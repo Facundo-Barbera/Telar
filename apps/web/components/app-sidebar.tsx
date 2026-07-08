@@ -48,6 +48,17 @@ type UsageWindow = {
   requests: number;
 };
 
+// The chat-list shape GET /api/chats returns (a message-less Chat plus a last-
+// message preview). Declared locally so this client bundle never pulls in the
+// fs-backed store. `preview` may be absent on an older API — tolerated below.
+type SessionMeta = {
+  id: string;
+  title: string;
+  project?: string;
+  updatedAt: number;
+  preview?: string;
+};
+
 function fmtReset(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -180,6 +191,40 @@ function ActiveRunsGroup({ runs }: { runs: Run[] }) {
   );
 }
 
+function SessionsGroup({ sessions }: { sessions: SessionMeta[] }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  if (sessions.length === 0) return null;
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Sessions</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {sessions.map((s) => {
+            const href = `/projects/${encodeURIComponent(s.project ?? "")}/sessions/${s.id}`;
+            const title = s.title || "Untitled session";
+            return (
+              <SidebarMenuItem key={s.id}>
+                <SidebarMenuButton
+                  isActive={pathname === href}
+                  onClick={() => router.push(href)}
+                  title={title}
+                  className="h-auto flex-col items-start gap-0.5 py-1.5"
+                >
+                  <span className="w-full truncate text-xs">{title}</span>
+                  <span className="w-full truncate font-mono text-[10px] text-sidebar-foreground/50">
+                    {s.project}
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            );
+          })}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
 function TelarSidebarHeader() {
   const router = useRouter();
   return (
@@ -199,18 +244,30 @@ function TelarSidebarHeader() {
 
 function SidebarBody() {
   const [runs, setRuns] = useState<Run[]>([]);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
   const [ledger, setLedger] = useState<{
     session: UsageWindow;
     weekly: UsageWindow;
   } | null>(null);
 
-  // Self-fetching: active runs + plan usage, refreshed on mount, on the global
-  // "telar:refresh" signal, and on a slow interval as a safety net.
+  // Self-fetching: active runs, recent sessions + plan usage, refreshed on
+  // mount, on the global "telar:refresh" signal, and on a slow interval as a
+  // safety net.
   const loadAll = useCallback(() => {
     fetch("/api/runs")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setRuns(Array.isArray(d.runs) ? d.runs : []))
+      .catch(() => {});
+    // Chats arrive newest-first; keep the 5 most recent that anchor to a
+    // project (only those have a session page to link into).
+    fetch("/api/chats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        const chats: SessionMeta[] = Array.isArray(d.chats) ? d.chats : [];
+        setSessions(chats.filter((c) => c.project).slice(0, 5));
+      })
       .catch(() => {});
     fetch("/api/usage")
       .then((r) => (r.ok ? r.json() : null))
@@ -242,6 +299,7 @@ function SidebarBody() {
       <SidebarContent>
         <NavGroup activeRuns={activeRuns.length} />
         <ActiveRunsGroup runs={activeRuns} />
+        <SessionsGroup sessions={sessions} />
       </SidebarContent>
 
       <SidebarFooter className="border-t">

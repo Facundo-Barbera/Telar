@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Loader2Icon,
+  MessageSquarePlusIcon,
   PlayIcon,
   ShieldIcon,
   Trash2Icon,
@@ -192,16 +193,32 @@ export function ProjectCard({
       </CardContent>
 
       <CardFooter className="justify-between gap-2">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() =>
-            router.push(`/runs?new=1&project=${encodeURIComponent(entry.name)}`)
-          }
-        >
-          <PlayIcon />
-          New run
-        </Button>
+        {/* Planning-first: a session (read-only, quick to start) leads; a run
+            (which writes) is the secondary action. */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            render={
+              <Link
+                href={`/projects/${encodeURIComponent(entry.name)}/sessions/new`}
+              />
+            }
+          >
+            <MessageSquarePlusIcon />
+            New session
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              router.push(`/runs?new=1&project=${encodeURIComponent(entry.name)}`)
+            }
+          >
+            <PlayIcon />
+            New run
+          </Button>
+        </div>
         <span className="font-mono text-[10px] text-muted-foreground/60">
           added {fmtAgo(entry.addedAt)}
         </span>

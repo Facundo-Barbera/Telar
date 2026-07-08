@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { ArrowLeftIcon, FolderGitIcon } from "lucide-react";
 import { getProject } from "@telar/core";
-import { getChat } from "@/lib/store";
+import { getChat, listChats } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { SessionView } from "@/components/session/session-view";
+import { SessionsRail } from "@/components/session/sessions-rail";
 
 // The transcript is read straight from the store at request time.
 export const dynamic = "force-dynamic";
@@ -73,18 +74,28 @@ export default async function SessionPage({
     ? { id: chat.id, model: chat.model, messages: chat.messages }
     : undefined;
 
-  // The header lives inside SessionView so a freshly-minted session shows its
-  // derived title live (the store only persists the title on the later 'saved'
-  // event, after the URL has already been rewritten to the new id).
+  // The rail lists every session anchored to this project, newest-first. It's
+  // server-rendered from the store: a freshly-minted session (URL rewritten
+  // mid-stream, first turn not yet persisted) simply isn't in the list until it
+  // saves — no highlight, which is correct for a thread that doesn't exist yet.
+  const sessions = listChats(name);
+
+  // Rail on the left, chat pane on the right. The pane keeps SessionView's own
+  // header inside it so a freshly-minted session shows its derived title live
+  // (the store only persists the title on the later 'saved' event, after the
+  // URL has already been rewritten to the new id).
   return (
-    <div className="flex h-dvh flex-col">
-      <SessionView
-        key={name}
-        project={name}
-        account={account}
-        initialChat={initialChat}
-        initialTitle={chat?.title}
-      />
+    <div className="flex h-dvh overflow-hidden">
+      <SessionsRail project={name} sessions={sessions} activeId={id} />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <SessionView
+          key={name}
+          project={name}
+          account={account}
+          initialChat={initialChat}
+          initialTitle={chat?.title}
+        />
+      </div>
     </div>
   );
 }

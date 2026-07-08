@@ -17,7 +17,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry, Run } from "@telar/core";
-import type { Chat } from "@/lib/store";
+import type { ChatSummary } from "@/lib/store";
 import { fmtAgo, fmtCost } from "@/lib/format";
 import { modelById } from "@/lib/models";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -45,7 +45,7 @@ type ProjectEntry = {
   error: string | null;
 };
 
-type ChatMeta = Omit<Chat, "messages">;
+type ChatMeta = ChatSummary;
 
 type Status = "loading" | "ready" | "missing" | "error";
 
@@ -295,6 +295,11 @@ function SessionRow({ name, chat }: { name: string; chat: ChatMeta }) {
         <div className="truncate text-sm font-medium">
           {chat.title || "Untitled session"}
         </div>
+        {chat.preview && (
+          <div className="mt-0.5 truncate text-xs text-muted-foreground/80">
+            {chat.preview}
+          </div>
+        )}
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="font-mono">{model}</span>
           <span className="text-border">·</span>

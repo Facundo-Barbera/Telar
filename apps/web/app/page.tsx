@@ -11,6 +11,7 @@ import {
   GaugeIcon,
   HistoryIcon,
   type LucideIcon,
+  MessagesSquareIcon,
   PlusIcon,
   RotateCwIcon,
   ShieldIcon,
@@ -50,6 +51,17 @@ type ProjectEntry = {
   entry: RegistryEntry;
   manifest: ProjectManifest | null;
   error: string | null;
+};
+
+// The chat-list shape GET /api/chats returns — a message-less Chat plus a
+// last-message preview. Declared locally (client component) and `preview` is
+// optional so an older API that predates it degrades to no preview line.
+type SessionMeta = {
+  id: string;
+  title: string;
+  project?: string;
+  updatedAt: number;
+  preview?: string;
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -175,6 +187,38 @@ function RecentRow({ run }: { run: Run }) {
   );
 }
 
+// A compact planning-session row — title over its last-reply preview, with the
+// anchoring project and relative time on the right. Links into the session page.
+function SessionRow({ session }: { session: SessionMeta }) {
+  const href = `/projects/${encodeURIComponent(session.project ?? "")}/sessions/${session.id}`;
+  return (
+    <Link
+      href={href}
+      className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
+    >
+      <MessagesSquareIcon className="size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">
+          {session.title || "Untitled session"}
+        </span>
+        {session.preview && (
+          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+            {session.preview}
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <Badge variant="outline" className="max-w-[10rem] truncate text-[10px]">
+          {session.project}
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          {fmtAgo(session.updatedAt)}
+        </span>
+      </div>
+    </Link>
+  );
+}
+
 function ProjectMiniCard({ entry, manifest, error }: ProjectEntry) {
   const href = `/projects/${encodeURIComponent(entry.name)}`;
   if (!manifest || error) {
@@ -280,6 +324,7 @@ export default function DashboardPage() {
   const [runsError, setRunsError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionMeta[] | null>(null);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
   const [nowTs, setNowTs] = useState(() => Date.now());
 
@@ -305,6 +350,18 @@ export default function DashboardPage() {
         setProjectsError(null);
       })
       .catch((e) => setProjectsError(e instanceof Error ? e.message : String(e)));
+
+    // Sessions are best-effort — a failure just leaves the section on its
+    // skeleton rather than gating the dashboard. Chats arrive newest-first;
+    // keep the most recent that anchor to a project (only those are linkable).
+    fetch("/api/chats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        const chats: SessionMeta[] = Array.isArray(d.chats) ? d.chats : [];
+        setSessions(chats.filter((c) => c.project).slice(0, 6));
+      })
+      .catch(() => {});
 
     fetch("/api/usage")
       .then((r) => (r.ok ? r.json() : null))
@@ -454,6 +511,53 @@ export default function DashboardPage() {
               )}
             </>
           )}
+
+          {/* Recent sessions — the planning surface, back-to-back with runs. */}
+          <section>
+            <SectionHeading
+              icon={MessagesSquareIcon}
+              count={sessions?.length || undefined}
+            >
+              Recent sessions
+            </SectionHeading>
+            {sessions === null ? (
+              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2.5">
+                    <Skeleton className="size-4 rounded" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-4 w-1/3" />
+                      <Skeleton className="h-3 w-1/2" />
+                    </div>
+                    <Skeleton className="h-4 w-14" />
+                  </div>
+                ))}
+              </div>
+            ) : sessions.length === 0 ? (
+              <EmptyState
+                className="py-10"
+                icon={MessagesSquareIcon}
+                title="Plan something"
+                description="Start a session from a project — sessions explore and prepare a change before a run writes it."
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    render={<Link href="/projects" />}
+                  >
+                    <FolderGit2Icon />
+                    Browse projects
+                  </Button>
+                }
+              />
+            ) : (
+              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                {sessions.map((session) => (
+                  <SessionRow key={session.id} session={session} />
+                ))}
+              </div>
+            )}
+          </section>
 
           {/* Projects */}
           <section>

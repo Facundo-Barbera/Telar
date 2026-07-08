@@ -31,6 +31,11 @@ export type Chat = {
   messages: ChatMessage[];
 };
 
+// A chat without its transcript, plus a one-line preview of the latest
+// assistant reply — the shape every list surface (project detail, sidebar,
+// dashboard) consumes.
+export type ChatSummary = Omit<Chat, "messages"> & { preview: string };
+
 export type UsageEntry = {
   ts: number;
   account: string;
@@ -62,10 +67,29 @@ function writeChats(chats: Chat[]) {
   fs.renameSync(tmp, CHATS);
 }
 
-export function listChats(project?: string): Omit<Chat, "messages">[] {
+// Last assistant text, normalized to a single line and capped — the ~100-char
+// glimpse the list surfaces show under each session title. Scans from the end
+// so the freshest reply wins; "" when a session has no assistant text yet.
+function previewOf(messages: ChatMessage[] = []): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant") continue;
+    const parts = m.parts ?? [];
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const p = parts[j];
+      if (p.type === "text") {
+        const text = p.text.replace(/\s+/g, " ").trim();
+        if (text) return text.slice(0, 100);
+      }
+    }
+  }
+  return "";
+}
+
+export function listChats(project?: string): ChatSummary[] {
   return readChats()
     .filter((c) => (project ? c.project === project : true))
-    .map(({ messages: _messages, ...meta }) => meta)
+    .map(({ messages, ...meta }) => ({ ...meta, preview: previewOf(messages) }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
