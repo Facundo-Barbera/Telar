@@ -38,6 +38,7 @@ export async function POST(req: Request) {
     sessionId,
     model = DEFAULT_MODEL,
     project,
+    account,
   } = await req.json();
 
   // Resolve the anchoring project up front — an unknown/missing project is a
@@ -52,7 +53,24 @@ export async function POST(req: Request) {
     );
   }
 
-  const profile = ACCOUNTS[manifest.account] ?? ACCOUNTS.personal;
+  // Same treatment as the project check: an unknown account is a plain 400
+  // before any stream opens, not something canUseTool/the SDK ever sees.
+  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
+  // "constructor"/"toString" can't slip past this as a false "known account".
+  if (account != null && !Object.prototype.hasOwnProperty.call(ACCOUNTS, account)) {
+    return Response.json(
+      { error: `Unknown account "${account}".` },
+      { status: 400 },
+    );
+  }
+
+  // Caller-supplied account wins (existing chats resume with their persisted
+  // chat.account, passed explicitly here), then the project's manifest
+  // default, then "personal". See AGENTS notes on the account-lock: a
+  // session's resume transcript lives under the account's config dir, so
+  // this route trusts whatever the client sends — the picker being
+  // choosable only pre-first-turn is a client-side rule, not enforced here.
+  const profile = ACCOUNTS[account] ?? ACCOUNTS[manifest.account] ?? ACCOUNTS.personal;
   const workspace = manifest.root;
 
   const abort = new AbortController();
@@ -73,7 +91,14 @@ export async function POST(req: Request) {
 
       const parts: Part[] = [];
       let streamingText = ""; // text accumulated from deltas for current block
-      let capturedSession = sessionId ?? null;
+      // The resume target is the client-supplied id, but it's untrusted until
+      // the SDK actually confirms it via a system:init message below.
+      // capturedSession must only ever hold an SDK-confirmed id — the finally
+      // block persists a turn whenever it's truthy, and a resume that fails
+      // before init (e.g. session doesn't exist under this account's config
+      // dir) must not persist a phantom empty turn under the client's guess.
+      const resumeTarget = sessionId ?? null;
+      let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
       // Permission requests opened by THIS stream; drained (deny) on teardown so
@@ -160,7 +185,7 @@ export async function POST(req: Request) {
           prompt: message,
           options: {
             cwd: workspace,
-            ...(capturedSession ? { resume: capturedSession } : {}),
+            ...(resumeTarget ? { resume: resumeTarget } : {}),
             model,
             env: accountEnv(profile),
             systemPrompt: { type: "preset", preset: "claude_code" },
@@ -190,8 +215,17 @@ export async function POST(req: Request) {
         });
         for await (const msg of q) {
           if (msg.type === "system" && msg.subtype === "init") {
-            capturedSession = (msg as { session_id: string }).session_id;
-            send("session", { sessionId: capturedSession });
+            const init = msg as {
+              session_id: string;
+              slash_commands?: string[];
+              skills?: string[];
+            };
+            capturedSession = init.session_id;
+            send("session", {
+              sessionId: capturedSession,
+              slashCommands: init.slash_commands ?? [],
+              skills: init.skills ?? [],
+            });
             // Fire the plan-usage control call now — the subprocess must still
             // be alive when it resolves; awaiting it at result-time is too late.
             const usageFn = (q as unknown as Record<string, () => Promise<any>>)

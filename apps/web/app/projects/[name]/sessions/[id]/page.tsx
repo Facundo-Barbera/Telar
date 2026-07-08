@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowLeftIcon, FolderGitIcon } from "lucide-react";
 import { getProject } from "@telar/core";
 import { getChat, listChats } from "@/lib/store";
+import { ACCOUNTS } from "@/lib/accounts";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -30,12 +31,12 @@ export default async function SessionPage({
 }) {
   const { name, id } = await params;
 
-  // The manifest fixes the account this session bills against. An unknown
-  // project is a stable condition (it can't resolve mid-stream), so it's the
-  // one case we surface as an error rather than a fresh session.
-  let account: string;
+  // The manifest fixes this project's default account. An unknown project is
+  // a stable condition (it can't resolve mid-stream), so it's the one case
+  // we surface as an error rather than a fresh session.
+  let manifest;
   try {
-    account = getProject(name).manifest.account;
+    manifest = getProject(name).manifest;
   } catch {
     return (
       <div className="flex h-dvh flex-col">
@@ -74,11 +75,24 @@ export default async function SessionPage({
     ? { id: chat.id, model: chat.model, messages: chat.messages }
     : undefined;
 
+  // An existing chat resumes with its own persisted account (the resume
+  // transcript lives under that account's config dir — the manifest default
+  // may have changed since); a fresh session falls back to the manifest.
+  const account = chat?.account ?? manifest.account;
+
   // The rail lists every session anchored to this project, newest-first. It's
   // server-rendered from the store: a freshly-minted session (URL rewritten
   // mid-stream, first turn not yet persisted) simply isn't in the list until it
   // saves — no highlight, which is correct for a thread that doesn't exist yet.
   const sessions = listChats(name);
+
+  // Display-only account metadata for the client picker — passed as plain
+  // data so the client component never imports the server-only accounts
+  // module (which may carry configDir/oauthTokenEnv).
+  const accounts = Object.values(ACCOUNTS).map((a) => ({
+    name: a.name,
+    displayTier: a.displayTier,
+  }));
 
   // Rail on the left, chat pane on the right. The pane keeps SessionView's own
   // header inside it so a freshly-minted session shows its derived title live
@@ -89,9 +103,17 @@ export default async function SessionPage({
       <SessionsRail project={name} sessions={sessions} activeId={id} />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <SessionView
-          key={name}
+          // Keyed on project+id (not just project) so a real Next.js
+          // navigation between two sessions remounts SessionView and
+          // re-seeds its state from the new initialChat/account/title.
+          // The mid-stream `history.replaceState` rename (see session-view's
+          // "session" event handler) never re-renders this server component,
+          // so `id` here doesn't change then — only on an actual navigation,
+          // which is exactly when a remount is wanted.
+          key={`${name}:${id}`}
           project={name}
           account={account}
+          accounts={accounts}
           initialChat={initialChat}
           initialTitle={chat?.title}
         />
