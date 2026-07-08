@@ -27,6 +27,9 @@ const {
   removeRule,
   createPending,
   resolvePending,
+  pendingRuleOptions,
+  isValidPermissionMode,
+  PERMISSION_MODES,
 } = await import("./permissions");
 
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
@@ -426,7 +429,7 @@ describe("rules store", () => {
 
 describe("pending registry", () => {
   test("resolvePending settles the promise once; a second resolve is a no-op", async () => {
-    const { id, promise } = createPending("proj", "Write");
+    const { id, promise } = createPending("proj", "Write", { file_path: "/x" }, "Write");
     expect(resolvePending(id, { behavior: "allow", always: true })).toBe(true);
     expect(resolvePending(id, { behavior: "deny" })).toBe(false);
     await expect(promise).resolves.toEqual({ behavior: "allow", always: true });
@@ -437,26 +440,34 @@ describe("pending registry", () => {
   });
 
   test("timeout auto-denies with a distinguishable reason and clears the entry", async () => {
-    const { id, promise } = createPending("proj", "Write", 20);
+    const { id, promise } = createPending("proj", "Write", { file_path: "/x" }, "Write", 20);
     await expect(promise).resolves.toEqual({ behavior: "deny", reason: "timeout" });
     // the timer already removed it, so a late answer is rejected
     expect(resolvePending(id, { behavior: "allow" })).toBe(false);
   });
 
   test("ids are unique across concurrent creations", () => {
-    const ids = new Set(Array.from({ length: 50 }, () => createPending("proj", "Write").id));
+    const ids = new Set(
+      Array.from({ length: 50 }, () => createPending("proj", "Write", { file_path: "/x" }, "Write").id),
+    );
     expect(ids.size).toBe(50);
   });
 
-  test("'always allow' coalesces other pendings waiting on the same project+rule", async () => {
-    const a = createPending("proj", "Bash(bun test:*)");
-    const b = createPending("proj", "Bash(bun test:*)");
+  test("'always allow' coalesces other pendings whose OWN call the resolved rule actually covers", async () => {
+    const a = createPending("proj", "Bash", { command: "bun test" }, "Bash(bun test:*)");
+    const b = createPending("proj", "Bash", { command: "bun test lib/x.test.ts" }, "Bash(bun test:*)");
     // a different rule/project must NOT be swept up
-    const c = createPending("proj", "Write");
-    const d = createPending("other", "Bash(bun test:*)");
+    const c = createPending("proj", "Write", { file_path: "/x" }, "Write");
+    const d = createPending("other", "Bash", { command: "bun test" }, "Bash(bun test:*)");
 
-    expect(resolvePending(a.id, { behavior: "allow", always: true })).toBe(true);
-    await expect(a.promise).resolves.toEqual({ behavior: "allow", always: true });
+    expect(
+      resolvePending(a.id, { behavior: "allow", always: true, rule: "Bash(bun test:*)" }),
+    ).toBe(true);
+    await expect(a.promise).resolves.toEqual({
+      behavior: "allow",
+      always: true,
+      rule: "Bash(bun test:*)",
+    });
     await expect(b.promise).resolves.toEqual({ behavior: "allow", reason: "coalesced" });
 
     // b was already resolved by coalescing — resolving it again is a no-op
@@ -466,11 +477,106 @@ describe("pending registry", () => {
     expect(resolvePending(d.id, { behavior: "deny" })).toBe(true);
   });
 
+  test("security regression: coalescing never bypasses ruleMatches/SHELL_CHAIN for a sibling whose actual command isn't covered by the rule the user picked", async () => {
+    // Both requests share the same DEFAULT ruleFor grouping ("git log"), but
+    // the sibling's real command is a shell-chained payload the user never
+    // saw or approved.
+    const main = createPending(
+      "proj",
+      "Bash",
+      { command: "git log --oneline -5" },
+      "Bash(git log:*)",
+      undefined,
+      ruleOptionsFor("Bash", { command: "git log --oneline -5" }),
+    );
+    const sibling = createPending(
+      "proj",
+      "Bash",
+      { command: "git log && rm -rf /tmp/x" },
+      "Bash(git log:*)",
+    );
+
+    // The user picks the NARROWEST option on the first card: this exact
+    // command only — specifically meant to approve nothing else.
+    resolvePending(main.id, {
+      behavior: "allow",
+      always: true,
+      rule: "Bash(git log --oneline -5)",
+    });
+
+    // The sibling must NOT have been silently approved — it's still pending,
+    // waiting for its own prompt (or eventual timeout/deny).
+    expect(resolvePending(sibling.id, { behavior: "deny" })).toBe(true);
+  });
+
+  test("security regression: a broad rule choice still refuses to coalesce a shell-chained sibling (SHELL_CHAIN enforced)", async () => {
+    const main = createPending("proj", "Bash", { command: "git log --oneline -5" }, "Bash(git log:*)");
+    const sibling = createPending("proj", "Bash", { command: "git log && rm -rf /tmp/x" }, "Bash(git log:*)");
+
+    // Even the WIDEST plausible choice ("any 'git' command") must not reach
+    // a chained/injected sibling command — SHELL_CHAIN always wins.
+    resolvePending(main.id, { behavior: "allow", always: true, rule: "Bash(git:*)" });
+
+    expect(resolvePending(sibling.id, { behavior: "deny" })).toBe(true);
+  });
+
   test("a plain (non-always) allow does not coalesce siblings", async () => {
-    const a = createPending("proj", "Write");
-    const b = createPending("proj", "Write");
+    const a = createPending("proj", "Write", { file_path: "/x" }, "Write");
+    const b = createPending("proj", "Write", { file_path: "/y" }, "Write");
     expect(resolvePending(a.id, { behavior: "allow" })).toBe(true);
     // b is still pending — only a real 'always' sweeps siblings
     expect(resolvePending(b.id, { behavior: "deny" })).toBe(true);
+  });
+
+  test("pendingRuleOptions remembers what createPending was given, undefined once resolved/unknown", async () => {
+    const options = ruleOptionsFor("Bash", { command: "git log --oneline" });
+    const { id, promise } = createPending(
+      "proj",
+      "Bash",
+      { command: "git log --oneline" },
+      "Bash(git log:*)",
+      undefined,
+      options,
+    );
+    expect(pendingRuleOptions(id)).toEqual(options);
+    expect(pendingRuleOptions("perm_nope")).toBeUndefined();
+    resolvePending(id, { behavior: "deny" });
+    await promise;
+    // Resolved/removed — no longer looked up.
+    expect(pendingRuleOptions(id)).toBeUndefined();
+  });
+
+  test("createPending without ruleOptions defaults to an empty (never wildcard-permissive) list", () => {
+    const { id } = createPending("proj", "Write", { file_path: "/x" }, "Write");
+    expect(pendingRuleOptions(id)).toEqual([]);
+  });
+
+  test("a decision's chosen rule round-trips through resolvePending to the caller", async () => {
+    const { id, promise } = createPending(
+      "proj",
+      "Bash",
+      { command: "git log --oneline" },
+      "Bash(git log:*)",
+    );
+    resolvePending(id, { behavior: "allow", always: true, rule: "Bash(git:*)" });
+    await expect(promise).resolves.toEqual({
+      behavior: "allow",
+      always: true,
+      rule: "Bash(git:*)",
+    });
+  });
+});
+
+describe("isValidPermissionMode", () => {
+  test("accepts exactly the three client-choosable modes", () => {
+    for (const mode of PERMISSION_MODES) {
+      expect(isValidPermissionMode(mode)).toBe(true);
+    }
+  });
+
+  test("rejects every SDK mode a client must never select, plus garbage", () => {
+    for (const mode of ["bypassPermissions", "dontAsk", "plan", "", "DEFAULT", 1, null, undefined, {}]) {
+      expect(isValidPermissionMode(mode)).toBe(false);
+    }
   });
 });

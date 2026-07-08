@@ -66,3 +66,45 @@ export const DEFAULT_MODEL = "claude-sonnet-5";
 
 export const modelById = (id: string): ModelInfo | undefined =>
   MODELS.find((m) => m.id === id);
+
+// Mirrors the SDK's own EffortLevel union exactly (see @anthropic-ai/claude-agent-sdk's
+// `EffortLevel` export) — kept as a local literal type rather than importing it so this
+// file (pulled into the client bundle by the composer) never depends on the SDK package.
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+export type EffortOption = {
+  id: EffortLevel;
+  label: string;
+  blurb: string;
+};
+
+export const EFFORT_OPTIONS: EffortOption[] = [
+  {
+    id: "low",
+    label: "Low",
+    blurb: "Minimal thinking, fastest responses.",
+  },
+  {
+    id: "medium",
+    label: "Medium",
+    blurb: "Moderate thinking for everyday tasks.",
+  },
+  {
+    id: "high",
+    label: "High",
+    blurb: "Deep reasoning for harder problems.",
+  },
+  {
+    id: "xhigh",
+    label: "Extra high",
+    blurb: "Deeper than high. Availability is model-dependent — older models may ignore or reject it.",
+  },
+  {
+    id: "max",
+    label: "Max",
+    blurb: "Maximum reasoning effort. Availability is model-dependent — older models may ignore or reject it.",
+  },
+];
+
+export const effortById = (id: string): EffortOption | undefined =>
+  EFFORT_OPTIONS.find((e) => e.id === id);

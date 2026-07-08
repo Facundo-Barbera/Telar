@@ -49,6 +49,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { PageHeader } from "@/components/common/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -56,8 +57,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fmtCost, shortId } from "@/lib/format";
-import { DEFAULT_MODEL, MODELS, modelById } from "@/lib/models";
+import { fmtCost, fmtTokens, shortId } from "@/lib/format";
+import { DEFAULT_MODEL, EFFORT_OPTIONS, MODELS, modelById } from "@/lib/models";
+import type { ClientPermissionMode } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 
 // Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
@@ -85,6 +87,9 @@ type StorePart =
       parentId?: string;
       agent?: AgentInfo;
       taskStatus?: "completed" | "failed" | "stopped";
+      // Set when auto/acceptEdits mode hard-blocked this call without an
+      // interactive prompt (route.ts's "permission_denied" handling).
+      autoDenied?: boolean;
     };
 type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 
@@ -94,8 +99,15 @@ type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 // parentId: canUseTool gets no parent attribution from the SDK, so every
 // permission card — regardless of which subagent's tool call triggered it —
 // renders on the Main thread (a documented v1 limitation, not a bug).
+//
+// "thinking" parts are the same kind of live-only artifact: the server emits
+// "thinking"/"thinking_delta" purely as SSE (see route.ts's stream_event
+// handling), never persisting narration text into a store Part, so there's
+// nothing to seed on reload — a thinking block only ever exists while its
+// turn is actually streaming.
 type Part =
   | { type: "text"; text: string; done: boolean; parentId?: string }
+  | { type: "thinking"; text: string; done: boolean; parentId?: string }
   | {
       type: "tool";
       name: string;
@@ -107,6 +119,7 @@ type Part =
       parentId?: string;
       agent?: AgentInfo;
       taskStatus?: "completed" | "failed" | "stopped";
+      autoDenied?: boolean;
     }
   | {
       type: "permission";
@@ -114,6 +127,11 @@ type Part =
       toolName: string;
       input: Record<string, unknown>;
       rule: string;
+      // Narrow -> broad rule choices offered for this call (ruleOptionsFor,
+      // server-side) — the user, not a heuristic, picks how wide an "Always
+      // allow" persists. `rule` above is always one of these (the default,
+      // prefix, option).
+      ruleOptions: Array<{ rule: string; label: string }>;
       status: "pending" | "allowed" | "denied";
     };
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
@@ -177,7 +195,23 @@ type ProjectCommand = {
 export type InitialChat = {
   id: string;
   model: string;
+  effort?: string;
+  // Absent on chats persisted before mode selection existed — reads as
+  // "default" (the prior hardcoded behavior), same fallback the state below
+  // uses.
+  permissionMode?: ClientPermissionMode;
   messages: StoreMessage[];
+  // Reload seed for the heartbeat bar — a live turn's "done" events add on
+  // top of these, but without seeding from the persisted chat record a
+  // reload of an existing session would show $0.00 / 0 tokens despite the
+  // store already holding the true accumulated totals (see the sessionCost
+  // useState below).
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  contextTokens: number;
 };
 
 const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
@@ -213,10 +247,37 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
             parentId: p.parentId,
             agent: p.agent,
             taskStatus: p.taskStatus,
+            autoDenied: p.autoDenied,
           },
     ),
   }));
 }
+
+// "Ask me" / "Auto" / "Accept edits" — the only three permissionMode values
+// a client may pick (see lib/permissions.ts's PERMISSION_MODES); the mode
+// select in the composer footer renders these, one-line description and
+// all, same idiom as the model select above it.
+const PERMISSION_MODE_OPTIONS: Array<{
+  value: ClientPermissionMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "default",
+    label: "Ask me",
+    description: "Prompt for every tool call that isn't already allowed.",
+  },
+  {
+    value: "auto",
+    label: "Auto",
+    description: "A classifier approves routine tool calls automatically.",
+  },
+  {
+    value: "acceptEdits",
+    label: "Accept edits",
+    description: "Auto-accept file edits; still ask about everything else.",
+  },
+];
 
 // Best-effort salient preview of a tool call's input: the path/command a human
 // actually cares about, or a capped JSON dump for anything else.
@@ -232,8 +293,17 @@ function PermissionCard({
   onRespond,
 }: {
   part: Extract<Part, { type: "permission" }>;
-  onRespond: (id: string, behavior: "allow" | "deny", always: boolean) => void;
+  onRespond: (id: string, behavior: "allow" | "deny", always: boolean, rule?: string) => void;
 }) {
+  // The user picks how broad an "Always allow" is — never a heuristic. Plain
+  // click on "Always allow" uses the default (prefix) option, `part.rule`;
+  // the caret reveals the other offered options (narrower exact match, and
+  // — unless the command is dangerous — a broader command-wide rule) as a
+  // tiny inline list, not a new overlay/select (no programmatic .focus()
+  // anywhere here — WebKit 26.x).
+  const [showOptions, setShowOptions] = useState(false);
+  const otherOptions = part.ruleOptions.filter((o) => o.rule !== part.rule);
+
   return (
     <div className="flex w-full flex-col gap-2 rounded-lg border bg-muted/40 p-3 text-xs">
       <div className="flex items-center gap-1.5 font-medium">
@@ -249,35 +319,72 @@ function PermissionCard({
         rule <span className="font-mono text-foreground/80">{part.rule}</span>
       </div>
       {part.status === "pending" ? (
-        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => onRespond(part.id, "allow", false)}
-          >
-            Allow once
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            className="h-auto flex-col items-start gap-0 py-1"
-            onClick={() => onRespond(part.id, "allow", true)}
-          >
-            <span>Always allow</span>
-            <span className="font-mono text-[9px] font-normal text-muted-foreground">
-              {part.rule}
-            </span>
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="destructive"
-            onClick={() => onRespond(part.id, "deny", false)}
-          >
-            Deny
-          </Button>
+        <div className="flex flex-col gap-1.5 pt-0.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => onRespond(part.id, "allow", false)}
+            >
+              Allow once
+            </Button>
+            <div className="flex items-stretch overflow-hidden rounded-md border">
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                className="h-auto flex-col items-start gap-0 rounded-none border-0 py-1"
+                onClick={() => onRespond(part.id, "allow", true)}
+              >
+                <span>Always allow</span>
+                <span className="font-mono text-[9px] font-normal text-muted-foreground">
+                  {part.rule}
+                </span>
+              </Button>
+              {otherOptions.length > 0 && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="rounded-none border-0 border-l px-1"
+                  aria-label={showOptions ? "Hide other rule choices" : "More rule choices"}
+                  onClick={() => setShowOptions((s) => !s)}
+                >
+                  <ChevronRightIcon
+                    className={cn("size-3 transition-transform", showOptions && "rotate-90")}
+                  />
+                </Button>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="xs"
+              variant="destructive"
+              onClick={() => onRespond(part.id, "deny", false)}
+            >
+              Deny
+            </Button>
+          </div>
+          {showOptions && otherOptions.length > 0 && (
+            <div className="flex flex-col gap-1 rounded-md border bg-background/40 p-1.5">
+              {otherOptions.map((o) => (
+                <Button
+                  key={o.rule}
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="h-auto w-fit flex-col items-start gap-0 px-1.5 py-1"
+                  onClick={() => onRespond(part.id, "allow", true, o.rule)}
+                >
+                  <span>{o.label}</span>
+                  <span className="font-mono text-[9px] font-normal text-muted-foreground">
+                    {o.rule}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <Badge
@@ -291,6 +398,53 @@ function PermissionCard({
   );
 }
 
+// Interleaved narration, rendered live-only (see the Part union comment —
+// there's no persisted counterpart). While the block is still streaming
+// (`!part.done`) it's a growing muted italic block, matching the shimmer's
+// "something is happening" register without competing with real answer
+// text. Once the block ends it collapses to a single "✻ Thought" row,
+// click to expand — same disclosure idiom as ToolStepRow, just without a
+// chevron rotate on the live (never-collapsed) state. No fade-from-zero
+// keyframes anywhere here (WebKit 26.x) — only a transform transition on
+// the chevron, same as every other expand/collapse row in this file.
+function ThinkingRow({
+  part,
+  open,
+  onToggle,
+}: {
+  part: Extract<Part, { type: "thinking" }>;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  if (!part.done) {
+    return (
+      <p className="rounded-md border border-dashed bg-muted/10 px-2.5 py-1.5 text-xs whitespace-pre-wrap italic text-muted-foreground">
+        {part.text || "…"}
+      </p>
+    );
+  }
+  return (
+    <div className="rounded-md">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-muted/60"
+      >
+        <span aria-hidden className="shrink-0">✻</span>
+        <span className="min-w-0 flex-1 truncate italic">Thought</span>
+        <ChevronRightIcon
+          className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
+        />
+      </button>
+      {open && (
+        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/10 p-2 text-[11px] whitespace-pre-wrap italic text-muted-foreground">
+          {part.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // One rendered chunk of an assistant message's parts: standalone text,
 // standalone permission card (always interactive, so it always breaks a
 // tool-step group), or a run of consecutive tool parts collapsed into one
@@ -298,6 +452,7 @@ function PermissionCard({
 // identity used to remember a user's manual expand/collapse override.
 type RenderItem =
   | { kind: "text"; key: string; part: Extract<Part, { type: "text" }> }
+  | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
   | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
   | { kind: "tools"; key: string; parts: ToolPart[] };
 
@@ -316,6 +471,8 @@ function groupParts(messageId: string, parts: Part[]): RenderItem[] {
       }
     } else if (part.type === "text") {
       items.push({ kind: "text", key: `${messageId}:${idx}`, part });
+    } else if (part.type === "thinking") {
+      items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
     } else {
       items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
     }
@@ -418,6 +575,11 @@ function ToolStepRow({
               <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
                 {preview}
               </span>
+            )}
+            {part.autoDenied && (
+              <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[9px]">
+                auto-denied
+              </Badge>
             )}
             {interrupted && !part.isError && (
               <span className="shrink-0 text-[10px] text-muted-foreground/70">
@@ -561,14 +723,18 @@ function ToolStepGroup({
   return (
     <div
       className={cn(
-        "flex w-full flex-col gap-0.5 rounded-lg border bg-muted/20 text-xs",
+        "flex flex-col gap-0.5 rounded-lg border bg-muted/20 text-xs",
+        // Collapsed groups hug their label (a short "1 step · Bash ×1" in a
+        // full-width bar reads as empty/heavy); only expand to full width when
+        // open, so the rows inside have room.
+        open ? "w-full" : "w-fit",
         hasError && "border-destructive/40",
       )}
     >
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-muted/40"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left hover:bg-muted/40"
       >
         <ChevronRightIcon
           className={cn(
@@ -676,6 +842,15 @@ function SessionViewInner({
   // undefined until the first turn persists, long after the URL is rewritten).
   const [title, setTitle] = useState(initialTitle ?? "New session");
   const [model, setModel] = useState(initialChat?.model ?? DEFAULT_MODEL);
+  // "default" = omit `effort` from the POST body entirely (let the model/SDK
+  // pick). Any other value is a real EffortLevel string sent as-is.
+  const [effort, setEffort] = useState(initialChat?.effort ?? "default");
+  // "Ask me" (interactive, the prior hardcoded behavior) by default —
+  // changeable between turns, persisted on the chat record like model/effort
+  // (route.ts's appendTurn) so a resumed session keeps whatever was last set.
+  const [permissionMode, setPermissionMode] = useState<ClientPermissionMode>(
+    initialChat?.permissionMode ?? "default",
+  );
   // The caller already resolves the effective account (chat.account for an
   // existing session, the manifest default for a fresh one — contract #5:
   // resume transcripts live under the account's config dir, so an existing
@@ -684,7 +859,31 @@ function SessionViewInner({
   const [activeAccount, setActiveAccount] = useState(account);
   const [status, setStatus] = useState<Status>("ready");
   const [thinking, setThinking] = useState(false);
-  const [sessionCost, setSessionCost] = useState(0);
+  // True once the chat record is actually confirmed persisted server-side —
+  // NOT the same as `sessionId` being set. sessionId is assigned the moment
+  // the "session" SSE event arrives, right at the START of a turn (just
+  // after the SDK's system:init); the chat itself is only created/persisted
+  // at the very END of that same turn, inside route.ts's teardown (the
+  // appendTurn call, confirmed by its "saved" event) — which for an agentic
+  // multi-tool-call turn can be tens of seconds to minutes later. Gating the
+  // rename affordance on sessionId alone lets the user PATCH a chat that
+  // doesn't exist on disk yet, which 404s and silently reverts. Seeded true
+  // for a page load that already has an existing chat (initialChat).
+  const [chatPersisted, setChatPersisted] = useState(!!initialChat);
+  // Seeded from the persisted chat record (reload) — live "done" events add
+  // on top. Without this seed, reloading an existing session would show
+  // $0.00 / 0 tokens despite the store already holding the true accumulated
+  // totals (the bug this seed fixes).
+  const [sessionCost, setSessionCost] = useState(initialChat?.costUsd ?? 0);
+  const [tokens, setTokens] = useState({
+    input: initialChat?.inputTokens ?? 0,
+    output: initialChat?.outputTokens ?? 0,
+    cacheRead: initialChat?.cacheReadTokens ?? 0,
+    cacheCreate: initialChat?.cacheCreateTokens ?? 0,
+  });
+  // Context-window occupancy: the LATEST turn's prompt size, set (not summed)
+  // each turn — see the "done" handler and store.ts contextTokens.
+  const [context, setContext] = useState(initialChat?.contextTokens ?? 0);
   const [elapsed, setElapsed] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -718,6 +917,14 @@ function SessionViewInner({
   // id}` — lifted here (rather than local state in ToolStepRow) so it survives
   // the row unmounting when its group auto-collapses (see ToolStepGroup).
   const [rowOverrides, setRowOverrides] = useState<Record<string, boolean>>({});
+  // Expand/collapse for a finished ("✻ Thought") thinking row, keyed by its
+  // own part key — same lift-to-parent reasoning as rowOverrides above.
+  const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
+  // Click-to-edit for the header title (item 5's rename affordance). Only
+  // meaningful once a session exists server-side (PATCH /api/chats/[id]
+  // needs a chat to already be in the store).
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
 
   const busy = status === "submitted" || status === "streaming";
 
@@ -821,6 +1028,18 @@ function SessionViewInner({
   const patch = (id: string, fn: (m: ChatMessage) => ChatMessage) =>
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
 
+  // A thinking block's end is never sent explicitly by the server (see the
+  // "thinking" SSE case) — it's inferred from the next delta/text/tool for
+  // the SAME parent. Closes (marks `done`), never deletes, so ThinkingRow
+  // switches from the live growing block to the collapsed "✻ Thought" row
+  // instead of the text vanishing.
+  const closeThinking = (m: ChatMessage, parent: string | undefined): ChatMessage => ({
+    ...m,
+    parts: m.parts.map((p) =>
+      p.type === "thinking" && !p.done && parentOf(p) === parent ? { ...p, done: true } : p,
+    ),
+  });
+
   // A tool part still missing output when the turn ends abnormally (Stop
   // clicked, mid-turn server error, dropped connection) never got its
   // tool_result — flag it so it renders as "interrupted" instead of looking
@@ -834,7 +1053,7 @@ function SessionViewInner({
     }));
 
   const respondPermission = useCallback(
-    (id: string, behavior: "allow" | "deny", always: boolean) => {
+    (id: string, behavior: "allow" | "deny", always: boolean, rule?: string) => {
       // Optimistic — the "permission_result" SSE event (or the server's 120s
       // timeout deny) is authoritative and will overwrite this regardless.
       setMessages((ms) =>
@@ -850,12 +1069,37 @@ function SessionViewInner({
       fetch("/api/chat/permission", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, behavior, always }),
+        // `rule` is only sent when the user picked a non-default option off
+        // the card — the route validates it's one of THIS request's
+        // remembered ruleOptions (isOfferedRule) and 400s otherwise.
+        body: JSON.stringify({ id, behavior, always, ...(rule ? { rule } : {}) }),
       }).catch(() => {
         // Fire-and-forget: the SSE event / server timeout still resolves this.
       });
     },
     [],
+  );
+
+  // The rename affordance's commit path: optimistic update, PATCH, revert on
+  // failure. Only ever called once a session exists (see commitTitleEdit,
+  // gated on sessionId, below) — a chat has to already be in the store for
+  // PATCH to find it.
+  const saveTitle = useCallback(
+    (id: string, next: string) => {
+      const prev = title;
+      setTitle(next);
+      fetch(`/api/chats/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: next }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error("rename failed");
+          refresh();
+        })
+        .catch(() => setTitle(prev));
+    },
+    [title],
   );
 
   const send = useCallback(
@@ -886,6 +1130,8 @@ function SessionViewInner({
             model,
             project,
             account: activeAccount,
+            ...(effort !== "default" ? { effort } : {}),
+            permissionMode,
           }),
           signal: abort.signal,
         });
@@ -954,20 +1200,47 @@ function SessionViewInner({
                   setAvailableAgents(payload.agents);
                 }
                 break;
-              case "thinking":
-                // Carries an optional `parent` too, but stays a single
-                // turn-wide flag on purpose: it only ever drives the busy
-                // wording in the heartbeat bar / empty-message placeholder,
-                // and contract #5 keys busy/elapsed to the whole turn
-                // regardless of which tab is active. There's also no
-                // explicit "stopped thinking" event to attribute the *end* of
-                // a thinking span per parent — it's only ever inferred from
-                // the next delta/text/tool, so per-parent precision here
-                // would be partial at best. A subagent's own empty-tab
-                // placeholder (see renderAgentBucket) already renders its own
-                // static "Spinning up…" instead of reading this flag.
+              case "thinking": {
+                // Still drives the turn-wide busy wording (unchanged — see
+                // below), but now ALSO opens a live "thinking" part attributed
+                // to `parent` (main thread when omitted) — the growing muted
+                // italic block ThinkingRow renders while it streams. A block
+                // start always opens a NEW part rather than reopening a
+                // previous one: by the time a second thinking block starts
+                // for the same parent, the first was already closed by
+                // whatever delta/text/tool followed it (see closeThinking).
                 setThinking(true);
+                const parent: string | undefined = payload.parent ?? undefined;
+                patch(asstId, (m) => ({
+                  ...m,
+                  parts: [...m.parts, { type: "thinking", text: "", done: false, parentId: parent }],
+                }));
                 break;
+              }
+              case "thinking_delta": {
+                // Merges into the trailing OPEN thinking part of this same
+                // parent — mirrors "delta"'s merge-into-trailing-part
+                // pattern, just scoped to type "thinking" instead of "text"
+                // so the two never merge into each other.
+                const parent: string | undefined = payload.parent ?? undefined;
+                patch(asstId, (m) => {
+                  const idx = m.parts.findLastIndex((p) => parentOf(p) === parent);
+                  const last = idx >= 0 ? m.parts[idx] : undefined;
+                  if (last?.type === "thinking" && !last.done) {
+                    const parts = [...m.parts];
+                    parts[idx] = { ...last, text: last.text + payload.text };
+                    return { ...m, parts };
+                  }
+                  // No open thinking part for this parent (e.g. it already
+                  // got closed by an interleaved event) — open one so the
+                  // text isn't dropped.
+                  return {
+                    ...m,
+                    parts: [...m.parts, { type: "thinking", text: payload.text, done: false, parentId: parent }],
+                  };
+                });
+                break;
+              }
               case "delta": {
                 // `parent` (parent_tool_use_id) routes this chunk to its own
                 // tab's bucket — null/omitted means the main thread. Several
@@ -981,16 +1254,17 @@ function SessionViewInner({
                 setStatus("streaming");
                 setThinking(false);
                 patch(asstId, (m) => {
-                  const idx = m.parts.findLastIndex((p) => parentOf(p) === parent);
-                  const last = idx >= 0 ? m.parts[idx] : undefined;
+                  const closed = closeThinking(m, parent);
+                  const idx = closed.parts.findLastIndex((p) => parentOf(p) === parent);
+                  const last = idx >= 0 ? closed.parts[idx] : undefined;
                   if (last?.type === "text" && !last.done) {
-                    const parts = [...m.parts];
+                    const parts = [...closed.parts];
                     parts[idx] = { ...last, text: last.text + payload.text };
-                    return { ...m, parts };
+                    return { ...closed, parts };
                   }
                   return {
-                    ...m,
-                    parts: [...m.parts, { type: "text", text: payload.text, done: false, parentId: parent }],
+                    ...closed,
+                    parts: [...closed.parts, { type: "text", text: payload.text, done: false, parentId: parent }],
                   };
                 });
                 break;
@@ -1000,16 +1274,17 @@ function SessionViewInner({
                 setStatus("streaming");
                 setThinking(false);
                 patch(asstId, (m) => {
-                  const idx = m.parts.findLastIndex((p) => parentOf(p) === parent);
-                  const last = idx >= 0 ? m.parts[idx] : undefined;
+                  const closed = closeThinking(m, parent);
+                  const idx = closed.parts.findLastIndex((p) => parentOf(p) === parent);
+                  const last = idx >= 0 ? closed.parts[idx] : undefined;
                   if (last?.type === "text" && !last.done) {
-                    const parts = [...m.parts];
+                    const parts = [...closed.parts];
                     parts[idx] = { type: "text", text: payload.text, done: true, parentId: parent };
-                    return { ...m, parts };
+                    return { ...closed, parts };
                   }
                   return {
-                    ...m,
-                    parts: [...m.parts, { type: "text", text: payload.text, done: true, parentId: parent }],
+                    ...closed,
+                    parts: [...closed.parts, { type: "text", text: payload.text, done: true, parentId: parent }],
                   };
                 });
                 break;
@@ -1018,23 +1293,26 @@ function SessionViewInner({
                 const parent: string | undefined = payload.parent ?? undefined;
                 setStatus("streaming");
                 setThinking(false);
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: [
-                    ...m.parts,
-                    {
-                      type: "tool",
-                      name: payload.name,
-                      id: payload.id,
-                      input: payload.input,
-                      ...(parent ? { parentId: parent } : {}),
-                      // Only a spawn call's own "tool" event carries `agent`
-                      // (pulled server-side from its AgentInput) — everything
-                      // else is undefined here, same as before this feature.
-                      ...(payload.agent ? { agent: payload.agent as AgentInfo } : {}),
-                    },
-                  ],
-                }));
+                patch(asstId, (m) => {
+                  const closed = closeThinking(m, parent);
+                  return {
+                    ...closed,
+                    parts: [
+                      ...closed.parts,
+                      {
+                        type: "tool",
+                        name: payload.name,
+                        id: payload.id,
+                        input: payload.input,
+                        ...(parent ? { parentId: parent } : {}),
+                        // Only a spawn call's own "tool" event carries `agent`
+                        // (pulled server-side from its AgentInput) — everything
+                        // else is undefined here, same as before this feature.
+                        ...(payload.agent ? { agent: payload.agent as AgentInfo } : {}),
+                      },
+                    ],
+                  };
+                });
                 break;
               }
               case "tool_result":
@@ -1087,6 +1365,7 @@ function SessionViewInner({
                       toolName: payload.toolName,
                       input: payload.input ?? {},
                       rule: payload.rule,
+                      ruleOptions: Array.isArray(payload.ruleOptions) ? payload.ruleOptions : [],
                       status: "pending",
                     },
                   ],
@@ -1103,6 +1382,42 @@ function SessionViewInner({
                   ),
                 }));
                 break;
+              case "permission_denied": {
+                // Auto/acceptEdits mode's classifier (or the guardrail hook)
+                // blocked a call without an interactive prompt — patch the
+                // matching "tool" part (from the earlier "tool" event) so it
+                // renders with the destructive auto-denied chip; the rare
+                // out-of-order case (this arrives before that "tool" event
+                // ever did) falls back to synthesizing one, mirroring
+                // route.ts's own persisted-part fallback.
+                let matched = false;
+                patch(asstId, (m) => {
+                  const parts = m.parts.map((p) => {
+                    if (p.type === "tool" && p.id === payload.toolUseId) {
+                      matched = true;
+                      return { ...p, isError: true, autoDenied: true, output: p.output ?? payload.message };
+                    }
+                    return p;
+                  });
+                  return matched
+                    ? { ...m, parts }
+                    : {
+                        ...m,
+                        parts: [
+                          ...parts,
+                          {
+                            type: "tool" as const,
+                            id: payload.toolUseId,
+                            name: payload.toolName,
+                            isError: true,
+                            autoDenied: true,
+                            output: payload.message,
+                          },
+                        ],
+                      };
+                });
+                break;
+              }
               case "interrupted":
                 // The server's teardown just flagged some still-unresolved
                 // tool part(s) of THIS turn as interrupted (route.ts's
@@ -1116,11 +1431,36 @@ function SessionViewInner({
               case "plan":
                 refresh();
                 break;
+              case "title":
+                // Fired once, only for a fresh session (route.ts contract #2)
+                // — arrives before "saved". Only ever overwrites the
+                // client-side placeholder (text.slice(0, 60), set in `send`
+                // above) with the AI-generated title; never fires again for
+                // this chat's later turns, so it can never clobber a
+                // subsequent user rename.
+                if (typeof payload.title === "string" && payload.title) {
+                  setTitle(payload.title);
+                }
+                break;
               case "done":
                 setSessionCost((c) => c + (payload.costUsd ?? 0));
+                setTokens((t) => ({
+                  input: t.input + (payload.usage?.input_tokens ?? 0),
+                  output: t.output + (payload.usage?.output_tokens ?? 0),
+                  cacheRead: t.cacheRead + (payload.usage?.cache_read_input_tokens ?? 0),
+                  cacheCreate: t.cacheCreate + (payload.usage?.cache_creation_input_tokens ?? 0),
+                }));
+                // Context = this turn's whole prompt side (the conversation is
+                // re-sent every turn), overwritten not accumulated.
+                setContext(
+                  (payload.usage?.input_tokens ?? 0) +
+                    (payload.usage?.cache_read_input_tokens ?? 0) +
+                    (payload.usage?.cache_creation_input_tokens ?? 0),
+                );
                 refresh();
                 break;
               case "saved":
+                setChatPersisted(true);
                 refresh();
                 break;
               case "error":
@@ -1170,7 +1510,7 @@ function SessionViewInner({
         abortRef.current = null;
       }
     },
-    [sessionId, model, project, activeAccount, router],
+    [sessionId, model, effort, permissionMode, project, activeAccount, router],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -1331,6 +1671,18 @@ function SessionViewInner({
             // mirrors Main's exhaustive RenderItem switch exactly.
             return null;
           }
+          if (item.kind === "thinking") {
+            return (
+              <ThinkingRow
+                key={item.key}
+                part={item.part}
+                open={thinkingOpen[item.key] ?? false}
+                onToggle={() =>
+                  setThinkingOpen((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                }
+              />
+            );
+          }
           const isTrailing = items.slice(i + 1).every((it) => it.kind === "permission");
           const live = bucketLive && isTrailing;
           const open = groupOverrides[item.key] ?? live;
@@ -1379,6 +1731,61 @@ function SessionViewInner({
     );
   }
 
+  // The rename affordance's commit path: Enter and blur both go through
+  // here (a plain, non-empty, changed value is saved via saveTitle; an
+  // unchanged/empty draft just closes the editor with no PATCH). Escape
+  // (below) bypasses this entirely — it never touches titleDraft's value.
+  const commitTitleEdit = () => {
+    setEditingTitle(false);
+    const trimmed = titleDraft.trim().slice(0, 120);
+    if (!sessionId || !chatPersisted || !trimmed || trimmed === title) return;
+    saveTitle(sessionId, trimmed);
+  };
+
+  // No .focus() call anywhere in this — WebKit 26.x. The input renders
+  // un-focused; the user clicks into it themselves (it just replaced the
+  // pencil button they clicked, so it's already under the pointer).
+  const titleNode = editingTitle ? (
+    <Input
+      value={titleDraft}
+      onChange={(e) => setTitleDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitTitleEdit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setEditingTitle(false);
+        }
+      }}
+      onBlur={commitTitleEdit}
+      className="h-6 max-w-xs text-base font-semibold"
+    />
+  ) : (
+    <span className="group/title inline-flex min-w-0 items-center gap-1">
+      <span className="truncate">{title}</span>
+      {/* Only once the chat is CONFIRMED persisted server-side (chatPersisted,
+          not just sessionId) — PATCH /api/chats/[id] needs a chat already in
+          the store to rename, and sessionId alone is set well before that
+          (see chatPersisted's own comment above). */}
+      {sessionId && chatPersisted && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Rename session"
+          onClick={() => {
+            setTitleDraft(title);
+            setEditingTitle(true);
+          }}
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
+        >
+          <PencilIcon />
+        </Button>
+      )}
+    </span>
+  );
+
   return (
     <>
       <PageHeader
@@ -1388,13 +1795,13 @@ function SessionViewInner({
             label={`Back to ${project}`}
           />
         }
-        title={title}
+        title={titleNode}
         description={<span className="font-mono text-xs">{project}</span>}
       />
 
       {/* Live heartbeat for this session — active account (editable pre-session,
           locked once one exists), session id once minted, elapsed while
-          working, running cost. */}
+          working, running cost + token counts. */}
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5">
         <Badge variant="outline" className="gap-1.5 font-mono text-xs">
           <UserRoundIcon className="size-3" />
@@ -1411,6 +1818,16 @@ function SessionViewInner({
               {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
             </Shimmer>
           )}
+          {/* Cache tokens live in the title attribute rather than cluttering
+              the bar with a third number — same idiom as a tooltip, no new
+              overlay primitive. */}
+          <Badge
+            variant="outline"
+            className="font-mono text-xs"
+            title={`cache read ${fmtTokens(tokens.cacheRead)} · cache create ${fmtTokens(tokens.cacheCreate)}`}
+          >
+            {fmtTokens(tokens.input)} in · {fmtTokens(tokens.output)} out
+          </Badge>
           <Badge variant="outline" className="font-mono text-xs">
             {fmtCost(sessionCost)}
           </Badge>
@@ -1421,16 +1838,26 @@ function SessionViewInner({
           tool-call part arrives (live) or is reconstructed from persisted
           parts (load) — see agentBuckets. Scrolls horizontally on overflow,
           never wraps into the conversation below it. */}
-      <AgentTabsStrip
-        tabs={agentTabs}
-        activeId={activeTab}
-        onSelect={setActiveTab}
-        mainNeedsAttention={mainNeedsAttention}
-        availableAgents={availableAgents ?? undefined}
-      />
+      {/* The strip carries its own "Main" tab, so with no subagents spawned it
+          would render a lone, pointless "Main" — only show it once at least one
+          subagent tab exists. */}
+      {agentTabs.length > 0 && (
+        <AgentTabsStrip
+          tabs={agentTabs}
+          activeId={activeTab}
+          onSelect={setActiveTab}
+          mainNeedsAttention={mainNeedsAttention}
+          availableAgents={availableAgents ?? undefined}
+        />
+      )}
 
       <Conversation className="flex-1">
-        <ConversationContent className="mx-auto w-full max-w-3xl">
+        {/* Full-width transcript (explicit user request — no inner padding):
+            no max-w-3xl/mx-auto centering, no horizontal padding. Vertical
+            padding (py-4) and the scroll behavior are unchanged. Individual
+            code blocks / tool detail panels still scroll horizontally within
+            themselves (overflow-x-auto — see ToolStepRow), never the page. */}
+        <ConversationContent className="px-0">
           {activeBucket ? (
             renderAgentBucket(activeBucket)
           ) : messages.length === 0 ? (
@@ -1476,6 +1903,18 @@ function SessionViewInner({
                           />
                         );
                       }
+                      if (item.kind === "thinking") {
+                        return (
+                          <ThinkingRow
+                            key={item.key}
+                            part={item.part}
+                            open={thinkingOpen[item.key] ?? false}
+                            onToggle={() =>
+                              setThinkingOpen((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
+                            }
+                          />
+                        );
+                      }
                       // A pending/just-resolved permission card is not a new
                       // unit of finished work — it's the same blocked tool
                       // call waiting on the user, so a trailing run of
@@ -1515,7 +1954,10 @@ function SessionViewInner({
         <ConversationScrollButton />
       </Conversation>
 
-      <div className="relative mx-auto w-full max-w-3xl px-4 pb-4">
+      {/* Composer matches the transcript's reading column — same mx-auto
+          max-w-7xl the Message wrapper uses, so the input aligns with the
+          messages instead of spanning the whole pane. */}
+      <div className="relative mx-auto w-full max-w-7xl pb-4">
         {slashMenuOpen && (
           <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
             {filteredCommands.length === 0 ? (
@@ -1560,6 +2002,7 @@ function SessionViewInner({
         <PromptInput onSubmit={handleSubmit}>
           <PromptInputBody>
             <PromptInputTextarea
+              className="min-h-10"
               placeholder={`Ask about ${project}… ("/" for commands)`}
               onKeyDown={handleComposerKeyDown}
               onChange={() => setMenuDismissed(false)}
@@ -1605,6 +2048,38 @@ function SessionViewInner({
                   ))}
                 </SelectContent>
               </Select>
+              {/* "default" omits `effort` from the POST body entirely — the
+                  model/SDK picks its own. Editable on every turn, like model
+                  above (not locked to pre-session like the account picker
+                  below): route.ts persists whatever was last sent, same as
+                  model, and restores it on resume via initialChat.effort. */}
+              <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
+                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
+                  <SelectValue>
+                    {effort === "default"
+                      ? "Effort"
+                      : (EFFORT_OPTIONS.find((e) => e.id === effort)?.label ?? effort)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
+                  <SelectItem value="default" className="py-2">
+                    <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                      <span className="font-medium">Default</span>
+                      <span className="text-xs text-muted-foreground">
+                        Let the model choose its own effort.
+                      </span>
+                    </div>
+                  </SelectItem>
+                  {EFFORT_OPTIONS.map((e) => (
+                    <SelectItem key={e.id} value={e.id} className="py-2">
+                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                        <span className="font-medium">{e.label}</span>
+                        <span className="text-xs text-muted-foreground">{e.blurb}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {sessionId === null && !busy && (
                 <Select
                   value={activeAccount}
@@ -1634,6 +2109,27 @@ function SessionViewInner({
                   </SelectContent>
                 </Select>
               )}
+              <Select
+                value={permissionMode}
+                onValueChange={(v) => v && setPermissionMode(v as ClientPermissionMode)}
+              >
+                <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
+                  <SelectValue>
+                    {PERMISSION_MODE_OPTIONS.find((o) => o.value === permissionMode)?.label ??
+                      "Ask me"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
+                  {PERMISSION_MODE_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value} className="py-2">
+                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                        <span className="font-medium">{o.label}</span>
+                        <span className="text-xs text-muted-foreground">{o.description}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
                 type="button"
                 variant="outline"

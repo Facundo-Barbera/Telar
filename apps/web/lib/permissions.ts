@@ -13,11 +13,25 @@ export type PermissionDecision = {
   behavior: "allow" | "deny";
   always?: boolean;
   reason?: "timeout" | "aborted" | "coalesced";
+  // The specific rule to persist when `always` is set — one of the options
+  // ruleOptionsFor offered for this tool call, validated by the route
+  // (isOfferedRule) before it ever reaches here. Absent means "use the
+  // caller's own default" — route.ts's canUseTool falls back to the prefix
+  // rule (ruleFor's output) it minted the pending request with.
+  rule?: string;
 };
 
 type PendingRequest = {
   project: string;
   rule: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  // The rule-choice options offered for this tool call (ruleOptionsFor's
+  // output), remembered so POST /api/chat/permission can validate a
+  // client-chosen `rule` against what was actually offered — never a wider,
+  // client-injected string. Defaults to [] for callers (tests) that don't
+  // pass any.
+  ruleOptions: Array<{ rule: string; label: string }>;
   resolve: (d: PermissionDecision) => void;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -72,10 +86,15 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Command names for which a bare "Bash(<name>:*)" rule — i.e. "always allow
 // any invocation of this command, with any args" — is never offered as a
 // choice. These either grant broad system access on their own (sudo, sh,
-// bash, zsh, eval, exec), are commonly used to route around narrower rules
-// (curl, wget, npx, bunx, node, python*, which can run arbitrary fetched or
-// interpreted code), or are destructive enough that "any args" is too wide
-// (rm, rmdir, dd, mkfs, chmod, chown, kill, pkill).
+// bash, zsh, eval, exec), are general-purpose command-execution wrappers
+// that make "any args" equivalent to a bare shell (env, xargs, find (via
+// -exec), timeout, nohup, nice, setsid, watch — all can invoke an arbitrary
+// OTHER program with attacker-controlled args and no shell metacharacter, so
+// SHELL_CHAIN never catches them), are commonly used to route around
+// narrower rules (curl, wget, npx, bunx, node, python*, perl, ruby, php,
+// lua, deno, which can run arbitrary fetched or interpreted code), or are
+// destructive enough that "any args" is too wide (rm, rmdir, dd, mkfs,
+// chmod, chown, kill, pkill).
 export const DANGEROUS_COMMANDS: readonly string[] = [
   "rm",
   "rmdir",
@@ -85,6 +104,14 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   "zsh",
   "eval",
   "exec",
+  "env",
+  "xargs",
+  "find",
+  "timeout",
+  "nohup",
+  "nice",
+  "setsid",
+  "watch",
   "dd",
   "mkfs",
   "chmod",
@@ -98,6 +125,11 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   "node",
   "python",
   "python3",
+  "perl",
+  "ruby",
+  "php",
+  "lua",
+  "deno",
 ];
 
 // The specifier for a rule derived from a tool call: for Bash, the command
@@ -195,6 +227,19 @@ export function ruleOptionsFor(
 // string equality only, no prefix/pattern matching.
 export function isOfferedRule(options: Array<{ rule: string; label: string }>, rule: string): boolean {
   return options.some((o) => o.rule === rule);
+}
+
+// The only SDK permission modes a client may ever select. The SDK's own
+// PermissionMode also includes "bypassPermissions" (skips canUseTool
+// entirely, requires an extra opt-in flag) and "dontAsk"/"plan" (not
+// meaningful choices from this UI) — none of those are ever accepted from a
+// client request even if sent; see isValidPermissionMode and its use in the
+// chat route's 400 check.
+export const PERMISSION_MODES = ["default", "auto", "acceptEdits"] as const;
+export type ClientPermissionMode = (typeof PERMISSION_MODES)[number];
+
+export function isValidPermissionMode(mode: unknown): mode is ClientPermissionMode {
+  return typeof mode === "string" && (PERMISSION_MODES as readonly string[]).includes(mode);
 }
 
 // Shell separators/substitution/redirection that chain or divert a second
@@ -357,8 +402,11 @@ export function makeGuardrailDecision(
 
 export function createPending(
   project: string,
+  toolName: string,
+  input: Record<string, unknown>,
   rule: string,
   timeoutMs = 120_000,
+  ruleOptions: Array<{ rule: string; label: string }> = [],
 ): { id: string; promise: Promise<PermissionDecision> } {
   let id = "perm_" + randomUUID();
   while (pending.has(id)) id = "perm_" + randomUUID(); // paranoia: randomUUID collisions are not realistic
@@ -367,9 +415,17 @@ export function createPending(
       pending.delete(id);
       resolve({ behavior: "deny", reason: "timeout" });
     }, timeoutMs);
-    pending.set(id, { project, rule, resolve, timer });
+    pending.set(id, { project, rule, toolName, input, ruleOptions, resolve, timer });
   });
   return { id, promise };
+}
+
+// Looked up by POST /api/chat/permission to validate a client-supplied
+// `rule` against what was actually offered for this still-open request.
+// undefined for an unknown or already-resolved id — the route treats that
+// as "reject any rule" rather than trusting an unvalidatable choice.
+export function pendingRuleOptions(id: string): Array<{ rule: string; label: string }> | undefined {
+  return pending.get(id)?.ruleOptions;
 }
 
 export function resolvePending(id: string, decision: PermissionDecision): boolean {
@@ -379,13 +435,26 @@ export function resolvePending(id: string, decision: PermissionDecision): boolea
   pending.delete(id);
   p.resolve(decision);
   // "Always allow" persists a rule that covers every other tool call already
-  // waiting on the same project+rule — resolve those too instead of making
-  // them sit out the prompt (or the 120s timeout) for a rule the user just
+  // waiting on the same project — resolve those too instead of making them
+  // sit out the prompt (or the 120s timeout) for a rule the user just
   // approved. The rule itself is persisted by the caller of resolvePending
   // (route.ts, keyed off `decision.always`), not here.
+  //
+  // Critical: this must check the rule the user ACTUALLY picked
+  // (decision.rule, falling back to this request's own default only when
+  // they didn't pick a narrower one) against each sibling's OWN toolName/
+  // input via ruleMatches — never just compare the two requests' stored
+  // *default* `rule` labels for equality. That default is only a grouping
+  // key (same command name + second token) computed once at createPending
+  // time; it says nothing about what the user actually approved, and
+  // skipping ruleMatches would also skip its SHELL_CHAIN check, so a
+  // concurrently-pending sibling with a shell-chained/injected payload that
+  // merely shares the same command-name grouping would get silently
+  // auto-approved regardless of how narrow a rule the user chose.
   if (decision.behavior === "allow" && decision.always) {
+    const persistedRule = decision.rule ?? p.rule;
     for (const [otherId, other] of pending) {
-      if (other.project === p.project && other.rule === p.rule) {
+      if (other.project === p.project && ruleMatches(persistedRule, other.toolName, other.input)) {
         clearTimeout(other.timer);
         pending.delete(otherId);
         other.resolve({ behavior: "allow", reason: "coalesced" });

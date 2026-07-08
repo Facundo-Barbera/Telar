@@ -1,11 +1,15 @@
 import {
   query,
+  type EffortLevel,
+  type HookInput,
+  type HookJSONOutput,
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
 import { accountEnv, getProject, type ProjectManifest } from "@telar/core";
 import { ACCOUNTS } from "@/lib/accounts";
-import { DEFAULT_MODEL } from "@/lib/models";
+import { DEFAULT_MODEL, EFFORT_OPTIONS } from "@/lib/models";
+import { generateTitle } from "@/lib/titles";
 import {
   createPending,
   resolvePending,
@@ -13,9 +17,10 @@ import {
   addRule,
   ruleFor,
   ruleMatches,
-  isProtectedPath,
-  bashTouchesProtectedPath,
-  inputPaths,
+  ruleOptionsFor,
+  makeGuardrailDecision,
+  isValidPermissionMode,
+  type ClientPermissionMode,
   type PermissionDecision,
 } from "@/lib/permissions";
 import {
@@ -47,6 +52,20 @@ const toIso = (epoch?: number) =>
 // blow up chats.json or the blocking write it forces on every other chat.
 const MAX_DETAILED_TOOL_PARTS = 200;
 
+// The SDK's full EffortLevel set, single-sourced from lib/models.ts (also
+// what the composer's Select renders) so the API's validation and the UI's
+// offered choices can never drift apart. Typed as Set<string> (not the
+// inferred Set<EffortLevel>) so the `.has(effort)` check below — where
+// `effort` is narrowed to plain `string` by the `typeof effort === "string"`
+// guard, not to the literal union — type-checks; the runtime membership test
+// is identical either way.
+const EFFORT_LEVELS: Set<string> = new Set(EFFORT_OPTIONS.map((o) => o.id));
+
+// Title generation must never delay teardown beyond this — see the `finally`
+// block's Promise.race. Deliberately short: a title that isn't ready by then
+// just falls back to appendTurn's own message-prefix default.
+const TITLE_RACE_MS = 2_000;
+
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
 // via includePartialMessages; client abort propagates to the subprocess.
@@ -57,6 +76,8 @@ export async function POST(req: Request) {
     model = DEFAULT_MODEL,
     project,
     account,
+    effort,
+    permissionMode: rawPermissionMode = "default",
   } = await req.json();
 
   // Resolve the anchoring project up front — an unknown/missing project is a
@@ -82,6 +103,29 @@ export async function POST(req: Request) {
     );
   }
 
+  // Omitting effort means "let the model/SDK pick its own default" — only a
+  // present-but-invalid value is rejected. Validated up front, alongside
+  // project/account, so a bad value is a plain 400 before any stream opens
+  // rather than an opaque SDK error mid-turn.
+  if (effort != null && (typeof effort !== "string" || !EFFORT_LEVELS.has(effort))) {
+    return Response.json(
+      { error: `Invalid effort "${effort}".` },
+      { status: 400 },
+    );
+  }
+
+  // Only "default"/"auto"/"acceptEdits" are ever accepted from a client —
+  // never "bypassPermissions" (skips canUseTool entirely), "dontAsk", or
+  // "plan", regardless of what the request body claims. See
+  // isValidPermissionMode.
+  if (!isValidPermissionMode(rawPermissionMode)) {
+    return Response.json(
+      { error: `Invalid permissionMode "${rawPermissionMode}".` },
+      { status: 400 },
+    );
+  }
+  const permissionMode: ClientPermissionMode = rawPermissionMode;
+
   // Caller-supplied account wins (existing chats resume with their persisted
   // chat.account, passed explicitly here), then the project's manifest
   // default, then "personal". See AGENTS notes on the account-lock: a
@@ -93,6 +137,17 @@ export async function POST(req: Request) {
 
   const abort = new AbortController();
   req.signal.addEventListener("abort", () => abort.abort());
+
+  // Fire title generation the instant the body is validated, in parallel
+  // with the main turn below — only for a brand-new session (no resume
+  // target: appendTurn only ever consults a supplied title when it's
+  // CREATING the chat, so generating one for an existing session's turn
+  // would just be wasted inference). Forwarding `abort.signal` means a
+  // client disconnect/Stop click cancels this subprocess too, same as the
+  // main turn's.
+  const titlePromise: Promise<string | null> | null = sessionId
+    ? null
+    : generateTitle(message, profile, abort.signal);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -162,37 +217,35 @@ export async function POST(req: Request) {
       const canUseTool = async (
         toolName: string,
         input: Record<string, unknown>,
-        { signal, suggestions }: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
+        // The SDK's own `suggestions` (PermissionUpdate[]) is intentionally
+        // never destructured/used here — see the comment below at the
+        // "allow" return for why it's never forwarded as
+        // `updatedPermissions`.
+        { signal }: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
       ): Promise<PermissionResult> => {
-        const g = manifest.guardrails;
-        if (g.disallowedTools.includes(toolName)) {
-          return { behavior: "deny", message: `${toolName} is disallowed by this project's guardrails.` };
-        }
-        const blocked = inputPaths(input).find((t) => isProtectedPath(workspace, g.protectedPaths, t));
-        if (blocked) {
-          return { behavior: "deny", message: `"${blocked}" is a protected path in this project.` };
-        }
-        // protectedPaths above only inspects path-shaped input keys, which
-        // Bash never populates (its target lives in `command`) — check it
-        // separately or the guardrail is a no-op for the most powerful tool.
-        if (toolName === "Bash" && typeof input.command === "string" &&
-            bashTouchesProtectedPath(workspace, g.protectedPaths, input.command)) {
-          return { behavior: "deny", message: "This command touches a protected path in this project." };
-        }
+        // disallowedTools / protectedPaths — shared with the PreToolUse hook
+        // below (options.hooks) so the same checks apply whether or not this
+        // particular call ever reaches canUseTool at all (auto/acceptEdits
+        // mode can approve without invoking it — see the hook's own comment).
+        const guardrail = makeGuardrailDecision(manifest, workspace, toolName, input);
+        if (guardrail.behavior === "deny") return guardrail;
         // The agent-spawn tool itself is auto-allowed (no interactive prompt —
         // every tool the subagent goes on to call still gates individually
         // through this same canUseTool), but it must still be ROUTED through
         // here rather than listed in `allowedTools`: the SDK's AgentInput
         // accepts a model-controlled `mode` field ("bypassPermissions" /
         // "acceptEdits" / "auto" / "dontAsk") documented as the "Permission
-        // mode for spawned teammate" — if the model set that and the call
-        // never reached canUseTool at all, the subagent's own tool calls
-        // could skip this gate entirely, silently defeating
-        // protectedPaths/disallowedTools for everything it does. Stripping
-        // `mode` here (and passing the rest through via updatedInput) closes
-        // that hole while keeping spawning itself frictionless.
+        // mode for spawned teammate", and a separate `isolation` field
+        // ("remote" moves the subagent's execution off-box) — if the model
+        // set either and the call never reached canUseTool at all, the
+        // subagent's own tool calls could skip this gate entirely (silently
+        // defeating protectedPaths/disallowedTools for everything it does),
+        // or run somewhere telar never intended. Stripping both here (and
+        // passing the rest through via updatedInput) closes that hole while
+        // keeping spawning itself frictionless; local execution is always
+        // correct for telar sessions.
         if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(toolName)) {
-          const { mode: _mode, ...safeInput } = input;
+          const { mode: _mode, isolation: _isolation, ...safeInput } = input;
           return { behavior: "allow", updatedInput: safeInput };
         }
         const rule = ruleFor(toolName, input);
@@ -201,13 +254,18 @@ export async function POST(req: Request) {
         }
         if (signal.aborted) return { behavior: "deny", message: "Aborted." };
 
-        const { id, promise } = createPending(project, rule);
+        // Narrow -> broad rule choices for the "Always allow" affordance
+        // (contract: the card lets the USER pick how wide a rule to persist,
+        // never a heuristic) — remembered on the pending entry so the
+        // permission route can validate whichever one the client picks.
+        const ruleOptions = ruleOptionsFor(toolName, input);
+        const { id, promise } = createPending(project, toolName, input, rule, undefined, ruleOptions);
         myPending.add(id);
         // Respect the SDK's per-call signal: resolve the pending (deny) the
         // moment this tool call is aborted, rather than hanging to timeout.
         const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
         signal.addEventListener("abort", onAbort, { once: true });
-        send("permission", { id, toolName, input, rule });
+        send("permission", { id, toolName, input, rule, ruleOptions });
 
         let decision: PermissionDecision;
         try {
@@ -219,22 +277,30 @@ export async function POST(req: Request) {
 
         send("permission_result", { id, behavior: decision.behavior });
         if (decision.behavior === "allow") {
-          if (decision.always) addRule(project, rule);
-          // Only forward suggestions that stay in-session — any other
-          // destination (userSettings/projectSettings/localSettings) would
-          // write a permission rule into a settings file telar never asked
-          // to touch (and userSettings would land in the developer's own
-          // ~/.claude/settings.json, which settingSources deliberately
-          // excludes). Our own store (~/.telar/permissions.json) already
-          // covers persistence.
-          const sessionSuggestions = suggestions?.filter((s) => s.destination === "session");
-          return {
-            behavior: "allow",
-            updatedInput: input,
-            ...(decision.always && sessionSuggestions?.length
-              ? { updatedPermissions: sessionSuggestions }
-              : {}),
-          };
+          // decision.rule is the option the user actually picked off the
+          // card (validated against `ruleOptions` by the permission route,
+          // see isOfferedRule) — falls back to the prefix rule ruleFor
+          // computed above when the user just clicked the default button.
+          if (decision.always) addRule(project, decision.rule ?? rule);
+          // Never forward the SDK's own `suggestions` back as
+          // `updatedPermissions`, even session-scoped ones. The SDK's
+          // PermissionUpdate union includes `{type:'setMode', mode}` where
+          // mode ranges over the FULL PermissionMode set — including
+          // 'bypassPermissions', which this route's own 400-gate
+          // (isValidPermissionMode) explicitly forbids a client from ever
+          // selecting — plus 'addRules'/'replaceRules' whose `ruleContent`
+          // is entirely SDK-determined and has no relation to the
+          // ruleOptionsFor/isOfferedRule choices actually shown on the
+          // permission card. Forwarding any of this would let it reach the
+          // live session unvalidated, and — since the SDK would then
+          // auto-approve matching future calls WITHOUT ever invoking
+          // canUseTool again — silently bypass this function's own
+          // SHELL_CHAIN-aware ruleMatches for every subsequent call it
+          // covers. Our own store (~/.telar/permissions.json, checked via
+          // readRules+ruleMatches at the top of every canUseTool call)
+          // already covers not re-prompting for an approved rule; nothing
+          // needs to reach the SDK's own permission state to get that.
+          return { behavior: "allow", updatedInput: input };
         }
         // Distinguish a real user refusal from a timeout/abort so the model
         // doesn't treat silence as a deliberate "no" and abandon the tool.
@@ -247,6 +313,49 @@ export async function POST(req: Request) {
         return { behavior: "deny", message };
       };
 
+      // Guardrail integrity backstop (permissionMode auto/acceptEdits): the
+      // SDK's own classifier (auto) or the accept-edits shortcut can approve
+      // a tool call WITHOUT ever calling canUseTool above, which would
+      // silently stop enforcing disallowedTools/protectedPaths the moment a
+      // session leaves "default" mode. Hooks fire regardless of how
+      // permission was decided, in every mode — this re-runs the exact same
+      // check (makeGuardrailDecision) as canUseTool's own guardrail branch,
+      // so both paths are covered (belt and suspenders).
+      const preToolUseGuardrail = async (input: HookInput): Promise<HookJSONOutput> => {
+        if (input.hook_event_name !== "PreToolUse") return { continue: true };
+        const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+        const decision = makeGuardrailDecision(manifest, workspace, input.tool_name, toolInput);
+        if (decision.behavior === "deny") {
+          return {
+            continue: true,
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: decision.message,
+            },
+          };
+        }
+        // Mirror canUseTool's own AGENT_SPAWN_TOOL_CANDIDATES stripping (see
+        // its comment above): this hook fires even for a Task/Agent spawn
+        // that auto/acceptEdits mode approved WITHOUT ever calling canUseTool
+        // — the only place left that can strip a model-supplied `mode`
+        // ("bypassPermissions" skips the subagent's own permission checks
+        // entirely) or `isolation` ("remote" moves it off-box) before either
+        // reaches the SDK. `updatedInput` on a PreToolUse hook's output
+        // replaces the tool's input the same way canUseTool's own does.
+        if (
+          (AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(input.tool_name) &&
+          ("mode" in toolInput || "isolation" in toolInput)
+        ) {
+          const { mode: _mode, isolation: _isolation, ...safeInput } = toolInput;
+          return {
+            continue: true,
+            hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: safeInput },
+          };
+        }
+        return { continue: true };
+      };
+
       try {
         const q = query({
           prompt: message,
@@ -254,9 +363,10 @@ export async function POST(req: Request) {
             cwd: workspace,
             ...(resumeTarget ? { resume: resumeTarget } : {}),
             model,
+            ...(effort ? { effort: effort as EffortLevel } : {}),
             env: accountEnv(profile),
             systemPrompt: { type: "preset", preset: "claude_code" },
-            permissionMode: "default",
+            permissionMode,
             // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
             // settings, hooks, and MCP servers. User-level settings stay out
             // on purpose (keeps the developer's personal config/tokens out of
@@ -283,6 +393,7 @@ export async function POST(req: Request) {
             allowedTools: ["Read", "Grep", "Glob"],
             disallowedTools: manifest.guardrails.disallowedTools,
             canUseTool,
+            hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
             maxTurns: 25,
             includePartialMessages: true,
             // Relay full subagent conversation text (not just its tool
@@ -331,6 +442,18 @@ export async function POST(req: Request) {
             ) {
               streamingText.set(parent, (streamingText.get(parent) ?? "") + ev.delta.text);
               send("delta", { text: ev.delta.text, ...(parent ? { parent } : {}) });
+            } else if (
+              ev?.type === "content_block_delta" &&
+              ev.delta?.type === "thinking_delta"
+            ) {
+              // Interleaved narration text, not persisted (see StorePart —
+              // there's no "thinking" variant there): live-only, same
+              // treatment as permission cards. `thinking` above already told
+              // the client a block started; this streams its growing text.
+              send("thinking_delta", {
+                text: ev.delta.thinking ?? "",
+                ...(parent ? { parent } : {}),
+              });
             }
           } else if (msg.type === "assistant") {
             // A non-null parent_tool_use_id means this message came from a
@@ -477,6 +600,44 @@ export async function POST(req: Request) {
                 send("task_status", { id: tn.tool_use_id, status: tn.status });
               }
             }
+          } else if (msg.type === "system" && msg.subtype === "permission_denied") {
+            // Auto-denied without an interactive prompt — the model's normal
+            // tool_use/tool_result exchange still happens (already handled
+            // by the "assistant"/"user" cases above), so in the common case
+            // this just adds WHY onto the tool part they already created.
+            // The fallback branch below covers the rare ordering where this
+            // message is seen before that tool_use block ever is.
+            const pd = msg as unknown as {
+              tool_name: string;
+              tool_use_id: string;
+              message: string;
+              decision_reason_type?: string;
+            };
+            send("permission_denied", {
+              toolName: pd.tool_name,
+              toolUseId: pd.tool_use_id,
+              message: pd.message,
+              reason: pd.decision_reason_type,
+            });
+            const existing = parts.find(
+              (p): p is Extract<Part, { type: "tool" }> =>
+                p.type === "tool" && p.id === pd.tool_use_id,
+            );
+            if (existing) {
+              existing.autoDenied = true;
+              existing.isError = true;
+              if (existing.output === undefined) existing.output = pd.message;
+            } else {
+              parts.push({
+                type: "tool",
+                id: pd.tool_use_id,
+                name: pd.tool_name,
+                isError: true,
+                autoDenied: true,
+                output: pd.message,
+              });
+              partOrigin.push(undefined);
+            }
           } else if (msg.type === "rate_limit_event") {
             // Streamed mid-turn — single-window update, merge into the snapshot
             const info = (msg as { rate_limit_info?: Record<string, any> }).rate_limit_info;
@@ -587,33 +748,79 @@ export async function POST(req: Request) {
               delete part.output;
             }
           }
-          // Act on the LAST "result" message only (see the "result" case
-          // above for why) — plan-usage snapshot, the usage.ndjson entry,
-          // and the "done" broadcast all fire at most once per POST.
-          if (lastResult) {
+          // Fetch the live session-cost control call unconditionally (not
+          // gated on `lastResult`): a client disconnect/navigation aborts the
+          // SDK loop with a throw rather than a final graceful "result"
+          // message, so `lastResult` commonly stays null for a turn that
+          // still did real, billable tool/model work. Without a fallback,
+          // that spend simply vanishes from every accounting surface
+          // (chat.costUsd, per-token totals, usage.ndjson) — see below.
+          let u: any = null;
+          if (usagePromise) {
             try {
-              const u = usagePromise
-                ? await Promise.race([
-                    usagePromise,
-                    new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
-                  ])
-                : null;
-              if (u?.rate_limits_available && u.rate_limits) {
-                const rl = u.rate_limits;
-                const snapshot: Partial<PlanSnapshot> = {
-                  subscriptionType: u.subscription_type ?? null,
-                  fiveHour: rl.five_hour ?? null,
-                  sevenDay: rl.seven_day ?? null,
-                  sevenDayOpus: rl.seven_day_opus ?? null,
-                  sevenDaySonnet: rl.seven_day_sonnet ?? null,
-                  modelScoped: rl.model_scoped ?? [],
-                };
-                savePlanUsage(profile.name, snapshot);
-                send("plan", { account: profile.name, ...snapshot });
-              }
+              u = await Promise.race([
+                usagePromise,
+                new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+              ]);
             } catch {
               // experimental API — degrade silently, rate_limit_events still cover us
             }
+          }
+          if (u?.rate_limits_available && u.rate_limits) {
+            const rl = u.rate_limits;
+            const snapshot: Partial<PlanSnapshot> = {
+              subscriptionType: u.subscription_type ?? null,
+              fiveHour: rl.five_hour ?? null,
+              sevenDay: rl.seven_day ?? null,
+              sevenDayOpus: rl.seven_day_opus ?? null,
+              sevenDaySonnet: rl.seven_day_sonnet ?? null,
+              modelScoped: rl.model_scoped ?? [],
+            };
+            savePlanUsage(profile.name, snapshot);
+            send("plan", { account: profile.name, ...snapshot });
+          }
+          // No "result" message ever arrived for this POST (aborted/errored
+          // mid-flight) but the session did initialize, so `u.session` — the
+          // same control call's own cost/usage totals — is the best
+          // remaining source of truth. It's scoped to THIS query() process
+          // the same way `result.total_cost_usd` already is (both are
+          // "since this invocation started", not cumulative across the
+          // resumed conversation's earlier turns — that's exactly why
+          // appendTurn/chat.costUsd already ADD each turn's figure rather
+          // than replacing it), so folding it in here as a substitute
+          // `lastResult` is consistent with how a graceful completion would
+          // have been accounted for, just recovered via a different SDK call.
+          if (!lastResult && u?.session) {
+            const modelUsages = Object.values(u.session.model_usage ?? {}) as Array<{
+              inputTokens?: number;
+              outputTokens?: number;
+              cacheReadInputTokens?: number;
+              cacheCreationInputTokens?: number;
+            }>;
+            costUsd = u.session.total_cost_usd ?? 0;
+            const usage = modelUsages.reduce(
+              (acc, m) => ({
+                input_tokens: acc.input_tokens + (m.inputTokens ?? 0),
+                output_tokens: acc.output_tokens + (m.outputTokens ?? 0),
+                cache_read_input_tokens: acc.cache_read_input_tokens + (m.cacheReadInputTokens ?? 0),
+                cache_creation_input_tokens:
+                  acc.cache_creation_input_tokens + (m.cacheCreationInputTokens ?? 0),
+              }),
+              {
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+              },
+            );
+            lastResult = { subtype: "aborted", totalCostUsd: costUsd, usage };
+          }
+          // Act on the LAST "result" message — real or, absent one, the
+          // synthesized fallback above (see the "result" case for why only
+          // the last one is ever used) — plan-usage snapshot, the
+          // usage.ndjson entry, and the "done" broadcast all fire at most
+          // once per POST.
+          if (lastResult) {
             if (capturedSession) {
               logUsage({
                 ts: Date.now(),
@@ -635,20 +842,62 @@ export async function POST(req: Request) {
             });
           }
           if (capturedSession) {
+            // Bounded wait for the title job fired at POST-body-validation
+            // time (parallel with the whole main turn above, so it's usually
+            // already settled by now) — never let it delay persistence
+            // beyond TITLE_RACE_MS. Resolves to null (not the string "null")
+            // on timeout, abort, or any generation failure; appendTurn's own
+            // message-prefix fallback covers all of those.
+            let title: string | undefined;
+            if (titlePromise) {
+              const raced = await Promise.race([
+                titlePromise,
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), TITLE_RACE_MS)),
+              ]);
+              title = raced ?? undefined;
+            }
+            if (title) send("title", { title });
             appendTurn({
               id: capturedSession,
               model,
+              effort,
               account: profile.name,
               project,
+              permissionMode,
               userMessage: { role: "user", parts: [{ type: "text", text: message }] },
               assistantMessage: { role: "assistant", parts },
               costUsd,
+              title,
+              usage: lastResult?.usage
+                ? {
+                    inputTokens: lastResult.usage.input_tokens ?? 0,
+                    outputTokens: lastResult.usage.output_tokens ?? 0,
+                    cacheReadTokens: lastResult.usage.cache_read_input_tokens ?? 0,
+                    cacheCreateTokens: lastResult.usage.cache_creation_input_tokens ?? 0,
+                  }
+                : undefined,
             });
             send("saved", { chatId: capturedSession });
           }
         } catch {
           // persistence failure must never mask the stream teardown
         }
+        // Never let title generation outlive this response. `abort` is only
+        // ever triggered above by req.signal's 'abort' listener (client
+        // disconnect) — a turn that completes/errors/aborts normally never
+        // signals it otherwise, so titlePromise's underlying subprocess would
+        // otherwise keep running unobserved: (1) it lost the TITLE_RACE_MS
+        // race above (still running past the bounded wait), or (2) the main
+        // query() never reached system:init at all (capturedSession stayed
+        // null, so the whole persistence block — the only place that awaits
+        // titlePromise — never ran). Aborting here is a no-op if
+        // generateTitle already finished on its own (its own `finally`
+        // already called abort.abort(); idempotent) and a no-op for a
+        // resumed session (titlePromise is null there, nothing was ever
+        // fired) — otherwise it force-ends the orphaned subprocess right now
+        // instead of leaving it to whatever natural conclusion it reaches on
+        // its own after the HTTP response has already closed.
+        if (titlePromise) abort.abort();
         try {
           controller.close();
         } catch {

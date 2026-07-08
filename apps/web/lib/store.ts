@@ -3,6 +3,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import type { ClientPermissionMode } from "./permissions";
 
 const DIR = path.join(os.homedir(), ".telar");
 const CHATS = path.join(DIR, "chats.json");
@@ -44,6 +45,12 @@ export type Part =
       // "go by output/interrupted instead" (a synchronous subagent, or an
       // SDK build that never emits this message).
       taskStatus?: "completed" | "failed" | "stopped";
+      // Set when this call was auto-denied by permissionMode "auto"/
+      // "acceptEdits" — a hard block (guardrail PreToolUse hook or the SDK's
+      // own classifier) rather than a user's interactive "Deny" click, which
+      // never touches this field (the permission card's own status covers
+      // that case instead).
+      autoDenied?: boolean;
     };
 
 export type ChatMessage = {
@@ -54,14 +61,33 @@ export type ChatMessage = {
 export type Chat = {
   id: string; // = SDK session id (stable across resumes)
   title: string;
+  customTitle?: boolean; // true once the user has explicitly renamed the chat (PATCH .../route.ts)
   model: string;
+  effort?: string; // reasoning effort level for this chat's turns (optional: model default when absent)
   account: string;
   project?: string; // registry name of the anchoring project (optional: old entries predate it)
+  // Client-choosable SDK permission mode for this session's turns — see
+  // lib/permissions.ts's ClientPermissionMode. Optional: absent on entries
+  // predating mode selection, which read as "default" (the prior hardcoded
+  // behavior).
+  permissionMode?: ClientPermissionMode;
   createdAt: number;
   updatedAt: number;
   costUsd: number;
   turns: number;
   archived?: boolean; // optional: absent on entries predating archiving
+  // Per-turn token totals, accumulated on appendTurn. All optional so chats
+  // persisted before this field existed keep loading — see getChat's
+  // read-time derivation fallback (tokensFromUsageLog) for those.
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreateTokens?: number;
+  // Context-window occupancy after the LATEST turn (input + cache-read +
+  // cache-create of that turn) — SET each turn, not accumulated, because every
+  // turn re-sends the whole conversation as its prompt, so the last turn's
+  // input side IS the current context size. This is the "CTX" the header shows.
+  contextTokens?: number;
   messages: ChatMessage[];
 };
 
@@ -137,8 +163,79 @@ export function listChats(
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+type TokenTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+};
+
+function emptyTokenTotals(): TokenTotals {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
+}
+
+// Parsed usage.ndjson, indexed by sessionId — memoized across calls and
+// invalidated by the ledger's own mtime (a fresh logUsage() append changes
+// it). Without this, every GET of any chat that predates per-turn token
+// accumulation (tokensFromUsageLog's only caller) would synchronously
+// re-read and re-parse the ENTIRE append-only ledger — one line per turn
+// across every chat/project/account ever run — on every single request.
+let usageLogCache: { mtimeMs: number; bySession: Map<string, TokenTotals> } | null = null;
+
+function usageLogBySession(): Map<string, TokenTotals> {
+  let mtimeMs: number;
+  try {
+    mtimeMs = fs.statSync(USAGE).mtimeMs;
+  } catch {
+    usageLogCache = null;
+    return new Map();
+  }
+  if (usageLogCache && usageLogCache.mtimeMs === mtimeMs) return usageLogCache.bySession;
+
+  const bySession = new Map<string, TokenTotals>();
+  let lines: string[] = [];
+  try {
+    lines = fs.readFileSync(USAGE, "utf8").split("\n").filter(Boolean);
+  } catch {
+    usageLogCache = { mtimeMs, bySession };
+    return bySession;
+  }
+  for (const line of lines) {
+    let e: UsageEntry;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const totals = bySession.get(e.sessionId) ?? emptyTokenTotals();
+    totals.inputTokens += e.inputTokens;
+    totals.outputTokens += e.outputTokens;
+    totals.cacheReadTokens += e.cacheReadTokens;
+    totals.cacheCreateTokens += e.cacheCreateTokens;
+    bySession.set(e.sessionId, totals);
+  }
+  usageLogCache = { mtimeMs, bySession };
+  return bySession;
+}
+
+// Sums usage.ndjson entries for one session — the read-time fallback for
+// chats persisted before per-turn token accumulation existed on Chat itself
+// (appendTurn's `usage` accumulation is the primary path; this only kicks in
+// when a chat predates it, detected by getChat via inputTokens===undefined).
+function tokensFromUsageLog(sessionId: string): TokenTotals {
+  return usageLogBySession().get(sessionId) ?? emptyTokenTotals();
+}
+
 export function getChat(id: string): Chat | undefined {
-  return readChats().find((c) => c.id === id);
+  const chat = readChats().find((c) => c.id === id);
+  if (!chat) return undefined;
+  // Old chats predate per-turn token accumulation (inputTokens is the
+  // canary — all four fields were added together) — derive their totals
+  // from the usage ledger instead of silently showing zero.
+  if (chat.inputTokens === undefined) {
+    return { ...chat, ...tokensFromUsageLog(chat.id) };
+  }
+  return chat;
 }
 
 export function deleteChat(id: string) {
@@ -155,31 +252,62 @@ export function setChatArchived(id: string, archived: boolean): boolean {
   return true;
 }
 
+// Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so
+// appendTurn's fallback title-on-create logic never matters again for this
+// chat — a user rename always wins. Returns false when the id is unknown.
+export function setChatTitle(id: string, title: string, opts?: { custom?: boolean }): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  chat.title = title;
+  if (opts?.custom) chat.customTitle = true;
+  writeChats(chats);
+  return true;
+}
+
 export function appendTurn(opts: {
   id: string;
   model: string;
+  effort?: string;
   account: string;
   project?: string;
+  permissionMode?: ClientPermissionMode;
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
   costUsd: number;
+  // Only consulted when this call CREATES the chat (fresh session) — an
+  // existing chat keeps whatever title it already has, custom or derived.
+  title?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+  };
 }) {
   const chats = readChats();
   let chat = chats.find((c) => c.id === opts.id);
   const now = Date.now();
   if (!chat) {
     const firstText = opts.userMessage.parts.find((p) => p.type === "text");
+    const fallbackTitle =
+      (firstText?.type === "text" ? firstText.text : "New thread").slice(0, 60);
     chat = {
       id: opts.id,
-      title:
-        (firstText?.type === "text" ? firstText.text : "New thread").slice(0, 60),
+      title: opts.title?.trim() || fallbackTitle,
       model: opts.model,
+      effort: opts.effort,
       account: opts.account,
       project: opts.project,
+      permissionMode: opts.permissionMode,
       createdAt: now,
       updatedAt: now,
       costUsd: 0,
       turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
       messages: [],
     };
     chats.push(chat);
@@ -188,6 +316,41 @@ export function appendTurn(opts: {
   chat.costUsd += opts.costUsd;
   chat.turns += 1;
   chat.model = opts.model;
+  chat.effort = opts.effort;
+  chat.permissionMode = opts.permissionMode;
+  if (opts.usage) {
+    // chat.inputTokens === undefined means this chat predates per-turn token
+    // accumulation (getChat's tokensFromUsageLog fallback is the canary's
+    // other consumer) — its whole pre-upgrade history lives ONLY in
+    // usage.ndjson, never on the chat record itself. Seed the cumulative
+    // fields from that ledger before folding in `opts.usage`, or the
+    // fallback's derived total (already shown to the user via getChat) is
+    // silently replaced by just this one turn's delta and every earlier
+    // turn's tokens become permanently unrecoverable the moment this chat is
+    // resumed. This must not ALSO add opts.usage on top of the seeded
+    // total: route.ts's teardown always calls logUsage() for this exact
+    // turn/session before calling appendTurn (both gated by the same
+    // `capturedSession`/`lastResult` truthiness, in the same synchronous
+    // block — see route.ts), so usage.ndjson already includes this turn's
+    // entry by the time tokensFromUsageLog runs here.
+    if (chat.inputTokens === undefined) {
+      const historical = tokensFromUsageLog(chat.id);
+      chat.inputTokens = historical.inputTokens;
+      chat.outputTokens = historical.outputTokens;
+      chat.cacheReadTokens = historical.cacheReadTokens;
+      chat.cacheCreateTokens = historical.cacheCreateTokens;
+    } else {
+      chat.inputTokens += opts.usage.inputTokens;
+      chat.outputTokens = (chat.outputTokens ?? 0) + opts.usage.outputTokens;
+      chat.cacheReadTokens = (chat.cacheReadTokens ?? 0) + opts.usage.cacheReadTokens;
+      chat.cacheCreateTokens = (chat.cacheCreateTokens ?? 0) + opts.usage.cacheCreateTokens;
+    }
+    // Context is the latest turn's prompt size, not a running sum — overwrite.
+    chat.contextTokens =
+      opts.usage.inputTokens +
+      opts.usage.cacheReadTokens +
+      opts.usage.cacheCreateTokens;
+  }
   chat.updatedAt = now;
   writeChats(chats);
 }

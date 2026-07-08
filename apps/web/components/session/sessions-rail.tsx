@@ -1,16 +1,18 @@
 import Link from "next/link";
 import { ArrowLeftIcon, MessageSquarePlusIcon } from "lucide-react";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo, fmtCost } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ArchiveButton } from "@/components/session/archive-button";
 
-// The rail only needs a session's identity, title, and recency — a structural
-// subset of the store's chat meta, so listChats(project) passes through as-is.
+// The rail only needs a session's identity, title, recency, and spend — a
+// structural subset of the store's chat meta, so listChats(project) passes
+// through as-is.
 type RailSession = {
   id: string;
   title: string;
   updatedAt: number;
+  costUsd: number;
 };
 
 // The chat-workspace rail: this project's sessions, newest-first, with a
@@ -74,8 +76,9 @@ export function SessionsRail({
                     >
                       {s.title || "Untitled session"}
                     </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {fmtAgo(s.updatedAt)}
+                    <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                      <span>{fmtAgo(s.updatedAt)}</span>
+                      <span className="font-mono">{fmtCost(s.costUsd)}</span>
                     </div>
                   </Link>
                   <ArchiveButton

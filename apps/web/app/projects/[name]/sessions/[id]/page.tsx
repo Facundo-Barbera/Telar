@@ -72,7 +72,19 @@ export default async function SessionPage({
   // fresh, so rewriting the URL to the new id never tears the live stream down.
   const chat = id === "new" ? undefined : getChat(id);
   const initialChat = chat
-    ? { id: chat.id, model: chat.model, messages: chat.messages }
+    ? {
+        id: chat.id,
+        model: chat.model,
+        effort: chat.effort,
+        permissionMode: chat.permissionMode,
+        messages: chat.messages,
+        costUsd: chat.costUsd,
+        inputTokens: chat.inputTokens ?? 0,
+        outputTokens: chat.outputTokens ?? 0,
+        cacheReadTokens: chat.cacheReadTokens ?? 0,
+        cacheCreateTokens: chat.cacheCreateTokens ?? 0,
+        contextTokens: chat.contextTokens ?? 0,
+      }
     : undefined;
 
   // An existing chat resumes with its own persisted account (the resume

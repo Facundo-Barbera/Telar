@@ -29,7 +29,12 @@ export const ConversationContent = ({
   ...props
 }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn("flex flex-col gap-8 p-4", className)}
+    // py-4/px-4 (not the p-4 shorthand) so a caller can override just the
+    // horizontal half (e.g. session-view.tsx's full-width transcript, which
+    // wants py-4 but px-0) — tailwind-merge only resolves same-axis
+    // conflicts, so a shorthand p-4 would survive alongside a later px-0
+    // rather than being replaced by it.
+    className={cn("flex flex-col gap-8 py-4 px-4", className)}
     {...props}
   />
 );
