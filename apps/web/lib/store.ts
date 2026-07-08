@@ -11,7 +11,18 @@ const PLAN = path.join(DIR, "plan-usage.json");
 
 export type Part =
   | { type: "text"; text: string }
-  | { type: "tool"; name: string };
+  | {
+      type: "tool";
+      name: string;
+      id?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      isError?: boolean;
+      // Set at persist time when the turn ended (abort/mid-turn error) before
+      // this call's tool_result ever arrived — distinguishes "cancelled
+      // mid-flight" from a genuinely empty successful result.
+      interrupted?: boolean;
+    };
 
 export type ChatMessage = {
   role: "user" | "assistant";

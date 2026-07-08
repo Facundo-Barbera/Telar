@@ -25,9 +25,20 @@ import {
   type Part,
   type PlanSnapshot,
 } from "@/lib/store";
+import { capToolInput, capToolOutput, extractToolResultText } from "@/lib/transcript";
 
 const toIso = (epoch?: number) =>
   epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
+
+// Hard ceiling on how many tool calls a single turn persists with full
+// input/output detail. capToolInput/capToolOutput bound each part's own
+// size, but nothing bounds the COUNT — a pathological (e.g. repo-wide
+// refactor) turn can carry hundreds of tool calls across maxTurns rounds,
+// and store.ts rewrites the entire chats.json synchronously on every
+// appendTurn. Beyond this ceiling, later tool parts degrade to name-only
+// (the shape this diff's tool parts had before) so one outlier turn can't
+// blow up chats.json or the blocking write it forces on every other chat.
+const MAX_DETAILED_TOOL_PARTS = 200;
 
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
@@ -90,6 +101,10 @@ export async function POST(req: Request) {
       };
 
       const parts: Part[] = [];
+      // parts[i]'s originating SDKMessage uuid, index-aligned with `parts` —
+      // scratch bookkeeping so a later refusal-fallback `supersedes` list can
+      // evict the exact entries it retracts (see the "assistant" handler).
+      const partOrigin: (string | undefined)[] = [];
       let streamingText = ""; // text accumulated from deltas for current block
       // The resume target is the client-supplied id, but it's untrusted until
       // the SDK actually confirms it via a system:init message below.
@@ -246,19 +261,84 @@ export async function POST(req: Request) {
               send("delta", { text: ev.delta.text });
             }
           } else if (msg.type === "assistant") {
+            // A non-null parent_tool_use_id means this message came from a
+            // subagent's own internal conversation (e.g. spawned via Task),
+            // relayed on this same top-level stream. Skip it — its tool
+            // calls aren't the top-level turn's own actions and must not be
+            // flattened into this turn's transcript as if they were.
+            if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+              continue;
+            }
+            const msgUuid = (msg as { uuid?: string }).uuid;
             const content =
               (msg as { message?: { content?: Array<Record<string, any>> } })
                 .message?.content ?? [];
             for (const block of content) {
               if (block.type === "text") {
                 parts.push({ type: "text", text: block.text as string });
+                partOrigin.push(msgUuid);
                 send("text", { text: block.text }); // finalize the streamed block
                 streamingText = "";
               }
               if (block.type === "tool_use") {
-                parts.push({ type: "tool", name: block.name as string });
-                send("tool", { name: block.name });
+                const id = block.id as string;
+                const name = block.name as string;
+                const input = capToolInput(
+                  (block.input ?? {}) as Record<string, unknown>,
+                );
+                parts.push({ type: "tool", id, name, input });
+                partOrigin.push(msgUuid);
+                send("tool", { id, name, input });
               }
+            }
+            // Refusal-fallback retry: the SDK retried on a fallback model and
+            // this message's `supersedes` names the wire uuids of previously
+            // -delivered message frames it replaces (including tombstoned
+            // tool_result frames from the refused leg). Evict whatever this
+            // turn already queued from those frames so a retracted tool call
+            // never gets persisted as if the model's final output included it.
+            const supersedes = (msg as { supersedes?: string[] }).supersedes;
+            if (supersedes?.length) {
+              const dead = new Set(supersedes);
+              for (let i = parts.length - 1; i >= 0; i--) {
+                const origin = partOrigin[i];
+                if (origin && dead.has(origin)) {
+                  parts.splice(i, 1);
+                  partOrigin.splice(i, 1);
+                }
+              }
+            }
+          } else if (msg.type === "user") {
+            // Tool results: the SDK relays the model's `user` turn carrying
+            // tool_result blocks. Attach output/isError onto the matching
+            // "tool" part (by tool_use_id) so persistence includes results,
+            // and mirror the same data over SSE. A tool_result whose id
+            // matches no part pushed above is subagent/side-channel noise
+            // (not part of this turn's visible transcript) — skip it rather
+            // than crash or emit a dangling event.
+            if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+              continue;
+            }
+            const content =
+              (msg as { message?: { content?: Array<Record<string, any>> } })
+                .message?.content ?? [];
+            for (const block of content) {
+              if (block.type !== "tool_result") continue;
+              const id = block.tool_use_id as string;
+              const part = parts.find(
+                (p): p is Extract<Part, { type: "tool" }> =>
+                  p.type === "tool" && p.id === id,
+              );
+              if (!part) continue;
+              // A duplicate/retried delivery for the same tool_use_id: first
+              // write wins rather than silently overwriting an already
+              // -resolved result with a second (possibly stale) one.
+              if (part.output !== undefined) continue;
+              const output = capToolOutput(extractToolResultText(block.content));
+              const isError = !!block.is_error;
+              part.output = output;
+              part.isError = isError;
+              send("tool_result", { id, output, isError });
             }
           } else if (msg.type === "rate_limit_event") {
             // Streamed mid-turn — single-window update, merge into the snapshot
@@ -350,6 +430,25 @@ export async function POST(req: Request) {
         // turn must survive it — the SDK session already exists server-side.
         try {
           if (streamingText) parts.push({ type: "text", text: streamingText });
+          // A tool part still missing output at this point never got a
+          // matching tool_result — the turn was aborted or crashed mid-flight
+          // (a graceful "result" message only arrives once every tool call
+          // belonging to it has resolved, denials included). Flag it so the
+          // client can render "interrupted" instead of rendering identically
+          // to a genuinely empty successful result.
+          for (const part of parts) {
+            if (part.type === "tool" && part.output === undefined) {
+              part.interrupted = true;
+            }
+          }
+          let detailedTools = 0;
+          for (const part of parts) {
+            if (part.type !== "tool") continue;
+            if (++detailedTools > MAX_DETAILED_TOOL_PARTS) {
+              delete part.input;
+              delete part.output;
+            }
+          }
           if (capturedSession) {
             appendTurn({
               id: capturedSession,

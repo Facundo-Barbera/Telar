@@ -6,8 +6,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
+  ChevronRightIcon,
+  FileTextIcon,
+  FolderSearchIcon,
+  GlobeIcon,
+  ListTodoIcon,
+  PencilIcon,
   PlayIcon,
+  SearchIcon,
   ShieldAlertIcon,
+  TerminalIcon,
+  TriangleAlertIcon,
   UserRoundIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -49,10 +58,20 @@ import { DEFAULT_MODEL, MODELS, modelById } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
 // The transcript shape the store persists (see lib/store.ts). Text parts stream
-// with a `done` flag on the client; persisted parts are always finished.
+// with a `done` flag on the client; persisted parts are always finished. Tool
+// parts carry id/input/output/isError as optional so every old persisted chat
+// (name-only tool parts) still loads without a migration.
 type StorePart =
   | { type: "text"; text: string }
-  | { type: "tool"; name: string };
+  | {
+      type: "tool";
+      name: string;
+      id?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      isError?: boolean;
+      interrupted?: boolean;
+    };
 type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 
 // Permission cards are live-stream-only artifacts (resolved by "permission_result"
@@ -60,7 +79,15 @@ type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 // so StorePart above stays exactly as persisted.
 type Part =
   | { type: "text"; text: string; done: boolean }
-  | { type: "tool"; name: string }
+  | {
+      type: "tool";
+      name: string;
+      id?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      isError?: boolean;
+      interrupted?: boolean;
+    }
   | {
       type: "permission";
       id: string;
@@ -70,6 +97,7 @@ type Part =
       status: "pending" | "allowed" | "denied";
     };
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
+type ToolPart = Extract<Part, { type: "tool" }>;
 type Status = "ready" | "submitted" | "streaming" | "error";
 
 type ProjectCommand = {
@@ -106,7 +134,15 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
     parts: m.parts.map((p) =>
       p.type === "text"
         ? { type: "text" as const, text: p.text, done: true }
-        : { type: "tool" as const, name: p.name },
+        : {
+            type: "tool" as const,
+            name: p.name,
+            id: p.id,
+            input: p.input,
+            output: p.output,
+            isError: p.isError,
+            interrupted: p.interrupted,
+          },
     ),
   }));
 }
@@ -179,6 +215,274 @@ function PermissionCard({
         >
           {part.status === "allowed" ? "Allowed" : "Denied"}
         </Badge>
+      )}
+    </div>
+  );
+}
+
+// One rendered chunk of an assistant message's parts: standalone text,
+// standalone permission card (always interactive, so it always breaks a
+// tool-step group), or a run of consecutive tool parts collapsed into one
+// group. Keys are stable across re-renders — the group key doubles as the
+// identity used to remember a user's manual expand/collapse override.
+type RenderItem =
+  | { kind: "text"; key: string; part: Extract<Part, { type: "text" }> }
+  | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
+  | { kind: "tools"; key: string; parts: ToolPart[] };
+
+function groupParts(messageId: string, parts: Part[]): RenderItem[] {
+  const items: RenderItem[] = [];
+  parts.forEach((part, idx) => {
+    if (part.type === "tool") {
+      const last = items[items.length - 1];
+      if (last?.kind === "tools") {
+        last.parts.push(part);
+      } else {
+        // A tool_use id is unique for the life of the id, but old persisted
+        // parts predate the id field — fall back to a message-scoped index,
+        // stable because parts only ever get appended to, never reordered.
+        items.push({ kind: "tools", key: part.id ?? `${messageId}:${idx}`, parts: [part] });
+      }
+    } else if (part.type === "text") {
+      items.push({ kind: "text", key: `${messageId}:${idx}`, part });
+    } else {
+      items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
+    }
+  });
+  return items;
+}
+
+// Primary-arg preview for a step row: the argument a human actually cares
+// about, one line, short enough to sit inline next to the tool name.
+function stepPreview(input?: Record<string, unknown>): string | null {
+  if (!input) return null;
+  const value =
+    (typeof input.command === "string" && input.command) ||
+    (typeof input.file_path === "string" && input.file_path) ||
+    (typeof input.pattern === "string" && input.pattern) ||
+    (typeof input.path === "string" && input.path) ||
+    Object.values(input).find((v): v is string => typeof v === "string") ||
+    null;
+  if (!value) return null;
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  // Array.from splits on code points, not UTF-16 code units — plain
+  // .slice(0, 80) can cut an astral character (e.g. an emoji) in half and
+  // render a broken glyph right at the truncation boundary.
+  const codePoints = Array.from(oneLine);
+  return codePoints.length > 80 ? `${codePoints.slice(0, 80).join("")}…` : oneLine;
+}
+
+// Claude Code's own icon-per-tool set; anything unrecognized (MCP tools,
+// future built-ins) falls back to the generic wrench.
+const TOOL_ICONS: Record<string, typeof WrenchIcon> = {
+  Bash: TerminalIcon,
+  Read: FileTextIcon,
+  Write: FileTextIcon,
+  Edit: PencilIcon,
+  Grep: SearchIcon,
+  Glob: FolderSearchIcon,
+  WebFetch: GlobeIcon,
+  WebSearch: GlobeIcon,
+  TodoWrite: ListTodoIcon,
+};
+
+// A single step's collapsed row + click-to-expand detail panel. Old persisted
+// parts have neither input nor output — the row still renders, just with no
+// preview and nothing to expand (never crashes on the missing fields).
+// `open` is lifted to the parent (keyed by tool id) rather than local state:
+// ToolStepGroup unmounts these rows whenever the group itself collapses (e.g.
+// the group stops being the live trailing item once the turn's closing text
+// arrives), and local state would be silently discarded on that unmount.
+function ToolStepRow({
+  part,
+  running,
+  open,
+  onToggle,
+}: {
+  part: ToolPart;
+  running: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const hasDetail = part.input !== undefined || part.output !== undefined;
+  const Icon = TOOL_ICONS[part.name] ?? WrenchIcon;
+  const preview = stepPreview(part.input);
+
+  // interrupted is only meaningful while there's genuinely no result — once
+  // isError/output resolve for real, those take precedence over a stale flag.
+  const interrupted = part.interrupted === true && part.output === undefined;
+
+  return (
+    <div
+      className={cn(
+        "rounded-md",
+        part.isError ? "bg-destructive/10" : interrupted && "bg-muted/60",
+      )}
+    >
+      <button
+        type="button"
+        disabled={!hasDetail}
+        onClick={onToggle}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left",
+          hasDetail && "hover:bg-muted/60",
+        )}
+      >
+        {running ? (
+          <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
+            {preview ? `${part.name} · ${preview}` : part.name}
+          </Shimmer>
+        ) : (
+          <>
+            <Icon
+              className={cn(
+                "size-3.5 shrink-0",
+                part.isError ? "text-destructive" : "text-muted-foreground",
+              )}
+            />
+            <span className={cn("shrink-0 font-medium", part.isError && "text-destructive")}>
+              {part.name}
+            </span>
+            {preview && (
+              <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+                {preview}
+              </span>
+            )}
+            {interrupted && !part.isError && (
+              <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                (interrupted)
+              </span>
+            )}
+          </>
+        )}
+        {hasDetail && (
+          <ChevronRightIcon
+            className={cn(
+              "ml-auto size-3 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        )}
+      </button>
+      {open && hasDetail && (
+        <div className="flex flex-col gap-1.5 px-1.5 pb-1.5">
+          <pre className="max-h-60 overflow-x-auto overflow-y-auto rounded-md bg-background/60 p-2 font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground ring-1 ring-border">
+            {part.name === "Bash" && typeof part.input?.command === "string"
+              ? part.input.command
+              : JSON.stringify(part.input ?? {}, null, 2)}
+          </pre>
+          {part.isError && (
+            <div className="flex items-center gap-1 text-[11px] font-medium text-destructive">
+              <TriangleAlertIcon className="size-3" />
+              Error
+            </div>
+          )}
+          {interrupted && !part.isError && (
+            <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+              <TriangleAlertIcon className="size-3" />
+              Interrupted — no result
+            </div>
+          )}
+          <pre
+            className={cn(
+              "max-h-60 overflow-x-auto overflow-y-auto rounded-md p-2 font-mono text-[11px] whitespace-pre-wrap break-words ring-1 ring-border",
+              part.isError
+                ? "bg-destructive/10 text-destructive"
+                : "bg-background/60 text-muted-foreground",
+            )}
+          >
+            {interrupted ? "(interrupted before finishing)" : part.output || "(no output)"}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The group header: step count + compact tool tally, e.g.
+// "16 steps · Bash ×12 · Read ×2 · Glob ×2" — order follows first appearance.
+function ToolStepGroup({
+  toolParts,
+  open,
+  onToggle,
+  live,
+  rowOpen,
+  onToggleRow,
+}: {
+  toolParts: ToolPart[];
+  open: boolean;
+  onToggle: () => void;
+  live: boolean;
+  rowOpen: (key: string) => boolean;
+  onToggleRow: (key: string) => void;
+}) {
+  const tally: Array<[string, number]> = [];
+  const indexByName = new Map<string, number>();
+  for (const p of toolParts) {
+    const i = indexByName.get(p.name);
+    if (i === undefined) {
+      indexByName.set(p.name, tally.length);
+      tally.push([p.name, 1]);
+    } else {
+      tally[i][1] += 1;
+    }
+  }
+  // Surfaced even while collapsed — otherwise a group that just finished
+  // showing a failing/cancelled step visually disappears the instant the
+  // turn ends and the group auto-collapses back to its default.
+  const hasError = toolParts.some((p) => p.isError);
+  const hasInterrupted =
+    !hasError && toolParts.some((p) => p.interrupted && p.output === undefined);
+
+  return (
+    <div
+      className={cn(
+        "flex w-full flex-col gap-0.5 rounded-lg border bg-muted/20 text-xs",
+        hasError && "border-destructive/40",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-muted/40"
+      >
+        <ChevronRightIcon
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        {(hasError || hasInterrupted) && (
+          <TriangleAlertIcon
+            className={cn(
+              "size-3 shrink-0",
+              hasError ? "text-destructive" : "text-muted-foreground",
+            )}
+          />
+        )}
+        <span className={cn("shrink-0", hasError ? "text-destructive" : "text-muted-foreground")}>
+          {toolParts.length} step{toolParts.length === 1 ? "" : "s"}
+        </span>
+        <span className="shrink-0 text-muted-foreground/50">·</span>
+        <span className="min-w-0 truncate font-mono text-muted-foreground">
+          {tally.map(([name, count]) => `${name} ×${count}`).join(" · ")}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-0.5 px-1.5 pb-1.5">
+          {toolParts.map((p, i) => {
+            const rowKey = p.id ?? String(i);
+            return (
+              <ToolStepRow
+                key={rowKey}
+                part={p}
+                running={live && p.output === undefined && !p.isError}
+                open={rowOpen(rowKey)}
+                onToggle={() => onToggleRow(rowKey)}
+              />
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -262,6 +566,16 @@ function SessionViewInner({
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
+  // Manual expand/collapse for tool-step groups, keyed by group id (see
+  // groupParts). Absent means "use the automatic default": collapsed once a
+  // turn is finished, expanded for the trailing group of a message that's
+  // still streaming.
+  const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
+  // Per-row expand state within a tool-step group, keyed by `${group key}:${tool
+  // id}` — lifted here (rather than local state in ToolStepRow) so it survives
+  // the row unmounting when its group auto-collapses (see ToolStepGroup).
+  const [rowOverrides, setRowOverrides] = useState<Record<string, boolean>>({});
+
   const busy = status === "submitted" || status === "streaming";
 
   // Elapsed clock — runs only while a turn is in flight.
@@ -299,6 +613,18 @@ function SessionViewInner({
 
   const patch = (id: string, fn: (m: ChatMessage) => ChatMessage) =>
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
+
+  // A tool part still missing output when the turn ends abnormally (Stop
+  // clicked, mid-turn server error, dropped connection) never got its
+  // tool_result — flag it so it renders as "interrupted" instead of looking
+  // identical to a tool that genuinely finished with an empty result.
+  const markToolsInterrupted = (id: string) =>
+    patch(id, (m) => ({
+      ...m,
+      parts: m.parts.map((p) =>
+        p.type === "tool" && p.output === undefined ? { ...p, interrupted: true } : p,
+      ),
+    }));
 
   const respondPermission = useCallback(
     (id: string, behavior: "allow" | "deny", always: boolean) => {
@@ -450,7 +776,27 @@ function SessionViewInner({
                 setThinking(false);
                 patch(asstId, (m) => ({
                   ...m,
-                  parts: [...m.parts, { type: "tool", name: payload.name }],
+                  parts: [
+                    ...m.parts,
+                    { type: "tool", name: payload.name, id: payload.id, input: payload.input },
+                  ],
+                }));
+                break;
+              case "tool_result":
+                // Can arrive after later parts already exist (more tool calls
+                // or text streamed in since) — find the part by id wherever
+                // it landed in this turn's own message rather than assuming
+                // it's the newest part. Scoped to asstId (like every other
+                // case here) rather than scanning every message in the
+                // conversation — this turn's tool ids only ever land on the
+                // message this same turn opened.
+                patch(asstId, (m) => ({
+                  ...m,
+                  parts: m.parts.map((p) =>
+                    p.type === "tool" && p.id === payload.id
+                      ? { ...p, output: payload.output, isError: payload.isError }
+                      : p,
+                  ),
                 }));
                 break;
               case "permission":
@@ -474,16 +820,15 @@ function SessionViewInner({
                 }));
                 break;
               case "permission_result":
-                setMessages((ms) =>
-                  ms.map((m) => ({
-                    ...m,
-                    parts: m.parts.map((p) =>
-                      p.type === "permission" && p.id === payload.id
-                        ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
-                        : p,
-                    ),
-                  })),
-                );
+                // Scoped to asstId — see the "tool_result" case above.
+                patch(asstId, (m) => ({
+                  ...m,
+                  parts: m.parts.map((p) =>
+                    p.type === "permission" && p.id === payload.id
+                      ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
+                      : p,
+                  ),
+                }));
                 break;
               case "plan":
                 refresh();
@@ -502,6 +847,7 @@ function SessionViewInner({
           }
         }
         if (streamErrorMessage) {
+          markToolsInterrupted(asstId);
           patch(asstId, (m) => ({
             ...m,
             parts: [...m.parts, { type: "text", text: `**Error:** ${streamErrorMessage}`, done: true }],
@@ -526,6 +872,7 @@ function SessionViewInner({
             ),
           })),
         );
+        markToolsInterrupted(asstId);
         if (abort.signal.aborted) {
           setStatus("ready");
         } else {
@@ -674,33 +1021,70 @@ function SessionViewInner({
               description="This session explores the repo with Read · Grep · Glob to plan a change. When you're ready to write, start a run."
             />
           ) : (
-            messages.map((m) => (
-              <Message from={m.role} key={m.id}>
-                <MessageContent>
-                  {m.parts.length === 0 && m.role === "assistant" && busy && (
-                    <Shimmer className="text-sm">
-                      {thinking ? "Thinking…" : "Weaving…"}
-                    </Shimmer>
-                  )}
-                  {m.parts.map((p, i) => {
-                    if (p.type === "text") {
-                      return <MessageResponse key={i}>{p.text}</MessageResponse>;
-                    }
-                    if (p.type === "permission") {
+            messages.map((m) => {
+              // The trailing tool-step group of the message currently being
+              // streamed into defaults open; every other group (finished
+              // turns, or a group a later text/permission part moved past)
+              // defaults collapsed. A manual toggle in groupOverrides always
+              // wins over this default.
+              const isCurrentMessage =
+                busy && m.id === messages[messages.length - 1]?.id;
+              const items = groupParts(m.id, m.parts);
+              return (
+                <Message from={m.role} key={m.id}>
+                  <MessageContent>
+                    {m.parts.length === 0 && m.role === "assistant" && busy && (
+                      <Shimmer className="text-sm">
+                        {thinking ? "Thinking…" : "Weaving…"}
+                      </Shimmer>
+                    )}
+                    {items.map((item, i) => {
+                      if (item.kind === "text") {
+                        return (
+                          <MessageResponse key={item.key}>{item.part.text}</MessageResponse>
+                        );
+                      }
+                      if (item.kind === "permission") {
+                        return (
+                          <PermissionCard
+                            key={item.key}
+                            part={item.part}
+                            onRespond={respondPermission}
+                          />
+                        );
+                      }
+                      // A pending/just-resolved permission card is not a new
+                      // unit of finished work — it's the same blocked tool
+                      // call waiting on the user, so a trailing run of
+                      // permission items doesn't end this group's liveness.
+                      const isTrailing = items
+                        .slice(i + 1)
+                        .every((it) => it.kind === "permission");
+                      const live = isCurrentMessage && isTrailing;
+                      const open = groupOverrides[item.key] ?? live;
                       return (
-                        <PermissionCard key={i} part={p} onRespond={respondPermission} />
+                        <ToolStepGroup
+                          key={item.key}
+                          toolParts={item.parts}
+                          open={open}
+                          live={live}
+                          onToggle={() =>
+                            setGroupOverrides((prev) => ({ ...prev, [item.key]: !open }))
+                          }
+                          rowOpen={(key) => rowOverrides[`${item.key}:${key}`] ?? false}
+                          onToggleRow={(key) =>
+                            setRowOverrides((prev) => {
+                              const k = `${item.key}:${key}`;
+                              return { ...prev, [k]: !(prev[k] ?? false) };
+                            })
+                          }
+                        />
                       );
-                    }
-                    return (
-                      <Badge variant="secondary" className="w-fit font-mono text-xs" key={i}>
-                        <WrenchIcon className="size-3" />
-                        {p.name}
-                      </Badge>
-                    );
-                  })}
-                </MessageContent>
-              </Message>
-            ))
+                    })}
+                  </MessageContent>
+                </Message>
+              );
+            })
           )}
         </ConversationContent>
         <ConversationScrollButton />
