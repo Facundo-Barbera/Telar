@@ -14,6 +14,7 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   tools?: string[]; // [] = pure-reasoning agent
   account?: AccountProfile; // routes this run to a specific Claude account
   resume?: string; // session id — continue a previous run
+  abort?: AbortController;
   onEvent?: (e: EngineEvent) => void;
 };
 
@@ -75,6 +76,7 @@ export async function agent<S extends z.ZodRawShape>(
         permissionMode: "bypassPermissions",
         env: accountEnv(opts.account),
         ...(opts.resume ? { resume: opts.resume } : {}),
+        ...(opts.abort ? { abortController: opts.abort } : {}),
         mcpServers: { out },
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
       },
