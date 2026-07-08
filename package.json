@@ -1,0 +1,5 @@
+{
+  "name": "telar",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"]
+}
