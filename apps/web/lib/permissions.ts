@@ -68,6 +68,38 @@ export function removeRule(project: string, rule: string): void {
 // Leading "VAR=value" environment assignments (PORT=3100 bun run dev) don't
 // name the command — skip them when picking what to group the rule by.
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Command names for which a bare "Bash(<name>:*)" rule — i.e. "always allow
+// any invocation of this command, with any args" — is never offered as a
+// choice. These either grant broad system access on their own (sudo, sh,
+// bash, zsh, eval, exec), are commonly used to route around narrower rules
+// (curl, wget, npx, bunx, node, python*, which can run arbitrary fetched or
+// interpreted code), or are destructive enough that "any args" is too wide
+// (rm, rmdir, dd, mkfs, chmod, chown, kill, pkill).
+export const DANGEROUS_COMMANDS: readonly string[] = [
+  "rm",
+  "rmdir",
+  "sudo",
+  "sh",
+  "bash",
+  "zsh",
+  "eval",
+  "exec",
+  "dd",
+  "mkfs",
+  "chmod",
+  "chown",
+  "curl",
+  "wget",
+  "kill",
+  "pkill",
+  "npx",
+  "bunx",
+  "node",
+  "python",
+  "python3",
+];
+
 // The specifier for a rule derived from a tool call: for Bash, the command
 // name plus its second raw token (if any); the bare tool name for everything
 // else. The second token is folded in unconditionally — NOT only when it
@@ -111,6 +143,60 @@ function parseRule(rule: string): { tool: string; spec: string | null } | null {
   return { tool: rule.slice(0, open), spec: rule.slice(open + 1, -1) };
 }
 
+// The choices offered to the user for "always allow" on a given tool call,
+// ordered narrow -> broad. For Bash: the exact command typed, the ruleFor
+// prefix (command + second raw token), and — unless the command name is in
+// DANGEROUS_COMMANDS — a command-wide rule with no argument constraint at
+// all. Non-Bash tools get a single bare-tool-name option; there's nothing
+// narrower to offer since ruleFor/ruleMatches don't inspect non-Bash inputs.
+export function ruleOptionsFor(
+  toolName: string,
+  input: Record<string, unknown>,
+): Array<{ rule: string; label: string }> {
+  if (toolName !== "Bash" || typeof input.command !== "string") {
+    return [{ rule: toolName, label: `any '${toolName}' use` }];
+  }
+  const command = input.command;
+  const options: Array<{ rule: string; label: string }> = [];
+
+  // Exact spec is the raw (untrimmed) command, so it matches byte-for-byte
+  // on re-invocation — ruleMatches compares the exact spec against the raw
+  // input.command, not a trimmed copy.
+  if (command.trim()) {
+    options.push({ rule: `Bash(${command})`, label: "this exact command" });
+  }
+
+  const prefixRule = ruleFor(toolName, input);
+  const parsedPrefix = parseRule(prefixRule);
+  const head = parsedPrefix?.spec?.endsWith(":*") ? parsedPrefix.spec.slice(0, -2) : "";
+  options.push({
+    rule: prefixRule,
+    label: head ? `any '${head}' command` : "any command",
+  });
+
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN.test(tokens[i])) i++;
+  const name = tokens[i];
+  if (name && !DANGEROUS_COMMANDS.includes(name)) {
+    const wideRule = `Bash(${name}:*)`;
+    // Single-word commands (no second token) already collapse to this same
+    // rule via ruleFor — don't offer the identical choice twice.
+    if (wideRule !== prefixRule) {
+      options.push({ rule: wideRule, label: `any '${name}' command` });
+    }
+  }
+
+  return options;
+}
+
+// Strict membership check the route uses to reject a client-injected rule
+// that isn't one of the choices actually offered for this tool call — exact
+// string equality only, no prefix/pattern matching.
+export function isOfferedRule(options: Array<{ rule: string; label: string }>, rule: string): boolean {
+  return options.some((o) => o.rule === rule);
+}
+
 // Shell separators/substitution/redirection that chain or divert a second
 // command/target onto the first: ; & | ` newline, $( ), and < > (which also
 // covers << heredocs and <( )/>( ) process substitution). A prefix rule like
@@ -121,6 +207,19 @@ function parseRule(rule: string): { tool: string; spec: string | null } | null {
 // through unprompted — no chain keyword needed, just an output target.
 const SHELL_CHAIN = /[;&|`\n<>]|\$\(/;
 
+// Mirror ruleFor's naming skip on the match side: drop leading VAR=value
+// tokens so a rule minted from "PORT=3100 bun run dev" (named "bun run",
+// per ruleFor) matches env-prefixed invocations, including its own creator.
+// If EVERY token is an env assignment there's no command to skip to —
+// ruleFor's degenerate fallback keeps the raw tokens in that case (see its
+// "nothing but env assignments" branch), so mirror that here too instead of
+// stripping down to an empty list.
+function stripLeadingEnvAssignments(tokens: string[]): string[] {
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN.test(tokens[i])) i++;
+  return i < tokens.length ? tokens.slice(i) : tokens;
+}
+
 // Prefix match at a token boundary: "bun test" matches "bun test x" but not
 // "bun tester", and never matches a command that chains on a second command
 // via a shell separator (see SHELL_CHAIN). Tokenizing also absorbs
@@ -128,7 +227,7 @@ const SHELL_CHAIN = /[;&|`\n<>]|\$\(/;
 function tokenPrefix(prefix: string, target: string): boolean {
   if (SHELL_CHAIN.test(target)) return false;
   const p = prefix.trim().split(/\s+/).filter(Boolean);
-  const t = target.trim().split(/\s+/).filter(Boolean);
+  const t = stripLeadingEnvAssignments(target.trim().split(/\s+/).filter(Boolean));
   if (!p.length || t.length < p.length) return false;
   return p.every((tok, i) => t[i] === tok);
 }
@@ -221,6 +320,39 @@ export function bashTouchesProtectedPath(root: string, protectedPaths: string[],
     .split(BASH_WORD_SPLIT)
     .filter(Boolean)
     .some((word) => isProtectedPath(root, protectedPaths, word));
+}
+
+// Pure extraction of the hard-deny guardrail checks (disallowedTools,
+// protectedPaths over path-shaped inputs, protectedPaths over a Bash
+// command's words) that used to be inlined in the chat route's canUseTool.
+// Callable from both canUseTool and, later, an SDK PreToolUse hook — neither
+// of which this function knows about. Order matters: disallowedTools first
+// (cheapest, no filesystem access), then the two protectedPaths checks.
+export function makeGuardrailDecision(
+  manifest: { guardrails: { disallowedTools: string[]; protectedPaths: string[] } },
+  root: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): { behavior: "allow" } | { behavior: "deny"; message: string } {
+  const g = manifest.guardrails;
+  if (g.disallowedTools.includes(toolName)) {
+    return { behavior: "deny", message: `${toolName} is disallowed by this project's guardrails.` };
+  }
+  const blocked = inputPaths(input).find((t) => isProtectedPath(root, g.protectedPaths, t));
+  if (blocked) {
+    return { behavior: "deny", message: `"${blocked}" is a protected path in this project.` };
+  }
+  // protectedPaths above only inspects path-shaped input keys, which Bash
+  // never populates (its target lives in `command`) — check it separately
+  // or the guardrail is a no-op for the most powerful tool.
+  if (
+    toolName === "Bash" &&
+    typeof input.command === "string" &&
+    bashTouchesProtectedPath(root, g.protectedPaths, input.command)
+  ) {
+    return { behavior: "deny", message: "This command touches a protected path in this project." };
+  }
+  return { behavior: "allow" };
 }
 
 export function createPending(
