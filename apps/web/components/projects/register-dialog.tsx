@@ -165,7 +165,7 @@ export function RegisterProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger render={<Button size="sm" />}>
+      <DialogTrigger render={<Button id="register-project-btn" size="sm" />}>
         <FolderPlusIcon />
         Register project
       </DialogTrigger>
@@ -197,7 +197,6 @@ export function RegisterProjectDialog({
                 onChange={(e) => setRoot(e.target.value)}
                 placeholder="/Users/you/code/my-repo"
                 className="font-mono text-xs"
-                autoFocus
                 autoComplete="off"
                 spellCheck={false}
               />

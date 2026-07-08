@@ -8,7 +8,10 @@ import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  // modal="trap-focus" keeps focus containment but skips Base UI's inert-ing
+  // of background content — holding inert crashes the WebKit build cmux's
+  // browser surfaces run on (Safari 26.x beta renderer dies).
+  return <DialogPrimitive.Root data-slot="dialog" modal="trap-focus" {...props} />
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
@@ -52,6 +55,10 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
+        // WebKit 26.x kills its renderer on programmatic focus() — never move
+        // focus on open/close; the user's own click/tab focus is unaffected.
+        initialFocus={false}
+        finalFocus={false}
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className

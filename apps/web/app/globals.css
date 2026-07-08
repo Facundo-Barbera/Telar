@@ -128,3 +128,12 @@
     @apply font-sans;
   }
 }
+/* WebKit 26.x (Safari 26 / cmux browser surfaces) crashes its renderer on
+   keyframe animations that fade fixed-position layers in/out from near-zero
+   opacity — exactly what overlay enter/exit animations do. Disable enter/exit
+   animations everywhere (dialogs just appear); animate-pulse / animate-spin
+   and other keyframes are unaffected. Revert when WebKit ships a fix. */
+[class*="animate-in"],
+[class*="animate-out"] {
+  animation-name: none !important;
+}
