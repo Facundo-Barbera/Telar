@@ -284,6 +284,9 @@ export function appendTurn(opts: {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   };
+  // Context-window occupancy after this turn (final model call's prompt size),
+  // computed by the caller — SET, not accumulated.
+  contextTokens?: number;
 }) {
   const chats = readChats();
   let chat = chats.find((c) => c.id === opts.id);
@@ -345,12 +348,11 @@ export function appendTurn(opts: {
       chat.cacheReadTokens = (chat.cacheReadTokens ?? 0) + opts.usage.cacheReadTokens;
       chat.cacheCreateTokens = (chat.cacheCreateTokens ?? 0) + opts.usage.cacheCreateTokens;
     }
-    // Context is the latest turn's prompt size, not a running sum — overwrite.
-    chat.contextTokens =
-      opts.usage.inputTokens +
-      opts.usage.cacheReadTokens +
-      opts.usage.cacheCreateTokens;
   }
+  // Context is the latest turn's final-call prompt size (computed by the
+  // caller from the last main-thread assistant message, not the step-summed
+  // usage above) — overwrite, never accumulate.
+  if (opts.contextTokens !== undefined) chat.contextTokens = opts.contextTokens;
   chat.updatedAt = now;
   writeChats(chats);
 }

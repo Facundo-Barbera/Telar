@@ -207,6 +207,15 @@ export async function POST(req: Request) {
           cache_creation_input_tokens?: number;
         };
       } | null = null;
+      // The final main-thread assistant call's usage — the basis for CTX (see
+      // the assistant branch). Distinct from lastResult.usage (a step sum).
+      let lastMainUsage: Record<string, number> | null = null;
+      const contextOf = (u: Record<string, number> | null) =>
+        u
+          ? (u.input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0)
+          : 0;
       // Permission requests opened by THIS stream; drained (deny) on teardown so
       // a client disconnect never leaves canUseTool hanging or a pending leaked.
       const myPending = new Set<string>();
@@ -388,9 +397,22 @@ export async function POST(req: Request) {
             // is ever invoked, which would let a model-supplied AgentInput
             // `mode` override reach the subagent unexamined (see canUseTool's
             // own dedicated branch above, which allows it AND strips that
-            // field). Only Read/Grep/Glob — plain, individually-safe
-            // read-only tools — are auto-allowed at this level.
-            allowedTools: ["Read", "Grep", "Glob"],
+            // field). Read/Grep/Glob plus the web tools are auto-allowed here:
+            // all are individually-safe read-only tools that never touch the
+            // filesystem. Auto-allowing the web tools is also what makes them
+            // usable inside a SUBAGENT — a subagent's canUseTool requests can't
+            // reach the interactive approval channel (they fail closed with
+            // "Stream closed"), so anything a research subagent needs (web
+            // search/fetch, the MCP tool-search) must be pre-allowed, not
+            // gated. The PreToolUse guardrail hook still runs for these.
+            allowedTools: [
+              "Read",
+              "Grep",
+              "Glob",
+              "WebSearch",
+              "WebFetch",
+              "ToolSearch",
+            ],
             disallowedTools: manifest.guardrails.disallowedTools,
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
@@ -468,6 +490,18 @@ export async function POST(req: Request) {
               (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
             );
             const msgUuid = (msg as { uuid?: string }).uuid;
+            // Context-window occupancy = the FINAL main-thread model call's
+            // prompt (input + cache-read + cache-create). Each assistant
+            // message in a multi-step turn carries its own single-call usage;
+            // the result message's usage is the SUM across every step, which
+            // is far larger than the actual window (13 tool steps → ~13× the
+            // real context). Capture the last main-thread (non-subagent) call
+            // so the "CTX" the UI shows is the real thing, not a step total.
+            if (!parent) {
+              const mu = (msg as unknown as { message?: { usage?: Record<string, number> } })
+                .message?.usage;
+              if (mu) lastMainUsage = mu;
+            }
             const content =
               (msg as { message?: { content?: Array<Record<string, any>> } })
                 .message?.content ?? [];
@@ -839,6 +873,8 @@ export async function POST(req: Request) {
               costUsd: lastResult.totalCostUsd,
               turns: lastResult.turns,
               usage: lastResult.usage,
+              // Real context-window occupancy (final call), not the step sum.
+              context: contextOf(lastMainUsage),
             });
           }
           if (capturedSession) {
@@ -876,6 +912,9 @@ export async function POST(req: Request) {
                     cacheCreateTokens: lastResult.usage.cache_creation_input_tokens ?? 0,
                   }
                 : undefined,
+              // Final-call context (not the step sum) — persisted so CTX is
+              // right on resume, independent of the cumulative usage above.
+              contextTokens: contextOf(lastMainUsage),
             });
             send("saved", { chatId: capturedSession });
           }

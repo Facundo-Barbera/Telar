@@ -792,8 +792,10 @@ function ToolStepGroup({
 // The account is choosable up front (contract: an SDK session's resume
 // transcript lives under the account's config dir, so it's only choosable
 // before the first turn — sessionId === null); once a session exists it's
-// locked and shown read-only in the heartbeat bar. Tools stay read-only
-// (Read / Grep / Glob) — sessions explore and prepare, runs do the writing.
+// locked and shown read-only in the heartbeat bar. Sessions are full
+// Claude Code sessions: reads (Read/Grep/Glob) auto-run, while writes,
+// edits, and commands gate through canUseTool — the permission cards, Auto
+// mode, and guardrails. Runs are the separate deterministic-gate lane.
 export function SessionView(props: {
   project: string;
   account: string;
@@ -1450,13 +1452,10 @@ function SessionViewInner({
                   cacheRead: t.cacheRead + (payload.usage?.cache_read_input_tokens ?? 0),
                   cacheCreate: t.cacheCreate + (payload.usage?.cache_creation_input_tokens ?? 0),
                 }));
-                // Context = this turn's whole prompt side (the conversation is
-                // re-sent every turn), overwritten not accumulated.
-                setContext(
-                  (payload.usage?.input_tokens ?? 0) +
-                    (payload.usage?.cache_read_input_tokens ?? 0) +
-                    (payload.usage?.cache_creation_input_tokens ?? 0),
-                );
+                // Context is the server-computed final-call prompt size
+                // (payload.context), NOT derived from the cumulative usage
+                // above — that usage sums every step of the turn.
+                if (typeof payload.context === "number") setContext(payload.context);
                 refresh();
                 break;
               case "saved":
@@ -1623,7 +1622,9 @@ function SessionViewInner({
     const bucketLive = status === "running";
     const items = groupParts(bucket.id, bucket.parts);
     return (
-      <div className="flex w-full flex-col gap-3 text-sm">
+      // Same reading column as the main transcript's <Message> wrapper, so a
+      // subagent tab lines up with Main instead of spanning the whole pane.
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 text-sm">
         <div className="flex flex-col gap-1 border-b pb-3 text-xs">
           <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
             <BotIcon className="size-3.5 text-muted-foreground" />
@@ -1818,16 +1819,18 @@ function SessionViewInner({
               {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
             </Shimmer>
           )}
-          {/* Cache tokens live in the title attribute rather than cluttering
-              the bar with a third number — same idiom as a tooltip, no new
-              overlay primitive. */}
-          <Badge
-            variant="outline"
-            className="font-mono text-xs"
-            title={`cache read ${fmtTokens(tokens.cacheRead)} · cache create ${fmtTokens(tokens.cacheCreate)}`}
-          >
-            {fmtTokens(tokens.input)} in · {fmtTokens(tokens.output)} out
-          </Badge>
+          {/* Context-window occupancy after the latest turn — the number that
+              actually answers "how full is this conversation". The lifetime
+              in/out/cache totals live in the tooltip rather than the bar. */}
+          {context > 0 && (
+            <Badge
+              variant="outline"
+              className="font-mono text-xs"
+              title={`context ${fmtTokens(context)}${activeModel?.context ? ` of ${activeModel.context}` : ""} · lifetime ${fmtTokens(tokens.input)} in · ${fmtTokens(tokens.output)} out · cache read ${fmtTokens(tokens.cacheRead)}`}
+            >
+              CTX {fmtTokens(context)}
+            </Badge>
+          )}
           <Badge variant="outline" className="font-mono text-xs">
             {fmtCost(sessionCost)}
           </Badge>
@@ -1862,8 +1865,8 @@ function SessionViewInner({
             renderAgentBucket(activeBucket)
           ) : messages.length === 0 ? (
             <ConversationEmptyState
-              title="Read the workspace"
-              description="This session explores the repo with Read · Grep · Glob to plan a change. When you're ready to write, start a run."
+              title="Work in this repo"
+              description="Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
             />
           ) : (
             messages.map((m) => {
