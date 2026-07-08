@@ -1,6 +1,15 @@
 "use client";
 
-import { MessageSquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  ActivityIcon,
+  FolderGit2Icon,
+  MessageSquareIcon,
+  MessagesSquareIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -11,13 +20,14 @@ import {
   SidebarHeader,
   SidebarMenu,
   SidebarMenuAction,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
-export type ChatMeta = {
+type ChatMeta = {
   id: string;
   title: string;
   model: string;
@@ -26,16 +36,16 @@ export type ChatMeta = {
   costUsd: number;
 };
 
-export type UsageWindow = {
+type UsageWindow = {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
   requests: number;
 };
 
-export type PlanWindow = { utilization: number | null; resets_at: string | null };
+type PlanWindow = { utilization: number | null; resets_at: string | null };
 
-export type PlanSnapshot = {
+type PlanSnapshot = {
   capturedAt: number;
   subscriptionType: string | null;
   fiveHour?: PlanWindow | null;
@@ -85,25 +95,140 @@ function groupLabel(ts: number): string {
   return "Older";
 }
 
-export function AppSidebar({
-  chats,
-  activeId,
-  plan,
-  ledger,
-  account,
-  onSelect,
-  onNew,
-  onDelete,
-}: {
-  chats: ChatMeta[];
-  activeId: string | null;
-  plan: PlanSnapshot | null;
-  ledger: { session: UsageWindow; weekly: UsageWindow } | null;
-  account: string;
-  onSelect: (id: string) => void;
-  onNew: () => void;
-  onDelete: (id: string) => void;
-}) {
+const NAV = [
+  { href: "/", label: "Chat", icon: MessagesSquareIcon },
+  { href: "/projects", label: "Projects", icon: FolderGit2Icon },
+  { href: "/runs", label: "Runs", icon: ActivityIcon },
+] as const;
+
+function NavGroup({ activeRuns }: { activeRuns: number }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  return (
+    <SidebarGroup>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {NAV.map(({ href, label, icon: Icon }) => {
+            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+            return (
+              <SidebarMenuItem key={href}>
+                <SidebarMenuButton isActive={active} onClick={() => router.push(href)}>
+                  <Icon className="size-4 shrink-0" />
+                  <span>{label}</span>
+                </SidebarMenuButton>
+                {href === "/runs" && activeRuns > 0 && (
+                  <SidebarMenuBadge className="animate-pulse bg-primary text-primary-foreground">
+                    {activeRuns}
+                  </SidebarMenuBadge>
+                )}
+              </SidebarMenuItem>
+            );
+          })}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
+function TelarSidebarHeader() {
+  const router = useRouter();
+  return (
+    <SidebarHeader className="border-b">
+      <div className="flex items-center justify-between px-2 py-1">
+        <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => router.push("/")}
+          title="New thread"
+        >
+          <PlusIcon className="size-4" />
+        </Button>
+      </div>
+    </SidebarHeader>
+  );
+}
+
+function SidebarLoadingBody() {
+  return (
+    <>
+      <SidebarContent>
+        <NavGroup activeRuns={0} />
+      </SidebarContent>
+      <SidebarFooter className="border-t">
+        <div className="space-y-3 p-2">
+          <span className="text-xs font-medium text-sidebar-foreground/70">Plan usage</span>
+          <p className="text-xs text-sidebar-foreground/50">Loading usage…</p>
+        </div>
+      </SidebarFooter>
+    </>
+  );
+}
+
+function SidebarBody() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const activeChatId = searchParams.get("chat");
+
+  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
+  const [ledger, setLedger] = useState<{ session: UsageWindow; weekly: UsageWindow } | null>(null);
+  const [activeRuns, setActiveRuns] = useState(0);
+  // The chat composer broadcasts its live account choice; follow it so the plan
+  // footer never drifts from the dropdown (falls back to the saved chat value).
+  const [composerAccount, setComposerAccount] = useState<string | null>(null);
+
+  // Self-fetching: chats + usage + active runs, refreshed on mount, on the
+  // global "telar:refresh" signal, and on a slow interval as a safety net.
+  const loadAll = useCallback(() => {
+    fetch("/api/chats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setChats(d.chats ?? []))
+      .catch(() => {});
+    fetch("/api/usage")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        setPlan(d.plan ?? {});
+        setLedger(d.ledger ?? null);
+      })
+      .catch(() => {});
+    fetch("/api/runs")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setActiveRuns(Array.isArray(d.active) ? d.active.length : 0))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadAll();
+    window.addEventListener("telar:refresh", loadAll);
+    const t = setInterval(loadAll, 10_000);
+    return () => {
+      window.removeEventListener("telar:refresh", loadAll);
+      clearInterval(t);
+    };
+  }, [loadAll]);
+
+  useEffect(() => {
+    const onAccount = (e: Event) =>
+      setComposerAccount((e as CustomEvent<string>).detail);
+    window.addEventListener("telar:account", onAccount);
+    return () => window.removeEventListener("telar:account", onAccount);
+  }, []);
+
+  const removeChat = useCallback(
+    async (id: string) => {
+      await fetch(`/api/chats/${id}`, { method: "DELETE" });
+      if (id === activeChatId) router.push("/");
+      window.dispatchEvent(new Event("telar:refresh"));
+    },
+    [activeChatId, router],
+  );
+
+  const account =
+    composerAccount ?? chats.find((c) => c.id === activeChatId)?.account ?? "personal";
+  const activePlan = plan[account] ?? null;
+
   const groups = new Map<string, ChatMeta[]>();
   for (const chat of chats) {
     const label = groupLabel(chat.updatedAt);
@@ -112,19 +237,9 @@ export function AppSidebar({
   }
 
   return (
-    <Sidebar>
-      <SidebarHeader className="border-b">
-        <div className="flex items-center justify-between px-2 py-1">
-          <span className="font-heading text-lg font-semibold tracking-tight">
-            telar
-          </span>
-          <Button variant="ghost" size="icon-sm" onClick={onNew} title="New thread">
-            <PlusIcon className="size-4" />
-          </Button>
-        </div>
-      </SidebarHeader>
-
+    <>
       <SidebarContent>
+        <NavGroup activeRuns={activeRuns} />
         {chats.length === 0 && (
           <div className="px-4 py-6 text-center text-xs text-sidebar-foreground/50">
             No threads yet — weave your first one.
@@ -138,8 +253,8 @@ export function AppSidebar({
                 {items.map((chat) => (
                   <SidebarMenuItem key={chat.id}>
                     <SidebarMenuButton
-                      isActive={chat.id === activeId}
-                      onClick={() => onSelect(chat.id)}
+                      isActive={chat.id === activeChatId}
+                      onClick={() => router.push("/?chat=" + chat.id)}
                       className="pr-8"
                     >
                       <MessageSquareIcon className="size-4 shrink-0" />
@@ -149,7 +264,7 @@ export function AppSidebar({
                       showOnHover
                       onClick={(e) => {
                         e.stopPropagation();
-                        onDelete(chat.id);
+                        void removeChat(chat.id);
                       }}
                       title="Delete thread"
                     >
@@ -169,26 +284,26 @@ export function AppSidebar({
             <span className="text-xs font-medium text-sidebar-foreground/70">
               Plan usage · {account}
             </span>
-            {plan?.subscriptionType && (
+            {activePlan?.subscriptionType && (
               <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
-                {plan.subscriptionType}
+                {activePlan.subscriptionType}
               </span>
             )}
           </div>
-          {plan ? (
+          {activePlan ? (
             <>
-              {plan.fiveHour && <PlanMeter label="Session · 5h" window={plan.fiveHour} />}
-              {plan.sevenDay && <PlanMeter label="Weekly · all models" window={plan.sevenDay} />}
-              {plan.sevenDayOpus && <PlanMeter label="Weekly · Opus" window={plan.sevenDayOpus} />}
-              {plan.sevenDaySonnet && (
-                <PlanMeter label="Weekly · Sonnet" window={plan.sevenDaySonnet} />
+              {activePlan.fiveHour && <PlanMeter label="Session · 5h" window={activePlan.fiveHour} />}
+              {activePlan.sevenDay && (
+                <PlanMeter label="Weekly · all models" window={activePlan.sevenDay} />
               )}
-              {plan.modelScoped?.map((w) => (
-                <PlanMeter
-                  key={w.display_name}
-                  label={`Weekly · ${w.display_name}`}
-                  window={w}
-                />
+              {activePlan.sevenDayOpus && (
+                <PlanMeter label="Weekly · Opus" window={activePlan.sevenDayOpus} />
+              )}
+              {activePlan.sevenDaySonnet && (
+                <PlanMeter label="Weekly · Sonnet" window={activePlan.sevenDaySonnet} />
+              )}
+              {activePlan.modelScoped?.map((w) => (
+                <PlanMeter key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
               ))}
             </>
           ) : (
@@ -204,6 +319,17 @@ export function AppSidebar({
           )}
         </div>
       </SidebarFooter>
+    </>
+  );
+}
+
+export function AppSidebar() {
+  return (
+    <Sidebar>
+      <TelarSidebarHeader />
+      <Suspense fallback={<SidebarLoadingBody />}>
+        <SidebarBody />
+      </Suspense>
     </Sidebar>
   );
 }

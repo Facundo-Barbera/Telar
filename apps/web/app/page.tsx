@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { WrenchIcon } from "lucide-react";
 import {
   Conversation,
@@ -23,12 +24,6 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import {
-  AppSidebar,
-  type ChatMeta,
-  type PlanSnapshot,
-  type UsageWindow,
-} from "@/components/app-sidebar";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -38,7 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { DEFAULT_MODEL, MODELS, modelById } from "@/lib/models";
 
 type Part =
@@ -49,11 +44,15 @@ type Status = "ready" | "submitted" | "streaming" | "error";
 
 const ACCOUNT_NAMES = ["personal", "work"];
 
-export default function TelarPage() {
-  const [chats, setChats] = useState<ChatMeta[]>([]);
-  const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
-  const [ledger, setLedger] = useState<{ session: UsageWindow; weekly: UsageWindow } | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
+
+function Chat() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const chatParam = searchParams.get("chat");
+
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [title, setTitle] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [account, setAccount] = useState("personal");
@@ -63,33 +62,18 @@ export default function TelarPage() {
   const [elapsed, setElapsed] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // The session id whose transcript is currently mounted. Kept in a ref so the
+  // URL effect can tell a real navigation apart from our own router.replace
+  // after a new session is minted mid-stream.
+  const loadedIdRef = useRef<string | null>(null);
 
   const busy = status === "submitted" || status === "streaming";
 
-  const loadChats = useCallback(async () => {
-    try {
-      const res = await fetch("/api/chats");
-      setChats((await res.json()).chats);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const loadUsage = useCallback(async () => {
-    try {
-      const res = await fetch("/api/usage");
-      const data = await res.json();
-      setPlan(data.plan ?? {});
-      setLedger(data.ledger ?? null);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
+  // Keep the sidebar's "Plan usage · <account>" footer in lockstep with the
+  // composer account dropdown (they live in separate subtrees under the layout).
   useEffect(() => {
-    loadChats();
-    loadUsage();
-  }, [loadChats, loadUsage]);
+    window.dispatchEvent(new CustomEvent("telar:account", { detail: account }));
+  }, [account]);
 
   useEffect(() => {
     if (!busy) return;
@@ -104,10 +88,15 @@ export default function TelarPage() {
 
   const selectChat = useCallback(async (id: string) => {
     abortRef.current?.abort();
+    loadedIdRef.current = id;
     const res = await fetch(`/api/chats/${id}`);
     if (!res.ok) return;
     const chat = await res.json();
-    setActiveId(id);
+    // A newer selectChat may have won the race while we awaited — drop this
+    // stale result so the mounted transcript always matches loadedIdRef/URL.
+    if (loadedIdRef.current !== id) return;
+    setSessionId(id);
+    setTitle(chat.title);
     setModel(chat.model);
     setAccount(chat.account);
     setSessionCost(chat.costUsd);
@@ -124,21 +113,22 @@ export default function TelarPage() {
 
   const newChat = useCallback(() => {
     abortRef.current?.abort();
-    setActiveId(null);
+    loadedIdRef.current = null;
+    setSessionId(null);
+    setTitle(null);
     setMessages([]);
     setSessionCost(0);
     setStatus("ready");
     setThinking(false);
   }, []);
 
-  const removeChat = useCallback(
-    async (id: string) => {
-      await fetch(`/api/chats/${id}`, { method: "DELETE" });
-      if (id === activeId) newChat();
-      loadChats();
-    },
-    [activeId, newChat, loadChats],
-  );
+  // Active chat = ?chat=<id>. Load it when the URL points somewhere new; skip
+  // when it already matches what's mounted (e.g. our own replace mid-stream).
+  useEffect(() => {
+    if (chatParam === loadedIdRef.current) return;
+    if (chatParam) void selectChat(chatParam);
+    else newChat();
+  }, [chatParam, selectChat, newChat]);
 
   const send = useCallback(
     async (text: string) => {
@@ -149,6 +139,9 @@ export default function TelarPage() {
         { id: userId, role: "user", parts: [{ type: "text", text, done: true }] },
         { id: asstId, role: "assistant", parts: [] },
       ]);
+      // New thread: derive the header title from the first message, matching the
+      // slice the store uses when it persists the chat.
+      if (!sessionId) setTitle(text.slice(0, 60));
       setStatus("submitted");
       setThinking(false);
 
@@ -159,7 +152,7 @@ export default function TelarPage() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, sessionId: activeId, model, account }),
+          body: JSON.stringify({ message: text, sessionId, model, account }),
           signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -187,7 +180,11 @@ export default function TelarPage() {
 
             switch (event) {
               case "session":
-                setActiveId(payload.sessionId);
+                // New session id — reflect it in the URL without reloading the
+                // transcript (loadedIdRef guards the URL effect above).
+                setSessionId(payload.sessionId);
+                loadedIdRef.current = payload.sessionId;
+                router.replace("/?chat=" + payload.sessionId);
                 break;
               case "thinking":
                 setThinking(true);
@@ -226,20 +223,15 @@ export default function TelarPage() {
                   parts: [...m.parts, { type: "tool", name: payload.name }],
                 }));
                 break;
-              case "plan": {
-                const { account: acct, ...windows } = payload;
-                setPlan((p) => ({
-                  ...p,
-                  [acct]: { ...p[acct], ...windows, capturedAt: Date.now() },
-                }));
+              case "plan":
+                refresh();
                 break;
-              }
               case "done":
                 setSessionCost((c) => c + (payload.costUsd ?? 0));
+                refresh();
                 break;
               case "saved":
-                loadChats();
-                loadUsage();
+                refresh();
                 break;
               case "error":
                 throw new Error(payload.message);
@@ -262,7 +254,7 @@ export default function TelarPage() {
         abortRef.current = null;
       }
     },
-    [activeId, model, account, loadChats, loadUsage],
+    [sessionId, model, account, router],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -272,144 +264,150 @@ export default function TelarPage() {
   };
 
   const activeModel = modelById(model);
-  const activeTitle = chats.find((c) => c.id === activeId)?.title;
 
   return (
-    <SidebarProvider>
-      <AppSidebar
-        chats={chats}
-        activeId={activeId}
-        plan={plan[account] ?? null}
-        ledger={ledger}
-        account={account}
-        onSelect={selectChat}
-        onNew={newChat}
-        onDelete={removeChat}
-      />
-      <SidebarInset className="flex h-dvh flex-col">
-        <header className="flex items-center gap-2 border-b px-3 py-2">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="h-4" />
-          <span className="truncate text-sm font-medium">
-            {activeTitle ?? "New thread"}
-          </span>
-          <div className="ml-auto flex items-center gap-2">
-            {busy && (
-              <Shimmer className="text-xs">
-                {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
-              </Shimmer>
-            )}
-            <Badge variant="outline" className="font-mono text-xs">
-              session ${sessionCost.toFixed(4)}
+    <>
+      <header className="flex items-center gap-2 border-b px-3 py-2">
+        <SidebarTrigger />
+        <Separator orientation="vertical" className="h-4" />
+        <span className="truncate text-sm font-medium">{title ?? "New thread"}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {busy && (
+            <Shimmer className="text-xs">
+              {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
+            </Shimmer>
+          )}
+          <Badge variant="outline" className="font-mono text-xs">
+            session ${sessionCost.toFixed(4)}
+          </Badge>
+          {sessionId && (
+            <Badge variant="secondary" className="font-mono text-xs">
+              {sessionId.slice(0, 8)}
             </Badge>
-            {activeId && (
-              <Badge variant="secondary" className="font-mono text-xs">
-                {activeId.slice(0, 8)}
-              </Badge>
-            )}
-          </div>
-        </header>
-
-        <Conversation className="flex-1">
-          <ConversationContent className="mx-auto w-full max-w-3xl">
-            {messages.length === 0 ? (
-              <ConversationEmptyState
-                title="Weave a thread"
-                description="Telar drives the Claude Agent SDK on your subscription — sessions, history, and usage all on your loom."
-              />
-            ) : (
-              messages.map((m) => (
-                <Message from={m.role} key={m.id}>
-                  <MessageContent>
-                    {m.parts.length === 0 && m.role === "assistant" && busy && (
-                      <Shimmer className="text-sm">
-                        {thinking ? "Thinking…" : "Weaving…"}
-                      </Shimmer>
-                    )}
-                    {m.parts.map((p, i) =>
-                      p.type === "text" ? (
-                        <MessageResponse key={i}>{p.text}</MessageResponse>
-                      ) : (
-                        <Badge variant="secondary" className="w-fit font-mono text-xs" key={i}>
-                          <WrenchIcon className="size-3" />
-                          {p.name}
-                        </Badge>
-                      ),
-                    )}
-                  </MessageContent>
-                </Message>
-              ))
-            )}
-          </ConversationContent>
-          <ConversationScrollButton />
-        </Conversation>
-
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-          <PromptInput onSubmit={handleSubmit}>
-            <PromptInputBody>
-              <PromptInputTextarea placeholder="Ask about this workspace…" />
-            </PromptInputBody>
-            <PromptInputFooter>
-              <PromptInputTools>
-                <Select value={model} onValueChange={(v) => v && setModel(v)}>
-                  <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
-                    <SelectValue>
-                      <span className="flex items-center gap-1.5">
-                        {activeModel?.name ?? model}
-                        {activeModel && (
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {activeModel.context}
-                          </Badge>
-                        )}
-                      </span>
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-[340px]">
-                    {MODELS.map((m) => (
-                      <SelectItem key={m.id} value={m.id} className="py-2">
-                        <div className="flex w-full flex-col gap-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{m.name}</span>
-                            <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                              {m.context} ctx
-                            </Badge>
-                            <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                              {m.maxOutput} out
-                            </Badge>
-                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                              ${m.inputPerMTok}/{m.outputPerMTok} MTok
-                            </span>
-                          </div>
-                          <span className="text-xs text-muted-foreground">{m.blurb}</span>
-                          {m.note && (
-                            <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select value={account} onValueChange={(v) => v && setAccount(v)}>
-                  <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ACCOUNT_NAMES.map((a) => (
-                      <SelectItem key={a} value={a}>
-                        {a}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </PromptInputTools>
-              <PromptInputSubmit
-                status={status === "ready" ? undefined : status}
-                onStop={() => abortRef.current?.abort()}
-              />
-            </PromptInputFooter>
-          </PromptInput>
+          )}
         </div>
-      </SidebarInset>
-    </SidebarProvider>
+      </header>
+
+      <Conversation className="flex-1">
+        <ConversationContent className="mx-auto w-full max-w-3xl">
+          {messages.length === 0 ? (
+            <ConversationEmptyState
+              title="Weave a thread"
+              description="Telar drives the Claude Agent SDK on your subscription — sessions, history, and usage all on your loom."
+            />
+          ) : (
+            messages.map((m) => (
+              <Message from={m.role} key={m.id}>
+                <MessageContent>
+                  {m.parts.length === 0 && m.role === "assistant" && busy && (
+                    <Shimmer className="text-sm">
+                      {thinking ? "Thinking…" : "Weaving…"}
+                    </Shimmer>
+                  )}
+                  {m.parts.map((p, i) =>
+                    p.type === "text" ? (
+                      <MessageResponse key={i}>{p.text}</MessageResponse>
+                    ) : (
+                      <Badge variant="secondary" className="w-fit font-mono text-xs" key={i}>
+                        <WrenchIcon className="size-3" />
+                        {p.name}
+                      </Badge>
+                    ),
+                  )}
+                </MessageContent>
+              </Message>
+            ))
+          )}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
+
+      <div className="mx-auto w-full max-w-3xl px-4 pb-4">
+        <PromptInput onSubmit={handleSubmit}>
+          <PromptInputBody>
+            <PromptInputTextarea placeholder="Ask about this workspace…" />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools>
+              <Select value={model} onValueChange={(v) => v && setModel(v)}>
+                <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
+                  <SelectValue>
+                    <span className="flex items-center gap-1.5">
+                      {activeModel?.name ?? model}
+                      {activeModel && (
+                        <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                          {activeModel.context}
+                        </Badge>
+                      )}
+                    </span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="w-[340px]">
+                  {MODELS.map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="py-2">
+                      <div className="flex w-full flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{m.name}</span>
+                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                            {m.context} ctx
+                          </Badge>
+                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                            {m.maxOutput} out
+                          </Badge>
+                          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                            ${m.inputPerMTok}/{m.outputPerMTok} MTok
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">{m.blurb}</span>
+                        {m.note && (
+                          <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={account} onValueChange={(v) => v && setAccount(v)}>
+                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACCOUNT_NAMES.map((a) => (
+                    <SelectItem key={a} value={a}>
+                      {a}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </PromptInputTools>
+            <PromptInputSubmit
+              status={status === "ready" ? undefined : status}
+              onStop={() => abortRef.current?.abort()}
+            />
+          </PromptInputFooter>
+        </PromptInput>
+      </div>
+    </>
+  );
+}
+
+function ChatFallback() {
+  return (
+    <>
+      <header className="flex items-center gap-2 border-b px-3 py-2">
+        <SidebarTrigger />
+        <Separator orientation="vertical" className="h-4" />
+        <span className="truncate text-sm font-medium text-muted-foreground">New thread</span>
+      </header>
+      <div className="flex-1" />
+    </>
+  );
+}
+
+export default function TelarPage() {
+  return (
+    <Suspense fallback={<ChatFallback />}>
+      <Chat />
+    </Suspense>
   );
 }
