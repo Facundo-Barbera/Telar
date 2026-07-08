@@ -12,9 +12,11 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   cwd?: string;
   maxTurns?: number;
   tools?: string[]; // [] = pure-reasoning agent
+  disallowedTools?: string[]; // explicit SDK disallow — wins over any allow, incl. repo settingSources
   account?: AccountProfile; // routes this run to a specific Claude account
   resume?: string; // session id — continue a previous run
   abort?: AbortController;
+  settingSources?: Array<"user" | "project" | "local">; // repo .claude support
   onEvent?: (e: EngineEvent) => void;
 };
 
@@ -77,8 +79,13 @@ export async function agent<S extends z.ZodRawShape>(
         env: accountEnv(opts.account),
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...(opts.abort ? { abortController: opts.abort } : {}),
+        ...(opts.settingSources ? { settingSources: opts.settingSources } : {}),
         mcpServers: { out },
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
+        // Belt-and-suspenders against settingSources: a repo's own .claude
+        // settings can widen its own allow rules, but an explicit SDK
+        // disallow always wins over any allow rule.
+        ...(opts.disallowedTools?.length ? { disallowedTools: opts.disallowedTools } : {}),
       },
     })) {
       if (msg.type === "system" && msg.subtype === "init") {

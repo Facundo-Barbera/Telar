@@ -108,6 +108,8 @@ export async function executeRun(
         model,
         maxTurns,
         tools,
+        disallowedTools: manifest.guardrails.disallowedTools,
+        settingSources: ["project", "local"],
         account: opts.accounts?.[manifest.account],
         abort: opts.abort,
         ...(resume ? { resume } : {}),
