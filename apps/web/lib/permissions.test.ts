@@ -28,10 +28,48 @@ const {
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 describe("ruleFor", () => {
-  test("Bash groups by the first two tokens", () => {
-    expect(ruleFor("Bash", { command: "bun test lib/foo" })).toBe("Bash(bun test:*)");
-    expect(ruleFor("Bash", { command: "  git   commit -m x " })).toBe("Bash(git commit:*)");
+  test("Bash names the command, plus its second raw token when present", () => {
+    expect(ruleFor("Bash", { command: "git log --oneline" })).toBe("Bash(git log:*)");
+    expect(ruleFor("Bash", { command: "bun test lib/x.test.ts" })).toBe("Bash(bun test:*)");
+    expect(ruleFor("Bash", { command: "cat /Users/x/file" })).toBe("Bash(cat /Users/x/file:*)");
+    expect(ruleFor("Bash", { command: 'echo "=== a ==="' })).toBe('Bash(echo "===:*)');
+    expect(ruleFor("Bash", { command: "tail -50 notes.md" })).toBe("Bash(tail -50:*)");
+    expect(ruleFor("Bash", { command: "sed -n '1,5p' f" })).toBe("Bash(sed -n:*)");
     expect(ruleFor("Bash", { command: "ls" })).toBe("Bash(ls:*)");
+    expect(ruleFor("Bash", { command: "  git   commit -m x " })).toBe("Bash(git commit:*)");
+  });
+
+  test("regression: a flagged/pathed second token no longer collapses to an unconstrained bare-command rule", () => {
+    // Previously, any second token that wasn't a bare subcommand word (a flag,
+    // a path, a quote fragment) fell through to just the command name, e.g.
+    // "Bash(rm:*)" — which then matched ANY rm invocation, regardless of
+    // flags or target (rm -rf /, rm -rf ~, ...).
+    const rmRule = ruleFor("Bash", { command: "rm -rf ./node_modules/.cache" });
+    expect(rmRule).not.toBe("Bash(rm:*)");
+    expect(ruleMatches(rmRule, "Bash", { command: "rm -i /tmp/x" })).toBe(false);
+
+    const shRule = ruleFor("Bash", { command: 'sh -c "echo hi"' });
+    expect(shRule).not.toBe("Bash(sh:*)");
+  });
+
+  test("leading VAR=value environment assignments are skipped when naming the rule", () => {
+    expect(ruleFor("Bash", { command: "PORT=3100 bun run dev" })).toBe("Bash(bun run:*)");
+    expect(ruleFor("Bash", { command: "FOO=1 BAR=2 npm start" })).toBe("Bash(npm start:*)");
+  });
+
+  test("a chained command is named by its first two raw tokens, ignoring the rest", () => {
+    // Naming stops at the second token ("&&" and beyond are ignored) —
+    // ruleMatches (tested below) is what refuses to match a chained target
+    // against this narrower rule.
+    expect(ruleFor("Bash", { command: "cd /repo && git log" })).toBe("Bash(cd /repo:*)");
+  });
+
+  test("degenerate commands (empty, or nothing but env assignments) never produce a bare 'Bash' rule", () => {
+    expect(ruleFor("Bash", { command: "" })).toBe("Bash(:*)");
+    expect(ruleFor("Bash", { command: "   " })).toBe("Bash(:*)");
+    // Falls back to the old exact-two-token grouping — narrow, but safe.
+    expect(ruleFor("Bash", { command: "PORT=3100" })).toBe("Bash(PORT=3100:*)");
+    expect(ruleFor("Bash", { command: "A=1 B=2" })).toBe("Bash(A=1 B=2:*)");
   });
 
   test("file/other tools scope to the bare tool name", () => {
@@ -67,6 +105,14 @@ describe("ruleMatches", () => {
     expect(ruleMatches("Bash(bun test:*)", "Bash", { command: "bun test lib/x" })).toBe(true);
   });
 
+  test("prefix rules never match a target that redirects output or uses process substitution", () => {
+    expect(ruleMatches("Bash(cat:*)", "Bash", { command: "cat file > ~/.ssh/authorized_keys" })).toBe(false);
+    expect(ruleMatches("Bash(echo:*)", "Bash", { command: "echo ssh-rsa-x >> ~/.ssh/authorized_keys" })).toBe(false);
+    expect(ruleMatches("Bash(cat:*)", "Bash", { command: "cat <(evil)" })).toBe(false);
+    // still matches the unredirected case
+    expect(ruleMatches("Bash(cat:*)", "Bash", { command: "cat file.txt" })).toBe(true);
+  });
+
   test("Bash(rm:*) matches rm commands but not lookalikes", () => {
     expect(ruleMatches("Bash(rm:*)", "Bash", { command: "rm -rf /tmp/x" })).toBe(true);
     expect(ruleMatches("Bash(rm:*)", "Bash", { command: "rm" })).toBe(true);
@@ -94,6 +140,33 @@ describe("ruleMatches", () => {
   test("path-spec wildcard respects segment boundaries", () => {
     expect(ruleMatches("Write(src:*)", "Write", { file_path: "src/app.ts" })).toBe(true);
     expect(ruleMatches("Write(src:*)", "Write", { file_path: "srcx/app.ts" })).toBe(false);
+  });
+
+  test("a rule named from a chained command still refuses to match the chain", () => {
+    const rule = ruleFor("Bash", { command: "cd /repo && git log" });
+    expect(rule).toBe("Bash(cd /repo:*)");
+    expect(ruleMatches(rule, "Bash", { command: "cd /repo && git log" })).toBe(false);
+    // the narrower, unchained command it was actually named for does match
+    expect(ruleMatches(rule, "Bash", { command: "cd /repo" })).toBe(true);
+    // a different cd target is NOT authorized by this rule
+    expect(ruleMatches(rule, "Bash", { command: "cd /etc" })).toBe(false);
+  });
+
+  // Regression: rules already persisted under the old first-two-raw-tokens
+  // grouping (before this fix) must keep parsing and matching exactly as
+  // before — these are verbatim from a real ~/.telar/permissions.json.
+  test("old-format two-token stored rules still parse and match as before", () => {
+    const echoRule = 'Bash(echo "===:*)';
+    expect(ruleMatches(echoRule, "Bash", { command: 'echo "=== section ===" done' })).toBe(true);
+    expect(ruleMatches(echoRule, "Bash", { command: 'echo "start"' })).toBe(false);
+
+    const cdRule = "Bash(cd /Users/facundo/Projects/Focaltec/orchestrator:*)";
+    expect(
+      ruleMatches(cdRule, "Bash", { command: "cd /Users/facundo/Projects/Focaltec/orchestrator" }),
+    ).toBe(true);
+    expect(
+      ruleMatches(cdRule, "Bash", { command: "cd /Users/facundo/Projects/Focaltec/other" }),
+    ).toBe(false);
   });
 });
 

