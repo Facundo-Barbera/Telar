@@ -106,7 +106,9 @@ export async function POST(req: Request) {
     // no/empty body → refresh every account
   }
 
-  if (account && !(account in ACCOUNTS)) {
+  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
+  // "constructor"/"toString" can't slip past this as a false "known account".
+  if (account && !Object.prototype.hasOwnProperty.call(ACCOUNTS, account)) {
     return Response.json({ error: `Unknown account "${account}".` }, { status: 400 });
   }
 

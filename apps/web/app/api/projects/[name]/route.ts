@@ -35,7 +35,9 @@ export async function PATCH(
   if ("root" in body && body.root !== manifest.root) {
     return Response.json({ error: "root is immutable." }, { status: 400 });
   }
-  if (body.account != null && !(body.account in ACCOUNTS)) {
+  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
+  // "constructor"/"toString" can't slip past this as a false "known account".
+  if (body.account != null && !Object.prototype.hasOwnProperty.call(ACCOUNTS, body.account)) {
     return Response.json(
       { error: `Unknown account "${body.account}".` },
       { status: 400 },

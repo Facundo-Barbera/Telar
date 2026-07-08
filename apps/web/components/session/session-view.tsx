@@ -72,7 +72,11 @@ type Part =
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
 type Status = "ready" | "submitted" | "streaming" | "error";
 
-type ProjectCommand = { name: string; description: string };
+type ProjectCommand = {
+  name: string;
+  description: string;
+  kind: "command" | "skill";
+};
 
 export type InitialChat = {
   id: string;
@@ -547,9 +551,12 @@ function SessionViewInner({
 
   const activeModel = modelById(model);
 
-  // Merge project's scanned commands with what the live SDK session actually
-  // reports (once known) — the SDK list carries built-ins we don't advertise,
-  // so we only ever narrow, never add names the project scan didn't find.
+  // Merge project's scanned commands+skills with what the live SDK session
+  // actually reports (once known) — the SDK's slash_commands list includes
+  // repo skills alongside .claude/commands entries, so a name match here
+  // keeps skills exactly like commands. The SDK list also carries built-ins
+  // and plugin commands we don't advertise, so this only ever narrows, never
+  // adds names the project scan didn't already find.
   const availableCommands = useMemo(() => {
     if (sdkSlashCommands === null) return projectCommands;
     const known = new Set(sdkSlashCommands);
@@ -567,8 +574,15 @@ function SessionViewInner({
     return availableCommands.filter((c) => c.name.toLowerCase().startsWith(q));
   }, [availableCommands, slashQuery]);
 
+  // The menu also opens on a genuinely empty project (zero commands AND zero
+  // skills) so it can show the "how to add some" hint below instead of just
+  // silently doing nothing — that read as a broken feature to users. A query
+  // that merely doesn't match anything (project has commands, none start
+  // with what's typed) still closes the menu as before.
   const slashMenuOpen =
-    slashQuery !== null && !menuDismissed && filteredCommands.length > 0;
+    slashQuery !== null &&
+    !menuDismissed &&
+    (filteredCommands.length > 0 || projectCommands.length === 0);
 
   // Reset the selection whenever the query text changes so it never points
   // past a shrunk list or feels stale after typing.
@@ -587,6 +601,16 @@ function SessionViewInner({
   // by the textarea's own keydown, so the textarea never loses focus.
   const handleComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (!slashMenuOpen) return;
+    // Escape always dismisses, including the empty-project hint panel. The
+    // rest only make sense once there's something to navigate/accept — the
+    // hint panel has no items, so leave those keys to behave normally
+    // (e.g. Enter still submits the composer).
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMenuDismissed(true);
+      return;
+    }
+    if (filteredCommands.length === 0) return;
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
@@ -600,10 +624,6 @@ function SessionViewInner({
       case "Tab":
         e.preventDefault();
         acceptCommand(filteredCommands[selectedIndex] ?? filteredCommands[0]);
-        break;
-      case "Escape":
-        e.preventDefault();
-        setMenuDismissed(true);
         break;
     }
   };
@@ -689,30 +709,43 @@ function SessionViewInner({
       <div className="relative mx-auto w-full max-w-3xl px-4 pb-4">
         {slashMenuOpen && (
           <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-            {filteredCommands.map((c, i) => (
-              <button
-                type="button"
-                key={c.name}
-                // preventDefault on mousedown keeps focus on the textarea — no
-                // .focus() call, just skipping the browser's default click-to-
-                // focus so the composer stays the active element.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => acceptCommand(c)}
-                className={cn(
-                  "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
-                  i === selectedIndex
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-accent hover:text-accent-foreground",
-                )}
-              >
-                <span className="font-mono text-xs">/{c.name}</span>
-                {c.description && (
-                  <span className="text-[11px] text-muted-foreground">
-                    {c.description}
+            {filteredCommands.length === 0 ? (
+              <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                No commands — add .claude/commands/*.md or skills to this repo.
+              </p>
+            ) : (
+              filteredCommands.map((c, i) => (
+                <button
+                  type="button"
+                  key={c.name}
+                  // preventDefault on mousedown keeps focus on the textarea — no
+                  // .focus() call, just skipping the browser's default click-to-
+                  // focus so the composer stays the active element.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => acceptCommand(c)}
+                  className={cn(
+                    "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
+                    i === selectedIndex
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-accent hover:text-accent-foreground",
+                  )}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span className="font-mono text-xs">/{c.name}</span>
+                    {c.kind === "skill" && (
+                      <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                        skill
+                      </Badge>
+                    )}
                   </span>
-                )}
-              </button>
-            ))}
+                  {c.description && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {c.description}
+                    </span>
+                  )}
+                </button>
+              ))
+            )}
           </div>
         )}
         <PromptInput onSubmit={handleSubmit}>
