@@ -1,7 +1,23 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type PermissionResult,
+  type PermissionUpdate,
+} from "@anthropic-ai/claude-agent-sdk";
 import { accountEnv, getProject, type ProjectManifest } from "@telar/core";
 import { ACCOUNTS } from "@/lib/accounts";
 import { DEFAULT_MODEL } from "@/lib/models";
+import {
+  createPending,
+  resolvePending,
+  readRules,
+  addRule,
+  ruleFor,
+  ruleMatches,
+  isProtectedPath,
+  bashTouchesProtectedPath,
+  inputPaths,
+  type PermissionDecision,
+} from "@/lib/permissions";
 import {
   appendTurn,
   logUsage,
@@ -60,6 +76,84 @@ export async function POST(req: Request) {
       let capturedSession = sessionId ?? null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
+      // Permission requests opened by THIS stream; drained (deny) on teardown so
+      // a client disconnect never leaves canUseTool hanging or a pending leaked.
+      const myPending = new Set<string>();
+
+      // Interactive permissions, Claude Code-style: read tools are always
+      // allowed; anything else asks the user through an SSE "permission"
+      // event answered via POST /api/chat/permission. Guardrails hard-deny.
+      const canUseTool = async (
+        toolName: string,
+        input: Record<string, unknown>,
+        { signal, suggestions }: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
+      ): Promise<PermissionResult> => {
+        const g = manifest.guardrails;
+        if (g.disallowedTools.includes(toolName)) {
+          return { behavior: "deny", message: `${toolName} is disallowed by this project's guardrails.` };
+        }
+        const blocked = inputPaths(input).find((t) => isProtectedPath(workspace, g.protectedPaths, t));
+        if (blocked) {
+          return { behavior: "deny", message: `"${blocked}" is a protected path in this project.` };
+        }
+        // protectedPaths above only inspects path-shaped input keys, which
+        // Bash never populates (its target lives in `command`) — check it
+        // separately or the guardrail is a no-op for the most powerful tool.
+        if (toolName === "Bash" && typeof input.command === "string" &&
+            bashTouchesProtectedPath(workspace, g.protectedPaths, input.command)) {
+          return { behavior: "deny", message: "This command touches a protected path in this project." };
+        }
+        const rule = ruleFor(toolName, input);
+        if (readRules(project).some((r) => ruleMatches(r, toolName, input))) {
+          return { behavior: "allow", updatedInput: input };
+        }
+        if (signal.aborted) return { behavior: "deny", message: "Aborted." };
+
+        const { id, promise } = createPending(project, rule);
+        myPending.add(id);
+        // Respect the SDK's per-call signal: resolve the pending (deny) the
+        // moment this tool call is aborted, rather than hanging to timeout.
+        const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
+        signal.addEventListener("abort", onAbort, { once: true });
+        send("permission", { id, toolName, input, rule });
+
+        let decision: PermissionDecision;
+        try {
+          decision = await promise;
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+          myPending.delete(id);
+        }
+
+        send("permission_result", { id, behavior: decision.behavior });
+        if (decision.behavior === "allow") {
+          if (decision.always) addRule(project, rule);
+          // Only forward suggestions that stay in-session — any other
+          // destination (userSettings/projectSettings/localSettings) would
+          // write a permission rule into a settings file telar never asked
+          // to touch (and userSettings would land in the developer's own
+          // ~/.claude/settings.json, which settingSources deliberately
+          // excludes). Our own store (~/.telar/permissions.json) already
+          // covers persistence.
+          const sessionSuggestions = suggestions?.filter((s) => s.destination === "session");
+          return {
+            behavior: "allow",
+            updatedInput: input,
+            ...(decision.always && sessionSuggestions?.length
+              ? { updatedPermissions: sessionSuggestions }
+              : {}),
+          };
+        }
+        // Distinguish a real user refusal from a timeout/abort so the model
+        // doesn't treat silence as a deliberate "no" and abandon the tool.
+        const message =
+          decision.reason === "timeout"
+            ? "No response from the user in time; treat as not yet decided."
+            : decision.reason === "aborted"
+              ? "The request was cancelled before the user responded."
+              : "Denied by the user in telar.";
+        return { behavior: "deny", message };
+      };
 
       try {
         const q = query({
@@ -71,7 +165,24 @@ export async function POST(req: Request) {
             env: accountEnv(profile),
             systemPrompt: { type: "preset", preset: "claude_code" },
             permissionMode: "default",
+            // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
+            // settings, hooks, and MCP servers. User-level settings stay out
+            // on purpose (keeps the developer's personal config/tokens out of
+            // the subprocess). This is a deliberate trust decision, not an
+            // oversight: a repo's settings.local.json can itself grant
+            // `permissions.allow`/`defaultMode: bypassPermissions`, which the
+            // SDK honors BEFORE canUseTool is ever invoked — our guardrails
+            // and the interactive prompt below are both bypassed for
+            // whatever the repo pre-allows. Hooks/apiKeyHelper/MCP servers
+            // from the repo's settings also run as ordinary subprocess code,
+            // outside canUseTool entirely. `disallowedTools` is passed
+            // explicitly below because the SDK guarantees a disallow always
+            // wins over any allow rule (repo-settings or otherwise), which is
+            // the one lever we have against a repo widening its own access.
+            settingSources: ["project", "local"],
             allowedTools: ["Read", "Grep", "Glob"],
+            disallowedTools: manifest.guardrails.disallowedTools,
+            canUseTool,
             maxTurns: 25,
             includePartialMessages: true,
             abortController: abort,
@@ -196,6 +307,10 @@ export async function POST(req: Request) {
       } catch (e) {
         if (!abort.signal.aborted) send("error", { message: String(e) });
       } finally {
+        // Fail-closed teardown: deny any permission requests still open on this
+        // stream so their canUseTool promises unblock and no pending is leaked.
+        for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
+        myPending.clear();
         // Persist in teardown, not in the happy path: a client disconnect
         // (navigation, closed tab) aborts the SDK loop with a throw, and the
         // turn must survive it — the SDK session already exists server-side.
