@@ -1,6 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { accountEnv } from "@telar/core";
-import path from "path";
+import { accountEnv, getProject, type ProjectManifest } from "@telar/core";
 import { ACCOUNTS } from "@/lib/accounts";
 import { DEFAULT_MODEL } from "@/lib/models";
 import {
@@ -22,12 +21,23 @@ export async function POST(req: Request) {
     message,
     sessionId,
     model = DEFAULT_MODEL,
-    account = "personal",
+    project,
   } = await req.json();
 
-  const profile = ACCOUNTS[account] ?? ACCOUNTS.personal;
-  const workspace =
-    process.env.TELAR_WORKSPACE ?? path.resolve(process.cwd(), "../..");
+  // Resolve the anchoring project up front — an unknown/missing project is a
+  // plain 400, not an SSE error, so the client fails before any stream opens.
+  let manifest: ProjectManifest;
+  try {
+    manifest = getProject(project).manifest;
+  } catch {
+    return Response.json(
+      { error: `Unknown project "${project ?? ""}".` },
+      { status: 400 },
+    );
+  }
+
+  const profile = ACCOUNTS[manifest.account] ?? ACCOUNTS.personal;
+  const workspace = manifest.root;
 
   const abort = new AbortController();
   req.signal.addEventListener("abort", () => abort.abort());
@@ -191,6 +201,7 @@ export async function POST(req: Request) {
             id: capturedSession,
             model,
             account: profile.name,
+            project,
             userMessage: { role: "user", parts: [{ type: "text", text: message }] },
             assistantMessage: { role: "assistant", parts },
             costUsd,

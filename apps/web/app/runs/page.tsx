@@ -3,16 +3,23 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PlusIcon, SparklesIcon } from "lucide-react";
+import {
+  PlusIcon,
+  RotateCwIcon,
+  SparklesIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import type { Run } from "@telar/core";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { StateBadge } from "@/components/runs/state-badge";
+import { PageHeader } from "@/components/common/page-header";
+import { EmptyState } from "@/components/common/empty-state";
+import { StateBadge } from "@/components/common/state-badge";
 import { NewRunDialog } from "@/components/runs/new-run-dialog";
-import { fmtCost, fmtRelative, isTerminal, sumCost } from "@/components/runs/utils";
+import { isTerminal, sumCost } from "@/components/runs/utils";
+import { fmtAgo, fmtCost } from "@/lib/format";
 
 function RunRow({ run }: { run: Run }) {
   const attempts = run.attempts.length;
@@ -37,7 +44,7 @@ function RunRow({ run }: { run: Run }) {
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span className="font-mono text-xs">{fmtCost(sumCost(run.attempts))}</span>
         <span className="text-xs text-muted-foreground">
-          {fmtRelative(run.updatedAt)}
+          {fmtAgo(run.updatedAt)}
         </span>
       </div>
     </Link>
@@ -65,7 +72,9 @@ function RunsInner() {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      setRuns((prev) => prev ?? []);
+      // Keep null until a load succeeds so first-load failure is distinct from
+      // "loaded, but empty" — mirrors the projects page's error handling.
+      setRuns((prev) => prev ?? null);
     }
   }, []);
 
@@ -110,32 +119,21 @@ function RunsInner() {
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-3">
-        <SidebarTrigger />
-        <Separator orientation="vertical" className="h-4" />
-        <div className="min-w-0">
-          <h1 className="font-heading text-base font-semibold tracking-tight">
-            Runs
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            Autonomous work on your projects — attempt, verify, retry.
-          </p>
-        </div>
-        <Button className="ml-auto" onClick={() => setDialogOpen(true)}>
-          <PlusIcon />
-          New run
-        </Button>
-      </header>
+      <PageHeader
+        title="Runs"
+        description="Autonomous work on your projects — attempt, verify, retry."
+        actions={
+          <Button onClick={() => setDialogOpen(true)}>
+            <PlusIcon />
+            New run
+          </Button>
+        }
+      />
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-4 py-4">
-          {error && (
-            <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              Couldn&apos;t load runs — {error}
-            </div>
-          )}
-
-          {runs === null ? (
+          {/* Loading */}
+          {runs === null && !error && (
             <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="flex items-center gap-3 px-3 py-3">
@@ -148,31 +146,71 @@ function RunsInner() {
                 </div>
               ))}
             </div>
-          ) : runs.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-16 text-center">
-              <SparklesIcon className="size-6 text-muted-foreground" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium">No runs yet</p>
-                <p className="text-sm text-muted-foreground">
-                  Weave your first run — pick a project and describe the work.
-                </p>
-              </div>
-              <Button variant="outline" onClick={() => setDialogOpen(true)}>
-                <PlusIcon />
-                New run
-              </Button>
-            </div>
-          ) : (
-            <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-              {runs.map((run) => (
-                <RunRow key={run.id} run={run} />
-              ))}
-            </div>
           )}
 
-          {runs && runs.length > 0 && (
+          {/* First-load failure */}
+          {runs === null && error && (
+            <EmptyState
+              icon={TriangleAlertIcon}
+              iconClassName="text-destructive/60"
+              title="Couldn't load runs"
+              description={
+                <span className="font-mono text-xs break-words">{error}</span>
+              }
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadRuns()}
+                >
+                  <RotateCwIcon />
+                  Retry
+                </Button>
+              }
+            />
+          )}
+
+          {/* Empty */}
+          {runs !== null && runs.length === 0 && (
+            <EmptyState
+              icon={SparklesIcon}
+              title="No runs yet"
+              description="Weave your first run — pick a project and describe the work."
+              action={
+                <Button variant="outline" onClick={() => setDialogOpen(true)}>
+                  <PlusIcon />
+                  New run
+                </Button>
+              }
+            />
+          )}
+
+          {/* Populated */}
+          {runs !== null && runs.length > 0 && (
+            <>
+              {error && (
+                <Alert variant="destructive" className="mb-3">
+                  <TriangleAlertIcon />
+                  <AlertTitle>Refresh failed</AlertTitle>
+                  <AlertDescription className="font-mono text-xs break-words">
+                    {error}
+                  </AlertDescription>
+                </Alert>
+              )}
+              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                {runs.map((run) => (
+                  <RunRow key={run.id} run={run} />
+                ))}
+              </div>
+            </>
+          )}
+
+          {runs !== null && runs.length > 0 && (
             <p className="mt-3 flex items-center gap-1.5 px-1 text-xs text-muted-foreground/60">
-              <Badge variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
+              <Badge
+                variant="outline"
+                className="px-1.5 py-0 font-mono text-[10px]"
+              >
                 {runs.length}
               </Badge>
               {runs.length === 1 ? "run" : "runs"} on the loom
@@ -196,16 +234,7 @@ export default function RunsPage() {
     <Suspense
       fallback={
         <div className="flex h-dvh flex-col">
-          <header className="flex items-center gap-3 border-b px-4 py-3">
-            <SidebarTrigger />
-            <Separator orientation="vertical" className="h-4" />
-            <div>
-              <h1 className="font-heading text-base font-semibold tracking-tight">
-                Runs
-              </h1>
-              <p className="text-xs text-muted-foreground">Loading…</p>
-            </div>
-          </header>
+          <PageHeader title="Runs" description="Loading…" />
         </div>
       }
     >

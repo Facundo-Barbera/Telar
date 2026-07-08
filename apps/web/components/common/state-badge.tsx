@@ -2,9 +2,10 @@ import type { WorkUnitState } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
-// Shared state color language for the Runs pages. running/verifying/preparing
-// animate; done reads as default/primary; failed destructive; needs-review
-// amber accent; queued outline; halted/skipped muted.
+// THE state badge — one color language shared by runs, the dashboard, and
+// project surfaces. preparing/running/verifying animate (work in flight);
+// done reads as default/primary; failed destructive; needs-review amber;
+// queued outline; halted/skipped muted.
 const STYLES: Record<
   WorkUnitState,
   { label: string; dot: string; className: string; pulse: boolean }
@@ -79,7 +80,11 @@ export function StateBadge({
       className={cn("gap-1.5 font-medium", s.className, className)}
     >
       <span
-        className={cn("size-1.5 shrink-0 rounded-full", s.dot, s.pulse && "animate-pulse")}
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          s.dot,
+          s.pulse && "animate-pulse",
+        )}
       />
       {s.label}
     </Badge>

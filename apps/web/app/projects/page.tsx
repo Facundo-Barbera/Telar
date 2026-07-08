@@ -5,10 +5,10 @@ import { FolderGit2Icon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/common/page-header";
+import { EmptyState } from "@/components/common/empty-state";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import {
   ProjectCard,
@@ -67,24 +67,11 @@ export default function ProjectsPage() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
-      <header className="shrink-0 border-b px-6 py-4">
-        <div className="mx-auto flex w-full max-w-6xl items-start justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <SidebarTrigger />
-            <Separator orientation="vertical" className="mt-0.5 h-4" />
-            <div className="space-y-1">
-              <h1 className="font-heading text-lg font-semibold tracking-tight">
-                Projects
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Repos on the loom — each carries its gates, guardrails, and
-                account in a telar.yaml.
-              </p>
-            </div>
-          </div>
-          <RegisterProjectDialog onRegistered={load} />
-        </div>
-      </header>
+      <PageHeader
+        title="Projects"
+        description="Repos on the loom — each carries its gates, guardrails, and account in a telar.yaml."
+        actions={<RegisterProjectDialog onRegistered={load} />}
+      />
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl px-6 py-6">
@@ -99,41 +86,34 @@ export default function ProjectsPage() {
 
           {/* First-load failure */}
           {entries === null && error && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-16 text-center">
-              <TriangleAlertIcon className="size-8 text-destructive/60" />
-              <h2 className="mt-4 font-heading text-base font-medium">
-                Couldn&apos;t reach the registry
-              </h2>
-              <p className="mt-1 max-w-sm font-mono text-xs break-words text-muted-foreground">
-                {error}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-4"
-                onClick={() => void load()}
-              >
-                <RotateCwIcon />
-                Retry
-              </Button>
-            </div>
+            <EmptyState
+              icon={TriangleAlertIcon}
+              iconClassName="text-destructive/60"
+              title="Couldn't reach the registry"
+              description={
+                <span className="font-mono text-xs break-words">{error}</span>
+              }
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void load()}
+                >
+                  <RotateCwIcon />
+                  Retry
+                </Button>
+              }
+            />
           )}
 
           {/* Empty */}
           {entries !== null && entries.length === 0 && (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-16 text-center">
-              <FolderGit2Icon className="size-8 text-muted-foreground/50" />
-              <h2 className="mt-4 font-heading text-base font-medium">
-                No projects on the loom yet
-              </h2>
-              <p className="mt-1 max-w-md text-sm text-muted-foreground">
-                A telar.yaml in a repo declares its gates, guardrails, and
-                account — register one to let Telar weave changes there.
-              </p>
-              <div className="mt-5">
-                <RegisterProjectDialog onRegistered={load} />
-              </div>
-            </div>
+            <EmptyState
+              icon={FolderGit2Icon}
+              title="No projects on the loom yet"
+              description="A telar.yaml in a repo declares its gates, guardrails, and account — register one to let Telar weave changes there."
+              action={<RegisterProjectDialog onRegistered={load} />}
+            />
           )}
 
           {/* Populated */}

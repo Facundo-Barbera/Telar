@@ -1,7 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { FolderPlusIcon, Loader2Icon, PlusIcon, XIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  FolderOpenIcon,
+  FolderPlusIcon,
+  Loader2Icon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import { ACCOUNTS } from "@/lib/accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -16,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Select,
   SelectContent,
@@ -56,6 +64,7 @@ export function RegisterProjectDialog({
 }: {
   onRegistered: () => void;
 }) {
+  const router = useRouter();
   const accountNames = useMemo(() => Object.keys(ACCOUNTS), []);
   const [open, setOpen] = useState(false);
   const [root, setRoot] = useState("");
@@ -64,7 +73,26 @@ export function RegisterProjectDialog({
   const [account, setAccount] = useState(accountNames[0] ?? "personal");
   const [gates, setGates] = useState<GateRow[]>([{ ...DEFAULT_GATE }]);
   const [submitting, setSubmitting] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Native folder picker on the server host — fills the path input. Only ever
+  // fires on an explicit click; a cancelled dialog leaves the field untouched.
+  const browse = async () => {
+    setBrowsing(true);
+    try {
+      const res = await fetch("/api/browse", { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as {
+        path?: string;
+        cancelled?: boolean;
+      };
+      if (data.path) setRoot(data.path);
+    } catch {
+      /* ignore — the user can still type the path by hand */
+    } finally {
+      setBrowsing(false);
+    }
+  };
 
   const basename =
     root
@@ -81,6 +109,7 @@ export function RegisterProjectDialog({
     setGates([{ ...DEFAULT_GATE }]);
     setError(null);
     setSubmitting(false);
+    setBrowsing(false);
   };
 
   const handleOpenChange = (next: boolean) => {
@@ -117,12 +146,17 @@ export function RegisterProjectDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ root: trimmedRoot, create: scaffold, manifest }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        manifest?: { name: string };
+      };
       if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
 
       handleOpenChange(false);
       onRegistered();
       window.dispatchEvent(new Event("telar:refresh"));
+      if (data.manifest?.name)
+        router.push(`/projects/${encodeURIComponent(data.manifest.name)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setSubmitting(false);
@@ -156,16 +190,28 @@ export function RegisterProjectDialog({
             label="Repository path"
             hint="Absolute path to the repo root on this machine."
           >
-            <Input
-              id="project-root"
-              value={root}
-              onChange={(e) => setRoot(e.target.value)}
-              placeholder="/Users/you/code/my-repo"
-              className="font-mono text-xs"
-              autoFocus
-              autoComplete="off"
-              spellCheck={false}
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                id="project-root"
+                value={root}
+                onChange={(e) => setRoot(e.target.value)}
+                placeholder="/Users/you/code/my-repo"
+                className="font-mono text-xs"
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => void browse()}
+                disabled={browsing}
+              >
+                {browsing ? <Spinner /> : <FolderOpenIcon />}
+                Browse…
+              </Button>
+            </div>
           </Field>
 
           <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-2.5">

@@ -17,7 +17,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { fmtCost, fmtDuration, fmtMs } from "./utils";
+import { fmtCost, shortId } from "@/lib/format";
+import { fmtDuration, fmtMs } from "./utils";
 
 function GateRow({ gate }: { gate: GateResult }) {
   const [open, setOpen] = useState(false);
@@ -103,7 +104,7 @@ export function AttemptCard({ attempt }: { attempt: AttemptRecord }) {
       <CardContent className="flex flex-col gap-3">
         {attempt.sessionId && (
           <div className="font-mono text-[11px] text-muted-foreground/70">
-            session {attempt.sessionId.slice(0, 8)}
+            session {shortId(attempt.sessionId)}
           </div>
         )}
 

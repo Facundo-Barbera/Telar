@@ -23,6 +23,7 @@ export type Chat = {
   title: string;
   model: string;
   account: string;
+  project?: string; // registry name of the anchoring project (optional: old entries predate it)
   createdAt: number;
   updatedAt: number;
   costUsd: number;
@@ -61,8 +62,9 @@ function writeChats(chats: Chat[]) {
   fs.renameSync(tmp, CHATS);
 }
 
-export function listChats(): Omit<Chat, "messages">[] {
+export function listChats(project?: string): Omit<Chat, "messages">[] {
   return readChats()
+    .filter((c) => (project ? c.project === project : true))
     .map(({ messages: _messages, ...meta }) => meta)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -79,6 +81,7 @@ export function appendTurn(opts: {
   id: string;
   model: string;
   account: string;
+  project?: string;
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
   costUsd: number;
@@ -94,6 +97,7 @@ export function appendTurn(opts: {
         (firstText?.type === "text" ? firstText.text : "New thread").slice(0, 60),
       model: opts.model,
       account: opts.account,
+      project: opts.project,
       createdAt: now,
       updatedAt: now,
       costUsd: 0,

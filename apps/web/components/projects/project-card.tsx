@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Loader2Icon,
@@ -10,6 +11,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
+import { fmtAgo } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,23 +30,6 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover";
-
-// Local copy — file ownership is strict, so small fm; not shared.
-function fmtAgo(ts: number): string {
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  const w = Math.floor(d / 7);
-  if (w < 5) return `${w}w ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(d / 365)}y ago`;
-}
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -135,8 +120,14 @@ export function ProjectCard({
   return (
     <Card className="transition-shadow hover:ring-foreground/20">
       <CardHeader>
-        <CardTitle className="truncate" title={manifest.name}>
-          {manifest.name}
+        <CardTitle className="truncate">
+          <Link
+            href={`/projects/${encodeURIComponent(entry.name)}`}
+            className="underline-offset-4 outline-none hover:underline focus-visible:underline"
+            title={manifest.name}
+          >
+            {manifest.name}
+          </Link>
         </CardTitle>
         <CardAction>
           <UnregisterButton name={entry.name} onDone={onChanged} />

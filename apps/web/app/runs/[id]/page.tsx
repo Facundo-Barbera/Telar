@@ -15,19 +15,13 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StateBadge } from "@/components/runs/state-badge";
+import { PageHeader } from "@/components/common/page-header";
+import { StateBadge } from "@/components/common/state-badge";
 import { AttemptCard } from "@/components/runs/attempt-card";
 import { LiveFeed } from "@/components/runs/live-feed";
-import {
-  fmtCost,
-  fmtDuration,
-  isActive,
-  isTerminal,
-  sumCost,
-} from "@/components/runs/utils";
+import { fmtDuration, isActive, isTerminal, sumCost } from "@/components/runs/utils";
+import { fmtCost } from "@/lib/format";
 
 function BackLink() {
   return (
@@ -133,12 +127,7 @@ export default function RunDetailPage() {
   if (error && !run) {
     return (
       <div className="flex h-dvh flex-col">
-        <header className="flex items-center gap-3 border-b px-4 py-3">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="h-4" />
-          <BackLink />
-          <span className="text-sm font-medium">Run</span>
-        </header>
+        <PageHeader title="Run" leading={<BackLink />} />
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="flex max-w-sm flex-col items-center gap-3 text-center">
             <TriangleAlertIcon className="size-6 text-muted-foreground" />
@@ -158,13 +147,11 @@ export default function RunDetailPage() {
   if (!run) {
     return (
       <div className="flex h-dvh flex-col">
-        <header className="flex items-center gap-3 border-b px-4 py-3">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="h-4" />
-          <BackLink />
-          <Skeleton className="h-5 w-48" />
-          <Skeleton className="ml-auto h-5 w-20 rounded-full" />
-        </header>
+        <PageHeader
+          leading={<BackLink />}
+          title={<Skeleton className="h-5 w-48" />}
+          actions={<Skeleton className="h-5 w-20 rounded-full" />}
+        />
         <div className="mx-auto w-full max-w-5xl space-y-3 p-4">
           <Skeleton className="h-24 w-full rounded-xl" />
           <Skeleton className="h-40 w-full rounded-xl" />
@@ -182,13 +169,12 @@ export default function RunDetailPage() {
 
   return (
     <div className="flex h-dvh flex-col">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-3">
-        <SidebarTrigger />
-        <Separator orientation="vertical" className="h-4" />
-        <BackLink />
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold">{run.title}</h1>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+      <PageHeader
+        className="flex-wrap"
+        leading={<BackLink />}
+        title={run.title}
+        description={
+          <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant="outline" className="max-w-[220px]">
               <span className="truncate">{run.project}</span>
             </Badge>
@@ -199,33 +185,35 @@ export default function RunDetailPage() {
               {run.account}
             </Badge>
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
-            <ClockIcon className="size-3.5" />
-            {fmtDuration(elapsedMs)}
-          </div>
-          <Badge variant="outline" className="font-mono text-xs">
-            {fmtCost(totalCost)}
-          </Badge>
-          <StateBadge state={run.state} />
-          {nonTerminal && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={cancel}
-              disabled={cancelling}
-            >
-              {cancelling ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <BanIcon />
-              )}
-              Cancel
-            </Button>
-          )}
-        </div>
-      </header>
+        }
+        actions={
+          <>
+            <div className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
+              <ClockIcon className="size-3.5" />
+              {fmtDuration(elapsedMs)}
+            </div>
+            <Badge variant="outline" className="font-mono text-xs">
+              {fmtCost(totalCost)}
+            </Badge>
+            <StateBadge state={run.state} />
+            {nonTerminal && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={cancel}
+                disabled={cancelling}
+              >
+                {cancelling ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <BanIcon />
+                )}
+                Cancel
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">

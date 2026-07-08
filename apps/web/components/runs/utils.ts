@@ -1,5 +1,6 @@
-// Run-page helpers. Duplicated here (not shared) so the Runs pages own their
-// own formatting and never collide with a sibling agent's files.
+// Run-specific helpers — state predicates, cost summing, and the duration
+// formatters the run views need. Cross-surface formatters (fmtAgo, fmtCost,
+// shortId) live in @/lib/format so every page shares one language.
 import type { AttemptRecord, RunKind, WorkUnitState } from "@telar/core";
 
 const TERMINAL: readonly WorkUnitState[] = [
@@ -16,24 +17,6 @@ export const isActive = (s: WorkUnitState): boolean =>
 
 export function sumCost(attempts: AttemptRecord[]): number {
   return attempts.reduce((total, a) => total + (a.costUsd ?? 0), 0);
-}
-
-export function fmtCost(n: number): string {
-  return `$${n.toFixed(4)}`;
-}
-
-export function fmtRelative(ts: number): string {
-  const diff = Date.now() - ts;
-  const s = Math.round(diff / 1000);
-  if (s < 5) return "just now";
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 // Coarse duration for elapsed / attempt spans (seconds → m s → h m).

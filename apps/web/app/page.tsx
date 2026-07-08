@@ -1,413 +1,522 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { WrenchIcon } from "lucide-react";
+import type { ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButton,
-} from "@/components/ai-elements/conversation";
-import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputFooter,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-  type PromptInputMessage,
-} from "@/components/ai-elements/prompt-input";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+  ActivityIcon,
+  CircleDashedIcon,
+  ClockIcon,
+  FolderGit2Icon,
+  GaugeIcon,
+  HistoryIcon,
+  type LucideIcon,
+  PlusIcon,
+  RotateCwIcon,
+  ShieldIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
+import type { ProjectManifest, RegistryEntry, Run } from "@telar/core";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { DEFAULT_MODEL, MODELS, modelById } from "@/lib/models";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/common/page-header";
+import { EmptyState } from "@/components/common/empty-state";
+import { StateBadge } from "@/components/common/state-badge";
+import { fmtDuration, isTerminal, sumCost } from "@/components/runs/utils";
+import { fmtAgo, fmtCost } from "@/lib/format";
 
-type Part =
-  | { type: "text"; text: string; done: boolean }
-  | { type: "tool"; name: string };
-type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
-type Status = "ready" | "submitted" | "streaming" | "error";
+// Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
+// dashboard (a client component) never pulls the fs-backed store into the bundle.
+type PlanWindow = { utilization: number | null; resets_at: string | null };
+type PlanSnapshot = {
+  capturedAt: number;
+  subscriptionType: string | null;
+  fiveHour?: PlanWindow | null;
+  sevenDay?: PlanWindow | null;
+  sevenDayOpus?: PlanWindow | null;
+  sevenDaySonnet?: PlanWindow | null;
+  modelScoped?: {
+    display_name: string;
+    utilization: number | null;
+    resets_at: string | null;
+  }[];
+};
 
-const ACCOUNT_NAMES = ["personal", "work"];
+type ProjectEntry = {
+  entry: RegistryEntry;
+  manifest: ProjectManifest | null;
+  error: string | null;
+};
 
-const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function Chat() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const chatParam = searchParams.get("chat");
-
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [title, setTitle] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [account, setAccount] = useState("personal");
-  const [status, setStatus] = useState<Status>("ready");
-  const [thinking, setThinking] = useState(false);
-  const [sessionCost, setSessionCost] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const nextId = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
-  // The session id whose transcript is currently mounted. Kept in a ref so the
-  // URL effect can tell a real navigation apart from our own router.replace
-  // after a new session is minted mid-stream.
-  const loadedIdRef = useRef<string | null>(null);
-
-  const busy = status === "submitted" || status === "streaming";
-
-  // Keep the sidebar's "Plan usage · <account>" footer in lockstep with the
-  // composer account dropdown (they live in separate subtrees under the layout).
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("telar:account", { detail: account }));
-  }, [account]);
-
-  useEffect(() => {
-    if (!busy) return;
-    const started = Date.now();
-    setElapsed(0);
-    const t = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(t);
-  }, [busy]);
-
-  const patch = (id: string, fn: (m: ChatMessage) => ChatMessage) =>
-    setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
-
-  const selectChat = useCallback(async (id: string) => {
-    abortRef.current?.abort();
-    loadedIdRef.current = id;
-    const res = await fetch(`/api/chats/${id}`);
-    if (!res.ok) return;
-    const chat = await res.json();
-    // A newer selectChat may have won the race while we awaited — drop this
-    // stale result so the mounted transcript always matches loadedIdRef/URL.
-    if (loadedIdRef.current !== id) return;
-    setSessionId(id);
-    setTitle(chat.title);
-    setModel(chat.model);
-    setAccount(chat.account);
-    setSessionCost(chat.costUsd);
-    setStatus("ready");
-    setThinking(false);
-    setMessages(
-      chat.messages.map((m: { role: "user" | "assistant"; parts: Array<Record<string, unknown>> }) => ({
-        id: `m${nextId.current++}`,
-        role: m.role,
-        parts: m.parts.map((p) => (p.type === "text" ? { ...p, done: true } : p)) as Part[],
-      })),
-    );
-  }, []);
-
-  const newChat = useCallback(() => {
-    abortRef.current?.abort();
-    loadedIdRef.current = null;
-    setSessionId(null);
-    setTitle(null);
-    setMessages([]);
-    setSessionCost(0);
-    setStatus("ready");
-    setThinking(false);
-  }, []);
-
-  // Active chat = ?chat=<id>. Load it when the URL points somewhere new; skip
-  // when it already matches what's mounted (e.g. our own replace mid-stream).
-  useEffect(() => {
-    if (chatParam === loadedIdRef.current) return;
-    if (chatParam) void selectChat(chatParam);
-    else newChat();
-  }, [chatParam, selectChat, newChat]);
-
-  const send = useCallback(
-    async (text: string) => {
-      const userId = `m${nextId.current++}`;
-      const asstId = `m${nextId.current++}`;
-      setMessages((ms) => [
-        ...ms,
-        { id: userId, role: "user", parts: [{ type: "text", text, done: true }] },
-        { id: asstId, role: "assistant", parts: [] },
-      ]);
-      // New thread: derive the header title from the first message, matching the
-      // slice the store uses when it persists the chat.
-      if (!sessionId) setTitle(text.slice(0, 60));
-      setStatus("submitted");
-      setThinking(false);
-
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, sessionId, model, account }),
-          signal: abort.signal,
-        });
-        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const chunks = buffer.split("\n\n");
-          buffer = chunks.pop() ?? "";
-
-          for (const chunk of chunks) {
-            let event = "";
-            let data = "";
-            for (const line of chunk.split("\n")) {
-              if (line.startsWith("event: ")) event = line.slice(7);
-              if (line.startsWith("data: ")) data = line.slice(6);
-            }
-            if (!event || !data) continue;
-            const payload = JSON.parse(data);
-
-            switch (event) {
-              case "session":
-                // New session id — reflect it in the URL without reloading the
-                // transcript (loadedIdRef guards the URL effect above).
-                setSessionId(payload.sessionId);
-                loadedIdRef.current = payload.sessionId;
-                router.replace("/?chat=" + payload.sessionId);
-                break;
-              case "thinking":
-                setThinking(true);
-                break;
-              case "delta":
-                setStatus("streaming");
-                setThinking(false);
-                patch(asstId, (m) => {
-                  const last = m.parts[m.parts.length - 1];
-                  if (last?.type === "text" && !last.done) {
-                    const parts = [...m.parts];
-                    parts[parts.length - 1] = { ...last, text: last.text + payload.text };
-                    return { ...m, parts };
-                  }
-                  return { ...m, parts: [...m.parts, { type: "text", text: payload.text, done: false }] };
-                });
-                break;
-              case "text":
-                setStatus("streaming");
-                setThinking(false);
-                patch(asstId, (m) => {
-                  const last = m.parts[m.parts.length - 1];
-                  if (last?.type === "text" && !last.done) {
-                    const parts = [...m.parts];
-                    parts[parts.length - 1] = { type: "text", text: payload.text, done: true };
-                    return { ...m, parts };
-                  }
-                  return { ...m, parts: [...m.parts, { type: "text", text: payload.text, done: true }] };
-                });
-                break;
-              case "tool":
-                setStatus("streaming");
-                setThinking(false);
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: [...m.parts, { type: "tool", name: payload.name }],
-                }));
-                break;
-              case "plan":
-                refresh();
-                break;
-              case "done":
-                setSessionCost((c) => c + (payload.costUsd ?? 0));
-                refresh();
-                break;
-              case "saved":
-                refresh();
-                break;
-              case "error":
-                throw new Error(payload.message);
-            }
-          }
-        }
-        setStatus("ready");
-      } catch (err) {
-        if (abort.signal.aborted) {
-          setStatus("ready");
-        } else {
-          patch(asstId, (m) => ({
-            ...m,
-            parts: [...m.parts, { type: "text", text: `**Error:** ${String(err)}`, done: true }],
-          }));
-          setStatus("error");
-        }
-      } finally {
-        setThinking(false);
-        abortRef.current = null;
-      }
-    },
-    [sessionId, model, account, router],
-  );
-
-  const handleSubmit = (message: PromptInputMessage) => {
-    const text = message.text.trim();
-    if (!text || busy) return;
-    void send(text);
-  };
-
-  const activeModel = modelById(model);
-
+function SectionHeading({
+  icon: Icon,
+  children,
+  count,
+  action,
+}: {
+  icon: LucideIcon;
+  children: ReactNode;
+  count?: number;
+  action?: ReactNode;
+}) {
   return (
-    <>
-      <header className="flex items-center gap-2 border-b px-3 py-2">
-        <SidebarTrigger />
-        <Separator orientation="vertical" className="h-4" />
-        <span className="truncate text-sm font-medium">{title ?? "New thread"}</span>
-        <div className="ml-auto flex items-center gap-2">
-          {busy && (
-            <Shimmer className="text-xs">
-              {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
-            </Shimmer>
-          )}
-          <Badge variant="outline" className="font-mono text-xs">
-            session ${sessionCost.toFixed(4)}
-          </Badge>
-          {sessionId && (
-            <Badge variant="secondary" className="font-mono text-xs">
-              {sessionId.slice(0, 8)}
+    <div className="mb-2 flex items-center gap-2 px-1">
+      <Icon className="size-4 text-muted-foreground" />
+      <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        {children}
+      </h2>
+      {count != null && (
+        <Badge variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
+          {count}
+        </Badge>
+      )}
+      {action && <div className="ml-auto">{action}</div>}
+    </div>
+  );
+}
+
+function ViewAll({ href }: { href: string }) {
+  return (
+    <Link
+      href={href}
+      className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+    >
+      View all
+    </Link>
+  );
+}
+
+// A live tile for one non-terminal run — state, ticking elapsed, project.
+function ActiveRunCard({ run, nowTs }: { run: Run; nowTs: number }) {
+  return (
+    <Link href={`/runs/${run.id}`} className="block">
+      <Card size="sm" className="gap-2 transition-shadow hover:ring-foreground/20">
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <StateBadge state={run.state} />
+            <span className="ml-auto flex items-center gap-1 font-mono text-xs text-muted-foreground tabular-nums">
+              <ClockIcon className="size-3.5" />
+              {fmtDuration(nowTs - run.createdAt)}
+            </span>
+          </div>
+          <span className="truncate text-sm font-medium">{run.title}</span>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <FolderGit2Icon className="size-3.5 shrink-0" />
+            <span className="truncate">{run.project}</span>
+            <span className="text-border">·</span>
+            <span className="font-mono">{run.kind}</span>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
+  );
+}
+
+// A needs-review / failed run with its error snippet.
+function AttentionRow({ run }: { run: Run }) {
+  return (
+    <Link
+      href={`/runs/${run.id}`}
+      className="flex items-start gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
+    >
+      <StateBadge state={run.state} className="mt-0.5 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium">{run.title}</span>
+          <span className="shrink-0 truncate text-xs text-muted-foreground">
+            {run.project}
+          </span>
+        </div>
+        {run.error && (
+          <p
+            className={cn(
+              "mt-1 line-clamp-2 font-mono text-xs",
+              run.state === "failed" ? "text-destructive" : "text-amber-300",
+            )}
+          >
+            {run.error}
+          </p>
+        )}
+      </div>
+      <span className="shrink-0 text-xs text-muted-foreground">
+        {fmtAgo(run.updatedAt)}
+      </span>
+    </Link>
+  );
+}
+
+// A compact terminal-run row for the recent-outcomes list.
+function RecentRow({ run }: { run: Run }) {
+  return (
+    <Link
+      href={`/runs/${run.id}`}
+      className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
+    >
+      <StateBadge state={run.state} className="shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+        {run.title}
+      </span>
+      <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:inline">
+        {run.project}
+      </span>
+      <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        {fmtCost(sumCost(run.attempts))}
+      </span>
+      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground">
+        {fmtAgo(run.updatedAt)}
+      </span>
+    </Link>
+  );
+}
+
+function ProjectMiniCard({ entry, manifest, error }: ProjectEntry) {
+  const href = `/projects/${encodeURIComponent(entry.name)}`;
+  if (!manifest || error) {
+    return (
+      <Link href={href} className="block">
+        <Card
+          size="sm"
+          className="h-full bg-destructive/5 ring-destructive/25 transition-shadow hover:ring-destructive/40"
+        >
+          <CardContent className="flex flex-col gap-2">
+            <div className="flex items-center gap-1.5">
+              <TriangleAlertIcon className="size-4 shrink-0 text-destructive" />
+              <span className="truncate text-sm font-medium">{entry.name}</span>
+            </div>
+            <Badge variant="destructive" className="w-fit text-[10px]">
+              manifest error
+            </Badge>
+          </CardContent>
+        </Card>
+      </Link>
+    );
+  }
+  const gates = manifest.gates.length;
+  return (
+    <Link href={href} className="block">
+      <Card size="sm" className="h-full transition-shadow hover:ring-foreground/20">
+        <CardContent className="flex flex-col gap-2">
+          <span className="truncate text-sm font-medium">{manifest.name}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="text-[10px]">
+              {manifest.account}
+            </Badge>
+            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+              <ShieldIcon className="size-3.5" />
+              {gates === 0 ? "no gates" : plural(gates, "gate")}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
+  );
+}
+
+function RegisterCard() {
+  return (
+    <Link
+      href="/projects"
+      className="flex min-h-[76px] flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+    >
+      <PlusIcon className="size-4" />
+      <span className="text-xs font-medium">Register a project</span>
+    </Link>
+  );
+}
+
+function UsageMeter({ label, window }: { label: string; window: PlanWindow }) {
+  const pct = window.utilization ?? 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="font-mono text-muted-foreground tabular-nums">
+          {window.utilization != null ? `${Math.round(pct)}%` : "—"}
+        </span>
+      </div>
+      <Progress
+        value={Math.min(100, pct)}
+        className={cn(
+          "h-1",
+          pct >= 90 && "[&>[data-slot=progress-indicator]]:bg-destructive",
+        )}
+      />
+    </div>
+  );
+}
+
+function AccountUsage({ account, snap }: { account: string; snap: PlanSnapshot }) {
+  return (
+    <Card size="sm" className="min-w-0">
+      <CardContent className="flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium">
+            Plan · <span className="font-mono">{account}</span>
+          </span>
+          {snap.subscriptionType && (
+            <Badge variant="secondary" className="font-mono text-[10px] uppercase">
+              {snap.subscriptionType}
             </Badge>
           )}
         </div>
-      </header>
+        {snap.fiveHour && <UsageMeter label="Session · 5h" window={snap.fiveHour} />}
+        {snap.sevenDay && <UsageMeter label="Weekly" window={snap.sevenDay} />}
+        {snap.sevenDayOpus && (
+          <UsageMeter label="Weekly · Opus" window={snap.sevenDayOpus} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-      <Conversation className="flex-1">
-        <ConversationContent className="mx-auto w-full max-w-3xl">
-          {messages.length === 0 ? (
-            <ConversationEmptyState
-              title="Weave a thread"
-              description="Telar drives the Claude Agent SDK on your subscription — sessions, history, and usage all on your loom."
-            />
+export default function DashboardPage() {
+  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
+  const [nowTs, setNowTs] = useState(() => Date.now());
+
+  const load = useCallback(() => {
+    fetch("/api/runs")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setRuns(Array.isArray(d.runs) ? d.runs : []);
+        setRunsError(null);
+      })
+      .catch((e) => setRunsError(e instanceof Error ? e.message : String(e)));
+
+    fetch("/api/projects")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setProjects(Array.isArray(d.projects) ? d.projects : []);
+        setProjectsError(null);
+      })
+      .catch((e) => setProjectsError(e instanceof Error ? e.message : String(e)));
+
+    fetch("/api/usage")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setPlan(d.plan ?? {}))
+      .catch(() => {});
+  }, []);
+
+  // Refetch on mount + whenever a sibling surface broadcasts telar:refresh.
+  useEffect(() => {
+    load();
+    window.addEventListener("telar:refresh", load);
+    return () => window.removeEventListener("telar:refresh", load);
+  }, [load]);
+
+  const activeRuns = useMemo(
+    () => (runs ? runs.filter((r) => !isTerminal(r.state)) : []),
+    [runs],
+  );
+  const hasActive = activeRuns.length > 0;
+
+  // While work is in flight, poll (5s) and tick the elapsed clocks (1s).
+  useEffect(() => {
+    if (!hasActive) return;
+    const poll = setInterval(load, 5000);
+    const tick = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => {
+      clearInterval(poll);
+      clearInterval(tick);
+    };
+  }, [hasActive, load]);
+
+  const attention = runs
+    ? runs
+        .filter((r) => r.state === "needs-review" || r.state === "failed")
+        .slice(0, 5)
+    : [];
+  const recent = runs ? runs.filter((r) => isTerminal(r.state)).slice(0, 8) : [];
+  const planEntries = Object.entries(plan).sort(([a], [b]) =>
+    a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
+  );
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden">
+      <PageHeader
+        title="telar"
+        description="What's weaving now, what needs attention, and every project on the loom."
+        actions={
+          <Button render={<Link href="/runs?new=1" />}>
+            <PlusIcon />
+            New run
+          </Button>
+        }
+      />
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-6xl space-y-8 px-6 py-6">
+          {/* Runs area: active, needs-attention, recent — one loading/error gate. */}
+          {runs === null ? (
+            runsError ? (
+              <EmptyState
+                icon={TriangleAlertIcon}
+                iconClassName="text-destructive/60"
+                title="Couldn't load runs"
+                description={
+                  <span className="font-mono text-xs break-words">
+                    {runsError}
+                  </span>
+                }
+                action={
+                  <Button variant="outline" size="sm" onClick={load}>
+                    <RotateCwIcon />
+                    Retry
+                  </Button>
+                }
+              />
+            ) : (
+              <section>
+                <SectionHeading icon={ActivityIcon}>Active now</SectionHeading>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Skeleton className="h-24 rounded-xl" />
+                  <Skeleton className="h-24 rounded-xl" />
+                </div>
+              </section>
+            )
           ) : (
-            messages.map((m) => (
-              <Message from={m.role} key={m.id}>
-                <MessageContent>
-                  {m.parts.length === 0 && m.role === "assistant" && busy && (
-                    <Shimmer className="text-sm">
-                      {thinking ? "Thinking…" : "Weaving…"}
-                    </Shimmer>
-                  )}
-                  {m.parts.map((p, i) =>
-                    p.type === "text" ? (
-                      <MessageResponse key={i}>{p.text}</MessageResponse>
-                    ) : (
-                      <Badge variant="secondary" className="w-fit font-mono text-xs" key={i}>
-                        <WrenchIcon className="size-3" />
-                        {p.name}
-                      </Badge>
-                    ),
-                  )}
-                </MessageContent>
-              </Message>
-            ))
+            <>
+              <section>
+                <SectionHeading
+                  icon={ActivityIcon}
+                  count={activeRuns.length || undefined}
+                >
+                  Active now
+                </SectionHeading>
+                {activeRuns.length === 0 ? (
+                  <EmptyState
+                    className="py-10"
+                    icon={CircleDashedIcon}
+                    title="The loom is idle"
+                    description="No runs in flight. Start one and watch it weave."
+                    action={
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        render={<Link href="/runs?new=1" />}
+                      >
+                        <PlusIcon />
+                        New run
+                      </Button>
+                    }
+                  />
+                ) : (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {activeRuns.map((run) => (
+                      <ActiveRunCard key={run.id} run={run} nowTs={nowTs} />
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {attention.length > 0 && (
+                <section>
+                  <SectionHeading icon={TriangleAlertIcon} count={attention.length}>
+                    Needs attention
+                  </SectionHeading>
+                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                    {attention.map((run) => (
+                      <AttentionRow key={run.id} run={run} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {recent.length > 0 && (
+                <section>
+                  <SectionHeading
+                    icon={HistoryIcon}
+                    action={<ViewAll href="/runs" />}
+                  >
+                    Recent runs
+                  </SectionHeading>
+                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+                    {recent.map((run) => (
+                      <RecentRow key={run.id} run={run} />
+                    ))}
+                  </div>
+                </section>
+              )}
+            </>
           )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
 
-      <div className="mx-auto w-full max-w-3xl px-4 pb-4">
-        <PromptInput onSubmit={handleSubmit}>
-          <PromptInputBody>
-            <PromptInputTextarea placeholder="Ask about this workspace…" />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
-              <Select value={model} onValueChange={(v) => v && setModel(v)}>
-                <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
-                  <SelectValue>
-                    <span className="flex items-center gap-1.5">
-                      {activeModel?.name ?? model}
-                      {activeModel && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                          {activeModel.context}
-                        </Badge>
-                      )}
+          {/* Projects */}
+          <section>
+            <SectionHeading
+              icon={FolderGit2Icon}
+              count={projects?.length || undefined}
+              action={<ViewAll href="/projects" />}
+            >
+              Projects
+            </SectionHeading>
+            {projects === null ? (
+              projectsError ? (
+                <EmptyState
+                  className="py-10"
+                  icon={TriangleAlertIcon}
+                  iconClassName="text-destructive/60"
+                  title="Couldn't load projects"
+                  description={
+                    <span className="font-mono text-xs break-words">
+                      {projectsError}
                     </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="w-[340px]">
-                  {MODELS.map((m) => (
-                    <SelectItem key={m.id} value={m.id} className="py-2">
-                      <div className="flex w-full flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{m.name}</span>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.context} ctx
-                          </Badge>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.maxOutput} out
-                          </Badge>
-                          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                            ${m.inputPerMTok}/{m.outputPerMTok} MTok
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">{m.blurb}</span>
-                        {m.note && (
-                          <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
-                        )}
-                      </div>
-                    </SelectItem>
+                  }
+                  action={
+                    <Button variant="outline" size="sm" onClick={load}>
+                      <RotateCwIcon />
+                      Retry
+                    </Button>
+                  }
+                />
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-20 rounded-xl" />
                   ))}
-                </SelectContent>
-              </Select>
-              <Select value={account} onValueChange={(v) => v && setAccount(v)}>
-                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ACCOUNT_NAMES.map((a) => (
-                    <SelectItem key={a} value={a}>
-                      {a}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </PromptInputTools>
-            <PromptInputSubmit
-              status={status === "ready" ? undefined : status}
-              onStop={() => abortRef.current?.abort()}
-            />
-          </PromptInputFooter>
-        </PromptInput>
+                </div>
+              )
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {projects.map((p) => (
+                  <ProjectMiniCard key={p.entry.name} {...p} />
+                ))}
+                <RegisterCard />
+              </div>
+            )}
+          </section>
+
+          {/* Usage */}
+          <section>
+            <SectionHeading icon={GaugeIcon}>Plan usage</SectionHeading>
+            {planEntries.length === 0 ? (
+              <p className="px-1 text-sm text-muted-foreground">
+                Plan usage appears after your first turn.
+              </p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {planEntries.map(([account, snap]) => (
+                  <AccountUsage key={account} account={account} snap={snap} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
-    </>
-  );
-}
-
-function ChatFallback() {
-  return (
-    <>
-      <header className="flex items-center gap-2 border-b px-3 py-2">
-        <SidebarTrigger />
-        <Separator orientation="vertical" className="h-4" />
-        <span className="truncate text-sm font-medium text-muted-foreground">New thread</span>
-      </header>
-      <div className="flex-1" />
-    </>
-  );
-}
-
-export default function TelarPage() {
-  return (
-    <Suspense fallback={<ChatFallback />}>
-      <Chat />
-    </Suspense>
+    </div>
   );
 }

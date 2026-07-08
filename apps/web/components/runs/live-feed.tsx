@@ -13,6 +13,7 @@ import type { GateResult, RunEvent, Verdict, WorkUnitState } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { shortId } from "@/lib/format";
 import { isActive, fmtMs } from "./utils";
 
 function Separator({ children }: { children: React.ReactNode }) {
@@ -46,7 +47,7 @@ function renderEvent(ev: RunEvent, i: number): React.ReactNode {
     case "session":
       return (
         <div key={i} className="font-mono text-[11px] text-muted-foreground/50">
-          session {String(ev.sessionId).slice(0, 8)}
+          session {shortId(String(ev.sessionId))}
         </div>
       );
     case "text":

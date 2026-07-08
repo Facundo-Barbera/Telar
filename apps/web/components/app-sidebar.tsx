@@ -1,15 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import {
   ActivityIcon,
   FolderGit2Icon,
-  MessageSquareIcon,
-  MessagesSquareIcon,
-  PlusIcon,
-  Trash2Icon,
+  LayoutDashboardIcon,
 } from "lucide-react";
+import type { Run } from "@telar/core";
 import {
   Sidebar,
   SidebarContent,
@@ -19,29 +17,13 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-
-type ChatMeta = {
-  id: string;
-  title: string;
-  model: string;
-  account: string;
-  updatedAt: number;
-  costUsd: number;
-};
-
-type UsageWindow = {
-  costUsd: number;
-  inputTokens: number;
-  outputTokens: number;
-  requests: number;
-};
+import { StateBadge } from "@/components/common/state-badge";
+import { isTerminal } from "@/components/runs/utils";
 
 type PlanWindow = { utilization: number | null; resets_at: string | null };
 
@@ -52,7 +34,18 @@ type PlanSnapshot = {
   sevenDay?: PlanWindow | null;
   sevenDayOpus?: PlanWindow | null;
   sevenDaySonnet?: PlanWindow | null;
-  modelScoped?: { display_name: string; utilization: number | null; resets_at: string | null }[];
+  modelScoped?: {
+    display_name: string;
+    utilization: number | null;
+    resets_at: string | null;
+  }[];
+};
+
+type UsageWindow = {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
 };
 
 function fmtReset(iso: string | null): string {
@@ -73,7 +66,10 @@ function PlanMeter({ label, window }: { label: string; window: PlanWindow }) {
         <span className="font-mono">
           {window.utilization != null ? `${Math.round(pct)}%` : "—"}
           {window.resets_at && (
-            <span className="text-sidebar-foreground/50"> · resets {fmtReset(window.resets_at)}</span>
+            <span className="text-sidebar-foreground/50">
+              {" "}
+              · resets {fmtReset(window.resets_at)}
+            </span>
           )}
         </span>
       </div>
@@ -85,18 +81,38 @@ function PlanMeter({ label, window }: { label: string; window: PlanWindow }) {
   );
 }
 
-function groupLabel(ts: number): string {
-  const d = new Date(ts);
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 86_400_000);
-  if (d.toDateString() === today.toDateString()) return "Today";
-  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-  if (today.getTime() - ts < 7 * 86_400_000) return "This week";
-  return "Older";
+function PlanBlock({ account, snap }: { account: string; snap: PlanSnapshot }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-sidebar-foreground/70">
+          Plan · {account}
+        </span>
+        {snap.subscriptionType && (
+          <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
+            {snap.subscriptionType}
+          </span>
+        )}
+      </div>
+      {snap.fiveHour && <PlanMeter label="Session · 5h" window={snap.fiveHour} />}
+      {snap.sevenDay && (
+        <PlanMeter label="Weekly · all models" window={snap.sevenDay} />
+      )}
+      {snap.sevenDayOpus && (
+        <PlanMeter label="Weekly · Opus" window={snap.sevenDayOpus} />
+      )}
+      {snap.sevenDaySonnet && (
+        <PlanMeter label="Weekly · Sonnet" window={snap.sevenDaySonnet} />
+      )}
+      {snap.modelScoped?.map((w) => (
+        <PlanMeter key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
+      ))}
+    </div>
+  );
 }
 
 const NAV = [
-  { href: "/", label: "Chat", icon: MessagesSquareIcon },
+  { href: "/", label: "Dashboard", icon: LayoutDashboardIcon },
   { href: "/projects", label: "Projects", icon: FolderGit2Icon },
   { href: "/runs", label: "Runs", icon: ActivityIcon },
 ] as const;
@@ -109,10 +125,14 @@ function NavGroup({ activeRuns }: { activeRuns: number }) {
       <SidebarGroupContent>
         <SidebarMenu>
           {NAV.map(({ href, label, icon: Icon }) => {
-            const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+            const active =
+              href === "/" ? pathname === "/" : pathname.startsWith(href);
             return (
               <SidebarMenuItem key={href}>
-                <SidebarMenuButton isActive={active} onClick={() => router.push(href)}>
+                <SidebarMenuButton
+                  isActive={active}
+                  onClick={() => router.push(href)}
+                >
                   <Icon className="size-4 shrink-0" />
                   <span>{label}</span>
                 </SidebarMenuButton>
@@ -130,60 +150,67 @@ function NavGroup({ activeRuns }: { activeRuns: number }) {
   );
 }
 
+function ActiveRunsGroup({ runs }: { runs: Run[] }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  if (runs.length === 0) return null;
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Active runs</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {runs.map((run) => (
+            <SidebarMenuItem key={run.id}>
+              <SidebarMenuButton
+                isActive={pathname === `/runs/${run.id}`}
+                onClick={() => router.push(`/runs/${run.id}`)}
+                title={run.title}
+              >
+                <StateBadge
+                  state={run.state}
+                  className="shrink-0 gap-1 px-1.5 py-0 text-[10px]"
+                />
+                <span className="truncate text-xs">{run.title}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
 function TelarSidebarHeader() {
   const router = useRouter();
   return (
     <SidebarHeader className="border-b">
-      <div className="flex items-center justify-between px-2 py-1">
-        <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => router.push("/")}
-          title="New thread"
-        >
-          <PlusIcon className="size-4" />
-        </Button>
-      </div>
+      <button
+        type="button"
+        onClick={() => router.push("/")}
+        className="flex items-center px-2 py-1 text-left outline-none"
+      >
+        <span className="font-heading text-lg font-semibold tracking-tight">
+          telar
+        </span>
+      </button>
     </SidebarHeader>
   );
 }
 
-function SidebarLoadingBody() {
-  return (
-    <>
-      <SidebarContent>
-        <NavGroup activeRuns={0} />
-      </SidebarContent>
-      <SidebarFooter className="border-t">
-        <div className="space-y-3 p-2">
-          <span className="text-xs font-medium text-sidebar-foreground/70">Plan usage</span>
-          <p className="text-xs text-sidebar-foreground/50">Loading usage…</p>
-        </div>
-      </SidebarFooter>
-    </>
-  );
-}
-
 function SidebarBody() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const activeChatId = searchParams.get("chat");
-
-  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
-  const [ledger, setLedger] = useState<{ session: UsageWindow; weekly: UsageWindow } | null>(null);
-  const [activeRuns, setActiveRuns] = useState(0);
-  // The chat composer broadcasts its live account choice; follow it so the plan
-  // footer never drifts from the dropdown (falls back to the saved chat value).
-  const [composerAccount, setComposerAccount] = useState<string | null>(null);
+  const [ledger, setLedger] = useState<{
+    session: UsageWindow;
+    weekly: UsageWindow;
+  } | null>(null);
 
-  // Self-fetching: chats + usage + active runs, refreshed on mount, on the
-  // global "telar:refresh" signal, and on a slow interval as a safety net.
+  // Self-fetching: active runs + plan usage, refreshed on mount, on the global
+  // "telar:refresh" signal, and on a slow interval as a safety net.
   const loadAll = useCallback(() => {
-    fetch("/api/chats")
+    fetch("/api/runs")
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setChats(d.chats ?? []))
+      .then((d) => d && setRuns(Array.isArray(d.runs) ? d.runs : []))
       .catch(() => {});
     fetch("/api/usage")
       .then((r) => (r.ok ? r.json() : null))
@@ -192,10 +219,6 @@ function SidebarBody() {
         setPlan(d.plan ?? {});
         setLedger(d.ledger ?? null);
       })
-      .catch(() => {});
-    fetch("/api/runs")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setActiveRuns(Array.isArray(d.active) ? d.active.length : 0))
       .catch(() => {});
   }, []);
 
@@ -209,103 +232,24 @@ function SidebarBody() {
     };
   }, [loadAll]);
 
-  useEffect(() => {
-    const onAccount = (e: Event) =>
-      setComposerAccount((e as CustomEvent<string>).detail);
-    window.addEventListener("telar:account", onAccount);
-    return () => window.removeEventListener("telar:account", onAccount);
-  }, []);
-
-  const removeChat = useCallback(
-    async (id: string) => {
-      await fetch(`/api/chats/${id}`, { method: "DELETE" });
-      if (id === activeChatId) router.push("/");
-      window.dispatchEvent(new Event("telar:refresh"));
-    },
-    [activeChatId, router],
+  const activeRuns = runs.filter((r) => !isTerminal(r.state));
+  const planEntries = Object.entries(plan).sort(([a], [b]) =>
+    a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
-
-  const account =
-    composerAccount ?? chats.find((c) => c.id === activeChatId)?.account ?? "personal";
-  const activePlan = plan[account] ?? null;
-
-  const groups = new Map<string, ChatMeta[]>();
-  for (const chat of chats) {
-    const label = groupLabel(chat.updatedAt);
-    if (!groups.has(label)) groups.set(label, []);
-    groups.get(label)!.push(chat);
-  }
 
   return (
     <>
       <SidebarContent>
-        <NavGroup activeRuns={activeRuns} />
-        {chats.length === 0 && (
-          <div className="px-4 py-6 text-center text-xs text-sidebar-foreground/50">
-            No threads yet — weave your first one.
-          </div>
-        )}
-        {[...groups.entries()].map(([label, items]) => (
-          <SidebarGroup key={label}>
-            <SidebarGroupLabel>{label}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {items.map((chat) => (
-                  <SidebarMenuItem key={chat.id}>
-                    <SidebarMenuButton
-                      isActive={chat.id === activeChatId}
-                      onClick={() => router.push("/?chat=" + chat.id)}
-                      className="pr-8"
-                    >
-                      <MessageSquareIcon className="size-4 shrink-0" />
-                      <span className="truncate">{chat.title}</span>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      showOnHover
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void removeChat(chat.id);
-                      }}
-                      title="Delete thread"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </SidebarMenuAction>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        ))}
+        <NavGroup activeRuns={activeRuns.length} />
+        <ActiveRunsGroup runs={activeRuns} />
       </SidebarContent>
 
       <SidebarFooter className="border-t">
         <div className="space-y-3 p-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-sidebar-foreground/70">
-              Plan usage · {account}
-            </span>
-            {activePlan?.subscriptionType && (
-              <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
-                {activePlan.subscriptionType}
-              </span>
-            )}
-          </div>
-          {activePlan ? (
-            <>
-              {activePlan.fiveHour && <PlanMeter label="Session · 5h" window={activePlan.fiveHour} />}
-              {activePlan.sevenDay && (
-                <PlanMeter label="Weekly · all models" window={activePlan.sevenDay} />
-              )}
-              {activePlan.sevenDayOpus && (
-                <PlanMeter label="Weekly · Opus" window={activePlan.sevenDayOpus} />
-              )}
-              {activePlan.sevenDaySonnet && (
-                <PlanMeter label="Weekly · Sonnet" window={activePlan.sevenDaySonnet} />
-              )}
-              {activePlan.modelScoped?.map((w) => (
-                <PlanMeter key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
-              ))}
-            </>
+          {planEntries.length > 0 ? (
+            planEntries.map(([account, snap]) => (
+              <PlanBlock key={account} account={account} snap={snap} />
+            ))
           ) : (
             <p className="text-xs text-sidebar-foreground/50">
               Plan usage appears after your first turn.
@@ -327,9 +271,7 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <TelarSidebarHeader />
-      <Suspense fallback={<SidebarLoadingBody />}>
-        <SidebarBody />
-      </Suspense>
+      <SidebarBody />
     </Sidebar>
   );
 }
