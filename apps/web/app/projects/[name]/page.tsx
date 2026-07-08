@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   BanIcon,
+  ChevronRightIcon,
   FileCogIcon,
   FolderXIcon,
   MessagesSquareIcon,
   PlayIcon,
   RotateCwIcon,
+  SettingsIcon,
   ShieldIcon,
   SparklesIcon,
   Trash2Icon,
@@ -20,10 +22,16 @@ import type { ProjectManifest, RegistryEntry, Run } from "@telar/core";
 import type { ChatSummary } from "@/lib/store";
 import { fmtAgo, fmtCost } from "@/lib/format";
 import { modelById } from "@/lib/models";
+import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Popover,
   PopoverContent,
@@ -37,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
+import { ArchiveButton } from "@/components/session/archive-button";
 import { isTerminal, sumCost } from "@/components/runs/utils";
 
 type ProjectEntry = {
@@ -284,37 +293,142 @@ function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
   );
 }
 
+// The archive control sits beside the row link (never nested inside the
+// anchor) and reveals on hover. Archiving broadcasts telar:refresh, which the
+// page listens for and reloads — the row drops out (default exclude).
 function SessionRow({ name, chat }: { name: string; chat: ChatMeta }) {
   const model = modelById(chat.model)?.name ?? chat.model;
   return (
-    <Link
-      href={`/projects/${encodeURIComponent(name)}/sessions/${chat.id}`}
-      className="flex items-center gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">
-          {chat.title || "Untitled session"}
-        </div>
-        {chat.preview && (
-          <div className="mt-0.5 truncate text-xs text-muted-foreground/80">
-            {chat.preview}
+    <div className="group flex items-center transition-colors hover:bg-muted/40">
+      <Link
+        href={`/projects/${encodeURIComponent(name)}/sessions/${chat.id}`}
+        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">
+            {chat.title || "Untitled session"}
           </div>
-        )}
-        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-mono">{model}</span>
-          <span className="text-border">·</span>
-          <span>
-            {chat.turns} {chat.turns === 1 ? "turn" : "turns"}
+          {chat.preview && (
+            <div className="mt-0.5 truncate text-xs text-muted-foreground/80">
+              {chat.preview}
+            </div>
+          )}
+          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="font-mono">{model}</span>
+            <span className="text-border">·</span>
+            <span>
+              {chat.turns} {chat.turns === 1 ? "turn" : "turns"}
+            </span>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
+          <span className="font-mono text-xs">{fmtCost(chat.costUsd)}</span>
+          <span className="text-xs text-muted-foreground">
+            {fmtAgo(chat.updatedAt)}
           </span>
         </div>
+      </Link>
+      <div className="shrink-0 pr-2 pl-1">
+        <ArchiveButton
+          id={chat.id}
+          className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+        />
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-0.5">
-        <span className="font-mono text-xs">{fmtCost(chat.costUsd)}</span>
-        <span className="text-xs text-muted-foreground">
-          {fmtAgo(chat.updatedAt)}
-        </span>
-      </div>
-    </Link>
+    </div>
+  );
+}
+
+// A subtle, collapsed-by-default drawer of this project's archived sessions.
+// Expanding it lazily fetches archived=only (never eagerly) and lists each with
+// a restore control; telar:refresh (fired by any archive/restore) keeps an open
+// drawer fresh and invalidates a closed one so reopening refetches.
+function ArchivedSessions({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<ChatMeta[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchArchived = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/chats?project=${encodeURIComponent(name)}&archived=only`,
+      );
+      if (!res.ok) throw new Error(`Couldn't load archived sessions (${res.status}).`);
+      const d = (await res.json()) as { chats?: ChatMeta[] };
+      setRows(d.chats ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [name]);
+
+  useEffect(() => {
+    if (open && rows === null) void fetchArchived();
+  }, [open, rows, fetchArchived]);
+
+  useEffect(() => {
+    const onRefresh = () => {
+      if (open) void fetchArchived();
+      else setRows(null); // invalidate so the next expand refetches
+    };
+    window.addEventListener("telar:refresh", onRefresh);
+    return () => window.removeEventListener("telar:refresh", onRefresh);
+  }, [open, fetchArchived]);
+
+  const count = rows?.length ?? 0;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2">
+      <CollapsibleTrigger className="group/arch flex w-fit items-center gap-1.5 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground">
+        <ChevronRightIcon
+          className={cn(
+            "size-3.5 transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        Archived
+        {rows !== null && count > 0 && (
+          <span className="font-mono text-[10px] normal-case">({count})</span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        {loading ? (
+          <ListSkeleton rows={1} />
+        ) : error ? (
+          <SectionError message={error} onRetry={() => void fetchArchived()} />
+        ) : count === 0 ? (
+          <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+            No archived sessions.
+          </p>
+        ) : (
+          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+            {rows?.map((chat) => (
+              <div
+                key={chat.id}
+                className="flex items-center gap-3 px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm text-foreground/80">
+                    {chat.title || "Untitled session"}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {fmtAgo(chat.updatedAt)}
+                  </div>
+                </div>
+                <ArchiveButton
+                  id={chat.id}
+                  archived
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -578,6 +692,19 @@ export default function ProjectDetailPage({
               <PlayIcon />
               New run
             </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Project settings"
+              render={
+                <Link
+                  href={`/projects/${encodeURIComponent(entry.name)}/settings`}
+                />
+              }
+            >
+              <SettingsIcon />
+            </Button>
             <UnregisterButton name={entry.name} />
           </>
         }
@@ -617,6 +744,7 @@ export default function ProjectDetailPage({
               ) : (
                 <ListSkeleton rows={2} />
               )}
+              {chats !== null && <ArchivedSessions name={entry.name} />}
             </section>
 
             {/* Runs */}
