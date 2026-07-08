@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   ActivityIcon,
   FolderGit2Icon,
   LayoutDashboardIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import type { Run } from "@telar/core";
+import { ACCOUNTS } from "@/lib/accounts";
 import {
   Sidebar,
   SidebarContent,
@@ -21,9 +24,14 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StateBadge } from "@/components/common/state-badge";
 import { isTerminal } from "@/components/runs/utils";
+
+// Auto-refresh plan usage on mount when a snapshot is missing or older than
+// this — keeps the sidebar honest without a manual click.
+const PLAN_STALE_MS = 30 * 60 * 1000;
 
 type PlanWindow = { utilization: number | null; resets_at: string | null };
 
@@ -48,16 +56,12 @@ type UsageWindow = {
   requests: number;
 };
 
-// The chat-list shape GET /api/chats returns (a message-less Chat plus a last-
-// message preview). Declared locally so this client bundle never pulls in the
-// fs-backed store. `preview` may be absent on an older API — tolerated below.
-type SessionMeta = {
-  id: string;
-  title: string;
-  project?: string;
-  updatedAt: number;
-  preview?: string;
-};
+// Chats and projects only feed per-project recency in the sidebar now (no rows
+// rendered for them), so we keep just the fields recency needs. Declared
+// locally so this client bundle never pulls in the fs-backed store.
+type ChatMeta = { project?: string; updatedAt: number };
+type ProjectMeta = { entry: { name: string; addedAt: number } };
+type RecentProject = { name: string; active: boolean };
 
 function fmtReset(iso: string | null): string {
   if (!iso) return "";
@@ -93,15 +97,26 @@ function PlanMeter({ label, window }: { label: string; window: PlanWindow }) {
 }
 
 function PlanBlock({ account, snap }: { account: string; snap: PlanSnapshot }) {
+  // A hand-set cosmetic label (e.g. "20x") — undefined until the user fills it in.
+  const tier = ACCOUNTS[account]?.displayTier;
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-sidebar-foreground/70">
-          Plan · {account}
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate font-mono text-xs font-medium text-sidebar-foreground/70">
+          {account}
         </span>
-        {snap.subscriptionType && (
-          <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
-            {snap.subscriptionType}
+        {(snap.subscriptionType || tier) && (
+          <span className="flex shrink-0 items-center gap-1">
+            {snap.subscriptionType && (
+              <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
+                {snap.subscriptionType}
+              </span>
+            )}
+            {tier && (
+              <span className="font-mono text-[10px] text-sidebar-foreground/50">
+                {tier}
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -191,30 +206,34 @@ function ActiveRunsGroup({ runs }: { runs: Run[] }) {
   );
 }
 
-function SessionsGroup({ sessions }: { sessions: SessionMeta[] }) {
-  const router = useRouter();
+// The 5 most recently touched projects — sessions now live inside a project, so
+// this replaces the old flat "Sessions" list. A pulsing dot marks a project
+// with a run in flight. Hidden entirely when there are no projects.
+function RecentProjectsGroup({ projects }: { projects: RecentProject[] }) {
   const pathname = usePathname();
-  if (sessions.length === 0) return null;
+  if (projects.length === 0) return null;
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Sessions</SidebarGroupLabel>
+      <SidebarGroupLabel>Recent projects</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {sessions.map((s) => {
-            const href = `/projects/${encodeURIComponent(s.project ?? "")}/sessions/${s.id}`;
-            const title = s.title || "Untitled session";
+          {projects.map((p) => {
+            const href = `/projects/${encodeURIComponent(p.name)}`;
             return (
-              <SidebarMenuItem key={s.id}>
+              <SidebarMenuItem key={p.name}>
                 <SidebarMenuButton
                   isActive={pathname === href}
-                  onClick={() => router.push(href)}
-                  title={title}
-                  className="h-auto flex-col items-start gap-0.5 py-1.5"
+                  title={p.name}
+                  render={<Link href={href} />}
                 >
-                  <span className="w-full truncate text-xs">{title}</span>
-                  <span className="w-full truncate font-mono text-[10px] text-sidebar-foreground/50">
-                    {s.project}
-                  </span>
+                  <FolderGit2Icon className="size-4 shrink-0" />
+                  <span className="truncate">{p.name}</span>
+                  {p.active && (
+                    <span
+                      aria-hidden
+                      className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+                    />
+                  )}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             );
@@ -244,31 +263,79 @@ function TelarSidebarHeader() {
 
 function SidebarBody() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
   const [ledger, setLedger] = useState<{
     session: UsageWindow;
     weekly: UsageWindow;
   } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const autoRefreshed = useRef(false);
 
-  // Self-fetching: active runs, recent sessions + plan usage, refreshed on
-  // mount, on the global "telar:refresh" signal, and on a slow interval as a
-  // safety net.
+  // Re-reads the stored snapshots (fast, no subprocess) and returns them so
+  // callers can reason about staleness.
+  const refetchUsage = useCallback(async (): Promise<
+    Record<string, PlanSnapshot>
+  > => {
+    try {
+      const r = await fetch("/api/usage");
+      if (!r.ok) return {};
+      const d = await r.json();
+      const p: Record<string, PlanSnapshot> = d.plan ?? {};
+      setPlan(p);
+      setLedger(d.ledger ?? null);
+      return p;
+    } catch {
+      return {};
+    }
+  }, []);
+
+  // Captures fresh plan usage for every account (POST spawns a short-lived SDK
+  // probe server-side), then re-reads the stored snapshots and broadcasts so
+  // sibling surfaces (dashboard) pick up the new numbers too.
+  const runRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await fetch("/api/usage/refresh", { method: "POST" });
+    } catch {
+      // best-effort — refetchUsage below surfaces whatever landed
+    } finally {
+      await refetchUsage();
+      setRefreshing(false);
+      window.dispatchEvent(new Event("telar:refresh"));
+    }
+  }, [refetchUsage]);
+
+  // Self-fetching: active runs, per-project recency inputs (chats + projects),
+  // and plan usage — refreshed on mount, on the global "telar:refresh" signal,
+  // and on a slow interval as a safety net.
   const loadAll = useCallback(() => {
     fetch("/api/runs")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setRuns(Array.isArray(d.runs) ? d.runs : []))
       .catch(() => {});
-    // Chats arrive newest-first; keep the 5 most recent that anchor to a
-    // project (only those have a session page to link into).
+    // Chats feed per-project recency only (no rows rendered) — keep just those
+    // that anchor to a project.
     fetch("/api/chats")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!d) return;
-        const chats: SessionMeta[] = Array.isArray(d.chats) ? d.chats : [];
-        setSessions(chats.filter((c) => c.project).slice(0, 5));
+        const list: ChatMeta[] = Array.isArray(d.chats) ? d.chats : [];
+        setChats(list.filter((c) => c.project));
       })
       .catch(() => {});
+    fetch("/api/projects")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d) return;
+        setProjects(Array.isArray(d.projects) ? d.projects : []);
+      })
+      .catch(() => {});
+    // Inlined rather than delegating to refetchUsage: this effect re-runs on
+    // every mount/interval/telar:refresh tick, and the lint rule against
+    // setState-in-effect can't see through a helper that sets state after an
+    // `await` unless the fetch chain is visible right here at the call site.
     fetch("/api/usage")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -289,7 +356,42 @@ function SidebarBody() {
     };
   }, [loadAll]);
 
+  // Once, on mount: if any account is missing a snapshot or its snapshot has
+  // gone stale, capture fresh usage automatically. Ref-guarded so it fires a
+  // single time regardless of re-renders or the load interval.
+  useEffect(() => {
+    if (autoRefreshed.current) return;
+    autoRefreshed.current = true;
+    void refetchUsage().then((p) => {
+      const now = Date.now();
+      const stale = Object.keys(ACCOUNTS).some((account) => {
+        const snap = p[account];
+        return !snap || now - snap.capturedAt > PLAN_STALE_MS;
+      });
+      if (stale) void runRefresh();
+    });
+  }, [refetchUsage, runRefresh]);
+
   const activeRuns = runs.filter((r) => !isTerminal(r.state));
+  const activeProjectNames = new Set(activeRuns.map((r) => r.project));
+
+  // Recency per project = the freshest touch (chat or run); projects with no
+  // activity fall back to when they were registered. Take the 5 most recent.
+  const recency = new Map<string, number>();
+  const bump = (name: string, ts: number) =>
+    recency.set(name, Math.max(recency.get(name) ?? 0, ts));
+  for (const c of chats) if (c.project) bump(c.project, c.updatedAt);
+  for (const r of runs) bump(r.project, r.updatedAt);
+  const recentProjects: RecentProject[] = projects
+    .map((p) => ({
+      name: p.entry.name,
+      activity: recency.get(p.entry.name) ?? p.entry.addedAt,
+      active: activeProjectNames.has(p.entry.name),
+    }))
+    .sort((a, b) => b.activity - a.activity)
+    .slice(0, 5)
+    .map(({ name, active }) => ({ name, active }));
+
   const planEntries = Object.entries(plan).sort(([a], [b]) =>
     a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
@@ -299,18 +401,36 @@ function SidebarBody() {
       <SidebarContent>
         <NavGroup activeRuns={activeRuns.length} />
         <ActiveRunsGroup runs={activeRuns} />
-        <SessionsGroup sessions={sessions} />
+        <RecentProjectsGroup projects={recentProjects} />
       </SidebarContent>
 
       <SidebarFooter className="border-t">
         <div className="space-y-3 p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-sidebar-foreground/70">
+              Plan usage
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void runRefresh()}
+              disabled={refreshing}
+              aria-label="Refresh plan usage"
+              title="Refresh plan usage"
+              className="-my-1 text-sidebar-foreground/60 hover:text-sidebar-foreground"
+            >
+              <RefreshCwIcon className={refreshing ? "animate-spin" : undefined} />
+            </Button>
+          </div>
           {planEntries.length > 0 ? (
             planEntries.map(([account, snap]) => (
               <PlanBlock key={account} account={account} snap={snap} />
             ))
           ) : (
             <p className="text-xs text-sidebar-foreground/50">
-              Plan usage appears after your first turn.
+              {refreshing
+                ? "Fetching plan usage…"
+                : "No usage captured yet — refresh to fetch it."}
             </p>
           )}
           {ledger && (
