@@ -25,7 +25,14 @@ import {
   type Part,
   type PlanSnapshot,
 } from "@/lib/store";
-import { capToolInput, capToolOutput, extractToolResultText } from "@/lib/transcript";
+import {
+  agentMetaFromInput,
+  AGENT_SPAWN_TOOL_CANDIDATES,
+  capToolInput,
+  capToolOutput,
+  extractToolResultText,
+  ParentFlattener,
+} from "@/lib/transcript";
 
 const toIso = (epoch?: number) =>
   epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
@@ -105,7 +112,17 @@ export async function POST(req: Request) {
       // scratch bookkeeping so a later refusal-fallback `supersedes` list can
       // evict the exact entries it retracts (see the "assistant" handler).
       const partOrigin: (string | undefined)[] = [];
-      let streamingText = ""; // text accumulated from deltas for current block
+      // Text accumulated from deltas for the current content block, keyed by
+      // resolved parent id (null = main conversation). A Map, not a single
+      // string, because with forwardSubagentText the main turn and any
+      // number of concurrently-streaming subagents interleave their
+      // stream_event deltas on this one loop — a shared scalar would let
+      // them clobber each other's in-progress text.
+      const streamingText = new Map<string | null, string>();
+      // Flattens subagent-of-a-subagent nesting to the top-level spawn's
+      // tool_use id — see lib/transcript.ts's ParentFlattener for why a
+      // raw parent_tool_use_id isn't already enough.
+      const parentFlatten = new ParentFlattener();
       // The resume target is the client-supplied id, but it's untrusted until
       // the SDK actually confirms it via a system:init message below.
       // capturedSession must only ever hold an SDK-confirmed id — the finally
@@ -116,6 +133,25 @@ export async function POST(req: Request) {
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
+      // The last "result" message seen this POST — captured, not acted on
+      // immediately. A backgrounded subagent (forwardSubagentText) can wake
+      // an SDK auto-continuation that runs a second full turn (and hence a
+      // second "result") inside this same stream; those messages report
+      // running totals for the whole query() invocation, not per-turn
+      // deltas, so logging/broadcasting each one as it arrives would
+      // double-count cost/usage. Only the LAST one — read once in the
+      // `finally` block below — is ever acted on.
+      let lastResult: {
+        subtype: string;
+        totalCostUsd: number;
+        turns?: number;
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+      } | null = null;
       // Permission requests opened by THIS stream; drained (deny) on teardown so
       // a client disconnect never leaves canUseTool hanging or a pending leaked.
       const myPending = new Set<string>();
@@ -142,6 +178,22 @@ export async function POST(req: Request) {
         if (toolName === "Bash" && typeof input.command === "string" &&
             bashTouchesProtectedPath(workspace, g.protectedPaths, input.command)) {
           return { behavior: "deny", message: "This command touches a protected path in this project." };
+        }
+        // The agent-spawn tool itself is auto-allowed (no interactive prompt —
+        // every tool the subagent goes on to call still gates individually
+        // through this same canUseTool), but it must still be ROUTED through
+        // here rather than listed in `allowedTools`: the SDK's AgentInput
+        // accepts a model-controlled `mode` field ("bypassPermissions" /
+        // "acceptEdits" / "auto" / "dontAsk") documented as the "Permission
+        // mode for spawned teammate" — if the model set that and the call
+        // never reached canUseTool at all, the subagent's own tool calls
+        // could skip this gate entirely, silently defeating
+        // protectedPaths/disallowedTools for everything it does. Stripping
+        // `mode` here (and passing the rest through via updatedInput) closes
+        // that hole while keeping spawning itself frictionless.
+        if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(toolName)) {
+          const { mode: _mode, ...safeInput } = input;
+          return { behavior: "allow", updatedInput: safeInput };
         }
         const rule = ruleFor(toolName, input);
         if (readRules(project).some((r) => ruleMatches(r, toolName, input))) {
@@ -220,11 +272,25 @@ export async function POST(req: Request) {
             // wins over any allow rule (repo-settings or otherwise), which is
             // the one lever we have against a repo widening its own access.
             settingSources: ["project", "local"],
+            // The agent-spawn tool ("Agent"/"Task") is deliberately NOT
+            // listed here even though it's auto-allowed in effect: an
+            // `allowedTools` entry is approved by the SDK before canUseTool
+            // is ever invoked, which would let a model-supplied AgentInput
+            // `mode` override reach the subagent unexamined (see canUseTool's
+            // own dedicated branch above, which allows it AND strips that
+            // field). Only Read/Grep/Glob — plain, individually-safe
+            // read-only tools — are auto-allowed at this level.
             allowedTools: ["Read", "Grep", "Glob"],
             disallowedTools: manifest.guardrails.disallowedTools,
             canUseTool,
             maxTurns: 25,
             includePartialMessages: true,
+            // Relay full subagent conversation text (not just its tool
+            // calls/results) on this same stream, each message tagged with
+            // parent_tool_use_id — the basis for the client's per-subagent
+            // tabs (contract: see route.ts's per-message `parent`/`parentId`
+            // attribution below).
+            forwardSubagentText: true,
             abortController: abort,
           },
         });
@@ -234,12 +300,15 @@ export async function POST(req: Request) {
               session_id: string;
               slash_commands?: string[];
               skills?: string[];
+              agents?: string[];
+              tools?: string[];
             };
             capturedSession = init.session_id;
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
               skills: init.skills ?? [],
+              agents: init.agents ?? [],
             });
             // Fire the plan-usage control call now — the subprocess must still
             // be alive when it resolves; awaiting it at result-time is too late.
@@ -247,48 +316,88 @@ export async function POST(req: Request) {
               .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
             usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
           } else if (msg.type === "stream_event") {
+            const parent = parentFlatten.resolve(
+              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
+            );
             const ev = (msg as { event: Record<string, any> }).event;
             if (ev?.type === "content_block_start") {
               if (ev.content_block?.type === "thinking") {
-                send("thinking", {});
+                send("thinking", parent ? { parent } : {});
               }
-              streamingText = "";
+              streamingText.set(parent, "");
             } else if (
               ev?.type === "content_block_delta" &&
               ev.delta?.type === "text_delta"
             ) {
-              streamingText += ev.delta.text;
-              send("delta", { text: ev.delta.text });
+              streamingText.set(parent, (streamingText.get(parent) ?? "") + ev.delta.text);
+              send("delta", { text: ev.delta.text, ...(parent ? { parent } : {}) });
             }
           } else if (msg.type === "assistant") {
             // A non-null parent_tool_use_id means this message came from a
-            // subagent's own internal conversation (e.g. spawned via Task),
-            // relayed on this same top-level stream. Skip it — its tool
-            // calls aren't the top-level turn's own actions and must not be
-            // flattened into this turn's transcript as if they were.
-            if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
-              continue;
-            }
+            // subagent's own internal conversation (spawned via the detected
+            // agent-spawn tool), relayed on this same top-level stream
+            // because forwardSubagentText is on. It's still appended to the
+            // same flat `parts` array — attributed via parentId, flattening
+            // arbitrarily deep subagent-of-a-subagent nesting to the
+            // top-level spawn's tool_use id — rather than skipped, so the
+            // client can render it as its own tab.
+            const parent = parentFlatten.resolve(
+              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
+            );
             const msgUuid = (msg as { uuid?: string }).uuid;
             const content =
               (msg as { message?: { content?: Array<Record<string, any>> } })
                 .message?.content ?? [];
             for (const block of content) {
               if (block.type === "text") {
-                parts.push({ type: "text", text: block.text as string });
+                parts.push({
+                  type: "text",
+                  text: block.text as string,
+                  ...(parent ? { parentId: parent } : {}),
+                });
                 partOrigin.push(msgUuid);
-                send("text", { text: block.text }); // finalize the streamed block
-                streamingText = "";
+                send("text", { text: block.text, ...(parent ? { parent } : {}) }); // finalize the streamed block
+                streamingText.set(parent, "");
               }
               if (block.type === "tool_use") {
                 const id = block.id as string;
                 const name = block.name as string;
-                const input = capToolInput(
-                  (block.input ?? {}) as Record<string, unknown>,
-                );
-                parts.push({ type: "tool", id, name, input });
+                const rawInput = (block.input ?? {}) as Record<string, unknown>;
+                const input = capToolInput(rawInput);
+                const part: Extract<Part, { type: "tool" }> = {
+                  type: "tool",
+                  id,
+                  name,
+                  input,
+                  ...(parent ? { parentId: parent } : {}),
+                };
+                // This tool_use IS a spawn step: enrich its part with agent
+                // meta (contract 3) and record it in parentFlatten so any
+                // messages the spawned subagent forwards under this exact
+                // id resolve straight to it — including a subagent that
+                // itself spawns a sub-subagent, which noteSpawn flattens to
+                // this same top-level id via `parent` above.
+                //
+                // Matched directly against the candidate list, NOT against a
+                // single name detected once from the init message's `tools`
+                // array: live testing showed init.tools advertises the spawn
+                // tool under its legacy registered name ("Task") while the
+                // actual tool_use blocks on the wire carry the SDK's current
+                // canonical name ("Agent") — the two disagree within the same
+                // session, so a single detected name silently never matches.
+                if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(name)) {
+                  part.agent = agentMetaFromInput(rawInput);
+                  parentFlatten.noteSpawn(id, parent);
+                }
+                parts.push(part);
                 partOrigin.push(msgUuid);
-                send("tool", { id, name, input });
+                send("tool", {
+                  id,
+                  name,
+                  input,
+                  ...(part.agent ? { agent: part.agent } : {}),
+                  ...(parent ? { parent } : {}),
+                });
               }
             }
             // Refusal-fallback retry: the SDK retried on a fallback model and
@@ -310,15 +419,17 @@ export async function POST(req: Request) {
             }
           } else if (msg.type === "user") {
             // Tool results: the SDK relays the model's `user` turn carrying
-            // tool_result blocks. Attach output/isError onto the matching
-            // "tool" part (by tool_use_id) so persistence includes results,
-            // and mirror the same data over SSE. A tool_result whose id
-            // matches no part pushed above is subagent/side-channel noise
-            // (not part of this turn's visible transcript) — skip it rather
-            // than crash or emit a dangling event.
-            if ((msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
-              continue;
-            }
+            // tool_result blocks — both this turn's own and, with
+            // forwardSubagentText on, any forwarded subagent's. Attach
+            // output/isError onto the matching "tool" part (by tool_use_id,
+            // globally unique regardless of nesting depth) so persistence
+            // includes results, and mirror the same data over SSE. A
+            // tool_result whose id matches no part pushed above is stray
+            // side-channel noise — skip it rather than crash or emit a
+            // dangling event.
+            const parent = parentFlatten.resolve(
+              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
+            );
             const content =
               (msg as { message?: { content?: Array<Record<string, any>> } })
                 .message?.content ?? [];
@@ -338,7 +449,33 @@ export async function POST(req: Request) {
               const isError = !!block.is_error;
               part.output = output;
               part.isError = isError;
-              send("tool_result", { id, output, isError });
+              send("tool_result", { id, output, isError, ...(parent ? { parent } : {}) });
+            }
+          } else if (msg.type === "system" && msg.subtype === "task_notification") {
+            // Authoritative completion signal for a backgrounded subagent.
+            // Subagents spawned via Agent/Task run in the background by
+            // default: the spawn tool_use's own tool_result ("Async agent
+            // launched successfully…") lands almost immediately and is NOT
+            // the subagent's real completion — this system message, keyed by
+            // the spawn's own tool_use id (not parent_tool_use_id — it's a
+            // control-plane notification ABOUT a tool_use, not a forwarded
+            // message FROM one), is. Recorded on the matching tool part so
+            // the client's agentStatus() can tell "still actually running"
+            // from "the launch ack merely already arrived" (see
+            // session-view.tsx).
+            const tn = msg as {
+              tool_use_id?: string;
+              status?: "completed" | "failed" | "stopped";
+            };
+            if (tn.tool_use_id && tn.status) {
+              const part = parts.find(
+                (p): p is Extract<Part, { type: "tool" }> =>
+                  p.type === "tool" && p.id === tn.tool_use_id,
+              );
+              if (part) {
+                part.taskStatus = tn.status;
+                send("task_status", { id: tn.tool_use_id, status: tn.status });
+              }
             }
           } else if (msg.type === "rate_limit_event") {
             // Streamed mid-turn — single-window update, merge into the snapshot
@@ -361,6 +498,99 @@ export async function POST(req: Request) {
               }
             }
           } else if (msg.type === "result") {
+            // Capture only — do NOT log usage / save plan snapshot / send
+            // "done" here. A backgrounded subagent can wake an SDK
+            // auto-continuation that produces a second "result" later in
+            // this same stream, and these fields are running totals for the
+            // whole query() invocation, not per-message deltas; acting on
+            // every "result" would double-count cost/usage for one turn.
+            // `lastResult` is read exactly once, after the loop ends (see
+            // the `finally` block), so only the final (most complete) totals
+            // are ever persisted or broadcast.
+            const r = msg as unknown as {
+              subtype: string;
+              total_cost_usd?: number;
+              num_turns?: number;
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation_input_tokens?: number;
+              };
+            };
+            costUsd = r.total_cost_usd ?? 0;
+            lastResult = {
+              subtype: r.subtype,
+              totalCostUsd: costUsd,
+              turns: r.num_turns,
+              usage: r.usage,
+            };
+          }
+        }
+
+      } catch (e) {
+        if (!abort.signal.aborted) send("error", { message: String(e) });
+      } finally {
+        // Fail-closed teardown: deny any permission requests still open on this
+        // stream so their canUseTool promises unblock and no pending is leaked.
+        for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
+        myPending.clear();
+        // Persist in teardown, not in the happy path: a client disconnect
+        // (navigation, closed tab) aborts the SDK loop with a throw, and the
+        // turn must survive it — the SDK session already exists server-side.
+        try {
+          // Flush every parent's in-progress (never text-block-finalized)
+          // streamed text — the main turn's (key null) and any forwarded
+          // subagent's alike — so an abort/crash mid-stream doesn't drop
+          // whatever was already visible to the user.
+          for (const [parent, text] of streamingText) {
+            if (text) parts.push({ type: "text", text, ...(parent ? { parentId: parent } : {}) });
+          }
+          // A tool part still missing output at this point never got a
+          // matching tool_result — the turn was aborted or crashed mid-flight
+          // (a graceful "result" message only arrives once every tool call
+          // belonging to it has resolved, denials included). Flag it so the
+          // client can render "interrupted" instead of rendering identically
+          // to a genuinely empty successful result.
+          let anyInterrupted = false;
+          for (const part of parts) {
+            if (part.type === "tool" && part.output === undefined) {
+              part.interrupted = true;
+              anyInterrupted = true;
+            }
+          }
+          // The mutation above is local-only (about to be persisted below) —
+          // without this, a live client watching this same stream never
+          // learns a tool call got flagged interrupted (no SSE event carried
+          // that fact before now), so its copy keeps reading `output:
+          // undefined, interrupted: undefined` and a subagent tab's status
+          // dot shimmers as "running" forever even after the turn is over.
+          // Payload-free: the client already knows which message is its own
+          // in-flight one and applies the exact same "tool part still
+          // missing output" rule locally (see markToolsInterrupted).
+          if (anyInterrupted) send("interrupted", {});
+          // Bound how many tool parts keep full input/output detail — but
+          // ration that budget PER PARENT (main thread = undefined, each
+          // subagent spawn = its own tool_use id), not with one shared
+          // counter. forwardSubagentText means a single chatty subagent's
+          // tool calls now share this same flat array with the main thread's
+          // own; a single shared counter would let that subagent's noise
+          // consume the whole budget and strip detail from the main thread's
+          // own tool calls, which is what a user actually asked for most.
+          const detailedByParent = new Map<string | undefined, number>();
+          for (const part of parts) {
+            if (part.type !== "tool") continue;
+            const count = (detailedByParent.get(part.parentId) ?? 0) + 1;
+            detailedByParent.set(part.parentId, count);
+            if (count > MAX_DETAILED_TOOL_PARTS) {
+              delete part.input;
+              delete part.output;
+            }
+          }
+          // Act on the LAST "result" message only (see the "result" case
+          // above for why) — plan-usage snapshot, the usage.ndjson entry,
+          // and the "done" broadcast all fire at most once per POST.
+          if (lastResult) {
             try {
               const u = usagePromise
                 ? await Promise.race([
@@ -384,70 +614,25 @@ export async function POST(req: Request) {
             } catch {
               // experimental API — degrade silently, rate_limit_events still cover us
             }
-            const r = msg as unknown as {
-              subtype: string;
-              total_cost_usd?: number;
-              num_turns?: number;
-              usage?: {
-                input_tokens?: number;
-                output_tokens?: number;
-                cache_read_input_tokens?: number;
-                cache_creation_input_tokens?: number;
-              };
-            };
-            costUsd = r.total_cost_usd ?? 0;
             if (capturedSession) {
               logUsage({
                 ts: Date.now(),
                 account: profile.name,
                 model,
                 sessionId: capturedSession,
-                inputTokens: r.usage?.input_tokens ?? 0,
-                outputTokens: r.usage?.output_tokens ?? 0,
-                cacheReadTokens: r.usage?.cache_read_input_tokens ?? 0,
-                cacheCreateTokens: r.usage?.cache_creation_input_tokens ?? 0,
-                costUsd,
+                inputTokens: lastResult.usage?.input_tokens ?? 0,
+                outputTokens: lastResult.usage?.output_tokens ?? 0,
+                cacheReadTokens: lastResult.usage?.cache_read_input_tokens ?? 0,
+                cacheCreateTokens: lastResult.usage?.cache_creation_input_tokens ?? 0,
+                costUsd: lastResult.totalCostUsd,
               });
             }
             send("done", {
-              subtype: r.subtype,
-              costUsd,
-              turns: r.num_turns,
-              usage: r.usage,
+              subtype: lastResult.subtype,
+              costUsd: lastResult.totalCostUsd,
+              turns: lastResult.turns,
+              usage: lastResult.usage,
             });
-          }
-        }
-
-      } catch (e) {
-        if (!abort.signal.aborted) send("error", { message: String(e) });
-      } finally {
-        // Fail-closed teardown: deny any permission requests still open on this
-        // stream so their canUseTool promises unblock and no pending is leaked.
-        for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
-        myPending.clear();
-        // Persist in teardown, not in the happy path: a client disconnect
-        // (navigation, closed tab) aborts the SDK loop with a throw, and the
-        // turn must survive it — the SDK session already exists server-side.
-        try {
-          if (streamingText) parts.push({ type: "text", text: streamingText });
-          // A tool part still missing output at this point never got a
-          // matching tool_result — the turn was aborted or crashed mid-flight
-          // (a graceful "result" message only arrives once every tool call
-          // belonging to it has resolved, denials included). Flag it so the
-          // client can render "interrupted" instead of rendering identically
-          // to a genuinely empty successful result.
-          for (const part of parts) {
-            if (part.type === "tool" && part.output === undefined) {
-              part.interrupted = true;
-            }
-          }
-          let detailedTools = 0;
-          for (const part of parts) {
-            if (part.type !== "tool") continue;
-            if (++detailedTools > MAX_DETAILED_TOOL_PARTS) {
-              delete part.input;
-              delete part.output;
-            }
           }
           if (capturedSession) {
             appendTurn({

@@ -6,6 +6,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
+  BotIcon,
+  CheckIcon,
   ChevronRightIcon,
   FileTextIcon,
   FolderSearchIcon,
@@ -26,6 +28,7 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import { AgentTabsStrip, StatusDot, type AgentTab } from "@/components/session/agent-tabs";
 import {
   Message,
   MessageContent,
@@ -57,12 +60,20 @@ import { fmtCost, shortId } from "@/lib/format";
 import { DEFAULT_MODEL, MODELS, modelById } from "@/lib/models";
 import { cn } from "@/lib/utils";
 
+// Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
+// name/...) and stashed on that tool part so the tab strip and the B.3 chip
+// both have a label without re-deriving it from raw input every render.
+type AgentInfo = { type: string | null; description: string; name?: string };
+
 // The transcript shape the store persists (see lib/store.ts). Text parts stream
 // with a `done` flag on the client; persisted parts are always finished. Tool
 // parts carry id/input/output/isError as optional so every old persisted chat
-// (name-only tool parts) still loads without a migration.
+// (name-only tool parts) still loads without a migration. `parentId`/`agent`
+// are newer still and equally optional for the same reason: an old chat's
+// parts simply lack them, which reads as "main thread, not a spawn" — exactly
+// the right default.
 type StorePart =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; parentId?: string }
   | {
       type: "tool";
       name: string;
@@ -71,14 +82,20 @@ type StorePart =
       output?: string;
       isError?: boolean;
       interrupted?: boolean;
+      parentId?: string;
+      agent?: AgentInfo;
+      taskStatus?: "completed" | "failed" | "stopped";
     };
 type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 
 // Permission cards are live-stream-only artifacts (resolved by "permission_result"
 // or the server's 120s timeout deny) — they never round-trip through the store,
-// so StorePart above stays exactly as persisted.
+// so StorePart above stays exactly as persisted. They also never carry a
+// parentId: canUseTool gets no parent attribution from the SDK, so every
+// permission card — regardless of which subagent's tool call triggered it —
+// renders on the Main thread (a documented v1 limitation, not a bug).
 type Part =
-  | { type: "text"; text: string; done: boolean }
+  | { type: "text"; text: string; done: boolean; parentId?: string }
   | {
       type: "tool";
       name: string;
@@ -87,6 +104,9 @@ type Part =
       output?: string;
       isError?: boolean;
       interrupted?: boolean;
+      parentId?: string;
+      agent?: AgentInfo;
+      taskStatus?: "completed" | "failed" | "stopped";
     }
   | {
       type: "permission";
@@ -99,6 +119,54 @@ type Part =
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
 type ToolPart = Extract<Part, { type: "tool" }>;
 type Status = "ready" | "submitted" | "streaming" | "error";
+
+// A part's parentId, normalized to `undefined` for the main thread (permission
+// parts don't have the field at all — they're always main). Centralizing this
+// lookup means every routing decision (grouping, streaming merge, bucketing)
+// agrees on what "main thread" means.
+const parentOf = (p: Part): string | undefined =>
+  p.type === "permission" ? undefined : p.parentId;
+
+// One spawned subagent's own transcript, reconstructed identically whether
+// it's arriving live (SSE events tagged with `parent`) or reconstructed from
+// persisted parts (tagged with `parentId`) — see agentBuckets below. `spawn`
+// is the enriched tool part itself (id, agent info, and — once the subagent
+// finishes — its output/isError), `parts` is everything that part spawned.
+type AgentBucket = { id: string; spawn: ToolPart; parts: Part[] };
+
+// Label priority per spec: an explicit run name, else the agent type, else a
+// clipped slice of the free-form description — always something short enough
+// for a tab. Array.from/codePoints mirrors stepPreview's astral-safe slicing.
+function agentLabel(agent: AgentInfo): string {
+  if (agent.name) return agent.name;
+  if (agent.type) return agent.type;
+  const codePoints = Array.from(agent.description.trim());
+  return codePoints.length > 24 ? `${codePoints.slice(0, 24).join("")}…` : codePoints.join("");
+}
+
+function agentStatus(spawn: ToolPart): AgentTab["status"] {
+  // taskStatus (from the SDK's task_notification, route.ts) is the
+  // authoritative completion signal for a backgrounded subagent and takes
+  // priority when present. Subagents run in the background by default, so
+  // spawn.output/isError below reflect only the near-instant "launched" ack
+  // — NOT the subagent's real result — and would otherwise flip this tab to
+  // "done" while the subagent is still actually working. Absent taskStatus
+  // (a synchronous subagent, or an SDK build that never sends it) falls
+  // through to the old output-based read.
+  if (spawn.taskStatus) {
+    return spawn.taskStatus === "completed" ? "done" : "error";
+  }
+  if (spawn.output === undefined) {
+    // A spawn that never got its tool_result because the whole turn ended
+    // abnormally (Stop clicked, mid-turn error, dropped connection — see
+    // route.ts's teardown) is not "still running": the turn is over, and
+    // `running`'s shimmer would otherwise animate forever for a dead tab.
+    // AgentTab's status vocabulary is only three states (spec), so this
+    // folds into the destructive tint rather than adding a fourth.
+    return spawn.interrupted ? "error" : "running";
+  }
+  return spawn.isError ? "error" : "done";
+}
 
 type ProjectCommand = {
   name: string;
@@ -133,7 +201,7 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
     role: m.role,
     parts: m.parts.map((p) =>
       p.type === "text"
-        ? { type: "text" as const, text: p.text, done: true }
+        ? { type: "text" as const, text: p.text, done: true, parentId: p.parentId }
         : {
             type: "tool" as const,
             name: p.name,
@@ -142,6 +210,9 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
             output: p.output,
             isError: p.isError,
             interrupted: p.interrupted,
+            parentId: p.parentId,
+            agent: p.agent,
+            taskStatus: p.taskStatus,
           },
     ),
   }));
@@ -399,8 +470,57 @@ function ToolStepRow({
   );
 }
 
+// A spawn step's row inside the main thread's B.3 groups — an "agent chip"
+// rather than a generic tool row. Clicking it only switches the active tab
+// (state, not focus/scroll): the raw input/output detail a normal tool row
+// would expand inline lives in the subagent's own tab instead, so there's
+// nothing to expand here.
+function AgentStepRow({
+  part,
+  stepCount,
+  onSelect,
+}: {
+  part: ToolPart & { agent: AgentInfo };
+  stepCount: number;
+  onSelect: () => void;
+}) {
+  const status = agentStatus(part);
+  const label = agentLabel(part.agent);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/60",
+        status === "error" && "bg-destructive/10",
+      )}
+    >
+      <BotIcon
+        className={cn("size-3.5 shrink-0", status === "error" ? "text-destructive" : "text-muted-foreground")}
+      />
+      {status === "running" ? (
+        <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
+          {label}
+        </Shimmer>
+      ) : (
+        <span className={cn("min-w-0 flex-1 truncate font-medium", status === "error" && "text-destructive")}>
+          {label}
+        </span>
+      )}
+      <span className="shrink-0 text-[10px] text-muted-foreground">
+        {stepCount} step{stepCount === 1 ? "" : "s"}
+      </span>
+      <StatusDot status={status} />
+      <ChevronRightIcon className="ml-0.5 size-3 shrink-0 text-muted-foreground" />
+    </button>
+  );
+}
+
 // The group header: step count + compact tool tally, e.g.
 // "16 steps · Bash ×12 · Read ×2 · Glob ×2" — order follows first appearance.
+// `agentSteps`/`onSelectAgent` are only ever passed for main-thread groups —
+// a subagent's own tab renders its nested tool calls with plain ToolStepRows,
+// since v1 doesn't track sub-subagents (see AgentBucket).
 function ToolStepGroup({
   toolParts,
   open,
@@ -408,6 +528,8 @@ function ToolStepGroup({
   live,
   rowOpen,
   onToggleRow,
+  agentSteps,
+  onSelectAgent,
 }: {
   toolParts: ToolPart[];
   open: boolean;
@@ -415,6 +537,8 @@ function ToolStepGroup({
   live: boolean;
   rowOpen: (key: string) => boolean;
   onToggleRow: (key: string) => void;
+  agentSteps?: (id: string) => number;
+  onSelectAgent?: (id: string) => void;
 }) {
   const tally: Array<[string, number]> = [];
   const indexByName = new Map<string, number>();
@@ -472,6 +596,16 @@ function ToolStepGroup({
         <div className="flex flex-col gap-0.5 px-1.5 pb-1.5">
           {toolParts.map((p, i) => {
             const rowKey = p.id ?? String(i);
+            if (p.agent && p.id && onSelectAgent) {
+              return (
+                <AgentStepRow
+                  key={rowKey}
+                  part={p as ToolPart & { agent: AgentInfo }}
+                  stepCount={agentSteps?.(p.id) ?? 0}
+                  onSelect={() => onSelectAgent(p.id!)}
+                />
+              );
+            }
             return (
               <ToolStepRow
                 key={rowKey}
@@ -555,6 +689,15 @@ function SessionViewInner({
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Agent types the live SDK session reports as available (init message's
+  // `agents` list) — surfaced as a subtle one-liner on the tab strip, not its
+  // own overlay. Null until a turn actually runs (matches sdkSlashCommands).
+  const [availableAgents, setAvailableAgents] = useState<string[] | null>(null);
+  // "main" or a spawn's tool_use id. Pure client-side selection state — tabs
+  // themselves are derived from the transcript (agentBuckets below), never
+  // stored separately, so there's nothing else to keep in sync here.
+  const [activeTab, setActiveTab] = useState<string>("main");
+
   // Slash-command autocomplete. `projectCommands` comes from the project's
   // .claude/commands scan (has descriptions); `sdkSlashCommands` narrows it to
   // what the live SDK session actually reports once a turn's "session" event
@@ -577,6 +720,70 @@ function SessionViewInner({
   const [rowOverrides, setRowOverrides] = useState<Record<string, boolean>>({});
 
   const busy = status === "submitted" || status === "streaming";
+
+  // Buckets a spawn's own transcript by its tool_use id — reconstructed fresh
+  // from `messages` every render (live streaming or a persisted load look
+  // identical here), never a separate piece of state. First pass finds every
+  // TOP-LEVEL enriched spawn part (in first-appearance order, so tabs don't
+  // reorder as later events refresh a spawn's output); second pass files
+  // every part whose parentId names one of those spawns into its bucket, in
+  // transcript order — including parts that land in a later message than the
+  // spawn.
+  //
+  // "Top-level" (parentOf(part) === undefined) matters here: a subagent that
+  // itself spawns a sub-subagent produces a tool part that is BOTH enriched
+  // with its own `agent` info AND carries a parentId — the server's
+  // ParentFlattener already collapsed it onto its top-level ancestor's
+  // bucket, so treating it as a second bucket-worthy spawn here would open a
+  // phantom tab that nothing could ever file parts into (everything the
+  // nested subagent produces resolves straight to the same ancestor id, per
+  // ParentFlattener, never to this nested id). It still renders inside its
+  // ancestor's own tab content — as a plain ToolStepRow, same as any other
+  // tool call that tab's subagent made — just without the agent-chip
+  // treatment or a tab of its own; see AgentBucket and renderAgentBucket
+  // (which doesn't pass onSelectAgent/agentSteps into its ToolStepGroup).
+  const agentBuckets = useMemo(() => {
+    const order: string[] = [];
+    const byId = new Map<string, AgentBucket>();
+    for (const m of messages) {
+      for (const part of m.parts) {
+        if (part.type === "tool" && part.agent && part.id && parentOf(part) === undefined) {
+          const existing = byId.get(part.id);
+          if (existing) {
+            existing.spawn = part; // refresh in place (e.g. output just landed)
+          } else {
+            order.push(part.id);
+            byId.set(part.id, { id: part.id, spawn: part, parts: [] });
+          }
+        }
+      }
+    }
+    for (const m of messages) {
+      for (const part of m.parts) {
+        const parent = parentOf(part);
+        if (parent) byId.get(parent)?.parts.push(part);
+      }
+    }
+    return order.map((id) => byId.get(id)!);
+  }, [messages]);
+
+  const agentBucketById = useMemo(
+    () => new Map(agentBuckets.map((b) => [b.id, b])),
+    [agentBuckets],
+  );
+
+  // A pending permission card always lives on Main (see the Part union
+  // comment) — badge the Main tab with it so an approval can never be
+  // stranded behind a subagent tab the user happens to be viewing.
+  const mainNeedsAttention = useMemo(
+    () =>
+      messages.some((m) =>
+        m.parts.some((p) => p.type === "permission" && p.status === "pending"),
+      ),
+    [messages],
+  );
+
+  const activeBucket = activeTab === "main" ? null : (agentBucketById.get(activeTab) ?? null);
 
   // Elapsed clock — runs only while a turn is in flight.
   useEffect(() => {
@@ -741,47 +948,95 @@ function SessionViewInner({
                 if (Array.isArray(payload.slashCommands)) {
                   setSdkSlashCommands(payload.slashCommands);
                 }
+                // Available subagent types for this session — surfaced as a
+                // muted one-liner on the tab strip, nothing more (contract #6).
+                if (Array.isArray(payload.agents)) {
+                  setAvailableAgents(payload.agents);
+                }
                 break;
               case "thinking":
+                // Carries an optional `parent` too, but stays a single
+                // turn-wide flag on purpose: it only ever drives the busy
+                // wording in the heartbeat bar / empty-message placeholder,
+                // and contract #5 keys busy/elapsed to the whole turn
+                // regardless of which tab is active. There's also no
+                // explicit "stopped thinking" event to attribute the *end* of
+                // a thinking span per parent — it's only ever inferred from
+                // the next delta/text/tool, so per-parent precision here
+                // would be partial at best. A subagent's own empty-tab
+                // placeholder (see renderAgentBucket) already renders its own
+                // static "Spinning up…" instead of reading this flag.
                 setThinking(true);
                 break;
-              case "delta":
+              case "delta": {
+                // `parent` (parent_tool_use_id) routes this chunk to its own
+                // tab's bucket — null/omitted means the main thread. Several
+                // parents can stream concurrently (main + N subagents), so the
+                // merge target is "the trailing part *of this same parent*",
+                // not just the array's last element — otherwise an
+                // interleaved chunk from another tab would either get
+                // appended onto the wrong text run or split one parent's text
+                // across two parts.
+                const parent: string | undefined = payload.parent ?? undefined;
                 setStatus("streaming");
                 setThinking(false);
                 patch(asstId, (m) => {
-                  const last = m.parts[m.parts.length - 1];
+                  const idx = m.parts.findLastIndex((p) => parentOf(p) === parent);
+                  const last = idx >= 0 ? m.parts[idx] : undefined;
                   if (last?.type === "text" && !last.done) {
                     const parts = [...m.parts];
-                    parts[parts.length - 1] = { ...last, text: last.text + payload.text };
+                    parts[idx] = { ...last, text: last.text + payload.text };
                     return { ...m, parts };
                   }
-                  return { ...m, parts: [...m.parts, { type: "text", text: payload.text, done: false }] };
+                  return {
+                    ...m,
+                    parts: [...m.parts, { type: "text", text: payload.text, done: false, parentId: parent }],
+                  };
                 });
                 break;
-              case "text":
+              }
+              case "text": {
+                const parent: string | undefined = payload.parent ?? undefined;
                 setStatus("streaming");
                 setThinking(false);
                 patch(asstId, (m) => {
-                  const last = m.parts[m.parts.length - 1];
+                  const idx = m.parts.findLastIndex((p) => parentOf(p) === parent);
+                  const last = idx >= 0 ? m.parts[idx] : undefined;
                   if (last?.type === "text" && !last.done) {
                     const parts = [...m.parts];
-                    parts[parts.length - 1] = { type: "text", text: payload.text, done: true };
+                    parts[idx] = { type: "text", text: payload.text, done: true, parentId: parent };
                     return { ...m, parts };
                   }
-                  return { ...m, parts: [...m.parts, { type: "text", text: payload.text, done: true }] };
+                  return {
+                    ...m,
+                    parts: [...m.parts, { type: "text", text: payload.text, done: true, parentId: parent }],
+                  };
                 });
                 break;
-              case "tool":
+              }
+              case "tool": {
+                const parent: string | undefined = payload.parent ?? undefined;
                 setStatus("streaming");
                 setThinking(false);
                 patch(asstId, (m) => ({
                   ...m,
                   parts: [
                     ...m.parts,
-                    { type: "tool", name: payload.name, id: payload.id, input: payload.input },
+                    {
+                      type: "tool",
+                      name: payload.name,
+                      id: payload.id,
+                      input: payload.input,
+                      ...(parent ? { parentId: parent } : {}),
+                      // Only a spawn call's own "tool" event carries `agent`
+                      // (pulled server-side from its AgentInput) — everything
+                      // else is undefined here, same as before this feature.
+                      ...(payload.agent ? { agent: payload.agent as AgentInfo } : {}),
+                    },
                   ],
                 }));
                 break;
+              }
               case "tool_result":
                 // Can arrive after later parts already exist (more tool calls
                 // or text streamed in since) — find the part by id wherever
@@ -799,11 +1054,29 @@ function SessionViewInner({
                   ),
                 }));
                 break;
+              case "task_status":
+                // Authoritative completion signal for a backgrounded
+                // subagent (route.ts's task_notification handler) — see
+                // agentStatus's comment. Scoped to asstId like "tool_result".
+                patch(asstId, (m) => ({
+                  ...m,
+                  parts: m.parts.map((p) =>
+                    p.type === "tool" && p.id === payload.id
+                      ? { ...p, taskStatus: payload.status }
+                      : p,
+                  ),
+                }));
+                break;
               case "permission":
                 // The turn stays in flight while the card is pending — status
                 // mirrors the "tool" case so the busy shimmer keeps showing.
+                // Permission cards never carry a parent (contract #7) and
+                // always need a response — auto-switch to Main so a pending
+                // approval is never stranded behind whichever subagent tab
+                // the user happens to be looking at.
                 setStatus("streaming");
                 setThinking(false);
+                setActiveTab("main");
                 patch(asstId, (m) => ({
                   ...m,
                   parts: [
@@ -829,6 +1102,16 @@ function SessionViewInner({
                       : p,
                   ),
                 }));
+                break;
+              case "interrupted":
+                // The server's teardown just flagged some still-unresolved
+                // tool part(s) of THIS turn as interrupted (route.ts's
+                // `finally` block) — mirror that locally so the live view
+                // matches what a reload would show instead of leaving a
+                // subagent tab's dot shimmering "running" forever after the
+                // stream has actually ended (status goes to "ready" right
+                // after this same read loop finishes).
+                markToolsInterrupted(asstId);
                 break;
               case "plan":
                 refresh();
@@ -975,6 +1258,127 @@ function SessionViewInner({
     }
   };
 
+  // Tab strip data — derived straight from agentBuckets, never stored on its
+  // own (contract #5). Order follows first appearance so a tab never jumps
+  // around later as its own spawn's status changes.
+  const agentTabs: AgentTab[] = useMemo(
+    () =>
+      agentBuckets.map((b) => ({
+        id: b.id,
+        label: agentLabel(b.spawn.agent ?? { type: null, description: "" }),
+        status: agentStatus(b.spawn),
+      })),
+    [agentBuckets],
+  );
+
+  // A subagent's own tab: same rendering path as Main (groupParts → text /
+  // ToolStepGroup), just over the bucket's parts instead of a message's, plus
+  // a header (agent type + spawn description) and the spawn's own tool_result
+  // rendered at the end as the run's result. `live` here mirrors Main's
+  // `isCurrentMessage && isTrailing` — "the spawn hasn't produced a result
+  // yet" stands in for "this is the message currently being streamed into".
+  function renderAgentBucket(bucket: AgentBucket) {
+    const agent = bucket.spawn.agent ?? { type: null, description: "" };
+    const status = agentStatus(bucket.spawn);
+    const bucketLive = status === "running";
+    const items = groupParts(bucket.id, bucket.parts);
+    return (
+      <div className="flex w-full flex-col gap-3 text-sm">
+        <div className="flex flex-col gap-1 border-b pb-3 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
+            <BotIcon className="size-3.5 text-muted-foreground" />
+            {agent.type ?? "subagent"}
+            {agent.name && agent.name !== agent.type && (
+              <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                {agent.name}
+              </Badge>
+            )}
+          </div>
+          {agent.description && <p className="text-muted-foreground">{agent.description}</p>}
+        </div>
+
+        {/* Empty-while-starting is designed, not blank: the tab exists the
+            instant the spawn tool call arrives, often before the subagent has
+            produced anything yet. A zero-parts "error" bucket (interrupted or
+            failed before it ever forwarded any activity) gets its own
+            destructive-tinted message too — otherwise it's indistinguishable
+            from a run that simply, genuinely finished with nothing to show,
+            and the tab strip's small status dot is the only hint anything
+            went wrong. */}
+        {bucket.parts.length === 0 &&
+          (bucketLive ? (
+            <Shimmer className="text-sm">Spinning up…</Shimmer>
+          ) : status === "error" ? (
+            <p className="flex items-center gap-1.5 text-sm text-destructive">
+              <TriangleAlertIcon className="size-3.5 shrink-0" />
+              {bucket.spawn.interrupted && bucket.spawn.output === undefined
+                ? "Interrupted before this subagent produced any output."
+                : "This subagent's run failed before producing any output."}
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No subagent activity was recorded for this run.
+            </p>
+          ))}
+
+        {items.map((item, i) => {
+          if (item.kind === "text") {
+            return <MessageResponse key={item.key}>{item.part.text}</MessageResponse>;
+          }
+          if (item.kind === "permission") {
+            // Unreachable in practice — permission parts never carry a
+            // parentId (see the Part union comment) — kept only so this
+            // mirrors Main's exhaustive RenderItem switch exactly.
+            return null;
+          }
+          const isTrailing = items.slice(i + 1).every((it) => it.kind === "permission");
+          const live = bucketLive && isTrailing;
+          const open = groupOverrides[item.key] ?? live;
+          return (
+            <ToolStepGroup
+              key={item.key}
+              toolParts={item.parts}
+              open={open}
+              live={live}
+              onToggle={() => setGroupOverrides((prev) => ({ ...prev, [item.key]: !open }))}
+              rowOpen={(key) => rowOverrides[`${item.key}:${key}`] ?? false}
+              onToggleRow={(key) =>
+                setRowOverrides((prev) => {
+                  const k = `${item.key}:${key}`;
+                  return { ...prev, [k]: !(prev[k] ?? false) };
+                })
+              }
+            />
+          );
+        })}
+
+        {bucket.spawn.output !== undefined && (
+          <div
+            className={cn(
+              "rounded-lg border p-3 text-xs",
+              bucket.spawn.isError ? "border-destructive/40 bg-destructive/10" : "bg-muted/20",
+            )}
+          >
+            <div
+              className={cn(
+                "mb-1.5 flex items-center gap-1.5 font-medium",
+                bucket.spawn.isError ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {bucket.spawn.isError ? (
+                <TriangleAlertIcon className="size-3" />
+              ) : (
+                <CheckIcon className="size-3" />
+              )}
+              Result
+            </div>
+            <MessageResponse className="text-xs">{bucket.spawn.output}</MessageResponse>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
       <PageHeader
@@ -1013,9 +1417,23 @@ function SessionViewInner({
         </div>
       </div>
 
+      {/* Main tab always present; a tab for a spawn appears the instant its
+          tool-call part arrives (live) or is reconstructed from persisted
+          parts (load) — see agentBuckets. Scrolls horizontally on overflow,
+          never wraps into the conversation below it. */}
+      <AgentTabsStrip
+        tabs={agentTabs}
+        activeId={activeTab}
+        onSelect={setActiveTab}
+        mainNeedsAttention={mainNeedsAttention}
+        availableAgents={availableAgents ?? undefined}
+      />
+
       <Conversation className="flex-1">
         <ConversationContent className="mx-auto w-full max-w-3xl">
-          {messages.length === 0 ? (
+          {activeBucket ? (
+            renderAgentBucket(activeBucket)
+          ) : messages.length === 0 ? (
             <ConversationEmptyState
               title="Read the workspace"
               description="This session explores the repo with Read · Grep · Glob to plan a change. When you're ready to write, start a run."
@@ -1029,11 +1447,16 @@ function SessionViewInner({
               // wins over this default.
               const isCurrentMessage =
                 busy && m.id === messages[messages.length - 1]?.id;
-              const items = groupParts(m.id, m.parts);
+              // Main renders only this message's OWN parts — anything a
+              // subagent produced lives in its own tab (see agentBuckets), not
+              // interleaved here even though it rode in on the same SSE
+              // stream and the same message's parts array.
+              const mainParts = m.parts.filter((p) => parentOf(p) === undefined);
+              const items = groupParts(m.id, mainParts);
               return (
                 <Message from={m.role} key={m.id}>
                   <MessageContent>
-                    {m.parts.length === 0 && m.role === "assistant" && busy && (
+                    {mainParts.length === 0 && m.role === "assistant" && busy && (
                       <Shimmer className="text-sm">
                         {thinking ? "Thinking…" : "Weaving…"}
                       </Shimmer>
@@ -1078,6 +1501,8 @@ function SessionViewInner({
                               return { ...prev, [k]: !(prev[k] ?? false) };
                             })
                           }
+                          agentSteps={(id) => agentBucketById.get(id)?.parts.length ?? 0}
+                          onSelectAgent={setActiveTab}
                         />
                       );
                     })}

@@ -10,7 +10,7 @@ const USAGE = path.join(DIR, "usage.ndjson");
 const PLAN = path.join(DIR, "plan-usage.json");
 
 export type Part =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; parentId?: string }
   | {
       type: "tool";
       name: string;
@@ -22,6 +22,28 @@ export type Part =
       // this call's tool_result ever arrived — distinguishes "cancelled
       // mid-flight" from a genuinely empty successful result.
       interrupted?: boolean;
+      // Present on subagent text/tool parts forwarded via
+      // forwardSubagentText — the tool_use id of the (possibly flattened,
+      // see lib/transcript.ts's ParentFlattener) spawn step that produced
+      // this part. Absent for parts belonging to the main conversation.
+      // All-optional by design: old persisted chats have no parentId and
+      // must keep loading as plain (parentless) parts.
+      parentId?: string;
+      // Present only on the spawn step itself — the tool_use that invoked
+      // the agent-spawn tool ("Agent"/"Task" depending on SDK version, see
+      // detectAgentSpawnTool) — pulled from its raw AgentInput. This is what
+      // lets the client turn one tool part into a tab, with zero separate
+      // tab bookkeeping.
+      agent?: { type: string | null; description: string; name?: string };
+      // Present only on the spawn step itself, once the SDK's own
+      // task_notification system message arrives for it. Backgrounded
+      // subagents (the default) get their own tool_result almost instantly
+      // ("Async agent launched…") — this is the actual completion signal,
+      // decoupled from that ack, and takes priority over output/isError for
+      // status purposes (see agentStatus in session-view.tsx). Absent means
+      // "go by output/interrupted instead" (a synchronous subagent, or an
+      // SDK build that never emits this message).
+      taskStatus?: "completed" | "failed" | "stopped";
     };
 
 export type ChatMessage = {

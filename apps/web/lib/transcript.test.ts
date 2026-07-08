@@ -1,9 +1,12 @@
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
 import {
+  agentMetaFromInput,
   capToolInput,
   capToolOutput,
+  detectAgentSpawnTool,
   extractToolResultText,
+  ParentFlattener,
   TOOL_INPUT_CAP,
   TOOL_OUTPUT_CAP,
 } from "./transcript";
@@ -178,5 +181,117 @@ describe("capToolOutput", () => {
 
   test("empty string under cap returns as-is", () => {
     expect(capToolOutput("")).toBe("");
+  });
+});
+
+describe("detectAgentSpawnTool", () => {
+  test("finds \"Agent\" when present", () => {
+    expect(detectAgentSpawnTool(["Read", "Grep", "Agent", "Bash"])).toBe("Agent");
+  });
+
+  test("falls back to the legacy \"Task\" name when \"Agent\" is absent", () => {
+    expect(detectAgentSpawnTool(["Read", "Task", "Bash"])).toBe("Task");
+  });
+
+  test("prefers \"Agent\" over \"Task\" when both are somehow present", () => {
+    expect(detectAgentSpawnTool(["Task", "Agent"])).toBe("Agent");
+  });
+
+  test("returns null when neither candidate is in the list", () => {
+    expect(detectAgentSpawnTool(["Read", "Grep", "Bash"])).toBeNull();
+  });
+
+  test("returns null for an empty list", () => {
+    expect(detectAgentSpawnTool([])).toBeNull();
+  });
+
+  test("returns null when tools is undefined", () => {
+    expect(detectAgentSpawnTool(undefined)).toBeNull();
+  });
+});
+
+describe("agentMetaFromInput", () => {
+  test("extracts description, subagent_type, and name", () => {
+    const input = {
+      description: "Fix the bug",
+      prompt: "Go fix it",
+      subagent_type: "general-purpose",
+      name: "bugfixer",
+    };
+    expect(agentMetaFromInput(input)).toEqual({
+      type: "general-purpose",
+      description: "Fix the bug",
+      name: "bugfixer",
+    });
+  });
+
+  test("omits name when absent, rather than setting it to undefined explicitly", () => {
+    const result = agentMetaFromInput({ description: "Fix the bug", prompt: "Go" });
+    expect(result).toEqual({ type: null, description: "Fix the bug" });
+    expect("name" in result).toBe(false);
+  });
+
+  test("defaults type to null and description to empty string when missing", () => {
+    expect(agentMetaFromInput({})).toEqual({ type: null, description: "" });
+  });
+
+  test("ignores non-string fields rather than trusting model-controlled JSON shapes", () => {
+    const input = {
+      description: 42,
+      subagent_type: { nested: true },
+      name: ["array"],
+    };
+    expect(agentMetaFromInput(input as unknown as Record<string, unknown>)).toEqual({
+      type: null,
+      description: "",
+    });
+  });
+});
+
+describe("ParentFlattener", () => {
+  test("resolve(null/undefined) is null (top-level, no parent)", () => {
+    const f = new ParentFlattener();
+    expect(f.resolve(null)).toBeNull();
+    expect(f.resolve(undefined)).toBeNull();
+  });
+
+  test("resolve of an unrecorded id falls back to that id unchanged (depth-1 subagent)", () => {
+    const f = new ParentFlattener();
+    expect(f.resolve("spawn-1")).toBe("spawn-1");
+  });
+
+  test("noteSpawn with a null resolvedParent records nothing (top-level spawn is its own resolution)", () => {
+    const f = new ParentFlattener();
+    f.noteSpawn("spawn-1", null);
+    expect(f.resolve("spawn-1")).toBe("spawn-1");
+  });
+
+  test("flattens a depth-2 nested spawn to its top-level ancestor", () => {
+    const f = new ParentFlattener();
+    // Top-level spawn "spawn-1" (no ancestor to record). Inside it, the
+    // subagent itself calls the spawn tool again, creating nested spawn
+    // "spawn-2" — recorded under spawn-1, the parent resolved for the
+    // message that contained it.
+    f.noteSpawn("spawn-2", f.resolve("spawn-1"));
+    expect(f.resolve("spawn-2")).toBe("spawn-1");
+  });
+
+  test("flattens arbitrarily deep nesting (depth-3) to the single top-level ancestor", () => {
+    const f = new ParentFlattener();
+    f.noteSpawn("spawn-2", f.resolve("spawn-1"));
+    f.noteSpawn("spawn-3", f.resolve("spawn-2"));
+    expect(f.resolve("spawn-3")).toBe("spawn-1");
+    // Messages directly under spawn-2 still flatten to the same ancestor.
+    expect(f.resolve("spawn-2")).toBe("spawn-1");
+  });
+
+  test("independent spawn trees do not cross-contaminate", () => {
+    const f = new ParentFlattener();
+    f.noteSpawn("a2", f.resolve("a1"));
+    f.noteSpawn("b2", f.resolve("b1"));
+    expect(f.resolve("a2")).toBe("a1");
+    expect(f.resolve("b2")).toBe("b1");
+    expect(f.resolve("a1")).toBe("a1");
+    expect(f.resolve("b1")).toBe("b1");
   });
 });

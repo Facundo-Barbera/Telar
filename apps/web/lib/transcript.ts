@@ -92,3 +92,67 @@ export function extractToolResultText(content: unknown): string {
 export function capToolOutput(text: string, cap: number = TOOL_OUTPUT_CAP): string {
   return headTruncate(text, cap);
 }
+
+// --- Subagent attribution -------------------------------------------------
+// Helpers backing route.ts's `forwardSubagentText` handling: naming the
+// agent-spawn tool, reading its AgentInput, and flattening arbitrarily deep
+// subagent nesting to the top-level spawn a tab can actually be drawn from.
+
+// The tool the model calls to spawn a subagent isn't a stable name across
+// harness versions — "Task" historically, "Agent" as of the SDK's current
+// tool-schema naming (sdk-tools.d.ts's `AgentInput`). Both are checked
+// against the live `init.tools` list rather than assuming either.
+export const AGENT_SPAWN_TOOL_CANDIDATES = ["Agent", "Task"] as const;
+
+// Contract: given the init message's `tools` list, returns whichever
+// candidate name is actually registered for this session, or null if
+// neither is (spawning unavailable/disabled). Iterates the candidate list
+// (not `tools`) so that if both were ever somehow present, the current
+// canonical name ("Agent") wins over the legacy one — pure lookup, no
+// guessing beyond that fixed, ordered candidate list.
+export function detectAgentSpawnTool(tools: string[] | undefined): string | null {
+  if (!tools) return null;
+  return AGENT_SPAWN_TOOL_CANDIDATES.find((c) => tools.includes(c)) ?? null;
+}
+
+// Contract: extracts the small `{ type, description, name? }` a spawn
+// tool_use's part is enriched with, straight from its raw AgentInput. Input
+// is model-controlled JSON, not a typed value — every field is optional and
+// individually validated rather than trusted.
+export function agentMetaFromInput(input: Record<string, unknown>): {
+  type: string | null;
+  description: string;
+  name?: string;
+} {
+  const description = typeof input.description === "string" ? input.description : "";
+  const type = typeof input.subagent_type === "string" ? input.subagent_type : null;
+  const name = typeof input.name === "string" ? input.name : undefined;
+  return { type, description, ...(name ? { name } : {}) };
+}
+
+// Contract: collapses subagent nesting of any depth to the nearest ancestor
+// id the caller already knows about. The SDK attributes a message via
+// `parent_tool_use_id`, but for a subagent's own subagent that id names the
+// *inner* spawn's tool_use — one that only ever appeared nested inside an
+// already-forwarded message, never as a top-level part. `noteSpawn` records,
+// for each spawn tool_use seen (at any depth), which already-resolved
+// ancestor it was itself created under; `resolve` then walks a raw
+// parent_tool_use_id through that one-hop map to the flattened id a tab can
+// be drawn from. A spawn with no recorded ancestor (i.e. a top-level one) is
+// its own resolution — `resolve` falls back to the id unchanged.
+export class ParentFlattener {
+  private readonly ancestor = new Map<string, string>();
+
+  resolve(parentToolUseId: string | null | undefined): string | null {
+    if (!parentToolUseId) return null;
+    return this.ancestor.get(parentToolUseId) ?? parentToolUseId;
+  }
+
+  // `id` is a spawn tool_use's own id; `resolvedParent` is `resolve()`'s
+  // output for the message that contained it (null when that spawn is
+  // itself top-level, in which case there's nothing to record — `resolve`
+  // already returns `id` unchanged for it).
+  noteSpawn(id: string, resolvedParent: string | null): void {
+    if (resolvedParent) this.ancestor.set(id, resolvedParent);
+  }
+}
