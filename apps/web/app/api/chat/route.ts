@@ -193,24 +193,29 @@ export async function POST(req: Request) {
           }
         }
 
-        // If we streamed deltas but never got the final block (abort), keep them
-        if (streamingText) parts.push({ type: "text", text: streamingText });
-
-        if (capturedSession) {
-          appendTurn({
-            id: capturedSession,
-            model,
-            account: profile.name,
-            project,
-            userMessage: { role: "user", parts: [{ type: "text", text: message }] },
-            assistantMessage: { role: "assistant", parts },
-            costUsd,
-          });
-          send("saved", { chatId: capturedSession });
-        }
       } catch (e) {
         if (!abort.signal.aborted) send("error", { message: String(e) });
       } finally {
+        // Persist in teardown, not in the happy path: a client disconnect
+        // (navigation, closed tab) aborts the SDK loop with a throw, and the
+        // turn must survive it — the SDK session already exists server-side.
+        try {
+          if (streamingText) parts.push({ type: "text", text: streamingText });
+          if (capturedSession) {
+            appendTurn({
+              id: capturedSession,
+              model,
+              account: profile.name,
+              project,
+              userMessage: { role: "user", parts: [{ type: "text", text: message }] },
+              assistantMessage: { role: "assistant", parts },
+              costUsd,
+            });
+            send("saved", { chatId: capturedSession });
+          }
+        } catch {
+          // persistence failure must never mask the stream teardown
+        }
         try {
           controller.close();
         } catch {

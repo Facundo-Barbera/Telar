@@ -203,12 +203,17 @@ export function SessionView({
 
             switch (event) {
               case "session":
-                // A newly minted session id — reflect it in the URL without
-                // reseeding (the page keeps initialChat undefined until the
-                // first turn persists, so the live stream survives the rewrite).
+                // A newly minted session id — reflect it in the URL shallowly.
+                // router.replace here would be a real App Router navigation:
+                // it remounts the page, cancels this fetch, and the abort kills
+                // the SDK turn server-side. history.replaceState updates the
+                // address bar only; the next real navigation loads the
+                // persisted transcript from the new URL.
                 if (payload.sessionId !== sessionId) {
                   setSessionId(payload.sessionId);
-                  router.replace(
+                  window.history.replaceState(
+                    null,
+                    "",
                     `/projects/${encodeURIComponent(project)}/sessions/${payload.sessionId}`,
                   );
                 }
