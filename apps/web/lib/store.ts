@@ -28,6 +28,7 @@ export type Chat = {
   updatedAt: number;
   costUsd: number;
   turns: number;
+  archived?: boolean; // optional: absent on entries predating archiving
   messages: ChatMessage[];
 };
 
@@ -86,9 +87,19 @@ function previewOf(messages: ChatMessage[] = []): string {
   return "";
 }
 
-export function listChats(project?: string): ChatSummary[] {
+// `archived` controls which slice is returned; default "exclude" keeps every
+// existing caller hiding archived chats with no code change.
+export function listChats(
+  project?: string,
+  opts?: { archived?: "exclude" | "include" | "only" },
+): ChatSummary[] {
+  const mode = opts?.archived ?? "exclude";
   return readChats()
     .filter((c) => (project ? c.project === project : true))
+    .filter((c) => {
+      if (mode === "include") return true;
+      return mode === "only" ? !!c.archived : !c.archived;
+    })
     .map(({ messages, ...meta }) => ({ ...meta, preview: previewOf(messages) }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -99,6 +110,16 @@ export function getChat(id: string): Chat | undefined {
 
 export function deleteChat(id: string) {
   writeChats(readChats().filter((c) => c.id !== id));
+}
+
+// Toggle a chat's archived flag; returns false when the id is unknown.
+export function setChatArchived(id: string, archived: boolean): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  chat.archived = archived;
+  writeChats(chats);
+  return true;
 }
 
 export function appendTurn(opts: {

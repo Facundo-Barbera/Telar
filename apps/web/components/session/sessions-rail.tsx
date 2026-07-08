@@ -3,6 +3,7 @@ import { ArrowLeftIcon, MessageSquarePlusIcon } from "lucide-react";
 import { fmtAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ArchiveButton } from "@/components/session/archive-button";
 
 // The rail only needs a session's identity, title, and recency — a structural
 // subset of the store's chat meta, so listChats(project) passes through as-is.
@@ -54,12 +55,12 @@ export function SessionsRail({
             {sessions.map((s) => {
               const active = s.id === activeId;
               return (
-                <li key={s.id}>
+                <li key={s.id} className="group/rail-item relative">
                   <Link
                     href={`${projectHref}/sessions/${s.id}`}
                     aria-current={active ? "page" : undefined}
                     className={cn(
-                      "block rounded-lg px-2.5 py-2 transition-colors",
+                      "block rounded-lg px-2.5 py-2 pr-9 transition-colors",
                       active ? "bg-muted" : "hover:bg-muted/50",
                     )}
                   >
@@ -77,6 +78,10 @@ export function SessionsRail({
                       {fmtAgo(s.updatedAt)}
                     </div>
                   </Link>
+                  <ArchiveButton
+                    id={s.id}
+                    className="absolute top-1.5 right-1.5 opacity-0 transition-opacity group-hover/rail-item:opacity-100 focus-visible:opacity-100"
+                  />
                 </li>
               );
             })}
