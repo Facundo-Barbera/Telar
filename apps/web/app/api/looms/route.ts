@@ -20,7 +20,11 @@ const LOOM_KINDS = new Set<StartLoomInput["kind"]>([
 const LOOM_TARGETS = new Set(["dev", "preview", "prod"]);
 
 export async function GET() {
-  return Response.json({ looms: listLooms(), active: activeLoomIds() });
+  // A Loom is the listed unit. Its weaves (threads) are first-class child looms
+  // shown INSIDE the god-view (via /api/looms/[id]/threads), never as separate
+  // top-level entries — so the list is roots only (no parentLoomId).
+  const looms = listLooms().filter((l) => !l.parentLoomId);
+  return Response.json({ looms, active: activeLoomIds() });
 }
 
 // Fire-and-forget: startLoom persists the queued loom and returns immediately while
