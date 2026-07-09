@@ -109,6 +109,9 @@ function AccountCard({
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm font-medium">{account.name}</span>
           <Badge variant="secondary" className="text-[10px] uppercase">{provider}</Badge>
+          {account.displayTier && (
+            <Badge variant="outline" className="text-[10px]">{account.displayTier}</Badge>
+          )}
           <Badge variant="outline" className="text-[10px]">{account.authMode ?? "subscription"}</Badge>
           {snap?.subscriptionType && (
             <Badge variant="outline" className="text-[10px] uppercase">{snap.subscriptionType}</Badge>
