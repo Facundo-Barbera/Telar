@@ -5,3 +5,7 @@ node_modules/
 .DS_Store
 *.log
 .telar/
+# Playwright MCP / test output (Verifier agent — generated per run)
+.playwright-mcp/
+test-results/
+playwright-report/

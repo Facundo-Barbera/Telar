@@ -1,7 +1,7 @@
 // Telar engine: deterministic control flow in code, intelligence in the leaves.
 // agent() = one query() forced through a typed result tool.
 // parallel() = Promise.all behind a concurrency gate (subscription-friendly).
-import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import { query, tool, createSdkMcpServer, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -17,6 +17,10 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   maxTurns?: number;
   tools?: string[]; // [] = pure-reasoning agent
   disallowedTools?: string[]; // explicit SDK disallow — wins over any allow, incl. repo settingSources
+  // Extra MCP servers merged alongside the built-in "out" (emit_result) server —
+  // e.g. the Playwright MCP server for the Verifier. Their tools surface as
+  // `mcp__<name>__*` and must be listed in `tools` to be callable.
+  extraMcpServers?: Record<string, McpServerConfig>;
   account?: AccountProfile; // routes this run to a specific Claude account
   resume?: string; // session id — continue a previous run
   abort?: AbortController;
@@ -98,7 +102,7 @@ export async function agent<S extends z.ZodRawShape>(
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...(opts.abort ? { abortController: opts.abort } : {}),
         ...(opts.settingSources ? { settingSources: opts.settingSources } : {}),
-        mcpServers: { out },
+        mcpServers: { out, ...opts.extraMcpServers },
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
         // Belt-and-suspenders against settingSources: a repo's own .claude
         // settings can widen its own allow rules, but an explicit SDK
