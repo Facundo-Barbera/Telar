@@ -6,8 +6,13 @@ import {
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
-import { accountEnv, getProject, type ProjectManifest } from "@telar/core";
-import { ACCOUNTS } from "@/lib/accounts";
+import {
+  accountEnv,
+  getAccount,
+  getDefaultAccountName,
+  getProject,
+  type ProjectManifest,
+} from "@telar/core";
 import { DEFAULT_MODEL, EFFORT_OPTIONS } from "@/lib/models";
 import { generateTitle } from "@/lib/titles";
 import {
@@ -94,9 +99,7 @@ export async function POST(req: Request) {
 
   // Same treatment as the project check: an unknown account is a plain 400
   // before any stream opens, not something canUseTool/the SDK ever sees.
-  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
-  // "constructor"/"toString" can't slip past this as a false "known account".
-  if (account != null && !Object.prototype.hasOwnProperty.call(ACCOUNTS, account)) {
+  if (account != null && !getAccount(account)) {
     return Response.json(
       { error: `Unknown account "${account}".` },
       { status: 400 },
@@ -132,7 +135,20 @@ export async function POST(req: Request) {
   // session's resume transcript lives under the account's config dir, so
   // this route trusts whatever the client sends — the picker being
   // choosable only pre-first-turn is a client-side rule, not enforced here.
-  const profile = ACCOUNTS[account] ?? ACCOUNTS[manifest.account] ?? ACCOUNTS.personal;
+  const profile =
+    (account ? getAccount(account) : undefined) ??
+    getAccount(manifest.account) ??
+    getAccount(getDefaultAccountName()) ?? { name: manifest.account };
+
+  // Sessions run through the Claude Agent SDK. A non-Claude account (e.g.
+  // Codex) can't drive a session until the provider execution seam lands —
+  // reject it up front rather than silently running it on the wrong backend.
+  if ((profile.provider ?? "claude") !== "claude") {
+    return Response.json(
+      { error: `Account "${profile.name}" uses ${profile.provider}, which can't run sessions yet.` },
+      { status: 400 },
+    );
+  }
   const workspace = manifest.root;
 
   const abort = new AbortController();

@@ -10,7 +10,7 @@ import {
   RefreshCwIcon,
 } from "lucide-react";
 import type { Run } from "@telar/core";
-import { ACCOUNTS } from "@/lib/accounts";
+import { useAccounts } from "@/lib/use-accounts";
 import {
   Sidebar,
   SidebarContent,
@@ -96,9 +96,15 @@ function PlanMeter({ label, window }: { label: string; window: PlanWindow }) {
   );
 }
 
-function PlanBlock({ account, snap }: { account: string; snap: PlanSnapshot }) {
-  // A hand-set cosmetic label (e.g. "20x") — undefined until the user fills it in.
-  const tier = ACCOUNTS[account]?.displayTier;
+function PlanBlock({
+  account,
+  snap,
+  tier,
+}: {
+  account: string;
+  snap: PlanSnapshot;
+  tier?: string; // hand-set cosmetic label (e.g. "20x"), undefined until filled in
+}) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -262,6 +268,8 @@ function TelarSidebarHeader() {
 }
 
 function SidebarBody() {
+  const { accounts } = useAccounts();
+  const tierOf = (name: string) => accounts.find((a) => a.name === name)?.displayTier;
   const [runs, setRuns] = useState<Run[]>([]);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
@@ -360,17 +368,18 @@ function SidebarBody() {
   // gone stale, capture fresh usage automatically. Ref-guarded so it fires a
   // single time regardless of re-renders or the load interval.
   useEffect(() => {
-    if (autoRefreshed.current) return;
+    if (autoRefreshed.current || accounts.length === 0) return;
     autoRefreshed.current = true;
+    const names = accounts.map((a) => a.name);
     void refetchUsage().then((p) => {
       const now = Date.now();
-      const stale = Object.keys(ACCOUNTS).some((account) => {
+      const stale = names.some((account) => {
         const snap = p[account];
         return !snap || now - snap.capturedAt > PLAN_STALE_MS;
       });
       if (stale) void runRefresh();
     });
-  }, [refetchUsage, runRefresh]);
+  }, [accounts, refetchUsage, runRefresh]);
 
   const activeRuns = runs.filter((r) => !isTerminal(r.state));
   const activeProjectNames = new Set(activeRuns.map((r) => r.project));
@@ -424,7 +433,7 @@ function SidebarBody() {
           </div>
           {planEntries.length > 0 ? (
             planEntries.map(([account, snap]) => (
-              <PlanBlock key={account} account={account} snap={snap} />
+              <PlanBlock key={account} account={account} snap={snap} tier={tierOf(account)} />
             ))
           ) : (
             <p className="text-xs text-sidebar-foreground/50">

@@ -1,13 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { accountEnv, type AccountProfile } from "@telar/core";
+import { accountEnv, getAccount, listAccounts, type AccountProfile } from "@telar/core";
 import os from "os";
-import { ACCOUNTS } from "@/lib/accounts";
 import {
   readPlanUsage,
   savePlanUsage,
   type PlanSnapshot,
   type PlanWindow,
 } from "@/lib/store";
+import { codexUsageSnapshot } from "@/lib/codex-usage";
 
 export const dynamic = "force-dynamic";
 
@@ -106,18 +106,22 @@ export async function POST(req: Request) {
     // no/empty body → refresh every account
   }
 
-  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
-  // "constructor"/"toString" can't slip past this as a false "known account".
-  if (account && !Object.prototype.hasOwnProperty.call(ACCOUNTS, account)) {
+  if (account && !getAccount(account)) {
     return Response.json({ error: `Unknown account "${account}".` }, { status: 400 });
   }
 
-  const profiles = account ? [ACCOUNTS[account]] : Object.values(ACCOUNTS);
+  const profiles = account ? [getAccount(account)!] : listAccounts();
 
   const errors: Record<string, string> = {};
   for (const profile of profiles) {
     try {
-      await refreshOne(profile);
+      if ((profile.provider ?? "claude") === "codex") {
+        // Zero-cost: read the latest limits cached in Codex's session rollouts.
+        const snap = codexUsageSnapshot(profile.configDir);
+        if (snap) savePlanUsage(profile.name, snap);
+      } else {
+        await refreshOne(profile);
+      }
     } catch (e) {
       errors[profile.name] = e instanceof Error ? e.message : String(e);
     }

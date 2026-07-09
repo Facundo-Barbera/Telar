@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { ArrowLeftIcon, FolderGitIcon } from "lucide-react";
-import { getProject } from "@telar/core";
+import { getProject, listAccounts } from "@telar/core";
 import { getChat, listChats } from "@/lib/store";
-import { ACCOUNTS } from "@/lib/accounts";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -99,9 +98,8 @@ export default async function SessionPage({
   const sessions = listChats(name);
 
   // Display-only account metadata for the client picker — passed as plain
-  // data so the client component never imports the server-only accounts
-  // module (which may carry configDir/oauthTokenEnv).
-  const accounts = Object.values(ACCOUNTS).map((a) => ({
+  // data so the client component never imports the server-only registry.
+  const accounts = listAccounts().map((a) => ({
     name: a.name,
     displayTier: a.displayTier,
   }));

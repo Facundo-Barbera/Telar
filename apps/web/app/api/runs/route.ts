@@ -1,11 +1,11 @@
 import {
   activeRunIds,
+  listAccounts,
   listRuns,
   loadPolicy,
   startRun,
   type StartRunInput,
 } from "@telar/core";
-import { ACCOUNTS } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,8 @@ export async function POST(req: Request) {
   const input = body as StartRunInput;
 
   try {
-    const run = startRun(input, { accounts: ACCOUNTS, policy: loadPolicy() });
+    const accounts = Object.fromEntries(listAccounts().map((a) => [a.name, a]));
+    const run = startRun(input, { accounts, policy: loadPolicy() });
     return Response.json({ run });
   } catch (e) {
     return Response.json(

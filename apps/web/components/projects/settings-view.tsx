@@ -17,7 +17,7 @@ import {
   XIcon,
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
-import { ACCOUNTS } from "@/lib/accounts";
+import { useAccounts } from "@/lib/use-accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -227,7 +227,8 @@ function StringListEditor({
 
 export function ProjectSettings({ name }: { name: string }) {
   const projectHref = `/projects/${encodeURIComponent(name)}`;
-  const accountNames = useMemo(() => Object.keys(ACCOUNTS), []);
+  const { accounts } = useAccounts();
+  const accountNames = accounts.map((a) => a.name);
 
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);

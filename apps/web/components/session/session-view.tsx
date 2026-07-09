@@ -58,6 +58,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { fmtCost, fmtTokens, shortId } from "@/lib/format";
+import { UsagePill } from "@/components/session/usage-pill";
+import type { PlanSnapshot } from "@/lib/store";
 import { DEFAULT_MODEL, EFFORT_OPTIONS, MODELS, modelById } from "@/lib/models";
 import type { ClientPermissionMode } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
@@ -886,6 +888,26 @@ function SessionViewInner({
   // Context-window occupancy: the LATEST turn's prompt size, set (not summed)
   // each turn — see the "done" handler and store.ts contextTokens.
   const [context, setContext] = useState(initialChat?.contextTokens ?? 0);
+  // Active account's 5h + weekly limit snapshot for the workspace usage pill.
+  // Reads the stored plan (populated by the sidebar's refresh) and re-reads on
+  // the global telar:refresh event so it stays in step with the sidebar.
+  const [usageSnap, setUsageSnap] = useState<PlanSnapshot | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      fetch("/api/usage")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!cancelled) setUsageSnap(d?.plan?.[activeAccount] ?? null);
+        })
+        .catch(() => {});
+    load();
+    window.addEventListener("telar:refresh", load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("telar:refresh", load);
+    };
+  }, [activeAccount]);
   const [elapsed, setElapsed] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -1819,6 +1841,7 @@ function SessionViewInner({
               {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
             </Shimmer>
           )}
+          <UsagePill snap={usageSnap} />
           {/* Context-window occupancy after the latest turn — the number that
               actually answers "how full is this conversation". The lifetime
               in/out/cache totals live in the tooltip rather than the bar. */}

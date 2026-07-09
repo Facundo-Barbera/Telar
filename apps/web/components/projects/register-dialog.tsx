@@ -9,7 +9,7 @@ import {
   PlusIcon,
   XIcon,
 } from "lucide-react";
-import { ACCOUNTS } from "@/lib/accounts";
+import { useAccounts } from "@/lib/use-accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -65,7 +65,8 @@ export function RegisterProjectDialog({
   onRegistered: () => void;
 }) {
   const router = useRouter();
-  const accountNames = useMemo(() => Object.keys(ACCOUNTS), []);
+  const { accounts } = useAccounts();
+  const accountNames = accounts.map((a) => a.name);
   const [open, setOpen] = useState(false);
   const [root, setRoot] = useState("");
   const [scaffold, setScaffold] = useState(false);

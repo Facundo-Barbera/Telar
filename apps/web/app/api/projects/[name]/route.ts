@@ -1,9 +1,8 @@
-import { getProject, unregisterProject, writeManifest, ProjectManifest } from "@telar/core";
+import { getAccount, getProject, unregisterProject, writeManifest, ProjectManifest } from "@telar/core";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
-import { ACCOUNTS } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
 
@@ -35,9 +34,7 @@ export async function PATCH(
   if ("root" in body && body.root !== manifest.root) {
     return Response.json({ error: "root is immutable." }, { status: 400 });
   }
-  // hasOwnProperty (not `in`) so inherited Object.prototype keys like
-  // "constructor"/"toString" can't slip past this as a false "known account".
-  if (body.account != null && !Object.prototype.hasOwnProperty.call(ACCOUNTS, body.account)) {
+  if (body.account != null && !getAccount(body.account)) {
     return Response.json(
       { error: `Unknown account "${body.account}".` },
       { status: 400 },
