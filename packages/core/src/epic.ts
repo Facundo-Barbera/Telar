@@ -94,7 +94,7 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
       objective: baseCharter?.objective ?? epic.title,
       proofStrategy: baseCharter?.proofStrategy ?? "custom",
       scope: baseCharter?.scope ?? { allowedPaths: [], forbiddenPaths: [] },
-      budget: baseCharter?.budget ?? { maxParallelThreads: 3, maxAgents: 12 },
+      budget: baseCharter?.budget ?? { maxParallelThreads: 3, maxAgents: 12, maxCriticAgents: 3 },
       shape: "epic",
       decomposition,
       version: baseCharter?.version ?? 1,

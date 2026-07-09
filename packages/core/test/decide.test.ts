@@ -63,6 +63,38 @@ describe("decide — gated + gatesOk + verdict.ok (Verifier gates promotion)", (
   });
 });
 
+describe("decide — panelRequired (§4 Layer 3: a bundle loom's panel IS the gate)", () => {
+  test("panelRequired absent (legacy/no-contract) -> skip still carries gates to done, unchanged", () => {
+    expect(run({ verification: "skip" })).toEqual({ action: "done" });
+  });
+
+  test("panelRequired=false explicitly -> same as absent, skip carries gates to done", () => {
+    expect(run({ verification: "skip", panelRequired: false })).toEqual({ action: "done" });
+  });
+
+  test("panelRequired=true -> skip never promotes even with gates green + agent ok; retries while budget remains", () => {
+    expect(run({ verification: "skip", panelRequired: true, n: 1, maxAttempts: 3 })).toEqual({ action: "retry" });
+  });
+
+  test("panelRequired=true -> needs-review once attempts are exhausted", () => {
+    expect(run({ verification: "skip", panelRequired: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "needs-review",
+      error: "panel verification required but did not run",
+    });
+  });
+
+  test("panelRequired=true has no effect once verification actually 'pass'es", () => {
+    expect(run({ verification: "pass", panelRequired: true })).toEqual({ action: "done" });
+  });
+
+  test("panelRequired=true does not change the fail/flaky branches (already never promote on skip)", () => {
+    expect(run({ verification: "fail", panelRequired: true, n: 1, maxAttempts: 3 })).toEqual({ action: "retry" });
+    expect(
+      run({ verification: "flaky", panelRequired: true, flakyUsed: 0, maxFlaky: 2, n: 1, maxAttempts: 3 }),
+    ).toEqual({ action: "retry" });
+  });
+});
+
 describe("decide — NO-GATES + verdict.ok (Verifier IS the gate)", () => {
   const noGates = { gatesConfigured: false, gatesOk: true, verdict: okVerdict };
 

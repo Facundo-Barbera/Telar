@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, PanelReport, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 
 const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
@@ -40,6 +40,10 @@ export type AttemptRecord = {
   sessionId?: string;
   verdict?: Verdict | null;
   verifierReport?: VerifierReport | null;
+  // §4 Layer 2 (docs/loom-model.md): the Critic Panel's aggregated report,
+  // present when the loom's verification was panel-driven (a Spec Bundle
+  // contract exists) instead of the legacy single-Verifier path.
+  panelReport?: PanelReport | null;
   gates?: GateResult[];
   costUsd?: number;
 };

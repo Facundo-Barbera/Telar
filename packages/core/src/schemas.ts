@@ -209,6 +209,9 @@ export const Budget = z.object({
   maxWallClockHours: z.number().optional(),
   maxParallelThreads: z.number().default(3),
   maxAgents: z.number().default(12), // the concurrency pool
+  // Reserved critic sub-pool (docs/loom-model.md §M / D11) — carved out of
+  // maxAgents so the Critic Panel can't be starved by build fan-out.
+  maxCriticAgents: z.number().default(3),
 });
 export type Budget = z.infer<typeof Budget>;
 
@@ -378,3 +381,57 @@ export function assertProvenance(p: unknown): asserts p is Provenance {
     throw new Error("invalid provenance: humanApprovedAt must be a positive number");
   }
 }
+
+// --- The Critic Panel (docs/loom-model.md §4 Layer 2, §M.3-§M.5) — the
+// single Verifier is replaced by N independent critic lenses, each grounded
+// only in the Spec Bundle + the running app (§M.5 isolation: never the
+// builder's Verdict/summary, never another lens's in-flight verdict).
+
+// "adversarial" and "reproduction" are the §M.3 BLOCKER-FLOOR classes: panel
+// aggregation (decide()) hardcodes >=1 lens of one of these two as always-
+// blocker, in code, never left to manifest/session policy.
+export const CriticClass = z.enum([
+  "intent",
+  "adversarial",
+  "reproduction",
+  "live-experience",
+  "security",
+  "performance",
+  "data-integrity",
+]);
+export type CriticClass = z.infer<typeof CriticClass>;
+
+export const CriticFinding = z.object({
+  severity: DesignSeverity,
+  title: z.string(),
+  detail: z.string(),
+  recommendation: z.string().optional(),
+  assertionId: z.string().optional(), // ties back to a ContractAssertion, when applicable
+  evidence: z.array(Evidence).default([]),
+});
+export type CriticFinding = z.infer<typeof CriticFinding>;
+
+export const CriticVerdict = z.object({
+  lens: z.string(), // human label, e.g. "adversarial/edge"
+  class: CriticClass,
+  blocker: z.boolean(), // is this a must-clear lens (§M.3 floor sets >=1 true)
+  ok: z.boolean(), // did this lens find the work acceptable
+  summary: z.string(),
+  findings: z.array(CriticFinding).default([]),
+  evidence: z.array(Evidence).default([]),
+});
+export type CriticVerdict = z.infer<typeof CriticVerdict>;
+
+// §M.4: panelSize() (the panel's analog of budget.ts:fanoutSize) is fed by
+// measurable post-build signals outside planner control — `sizedFrom` is the
+// audit trail of the raw signals it saw, never an AI-self-declared label.
+export const PanelReport = z.object({
+  url: z.string().default(""), // the app URL the panel drove
+  critics: z.array(CriticVerdict).default([]),
+  sizedFrom: z.record(z.string(), z.number()).optional(),
+  // The LensSpec[] the panel was originally sized to run (panel.ts:panelSize
+  // / retryLenses) — lets aggregatePanel() detect a blocker lens that
+  // crashed/never emitted and silently dropped out of `critics`.
+  sized: z.array(z.object({ class: CriticClass, lens: z.string(), blocker: z.boolean() })).optional(),
+});
+export type PanelReport = z.infer<typeof PanelReport>;

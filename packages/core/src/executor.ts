@@ -1,14 +1,25 @@
 // Executor: the L1 stage loop — attempt, verify with gates, decide, retry.
 // Pure w.r.t. persistence: mutates the loom object and emits events; the caller
 // persists via onState/onEvent. Retries resume the previous attempt's session.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
 import { type BuildPiece, runBuildFanout } from "./build-fanout";
+import { readBundleFile, readContract } from "./bundle";
+import { runPanel, type CriticContext, type PanelEvent } from "./critic";
+import { classifyPanel, type PanelSignals } from "./panel";
 import { runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { ModelPolicy, Verdict } from "./schemas";
-import type { AccountProfile, ProjectManifest, VerifierReport, WorkUnitState } from "./schemas";
+import type {
+  AccountProfile,
+  PanelReport,
+  ProjectManifest,
+  VerificationContract,
+  VerifierReport,
+  WorkUnitState,
+} from "./schemas";
 import { verify } from "./verifier";
 
 export type ExecuteOpts = {
@@ -34,6 +45,47 @@ const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 
 const BASE_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"];
 
 const tail = (s: string, n: number) => (s.length > n ? s.slice(-n) : s);
+
+// Conservative "is file under any of these path patterns" check — the same
+// literal-prefix approximation build-fanout.ts uses for allowedPaths overlap
+// (duplicated locally rather than shared, to keep this a same-file, minimal
+// change). An unanchored/empty pattern matches everything.
+function pathUnderAny(file: string, patterns: string[]): boolean {
+  const norm = file.replace(/\\/g, "/");
+  return patterns.some((p) => {
+    const idx = p.search(/[*?[]/);
+    const base = (idx === -1 ? p : p.slice(0, idx)).replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!base) return true;
+    return norm === base || norm.startsWith(base + "/") || norm.startsWith(base);
+  });
+}
+
+// §M.4: an independent (non-self-reported) measurement of which files
+// actually changed on disk, via `git status --porcelain` — the same
+// primitive build-fanout.ts:mergeDisjoint already uses for the fan-out path.
+// Best-effort: a non-git root (e.g. in tests) or any git failure yields []
+// rather than throwing, so this can never break a loom that has no git repo.
+function gitTouchedFiles(root: string): string[] {
+  try {
+    const raw = execFileSync("git", ["-c", "core.quotepath=false", "status", "--porcelain"], {
+      cwd: root,
+    }).toString();
+    const files: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      const status = line.slice(0, 2);
+      let filePath = line.slice(3).replace(/^"|"$/g, "");
+      if (status.includes("R")) {
+        const parts = filePath.split(" -> ");
+        filePath = parts[parts.length - 1]!;
+      }
+      files.push(filePath);
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
 
 function firstPrompt(loom: Loom, manifest: ProjectManifest): string {
   const protectedPaths = manifest.guardrails.protectedPaths;
@@ -102,7 +154,13 @@ export function terminalStateForCompletedLoom(loom: Pick<Loom, "parentLoomId">):
 
 // Pure outcome function: given the attempt's gate/verdict/verification state,
 // decide what to do. No side effects, no persistence. When verification ===
-// "skip" the outcome is byte-identical to the pre-M2 behavior.
+// "skip" the outcome is byte-identical to the pre-M2 behavior, UNLESS
+// `panelRequired` is set (a Verification Contract/Critic Panel was mandatory
+// for this loom) — in that case a "skip" can never satisfy promotion, no
+// matter how green the deterministic gates are: a missing target, a thrown
+// exception, or an all-null critic set is a FAILURE to obtain evidence, not
+// "nothing to verify" (docs/loom-model.md §4 Layer 3). Legacy/no-contract
+// looms never set this, so their behavior is unchanged.
 export function decide(input: {
   gatesConfigured: boolean;
   gatesOk: boolean;
@@ -112,8 +170,10 @@ export function decide(input: {
   maxAttempts: number;
   flakyUsed: number;
   maxFlaky: number;
+  panelRequired?: boolean;
 }): Decision {
-  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky } = input;
+  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired } =
+    input;
   const canRetry = n < maxAttempts;
   const flakyDecision = (): Decision =>
     flakyUsed < maxFlaky && canRetry ? { action: "retry" } : { action: "needs-review", error: "verification flaky" };
@@ -123,6 +183,12 @@ export function decide(input: {
       // Deterministic gates + agent both green; the Verifier now gates promotion.
       switch (verification) {
         case "skip":
+          if (panelRequired) {
+            return canRetry
+              ? { action: "retry" }
+              : { action: "needs-review", error: "panel verification required but did not run" };
+          }
+          return { action: "done" };
         case "pass":
           return { action: "done" };
         case "fail":
@@ -192,9 +258,101 @@ export function classify(report: VerifierReport): Verification {
   return "pass";
 }
 
+// §4 Layer 2 (docs/loom-model.md): grounds the Critic Panel in the loom's
+// Spec Bundle and returns its aggregated classification — the new source of
+// `verification` for a bundle loom. `target` missing means nothing can be
+// driven live, so this never spends anything ("skip", same rule the legacy
+// path uses). PURE composition around runPanel/classifyPanel; the only
+// side effects are emit() and mutating `attempt` (verifierReport's sibling).
+async function runPanelVerification(
+  loom: Loom,
+  manifest: ProjectManifest,
+  attempt: AttemptRecord,
+  emit: (ev: { type: string } & Record<string, unknown>) => void,
+  contract: VerificationContract,
+  account?: AccountProfile,
+  target?: string,
+  opts?: { abort?: AbortController; run?: typeof agent },
+): Promise<{
+  verification: Verification;
+  report: VerifierReport | null;
+  panelReport?: PanelReport | null;
+  panelRequired: boolean;
+}> {
+  if (!target) {
+    emit({ type: "panel", n: attempt.n, report: null });
+    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+  }
+  try {
+    const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
+    const ctx: CriticContext = { featureName: loom.title, url: target, objective, assertions: contract.assertions };
+
+    // §M.4 measurable, post-build signals — never an AI-self-declared label.
+    // filesTouched is the UNION of the builder's self-report and an
+    // independent `git status --porcelain` read of manifest.root: a builder
+    // that omits a file from its own Verdict (adversarially or by mistake)
+    // can no longer shrink its own panel or hide a protected-path edit —
+    // the git-derived set always carries the true touched files through.
+    const selfReported = attempt.verdict?.files_touched ?? [];
+    const gitTouched = gitTouchedFiles(manifest.root);
+    const filesTouched = Array.from(new Set([...selfReported, ...gitTouched]));
+    const allowedPaths = loom.charter?.scope.allowedPaths ?? [];
+    const protectedPaths = manifest.guardrails.protectedPaths;
+    const filesOutsideAllowed = allowedPaths.length
+      ? filesTouched.filter((f) => !pathUnderAny(f, allowedPaths)).length
+      : 0;
+    const protectedPathsTouched = filesTouched.some((f) => pathUnderAny(f, protectedPaths));
+    const priorFailingCritics = loom.attempts.filter(
+      (a) => a.n < attempt.n && a.panelReport && classifyPanel(a.panelReport) === "fail",
+    ).length;
+
+    const signals: PanelSignals = {
+      diffLines: 0, // no git-diff wiring at this layer yet; filesTouched carries the size signal
+      filesTouched: filesTouched.length,
+      filesOutsideAllowed,
+      protectedPathsTouched,
+      priorFailingCritics,
+    };
+
+    const evidenceDir = path.join(loomDir(loom.id), "evidence", `panel-${attempt.n}`);
+    const maxCriticAgents = loom.charter?.budget.maxCriticAgents ?? 3;
+
+    const panelReport = await runPanel(ctx, {
+      signals,
+      maxCriticAgents,
+      evidenceDir,
+      account,
+      abort: opts?.abort,
+      run: opts?.run,
+      onEvent: (e: PanelEvent) => {
+        if (e.type === "critic-cost") {
+          // §M "panel cost is real spend": flow it into the attempt, not just the event stream.
+          attempt.costUsd = (attempt.costUsd ?? 0) + e.costUsd;
+          emit({ type: "critic-cost", lens: e.lens, costUsd: e.costUsd });
+        } else {
+          emit({ type: "critic-verdict", lens: e.lens, verdict: e.verdict });
+        }
+      },
+    });
+
+    attempt.panelReport = panelReport;
+    emit({ type: "panel", n: attempt.n, report: panelReport });
+    return { verification: classifyPanel(panelReport), report: null, panelReport, panelRequired: true };
+  } catch (err) {
+    emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
+    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+  }
+}
+
 // Drive the Verifier over the running app: attaches the report to the attempt,
 // relativizes evidence paths, emits {type:"verifier"}, and classifies the loom.
 // Best-effort — a verify failure must never break the loom (classifies "skip").
+//
+// §4 (docs/loom-model.md): a loom anchored to a Spec Bundle (a validated
+// Verification Contract present via readContract) is judged by the Critic
+// Panel instead — GROUNDING replaces the single Verifier as the source of
+// `verification`. A loom with NO bundle/contract (today's acceptanceCriteria
+// looms) falls through unchanged to the legacy path below: full back-compat.
 export async function runVerification(
   loom: Loom,
   manifest: ProjectManifest,
@@ -202,9 +360,18 @@ export async function runVerification(
   emit: (ev: { type: string } & Record<string, unknown>) => void,
   account?: AccountProfile,
   url?: string,
-): Promise<{ verification: Verification; report: VerifierReport | null }> {
+  opts?: { abort?: AbortController; run?: typeof agent },
+): Promise<{
+  verification: Verification;
+  report: VerifierReport | null;
+  panelReport?: PanelReport | null;
+  panelRequired: boolean;
+}> {
   const target = url ?? manifest.urls?.dev;
-  if (!loom.acceptanceCriteria?.length || !target) return { verification: "skip", report: null };
+  const { contract } = readContract(loom.id);
+  if (contract) return runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts);
+
+  if (!loom.acceptanceCriteria?.length || !target) return { verification: "skip", report: null, panelRequired: false };
   try {
     const evidenceDir = path.join(loomDir(loom.id), "evidence");
     let designGuidelines: string | undefined;
@@ -221,7 +388,7 @@ export async function runVerification(
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
-      return { verification: "skip", report: null };
+      return { verification: "skip", report: null, panelRequired: false };
     }
     // Rewrite absolute evidence paths under evidenceDir to relative so the UI
     // can serve them via /api/looms/<id>/evidence/<relpath>.
@@ -236,10 +403,10 @@ export async function runVerification(
     // Persisted by the caller's onState when the next setState fires (this
     // module stays pure w.r.t. persistence — see the file header).
     emit({ type: "verifier", n: attempt.n, report });
-    return { verification: classify(report), report };
+    return { verification: classify(report), report, panelRequired: false };
   } catch (err) {
     emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
-    return { verification: "skip", report: null };
+    return { verification: "skip", report: null, panelRequired: false };
   }
 }
 
@@ -301,6 +468,7 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
       emit,
       opts.accounts?.[manifest.account],
       url,
+      { abort: opts.abort },
     );
     attempt.endedAt = Date.now();
     opts.onState?.(loom);
@@ -525,10 +693,20 @@ export async function executeLoom(
       const builderOk = verdict?.ok === true && (gatesConfigured ? gateRun.ok : true);
       let verification: Verification = "skip";
       let report: VerifierReport | null = null;
+      let panelRequired = false;
       if (builderOk) {
-        const vr = await runVerification(loom, manifest, attempt, emit, opts.accounts?.[manifest.account]);
+        const vr = await runVerification(
+          loom,
+          manifest,
+          attempt,
+          emit,
+          opts.accounts?.[manifest.account],
+          undefined,
+          { abort: opts.abort },
+        );
         verification = vr.verification;
         report = vr.report;
+        panelRequired = vr.panelRequired;
       }
 
       if (isAborted()) return halt();
@@ -538,6 +716,7 @@ export async function executeLoom(
         gatesOk: gateRun.ok,
         verdict,
         verification,
+        panelRequired,
         n,
         maxAttempts,
         flakyUsed,

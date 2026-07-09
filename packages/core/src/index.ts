@@ -22,3 +22,5 @@ export * from "./distill";
 export * from "./spec-lint";
 export * from "./build-fanout";
 export * from "./bundle";
+export * from "./panel";
+export * from "./critic";
