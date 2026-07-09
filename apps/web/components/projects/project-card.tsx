@@ -199,6 +199,7 @@ export function ProjectCard({
           <Button
             variant="secondary"
             size="sm"
+            nativeButton={false}
             render={
               <Link
                 href={`/projects/${encodeURIComponent(entry.name)}/sessions/new`}

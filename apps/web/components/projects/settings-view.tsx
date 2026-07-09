@@ -350,7 +350,7 @@ export function ProjectSettings({ name }: { name: string }) {
               </>
             }
             action={
-              <Button variant="outline" render={<Link href="/projects" />}>
+              <Button variant="outline" nativeButton={false} render={<Link href="/projects" />}>
                 Back to projects
               </Button>
             }
