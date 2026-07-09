@@ -239,10 +239,27 @@ export async function approveCharter(id: string, by: string, deps: DispatcherDep
   return true;
 }
 
+const TERMINAL_STATES: ReadonlySet<Loom["state"]> = new Set(["done", "halted", "failed", "skipped"]);
+
+// "Cancel" always means "stop this loom" — a live loom is aborted (the
+// running executor handles its own transition to "halted"); a paused loom
+// (charter-review/queued/ready/blocked/needs-review) has no live process to
+// abort, so it's halted directly here instead.
 export function cancelLoom(id: string): boolean {
   const ctl = active.get(id);
-  if (!ctl) return false;
-  ctl.abort();
+  if (ctl) {
+    ctl.abort();
+    active.delete(id);
+    return true;
+  }
+
+  const loom = getLoom(id);
+  if (!loom || TERMINAL_STATES.has(loom.state)) return false;
+
+  loom.state = "halted";
+  loom.error = loom.error ?? "Cancelled by user.";
+  appendEvent(id, { type: "state", state: "halted" });
+  saveLoom(loom);
   return true;
 }
 
