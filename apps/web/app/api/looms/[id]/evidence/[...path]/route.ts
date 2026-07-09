@@ -22,7 +22,12 @@ export async function GET(
 ) {
   const { id, path: segments } = await params;
 
-  const evidenceDir = path.join(loomDir(id), "evidence");
+  let evidenceDir: string;
+  try {
+    evidenceDir = path.join(loomDir(id), "evidence");
+  } catch {
+    return new Response("Forbidden", { status: 403 });
+  }
   const target = path.resolve(evidenceDir, ...segments);
 
   // Reject anything resolving outside the evidence dir (.., absolute, symlink-ish).

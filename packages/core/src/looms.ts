@@ -8,7 +8,24 @@ import type { GateResult } from "./gates";
 
 const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
 const loomsDir = () => path.join(telarDir(), "looms");
-export const loomDir = (id: string) => path.join(loomsDir(), id);
+
+// Every consumer of a loom's on-disk location (spec/evidence dirs, loom.json,
+// events.ndjson) routes through here, so this is the one place `id` needs
+// guarding against path traversal (e.g. id="../../etc" relocating the whole
+// per-loom sandbox off-disk). Reject anything that isn't a bare, separator-
+// free path segment matching createLoom()'s own id shape.
+export const loomDir = (id: string) => {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error(`invalid loom id: ${JSON.stringify(id)}`);
+  }
+  const dir = path.join(loomsDir(), id);
+  const base = loomsDir();
+  const withSep = base.endsWith(path.sep) ? base : base + path.sep;
+  if (!dir.startsWith(withSep)) {
+    throw new Error(`invalid loom id: ${JSON.stringify(id)}`);
+  }
+  return dir;
+};
 
 export type LoomKind = "quickfix" | "story" | "custom" | "verify";
 
@@ -125,7 +142,12 @@ export function saveLoom(loom: Loom): void {
 
 export function getLoom(id: string): Loom | null {
   ensureMigrated();
-  const dir = loomDir(id);
+  let dir: string;
+  try {
+    dir = loomDir(id);
+  } catch {
+    return null; // malformed/traversal id: treat like "not found", not a 500
+  }
   try {
     return JSON.parse(fs.readFileSync(path.join(dir, "loom.json"), "utf8")) as Loom;
   } catch {
