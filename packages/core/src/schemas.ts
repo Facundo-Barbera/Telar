@@ -126,8 +126,10 @@ export const WorkUnitState = z.enum([
   "preparing",
   "running",
   "verifying",
+  "ready", // verified, awaiting owner acceptance (docs/loom-model.md §A)
   "done",
   "needs-review",
+  "blocked", // paused on a missing prerequisite/human decision (docs/loom-model.md §M.7)
   "halted",
   "failed",
   "skipped",
@@ -235,3 +237,144 @@ export const Charter = z.object({
   rationale: z.string().optional(), // structured decomposition reasoning
 });
 export type Charter = z.infer<typeof Charter>;
+
+// --- Verification Contract (docs/loom-model.md §M.1, §2) — the falsifiable-
+// by-construction proof spec that anchors a Spec Bundle. "Structured" means
+// falsifiable, not "valid JSON": every non-live-critic assertion must carry a
+// concrete expected value or bundle-file pointer; validateContract enforces
+// that at the schema boundary.
+
+export const AssertionType = z.enum([
+  "golden-diff",
+  "value-equality",
+  "schema-match",
+  "contains",
+  "live-critic",
+]);
+export type AssertionType = z.infer<typeof AssertionType>;
+
+export const ContractAssertion = z.object({
+  id: z.string(),
+  subGoalId: z.string().optional(),
+  description: z.string(),
+  type: AssertionType,
+  expected: z.string().optional(),
+  expectedFile: z.string().optional(),
+  observable: z.string().optional(), // required for "live-critic": what it checks
+  blocker: z.boolean().default(true),
+});
+export type ContractAssertion = z.infer<typeof ContractAssertion>;
+
+export const VerificationContract = z.object({
+  version: z.number().default(1),
+  assertions: z.array(ContractAssertion).default([]),
+});
+export type VerificationContract = z.infer<typeof VerificationContract>;
+
+// PURE. Validates a Verification Contract against §M.1's falsifiable-by-
+// construction invariant. Returns every violation found (analog of
+// validateCharter), not just the first — [] means valid.
+//
+// `opts.existingFiles` (when supplied by a caller with bundle access, e.g.
+// bundle.ts) lets an expectedFile assertion be checked against what's
+// actually in the bundle rather than trusting any non-blank string as a
+// "concrete pointer" — closing the loophole where a prose sentence in
+// `expected` or a dangling `expectedFile` path both pass as falsifiable.
+export function validateContract(
+  c: VerificationContract,
+  opts?: { existingFiles?: Set<string> },
+): string[] {
+  const errors: string[] = [];
+  const assertions = c.assertions ?? [];
+
+  if (!assertions.length) errors.push("contract must have at least one assertion");
+
+  // §M.1's red-team target: an all-live-critic contract is prose judged by
+  // prose, with no falsifiable hard gate at all. Mirror §M.3's panel floor
+  // ("≥1 adversarial lens always blocks") at the contract level.
+  if (assertions.length && assertions.every((a) => a.type === "live-critic")) {
+    errors.push("contract must have at least one non-live-critic (hard-gate) assertion");
+  }
+
+  for (const a of assertions) {
+    if (!a.description || !a.description.trim()) {
+      errors.push(`assertion ${a.id} must have a non-empty description`);
+    }
+
+    if (a.type === "live-critic") {
+      if (!a.observable || !a.observable.trim()) {
+        errors.push(`live-critic assertion ${a.id} must name an observable`);
+      }
+    } else {
+      const hasExpected = !!a.expected && !!a.expected.trim();
+      const hasExpectedFile = !!a.expectedFile && !!a.expectedFile.trim();
+      if (!hasExpected && !hasExpectedFile) {
+        errors.push(`assertion ${a.id} is prose-only: needs expected or expectedFile`);
+      } else if (hasExpectedFile && opts?.existingFiles && !opts.existingFiles.has(a.expectedFile!.trim())) {
+        errors.push(`assertion ${a.id} points at a bundle file that doesn't exist: ${a.expectedFile}`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+// PURE. §M.2 loosening detector: returns the ids of assertions LOOSENED
+// between oldC and newC — removed outright, downgraded blocker -> non-
+// blocker, OR (still a blocker in both) content-weakened: its hard-gate type
+// swapped for "live-critic", or its expected/expectedFile pointer changed.
+// Editing the yardstick is set_verdict in disguise (§M.2) — text can't tell
+// "stricter" from "looser," so ANY content change to a still-blocking
+// assertion is treated as loosening-shaped and routed to the co-sign gate,
+// erring toward false positives over silent evasion. Tightening
+// (non-blocker -> blocker) and unchanged assertions are never flagged.
+export function contractLoosenings(oldC: VerificationContract, newC: VerificationContract): string[] {
+  const newById = new Map(newC.assertions.map((a) => [a.id, a]));
+  const loosened: string[] = [];
+
+  for (const old of oldC.assertions) {
+    const updated = newById.get(old.id);
+    if (!updated) {
+      loosened.push(old.id);
+      continue;
+    }
+    if (old.blocker && !updated.blocker) {
+      loosened.push(old.id);
+      continue;
+    }
+    if (updated.blocker) {
+      const typeWeakened = old.type !== "live-critic" && updated.type === "live-critic";
+      const contentChanged = old.expected !== updated.expected || old.expectedFile !== updated.expectedFile;
+      if (typeWeakened || contentChanged) loosened.push(old.id);
+    }
+  }
+
+  return loosened;
+}
+
+// --- Provenance (docs/loom-model.md §M.6) — human-approved origin of a Spec
+// Bundle. Settable only by a UI action, never the session agent; startLoom-
+// from-bundle rejects a bundle without it.
+
+export const Provenance = z.object({
+  sessionId: z.string().optional(),
+  approvedBy: z.string(),
+  humanApprovedAt: z.number(),
+});
+export type Provenance = z.infer<typeof Provenance>;
+
+// Throws with a clear message if `p` isn't a valid Provenance — the guard
+// startLoom-from-bundle uses to enforce "a Loom can only start from
+// human-approved provenance" as a checkable invariant, not a UI convention.
+export function assertProvenance(p: unknown): asserts p is Provenance {
+  const parsed = Provenance.safeParse(p);
+  if (!parsed.success) {
+    throw new Error(`invalid provenance: ${parsed.error.message}`);
+  }
+  if (!parsed.data.approvedBy.trim()) {
+    throw new Error("invalid provenance: approvedBy must be non-empty");
+  }
+  if (!Number.isFinite(parsed.data.humanApprovedAt) || parsed.data.humanApprovedAt <= 0) {
+    throw new Error("invalid provenance: humanApprovedAt must be a positive number");
+  }
+}

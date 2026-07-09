@@ -1,9 +1,11 @@
 // Epic roll-up & the orchestrator control loop (docs/loom-orchestrator.md
 // §4/§6/§7/§11). An epic Loom never builds anything itself — it only spawns
-// and folds up child Looms. rollupEpic is the ONLY path to "done": every
+// and folds up child Looms. rollupEpic is the ONLY completion path: every
 // required SubGoal's child must have independently reached "done" via
-// executeLoom's decide(). This is the composed moat — do not add another
-// branch that returns "done".
+// executeLoom's decide() (children keep landing on "done" — the epic is the
+// root the owner accepts, so the epic itself rolls up to "ready", never
+// "done" — docs/loom-model.md §A). This is the composed moat — do not add
+// another branch that returns "ready"/"done" here.
 import type { Loom } from "./looms";
 import type { Charter, SubGoal, WorkUnitState } from "./schemas";
 import { tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
@@ -30,7 +32,9 @@ export function rollupEpic(
   }
 
   const allRequiredDone = required.every((sg) => childBySubGoal.get(sg.id)?.state === "done");
-  if (allRequiredDone) return { state: "done" };
+  // §A: the epic is the root the owner accepts — it lands "ready", never
+  // "done", even though the gate is still every required child === "done".
+  if (allRequiredDone) return { state: "ready" };
 
   const failedRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state === "failed");
   if (failedRequired) return { state: "failed", error: `${failedRequired.id}: failed` };
@@ -224,9 +228,10 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
 
     const children = [...finished.values()];
     const r = rollupEpic(children, decomposition);
-    // rollup is authoritative for state: a genuinely "done" rollup always
-    // wins, clearing any stray escalate/iteration-bound error string.
-    epic.error = r.state === "done" ? null : (r.error ?? epic.error ?? null);
+    // rollup is authoritative for state: a genuinely "ready" rollup (every
+    // required child done) always wins, clearing any stray escalate/
+    // iteration-bound error string.
+    epic.error = r.state === "ready" ? null : (r.error ?? epic.error ?? null);
     setState(r.state);
     emit({ type: "epic-rollup", state: r.state });
     return epic;

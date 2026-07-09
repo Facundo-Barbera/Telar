@@ -165,6 +165,33 @@ export function appendEvent(id: string, ev: { type: string } & Record<string, un
   fs.appendFileSync(path.join(dir, "events.ndjson"), JSON.stringify({ ...ev, ts: Date.now() }) + "\n");
 }
 
+// §A / §M.2 (docs/loom-model.md): the ONLY path "ready" -> "done". A NORMAL
+// accept requires the loom to already be "ready" (verification green). An
+// OVERRIDE accept (opts.override) promotes a non-ready loom (e.g. a red/
+// needs-review loom) but requires opts.cosignedBy — the human co-sign §M.2
+// mandates for accepting anything less than a clean green — never the
+// default accept button.
+export function acceptLoom(id: string, by: string, opts?: { override?: boolean; cosignedBy?: string }): Loom {
+  const loom = getLoom(id);
+  if (!loom) throw new Error(`loom not found: ${id}`);
+  if (loom.state === "done") throw new Error("loom already accepted");
+
+  if (loom.state === "ready") {
+    loom.state = "done";
+    appendEvent(id, { type: "accepted", by });
+    saveLoom(loom);
+    return loom;
+  }
+
+  if (!opts?.override || !opts.cosignedBy?.trim()) {
+    throw new Error("accepting a non-ready loom requires an override co-sign");
+  }
+  loom.state = "done";
+  appendEvent(id, { type: "accepted", by, override: true, cosignedBy: opts.cosignedBy });
+  saveLoom(loom);
+  return loom;
+}
+
 // afterLine = complete lines already consumed; pass back nextLine to tail incrementally.
 export function readEvents(id: string, afterLine = 0): { events: LoomEvent[]; nextLine: number } {
   ensureMigrated();

@@ -92,6 +92,14 @@ export type Decision =
   | { action: "failed"; error?: string }
   | { action: "retry" };
 
+// Pure: §A (docs/loom-model.md) — a completed ROOT loom (no parentLoomId)
+// lands "ready" (verified, awaiting owner acceptance via acceptLoom()), never
+// "done". A CHILD thread (has parentLoomId) is a sub-unit the orchestrator's
+// rollupEpic folds up, and that gate still needs "done" from its children.
+export function terminalStateForCompletedLoom(loom: Pick<Loom, "parentLoomId">): WorkUnitState {
+  return loom.parentLoomId ? "done" : "ready";
+}
+
 // Pure outcome function: given the attempt's gate/verdict/verification state,
 // decide what to do. No side effects, no persistence. When verification ===
 // "skip" the outcome is byte-identical to the pre-M2 behavior.
@@ -236,11 +244,18 @@ export async function runVerification(
 }
 
 // Pure outcome function for a verify loom: no builder loop, so the mapping
-// from Verification to a terminal WorkUnitState is direct — no retries.
-export function decideVerifyLoom(v: Verification): { state: WorkUnitState; error?: string } {
+// from Verification to a terminal WorkUnitState is direct — no retries. A
+// "pass" routes through terminalStateForCompletedLoom (§A) same as the
+// builder path: a ROOT verify loom (no parentLoomId — true for every verify
+// loom today, since nothing spawns one as a child) lands "ready", awaiting
+// owner acceptance via acceptLoom(), never straight to "done".
+export function decideVerifyLoom(
+  v: Verification,
+  loom: Pick<Loom, "parentLoomId">,
+): { state: WorkUnitState; error?: string } {
   switch (v) {
     case "pass":
-      return { state: "done" };
+      return { state: terminalStateForCompletedLoom(loom) };
     case "fail":
       return { state: "needs-review", error: "verification failed" };
     case "flaky":
@@ -292,7 +307,7 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
 
     if (isAborted()) return halt();
 
-    const d = decideVerifyLoom(verification);
+    const d = decideVerifyLoom(verification, loom);
     if (d.error) loom.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
     setState(d.state);
     return loom;
@@ -530,7 +545,7 @@ export async function executeLoom(
       });
 
       if (decision.action === "done") {
-        setState("done");
+        setState(terminalStateForCompletedLoom(loom));
         return loom;
       }
       if (decision.action === "needs-review") {

@@ -54,13 +54,13 @@ function subGoal(overrides: Partial<SubGoal> = {}): SubGoal {
 }
 
 describe("rollupEpic (pure)", () => {
-  test("all required children done -> done", () => {
+  test("all required children done -> ready (§A: the epic is the root the owner accepts)", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "done" }),
     ];
-    expect(rollupEpic(children, decomposition)).toEqual({ state: "done" });
+    expect(rollupEpic(children, decomposition)).toEqual({ state: "ready" });
   });
 
   test("a required child failed -> failed", () => {
@@ -85,13 +85,13 @@ describe("rollupEpic (pure)", () => {
     expect(r.error).toBe("s2: not done");
   });
 
-  test("a non-required subgoal's child failed while all required done -> done", () => {
+  test("a non-required subgoal's child failed while all required done -> ready", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2", required: false })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "failed" }),
     ];
-    expect(rollupEpic(children, decomposition)).toEqual({ state: "done" });
+    expect(rollupEpic(children, decomposition)).toEqual({ state: "ready" });
   });
 
   test("a required subgoal with no child -> needs-review", () => {
@@ -104,7 +104,7 @@ describe("rollupEpic (pure)", () => {
 });
 
 describe("runEpic (fakes, no disk/agents)", () => {
-  test("folds up to done with two independent subgoals; children isolated from the epic object", async () => {
+  test("folds up to ready (§A) with two independent subgoals; children isolated from the epic object", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const epic = fakeLoom({ role: "epic" });
     const spawnedSubGoalIds: string[] = [];
@@ -120,7 +120,7 @@ describe("runEpic (fakes, no disk/agents)", () => {
       },
     });
 
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
     expect(spawnedSubGoalIds.sort()).toEqual(["s1", "s2"]);
     // Isolation at the object level: the epic doesn't embed child attempts/states.
     expect((result as unknown as Record<string, unknown>).children).toBeUndefined();
@@ -157,7 +157,7 @@ describe("runEpic (fakes, no disk/agents)", () => {
       },
     });
 
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
     expect(order.indexOf("a")).toBeLessThan(order.indexOf("b"));
   });
 });

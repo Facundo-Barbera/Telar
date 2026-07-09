@@ -93,6 +93,11 @@ function dispatchExecution(
   abort: AbortController,
   opts: { maxAttempts?: number } = {},
 ): Promise<Loom> {
+  // TODO(loom-model P1): derive epic-ness from "has decomposition/children"
+  // rather than the stored charter.shape-derived loom.role (docs/loom-model.md
+  // §2 "Epic-ness is derived"). Left as-is: role is set in multiple places
+  // (below, and the scoping path) entangled with charterPolicy gating — a
+  // broad refactor is out of scope for this pass.
   if (loom.role === "epic") return runEpicWiring(loom, manifest, deps, abort);
   return (deps.runLoomFn ?? executeLoom)(loom, manifest, {
     policy: deps.policy ?? loadPolicy(),

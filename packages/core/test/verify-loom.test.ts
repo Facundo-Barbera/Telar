@@ -4,20 +4,27 @@ import { WorkUnit } from "../src/schemas";
 import type { Loom, LoomKind } from "../src/looms";
 
 describe("decideVerifyLoom", () => {
-  test("pass -> done", () => {
-    expect(decideVerifyLoom("pass")).toEqual({ state: "done" });
+  // §A: every verify loom in production is a ROOT loom (nothing spawns one as
+  // a child) — "pass" must land "ready" (awaiting acceptLoom), never
+  // self-promote straight to "done".
+  test("pass on a ROOT verify loom (no parentLoomId) -> ready, not done", () => {
+    expect(decideVerifyLoom("pass", {})).toEqual({ state: "ready" });
+  });
+
+  test("pass on a CHILD verify loom (has parentLoomId) -> done", () => {
+    expect(decideVerifyLoom("pass", { parentLoomId: "epic_1" })).toEqual({ state: "done" });
   });
 
   test("fail -> needs-review 'verification failed'", () => {
-    expect(decideVerifyLoom("fail")).toEqual({ state: "needs-review", error: "verification failed" });
+    expect(decideVerifyLoom("fail", {})).toEqual({ state: "needs-review", error: "verification failed" });
   });
 
   test("flaky -> needs-review 'verification flaky'", () => {
-    expect(decideVerifyLoom("flaky")).toEqual({ state: "needs-review", error: "verification flaky" });
+    expect(decideVerifyLoom("flaky", {})).toEqual({ state: "needs-review", error: "verification flaky" });
   });
 
   test("skip -> needs-review 'nothing verified'", () => {
-    expect(decideVerifyLoom("skip")).toEqual({ state: "needs-review", error: "nothing verified" });
+    expect(decideVerifyLoom("skip", {})).toEqual({ state: "needs-review", error: "nothing verified" });
   });
 });
 

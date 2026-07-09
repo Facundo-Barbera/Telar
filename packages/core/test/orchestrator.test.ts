@@ -223,7 +223,7 @@ describe("tick (pure scheduler) — scenario table", () => {
 // ---- runEpic + tick loop, with fakes (no disk/agents) ----------------------
 
 describe("runEpic wired to the tick loop (fakes)", () => {
-  test("N=5 independent subgoals, maxAgents=2: pool cap holds, peak concurrency <= 2, all 5 run, epic folds to done", async () => {
+  test("N=5 independent subgoals, maxAgents=2: pool cap holds, peak concurrency <= 2, all 5 run, epic folds to ready (§A)", async () => {
     const decomposition = Array.from({ length: 5 }, (_, i) => subGoal({ id: `s${i + 1}` }));
     const epic = fakeLoom({ role: "epic", charter: charter(decomposition, { maxAgents: 2 }) });
 
@@ -248,7 +248,7 @@ describe("runEpic wired to the tick loop (fakes)", () => {
 
     expect(peak).toBeLessThanOrEqual(2);
     expect(ran.sort()).toEqual(["s1", "s2", "s3", "s4", "s5"]);
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
   });
 
   test("dependency chain a -> b -> c runs in strict order", async () => {
@@ -265,7 +265,7 @@ describe("runEpic wired to the tick loop (fakes)", () => {
       },
     });
 
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
     expect(order).toEqual(["a", "b", "c"]);
   });
 
@@ -340,7 +340,7 @@ describe("runEpic wired to the tick loop (fakes)", () => {
     });
 
     expect(spawned.sort()).toEqual(["s1", "s2", "s3"]);
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
   });
 
   test("finish-loom while an optional sibling is still running: runEpic doesn't return until that sibling settles (no orphaned in-flight child)", async () => {
@@ -363,7 +363,7 @@ describe("runEpic wired to the tick loop (fakes)", () => {
       },
     });
 
-    expect(result.state).toBe("done");
+    expect(result.state).toBe("ready");
     // The bug: runEpic returned while s2's runChild promise was still in
     // flight, abandoning it to a detached closure. The fix drains `running`
     // before rollup, so by the time runEpic resolves, s2 must have settled.
