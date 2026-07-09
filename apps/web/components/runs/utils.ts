@@ -20,7 +20,10 @@ export function sumCost(attempts: AttemptRecord[]): number {
 }
 
 // Coarse duration for elapsed / attempt spans (seconds → m s → h m).
+// Guards non-finite input (NaN from a missing/invalid timestamp) so the header
+// degrades to "—" instead of rendering "NaNh NaNm".
 export function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return "—";
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
