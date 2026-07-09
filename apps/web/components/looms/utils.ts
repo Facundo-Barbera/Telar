@@ -1,7 +1,7 @@
 // Loom-specific helpers — state predicates, cost summing, and the duration
 // formatters the loom views need. Cross-surface formatters (fmtAgo, fmtCost,
 // shortId) live in @/lib/format so every page shares one language.
-import type { AttemptRecord, LoomKind, WorkUnitState } from "@telar/core";
+import type { AttemptRecord, Loom, LoomKind, WorkUnitState } from "@telar/core";
 
 const TERMINAL: readonly WorkUnitState[] = [
   "done",
@@ -36,6 +36,54 @@ export function fmtDuration(ms: number): string {
 export function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// The SAME 5-color vocabulary StateBadge owns (sky=running/preparing,
+// violet=verifying, primary=done, amber=needs-review, destructive=failed,
+// muted=everything else) — a thin local variant, not a new palette, so every
+// state rail (thread rows, loom cards) reads off one shared definition.
+export function stateRailClass(state: WorkUnitState): string {
+  switch (state) {
+    case "preparing":
+    case "running":
+      return "bg-sky-400";
+    case "verifying":
+      return "bg-violet-400";
+    case "done":
+      return "bg-primary";
+    case "needs-review":
+      return "bg-amber-400";
+    case "failed":
+      return "bg-destructive";
+    default:
+      return "bg-muted-foreground/40";
+  }
+}
+
+// A loom's kind-of-loom, independent of its state: epic (spawns threads),
+// verify (read-only judgment, no writes), or leaf (does the work itself).
+// role is set server-side (docs/loom-orchestrator.md §4); kind === "verify"
+// is the fallback signal for looms with no role set.
+export function loomRole(loom: Loom): "epic" | "verify" | "leaf" {
+  if (loom.role === "epic") return "epic";
+  if (loom.kind === "verify") return "verify";
+  return "leaf";
+}
+
+// Thread count for an epic's "epic · N threads" chip, read straight off the
+// root loom's already-fetched Charter — zero extra requests. null means
+// "unknown, no charter yet" (queued/scoping epic), distinct from 0 threads.
+//
+// TODO: this undercounts orphan threads (children spawned under a prior
+// charter revision, no longer in `decomposition` — see thread-tree.tsx) since
+// resolving that needs the live /api/looms/[id]/threads fetch epic-god-view
+// is allowed to make per-epic-page. Do NOT "fix" this by looping
+// listChildLooms() inside the list route — that just moves the N+1 fetch
+// server-side instead of eliminating it. A batch-computed childCounts field
+// written into loom.json on state change (or an opt-in query param on
+// GET /api/looms) is the real fix, if this gap ever matters enough.
+export function threadCount(loom: Loom): number | null {
+  return loom.charter?.decomposition?.length ?? null;
 }
 
 export const KIND_INFO: Record<LoomKind, { label: string; blurb: string }> = {

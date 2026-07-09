@@ -2,35 +2,13 @@
 
 import Link from "next/link";
 import { ArrowRightIcon, TriangleAlertIcon } from "lucide-react";
-import type { Loom, SubGoal, WorkUnitState } from "@telar/core";
+import type { Loom, SubGoal } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { StateBadge } from "@/components/common/state-badge";
 import { fmtCost } from "@/lib/format";
-import { sumCost } from "./utils";
-
-// The SAME 5-color vocabulary StateBadge owns (sky=running/preparing,
-// violet=verifying, primary=done, amber=needs-review, destructive=failed,
-// muted=everything else) — kept as a thin local variant, not a new palette,
-// so the thread rail and the StateBadge dot never drift apart.
-function railClass(state: WorkUnitState): string {
-  switch (state) {
-    case "preparing":
-    case "running":
-      return "bg-sky-400";
-    case "verifying":
-      return "bg-violet-400";
-    case "done":
-      return "bg-primary";
-    case "needs-review":
-      return "bg-amber-400";
-    case "failed":
-      return "bg-destructive";
-    default:
-      return "bg-muted-foreground/40";
-  }
-}
+import { stateRailClass, sumCost } from "./utils";
 
 function dependsMissing(sg: SubGoal, childBySubGoal: Map<string, Loom>): string[] {
   return sg.dependsOn.filter((dep) => childBySubGoal.get(dep)?.state !== "done");
@@ -58,7 +36,7 @@ function ThreadRow({
       <span
         className={cn(
           "absolute top-0 bottom-0 left-0 w-[3px]",
-          railClass(child?.state ?? "queued"),
+          stateRailClass(child?.state ?? "queued"),
         )}
       />
       <CardContent className="flex flex-col gap-2 pl-3">

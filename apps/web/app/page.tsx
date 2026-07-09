@@ -6,7 +6,6 @@ import Link from "next/link";
 import {
   ActivityIcon,
   CircleDashedIcon,
-  ClockIcon,
   FolderGit2Icon,
   GaugeIcon,
   HistoryIcon,
@@ -26,9 +25,9 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
-import { StateBadge } from "@/components/common/state-badge";
-import { fmtDuration, isTerminal, sumCost } from "@/components/looms/utils";
-import { fmtAgo, fmtCost } from "@/lib/format";
+import { LoomCard } from "@/components/looms/loom-card";
+import { isTerminal } from "@/components/looms/utils";
+import { fmtAgo } from "@/lib/format";
 
 // Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
 // dashboard (a client component) never pulls the fs-backed store into the bundle.
@@ -100,89 +99,6 @@ function ViewAll({ href }: { href: string }) {
       className="text-xs text-muted-foreground transition-colors hover:text-foreground"
     >
       View all
-    </Link>
-  );
-}
-
-// A live tile for one non-terminal loom — state, ticking elapsed, project.
-function ActiveLoomCard({ loom, nowTs }: { loom: Loom; nowTs: number }) {
-  return (
-    <Link href={`/looms/${loom.id}`} className="block">
-      <Card size="sm" className="gap-2 transition-shadow hover:ring-foreground/20">
-        <CardContent className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <StateBadge state={loom.state} />
-            <span className="ml-auto flex items-center gap-1 font-mono text-xs text-muted-foreground tabular-nums">
-              <ClockIcon className="size-3.5" />
-              {fmtDuration(nowTs - loom.createdAt)}
-            </span>
-          </div>
-          <span className="truncate text-sm font-medium">{loom.title}</span>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <FolderGit2Icon className="size-3.5 shrink-0" />
-            <span className="truncate">{loom.project}</span>
-            <span className="text-border">·</span>
-            <span className="font-mono">{loom.kind}</span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
-  );
-}
-
-// A needs-review / failed loom with its error snippet.
-function AttentionRow({ loom }: { loom: Loom }) {
-  return (
-    <Link
-      href={`/looms/${loom.id}`}
-      className="flex items-start gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
-    >
-      <StateBadge state={loom.state} className="mt-0.5 shrink-0" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{loom.title}</span>
-          <span className="shrink-0 truncate text-xs text-muted-foreground">
-            {loom.project}
-          </span>
-        </div>
-        {loom.error && (
-          <p
-            className={cn(
-              "mt-1 line-clamp-2 font-mono text-xs",
-              loom.state === "failed" ? "text-destructive" : "text-amber-300",
-            )}
-          >
-            {loom.error}
-          </p>
-        )}
-      </div>
-      <span className="shrink-0 text-xs text-muted-foreground">
-        {fmtAgo(loom.updatedAt)}
-      </span>
-    </Link>
-  );
-}
-
-// A compact terminal-loom row for the recent-outcomes list.
-function RecentRow({ loom }: { loom: Loom }) {
-  return (
-    <Link
-      href={`/looms/${loom.id}`}
-      className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
-    >
-      <StateBadge state={loom.state} className="shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium">
-        {loom.title}
-      </span>
-      <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:inline">
-        {loom.project}
-      </span>
-      <span className="shrink-0 font-mono text-xs text-muted-foreground">
-        {fmtCost(sumCost(loom.attempts))}
-      </span>
-      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground">
-        {fmtAgo(loom.updatedAt)}
-      </span>
     </Link>
   );
 }
@@ -475,7 +391,7 @@ export default function DashboardPage() {
                 ) : (
                   <div className="grid gap-3 sm:grid-cols-2">
                     {activeLooms.map((loom) => (
-                      <ActiveLoomCard key={loom.id} loom={loom} nowTs={nowTs} />
+                      <LoomCard key={loom.id} loom={loom} layout="tile" now={nowTs} />
                     ))}
                   </div>
                 )}
@@ -488,7 +404,7 @@ export default function DashboardPage() {
                   </SectionHeading>
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
                     {attention.map((loom) => (
-                      <AttentionRow key={loom.id} loom={loom} />
+                      <LoomCard key={loom.id} loom={loom} layout="row" showError />
                     ))}
                   </div>
                 </section>
@@ -504,7 +420,7 @@ export default function DashboardPage() {
                   </SectionHeading>
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
                     {recent.map((loom) => (
-                      <RecentRow key={loom.id} loom={loom} />
+                      <LoomCard key={loom.id} loom={loom} layout="row" />
                     ))}
                   </div>
                 </section>

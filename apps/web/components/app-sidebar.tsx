@@ -264,7 +264,10 @@ function NavGroup({ activeLooms }: { activeLooms: number }) {
                   <span>{label}</span>
                 </SidebarMenuButton>
                 {href === "/looms" && activeLooms > 0 && (
-                  <SidebarMenuBadge className="animate-pulse bg-primary text-primary-foreground">
+                  <SidebarMenuBadge
+                    className="animate-pulse bg-primary text-primary-foreground"
+                    title={`${activeLooms} weaving`}
+                  >
                     {activeLooms}
                   </SidebarMenuBadge>
                 )}
