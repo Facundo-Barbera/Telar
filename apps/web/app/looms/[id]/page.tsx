@@ -21,6 +21,7 @@ import { StateBadge } from "@/components/common/state-badge";
 import { AttemptCard } from "@/components/looms/attempt-card";
 import { LiveFeed } from "@/components/looms/live-feed";
 import { EpicGodView } from "@/components/looms/epic-god-view";
+import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
 import { fmtDuration, isActive, isTerminal, sumCost } from "@/components/looms/utils";
 import { fmtCost } from "@/lib/format";
 
@@ -217,7 +218,11 @@ export default function LoomDetailPage() {
       />
 
       <div className="flex-1 overflow-y-auto">
-        {loom.role === "epic" ? (
+        {loom.state === "scoping" ? (
+          <ScopingCharter />
+        ) : loom.state === "charter-review" ? (
+          <CharterReview loom={loom} />
+        ) : loom.role === "epic" ? (
           <EpicGodView loom={loom} feed={feed} />
         ) : (
           <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">

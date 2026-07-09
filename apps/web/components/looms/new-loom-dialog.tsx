@@ -22,6 +22,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { KIND_INFO } from "./utils";
 
@@ -49,6 +50,7 @@ export function NewLoomDialog({
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [criteria, setCriteria] = useState("");
+  const [scoped, setScoped] = useState(false);
   const [target, setTarget] = useState<Target>("dev");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +62,7 @@ export function NewLoomDialog({
     setTitle("");
     setPrompt("");
     setCriteria("");
+    setScoped(false);
     setTarget("dev");
     setError(null);
     setSubmitting(false);
@@ -100,13 +103,19 @@ export function NewLoomDialog({
     });
   }, [projects, defaultProject]);
 
+  // Scoping is meaningless for verify — it judges pre-supplied acceptance
+  // criteria, so switching to verify drops the toggle back off.
+  useEffect(() => {
+    if (kind === "verify") setScoped(false);
+  }, [kind]);
+
   const selected = projects?.find((p) => p.name === project) ?? null;
   const canSubmit =
     !submitting &&
     project !== "" &&
     title.trim() !== "" &&
     prompt.trim() !== "" &&
-    (kind !== "verify" || criteria.trim() !== "");
+    (scoped || kind !== "verify" || criteria.trim() !== "");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,7 +123,9 @@ export function NewLoomDialog({
     setSubmitting(true);
     setError(null);
     try {
-      // One criterion per non-empty line; omit the field entirely when empty.
+      // One criterion per non-empty line; omit the field entirely when empty
+      // — and omit it outright when scoped, so a live agent drafts a charter
+      // instead (needsScoping triggers on acceptanceCriteria being absent).
       const acceptanceCriteria = criteria
         .split("\n")
         .map((l) => l.trim())
@@ -127,7 +138,7 @@ export function NewLoomDialog({
           kind,
           title: title.trim(),
           prompt,
-          ...(acceptanceCriteria.length ? { acceptanceCriteria } : {}),
+          ...(!scoped && acceptanceCriteria.length ? { acceptanceCriteria } : {}),
           ...(kind === "verify" ? { target } : {}),
         }),
       });
@@ -152,6 +163,20 @@ export function NewLoomDialog({
               and retries on its own.
             </DialogDescription>
           </DialogHeader>
+
+          {kind !== "verify" && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">Let Telar scope it</p>
+                <p className="text-xs text-muted-foreground">
+                  Skip acceptance criteria — a live agent drafts a charter
+                  (proof strategy, budget, decomposition) for you to review.
+                  Uses tokens.
+                </p>
+              </div>
+              <Switch checked={scoped} onCheckedChange={setScoped} />
+            </div>
+          )}
 
           {projects && projects.length === 0 ? (
             <div className="rounded-lg border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
@@ -286,26 +311,28 @@ export function NewLoomDialog({
                 </div>
               )}
 
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Acceptance criteria
-                  {kind !== "verify" && (
-                    <span className="ml-1.5 font-normal text-muted-foreground/70">
-                      optional
-                    </span>
-                  )}
-                </label>
-                <Textarea
-                  value={criteria}
-                  onChange={(e) => setCriteria(e.target.value)}
-                  placeholder={"Users can log in with email\nDashboard loads under 2s"}
-                  rows={3}
-                  className="resize-none font-mono text-xs leading-relaxed"
-                />
-                <p className="text-xs text-muted-foreground">
-                  One per line — the Verifier checks each after the loom finishes.
-                </p>
-              </div>
+              {!scoped && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Acceptance criteria
+                    {kind !== "verify" && (
+                      <span className="ml-1.5 font-normal text-muted-foreground/70">
+                        optional
+                      </span>
+                    )}
+                  </label>
+                  <Textarea
+                    value={criteria}
+                    onChange={(e) => setCriteria(e.target.value)}
+                    placeholder={"Users can log in with email\nDashboard loads under 2s"}
+                    rows={3}
+                    className="resize-none font-mono text-xs leading-relaxed"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    One per line — the Verifier checks each after the loom finishes.
+                  </p>
+                </div>
+              )}
             </>
           )}
 
