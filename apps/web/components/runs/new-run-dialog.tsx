@@ -46,6 +46,7 @@ export function NewRunDialog({
   const [kind, setKind] = useState<RunKind>("quickfix");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [criteria, setCriteria] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,6 +56,7 @@ export function NewRunDialog({
     setKind("quickfix");
     setTitle("");
     setPrompt("");
+    setCriteria("");
     setError(null);
     setSubmitting(false);
     setProjects(null);
@@ -104,10 +106,21 @@ export function NewRunDialog({
     setSubmitting(true);
     setError(null);
     try {
+      // One criterion per non-empty line; omit the field entirely when empty.
+      const acceptanceCriteria = criteria
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, kind, title: title.trim(), prompt }),
+        body: JSON.stringify({
+          project,
+          kind,
+          title: title.trim(),
+          prompt,
+          ...(acceptanceCriteria.length ? { acceptanceCriteria } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -239,6 +252,25 @@ export function NewRunDialog({
                   rows={6}
                   className="resize-none font-mono text-xs leading-relaxed"
                 />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Acceptance criteria
+                  <span className="ml-1.5 font-normal text-muted-foreground/70">
+                    optional
+                  </span>
+                </label>
+                <Textarea
+                  value={criteria}
+                  onChange={(e) => setCriteria(e.target.value)}
+                  placeholder={"Users can log in with email\nDashboard loads under 2s"}
+                  rows={3}
+                  className="resize-none font-mono text-xs leading-relaxed"
+                />
+                <p className="text-xs text-muted-foreground">
+                  One per line — the Verifier checks each after the run.
+                </p>
               </div>
             </>
           )}

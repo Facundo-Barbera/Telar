@@ -8,6 +8,7 @@ import {
   CheckCircle2Icon,
   FileCogIcon,
   FolderXIcon,
+  LinkIcon,
   PlusIcon,
   RotateCwIcon,
   SaveIcon,
@@ -62,6 +63,7 @@ type Form = {
   gates: GateRow[];
   protectedPaths: string[];
   disallowedTools: string[];
+  urls: { dev: string; preview: string; prod: string };
 };
 
 const ADAPTERS = ["plain", "bmad"] as const;
@@ -74,6 +76,11 @@ function formFromManifest(m: ProjectManifest): Form {
     gates: m.gates.map((g) => ({ name: g.name, run: g.run })),
     protectedPaths: [...m.guardrails.protectedPaths],
     disallowedTools: [...m.guardrails.disallowedTools],
+    urls: {
+      dev: m.urls?.dev ?? "",
+      preview: m.urls?.preview ?? "",
+      prod: m.urls?.prod ?? "",
+    },
   };
 }
 
@@ -101,6 +108,18 @@ function buildBody(form: Form, orig: Form): Record<string, unknown> {
   ) {
     body.guardrails = { protectedPaths, disallowedTools };
   }
+
+  const urls = {
+    dev: form.urls.dev.trim(),
+    preview: form.urls.preview.trim(),
+    prod: form.urls.prod.trim(),
+  };
+  const origUrls = {
+    dev: orig.urls.dev.trim(),
+    preview: orig.urls.preview.trim(),
+    prod: orig.urls.prod.trim(),
+  };
+  if (JSON.stringify(urls) !== JSON.stringify(origUrls)) body.urls = urls;
   return body;
 }
 
@@ -620,6 +639,57 @@ export function ProjectSettings({ name }: { name: string }) {
                     ariaPrefix="Disallowed tool"
                   />
                 </Field>
+              </SectionCard>
+
+              {/* URLs */}
+              <SectionCard
+                icon={LinkIcon}
+                title="URLs"
+                description="Deployment targets the Verifier can drive after a run."
+              >
+                <div className="space-y-4">
+                  <Field htmlFor="url-dev" label="Dev">
+                    <Input
+                      id="url-dev"
+                      value={form.urls.dev}
+                      onChange={(e) =>
+                        patch({ urls: { ...form.urls, dev: e.target.value } })
+                      }
+                      placeholder="http://localhost:3131"
+                      className="font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field htmlFor="url-preview" label="Preview">
+                    <Input
+                      id="url-preview"
+                      value={form.urls.preview}
+                      onChange={(e) =>
+                        patch({
+                          urls: { ...form.urls, preview: e.target.value },
+                        })
+                      }
+                      placeholder="https://preview.example.com"
+                      className="font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field htmlFor="url-prod" label="Prod">
+                    <Input
+                      id="url-prod"
+                      value={form.urls.prod}
+                      onChange={(e) =>
+                        patch({ urls: { ...form.urls, prod: e.target.value } })
+                      }
+                      placeholder="https://example.com"
+                      className="font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                </div>
               </SectionCard>
             </>
           ) : (

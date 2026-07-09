@@ -3,12 +3,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Verdict, WorkUnitState } from "./schemas";
+import type { Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 
 const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
 const runsDir = () => path.join(telarDir(), "runs");
-const runDir = (id: string) => path.join(runsDir(), id);
+export const runDir = (id: string) => path.join(runsDir(), id);
 
 export type RunKind = "quickfix" | "story" | "custom";
 
@@ -22,6 +22,7 @@ export type AttemptRecord = {
   endedAt?: number;
   sessionId?: string;
   verdict?: Verdict | null;
+  verifierReport?: VerifierReport | null;
   gates?: GateResult[];
   costUsd?: number;
 };
@@ -33,6 +34,7 @@ export type Run = {
   title: string;
   prompt: string;
   account: string;
+  acceptanceCriteria?: string[];
   state: WorkUnitState;
   createdAt: number;
   updatedAt: number;

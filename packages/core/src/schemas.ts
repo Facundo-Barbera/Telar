@@ -132,6 +132,13 @@ export const ProjectManifest = z.object({
       protectedPaths: z.array(z.string()).default([]),
     })
     .default({ disallowedTools: [], protectedPaths: [] }),
+  urls: z
+    .object({
+      dev: z.string().optional(),
+      preview: z.string().optional(),
+      prod: z.string().optional(),
+    })
+    .optional(),
 });
 export type ProjectManifest = z.infer<typeof ProjectManifest>;
 

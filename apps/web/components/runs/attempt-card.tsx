@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/collapsible";
 import { fmtCost, shortId } from "@/lib/format";
 import { fmtDuration, fmtMs } from "./utils";
+import { VerifierReportCard } from "./verifier-report-card";
 
 function GateRow({ gate }: { gate: GateResult }) {
   const [open, setOpen] = useState(false);
@@ -75,7 +76,13 @@ function GateRow({ gate }: { gate: GateResult }) {
   );
 }
 
-export function AttemptCard({ attempt }: { attempt: AttemptRecord }) {
+export function AttemptCard({
+  attempt,
+  runId,
+}: {
+  attempt: AttemptRecord;
+  runId: string;
+}) {
   const running = attempt.endedAt === undefined;
   const verdict = attempt.verdict ?? null;
   const duration =
@@ -145,6 +152,10 @@ export function AttemptCard({ attempt }: { attempt: AttemptRecord }) {
               <GateRow key={g.name} gate={g} />
             ))}
           </div>
+        )}
+
+        {attempt.verifierReport && (
+          <VerifierReportCard runId={runId} report={attempt.verifierReport} />
         )}
       </CardContent>
     </Card>

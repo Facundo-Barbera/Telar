@@ -63,6 +63,17 @@ export async function PATCH(
   const rawGuardrails =
     (rawManifest.guardrails as Record<string, unknown> | undefined) ?? {};
 
+  // Drop empty strings so a cleared URL field removes the key rather than
+  // persisting "". If nothing survives, omit `urls` from the manifest entirely.
+  let urls: Record<string, string> | undefined;
+  if (body.urls != null) {
+    urls = {};
+    for (const key of ["dev", "preview", "prod"] as const) {
+      const v = body.urls[key];
+      if (typeof v === "string" && v.trim()) urls[key] = v.trim();
+    }
+  }
+
   const merged = {
     ...rawManifest,
     ...(body.account != null ? { account: body.account } : {}),
@@ -71,6 +82,9 @@ export async function PATCH(
     ...(body.gates != null ? { gates: body.gates } : {}),
     ...(body.guardrails != null
       ? { guardrails: { ...rawGuardrails, ...body.guardrails } }
+      : {}),
+    ...(urls != null
+      ? { urls: Object.keys(urls).length ? urls : undefined }
       : {}),
   };
 

@@ -1,11 +1,13 @@
 // Executor: the L1 stage loop — attempt, verify with gates, decide, retry.
 // Pure w.r.t. persistence: mutates the run object and emits events; the caller
 // persists via onState/onEvent. Retries resume the previous attempt's session.
+import path from "node:path";
 import { agent } from "./engine";
 import { runGates, type GateResult } from "./gates";
-import type { AttemptRecord, Run, RunKind } from "./runs";
+import { runDir, type AttemptRecord, type Run, type RunKind } from "./runs";
 import { ModelPolicy, Verdict } from "./schemas";
 import type { AccountProfile, ProjectManifest, WorkUnitState } from "./schemas";
+import { verify } from "./verifier";
 
 export type ExecuteOpts = {
   policy?: ModelPolicy;
@@ -56,6 +58,44 @@ function retryPrompt(failing: GateResult[], verdict: Verdict | null, verdictWasN
     parts.push("Fix the issues above and re-verify, then call emit_result with your Verdict.");
   }
   return parts.join("\n\n");
+}
+
+// Informational post-gates verification (M1): drives evidence, not the run's
+// outcome. Best-effort — a verify failure must never break the run.
+export async function maybeVerify(
+  run: Run,
+  manifest: ProjectManifest,
+  attempt: AttemptRecord,
+  emit: (ev: { type: string } & Record<string, unknown>) => void,
+  account?: AccountProfile,
+): Promise<void> {
+  if (!run.acceptanceCriteria?.length || !manifest.urls?.dev) return;
+  try {
+    const evidenceDir = path.join(runDir(run.id), "evidence");
+    const report = await verify(
+      { name: run.title, acceptanceCriteria: run.acceptanceCriteria },
+      { url: manifest.urls.dev, evidenceDir, account, headless: true },
+    );
+    if (!report) {
+      emit({ type: "verifier", n: attempt.n, report: null });
+      return;
+    }
+    // Rewrite absolute evidence paths under evidenceDir to relative so the UI
+    // can serve them via /api/runs/<id>/evidence/<relpath>.
+    const relativize = (p?: string) => {
+      if (!p || !path.isAbsolute(p)) return p;
+      const rel = path.relative(evidenceDir, p);
+      return rel.startsWith("..") || path.isAbsolute(rel) ? p : rel;
+    };
+    for (const c of report.criteria) for (const e of c.evidence) e.path = relativize(e.path);
+    for (const e of report.sessionEvidence) e.path = relativize(e.path);
+    attempt.verifierReport = report;
+    // Persisted by the caller's onState when the next setState fires (this
+    // module stays pure w.r.t. persistence — see the file header).
+    emit({ type: "verifier", n: attempt.n, report });
+  } catch (err) {
+    emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export async function executeRun(
@@ -152,6 +192,7 @@ export async function executeRun(
 
       if (gatesConfigured && gateRun.ok) {
         if (verdict?.ok) {
+          await maybeVerify(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
           setState("done");
           return run;
         }
@@ -171,7 +212,10 @@ export async function executeRun(
 
       if (!gatesConfigured) {
         // Nothing deterministically verified — never auto-done without gates.
+        // The Verifier still runs (informational): it's the check the missing
+        // gates would otherwise be, and its report is where it matters most.
         if (verdict?.ok) {
+          await maybeVerify(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
           setState("needs-review");
           return run;
         }

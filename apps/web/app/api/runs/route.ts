@@ -36,6 +36,20 @@ export async function POST(req: Request) {
   if (typeof body.prompt !== "string" || !body.prompt.trim()) {
     return Response.json({ error: "A prompt is required." }, { status: 400 });
   }
+  // Optional — the Verifier checks each criterion after the run. Must be an
+  // array of non-empty trimmed strings if present.
+  if (body.acceptanceCriteria !== undefined) {
+    const ac = body.acceptanceCriteria;
+    if (
+      !Array.isArray(ac) ||
+      !ac.every((c) => typeof c === "string" && c.trim() === c && c !== "")
+    ) {
+      return Response.json(
+        { error: "acceptanceCriteria must be non-empty trimmed strings." },
+        { status: 400 },
+      );
+    }
+  }
   const input = body as StartRunInput;
 
   try {

@@ -251,7 +251,7 @@ export default function RunDetailPage() {
               )
             ) : (
               run.attempts.map((attempt) => (
-                <AttemptCard key={attempt.n} attempt={attempt} />
+                <AttemptCard key={attempt.n} attempt={attempt} runId={run.id} />
               ))
             )}
           </section>
