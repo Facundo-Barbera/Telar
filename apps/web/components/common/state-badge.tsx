@@ -16,6 +16,18 @@ const STYLES: Record<
     className: "border-border bg-transparent text-muted-foreground",
     pulse: false,
   },
+  scoping: {
+    label: "scoping",
+    dot: "bg-sky-400",
+    className: "border-sky-500/30 bg-sky-500/10 text-sky-300",
+    pulse: true,
+  },
+  "charter-review": {
+    label: "charter review",
+    dot: "bg-amber-400",
+    className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+    pulse: false,
+  },
   preparing: {
     label: "preparing",
     dot: "bg-sky-400",
