@@ -179,3 +179,51 @@ export const ModelPolicy = z.object({
   careful: z.string().default("opus"),
 });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;
+
+// --- The Charter (docs/loom-orchestrator.md §5) — the goal + proof spec for a
+// Loom, drafted in Phase 0 scoping. Additive: absent on today's quickfix/
+// story/custom/verify looms, which keep behaving exactly as before.
+
+export const ProofStrategy = z.enum(["quickfix", "bmad-story", "verifier-criteria", "custom"]);
+export type ProofStrategy = z.infer<typeof ProofStrategy>;
+
+export const ScopeBoundary = z.object({
+  allowedPaths: z.array(z.string()).default([]), // globs; enforced against repair diffs
+  forbiddenPaths: z.array(z.string()).default([]),
+  notes: z.string().optional(),
+});
+export type ScopeBoundary = z.infer<typeof ScopeBoundary>;
+
+export const Budget = z.object({
+  maxCostUsd: z.number().optional(),
+  maxWallClockHours: z.number().optional(),
+  maxParallelThreads: z.number().default(3),
+  maxAgents: z.number().default(12), // the concurrency pool
+});
+export type Budget = z.infer<typeof Budget>;
+
+export const SubGoal = z.object({
+  id: z.string(), // "s1"
+  title: z.string(),
+  detail: z.string(),
+  proofStrategy: ProofStrategy,
+  acceptanceCriteria: z.array(z.string()).default([]),
+  dependsOn: z.array(z.string()).default([]),
+  required: z.boolean().default(true),
+  status: z.enum(["pending", "ready", "active", "done", "blocked", "failed"]).default("pending"),
+});
+export type SubGoal = z.infer<typeof SubGoal>;
+
+export const Charter = z.object({
+  objective: z.string(),
+  proofStrategy: ProofStrategy,
+  scope: ScopeBoundary,
+  budget: Budget,
+  shape: z.enum(["leaf", "epic"]),
+  decomposition: z.array(SubGoal).default([]), // epic only
+  version: z.number().default(1),
+  approvedBy: z.string().optional(), // "you" | "auto:<policy>"
+  scopingSessionId: z.string().optional(), // the drafting session — resumable for takeover
+  rationale: z.string().optional(), // structured decomposition reasoning
+});
+export type Charter = z.infer<typeof Charter>;
