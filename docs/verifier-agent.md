@@ -533,6 +533,16 @@ New `RunKind:"verify"`, `ProjectManifest.urls`, external-cron POST to `/api/runs
 Retention policy for evidence, distinct Verifier account default, Telar-managed dev-server lifecycle, flaky-rate dashboard from JUnit reporters, durable scheduler replacing external cron (owns retries; solves the `dispatcher.ts` orphan gap).
 - **Acceptance:** flaky-rate trend visible per project; evidence dir bounded; a server restart mid-verify does not strand the run (scheduler re-drives). 
 
+### M6 — Design-aware QA (make it a *great* QA agent, not just a functional checker)
+Today the Verifier judges functional acceptance criteria. Extend it to also assess **design & UX quality** — visual consistency, spacing/alignment, hierarchy, responsive behavior, accessible contrast/roles, interaction affordances, empty/error/loading states — surfaced as a distinct dimension in `VerifierReport` (e.g. `designFindings[]` with severity), not conflated with pass/fail on functional criteria. Likely needs per-project design guidelines (a `telar` design-rules file the agent reads) and screenshots as a *judged* signal (not just evidence). Keep the accessibility-first driving; add a critique pass.
+- **Acceptance:** on a deliberately ugly-but-functional feature, the Verifier passes the functional criteria yet raises concrete design findings with screenshots + rationale.
+
+### M7 — In-run orchestration
+An **orchestrator agent** coordinates a run: decompose the task, delegate build vs. verify vs. repair to specialized agents, decide when to loop / escalate / stop — the run becomes a small managed team rather than a single builder + a post-hoc verifier. Builds on the verified loop (M2) and the design-aware QA (M6); the orchestrator owns the loop that today lives in `executor.ts`.
+- **Acceptance:** a run visibly coordinated by an orchestrator (plan → delegate → verify → repair) with each role attributed in the UI (reuse the subagent-tab system).
+
+*Captured from user direction (2026-07-09): "add orchestration … one agent works as the orchestrator" + "fine-tune the agent to … check actual design choices … I really want a good QA agent."*
+
 ---
 
 *Grounding anchors used throughout: `engine.ts:agent()`/`createSdkMcpServer`, `schemas.ts:Verdict`/`ProjectManifest`/`ModelPolicy`, `executor.ts:executeRun`, `gates.ts:runGates`, `runs.ts:RunKind`/`AttemptRecord`/`BASE_TOOLS`, `dispatcher.ts:startRun`/`active`, `route.ts` `send()` vocabulary (`tool`/`tool_result`/`session`/`done`) + `query({options})` + `allowedTools`/`disallowedTools`/`canUseTool`, `session-view.tsx:ToolStepRow`/event switch, `store.ts:Part`, `projects/[name]/route.ts:PATCH` merge, `settings-view.tsx:Form`.*
