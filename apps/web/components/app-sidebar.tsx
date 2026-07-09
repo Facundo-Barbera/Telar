@@ -8,6 +8,7 @@ import {
   FolderGit2Icon,
   LayoutDashboardIcon,
   RefreshCwIcon,
+  SettingsIcon,
 } from "lucide-react";
 import type { Run } from "@telar/core";
 import { useAccounts } from "@/lib/use-accounts";
@@ -147,6 +148,7 @@ const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboardIcon },
   { href: "/projects", label: "Projects", icon: FolderGit2Icon },
   { href: "/runs", label: "Runs", icon: ActivityIcon },
+  { href: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
 function NavGroup({ activeRuns }: { activeRuns: number }) {
