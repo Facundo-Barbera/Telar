@@ -154,14 +154,22 @@ const parentOf = (p: Part): string | undefined =>
 // finishes — its output/isError), `parts` is everything that part spawned.
 type AgentBucket = { id: string; spawn: ToolPart; parts: Part[] };
 
-// Label priority per spec: an explicit run name, else the agent type, else a
-// clipped slice of the free-form description — always something short enough
-// for a tab. Array.from/codePoints mirrors stepPreview's astral-safe slicing.
+// Label priority per spec: an explicit run name, else a clipped slice of the
+// free-form description, else the agent type, else a generic fallback. The
+// description comes before the type because the type is shared across every
+// spawn of the same subagent — several concurrent "general-purpose" spawns
+// would otherwise all render the identical, useless tab label — while the
+// description is supplied fresh per spawn and is what actually distinguishes
+// them. Array.from/codePoints mirrors stepPreview's astral-safe slicing.
 function agentLabel(agent: AgentInfo): string {
   if (agent.name) return agent.name;
+  const description = agent.description.trim();
+  if (description) {
+    const codePoints = Array.from(description);
+    return codePoints.length > 24 ? `${codePoints.slice(0, 24).join("")}…` : codePoints.join("");
+  }
   if (agent.type) return agent.type;
-  const codePoints = Array.from(agent.description.trim());
-  return codePoints.length > 24 ? `${codePoints.slice(0, 24).join("")}…` : codePoints.join("");
+  return "subagent";
 }
 
 function agentStatus(spawn: ToolPart): AgentTab["status"] {
@@ -186,6 +194,22 @@ function agentStatus(spawn: ToolPart): AgentTab["status"] {
     return spawn.interrupted ? "error" : "running";
   }
   return spawn.isError ? "error" : "done";
+}
+
+// Newer Claude Code builds run subagents asynchronously: the spawn tool
+// call's tool_result lands almost instantly and is just an internal launch
+// acknowledgement ("Async agent launched successfully", plus bookkeeping —
+// agentId/output_file/"Do NOT Read or tail" — meant for the orchestrating
+// agent, not a human). It is NOT the subagent's real result. The subagent's
+// actual output already streams into its own tab as ordinary assistant
+// messages (bucket.parts), so rendering this ack text in the "Result" block
+// would just leak Claude's internal plumbing into the UI. Matched on the
+// literal launch phrase, or (in case wording drifts) the "internal
+// metadata" + "agentId" combination that's specific to this ack and not
+// something a genuine subagent result would ever contain together.
+function isAsyncLaunchAck(text: string): boolean {
+  if (text.includes("Async agent launched successfully")) return true;
+  return text.includes("internal metadata") && text.includes("agentId");
 }
 
 type ProjectCommand = {
@@ -1643,6 +1667,16 @@ function SessionViewInner({
     const status = agentStatus(bucket.spawn);
     const bucketLive = status === "running";
     const items = groupParts(bucket.id, bucket.parts);
+    // The prominent line is the same label the tab strip/B.3 chip show (name,
+    // else the spawn's own description, else the shared type) so this reads
+    // as "which of the N spawns of this type am I looking at" rather than
+    // repeating the type. The full description only gets its own line when
+    // it says more than the (possibly clipped) label already does — e.g. the
+    // label is the name, or the description ran past the label's clip — so a
+    // short description isn't printed twice.
+    const label = agentLabel(agent);
+    const description = agent.description.trim();
+    const showDescription = description.length > 0 && description !== label;
     return (
       // Same reading column as the main transcript's <Message> wrapper, so a
       // subagent tab lines up with Main instead of spanning the whole pane.
@@ -1650,14 +1684,15 @@ function SessionViewInner({
         <div className="flex flex-col gap-1 border-b pb-3 text-xs">
           <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
             <BotIcon className="size-3.5 text-muted-foreground" />
-            {agent.type ?? "subagent"}
-            {agent.name && agent.name !== agent.type && (
-              <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                {agent.name}
-              </Badge>
-            )}
+            {label}
+            {/* Type demoted to a small secondary badge — still visible as
+                context, just no longer the headline every same-type spawn
+                shared. */}
+            <Badge variant="outline" className="px-1 py-0 text-[10px] font-normal text-muted-foreground">
+              {agent.type ?? "subagent"}
+            </Badge>
           </div>
-          {agent.description && <p className="text-muted-foreground">{agent.description}</p>}
+          {showDescription && <p className="text-muted-foreground">{description}</p>}
         </div>
 
         {/* Empty-while-starting is designed, not blank: the tab exists the
@@ -1727,29 +1762,39 @@ function SessionViewInner({
           );
         })}
 
-        {bucket.spawn.output !== undefined && (
-          <div
-            className={cn(
-              "rounded-lg border p-3 text-xs",
-              bucket.spawn.isError ? "border-destructive/40 bg-destructive/10" : "bg-muted/20",
-            )}
-          >
+        {bucket.spawn.output !== undefined &&
+          (isAsyncLaunchAck(bucket.spawn.output) ? (
+            // The spawn's tool_result is just the async launch ack, not the
+            // subagent's real result (see isAsyncLaunchAck) — the subagent's
+            // actual output already rendered above via bucket.parts. Swap
+            // the raw metadata dump for a one-line status instead of hiding
+            // it outright, so the bucket doesn't end on an unexplained cliff.
+            <p className="text-xs text-muted-foreground">
+              {bucketLive ? "Running…" : status === "error" ? "Failed" : "Completed"}
+            </p>
+          ) : (
             <div
               className={cn(
-                "mb-1.5 flex items-center gap-1.5 font-medium",
-                bucket.spawn.isError ? "text-destructive" : "text-muted-foreground",
+                "rounded-lg border p-3 text-xs",
+                bucket.spawn.isError ? "border-destructive/40 bg-destructive/10" : "bg-muted/20",
               )}
             >
-              {bucket.spawn.isError ? (
-                <TriangleAlertIcon className="size-3" />
-              ) : (
-                <CheckIcon className="size-3" />
-              )}
-              Result
+              <div
+                className={cn(
+                  "mb-1.5 flex items-center gap-1.5 font-medium",
+                  bucket.spawn.isError ? "text-destructive" : "text-muted-foreground",
+                )}
+              >
+                {bucket.spawn.isError ? (
+                  <TriangleAlertIcon className="size-3" />
+                ) : (
+                  <CheckIcon className="size-3" />
+                )}
+                Result
+              </div>
+              <MessageResponse className="text-xs">{bucket.spawn.output}</MessageResponse>
             </div>
-            <MessageResponse className="text-xs">{bucket.spawn.output}</MessageResponse>
-          </div>
-        )}
+          ))}
       </div>
     );
   }
@@ -1883,7 +1928,7 @@ function SessionViewInner({
             padding (py-4) and the scroll behavior are unchanged. Individual
             code blocks / tool detail panels still scroll horizontally within
             themselves (overflow-x-auto — see ToolStepRow), never the page. */}
-        <ConversationContent className="px-0">
+        <ConversationContent className="px-4">
           {activeBucket ? (
             renderAgentBucket(activeBucket)
           ) : messages.length === 0 ? (
@@ -1983,7 +2028,7 @@ function SessionViewInner({
       {/* Composer matches the transcript's reading column — same mx-auto
           max-w-7xl the Message wrapper uses, so the input aligns with the
           messages instead of spanning the whole pane. */}
-      <div className="relative mx-auto w-full max-w-7xl pb-4">
+      <div className="relative mx-auto w-full max-w-7xl px-4 pb-4">
         {slashMenuOpen && (
           <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
             {filteredCommands.length === 0 ? (
