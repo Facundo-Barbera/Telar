@@ -46,8 +46,6 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
-  --color-loom-accent: var(--loom-accent);
-  --color-loom-accent-foreground: var(--loom-accent-foreground);
 }
 
 :root {
@@ -83,12 +81,6 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  /* Loom-scoped only (see components/looms) — the mockup's warm-gold identity
-     color, kept OUT of --accent (shadcn's own token, load-bearing for hover/
-     focus across every non-loom surface). ~ #a9781a, the mockup's light
-     --accent. */
-  --loom-accent: oklch(0.58 0.13 75);
-  --loom-accent-foreground: oklch(0.99 0 0);
 }
 
 .dark {
@@ -123,10 +115,6 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
-  /* ~ #e6b84e, the mockup's dark --accent — brighter than the light value
-     since it sits on a near-black background. */
-  --loom-accent: oklch(0.82 0.13 85);
-  --loom-accent-foreground: oklch(0.2 0.03 75);
 }
 
 @layer base {

@@ -56,10 +56,10 @@ function AssertionRow({
           {assertion.blocker ? "blocker" : "advisory"}
         </Badge>
       </div>
-      <p className="text-sm leading-snug">{assertion.description}</p>
+      <p className="min-w-0 text-sm leading-snug break-words">{assertion.description}</p>
       {assertion.type === "live-critic" ? (
         assertion.observable && (
-          <p className="font-mono text-[11px] text-muted-foreground">
+          <p className="min-w-0 break-words font-mono text-[11px] text-muted-foreground">
             observes: {assertion.observable}
           </p>
         )
@@ -68,12 +68,12 @@ function AssertionRow({
           href={`/api/looms/${loomId}/spec/${assertion.expectedFile}`}
           target="_blank"
           rel="noreferrer"
-          className="truncate font-mono text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          className="min-w-0 truncate font-mono text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         >
           {assertion.expectedFile}
         </a>
       ) : assertion.expected ? (
-        <p className="truncate font-mono text-[11px] text-muted-foreground">
+        <p className="min-w-0 break-words font-mono text-[11px] text-muted-foreground">
           {assertion.expected}
         </p>
       ) : null}
@@ -122,7 +122,7 @@ export function SpecBundle({ loomId }: { loomId: string }) {
           {shortId(bundle.version)}
         </Badge>
         {bundle.provenance && (
-          <span className="ml-auto truncate text-xs text-muted-foreground">
+          <span className="ml-auto min-w-0 break-words text-xs text-muted-foreground">
             approved by{" "}
             <span className="text-foreground">{bundle.provenance.approvedBy}</span> ·{" "}
             {fmtAgo(bundle.provenance.humanApprovedAt)}

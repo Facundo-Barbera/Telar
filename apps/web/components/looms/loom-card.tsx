@@ -25,7 +25,7 @@ function EpicChip({ loom }: { loom: Loom }) {
   return (
     <Badge
       variant="outline"
-      className="shrink-0 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-600 dark:text-indigo-400"
+      className="shrink-0 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-300"
     >
       {n == null ? "epic" : `epic · ${n} thread${n === 1 ? "" : "s"}`}
     </Badge>
@@ -116,7 +116,7 @@ export function LoomCard({
             <span className="truncate text-sm font-medium">{loom.title}</span>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <FolderGit2Icon className="size-3.5 shrink-0" />
-              <span className="truncate">{loom.project}</span>
+              <span className="min-w-0 flex-1 truncate">{loom.project}</span>
               <span className="text-border">·</span>
               <KindLabel loom={loom} />
               <span className="ml-auto font-mono tabular-nums">{cost}</span>
@@ -145,13 +145,15 @@ export function LoomCard({
       <StateBadge state={loom.state} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="truncate text-sm font-medium">{loom.title}</span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {loom.title}
+          </span>
           <EpicChip loom={loom} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <KindLabel loom={loom} />
           <span className="text-border">·</span>
-          <span className="truncate">{loom.project}</span>
+          <span className="min-w-0 flex-1 truncate">{loom.project}</span>
           <span className="text-border">·</span>
           <span className="shrink-0">
             {attempts} {attempts === 1 ? "attempt" : "attempts"}

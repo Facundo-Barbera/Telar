@@ -115,9 +115,10 @@ export default function LoomDetailPage() {
     return () => es.close();
   }, [id]);
 
-  // Tick the elapsed clock while the loom is live.
+  // Tick the elapsed clock while the loom is live. Settled looms (terminal or
+  // awaiting the owner) freeze the displayed elapsed, so ticking is wasted work.
   useEffect(() => {
-    if (!loom || isTerminal(loom.state)) return;
+    if (!loom || isTerminal(loom.state) || isAwaitingOwner(loom.state)) return;
     const t = setInterval(() => setNowTs(Date.now()), 1000);
     return () => clearInterval(t);
   }, [loom]);
