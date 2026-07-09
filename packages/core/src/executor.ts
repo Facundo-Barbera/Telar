@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
+import { type BuildPiece, runBuildFanout } from "./build-fanout";
 import { runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { ModelPolicy, Verdict } from "./schemas";
@@ -17,6 +18,16 @@ export type ExecuteOpts = {
   abort?: AbortController;
   onEvent?: (ev: { type: string } & Record<string, unknown>) => void;
   onState?: (loom: Loom) => void;
+  // OPT-IN intra-thread Build fan-out (docs/loom-orchestrator.md §7). Absent
+  // (the default) => the single-builder path below runs byte-identical to
+  // pre-M7.3b. When present with >=2 pieces, the build step splits into N
+  // git-worktree-isolated builders (build-fanout.ts) whose merged result
+  // still goes through the SAME gates + one independent Verifier below — the
+  // moat is unaffected by how many builders wove the thread.
+  buildFanout?: { pieces: BuildPiece[]; baseRef?: string };
+  // Reserved for the caller's scheduler (M7.5) to report agent-pool headroom
+  // alongside buildFanout; not read by executeLoom itself in this phase.
+  poolRoom?: number;
 };
 
 const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
@@ -324,6 +335,128 @@ export async function executeLoom(
     return loom;
   };
 
+  // The single-builder step, extracted verbatim from the pre-M7.3b inline
+  // agent() call — a pure extraction, not a behavior change. Every existing
+  // side effect (attempt.sessionId capture, attempt.costUsd, the emit()/
+  // onState calls, resume) is preserved exactly.
+  const runBuildStep = async (
+    prompt: string,
+    ctx: { model: string; resume?: string; attempt: AttemptRecord },
+  ): Promise<Verdict | null> =>
+    agent(prompt, {
+      schema: Verdict,
+      cwd: manifest.root,
+      model: ctx.model,
+      maxTurns,
+      tools,
+      disallowedTools: manifest.guardrails.disallowedTools,
+      settingSources: ["project", "local"],
+      account: opts.accounts?.[manifest.account],
+      abort: opts.abort,
+      ...(ctx.resume ? { resume: ctx.resume } : {}),
+      onEvent: (e) => {
+        if (e.type === "session") {
+          ctx.attempt.sessionId = e.sessionId;
+          emit({ type: "session", sessionId: e.sessionId });
+          opts.onState?.(loom);
+        } else if (e.type === "text") {
+          emit({ type: "text", text: e.text });
+        } else if (e.type === "tool") {
+          emit({ type: "tool", name: e.name });
+        } else if (e.type === "result") {
+          ctx.attempt.costUsd = e.costUsd;
+          emit({ type: "agent-result", subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
+          opts.onState?.(loom);
+        }
+      },
+    });
+
+  // Scope a build-fanout piece's prompt to its allowedPaths (mirrors
+  // firstPrompt's guardrails framing) and run it as its own agent() call
+  // inside the piece's isolated worktree cwd. Bound to the current attempt's
+  // ctx (model + AttemptRecord) so every piece — including the final,
+  // policy.careful attempt — gets the same model escalation and live
+  // session/cost/text/tool reporting as the single-builder path
+  // (runBuildStep) rather than silently falling back to engine.ts's default
+  // model and vanishing from opts.onEvent / attempt.costUsd.
+  const makePieceBuilder =
+    (ctx: { model: string; attempt: AttemptRecord }) =>
+    (piece: BuildPiece, cwd: string): Promise<Verdict | null> =>
+      agent(
+        [
+          `# ${piece.title}`,
+          piece.prompt,
+          piece.allowedPaths.length
+            ? `You may ONLY modify files under: ${piece.allowedPaths.join(", ")}. Do not touch anything else.`
+            : "",
+          "When done, call emit_result with your Verdict (ok, summary, files_touched, blocker).",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        {
+          schema: Verdict,
+          cwd,
+          model: ctx.model,
+          maxTurns,
+          tools,
+          disallowedTools: manifest.guardrails.disallowedTools,
+          settingSources: ["project", "local"],
+          account: opts.accounts?.[manifest.account],
+          abort: opts.abort,
+          onEvent: (e) => {
+            if (e.type === "session") {
+              ctx.attempt.sessionId = e.sessionId;
+              emit({ type: "session", pieceId: piece.id, sessionId: e.sessionId });
+              opts.onState?.(loom);
+            } else if (e.type === "text") {
+              emit({ type: "text", pieceId: piece.id, text: e.text });
+            } else if (e.type === "tool") {
+              emit({ type: "tool", pieceId: piece.id, name: e.name });
+            } else if (e.type === "result") {
+              // Concurrent pieces each report their own cost — sum into the
+              // one shared AttemptRecord.costUsd rather than the last writer
+              // clobbering the others' spend.
+              ctx.attempt.costUsd = (ctx.attempt.costUsd ?? 0) + (e.costUsd ?? 0);
+              emit({ type: "agent-result", pieceId: piece.id, subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
+              opts.onState?.(loom);
+            }
+          },
+        },
+      );
+
+  // Runs the build step for one attempt: the fanned-out multi-builder path
+  // when opts.buildFanout supplies >=2 disjoint pieces, else the single
+  // builder (byte-identical to pre-M7.3b). Either way this only returns a
+  // Verdict — gates + the Verifier below run on the merged tree unchanged.
+  const runAttemptBuild = async (
+    prompt: string,
+    ctx: { model: string; resume?: string; attempt: AttemptRecord },
+  ): Promise<Verdict | null> => {
+    const fanout = opts.buildFanout;
+    if (!fanout || fanout.pieces.length < 2) return runBuildStep(prompt, ctx);
+
+    emit({ type: "fanout", pieces: fanout.pieces.length });
+    const result = await runBuildFanout({
+      repoRoot: manifest.root,
+      baseRef: fanout.baseRef ?? "HEAD",
+      pieces: fanout.pieces,
+      runPieceBuilder: makePieceBuilder(ctx),
+    });
+    const summary = fanout.pieces
+      .map((p, i) => `[${p.id}] ${result.verdicts[i]?.summary ?? (result.verdicts[i]?.ok ? "ok" : "no verdict")}`)
+      .join("; ");
+    const combined: Verdict = {
+      ok: result.ok,
+      summary: `fan-out (${fanout.pieces.length} pieces): ${summary}`,
+      files_touched: result.merged,
+      blocker: result.ok
+        ? null
+        : result.verdicts.find((v) => v && !v.ok)?.blocker ??
+          (result.stray.length ? `stray files outside allowedPaths: ${result.stray.join(", ")}` : "a build piece failed"),
+    };
+    return combined;
+  };
+
   try {
     // Retry context from the previous attempt.
     let failing: GateResult[] = [];
@@ -350,33 +483,7 @@ export async function executeLoom(
         n === 1
           ? firstPrompt(loom, manifest)
           : retryPrompt(failing, lastVerdict, verdictWasNull, verifierRepair || undefined);
-      const verdict: Verdict | null = await agent(prompt, {
-        schema: Verdict,
-        cwd: manifest.root,
-        model,
-        maxTurns,
-        tools,
-        disallowedTools: manifest.guardrails.disallowedTools,
-        settingSources: ["project", "local"],
-        account: opts.accounts?.[manifest.account],
-        abort: opts.abort,
-        ...(resume ? { resume } : {}),
-        onEvent: (e) => {
-          if (e.type === "session") {
-            attempt.sessionId = e.sessionId;
-            emit({ type: "session", sessionId: e.sessionId });
-            opts.onState?.(loom);
-          } else if (e.type === "text") {
-            emit({ type: "text", text: e.text });
-          } else if (e.type === "tool") {
-            emit({ type: "tool", name: e.name });
-          } else if (e.type === "result") {
-            attempt.costUsd = e.costUsd;
-            emit({ type: "agent-result", subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
-            opts.onState?.(loom);
-          }
-        },
-      });
+      const verdict: Verdict | null = await runAttemptBuild(prompt, { model, resume, attempt });
 
       if (isAborted()) {
         attempt.endedAt = Date.now();

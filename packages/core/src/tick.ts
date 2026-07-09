@@ -19,7 +19,12 @@ export type Decision =
   | { action: "repair"; threadId: string }
   | { action: "escalate"; threadId?: string; reason: string }
   | { action: "finish-loom" }
-  | { action: "hold" };
+  | { action: "hold" }
+  // Intra-thread Build fan-out (docs/loom-orchestrator.md §7, "Inner" axis):
+  // a single thread's Build splits into `pieces` worktree-isolated builders.
+  // Decided at build time (executor.ts), not by tick() itself in this phase —
+  // the type + validateDecision exist now for M7.5/UI to schedule against.
+  | { action: "fanout"; threadId: string; pieces: number; agents: number };
 
 export type LedgerView = {
   charter: Charter;
@@ -66,6 +71,13 @@ export function validateDecision(d: Decision, view: LedgerView): { ok: boolean; 
       if (threadBySubGoal.has(id)) return { ok: false, reason: `${id}: already threaded` };
       if (!ready.has(id)) return { ok: false, reason: `${id}: not ready` };
     }
+    return { ok: true };
+  }
+
+  if (d.action === "fanout") {
+    if (d.agents < 1) return { ok: false, reason: "agents must be >= 1" };
+    const poolRoom = view.budget.maxAgents - view.inFlight;
+    if (d.agents > poolRoom) return { ok: false, reason: "fanout would exceed the agent pool" };
     return { ok: true };
   }
 

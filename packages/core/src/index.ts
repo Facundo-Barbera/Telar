@@ -20,3 +20,4 @@ export * from "./proof-templates";
 export * from "./dispatcher";
 export * from "./distill";
 export * from "./spec-lint";
+export * from "./build-fanout";
