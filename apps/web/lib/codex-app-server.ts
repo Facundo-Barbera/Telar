@@ -38,6 +38,16 @@ export type CodexNormalizedEvent =
       };
     }
   | { type: "error"; message: string; threadId?: string }
+  // Raw fields off a `account/rateLimits/updated` notification's
+  // RateLimitSnapshot — route.ts does the fiveHour/sevenDay/PlanSnapshot
+  // shaping (mirroring the Claude branch's own "rate_limit_event" handling),
+  // this adapter just relays what the wire sent.
+  | {
+      type: "rate_limits";
+      primary: { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null;
+      secondary: { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null;
+      planType: string | null;
+    }
   // A collabAgentToolCall spawnAgent resolved to a new child thread.
   // `parentThreadId` is the RAW senderThreadId (un-flattened — a subagent
   // that itself spawns a sub-subagent reports its own thread id here, not
@@ -67,6 +77,22 @@ export type CodexRunOptions = {
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   resume?: string | null;
   signal?: AbortSignal;
+  // Mirrors the app-server's AskForApproval union. "never" keeps the old
+  // behavior (sandbox alone governs, no prompts); "untrusted"/"on-request"
+  // let the server send back the item/*/requestApproval (or legacy
+  // execCommandApproval/applyPatchApproval) REQUESTS handled below.
+  approvalPolicy: "untrusted" | "on-request" | "never";
+  // Called for every server->client approval REQUEST when approvalPolicy
+  // isn't "never" — route.ts wires this to the same canUseTool/pending-
+  // approval machinery the Claude branch uses. Absent (or approvalPolicy
+  // "never", where the server shouldn't send these at all) falls back to the
+  // old -32601 auto-answer.
+  onApproval?: (req: {
+    command?: string;
+    cwd?: string;
+    reason?: string;
+    kind: "command" | "file";
+  }) => Promise<"accept" | "decline">;
 };
 
 // Resolve the system Codex binary: an explicit override, else the common
@@ -122,11 +148,28 @@ class AsyncChannel<T> {
   }
 }
 
+// The two legacy (pre-item/*) approval method names — still on the wire per
+// `codex app-server generate-ts --experimental`'s ServerRequest union.
+// Answered with {decision: ReviewDecision} ("approved"/"denied"), unlike the
+// item/* pair's {decision: "accept"/"decline"}.
+const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
+
+// Server->client approval REQUEST methods this client can answer via
+// onApproval — the current item/* pair plus LEGACY_APPROVAL_METHODS.
+// Anything else falls through to the -32601 auto-answer below.
+const APPROVAL_METHODS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  ...LEGACY_APPROVAL_METHODS,
+]);
+
 // Owns one `codex app-server` subprocess: request/response id correlation
-// plus a notification channel. Any server->client REQUEST (id + method — not
-// expected with approvalPolicy:"never", but the exec/patch approval methods
-// exist on the wire) is auto-answered with a JSON-RPC error rather than left
-// hanging, since interactive approvals are a later phase.
+// plus a notification channel. Any server->client REQUEST (id + method) for
+// an approval method is routed to `onApproval` (when set) and answered async
+// — handling it must never block the line-by-line notification loop, since a
+// human can take arbitrarily long to answer. Every other server->client
+// request (unsupported/unknown methods) is auto-answered with a JSON-RPC
+// error rather than left hanging.
 class AppServerClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private nextId = 1;
@@ -137,6 +180,10 @@ class AppServerClient {
   readonly notifications = new AsyncChannel<{ method: string; params: unknown }>();
   private closed = false;
   private closeError: Error | null = null;
+  // Set right after construction (synchronously, before any stdout line can
+  // possibly be processed — see runCodexTurn) rather than threaded through
+  // the constructor, so it can be omitted entirely for approvalPolicy:"never".
+  onApproval?: CodexRunOptions["onApproval"];
 
   constructor(bin: string, env: Record<string, string>) {
     // Cast: Next.js's global NodeJS.ProcessEnv augmentation marks NODE_ENV as
@@ -165,8 +212,27 @@ class AppServerClient {
         return;
       }
       if (msg.method !== undefined && msg.id !== undefined) {
-        // Server->client request we don't support yet — answer so the
-        // server doesn't hang waiting on it.
+        if (this.onApproval && APPROVAL_METHODS.has(msg.method)) {
+          // Fire-and-forget from the readline callback's point of view —
+          // awaiting onApproval here would stall every subsequent stdout
+          // line (including this same turn's own item/text notifications)
+          // until the human answers. The promise chain below is what
+          // actually blocks, and it blocks nothing but itself.
+          this.answerApproval(msg.method, msg.id, msg.params).catch(() => {
+            // onApproval rejected (should not happen — route.ts's callback
+            // never throws) — fall back to a decline-shaped answer so the
+            // server never hangs.
+            this.write({
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: LEGACY_APPROVAL_METHODS.has(msg.method!) ? { decision: "denied" } : { decision: "decline" },
+            });
+          });
+          return;
+        }
+        // Server->client request we don't support (or no onApproval wired
+        // up, e.g. approvalPolicy:"never") — answer so the server doesn't
+        // hang waiting on it.
         this.write({
           jsonrpc: "2.0",
           id: msg.id,
@@ -190,6 +256,35 @@ class AppServerClient {
       this.pending.clear();
       this.notifications.end();
     });
+  }
+
+  // Shapes one server->client approval REQUEST's params down to onApproval's
+  // small {command?, cwd?, reason?, kind} contract, awaits the human's
+  // decision, and writes back the method-appropriate result shape —
+  // {decision:"accept"|"decline"} for the item/* pair, {decision:"approved"|
+  // "denied"} (ReviewDecision) for the legacy pair. Never throws: any error
+  // from onApproval itself propagates to the caller's .catch (see above),
+  // which answers decline/denied so the server doesn't hang either way.
+  private async answerApproval(method: string, id: string | number, params: unknown): Promise<void> {
+    const p = (params ?? {}) as Record<string, any>;
+    const isFile = method === "item/fileChange/requestApproval" || method === "applyPatchApproval";
+    const req: { command?: string; cwd?: string; reason?: string; kind: "command" | "file" } = {
+      kind: isFile ? "file" : "command",
+      ...(typeof p.reason === "string" ? { reason: p.reason } : {}),
+    };
+    if (!isFile) {
+      // item/commandExecution/requestApproval's `command` is already a
+      // single string; the legacy execCommandApproval's is an argv array —
+      // join so onApproval always sees one shell-ish string either way.
+      if (typeof p.command === "string") req.command = p.command;
+      else if (Array.isArray(p.command)) req.command = p.command.join(" ");
+      if (typeof p.cwd === "string") req.cwd = p.cwd;
+    }
+    const decision = await this.onApproval!(req);
+    const result = LEGACY_APPROVAL_METHODS.has(method)
+      ? { decision: decision === "accept" ? "approved" : "denied" }
+      : { decision };
+    this.write({ jsonrpc: "2.0", id, result });
   }
 
   private write(msg: Record<string, unknown>): void {
@@ -291,6 +386,10 @@ export async function* runCodexTurn(
   opts: CodexRunOptions,
 ): AsyncGenerator<CodexNormalizedEvent> {
   const client = new AppServerClient(resolveCodexBin(), dropUndefined(opts.env));
+  // Set synchronously, before any await — no stdout line can be processed
+  // (hence no approval REQUEST answered) until the event loop turns, which
+  // can't happen before this assignment runs.
+  client.onApproval = opts.onApproval;
   const onAbort = () => client.kill();
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -303,7 +402,7 @@ export async function* runCodexTurn(
 
     const threadStartParams = {
       cwd: opts.cwd,
-      approvalPolicy: "never" as const,
+      approvalPolicy: opts.approvalPolicy,
       sandbox: opts.sandbox,
       model: opts.model,
     };
@@ -311,7 +410,7 @@ export async function* runCodexTurn(
       ? await client.request<{ thread: { id: string } }>("thread/resume", {
           threadId: opts.resume,
           cwd: opts.cwd,
-          approvalPolicy: "never",
+          approvalPolicy: opts.approvalPolicy,
           sandbox: opts.sandbox,
           model: opts.model,
         })
@@ -328,7 +427,7 @@ export async function* runCodexTurn(
       input: [{ type: "text", text: opts.prompt, text_elements: [] }],
       ...(opts.reasoningEffort ? { effort: opts.reasoningEffort } : {}),
       model: opts.model,
-      approvalPolicy: "never",
+      approvalPolicy: opts.approvalPolicy,
       sandboxPolicy: sandboxPolicy(opts.sandbox, opts.cwd),
     });
     const rootTurnId = turnStartResult.turn.id;
@@ -491,6 +590,22 @@ export async function* runCodexTurn(
           }
           break;
         }
+        case "account/rateLimits/updated": {
+          // Notification shape is { rateLimits: RateLimitSnapshot } — see
+          // AccountRateLimitsUpdatedNotification (confirmed via `codex
+          // app-server generate-ts --experimental`). Not gated on rootThreadId
+          // (this is account-scoped, not thread-scoped) and yielded even for
+          // a subagent-adjacent turn — route.ts saves the latest snapshot
+          // regardless of which thread's activity triggered it.
+          const snap = params.rateLimits ?? {};
+          yield {
+            type: "rate_limits",
+            primary: snap.primary ?? null,
+            secondary: snap.secondary ?? null,
+            planType: snap.planType ?? null,
+          };
+          break;
+        }
         case "error": {
           const tag = threadTag(params.threadId);
           if (!tag && params.willRetry !== true) {
@@ -508,7 +623,7 @@ export async function* runCodexTurn(
           return;
         }
         default:
-          break; // every other notification (progress deltas we don't surface, account/*, etc.) is ignored
+          break; // every other notification (progress deltas we don't surface, account/updated, etc.) is ignored
       }
     }
   } finally {

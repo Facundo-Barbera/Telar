@@ -63,14 +63,15 @@ import { fmtCost, fmtTokens, shortId } from "@/lib/format";
 import { UsagePill } from "@/components/session/usage-pill";
 import type { PlanSnapshot } from "@/lib/store";
 import {
+  CODEX_APPROVAL_PRESETS,
   CODEX_EFFORT_OPTIONS,
-  CODEX_SANDBOX_PRESETS,
+  DEFAULT_CODEX_APPROVAL_ID,
   DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_SANDBOX,
   DEFAULT_MODEL,
   EFFORT_OPTIONS,
   modelById,
   modelsForProvider,
+  type CodexApprovalPolicy,
   type CodexSandbox,
   type ModelInfo,
 } from "@/lib/models";
@@ -992,11 +993,17 @@ function SessionViewInner({
   // real provider. Drives which model/effort/sandbox-or-permission controls
   // render and which fields go in the POST body.
   const [provider, setProvider] = useState<Provider>("claude");
-  // Codex's counterpart to `permissionMode` — a static, pre-turn sandbox
-  // choice (Codex can't prompt mid-turn; see lib/models.ts). Kept as its own
-  // state rather than reusing permissionMode's slots since the two providers'
-  // option sets don't line up 1:1.
-  const [sandbox, setSandbox] = useState<CodexSandbox>(DEFAULT_CODEX_SANDBOX);
+  // Codex's counterpart to `permissionMode` — an approval preset (sandbox +
+  // approvalPolicy pair, see CODEX_APPROVAL_PRESETS in lib/models.ts) now that
+  // the app-server can prompt mid-turn. Kept as its own state rather than
+  // reusing permissionMode's slots since the two providers' option sets don't
+  // line up 1:1.
+  const defaultCodexApproval =
+    CODEX_APPROVAL_PRESETS.find((p) => p.id === DEFAULT_CODEX_APPROVAL_ID) ?? CODEX_APPROVAL_PRESETS[0];
+  const [sandbox, setSandbox] = useState<CodexSandbox>(defaultCodexApproval.sandbox);
+  const [approvalPolicy, setApprovalPolicy] = useState<CodexApprovalPolicy>(
+    defaultCodexApproval.approvalPolicy,
+  );
   // Full account registry (name + provider + auth, unlike the server-resolved
   // `accounts` prop which predates multi-provider and only carries
   // name/displayTier). Used to scope the account picker to the selected
@@ -1359,7 +1366,7 @@ function SessionViewInner({
             project,
             account: activeAccount,
             ...(effort !== "default" ? { effort } : {}),
-            ...(provider === "codex" ? { sandbox } : { permissionMode }),
+            ...(provider === "codex" ? { sandbox, approvalPolicy } : { permissionMode }),
           }),
           signal: abort.signal,
         });
@@ -1735,7 +1742,7 @@ function SessionViewInner({
         abortRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, project, activeAccount, router],
+    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, router],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -2333,20 +2340,34 @@ function SessionViewInner({
                   </SelectContent>
                 </Select>
               )}
-              {/* Permission (Claude) / sandbox (Codex) — same styled
-                  label+description row idiom either way; Codex's is a static
-                  pre-turn choice since approvalPolicy is always "never" (the
-                  Codex SDK can't prompt mid-turn). */}
+              {/* Permission (Claude) / approval (Codex) — same styled
+                  label+description row idiom either way. Codex's now drives
+                  an interactive approval preset (sandbox + approvalPolicy)
+                  since the app-server can prompt mid-turn. */}
               {provider === "codex" ? (
-                <Select value={sandbox} onValueChange={(v) => v && setSandbox(v as CodexSandbox)}>
+                <Select
+                  value={
+                    CODEX_APPROVAL_PRESETS.find(
+                      (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
+                    )?.id ?? DEFAULT_CODEX_APPROVAL_ID
+                  }
+                  onValueChange={(v) => {
+                    const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
+                    if (!preset) return;
+                    setSandbox(preset.sandbox);
+                    setApprovalPolicy(preset.approvalPolicy);
+                  }}
+                >
                   <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
                     <SelectValue>
-                      {CODEX_SANDBOX_PRESETS.find((p) => p.sandbox === sandbox)?.label ?? "Sandbox"}
+                      {CODEX_APPROVAL_PRESETS.find(
+                        (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
+                      )?.label ?? "Approval"}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
-                    {CODEX_SANDBOX_PRESETS.map((p) => (
-                      <SelectItem key={p.id} value={p.sandbox} className="py-2">
+                    {CODEX_APPROVAL_PRESETS.map((p) => (
+                      <SelectItem key={p.id} value={p.id} className="py-2">
                         <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
                           <span className="font-medium">{p.label}</span>
                           <span className="text-xs text-muted-foreground">{p.blurb}</span>

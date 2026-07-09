@@ -101,6 +101,7 @@ export async function POST(req: Request) {
     effort,
     permissionMode: rawPermissionMode = "default",
     sandbox: rawSandbox,
+    approvalPolicy: rawApprovalPolicy,
   } = await req.json();
 
   // Resolve the anchoring project up front — an unknown/missing project is a
@@ -155,10 +156,13 @@ export async function POST(req: Request) {
     }
   }
 
-  // Codex-only: the sandbox is a static, up-front choice (the SDK can't
-  // prompt mid-turn — approvalPolicy is always "never"). Ignored for Claude,
-  // where the interactive canUseTool/permissionMode flow below governs
-  // access instead.
+  // Codex-only: the sandbox is a static, up-front choice paired with the
+  // approvalPolicy validated just below (see CODEX_APPROVAL_PRESETS in
+  // lib/models.ts, which the composer's preset picker sources both from —
+  // this route validates each independently rather than trusting a
+  // preset id, since the client sends the resolved sandbox/approvalPolicy
+  // pair, not the preset id itself). Ignored for Claude, where the
+  // interactive canUseTool/permissionMode flow below governs access instead.
   let sandbox: CodexSandbox = DEFAULT_CODEX_SANDBOX;
   if (provider === "codex" && rawSandbox != null) {
     if (typeof rawSandbox !== "string" || !CODEX_SANDBOXES.has(rawSandbox)) {
@@ -170,11 +174,31 @@ export async function POST(req: Request) {
     sandbox = rawSandbox as CodexSandbox;
   }
 
+  // Codex-only: mirrors the app-server's AskForApproval union. Deliberately
+  // an INLINE set here, not imported from lib/models.ts's CODEX_APPROVAL_
+  // PRESETS — that file also feeds the client bundle (composer UI), and this
+  // route's own validation is meant to stand alone rather than trust
+  // whatever the client-side preset list happens to contain. Defaults to
+  // "on-request" (CODEX_APPROVAL_PRESETS' "auto" preset's policy) when
+  // omitted, matching the composer's own default preset.
+  const CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
+  let approvalPolicy: "untrusted" | "on-request" | "never" = "on-request";
+  if (provider === "codex" && rawApprovalPolicy != null) {
+    if (typeof rawApprovalPolicy !== "string" || !CODEX_APPROVAL_POLICIES.has(rawApprovalPolicy)) {
+      return Response.json(
+        { error: `Invalid approvalPolicy "${rawApprovalPolicy}".` },
+        { status: 400 },
+      );
+    }
+    approvalPolicy = rawApprovalPolicy as "untrusted" | "on-request" | "never";
+  }
+
   // Only "default"/"auto"/"acceptEdits" are ever accepted from a client —
   // never "bypassPermissions" (skips canUseTool entirely), "dontAsk", or
   // "plan", regardless of what the request body claims. See
-  // isValidPermissionMode. Codex turns don't consult this (approvalPolicy is
-  // always "never"), but it's still validated uniformly for both providers.
+  // isValidPermissionMode. Codex turns don't consult this — approvalPolicy
+  // (validated above) is Codex's own analogous knob — but it's still
+  // validated uniformly for both providers.
   if (!isValidPermissionMode(rawPermissionMode)) {
     return Response.json(
       { error: `Invalid permissionMode "${rawPermissionMode}".` },
@@ -421,10 +445,11 @@ export async function POST(req: Request) {
           // Codex path: same session/text/thinking/tool/tool_result/done/
           // saved send() vocabulary as the Claude branch below, produced by
           // normalizing the `codex app-server` JSON-RPC stream in
-          // lib/codex-app-server.ts — see the mapping there. No
-          // canUseTool/hooks/permissionMode: approvalPolicy is always
-          // "never", so the sandbox chosen up front (validated above) is the
-          // only access control for this turn.
+          // lib/codex-app-server.ts — see the mapping there. No hooks/
+          // permissionMode (those are Claude SDK concepts), but approvalPolicy
+          // (validated above) now drives the SAME interactive canUseTool-style
+          // prompt via onCodexApproval below — the sandbox chosen up front is
+          // no longer the only access control for this turn.
           //
           // Subagents: a "spawn" event names a Codex collabAgentToolCall's
           // new child thread — resolved through the SAME parentFlatten used
@@ -438,6 +463,56 @@ export async function POST(req: Request) {
             if (!threadId || threadId === capturedSession) return undefined;
             return parentFlatten.resolve(threadId) ?? undefined;
           };
+          // Interactive approvals for Codex, reusing the EXACT SAME pending-
+          // approval machinery (createPending/resolvePending from
+          // lib/permissions.ts) and permission-card SSE contract
+          // (send("permission", ...), answered by the client via POST
+          // /api/chat/permission -> resolvePending) as the Claude branch's
+          // canUseTool above — that card UI and endpoint are tool-agnostic
+          // and need no Codex-specific changes. Every Codex approval request
+          // — command or file-change — is shaped as a Bash-tool card
+          // (toolName "Bash", input.command) since that's the one shape
+          // ruleFor/ruleOptionsFor/the card's permissionPreview already know
+          // how to preview and offer "always allow" choices for; a
+          // file-change request (no `command` on the wire) falls back to a
+          // synthesized command-shaped preview built from its `reason`.
+          // Called from lib/codex-app-server.ts's answerApproval — never
+          // throws, so a client disconnect (myPending drained "deny" by this
+          // same stream's teardown below) or an unexpected error here still
+          // resolves to a decline rather than leaving the app-server hanging.
+          const onCodexApproval = async (req: {
+            command?: string;
+            cwd?: string;
+            reason?: string;
+            kind: "command" | "file";
+          }): Promise<"accept" | "decline"> => {
+            const input: Record<string, unknown> = {
+              command:
+                req.command ??
+                (req.reason ? `[file change] ${req.reason}` : "Codex requested approval"),
+              ...(req.cwd ? { cwd: req.cwd } : {}),
+            };
+            const rule = ruleFor("Bash", input);
+            const ruleOptions = ruleOptionsFor("Bash", input);
+            const { id, promise } = createPending(project, "Bash", input, rule, undefined, ruleOptions);
+            myPending.add(id);
+            const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
+            abort.signal.addEventListener("abort", onAbort, { once: true });
+            send("permission", { id, toolName: "Bash", input, rule, ruleOptions });
+
+            let decision: PermissionDecision;
+            try {
+              decision = await promise;
+            } finally {
+              abort.signal.removeEventListener("abort", onAbort);
+              myPending.delete(id);
+            }
+            send("permission_result", { id, behavior: decision.behavior });
+            if (decision.behavior === "allow" && decision.always) {
+              addRule(project, decision.rule ?? rule);
+            }
+            return decision.behavior === "allow" ? "accept" : "decline";
+          };
           for await (const nev of runCodexTurn({
             prompt: message,
             cwd: workspace,
@@ -447,6 +522,8 @@ export async function POST(req: Request) {
             sandbox,
             resume: resumeTarget,
             signal: abort.signal,
+            approvalPolicy,
+            onApproval: onCodexApproval,
           })) {
             switch (nev.type) {
               case "session": {
@@ -565,6 +642,30 @@ export async function POST(req: Request) {
                   totalCostUsd: 0,
                   usage: nev.usage,
                 };
+                break;
+              }
+              case "rate_limits": {
+                // Same account-scoped snapshot idiom as the Claude branch's
+                // "rate_limit_event" handling below (savePlanUsage + send
+                // "plan", generic client refresh() on that event) — primary
+                // is the 5-hour window, secondary the weekly one (see
+                // lib/codex-app-server.ts's account/rateLimits/updated case).
+                const toWindow = (
+                  w: { usedPercent: number; resetsAt: number | null } | null,
+                ) =>
+                  w
+                    ? {
+                        utilization: Math.round(w.usedPercent),
+                        resets_at: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null,
+                      }
+                    : null;
+                const snapshot: Partial<PlanSnapshot> = {
+                  subscriptionType: nev.planType,
+                  fiveHour: toWindow(nev.primary),
+                  sevenDay: toWindow(nev.secondary),
+                };
+                savePlanUsage(profile.name, snapshot);
+                send("plan", { account: profile.name, ...snapshot });
                 break;
               }
               case "error": {

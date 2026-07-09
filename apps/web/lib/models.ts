@@ -187,3 +187,48 @@ export const CODEX_SANDBOX_PRESETS: {
 ];
 
 export const DEFAULT_CODEX_SANDBOX: CodexSandbox = "workspace-write";
+
+// Codex approval policy — mirrors the app-server's AskForApproval union. The
+// app-server can now prompt mid-turn (see lib/codex-app-server.ts), so each
+// preset below pairs a sandbox with an approvalPolicy, mirroring the Codex
+// desktop app's own approval dropdown.
+export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
+
+export const CODEX_APPROVAL_PRESETS: {
+  id: string;
+  label: string;
+  blurb: string;
+  sandbox: CodexSandbox;
+  approvalPolicy: CodexApprovalPolicy;
+}[] = [
+  {
+    id: "read-only",
+    label: "Read-only",
+    blurb: "Analysis only — no edits, no network.",
+    sandbox: "read-only",
+    approvalPolicy: "never",
+  },
+  {
+    id: "auto",
+    label: "Approve for me",
+    blurb: "Only asks for actions detected as risky.",
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+  },
+  {
+    id: "ask",
+    label: "Ask for approval",
+    blurb: "Asks before editing external files or using the network.",
+    sandbox: "workspace-write",
+    approvalPolicy: "untrusted",
+  },
+  {
+    id: "full",
+    label: "Full access",
+    blurb: "Unrestricted.",
+    sandbox: "danger-full-access",
+    approvalPolicy: "never",
+  },
+];
+
+export const DEFAULT_CODEX_APPROVAL_ID = "auto";
