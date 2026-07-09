@@ -12,7 +12,9 @@ import {
   FileTextIcon,
   FolderSearchIcon,
   GlobeIcon,
+  CircleIcon,
   ListTodoIcon,
+  Loader2Icon,
   PencilIcon,
   PlayIcon,
   SearchIcon,
@@ -559,6 +561,86 @@ const TOOL_ICONS: Record<string, typeof WrenchIcon> = {
 // parts have neither input nor output — the row still renders, just with no
 // preview and nothing to expand (never crashes on the missing fields).
 // `open` is lifted to the parent (keyed by tool id) rather than local state:
+type TodoState = "pending" | "in_progress" | "completed";
+
+// Normalizes both providers' to-do payloads into one shape: Claude's TodoWrite
+// ({ todos: [{content, status, activeForm}] }) and Codex's todo_list
+// ({ items: [{text, completed}] }, surfaced by codex-run as a TodoWrite tool).
+function normalizeTodos(
+  input?: Record<string, unknown>,
+): { label: string; state: TodoState }[] | null {
+  if (!input) return null;
+  if (Array.isArray(input.todos)) {
+    return input.todos.map((t) => {
+      const o = (t ?? {}) as Record<string, unknown>;
+      const state = (o.status as TodoState) ?? "pending";
+      const label =
+        state === "in_progress" && typeof o.activeForm === "string"
+          ? o.activeForm
+          : String(o.content ?? "");
+      return { label, state };
+    });
+  }
+  if (Array.isArray(input.items)) {
+    return input.items.map((t) => {
+      const o = (t ?? {}) as Record<string, unknown>;
+      return {
+        label: String(o.text ?? ""),
+        state: (o.completed ? "completed" : "pending") as TodoState,
+      };
+    });
+  }
+  return null;
+}
+
+// A to-do list rendered as a checklist rather than a raw JSON tool step —
+// shared by Claude and Codex. Always visible (not behind the tool-row
+// disclosure) since the point of a to-do list is to be glanceable.
+function TodoBlock({
+  todos,
+  isError,
+}: {
+  todos: { label: string; state: TodoState }[];
+  isError?: boolean;
+}) {
+  const done = todos.filter((t) => t.state === "completed").length;
+  return (
+    <div className={cn("rounded-md px-1.5 py-1", isError && "bg-destructive/10")}>
+      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <ListTodoIcon className="size-3.5" />
+        To-dos
+        <span className="font-mono text-[10px] text-muted-foreground/70">
+          {done}/{todos.length}
+        </span>
+      </div>
+      <ul className="space-y-0.5">
+        {todos.map((t, i) => (
+          <li key={i} className="flex items-start gap-1.5 text-xs leading-relaxed">
+            <span className="mt-[3px] shrink-0">
+              {t.state === "completed" ? (
+                <CheckIcon className="size-3 text-primary" />
+              ) : t.state === "in_progress" ? (
+                <Loader2Icon className="size-3 animate-spin text-amber-500" />
+              ) : (
+                <CircleIcon className="size-3 text-muted-foreground/40" />
+              )}
+            </span>
+            <span
+              className={cn(
+                t.state === "completed" && "text-muted-foreground line-through",
+                t.state === "in_progress" && "font-medium text-foreground",
+                t.state === "pending" && "text-muted-foreground",
+              )}
+            >
+              {t.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ToolStepGroup unmounts these rows whenever the group itself collapses (e.g.
 // the group stops being the live trailing item once the turn's closing text
 // arrives), and local state would be silently discarded on that unmount.
@@ -573,6 +655,10 @@ function ToolStepRow({
   open: boolean;
   onToggle: () => void;
 }) {
+  // A to-do write renders as a live checklist, not a collapsible JSON step.
+  const todos = part.name === "TodoWrite" ? normalizeTodos(part.input) : null;
+  if (todos && todos.length > 0) return <TodoBlock todos={todos} isError={part.isError} />;
+
   const hasDetail = part.input !== undefined || part.output !== undefined;
   const Icon = TOOL_ICONS[part.name] ?? WrenchIcon;
   const preview = stepPreview(part.input);
