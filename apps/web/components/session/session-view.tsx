@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   BotIcon,
@@ -16,7 +15,6 @@ import {
   ListTodoIcon,
   Loader2Icon,
   PencilIcon,
-  PlayIcon,
   SearchIcon,
   ShieldAlertIcon,
   TerminalIcon,
@@ -954,7 +952,6 @@ function SessionViewInner({
   initialChat?: InitialChat;
   initialTitle?: string;
 }) {
-  const router = useRouter();
   const textInput = usePromptInputController().textInput;
 
   // Seed once from the server-resolved transcript. Later prop changes are
@@ -1742,7 +1739,7 @@ function SessionViewInner({
         abortRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, router],
+    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -2474,17 +2471,6 @@ function SessionViewInner({
                   ))}
                 </SelectContent>
               </Select>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  router.push(`/looms?new=1&project=${encodeURIComponent(project)}`)
-                }
-              >
-                <PlayIcon />
-                Start loom
-              </Button>
             </PromptInputTools>
             {/* ml-auto/self-end: when the tools row wraps onto multiple lines
                 on a narrow composer, the submit button stays pinned to the
