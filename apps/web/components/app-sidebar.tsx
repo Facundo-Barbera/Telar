@@ -26,7 +26,12 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { StateBadge } from "@/components/common/state-badge";
 import { isTerminal } from "@/components/runs/utils";
 
@@ -73,27 +78,131 @@ function fmtReset(iso: string | null): string {
   return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
 }
 
-function PlanMeter({ label, window }: { label: string; window: PlanWindow }) {
-  const pct = window.utilization ?? 0;
+function ringStroke(p: number | null): string {
+  if (p == null) return "stroke-sidebar-foreground/20";
+  if (p >= 90) return "stroke-destructive";
+  if (p >= 70) return "stroke-amber-500";
+  return "stroke-primary";
+}
+
+function dotClass(p: number | null): string {
+  if (p == null) return "bg-sidebar-foreground/20";
+  if (p >= 90) return "bg-destructive";
+  if (p >= 70) return "bg-amber-500";
+  return "bg-primary";
+}
+
+function TipRow({ label, window }: { label: string; window?: PlanWindow | null }) {
+  if (!window) return null;
+  const pct = window.utilization;
   return (
-    <div className="space-y-1">
-      <div className="flex items-baseline justify-between text-xs">
-        <span className="text-sidebar-foreground/70">{label}</span>
-        <span className="font-mono">
-          {window.utilization != null ? `${Math.round(pct)}%` : "—"}
-          {window.resets_at && (
-            <span className="text-sidebar-foreground/50">
-              {" "}
-              · resets {fmtReset(window.resets_at)}
-            </span>
-          )}
-        </span>
-      </div>
-      <Progress
-        value={Math.min(100, pct)}
-        className={`h-1 ${pct >= 90 ? "[&>[data-slot=progress-indicator]]:bg-destructive" : ""}`}
-      />
+    <div className="flex items-center justify-between gap-3">
+      <span className="flex items-center gap-1.5">
+        <span className={`size-1.5 rounded-full ${dotClass(pct)}`} />
+        {label}
+      </span>
+      <span className="font-mono tabular-nums">
+        {pct != null ? `${Math.round(pct)}%` : "—"}
+        {window.resets_at && <span className="opacity-70"> · {fmtReset(window.resets_at)}</span>}
+      </span>
     </div>
+  );
+}
+
+// Outer ring = 5h session, inner ring = weekly. Hover for numbers.
+function PlanRing({
+  account,
+  snap,
+  tier,
+}: {
+  account: string;
+  snap: PlanSnapshot;
+  tier?: string;
+}) {
+  const five = snap.fiveHour?.utilization ?? null;
+  const week = snap.sevenDay?.utilization ?? null;
+  const size = 30,
+    cxy = size / 2,
+    sw = 3,
+    rOut = 12,
+    rIn = 7;
+  const circ = (r: number) => 2 * Math.PI * r;
+  const off = (r: number, p: number | null) =>
+    circ(r) * (1 - Math.min(100, p ?? 0) / 100);
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger className="shrink-0 rounded-full outline-none">
+          <svg
+            width={size}
+            height={size}
+            viewBox={`0 0 ${size} ${size}`}
+            className="-rotate-90"
+          >
+            <circle
+              cx={cxy}
+              cy={cxy}
+              r={rOut}
+              fill="none"
+              strokeWidth={sw}
+              className="stroke-sidebar-foreground/10"
+            />
+            <circle
+              cx={cxy}
+              cy={cxy}
+              r={rIn}
+              fill="none"
+              strokeWidth={sw}
+              className="stroke-sidebar-foreground/10"
+            />
+            {five != null && (
+              <circle
+                cx={cxy}
+                cy={cxy}
+                r={rOut}
+                fill="none"
+                strokeWidth={sw}
+                strokeLinecap="round"
+                strokeDasharray={circ(rOut)}
+                strokeDashoffset={off(rOut, five)}
+                className={ringStroke(five)}
+              />
+            )}
+            {week != null && (
+              <circle
+                cx={cxy}
+                cy={cxy}
+                r={rIn}
+                fill="none"
+                strokeWidth={sw}
+                strokeLinecap="round"
+                strokeDasharray={circ(rIn)}
+                strokeDashoffset={off(rIn, week)}
+                className={ringStroke(week)}
+              />
+            )}
+          </svg>
+        </TooltipTrigger>
+        <TooltipContent side="right" className="w-auto flex-col items-stretch gap-1">
+          <div className="flex items-center gap-1.5 font-mono text-xs font-medium">
+            {account}
+            {snap.subscriptionType && (
+              <span className="uppercase opacity-70">{snap.subscriptionType}</span>
+            )}
+            {tier && <span className="opacity-70">{tier}</span>}
+          </div>
+          <div className="space-y-0.5 text-xs">
+            <TipRow label="5-hour session" window={snap.fiveHour} />
+            <TipRow label="Weekly · all" window={snap.sevenDay} />
+            <TipRow label="Weekly · Opus" window={snap.sevenDayOpus} />
+            <TipRow label="Weekly · Sonnet" window={snap.sevenDaySonnet} />
+            {snap.modelScoped?.map((w) => (
+              <TipRow key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
+            ))}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -107,39 +216,23 @@ function PlanBlock({
   tier?: string; // hand-set cosmetic label (e.g. "20x"), undefined until filled in
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-mono text-xs font-medium text-sidebar-foreground/70">
+    <div className="flex items-center gap-2">
+      <PlanRing account={account} snap={snap} tier={tier} />
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate font-mono text-xs text-sidebar-foreground/70">
           {account}
         </span>
-        {(snap.subscriptionType || tier) && (
-          <span className="flex shrink-0 items-center gap-1">
-            {snap.subscriptionType && (
-              <span className="rounded bg-sidebar-accent px-1.5 py-0.5 font-mono text-[10px] uppercase">
-                {snap.subscriptionType}
-              </span>
-            )}
-            {tier && (
-              <span className="font-mono text-[10px] text-sidebar-foreground/50">
-                {tier}
-              </span>
-            )}
+        {snap.subscriptionType && (
+          <span className="shrink-0 rounded bg-sidebar-accent px-1 font-mono text-[9px] uppercase">
+            {snap.subscriptionType}
+          </span>
+        )}
+        {tier && (
+          <span className="shrink-0 font-mono text-[9px] text-sidebar-foreground/50">
+            {tier}
           </span>
         )}
       </div>
-      {snap.fiveHour && <PlanMeter label="Session · 5h" window={snap.fiveHour} />}
-      {snap.sevenDay && (
-        <PlanMeter label="Weekly · all models" window={snap.sevenDay} />
-      )}
-      {snap.sevenDayOpus && (
-        <PlanMeter label="Weekly · Opus" window={snap.sevenDayOpus} />
-      )}
-      {snap.sevenDaySonnet && (
-        <PlanMeter label="Weekly · Sonnet" window={snap.sevenDaySonnet} />
-      )}
-      {snap.modelScoped?.map((w) => (
-        <PlanMeter key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
-      ))}
     </div>
   );
 }
