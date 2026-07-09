@@ -476,6 +476,7 @@ export default function ProjectDetailPage({
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [chatsError, setChatsError] = useState<string | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
+  const [showAllSessions, setShowAllSessions] = useState(false);
 
   const sessionsHref = `/projects/${encodeURIComponent(name)}/sessions/new`;
   const newRunHref = `/runs?new=1&project=${encodeURIComponent(name)}`;
@@ -734,7 +735,7 @@ export default function ProjectDetailPage({
                   />
                 ) : (
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {chats.map((chat) => (
+                    {(showAllSessions ? chats : chats.slice(0, 6)).map((chat) => (
                       <SessionRow key={chat.id} name={entry.name} chat={chat} />
                     ))}
                   </div>
@@ -743,6 +744,18 @@ export default function ProjectDetailPage({
                 <SectionError message={chatsError} onRetry={() => void load()} />
               ) : (
                 <ListSkeleton rows={2} />
+              )}
+              {chats !== null && chats.length > 6 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowAllSessions((v) => !v)}
+                >
+                  {showAllSessions
+                    ? "Show fewer"
+                    : `Show all ${chats.length} sessions`}
+                </Button>
               )}
               {chats !== null && <ArchivedSessions name={entry.name} />}
             </section>
