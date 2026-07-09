@@ -51,4 +51,9 @@ export const KIND_INFO: Record<RunKind, { label: string; blurb: string }> = {
     label: "Custom",
     blurb: "Freeform — you write the whole brief.",
   },
+  verify: {
+    label: "Verify",
+    blurb:
+      "Read-only — drive a running/deployed URL and judge its acceptance criteria. No code changes.",
+  },
 };

@@ -8,7 +8,15 @@ import { getProject, telarDir } from "./manifest";
 import { createRun, saveRun, appendEvent, type Run, type RunKind } from "./runs";
 import { executeRun } from "./executor";
 
-export type StartRunInput = { project: string; kind: RunKind; title: string; prompt: string; acceptanceCriteria?: string[] };
+export type StartRunInput = {
+  project: string;
+  kind: RunKind;
+  title: string;
+  prompt: string;
+  acceptanceCriteria?: string[];
+  maxAttempts?: number;
+  target?: "dev" | "preview" | "prod";
+};
 export type DispatcherDeps = { accounts: Record<string, AccountProfile>; policy?: ModelPolicy };
 
 const active = new Map<string, AbortController>();
@@ -23,11 +31,13 @@ export function startRun(input: StartRunInput, deps: DispatcherDeps): Run {
     account: manifest.account,
   });
   run.acceptanceCriteria = input.acceptanceCriteria;
+  run.target = input.target;
   const abort = new AbortController();
   active.set(run.id, abort);
   executeRun(run, manifest, {
     policy: deps.policy ?? loadPolicy(),
     accounts: deps.accounts,
+    maxAttempts: input.maxAttempts,
     abort,
     onState: saveRun,
     onEvent: (ev) => appendEvent(run.id, ev),

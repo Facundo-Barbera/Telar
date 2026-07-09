@@ -11,7 +11,13 @@ export const dynamic = "force-dynamic";
 
 // Mirrors RunKind — the executor's MAX_TURNS only knows these, so reject others
 // up front rather than letting createRun store a run the executor can't drive.
-const RUN_KINDS = new Set<StartRunInput["kind"]>(["quickfix", "story", "custom"]);
+const RUN_KINDS = new Set<StartRunInput["kind"]>([
+  "quickfix",
+  "story",
+  "custom",
+  "verify",
+]);
+const RUN_TARGETS = new Set(["dev", "preview", "prod"]);
 
 export async function GET() {
   return Response.json({ runs: listRuns(), active: activeRunIds() });
@@ -49,6 +55,31 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
+  }
+  // verify runs are read-only judgments against acceptanceCriteria — without
+  // any, there's nothing for the Verifier to check.
+  if (
+    body.kind === "verify" &&
+    (!Array.isArray(body.acceptanceCriteria) || body.acceptanceCriteria.length === 0)
+  ) {
+    return Response.json(
+      { error: "A verify run needs acceptanceCriteria." },
+      { status: 400 },
+    );
+  }
+  if (body.maxAttempts !== undefined) {
+    if (!Number.isInteger(body.maxAttempts) || body.maxAttempts < 1) {
+      return Response.json(
+        { error: "maxAttempts must be an integer >= 1." },
+        { status: 400 },
+      );
+    }
+  }
+  if (body.target !== undefined && !RUN_TARGETS.has(body.target)) {
+    return Response.json(
+      { error: "target must be one of dev, preview, prod." },
+      { status: 400 },
+    );
   }
   const input = body as StartRunInput;
 

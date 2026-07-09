@@ -19,7 +19,7 @@ export type ExecuteOpts = {
   onState?: (run: Run) => void;
 };
 
-const MAX_TURNS: Record<RunKind, number> = { quickfix: 50, story: 150, custom: 80 };
+const MAX_TURNS: Record<RunKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
 const BASE_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"];
 
 const tail = (s: string, n: number) => (s.length > n ? s.slice(-n) : s);
@@ -182,8 +182,10 @@ export async function runVerification(
   attempt: AttemptRecord,
   emit: (ev: { type: string } & Record<string, unknown>) => void,
   account?: AccountProfile,
+  url?: string,
 ): Promise<{ verification: Verification; report: VerifierReport | null }> {
-  if (!run.acceptanceCriteria?.length || !manifest.urls?.dev) return { verification: "skip", report: null };
+  const target = url ?? manifest.urls?.dev;
+  if (!run.acceptanceCriteria?.length || !target) return { verification: "skip", report: null };
   try {
     const evidenceDir = path.join(runDir(run.id), "evidence");
     let designGuidelines: string | undefined;
@@ -196,7 +198,7 @@ export async function runVerification(
     }
     const report = await verify(
       { name: run.title, acceptanceCriteria: run.acceptanceCriteria },
-      { url: manifest.urls.dev, evidenceDir, account, headless: true, designGuidelines },
+      { url: target, evidenceDir, account, headless: true, designGuidelines },
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
@@ -222,11 +224,88 @@ export async function runVerification(
   }
 }
 
+// Pure outcome function for a verify run: no builder loop, so the mapping
+// from Verification to a terminal WorkUnitState is direct — no retries.
+export function decideVerifyRun(v: Verification): { state: WorkUnitState; error?: string } {
+  switch (v) {
+    case "pass":
+      return { state: "done" };
+    case "fail":
+      return { state: "needs-review", error: "verification failed" };
+    case "flaky":
+      return { state: "needs-review", error: "verification flaky" };
+    case "skip":
+      return { state: "needs-review", error: "nothing verified" };
+  }
+}
+
+// Read-only run: drives verify() against run.target with no builder attempt.
+// runVerification already returns "skip" when the target URL or acceptance
+// criteria are missing, so a misconfigured verify run lands needs-review
+// cleanly rather than crashing.
+async function executeVerifyRun(run: Run, manifest: ProjectManifest, opts: ExecuteOpts = {}): Promise<Run> {
+  const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
+  const setState = (s: WorkUnitState) => {
+    run.state = s;
+    emit({ type: "state", state: s });
+    opts.onState?.(run);
+  };
+  const isAborted = () => opts.abort?.signal.aborted === true;
+  const halt = () => {
+    setState("halted");
+    return run;
+  };
+
+  try {
+    if (isAborted()) return halt();
+
+    const targetKey = run.target ?? "dev";
+    const url = manifest.urls?.[targetKey];
+    const policy = opts.policy ?? ModelPolicy.parse({});
+
+    const attempt: AttemptRecord = { n: 1, role: "verifier", model: policy.dev, startedAt: Date.now() };
+    run.attempts.push(attempt);
+    opts.onState?.(run);
+
+    setState("verifying");
+    const { verification, report } = await runVerification(
+      run,
+      manifest,
+      attempt,
+      emit,
+      opts.accounts?.[manifest.account],
+      url,
+    );
+    attempt.endedAt = Date.now();
+    opts.onState?.(run);
+
+    if (isAborted()) return halt();
+
+    const d = decideVerifyRun(verification);
+    if (d.error) run.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
+    setState(d.state);
+    return run;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      if (isAborted()) return halt();
+      emit({ type: "error", message });
+      run.error = message;
+      setState("failed");
+    } catch {
+      run.state = isAborted() ? "halted" : "failed";
+      if (run.state === "failed") run.error ??= message;
+    }
+    return run;
+  }
+}
+
 export async function executeRun(
   run: Run,
   manifest: ProjectManifest,
   opts: ExecuteOpts = {},
 ): Promise<Run> {
+  if (run.kind === "verify") return executeVerifyRun(run, manifest, opts);
   const policy = opts.policy ?? ModelPolicy.parse({});
   // Clamp: <= 0 would skip the loop and resolve a still-"queued" run.
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);

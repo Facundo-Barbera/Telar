@@ -10,7 +10,7 @@ const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar
 const runsDir = () => path.join(telarDir(), "runs");
 export const runDir = (id: string) => path.join(runsDir(), id);
 
-export type RunKind = "quickfix" | "story" | "custom";
+export type RunKind = "quickfix" | "story" | "custom" | "verify";
 
 export type RunEvent = { ts: number; type: string } & Record<string, unknown>;
 
@@ -35,6 +35,7 @@ export type Run = {
   prompt: string;
   account: string;
   acceptanceCriteria?: string[];
+  target?: "dev" | "preview" | "prod";
   state: WorkUnitState;
   createdAt: number;
   updatedAt: number;

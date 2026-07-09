@@ -134,7 +134,7 @@ export type WorkUnitState = z.infer<typeof WorkUnitState>;
 
 export const WorkUnit = z.object({
   id: z.string(),
-  kind: z.enum(["quickfix", "story", "custom"]),
+  kind: z.enum(["quickfix", "story", "custom", "verify"]),
   project: z.string(), // project name from the registry
   title: z.string(),
   prompt: z.string(),

@@ -27,7 +27,9 @@ import { KIND_INFO } from "./utils";
 
 type ProjectOption = { name: string; account: string };
 
-const KINDS: RunKind[] = ["quickfix", "story", "custom"];
+const KINDS: RunKind[] = ["quickfix", "story", "custom", "verify"];
+const TARGETS = ["dev", "preview", "prod"] as const;
+type Target = (typeof TARGETS)[number];
 
 export function NewRunDialog({
   open,
@@ -47,6 +49,7 @@ export function NewRunDialog({
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [criteria, setCriteria] = useState("");
+  const [target, setTarget] = useState<Target>("dev");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +60,7 @@ export function NewRunDialog({
     setTitle("");
     setPrompt("");
     setCriteria("");
+    setTarget("dev");
     setError(null);
     setSubmitting(false);
     setProjects(null);
@@ -98,7 +102,11 @@ export function NewRunDialog({
 
   const selected = projects?.find((p) => p.name === project) ?? null;
   const canSubmit =
-    !submitting && project !== "" && title.trim() !== "" && prompt.trim() !== "";
+    !submitting &&
+    project !== "" &&
+    title.trim() !== "" &&
+    prompt.trim() !== "" &&
+    (kind !== "verify" || criteria.trim() !== "");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,6 +128,7 @@ export function NewRunDialog({
           title: title.trim(),
           prompt,
           ...(acceptanceCriteria.length ? { acceptanceCriteria } : {}),
+          ...(kind === "verify" ? { target } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -254,12 +263,37 @@ export function NewRunDialog({
                 />
               </div>
 
+              {kind === "verify" && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Target
+                  </label>
+                  <Select
+                    value={target}
+                    onValueChange={(v) => v && setTarget(v as Target)}
+                  >
+                    <SelectTrigger className="w-full" size="default">
+                      <SelectValue>{target}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TARGETS.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-muted-foreground">
                   Acceptance criteria
-                  <span className="ml-1.5 font-normal text-muted-foreground/70">
-                    optional
-                  </span>
+                  {kind !== "verify" && (
+                    <span className="ml-1.5 font-normal text-muted-foreground/70">
+                      optional
+                    </span>
+                  )}
                 </label>
                 <Textarea
                   value={criteria}
