@@ -22,7 +22,15 @@ import { AttemptCard } from "@/components/looms/attempt-card";
 import { LiveFeed } from "@/components/looms/live-feed";
 import { EpicGodView } from "@/components/looms/epic-god-view";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
-import { fmtDuration, isActive, isTerminal, sumCost } from "@/components/looms/utils";
+import { SpecBundle } from "@/components/looms/spec-bundle";
+import { AcceptancePanel } from "@/components/looms/acceptance-panel";
+import {
+  fmtDuration,
+  isActive,
+  isAwaitingOwner,
+  isTerminal,
+  sumCost,
+} from "@/components/looms/utils";
 import { fmtCost } from "@/lib/format";
 
 function BackLink() {
@@ -163,11 +171,13 @@ export default function LoomDetailPage() {
   }
 
   const nonTerminal = !isTerminal(loom.state);
-  const elapsedMs = nonTerminal
-    ? nowTs - loom.createdAt
-    : loom.updatedAt - loom.createdAt;
+  const settled = isTerminal(loom.state) || isAwaitingOwner(loom.state);
+  const elapsedMs = settled
+    ? loom.updatedAt - loom.createdAt
+    : nowTs - loom.createdAt;
   const totalCost = sumCost(loom.attempts);
   const preparing = loom.attempts.length === 0 && isActive(loom.state);
+  const showCancel = nonTerminal && !isAwaitingOwner(loom.state);
 
   return (
     <div className="flex h-dvh flex-col">
@@ -198,7 +208,7 @@ export default function LoomDetailPage() {
               {fmtCost(totalCost)}
             </Badge>
             <StateBadge state={loom.state} />
-            {nonTerminal && (
+            {showCancel && (
               <Button
                 variant="outline"
                 size="sm"
@@ -222,59 +232,67 @@ export default function LoomDetailPage() {
           <ScopingCharter />
         ) : loom.state === "charter-review" ? (
           <CharterReview loom={loom} />
-        ) : loom.role === "epic" ? (
-          <EpicGodView loom={loom} feed={feed} />
         ) : (
-          <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <section className="flex flex-col gap-3">
-              <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                Attempts
-              </h2>
-              {loom.error && (
-                <div
-                  className={cn(
-                    "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm",
-                    loom.state === "failed"
-                      ? "border-destructive/30 bg-destructive/10 text-destructive"
-                      : "border-amber-500/30 bg-amber-500/10 text-amber-300",
+          <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4">
+            {loom.state === "ready" && (
+              <AcceptancePanel loom={loom} onAccepted={(l) => setLoom(l)} />
+            )}
+            <SpecBundle loomId={loom.id} />
+            {loom.role === "epic" ? (
+              <EpicGodView loom={loom} feed={feed} />
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <section className="flex flex-col gap-3">
+                  <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                    Attempts
+                  </h2>
+                  {loom.error && (
+                    <div
+                      className={cn(
+                        "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm",
+                        loom.state === "failed"
+                          ? "border-destructive/30 bg-destructive/10 text-destructive"
+                          : "border-amber-500/30 bg-amber-500/10 text-amber-300",
+                      )}
+                    >
+                      <TriangleAlertIcon className="mt-px size-4 shrink-0" />
+                      <span className="leading-snug">{loom.error}</span>
+                    </div>
                   )}
-                >
-                  <TriangleAlertIcon className="mt-px size-4 shrink-0" />
-                  <span className="leading-snug">{loom.error}</span>
-                </div>
-              )}
-              {loom.attempts.length === 0 ? (
-                preparing ? (
-                  <Card size="sm">
-                    <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2Icon className="size-4 animate-spin" />
-                      Preparing the first attempt…
+                  {loom.attempts.length === 0 ? (
+                    preparing ? (
+                      <Card size="sm">
+                        <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2Icon className="size-4 animate-spin" />
+                          Preparing the first attempt…
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <p className="px-1 text-sm text-muted-foreground">
+                        {loom.state === "queued"
+                          ? "Queued — waiting to start."
+                          : "No attempts recorded."}
+                      </p>
+                    )
+                  ) : (
+                    loom.attempts.map((attempt) => (
+                      <AttemptCard key={attempt.n} attempt={attempt} loomId={loom.id} />
+                    ))
+                  )}
+                </section>
+
+                <section className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-0 lg:self-start">
+                  <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                    Live feed
+                  </h2>
+                  <Card size="sm" className="min-w-0">
+                    <CardContent className="min-w-0">
+                      <LiveFeed events={feed} state={loom.state} />
                     </CardContent>
                   </Card>
-                ) : (
-                  <p className="px-1 text-sm text-muted-foreground">
-                    {loom.state === "queued"
-                      ? "Queued — waiting to start."
-                      : "No attempts recorded."}
-                  </p>
-                )
-              ) : (
-                loom.attempts.map((attempt) => (
-                  <AttemptCard key={attempt.n} attempt={attempt} loomId={loom.id} />
-                ))
-              )}
-            </section>
-
-            <section className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-0 lg:self-start">
-              <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                Live feed
-              </h2>
-              <Card size="sm" className="min-w-0">
-                <CardContent className="min-w-0">
-                  <LiveFeed events={feed} state={loom.state} />
-                </CardContent>
-              </Card>
-            </section>
+                </section>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -14,6 +14,10 @@ const TERMINAL: readonly WorkUnitState[] = [
 export const isTerminal = (s: WorkUnitState): boolean => TERMINAL.includes(s);
 export const isActive = (s: WorkUnitState): boolean =>
   s === "running" || s === "verifying" || s === "preparing";
+// Waiting on the human — not doing autonomous work, but not closed either
+// (ready keeps its event stream open for steering; blocked needs a decision).
+export const isAwaitingOwner = (s: WorkUnitState): boolean =>
+  s === "ready" || s === "blocked";
 
 export function sumCost(attempts: AttemptRecord[]): number {
   return attempts.reduce((total, a) => total + (a.costUsd ?? 0), 0);
@@ -38,10 +42,11 @@ export function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-// The SAME 5-color vocabulary StateBadge owns (sky=running/preparing,
-// violet=verifying, primary=done, amber=needs-review, destructive=failed,
-// muted=everything else) — a thin local variant, not a new palette, so every
-// state rail (thread rows, loom cards) reads off one shared definition.
+// The SAME color vocabulary StateBadge owns (sky=running/preparing,
+// violet=verifying, primary=done, emerald=ready, amber=needs-review,
+// orange=blocked, destructive=failed, muted=everything else) — a thin local
+// variant, not a new palette, so every state rail (thread rows, loom cards)
+// reads off one shared definition.
 export function stateRailClass(state: WorkUnitState): string {
   switch (state) {
     case "preparing":
@@ -49,10 +54,14 @@ export function stateRailClass(state: WorkUnitState): string {
       return "bg-sky-400";
     case "verifying":
       return "bg-violet-400";
+    case "ready":
+      return "bg-emerald-400";
     case "done":
       return "bg-primary";
     case "needs-review":
       return "bg-amber-400";
+    case "blocked":
+      return "bg-orange-400";
     case "failed":
       return "bg-destructive";
     default:

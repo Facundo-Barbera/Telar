@@ -4,8 +4,10 @@ import { Badge } from "@/components/ui/badge";
 
 // THE state badge — one color language shared by looms, the dashboard, and
 // project surfaces. preparing/running/verifying animate (work in flight);
-// done reads as default/primary; failed destructive; needs-review amber;
-// queued outline; halted/skipped muted.
+// done reads as default/primary; ready emerald (verified, awaiting owner
+// accept — a CTA, distinct from done/verifying); failed destructive;
+// needs-review amber; blocked orange (paused on a human, distinct from
+// needs-review); queued outline; halted/skipped muted.
 const STYLES: Record<
   WorkUnitState,
   { label: string; dot: string; className: string; pulse: boolean }
@@ -46,6 +48,12 @@ const STYLES: Record<
     className: "border-violet-500/30 bg-violet-500/10 text-violet-300",
     pulse: true,
   },
+  ready: {
+    label: "ready",
+    dot: "bg-emerald-400",
+    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+    pulse: false,
+  },
   done: {
     label: "done",
     dot: "bg-primary-foreground/70",
@@ -56,6 +64,12 @@ const STYLES: Record<
     label: "needs review",
     dot: "bg-amber-400",
     className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+    pulse: false,
+  },
+  blocked: {
+    label: "blocked",
+    dot: "bg-orange-400",
+    className: "border-orange-500/40 bg-orange-500/10 text-orange-300",
     pulse: false,
   },
   failed: {
