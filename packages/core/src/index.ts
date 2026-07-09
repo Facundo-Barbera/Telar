@@ -8,6 +8,8 @@ export * from "./gates";
 export * from "./looms";
 export * from "./executor";
 export * from "./epic";
+export * from "./scoping";
+export * from "./proof-templates";
 export * from "./dispatcher";
 export * from "./distill";
 export * from "./spec-lint";

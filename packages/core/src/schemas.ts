@@ -121,6 +121,8 @@ export type VerifierReport = z.infer<typeof VerifierReport>;
 
 export const WorkUnitState = z.enum([
   "queued",
+  "scoping",
+  "charter-review",
   "preparing",
   "running",
   "verifying",
@@ -151,6 +153,12 @@ export const ProjectManifest = z.object({
   root: z.string(),
   adapter: z.enum(["plain", "bmad"]).default("plain"),
   account: z.string().default("personal"), // AccountProfile.name — routes billing/limits
+  // Human-approval policy for a drafted Charter (docs/loom-orchestrator.md §5).
+  // "auto" never pauses; "human-required-for-epics" pauses only for shape:"epic"
+  // (default — quickfix/leaf stays frictionless); "human-required" always pauses.
+  charterPolicy: z
+    .enum(["auto", "human-required-for-epics", "human-required"])
+    .default("human-required-for-epics"),
   baseBranch: z.string().default("main"),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
