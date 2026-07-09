@@ -2061,7 +2061,7 @@ function SessionViewInner({
       {/* Live heartbeat for this session — active account (editable pre-session,
           locked once one exists), session id once minted, elapsed while
           working, running cost + token counts. */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
         <Badge variant="outline" className="gap-1.5 font-mono text-xs">
           <UserRoundIcon className="size-3" />
           {activeAccount}
@@ -2071,7 +2071,7 @@ function SessionViewInner({
             {shortId(sessionId)}
           </Badge>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {busy && (
             <Shimmer className="text-xs">
               {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
@@ -2270,8 +2270,8 @@ function SessionViewInner({
               onChange={() => setMenuDismissed(false)}
             />
           </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
+          <PromptInputFooter className="flex-wrap">
+            <PromptInputTools className="flex-wrap">
               {/* Agent selector — first in the bar, per spec: it's the thing
                   that determines what everything to its right even means.
                   Provider/account are choosable only pre-session (an existing
@@ -2486,7 +2486,12 @@ function SessionViewInner({
                 Start run
               </Button>
             </PromptInputTools>
+            {/* ml-auto/self-end: when the tools row wraps onto multiple lines
+                on a narrow composer, the submit button stays pinned to the
+                bottom-right instead of drifting to wherever justify-between
+                would otherwise place a lone wrapped item. */}
             <PromptInputSubmit
+              className="ml-auto shrink-0 self-end"
               status={status === "ready" ? undefined : status}
               onStop={() => abortRef.current?.abort()}
             />
