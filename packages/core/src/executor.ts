@@ -371,6 +371,19 @@ export async function runVerification(
   const { contract } = readContract(loom.id);
   if (contract) return runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts);
 
+  // §M.1/§M.2: a loom that required a Verification Contract to START
+  // (loom.contractRequired, stamped by startLoomFromBundle's CONTRACT GATE)
+  // can never silently fall through to the legacy no-panel path just because
+  // contract.json later went missing, corrupt, or failed validateContract —
+  // that would let gates + a self-reported Verdict promote a bundle loom
+  // with zero panel evidence for this attempt. Treat it as a hard
+  // verification FAILURE instead (retries, then needs-review via decide()),
+  // exactly like a panel "fail" would.
+  if (loom.contractRequired) {
+    emit({ type: "panel-error", message: "verification contract required but missing or invalid" });
+    return { verification: "fail", report: null, panelReport: null, panelRequired: true };
+  }
+
   if (!loom.acceptanceCriteria?.length || !target) return { verification: "skip", report: null, panelRequired: false };
   try {
     const evidenceDir = path.join(loomDir(loom.id), "evidence");

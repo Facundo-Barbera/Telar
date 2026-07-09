@@ -293,6 +293,61 @@ describe("no-bundle loom: the legacy single-Verifier path is byte-identical", ()
   });
 });
 
+// §M.1/§M.2 regression guard: a loom that required a Verification Contract at
+// start (loom.contractRequired, stamped by startLoomFromBundle's CONTRACT
+// GATE) must NEVER fall through to the legacy no-panel skip path just because
+// contract.json later went missing/corrupt/invalid — that would let hard
+// gates + a self-reported Verdict silently promote a bundle loom with zero
+// panel evidence for the attempt (the exact "panel has nothing to check"
+// scenario, reachable mid-run instead of at start).
+describe("contractRequired: a lost/invalid contract on an already-started bundle loom is a hard failure, never a silent 'skip'", () => {
+  test("contract.json missing but loom.contractRequired=true -> verification 'fail', not the legacy 'skip'", async () => {
+    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+    loom.contractRequired = true; // what startLoomFromBundle stamps once the CONTRACT GATE passes
+    const attempt: AttemptRecord = { n: 1, role: "dev", model: "sonnet", startedAt: Date.now() };
+    loom.attempts.push(attempt);
+
+    const events: { type: string }[] = [];
+    const result = await runVerification(loom, manifest, attempt, (e) => events.push(e));
+
+    expect(result).toEqual({ verification: "fail", report: null, panelReport: null, panelRequired: true });
+    expect(events.some((e) => e.type === "panel-error")).toBe(true);
+  });
+
+  test("even with hard gates green + agent ok, decide() never promotes a contractRequired loom whose contract vanished", () => {
+    const okVerdict = { ok: true, summary: "done", files_touched: [], blocker: null };
+    // n < maxAttempts -> retry, not a silent "done".
+    expect(
+      decide({
+        gatesConfigured: true,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "fail",
+        panelRequired: true,
+        n: 1,
+        maxAttempts: 3,
+        flakyUsed: 0,
+        maxFlaky: 2,
+      }),
+    ).toEqual({ action: "retry" });
+
+    // exhausted -> needs-review, still never "done".
+    expect(
+      decide({
+        gatesConfigured: true,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "fail",
+        panelRequired: true,
+        n: 3,
+        maxAttempts: 3,
+        flakyUsed: 0,
+        maxFlaky: 2,
+      }),
+    ).toEqual({ action: "needs-review", error: "verification failed" });
+  });
+});
+
 // §M.4: filesTouched/protectedPathsTouched must come from an INDEPENDENT
 // git-status read of manifest.root, not solely the builder's self-reported
 // Verdict.files_touched — otherwise a builder can shrink its own panel or

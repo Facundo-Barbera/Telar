@@ -68,7 +68,26 @@ export type Loom = {
   parentLoomId?: string; // set on a child; points at the epic
   subGoalId?: string; // which Charter.decomposition node this child proves
   charter?: Charter; // the approved scope (root/epic loom)
+  // docs/loom-model.md §5/§M.6 — a loom whose Spec Bundle is still being
+  // authored by a planning session. Exists on disk (so the god-view can
+  // render the bundle-in-progress) but must not be listed or dispatched
+  // until `startLoomFromBundle` commits it (stamps provenance, flips this
+  // to false, and dispatches). Absent/false = a normal started loom.
+  draft?: boolean;
+  // §M.1: stamped true by startLoomFromBundle's CONTRACT GATE the moment a
+  // valid Verification Contract was required to start this loom. Sticky for
+  // the loom's lifetime so a contract that later goes missing/corrupt/
+  // invalid (a steering edit, a bad write, anything) is a hard verification
+  // FAILURE, never a silent downgrade to the legacy no-panel skip path —
+  // see runVerification in executor.ts.
+  contractRequired?: boolean;
 };
+
+// docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
+// list) once it's no longer a draft awaiting commit and isn't a child loom
+// (children render nested under their parent/epic). Pure so the web list
+// route and any other consumer share one definition instead of inlining it.
+export const isListableLoom = (l: Loom): boolean => !l.draft && !l.parentLoomId;
 
 // Idempotent, non-destructive legacy migration from ~/.telar/runs/ to
 // ~/.telar/looms/ (and run.json -> loom.json within each loom dir). Runs once
@@ -115,6 +134,7 @@ export function createLoom(init: {
   parentLoomId?: string;
   subGoalId?: string;
   charter?: Charter;
+  draft?: boolean;
 }): Loom {
   ensureMigrated();
   const now = Date.now();
@@ -198,6 +218,10 @@ export function appendEvent(id: string, ev: { type: string } & Record<string, un
 // mandates for accepting anything less than a clean green — never the
 // default accept button.
 export function acceptLoom(id: string, by: string, opts?: { override?: boolean; cosignedBy?: string }): Loom {
+  // §A: "done" is reachable solely through a human (or an authenticated
+  // human delegate) — a blank/missing `by` must never slip through, exactly
+  // as assertProvenance rejects a blank approvedBy for the provenance gate.
+  if (!by?.trim()) throw new Error("acceptLoom requires a non-blank `by`");
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
   if (loom.state === "done") throw new Error("loom already accepted");

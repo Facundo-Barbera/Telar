@@ -24,7 +24,7 @@ const {
   writeBundleFile,
   writeContract,
 } = await import("../src/bundle");
-const { createLoom } = await import("../src/looms");
+const { createLoom, getLoom, saveLoom } = await import("../src/looms");
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
@@ -217,6 +217,60 @@ describe("writeContract", () => {
         ],
       }),
     ).not.toThrow();
+  });
+});
+
+describe("writeContract co-sign gate (§M.2 loosening on an already-started loom)", () => {
+  const twoAssertions = {
+    version: 1,
+    assertions: [
+      { id: "a1", description: "checks x", type: "value-equality" as const, expected: "42", blocker: true },
+      { id: "a2", description: "checks y", type: "value-equality" as const, expected: "7", blocker: true },
+    ],
+  };
+
+  test("removing an assertion on a started loom (draft:false) requires cosignedBy", () => {
+    const id = newLoomId();
+    writeContract(id, twoAssertions); // first write, before the loom has "started" — unrestricted
+    const loom = getLoom(id)!;
+    loom.draft = false; // simulates startLoomFromBundle having committed it
+    saveLoom(loom);
+
+    const loosened = { version: 1, assertions: [twoAssertions.assertions[0]!] }; // drops a2 outright
+    expect(() => writeContract(id, loosened)).toThrow(/co-sign/);
+    // rejected write must not persist — the original two-assertion contract stays in force
+    expect(readContract(id).contract?.assertions.length).toBe(2);
+
+    expect(() => writeContract(id, loosened, { cosignedBy: "bob" })).not.toThrow();
+    expect(readContract(id).contract?.assertions.length).toBe(1);
+  });
+
+  test("tightening (adding an assertion) on a started loom needs no co-sign", () => {
+    const id = newLoomId();
+    writeContract(id, { version: 1, assertions: [twoAssertions.assertions[0]!] });
+    const loom = getLoom(id)!;
+    loom.draft = false;
+    saveLoom(loom);
+
+    expect(() => writeContract(id, twoAssertions)).not.toThrow();
+  });
+
+  test("a draft loom still being authored (draft:true) is unrestricted by the co-sign gate", () => {
+    const id = newLoomId();
+    writeContract(id, twoAssertions);
+    const loom = getLoom(id)!;
+    loom.draft = true; // still being authored — not yet committed via startLoomFromBundle
+    saveLoom(loom);
+
+    const loosened = { version: 1, assertions: [twoAssertions.assertions[0]!] };
+    expect(() => writeContract(id, loosened)).not.toThrow();
+  });
+
+  test("a loom with no bundle-flow draft flag at all (draft undefined) is unrestricted", () => {
+    const id = newLoomId(); // createLoom never sets `draft` unless asked
+    writeContract(id, twoAssertions);
+    const loosened = { version: 1, assertions: [twoAssertions.assertions[0]!] };
+    expect(() => writeContract(id, loosened)).not.toThrow();
   });
 });
 

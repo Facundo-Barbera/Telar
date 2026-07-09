@@ -7,9 +7,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { loomDir } from "./looms";
+import { getLoom, loomDir } from "./looms";
 import {
   assertProvenance,
+  contractLoosenings,
   validateContract,
   VerificationContract,
   type ContractAssertion,
@@ -122,15 +123,43 @@ export function readContract(id: string): { contract: VerificationContract | nul
 
 // Validates FIRST (never persists a prose-only/unfalsifiable contract) and
 // throws with every violation joined, mirroring validateCharter's style.
-export function writeContract(id: string, contract: VerificationContract): void {
+//
+// §M.2 loosening co-sign: once a loom has STARTED (startLoomFromBundle
+// flipped draft:false), weakening its already-committed contract — removing
+// an assertion, downgrading a blocker, or content-changing a still-blocking
+// one (contractLoosenings) — requires an explicit human co-sign, the same
+// override/cosignedBy shape acceptLoom uses for a non-ready accept. A draft
+// loom still being authored (or a loom's first-ever contract write) is
+// unrestricted: there is nothing yet to loosen.
+export function writeContract(id: string, contract: VerificationContract, opts?: { cosignedBy?: string }): void {
   const errors = validateContract(contract, { existingFiles: new Set(listBundleFiles(id)) });
   if (errors.length) {
     throw new Error(`invalid verification contract: ${errors.join("; ")}`);
+  }
+  const loom = getLoom(id);
+  if (loom && loom.draft === false) {
+    const { contract: existing } = readContract(id);
+    if (existing) {
+      const loosened = contractLoosenings(existing, contract);
+      if (loosened.length && !opts?.cosignedBy?.trim()) {
+        throw new Error(
+          `contract loosening requires a human co-sign (weakened assertions: ${loosened.join(", ")})`,
+        );
+      }
+    }
   }
   writeBundleFile(id, CONTRACT_FILE, JSON.stringify(contract, null, 2));
 }
 
 export const PROVENANCE_FILE = "provenance.json";
+
+// Validates (assertProvenance — throws on a blank approver, §M.6) then
+// persists provenance.json. The durable counterpart to readProvenance, and
+// the write side quickBundle / dispatcher.startLoomFromBundle both use.
+export function writeProvenance(id: string, provenance: Provenance): void {
+  assertProvenance(provenance);
+  writeBundleFile(id, PROVENANCE_FILE, JSON.stringify(provenance, null, 2));
+}
 
 // Reads back the provenance a quickBundle (or equivalent) call stamped onto
 // the bundle — the durable, checkable counterpart to assertProvenance's

@@ -3,12 +3,21 @@
 // process's memory — cancel works while the loom's process is alive.
 import fs from "node:fs";
 import path from "node:path";
-import { ModelPolicy, type AccountProfile, type Charter, type ProjectManifest, type ProofStrategy } from "./schemas";
+import {
+  ModelPolicy,
+  assertProvenance,
+  type AccountProfile,
+  type Charter,
+  type ProjectManifest,
+  type ProofStrategy,
+  type Provenance,
+} from "./schemas";
 import { getProject, telarDir } from "./manifest";
-import { createLoom, saveLoom, appendEvent, getLoom, type Loom, type LoomKind } from "./looms";
+import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, type ExecuteOpts } from "./executor";
 import { runEpic } from "./epic";
 import { draftCharter as draftCharterDefault, needsScoping, validateCharter } from "./scoping";
+import { readContract, writeProvenance } from "./bundle";
 
 export type StartLoomInput = {
   project: string;
@@ -237,6 +246,89 @@ export async function approveCharter(id: string, by: string, deps: DispatcherDep
     .finally(() => active.delete(loom.id));
 
   return true;
+}
+
+// docs/loom-model.md §5/§2 — a planning session calls this to get a loom id
+// to write Spec Bundle files into, BEFORE the loom is "started". The loom
+// exists on disk (draft:true, state "queued") so the god-view can render the
+// bundle-in-progress, but it is not dispatched — that only happens at the
+// commit moment, `startLoomFromBundle`.
+export function createDraftLoom(input: { project: string; title: string; objective: string; account?: string }): Loom {
+  const account = input.account ?? getProject(input.project).manifest.account;
+  return createLoom({
+    project: input.project,
+    kind: "custom",
+    title: input.title,
+    prompt: input.objective,
+    account,
+    role: "leaf",
+    draft: true,
+  });
+}
+
+// The commit moment (docs/loom-model.md §5, §M.6): a session finalizes a
+// draft loom's Spec Bundle and this is what turns it into a running loom.
+// Provenance-gated (§M.6 — "a Loom can only start from human-approved
+// provenance") and contract-gated (§M.1 — no falsifiable Verification
+// Contract, no start), modeled on approveCharter's dispatch tail.
+export async function startLoomFromBundle(
+  loomId: string,
+  by: string,
+  deps: DispatcherDeps,
+  opts?: { sessionId?: string; maxAttempts?: number },
+): Promise<Loom> {
+  const loom = getLoom(loomId);
+  if (!loom) throw new Error(`loom not found: ${loomId}`);
+  if (!loom.draft) throw new Error("loom is not a draft awaiting start");
+
+  // PROVENANCE GATE — settable only by this (human-approved UI) action, never
+  // the session agent; assertProvenance throws on a blank approver.
+  const provenance: Provenance = { sessionId: opts?.sessionId, approvedBy: by, humanApprovedAt: Date.now() };
+  assertProvenance(provenance);
+  writeProvenance(loomId, provenance);
+
+  // CONTRACT GATE — a bundle loom cannot start (and thus cannot reach ready)
+  // without a falsifiable Verification Contract (§M.1).
+  const { contract, errors } = readContract(loomId);
+  if (!contract || errors.length) {
+    throw new Error(`bundle has no valid verification contract: ${errors.join("; ")}`);
+  }
+
+  // CROSS-PROCESS GUARD (docs/loom-model.md §M.8): the draft->started flip
+  // below is a plain read-modify-write on loom.json with no file lock or
+  // version check. Within a single Node process, JS run-to-completion
+  // semantics already serialize two calls for the same loom id (no `await`
+  // precedes the flip), but a second OS process racing this function could
+  // still pass every gate above before either writes draft:false, and both
+  // dispatch. An O_EXCL sentinel file makes the FIRST caller to reach here
+  // (i.e. the first to actually pass all gates) win atomically; a concurrent
+  // second caller fails fast here instead of double-dispatching. Placed after
+  // the gates (not before) so a legitimate retry following a failed gate
+  // check — e.g. a fixed-up contract on the same draft loom — is never
+  // permanently blocked by a leftover marker from the earlier, failed call.
+  try {
+    fs.writeFileSync(path.join(loomDir(loomId), ".started"), String(Date.now()), { flag: "wx" });
+  } catch {
+    throw new Error(`loom ${loomId} is already starting or started (concurrent start)`);
+  }
+
+  // Sticky: once a contract was required to start, it stays required for
+  // the loom's whole lifetime (executor.ts's runVerification enforces this).
+  loom.contractRequired = true;
+  loom.draft = false;
+  saveLoom(loom);
+  appendEvent(loomId, { type: "started", by });
+
+  const { manifest } = getProject(loom.project);
+  const abort = new AbortController();
+  active.set(loom.id, abort);
+  const onFailure = makeOnFailure(loom);
+
+  dispatchExecution(loom, manifest, deps, abort, { maxAttempts: opts?.maxAttempts })
+    .catch(onFailure)
+    .finally(() => active.delete(loom.id));
+
+  return loom;
 }
 
 const TERMINAL_STATES: ReadonlySet<Loom["state"]> = new Set(["done", "halted", "failed", "skipped"]);

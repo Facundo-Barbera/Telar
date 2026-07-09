@@ -142,4 +142,18 @@ describe("acceptLoom (real TELAR_HOME)", () => {
   test("accepting a missing loom throws", () => {
     expect(() => acceptLoom("loom_nope", "alice")).toThrow(/not found/);
   });
+
+  // §A: "done" is reachable solely through a human/authenticated delegate —
+  // a blank `by` must be rejected structurally by acceptLoom itself, not just
+  // by caller discipline (mirrors assertProvenance's blank-approvedBy check).
+  test("a blank or whitespace-only `by` is rejected, even on an otherwise-ready loom", () => {
+    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+    loom.state = "ready";
+    saveLoom(loom);
+
+    expect(() => acceptLoom(loom.id, "")).toThrow(/non-blank/);
+    expect(() => acceptLoom(loom.id, "   ")).toThrow(/non-blank/);
+    expect(() => acceptLoom(loom.id, "", { override: true, cosignedBy: "bob" })).toThrow(/non-blank/);
+    expect(getLoom(loom.id)!.state).toBe("ready"); // never flipped to done
+  });
 });
