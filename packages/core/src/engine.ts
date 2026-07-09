@@ -17,6 +17,13 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   maxTurns?: number;
   tools?: string[]; // [] = pure-reasoning agent
   disallowedTools?: string[]; // explicit SDK disallow — wins over any allow, incl. repo settingSources
+  // Hard-restrict the AVAILABLE built-in tools to `tools` via the SDK `tools`
+  // option — NOT just auto-approve them. Required for a real capability wall:
+  // under permissionMode:"bypassPermissions" `allowedTools` does not gate
+  // availability, so without this the full claude_code preset (Write/Edit/Bash/
+  // Agent/…) stays loaded. Opt-in — the builder keeps the preset; the Verifier
+  // sets it so its read-only guarantee is enforced by construction, not denylist.
+  restrictTools?: boolean;
   // Extra MCP servers merged alongside the built-in "out" (emit_result) server —
   // e.g. the Playwright MCP server for the Verifier. Their tools surface as
   // `mcp__<name>__*` and must be listed in `tools` to be callable.
@@ -102,6 +109,11 @@ export async function agent<S extends z.ZodRawShape>(
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...(opts.abort ? { abortController: opts.abort } : {}),
         ...(opts.settingSources ? { settingSources: opts.settingSources } : {}),
+        // Availability restriction (built-in tools only; MCP tools come via
+        // mcpServers below). Filter out mcp__ names — they aren't built-ins.
+        ...(opts.restrictTools
+          ? { tools: (opts.tools ?? ["Read", "Grep", "Glob"]).filter((t) => !t.startsWith("mcp__")) }
+          : {}),
         mcpServers: { out, ...opts.extraMcpServers },
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
         // Belt-and-suspenders against settingSources: a repo's own .claude

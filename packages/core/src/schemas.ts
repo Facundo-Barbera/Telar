@@ -37,6 +37,59 @@ export const Verdict = z.object({
 });
 export type Verdict = z.infer<typeof Verdict>;
 
+// --- Verifier (QA) agent evidence & verdict schema (docs/verifier-agent.md §6.1) ---
+
+export const EvidenceKind = z.enum([
+  "screenshot",
+  "a11ySnapshot",
+  "console",
+  "network",
+  "trace",
+]);
+export type EvidenceKind = z.infer<typeof EvidenceKind>;
+
+export const Evidence = z.object({
+  kind: EvidenceKind,
+  // Path under the run's evidence dir, OR inline text for small blobs
+  // (a11ySnapshot / console line). Large binaries (png/trace) are always paths.
+  path: z.string().optional(),
+  text: z.string().optional(),
+  label: z.string().default(""), // e.g. "after submit", "POST /api/save -> 200"
+});
+export type Evidence = z.infer<typeof Evidence>;
+
+export const CriterionVerdict = z.enum(["pass", "fail", "flaky"]);
+export type CriterionVerdict = z.infer<typeof CriterionVerdict>;
+
+export const ReproStep = z.object({
+  action: z.string(), // "click", "fill", "navigate", "assert"
+  target: z.string(), // role-based description: "button 'Submit'"
+  value: z.string().optional(),
+  locator: z.string().optional(), // getByRole(...) from browser_generate_locator
+});
+export type ReproStep = z.infer<typeof ReproStep>;
+
+export const CriterionResult = z.object({
+  criterion: z.string(), // the acceptance-criterion text, verbatim
+  verdict: CriterionVerdict,
+  observed: z.string(), // what the agent saw ("asserted 'Saved' visible")
+  evidence: z.array(Evidence).default([]),
+  repro: z.array(ReproStep).default([]), // present on fail; ordered minimal repro
+  locators: z.array(z.string()).default([]), // generated role-locators touched (for distillation)
+});
+export type CriterionResult = z.infer<typeof CriterionResult>;
+
+export const VerifierReport = z.object({
+  feature: z.string(),
+  url: z.string(), // the app URL that was driven
+  ok: z.boolean(), // true iff every criterion === "pass"
+  summary: z.string(),
+  criteria: z.array(CriterionResult).default([]),
+  // Session-wide evidence not tied to one criterion (the trace, full console dump).
+  sessionEvidence: z.array(Evidence).default([]),
+});
+export type VerifierReport = z.infer<typeof VerifierReport>;
+
 export const WorkUnitState = z.enum([
   "queued",
   "preparing",

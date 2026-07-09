@@ -96,9 +96,13 @@ const VERIFIER_TOOLS = [
 
 **Enforcement of "no app-source writes" is defense-in-depth, all inside Telar's existing machinery:**
 
-1. **Allowlist omission (primary).** `Write`, `Edit`, and `Bash` are simply **not in `VERIFIER_TOOLS`**. Because `agent()` sets `allowedTools` explicitly and runs `permissionMode:"bypassPermissions"`, a tool absent from the allowlist is never available — there is no interactive channel to widen it. This is the same mechanism that makes a pure-reasoning agent (`tools:[]`) safe today.
+1. **Availability restriction (primary).** The Verifier passes `restrictTools: true`, which sets the SDK's `Options.tools` — the *availability* control ("the base set of available built-in tools") — to exactly `VERIFIER_TOOLS`' built-ins. So `Write`/`Edit`/`Bash`/`NotebookEdit`/`Agent` and the rest of the claude_code preset are **never loaded into the turn**. This is the real wall.
 
-2. **Explicit disallow (belt-and-suspenders).** Pass `disallowedTools: ["Write","Edit","Bash","NotebookEdit", ...manifest.guardrails.disallowedTools]`. Per engine.ts's own comment, an explicit SDK `disallowedTools` **wins over any allow rule, including repo `settingSources` (`["project","local"]`)**. This closes the one hole the chat route worries about — a repo's own `.claude/settings.local.json` granting `permissions.allow` — because disallow beats allow unconditionally.
+   > **M1 audit correction.** An earlier draft named allowlist omission as primary. That is wrong: under `permissionMode:"bypassPermissions"`, `allowedTools` only *auto-approves without prompting* — it does **not** gate availability (SDK `sdk.d.ts:1329-1331`: *"To restrict which tools are available, use the `tools` option instead"*). With `allowedTools` alone the full preset — including the `Agent` subagent-spawn tool, an escalation path to a writing child — stayed reachable. `restrictTools` → `Options.tools` is what actually restricts; the allowlist is now just the auto-approve convenience on top.
+
+2. **Explicit disallow (defense-in-depth).** Pass `disallowedTools: ["Write","Edit","MultiEdit","Bash","NotebookEdit","Agent", ...manifest.guardrails.disallowedTools]`. Per engine.ts's own comment, an explicit SDK `disallowedTools` **wins over any allow rule, including repo `settingSources`**. Redundant with `restrictTools` but kept for clarity and forward-compat as new write/spawn tools land.
+
+   *Residual (accepted for v1):* `Options.tools` governs built-ins only; MCP tools come via `mcpServers`. The Playwright server's non-allowlisted tools (`browser_take_screenshot` is needed; `browser_pdf_save`) can splat image/PDF **bytes** to an absolute path, but cannot author chosen source — so the real invariant (can't forge a passing state by rewriting code) holds. Tightening MCP tool exposure is a later milestone.
 
 3. **No settingSources escalation.** Unlike the builder pass, the Verifier passes **`settingSources: []`** (or omits it). The builder needs the repo's CLAUDE.md/skills; the Verifier must not inherit repo-defined tool grants or hooks that could re-enable writes. The judgment must be uncontaminated by the repo under test.
 
