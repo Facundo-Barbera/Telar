@@ -8,3 +8,5 @@ export * from "./gates";
 export * from "./runs";
 export * from "./executor";
 export * from "./dispatcher";
+export * from "./distill";
+export * from "./spec-lint";
