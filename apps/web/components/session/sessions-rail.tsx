@@ -41,7 +41,7 @@ export function SessionsRail({
           <ArrowLeftIcon className="size-3.5 shrink-0" />
           <span className="truncate font-mono">{project}</span>
         </Link>
-        <Button size="sm" className="w-full" nativeButton={false} render={<Link href={newHref} />}>
+        <Button size="sm" className="w-full" render={<Link href={newHref} />}>
           <MessageSquarePlusIcon />
           New session
         </Button>

@@ -51,6 +51,12 @@ function Button({
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
+      // A Button given a `render` element (e.g. render={<Link/>}) is no longer a
+      // native <button>, so default nativeButton off — keeps Base UI's a11y
+      // semantics correct and silences its warning. An explicit nativeButton wins.
+      {...(props.render != null && props.nativeButton === undefined
+        ? { nativeButton: false }
+        : {})}
     />
   )
 }
