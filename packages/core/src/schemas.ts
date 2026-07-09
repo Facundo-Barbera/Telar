@@ -1,11 +1,31 @@
 import { z } from "zod";
 
-// An auth profile = one Claude account. Selected per project (or per run) and
-// injected into the agent subprocess env — see engine.ts.
+// A provider = which agent CLI/backend an account drives. Claude today, Codex
+// alongside it; the string keys into PROVIDERS (providers.ts).
+export const ProviderId = z.enum(["claude", "codex"]);
+export type ProviderId = z.infer<typeof ProviderId>;
+
+// How an account authenticates:
+//  - subscription: an interactive login stored in the provider's config dir
+//    (CLAUDE_CONFIG_DIR / CODEX_HOME) — rides a Pro/Max/ChatGPT plan.
+//  - oauth-token:  a long-lived token env var (e.g. `claude setup-token`),
+//    still subscription-billed, headless-friendly for hosting.
+//  - api-key:      a provider API key (ANTHROPIC_API_KEY / OPENAI_API_KEY),
+//    API-billed — the redistribution-clean path.
+export const AuthMode = z.enum(["subscription", "oauth-token", "api-key"]);
+export type AuthMode = z.infer<typeof AuthMode>;
+
+// An auth profile = one account for one provider. Selected per project (or per
+// run/session) and injected into the agent subprocess env — see accountEnv in
+// engine.ts. Fields past `name` are optional so the registry can grow
+// incrementally; the provider descriptor maps them to concrete env vars.
 export const AccountProfile = z.object({
-  name: z.string(), // "personal" | "work" | ...
-  configDir: z.string().optional(), // CLAUDE_CONFIG_DIR with that account logged in
-  oauthTokenEnv: z.string().optional(), // env var name holding a `claude setup-token` token
+  name: z.string(), // "personal" | "work" | "codex" | ...
+  provider: ProviderId.optional(), // defaults to "claude" when absent
+  authMode: AuthMode.optional(), // defaults to "subscription" when absent
+  configDir: z.string().optional(), // → provider config dir env, that account logged in
+  tokenEnv: z.string().optional(), // env var name holding the token/key (else the secret store)
+  displayTier: z.string().optional(), // cosmetic plan label, e.g. "5x" / "20x"
 });
 export type AccountProfile = z.infer<typeof AccountProfile>;
 

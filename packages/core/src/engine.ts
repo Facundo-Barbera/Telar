@@ -2,8 +2,12 @@
 // agent() = one query() forced through a typed result tool.
 // parallel() = Promise.all behind a concurrency gate (subscription-friendly).
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
+import os from "node:os";
+import path from "node:path";
 import { z } from "zod";
 import type { AccountProfile } from "./schemas";
+import { providerOf } from "./providers";
+import { readSecret } from "./secrets";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -38,11 +42,25 @@ const release = () => {
   waiters.shift()?.();
 };
 
+const expandHome = (p: string): string =>
+  p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
+
+// Translates an account profile into the subprocess env for its provider.
+// Provider-neutral: the descriptor decides which config-dir/token env vars to
+// set (CLAUDE_CONFIG_DIR vs CODEX_HOME, CLAUDE_CODE_OAUTH_TOKEN vs OPENAI_API_KEY).
 export function accountEnv(account?: AccountProfile): Record<string, string | undefined> {
-  if (!account) return { ...process.env };
   const env: Record<string, string | undefined> = { ...process.env };
-  if (account.configDir) env.CLAUDE_CONFIG_DIR = account.configDir;
-  if (account.oauthTokenEnv) env.CLAUDE_CODE_OAUTH_TOKEN = process.env[account.oauthTokenEnv];
+  if (!account) return env;
+  const p = providerOf(account.provider);
+  if (account.configDir) env[p.configDirEnv] = expandHome(account.configDir);
+  const mode = account.authMode ?? "subscription";
+  if (mode !== "subscription") {
+    const target = p.tokenEnvByMode[mode];
+    // Prefer an explicitly-named env var (the hosting path — secret never on
+    // disk), fall back to the Telar-managed secret store keyed by account name.
+    const value = (account.tokenEnv && process.env[account.tokenEnv]) || readSecret(account.name);
+    if (target && value) env[target] = value;
+  }
   return env;
 }
 
