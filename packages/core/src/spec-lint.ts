@@ -68,7 +68,7 @@ export function lintSpecDir(dir: string): { file: string; violations: LintViolat
   return results;
 }
 
-if (import.meta.main) {
+if ((import.meta as ImportMeta & { main?: boolean }).main) {
   const dir = process.argv[2] ?? "e2e";
   const results = lintSpecDir(dir);
   let found = false;
