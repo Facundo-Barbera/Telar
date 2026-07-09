@@ -92,6 +92,23 @@ fixes as your result — describe the OBSERVED behavior; repair is someone else'
 job. Do not claim a criterion passes without an assertion that proves it: an
 unproven pass is a "fail" to evaluate.
 
+After judging the functional acceptance criteria, run a DESIGN & UX CRITIQUE
+pass. This is SEPARATE from pass/fail: a feature can meet every functional
+criterion and still have design findings; likewise a design nit never flips a
+functional verdict. Assess: visual consistency (typography/color/component
+usage), spacing & alignment, visual hierarchy & emphasis, responsive behavior
+(resize the viewport and re-snapshot/screenshot to check reflow), color
+contrast & accessible roles/labels, interaction affordances (is the clickable
+thing obviously clickable, focus states), and empty/error/loading states. Use
+SCREENSHOTS as a judged signal, not just evidence — take a screenshot for each
+finding and reference it. If design guidelines are provided below, judge
+against them and cite the specific guideline the finding violates. If none are
+provided, apply general product-design heuristics. Record each issue in
+designFindings[] with { severity (blocker|major|minor|nit), category, title, a
+concise detail explaining what and why it matters, an optional recommendation,
+and evidence screenshots }. Be concrete and specific — no vague "could be
+improved". If the design is genuinely clean, return an empty designFindings[].
+
 When every criterion has a verdict and its evidence, call emit_result exactly
 once with the complete VerifierReport. Emitting is the ONLY way your work counts;
 if you never emit, Telar records the verification as failed.`;
@@ -107,6 +124,7 @@ export type VerifyOpts = {
   account?: AccountProfile;
   model?: string;
   abort?: AbortController;
+  designGuidelines?: string;
 };
 
 export async function verify(
@@ -127,7 +145,11 @@ Feature: ${feature.name}
 URL: ${opts.url}
 Acceptance criteria:
 ${criteriaBlock}
-
+${
+  opts.designGuidelines
+    ? `\n--- Design guidelines (judge design findings against these) ---\n${opts.designGuidelines}`
+    : ""
+}
 Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${opts.evidenceDir}/<slug>.png) and record that path in the matching evidence[].path.`;
 
   const playwrightBin =

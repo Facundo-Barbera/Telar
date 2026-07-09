@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type {
   CriterionResult,
+  DesignFinding,
   Evidence,
   VerifierReport,
 } from "@telar/core";
@@ -28,6 +29,16 @@ const VERDICT_BADGE: Record<
   pass: { className: "bg-emerald-500/15 text-emerald-400", label: "pass" },
   fail: { className: "bg-destructive/15 text-destructive", label: "fail" },
   flaky: { className: "bg-amber-500/15 text-amber-400", label: "flaky" },
+};
+
+const DESIGN_SEVERITY_BADGE: Record<
+  DesignFinding["severity"],
+  { className: string; label: string }
+> = {
+  blocker: { className: "bg-destructive/15 text-destructive", label: "blocker" },
+  major: { className: "bg-amber-500/15 text-amber-400", label: "major" },
+  minor: { className: "bg-sky-500/15 text-sky-400", label: "minor" },
+  nit: { className: "bg-muted text-muted-foreground", label: "nit" },
 };
 
 function screenshots(evidence: Evidence[]) {
@@ -157,6 +168,49 @@ function CriterionRow({
   );
 }
 
+function DesignFindingRow({
+  runId,
+  finding,
+}: {
+  runId: string;
+  finding: DesignFinding;
+}) {
+  const badge = DESIGN_SEVERITY_BADGE[finding.severity];
+  const shots = screenshots(finding.evidence);
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
+      <div className="flex items-start gap-2 text-sm">
+        <Badge className={cn("mt-px shrink-0 font-mono text-[10px]", badge.className)}>
+          {badge.label}
+        </Badge>
+        <Badge
+          variant="outline"
+          className="mt-px shrink-0 font-mono text-[10px] text-muted-foreground"
+        >
+          {finding.category}
+        </Badge>
+        <span className="leading-snug font-medium">{finding.title}</span>
+      </div>
+      <p className="pl-1 text-xs text-muted-foreground">{finding.detail}</p>
+      {finding.recommendation && (
+        <p className="pl-1 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Fix:</span>{" "}
+          {finding.recommendation}
+        </p>
+      )}
+
+      {shots.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {shots.map((e, i) => (
+            <EvidenceImage key={e.path ?? i} runId={runId} evidence={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function VerifierReportCard({
   runId,
   report,
@@ -198,6 +252,17 @@ export function VerifierReportCard({
         <CardContent className="flex flex-col gap-2">
           {report.criteria.map((c, i) => (
             <CriterionRow key={c.criterion || i} runId={runId} criterion={c} />
+          ))}
+        </CardContent>
+      )}
+
+      {report.designFindings.length > 0 && (
+        <CardContent className="flex flex-col gap-2 border-t border-border pt-3">
+          <span className="text-xs font-medium text-muted-foreground">
+            Design findings ({report.designFindings.length})
+          </span>
+          {report.designFindings.map((f, i) => (
+            <DesignFindingRow key={`${f.title}-${i}`} runId={runId} finding={f} />
           ))}
         </CardContent>
       )}

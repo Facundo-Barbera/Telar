@@ -79,6 +79,34 @@ export const CriterionResult = z.object({
 });
 export type CriterionResult = z.infer<typeof CriterionResult>;
 
+export const DesignSeverity = z.enum(["blocker", "major", "minor", "nit"]);
+export type DesignSeverity = z.infer<typeof DesignSeverity>;
+
+export const DesignCategory = z.enum([
+  "visual-consistency",
+  "spacing-alignment",
+  "hierarchy",
+  "responsive",
+  "contrast-a11y",
+  "affordance",
+  "state",
+  "copy",
+  "other",
+]);
+export type DesignCategory = z.infer<typeof DesignCategory>;
+
+// A design/UX critique finding — a JUDGED signal, kept SEPARATE from the
+// functional per-criterion verdicts. Never gates the run (informational).
+export const DesignFinding = z.object({
+  severity: DesignSeverity,
+  category: DesignCategory,
+  title: z.string(),
+  detail: z.string(), // what's wrong + why it matters (cite a guideline when given)
+  recommendation: z.string().optional(),
+  evidence: z.array(Evidence).default([]), // screenshots as a judged signal
+});
+export type DesignFinding = z.infer<typeof DesignFinding>;
+
 export const VerifierReport = z.object({
   feature: z.string(),
   url: z.string(), // the app URL that was driven
@@ -87,6 +115,7 @@ export const VerifierReport = z.object({
   criteria: z.array(CriterionResult).default([]),
   // Session-wide evidence not tied to one criterion (the trace, full console dump).
   sessionEvidence: z.array(Evidence).default([]),
+  designFindings: z.array(DesignFinding).default([]),
 });
 export type VerifierReport = z.infer<typeof VerifierReport>;
 
@@ -139,6 +168,7 @@ export const ProjectManifest = z.object({
       prod: z.string().optional(),
     })
     .optional(),
+  designRules: z.string().optional(), // path (relative to root) to a design-guidelines doc the Verifier reads
 });
 export type ProjectManifest = z.infer<typeof ProjectManifest>;
 

@@ -1,6 +1,7 @@
 // Executor: the L1 stage loop — attempt, verify with gates, decide, retry.
 // Pure w.r.t. persistence: mutates the run object and emits events; the caller
 // persists via onState/onEvent. Retries resume the previous attempt's session.
+import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
 import { runGates, type GateResult } from "./gates";
@@ -185,9 +186,17 @@ export async function runVerification(
   if (!run.acceptanceCriteria?.length || !manifest.urls?.dev) return { verification: "skip", report: null };
   try {
     const evidenceDir = path.join(runDir(run.id), "evidence");
+    let designGuidelines: string | undefined;
+    if (manifest.designRules) {
+      try {
+        designGuidelines = fs.readFileSync(path.join(manifest.root, manifest.designRules), "utf8");
+      } catch {
+        // best-effort: missing/unreadable design-rules file never breaks the run
+      }
+    }
     const report = await verify(
       { name: run.title, acceptanceCriteria: run.acceptanceCriteria },
-      { url: manifest.urls.dev, evidenceDir, account, headless: true },
+      { url: manifest.urls.dev, evidenceDir, account, headless: true, designGuidelines },
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
