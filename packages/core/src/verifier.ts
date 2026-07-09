@@ -7,6 +7,7 @@
 // explicit disallow as defense-in-depth. NOTE: allowedTools alone does NOT gate
 // availability under bypassPermissions — see engine.ts restrictTools.
 import fs from "node:fs";
+import path from "node:path";
 import { agent } from "./engine";
 import { VerifierReport, type AccountProfile } from "./schemas";
 
@@ -113,6 +114,36 @@ When every criterion has a verdict and its evidence, call emit_result exactly
 once with the complete VerifierReport. Emitting is the ONLY way your work counts;
 if you never emit, Telar records the verification as failed.`;
 
+// Portable resolution of the @playwright/mcp CLI. Precedence: explicit opt ->
+// env -> walk up from this module to the workspace and find the installed
+// cli.js (chmod +x, node shebang -> spawnable directly). Falls back to the bare
+// command name (PATH lookup) so there is NO machine-specific path in source.
+export function resolvePlaywrightMcpBin(explicit?: string): string {
+  if (explicit) return explicit;
+  if (process.env.TELAR_PLAYWRIGHT_MCP_BIN) return process.env.TELAR_PLAYWRIGHT_MCP_BIN;
+  let dir = import.meta.dirname;
+  for (let i = 0; i < 8 && dir !== path.dirname(dir); i++, dir = path.dirname(dir)) {
+    const candidates = [
+      path.join(dir, "apps/web/node_modules/@playwright/mcp/cli.js"),
+      path.join(dir, "node_modules/@playwright/mcp/cli.js"),
+      path.join(dir, "node_modules/.bin/playwright-mcp"),
+    ];
+    for (const c of candidates) if (fs.existsSync(c)) return c;
+    // bun's hoisted store: node_modules/.bun/@playwright+mcp@<ver>/node_modules/@playwright/mcp/cli.js
+    const store = path.join(dir, "node_modules", ".bun");
+    try {
+      const hit = fs.readdirSync(store).find((n) => n.startsWith("@playwright+mcp@"));
+      if (hit) {
+        const cli = path.join(store, hit, "node_modules/@playwright/mcp/cli.js");
+        if (fs.existsSync(cli)) return cli;
+      }
+    } catch {
+      /* no store at this level */
+    }
+  }
+  return "playwright-mcp"; // last resort: PATH lookup — never a machine-specific path
+}
+
 export type VerifyFeature = { name: string; acceptanceCriteria: string[] };
 
 export type VerifyOpts = {
@@ -152,10 +183,7 @@ ${
 }
 Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${opts.evidenceDir}/<slug>.png) and record that path in the matching evidence[].path.`;
 
-  const playwrightBin =
-    opts.playwrightBin ??
-    process.env.TELAR_PLAYWRIGHT_MCP_BIN ??
-    "/Users/facundo/Projects/personal/telar/apps/web/node_modules/.bin/playwright-mcp";
+  const playwrightBin = resolvePlaywrightMcpBin(opts.playwrightBin);
 
   const args = [
     ...(opts.headless === false ? [] : ["--headless"]),
