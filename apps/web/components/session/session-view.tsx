@@ -60,9 +60,24 @@ import {
 import { fmtCost, fmtTokens, shortId } from "@/lib/format";
 import { UsagePill } from "@/components/session/usage-pill";
 import type { PlanSnapshot } from "@/lib/store";
-import { DEFAULT_MODEL, EFFORT_OPTIONS, MODELS, modelById } from "@/lib/models";
+import {
+  CODEX_EFFORT_OPTIONS,
+  CODEX_SANDBOX_PRESETS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_SANDBOX,
+  DEFAULT_MODEL,
+  EFFORT_OPTIONS,
+  modelById,
+  modelsForProvider,
+  type CodexSandbox,
+  type ModelInfo,
+} from "@/lib/models";
 import type { ClientPermissionMode } from "@/lib/permissions";
+import { useAccounts } from "@/lib/use-accounts";
 import { cn } from "@/lib/utils";
+import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
+
+type Provider = "claude" | "codex";
 
 // Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
 // name/...) and stashed on that tool part so the tab strip and the B.3 chip
@@ -885,6 +900,85 @@ function SessionViewInner({
   // chat must never drift to a since-changed manifest default). We just seed
   // from it once and lock further edits once a session exists (below).
   const [activeAccount, setActiveAccount] = useState(account);
+  // Which agent backend the composer is talking to. Defaults to "claude" —
+  // the overwhelmingly common case and the only thing we can assume before
+  // the account registry (fetched async, below) resolves `activeAccount`'s
+  // real provider. Drives which model/effort/sandbox-or-permission controls
+  // render and which fields go in the POST body.
+  const [provider, setProvider] = useState<Provider>("claude");
+  // Codex's counterpart to `permissionMode` — a static, pre-turn sandbox
+  // choice (Codex can't prompt mid-turn; see lib/models.ts). Kept as its own
+  // state rather than reusing permissionMode's slots since the two providers'
+  // option sets don't line up 1:1.
+  const [sandbox, setSandbox] = useState<CodexSandbox>(DEFAULT_CODEX_SANDBOX);
+  // Full account registry (name + provider + auth, unlike the server-resolved
+  // `accounts` prop which predates multi-provider and only carries
+  // name/displayTier). Used to scope the account picker to the selected
+  // provider and to recover a resumed session's real provider below.
+  const { accounts: accountProfiles } = useAccounts();
+  // `account`'s real provider may be either one (a fresh session's account
+  // is the project manifest's default, which can itself be a Codex account;
+  // a resumed session's is whatever it was created with) — re-derive
+  // `provider` once the registry loads instead of trusting the "claude"
+  // guess above. Only runs in "auto" mode: the moment the user actually
+  // touches the agent selector, selectProvider flips providerTouched and
+  // this effect stops overwriting their choice.
+  const providerTouched = useRef(false);
+  useEffect(() => {
+    if (providerTouched.current) return;
+    const match = accountProfiles.find((a) => a.name === activeAccount);
+    if (match) setProvider(match.provider ?? "claude");
+  }, [accountProfiles, activeAccount]);
+  // Accounts belonging to the currently selected provider, for the agent
+  // selector's scoped account picker. Falls back to the server-resolved
+  // `accounts` prop for "claude" so the picker isn't empty for the one
+  // provider we can resolve before the client-side /api/accounts fetch lands.
+  const providerAccounts = useMemo<Array<{ name: string; displayTier?: string }>>(() => {
+    const fromRegistry = accountProfiles.filter((a) => (a.provider ?? "claude") === provider);
+    if (fromRegistry.length > 0) return fromRegistry;
+    return provider === "claude" ? accounts : [];
+  }, [accountProfiles, provider, accounts]);
+  // Model catalog for the selected provider, fetched from GET /api/models
+  // (Claude: live Anthropic /v1/models; Codex: the local models_cache.json),
+  // falling back to the curated static list on any hiccup. Refetched whenever
+  // the provider changes.
+  const [modelOptions, setModelOptions] = useState<ModelInfo[]>(() => modelsForProvider("claude"));
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/models?provider=${provider}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return;
+        const list: ModelInfo[] = Array.isArray(d?.models) && d.models.length > 0 ? d.models : modelsForProvider(provider);
+        setModelOptions(list);
+      })
+      .catch(() => {
+        if (!cancelled) setModelOptions(modelsForProvider(provider));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider]);
+  // Switching the agent selector: sets the provider, resets model/effort to
+  // that provider's defaults (a Claude model id sent to Codex, or vice versa,
+  // is meaningless), and — unless the currently active account already
+  // belongs to the new provider — jumps to that provider's first account.
+  const selectProvider = useCallback(
+    (next: Provider) => {
+      providerTouched.current = true;
+      setProvider(next);
+      setModel(next === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
+      setEffort("default");
+      const stillValid = accountProfiles.find(
+        (a) => a.name === activeAccount && (a.provider ?? "claude") === next,
+      );
+      if (!stillValid) {
+        const candidates = accountProfiles.filter((a) => (a.provider ?? "claude") === next);
+        if (candidates[0]) setActiveAccount(candidates[0].name);
+      }
+    },
+    [accountProfiles, activeAccount],
+  );
   const [status, setStatus] = useState<Status>("ready");
   const [thinking, setThinking] = useState(false);
   // True once the chat record is actually confirmed persisted server-side —
@@ -1179,7 +1273,7 @@ function SessionViewInner({
             project,
             account: activeAccount,
             ...(effort !== "default" ? { effort } : {}),
-            permissionMode,
+            ...(provider === "codex" ? { sandbox } : { permissionMode }),
           }),
           signal: abort.signal,
         });
@@ -1555,7 +1649,7 @@ function SessionViewInner({
         abortRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, project, activeAccount, router],
+    [sessionId, model, effort, permissionMode, provider, sandbox, project, activeAccount, router],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -1564,7 +1658,11 @@ function SessionViewInner({
     void send(text);
   };
 
-  const activeModel = modelById(model);
+  // Prefer the fetched catalog (matches what's actually offered in the
+  // select) and fall back to the static list for a model id seeded from a
+  // resumed chat before the fetch resolves.
+  const activeModel = modelOptions.find((m) => m.id === model) ?? modelById(model);
+  const effortOptions = provider === "codex" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
 
   // Merge project's scanned commands+skills with what the live SDK session
   // actually reports (once known) — the SDK's slash_commands list includes
@@ -2081,77 +2179,46 @@ function SessionViewInner({
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
-              <Select value={model} onValueChange={(v) => v && setModel(v)}>
-                <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
-                  <SelectValue>
-                    <span className="flex items-center gap-1.5">
-                      {activeModel?.name ?? model}
-                      {activeModel && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                          {activeModel.context}
-                        </Badge>
-                      )}
-                    </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="w-[min(340px,calc(100vw-2rem))]">
-                  {MODELS.map((m) => (
-                    <SelectItem key={m.id} value={m.id} className="py-2">
-                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{m.name}</span>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.context} ctx
-                          </Badge>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.maxOutput} out
-                          </Badge>
-                          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                            ${m.inputPerMTok}/{m.outputPerMTok} MTok
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">{m.blurb}</span>
-                        {m.note && (
-                          <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
-                        )}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {/* "default" omits `effort` from the POST body entirely — the
-                  model/SDK picks its own. Editable on every turn, like model
-                  above (not locked to pre-session like the account picker
-                  below): route.ts persists whatever was last sent, same as
-                  model, and restores it on resume via initialChat.effort. */}
-              <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
-                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
-                  <SelectValue>
-                    {effort === "default"
-                      ? "Effort"
-                      : (EFFORT_OPTIONS.find((e) => e.id === effort)?.label ?? effort)}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
-                  <SelectItem value="default" className="py-2">
-                    <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                      <span className="font-medium">Default</span>
-                      <span className="text-xs text-muted-foreground">
-                        Let the model choose its own effort.
+              {/* Agent selector — first in the bar, per spec: it's the thing
+                  that determines what everything to its right even means.
+                  Provider/account are choosable only pre-session (an existing
+                  chat's resume transcript is tied to one account's config
+                  dir — same rule the account picker enforced before this
+                  bar existed), so once a turn has run we swap to a static,
+                  non-interactive badge instead of hiding it outright — the
+                  bar should still read as provider-aware after the lock. */}
+              {sessionId === null && !busy ? (
+                <Select value={provider} onValueChange={(v) => v && selectProvider(v as Provider)}>
+                  <SelectTrigger className="h-8 w-[118px] text-xs" size="sm">
+                    <SelectValue>
+                      <span className="flex items-center gap-1.5">
+                        <ProviderIcon provider={provider} />
+                        {PROVIDER_LABEL[provider]}
                       </span>
-                    </div>
-                  </SelectItem>
-                  {EFFORT_OPTIONS.map((e) => (
-                    <SelectItem key={e.id} value={e.id} className="py-2">
-                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                        <span className="font-medium">{e.label}</span>
-                        <span className="text-xs text-muted-foreground">{e.blurb}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {sessionId === null && !busy && (
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(180px,calc(100vw-2rem))]">
+                    {(["claude", "codex"] as const).map((p) => (
+                      <SelectItem key={p} value={p} className="py-2">
+                        <span className="flex items-center gap-1.5">
+                          <ProviderIcon provider={p} />
+                          <span className="font-medium">{PROVIDER_LABEL[p]}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <span className="flex h-8 items-center gap-1.5 rounded-md border border-input px-2.5 text-xs text-muted-foreground">
+                  <ProviderIcon provider={provider} />
+                  {PROVIDER_LABEL[provider]}
+                </span>
+              )}
+              {/* Secondary account picker — only when the selected provider
+                  actually has more than one account to choose between; a
+                  single-account provider is already fully resolved by the
+                  agent selector above. */}
+              {sessionId === null && !busy && providerAccounts.length > 1 && (
                 <Select
                   value={activeAccount}
                   onValueChange={(v) => v && setActiveAccount(v)}
@@ -2165,7 +2232,7 @@ function SessionViewInner({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent className="w-[min(220px,calc(100vw-2rem))]">
-                    {accounts.map((a) => (
+                    {providerAccounts.map((a) => (
                       <SelectItem key={a.name} value={a.name}>
                         <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-normal">
                           <span className="truncate">{a.name}</span>
@@ -2180,22 +2247,121 @@ function SessionViewInner({
                   </SelectContent>
                 </Select>
               )}
-              <Select
-                value={permissionMode}
-                onValueChange={(v) => v && setPermissionMode(v as ClientPermissionMode)}
-              >
-                <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
+              {/* Permission (Claude) / sandbox (Codex) — same styled
+                  label+description row idiom either way; Codex's is a static
+                  pre-turn choice since approvalPolicy is always "never" (the
+                  Codex SDK can't prompt mid-turn). */}
+              {provider === "codex" ? (
+                <Select value={sandbox} onValueChange={(v) => v && setSandbox(v as CodexSandbox)}>
+                  <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
+                    <SelectValue>
+                      {CODEX_SANDBOX_PRESETS.find((p) => p.sandbox === sandbox)?.label ?? "Sandbox"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
+                    {CODEX_SANDBOX_PRESETS.map((p) => (
+                      <SelectItem key={p.id} value={p.sandbox} className="py-2">
+                        <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                          <span className="font-medium">{p.label}</span>
+                          <span className="text-xs text-muted-foreground">{p.blurb}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Select
+                  value={permissionMode}
+                  onValueChange={(v) => v && setPermissionMode(v as ClientPermissionMode)}
+                >
+                  <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
+                    <SelectValue>
+                      {PERMISSION_MODE_OPTIONS.find((o) => o.value === permissionMode)?.label ??
+                        "Ask me"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
+                    {PERMISSION_MODE_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value} className="py-2">
+                        <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                          <span className="font-medium">{o.label}</span>
+                          <span className="text-xs text-muted-foreground">{o.description}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              <Select value={model} onValueChange={(v) => v && setModel(v)}>
+                <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
                   <SelectValue>
-                    {PERMISSION_MODE_OPTIONS.find((o) => o.value === permissionMode)?.label ??
-                      "Ask me"}
+                    <span className="flex items-center gap-1.5">
+                      {activeModel?.name ?? model}
+                      {activeModel && (
+                        <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                          {activeModel.context}
+                        </Badge>
+                      )}
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
-                  {PERMISSION_MODE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value} className="py-2">
+                <SelectContent className="w-[min(340px,calc(100vw-2rem))]">
+                  {modelOptions.map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="py-2">
                       <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                        <span className="font-medium">{o.label}</span>
-                        <span className="text-xs text-muted-foreground">{o.description}</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{m.name}</span>
+                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                            {m.context} ctx
+                          </Badge>
+                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                            {m.maxOutput} out
+                          </Badge>
+                          {m.inputPerMTok > 0 || m.outputPerMTok > 0 ? (
+                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                              ${m.inputPerMTok}/{m.outputPerMTok} MTok
+                            </span>
+                          ) : null}
+                        </div>
+                        <span className="text-xs text-muted-foreground">{m.blurb}</span>
+                        {m.note && (
+                          <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {/* "default" omits `effort` from the POST body entirely — the
+                  model/SDK picks its own. Editable on every turn, like model
+                  above (not locked to pre-session like the account picker
+                  above): route.ts persists whatever was last sent, same as
+                  model, and restores it on resume via initialChat.effort.
+                  Option set switches with the provider — Codex's reasoning
+                  effort tiers aren't identical to Claude's (no "max", has
+                  "minimal"). */}
+              <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
+                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
+                  <SelectValue>
+                    {effort === "default"
+                      ? "Effort"
+                      : (effortOptions.find((e) => e.id === effort)?.label ?? effort)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
+                  <SelectItem value="default" className="py-2">
+                    <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                      <span className="font-medium">Default</span>
+                      <span className="text-xs text-muted-foreground">
+                        Let the model choose its own effort.
+                      </span>
+                    </div>
+                  </SelectItem>
+                  {effortOptions.map((e) => (
+                    <SelectItem key={e.id} value={e.id} className="py-2">
+                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                        <span className="font-medium">{e.label}</span>
+                        <span className="text-xs text-muted-foreground">{e.blurb}</span>
                       </div>
                     </SelectItem>
                   ))}

@@ -13,7 +13,17 @@ import {
   getProject,
   type ProjectManifest,
 } from "@telar/core";
-import { DEFAULT_MODEL, EFFORT_OPTIONS } from "@/lib/models";
+import {
+  CODEX_EFFORT_OPTIONS,
+  CODEX_SANDBOX_PRESETS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_SANDBOX,
+  DEFAULT_MODEL,
+  EFFORT_OPTIONS,
+  type CodexReasoningEffort,
+  type CodexSandbox,
+} from "@/lib/models";
+import { runCodexTurn } from "@/lib/codex-run";
 import { generateTitle } from "@/lib/titles";
 import {
   createPending,
@@ -66,6 +76,13 @@ const MAX_DETAILED_TOOL_PARTS = 200;
 // is identical either way.
 const EFFORT_LEVELS: Set<string> = new Set(EFFORT_OPTIONS.map((o) => o.id));
 
+// Same idea as EFFORT_LEVELS but for Codex's distinct reasoning-effort union
+// ("minimal" instead of Claude's "max") and its static sandbox choice —
+// both single-sourced from lib/models.ts so this route's validation can't
+// drift from what the composer offers.
+const CODEX_EFFORT_LEVELS: Set<string> = new Set(CODEX_EFFORT_OPTIONS.map((o) => o.id));
+const CODEX_SANDBOXES: Set<string> = new Set(CODEX_SANDBOX_PRESETS.map((p) => p.sandbox));
+
 // Title generation must never delay teardown beyond this — see the `finally`
 // block's Promise.race. Deliberately short: a title that isn't ready by then
 // just falls back to appendTurn's own message-prefix default.
@@ -78,11 +95,12 @@ export async function POST(req: Request) {
   const {
     message,
     sessionId,
-    model = DEFAULT_MODEL,
+    model: rawModel,
     project,
     account,
     effort,
     permissionMode: rawPermissionMode = "default",
+    sandbox: rawSandbox,
   } = await req.json();
 
   // Resolve the anchoring project up front — an unknown/missing project is a
@@ -106,21 +124,57 @@ export async function POST(req: Request) {
     );
   }
 
+  // Caller-supplied account wins (existing chats resume with their persisted
+  // chat.account, passed explicitly here), then the project's manifest
+  // default, then "personal". See AGENTS notes on the account-lock: a
+  // session's resume transcript lives under the account's config dir, so
+  // this route trusts whatever the client sends — the picker being
+  // choosable only pre-first-turn is a client-side rule, not enforced here.
+  // Resolved ahead of the effort/sandbox checks below because both are
+  // provider-shaped (Claude's EffortLevel vs Codex's ModelReasoningEffort;
+  // sandbox is Codex-only).
+  const profile =
+    (account ? getAccount(account) : undefined) ??
+    getAccount(manifest.account) ??
+    getAccount(getDefaultAccountName()) ?? { name: manifest.account };
+  const provider = profile.provider ?? "claude";
+
   // Omitting effort means "let the model/SDK pick its own default" — only a
   // present-but-invalid value is rejected. Validated up front, alongside
   // project/account, so a bad value is a plain 400 before any stream opens
   // rather than an opaque SDK error mid-turn.
-  if (effort != null && (typeof effort !== "string" || !EFFORT_LEVELS.has(effort))) {
-    return Response.json(
-      { error: `Invalid effort "${effort}".` },
-      { status: 400 },
-    );
+  if (effort != null) {
+    const valid =
+      typeof effort === "string" &&
+      (provider === "codex" ? CODEX_EFFORT_LEVELS.has(effort) : EFFORT_LEVELS.has(effort));
+    if (!valid) {
+      return Response.json(
+        { error: `Invalid effort "${effort}".` },
+        { status: 400 },
+      );
+    }
+  }
+
+  // Codex-only: the sandbox is a static, up-front choice (the SDK can't
+  // prompt mid-turn — approvalPolicy is always "never"). Ignored for Claude,
+  // where the interactive canUseTool/permissionMode flow below governs
+  // access instead.
+  let sandbox: CodexSandbox = DEFAULT_CODEX_SANDBOX;
+  if (provider === "codex" && rawSandbox != null) {
+    if (typeof rawSandbox !== "string" || !CODEX_SANDBOXES.has(rawSandbox)) {
+      return Response.json(
+        { error: `Invalid sandbox "${rawSandbox}".` },
+        { status: 400 },
+      );
+    }
+    sandbox = rawSandbox as CodexSandbox;
   }
 
   // Only "default"/"auto"/"acceptEdits" are ever accepted from a client —
   // never "bypassPermissions" (skips canUseTool entirely), "dontAsk", or
   // "plan", regardless of what the request body claims. See
-  // isValidPermissionMode.
+  // isValidPermissionMode. Codex turns don't consult this (approvalPolicy is
+  // always "never"), but it's still validated uniformly for both providers.
   if (!isValidPermissionMode(rawPermissionMode)) {
     return Response.json(
       { error: `Invalid permissionMode "${rawPermissionMode}".` },
@@ -129,26 +183,7 @@ export async function POST(req: Request) {
   }
   const permissionMode: ClientPermissionMode = rawPermissionMode;
 
-  // Caller-supplied account wins (existing chats resume with their persisted
-  // chat.account, passed explicitly here), then the project's manifest
-  // default, then "personal". See AGENTS notes on the account-lock: a
-  // session's resume transcript lives under the account's config dir, so
-  // this route trusts whatever the client sends — the picker being
-  // choosable only pre-first-turn is a client-side rule, not enforced here.
-  const profile =
-    (account ? getAccount(account) : undefined) ??
-    getAccount(manifest.account) ??
-    getAccount(getDefaultAccountName()) ?? { name: manifest.account };
-
-  // Sessions run through the Claude Agent SDK. A non-Claude account (e.g.
-  // Codex) can't drive a session until the provider execution seam lands —
-  // reject it up front rather than silently running it on the wrong backend.
-  if ((profile.provider ?? "claude") !== "claude") {
-    return Response.json(
-      { error: `Account "${profile.name}" uses ${profile.provider}, which can't run sessions yet.` },
-      { status: 400 },
-    );
-  }
+  const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
   const workspace = manifest.root;
 
   const abort = new AbortController();
@@ -382,6 +417,96 @@ export async function POST(req: Request) {
       };
 
       try {
+        if (provider === "codex") {
+          // Codex path: same session/text/thinking/tool/tool_result/done/
+          // saved send() vocabulary as the Claude branch below, produced by
+          // normalizing @openai/codex-sdk's event stream in lib/codex-run.ts
+          // — see the mapping there. No canUseTool/hooks/permissionMode: the
+          // Codex SDK can't prompt mid-turn, so the sandbox chosen up front
+          // (validated above) is the only access control for this turn.
+          for await (const nev of runCodexTurn({
+            prompt: message,
+            cwd: workspace,
+            env: accountEnv(profile),
+            model,
+            ...(effort ? { reasoningEffort: effort as CodexReasoningEffort } : {}),
+            sandbox,
+            resume: resumeTarget,
+            signal: abort.signal,
+          })) {
+            switch (nev.type) {
+              case "session": {
+                capturedSession = nev.sessionId;
+                send("session", {
+                  sessionId: capturedSession,
+                  slashCommands: [],
+                  skills: [],
+                  agents: [],
+                });
+                break;
+              }
+              case "thinking_start":
+                send("thinking", {});
+                break;
+              case "thinking_delta":
+                send("thinking_delta", { text: nev.text });
+                break;
+              case "text_delta":
+                send("delta", { text: nev.text });
+                break;
+              case "text": {
+                parts.push({ type: "text", text: nev.text });
+                send("text", { text: nev.text });
+                break;
+              }
+              case "tool": {
+                const input = capToolInput(nev.input);
+                const part: Extract<Part, { type: "tool" }> = {
+                  type: "tool",
+                  id: nev.id,
+                  name: nev.name,
+                  input,
+                };
+                parts.push(part);
+                send("tool", { id: nev.id, name: nev.name, input });
+                break;
+              }
+              case "tool_result": {
+                const part = parts.find(
+                  (p): p is Extract<Part, { type: "tool" }> =>
+                    p.type === "tool" && p.id === nev.id,
+                );
+                // First write wins — same dedupe rule as the Claude branch's
+                // "user" (tool_result) handling below.
+                if (!part || part.output !== undefined) break;
+                const output = capToolOutput(nev.output);
+                part.output = output;
+                part.isError = nev.isError;
+                send("tool_result", { id: nev.id, output, isError: nev.isError });
+                break;
+              }
+              case "usage": {
+                lastMainUsage = {
+                  input_tokens: nev.usage.input_tokens,
+                  cache_read_input_tokens: nev.usage.cache_read_input_tokens,
+                  cache_creation_input_tokens: nev.usage.cache_creation_input_tokens,
+                };
+                // Codex has no per-token billing (ChatGPT subscription — see
+                // lib/models.ts's zeroed Codex pricing), so totalCostUsd is
+                // always 0 here rather than derived from usage.
+                lastResult = {
+                  subtype: "success",
+                  totalCostUsd: 0,
+                  usage: nev.usage,
+                };
+                break;
+              }
+              case "error":
+                send("error", { message: nev.message });
+                break;
+            }
+          }
+        } else {
         const q = query({
           prompt: message,
           options: {
@@ -737,6 +862,7 @@ export async function POST(req: Request) {
               usage: r.usage,
             };
           }
+        }
         }
 
       } catch (e) {
