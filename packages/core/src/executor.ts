@@ -6,7 +6,7 @@ import { agent } from "./engine";
 import { runGates, type GateResult } from "./gates";
 import { runDir, type AttemptRecord, type Run, type RunKind } from "./runs";
 import { ModelPolicy, Verdict } from "./schemas";
-import type { AccountProfile, ProjectManifest, WorkUnitState } from "./schemas";
+import type { AccountProfile, ProjectManifest, VerifierReport, WorkUnitState } from "./schemas";
 import { verify } from "./verifier";
 
 export type ExecuteOpts = {
@@ -37,8 +37,18 @@ function firstPrompt(run: Run, manifest: ProjectManifest): string {
     .join("\n\n");
 }
 
-function retryPrompt(failing: GateResult[], verdict: Verdict | null, verdictWasNull: boolean): string {
+function retryPrompt(
+  failing: GateResult[],
+  verdict: Verdict | null,
+  verdictWasNull: boolean,
+  verifierRepair?: string,
+): string {
   const parts: string[] = [];
+  if (verifierRepair) {
+    parts.push(
+      `The independent Verifier drove the running app and found these acceptance criteria NOT met:\n${verifierRepair}\nFix the underlying UI/behavior, then re-verify and call emit_result.`,
+    );
+  }
   if (failing.length) {
     parts.push("Your previous attempt failed these verification gates:");
     for (const g of failing) {
@@ -60,16 +70,119 @@ function retryPrompt(failing: GateResult[], verdict: Verdict | null, verdictWasN
   return parts.join("\n\n");
 }
 
-// Informational post-gates verification (M1): drives evidence, not the run's
-// outcome. Best-effort — a verify failure must never break the run.
-export async function maybeVerify(
+// How the Verifier's run classifies. "skip" = not run / not applicable / errored;
+// callers also pass "skip" when the builder never succeeded (nothing to verify).
+export type Verification = "skip" | "pass" | "fail" | "flaky";
+
+export type Decision =
+  | { action: "done" }
+  | { action: "needs-review"; error?: string }
+  | { action: "failed"; error?: string }
+  | { action: "retry" };
+
+// Pure outcome function: given the attempt's gate/verdict/verification state,
+// decide what to do. No side effects, no persistence. When verification ===
+// "skip" the outcome is byte-identical to the pre-M2 behavior.
+export function decide(input: {
+  gatesConfigured: boolean;
+  gatesOk: boolean;
+  verdict: Verdict | null;
+  verification: Verification;
+  n: number;
+  maxAttempts: number;
+  flakyUsed: number;
+  maxFlaky: number;
+}): Decision {
+  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky } = input;
+  const canRetry = n < maxAttempts;
+  const flakyDecision = (): Decision =>
+    flakyUsed < maxFlaky && canRetry ? { action: "retry" } : { action: "needs-review", error: "verification flaky" };
+
+  if (gatesConfigured && gatesOk) {
+    if (verdict?.ok) {
+      // Deterministic gates + agent both green; the Verifier now gates promotion.
+      switch (verification) {
+        case "skip":
+        case "pass":
+          return { action: "done" };
+        case "fail":
+          return canRetry ? { action: "retry" } : { action: "needs-review", error: "verification failed" };
+        case "flaky":
+          return flakyDecision();
+      }
+    }
+    if (verdict) return { action: "needs-review", error: verdict.blocker ?? undefined };
+    // Gates pass but the agent never reported.
+    return canRetry
+      ? { action: "retry" }
+      : { action: "needs-review", error: "gates pass but agent never confirmed" };
+  }
+
+  if (!gatesConfigured) {
+    if (verdict?.ok) {
+      // No deterministic gates — the Verifier IS the gate.
+      switch (verification) {
+        case "skip":
+          return { action: "needs-review" }; // nothing verified — unchanged
+        case "pass":
+          return { action: "done" }; // promote
+        case "fail":
+          return canRetry ? { action: "retry" } : { action: "needs-review", error: "verification failed" };
+        case "flaky":
+          return flakyDecision();
+      }
+    }
+    // verdict == null || !verdict.ok
+    return canRetry ? { action: "retry" } : { action: "failed" };
+  }
+
+  // gatesConfigured && !gatesOk
+  return canRetry ? { action: "retry" } : { action: "failed" };
+}
+
+// Summarize the failing (and flaky) criteria into a repair brief for the builder.
+function buildVerifierRepair(report: VerifierReport): string {
+  const parts: string[] = [];
+  for (const c of report.criteria) {
+    if (c.verdict !== "fail" && c.verdict !== "flaky") continue;
+    const lines = [`- [${c.verdict}] ${c.criterion}`, `  observed: ${c.observed}`];
+    if (c.repro.length) {
+      lines.push("  repro:");
+      for (const s of c.repro) lines.push(`    - ${s.action} ${s.target}${s.value ? ` = ${s.value}` : ""}`);
+    }
+    for (const e of c.evidence) {
+      if ((e.kind === "console" || e.kind === "network") && e.text) {
+        lines.push(`  ${e.kind}: ${tail(e.text, 500)}`);
+      }
+    }
+    parts.push(lines.join("\n"));
+  }
+  return parts.join("\n");
+}
+
+// Classify a report from its per-criterion verdicts — NOT report.ok. The
+// Verifier now gates real outcomes, so the classification must derive from the
+// evidence, not the agent's own summary boolean (which could contradict its
+// criteria). Empty criteria = nothing actually judged -> "skip" (safe: a
+// malformed report never auto-promotes to done).
+export function classify(report: VerifierReport): Verification {
+  if (report.criteria.length === 0) return "skip";
+  if (report.criteria.some((c) => c.verdict === "fail")) return "fail";
+  if (report.criteria.some((c) => c.verdict === "flaky")) return "flaky";
+  return "pass";
+}
+
+// Drive the Verifier over the running app: attaches the report to the attempt,
+// relativizes evidence paths, emits {type:"verifier"}, and classifies the run.
+// Best-effort — a verify failure must never break the run (classifies "skip").
+export async function runVerification(
   run: Run,
   manifest: ProjectManifest,
   attempt: AttemptRecord,
   emit: (ev: { type: string } & Record<string, unknown>) => void,
   account?: AccountProfile,
-): Promise<void> {
-  if (!run.acceptanceCriteria?.length || !manifest.urls?.dev) return;
+): Promise<{ verification: Verification; report: VerifierReport | null }> {
+  if (!run.acceptanceCriteria?.length || !manifest.urls?.dev) return { verification: "skip", report: null };
   try {
     const evidenceDir = path.join(runDir(run.id), "evidence");
     const report = await verify(
@@ -78,7 +191,7 @@ export async function maybeVerify(
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
-      return;
+      return { verification: "skip", report: null };
     }
     // Rewrite absolute evidence paths under evidenceDir to relative so the UI
     // can serve them via /api/runs/<id>/evidence/<relpath>.
@@ -93,8 +206,10 @@ export async function maybeVerify(
     // Persisted by the caller's onState when the next setState fires (this
     // module stays pure w.r.t. persistence — see the file header).
     emit({ type: "verifier", n: attempt.n, report });
+    return { verification: classify(report), report };
   } catch (err) {
     emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
+    return { verification: "skip", report: null };
   }
 }
 
@@ -126,6 +241,9 @@ export async function executeRun(
     let failing: GateResult[] = [];
     let lastVerdict: Verdict | null = null;
     let verdictWasNull = false;
+    let verifierRepair = ""; // set when the previous attempt was Verifier-driven
+    let flakyUsed = 0;
+    const maxFlaky = 2;
 
     for (let n = 1; n <= maxAttempts; n++) {
       if (isAborted()) return halt();
@@ -141,7 +259,9 @@ export async function executeRun(
       opts.onState?.(run);
 
       const prompt: string =
-        n === 1 ? firstPrompt(run, manifest) : retryPrompt(failing, lastVerdict, verdictWasNull);
+        n === 1
+          ? firstPrompt(run, manifest)
+          : retryPrompt(failing, lastVerdict, verdictWasNull, verifierRepair || undefined);
       const verdict: Verdict | null = await agent(prompt, {
         schema: Verdict,
         cwd: manifest.root,
@@ -190,48 +310,59 @@ export async function executeRun(
       lastVerdict = verdict;
       verdictWasNull = verdict === null;
 
-      if (gatesConfigured && gateRun.ok) {
-        if (verdict?.ok) {
-          await maybeVerify(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
-          setState("done");
-          return run;
-        }
-        if (verdict) {
-          run.error = verdict.blocker;
-          setState("needs-review");
-          return run;
-        }
-        // Gates pass but the agent never reported — retry; exhausted = unconfirmed.
-        if (n === maxAttempts) {
-          run.error = "gates pass but agent never confirmed";
-          setState("needs-review");
-          return run;
-        }
-        continue;
+      // Drive the Verifier only when the builder succeeded — otherwise there is
+      // nothing to verify and verification stays "skip" (no verify call).
+      const builderOk = verdict?.ok === true && (gatesConfigured ? gateRun.ok : true);
+      let verification: Verification = "skip";
+      let report: VerifierReport | null = null;
+      if (builderOk) {
+        const vr = await runVerification(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
+        verification = vr.verification;
+        report = vr.report;
       }
 
-      if (!gatesConfigured) {
-        // Nothing deterministically verified — never auto-done without gates.
-        // The Verifier still runs (informational): it's the check the missing
-        // gates would otherwise be, and its report is where it matters most.
-        if (verdict?.ok) {
-          await maybeVerify(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
-          setState("needs-review");
-          return run;
-        }
-        if (n === maxAttempts) {
-          run.error = verdict ? (verdict.blocker ?? verdict.summary) : "agent never reported a verdict";
-          setState("failed");
-          return run;
-        }
-        continue;
-      }
+      if (isAborted()) return halt();
 
-      // Gates fail: retry; exhausted = failed.
-      if (n === maxAttempts) {
-        run.error = failing.map((r) => r.name).join(", ");
+      const decision = decide({
+        gatesConfigured,
+        gatesOk: gateRun.ok,
+        verdict,
+        verification,
+        n,
+        maxAttempts,
+        flakyUsed,
+        maxFlaky,
+      });
+
+      if (decision.action === "done") {
+        setState("done");
+        return run;
+      }
+      if (decision.action === "needs-review") {
+        if (gatesConfigured && gateRun.ok && verdict && !verdict.ok) run.error = verdict.blocker;
+        else if (verification === "fail") run.error = `verification failed: ${report?.summary ?? ""}`;
+        else if (decision.error !== undefined) run.error = decision.error;
+        setState("needs-review");
+        return run;
+      }
+      if (decision.action === "failed") {
+        run.error =
+          gatesConfigured && !gateRun.ok
+            ? failing.map((r) => r.name).join(", ")
+            : verdict
+              ? (verdict.blocker ?? verdict.summary)
+              : "agent never reported a verdict";
         setState("failed");
         return run;
+      }
+
+      // retry: carry a Verifier-driven repair brief only when the Verifier drove
+      // this decision; clear it otherwise so the next prompt isn't misleading.
+      if (verification === "fail" || verification === "flaky") {
+        verifierRepair = report ? buildVerifierRepair(report) : "";
+        if (verification === "flaky") flakyUsed++;
+      } else {
+        verifierRepair = "";
       }
     }
     return run; // unreachable: the last attempt always returns above
