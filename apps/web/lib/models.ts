@@ -3,7 +3,8 @@
 export type ModelInfo = {
   id: string;
   name: string;
-  tier: "frontier" | "opus" | "sonnet" | "haiku";
+  provider?: "claude" | "codex"; // undefined = claude
+  tier: "frontier" | "opus" | "sonnet" | "haiku" | "codex";
   context: string;
   maxOutput: string;
   inputPerMTok: number;
@@ -13,6 +14,9 @@ export type ModelInfo = {
   note?: string;
 };
 
+// Curated FALLBACK list only. The composer fetches the live catalog from
+// GET /api/models?provider=claude|codex (see lib/model-registry.ts) and falls
+// back to modelsForProvider() below when the live source is unavailable.
 export const MODELS: ModelInfo[] = [
   {
     id: "claude-fable-5",
@@ -60,12 +64,57 @@ export const MODELS: ModelInfo[] = [
     cacheReadPerMTok: 0.1,
     blurb: "Fastest and cheapest — triage, mechanical edits, quick lookups",
   },
+  // Codex models (OpenAI). Priced via the ChatGPT subscription, so per-token
+  // figures are 0 here — the plan-usage rings track the real limits instead.
+  {
+    id: "gpt-5.5",
+    name: "GPT-5.5",
+    provider: "codex",
+    tier: "codex",
+    context: "400K",
+    maxOutput: "128K",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    cacheReadPerMTok: 0,
+    blurb: "Codex flagship — strongest coding & agentic model",
+    note: "ChatGPT subscription; no per-token billing.",
+  },
+  {
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+    provider: "codex",
+    tier: "codex",
+    context: "400K",
+    maxOutput: "128K",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    cacheReadPerMTok: 0,
+    blurb: "Balanced Codex model",
+    note: "ChatGPT subscription.",
+  },
+  {
+    id: "gpt-5.4-mini",
+    name: "GPT-5.4 mini",
+    provider: "codex",
+    tier: "codex",
+    context: "400K",
+    maxOutput: "128K",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    cacheReadPerMTok: 0,
+    blurb: "Fast, cheap Codex model",
+    note: "ChatGPT subscription.",
+  },
 ];
 
 export const DEFAULT_MODEL = "claude-sonnet-5";
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 
 export const modelById = (id: string): ModelInfo | undefined =>
   MODELS.find((m) => m.id === id);
+
+export const modelsForProvider = (p: "claude" | "codex"): ModelInfo[] =>
+  MODELS.filter((m) => (m.provider ?? "claude") === p);
 
 // Mirrors the SDK's own EffortLevel union exactly (see @anthropic-ai/claude-agent-sdk's
 // `EffortLevel` export) — kept as a local literal type rather than importing it so this
@@ -108,3 +157,33 @@ export const EFFORT_OPTIONS: EffortOption[] = [
 
 export const effortById = (id: string): EffortOption | undefined =>
   EFFORT_OPTIONS.find((e) => e.id === id);
+
+// Codex reasoning effort — mirrors the Codex SDK's ModelReasoningEffort union
+// ("minimal" instead of Claude's "max").
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export const CODEX_EFFORT_OPTIONS: { id: CodexReasoningEffort; label: string; blurb: string }[] = [
+  { id: "minimal", label: "Minimal", blurb: "Fastest, least reasoning." },
+  { id: "low", label: "Low", blurb: "Light reasoning." },
+  { id: "medium", label: "Medium", blurb: "Balanced everyday reasoning." },
+  { id: "high", label: "High", blurb: "Deep reasoning for harder problems." },
+  { id: "xhigh", label: "Extra high", blurb: "Maximum reasoning." },
+];
+
+// Codex sandbox presets. The Codex SDK (`codex exec`) can't prompt mid-turn, so
+// each preset is a STATIC choice made before the turn — approvalPolicy is always
+// "never"; an action the sandbox blocks fails back to the model, never to a card.
+export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
+
+export const CODEX_SANDBOX_PRESETS: {
+  id: string;
+  label: string;
+  blurb: string;
+  sandbox: CodexSandbox;
+}[] = [
+  { id: "read-only", label: "Read-only", blurb: "Analysis only — no edits, no network.", sandbox: "read-only" },
+  { id: "auto", label: "Auto", blurb: "Edits + network (gh, npm, git); writes stay in the repo.", sandbox: "workspace-write" },
+  { id: "full", label: "Full access", blurb: "Unrestricted edits and network access.", sandbox: "danger-full-access" },
+];
+
+export const DEFAULT_CODEX_SANDBOX: CodexSandbox = "workspace-write";
