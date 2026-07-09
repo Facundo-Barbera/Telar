@@ -23,7 +23,7 @@ import {
   type CodexReasoningEffort,
   type CodexSandbox,
 } from "@/lib/models";
-import { runCodexTurn } from "@/lib/codex-run";
+import { runCodexTurn } from "@/lib/codex-app-server";
 import { generateTitle } from "@/lib/titles";
 import {
   createPending,
@@ -420,10 +420,24 @@ export async function POST(req: Request) {
         if (provider === "codex") {
           // Codex path: same session/text/thinking/tool/tool_result/done/
           // saved send() vocabulary as the Claude branch below, produced by
-          // normalizing @openai/codex-sdk's event stream in lib/codex-run.ts
-          // — see the mapping there. No canUseTool/hooks/permissionMode: the
-          // Codex SDK can't prompt mid-turn, so the sandbox chosen up front
-          // (validated above) is the only access control for this turn.
+          // normalizing the `codex app-server` JSON-RPC stream in
+          // lib/codex-app-server.ts — see the mapping there. No
+          // canUseTool/hooks/permissionMode: approvalPolicy is always
+          // "never", so the sandbox chosen up front (validated above) is the
+          // only access control for this turn.
+          //
+          // Subagents: a "spawn" event names a Codex collabAgentToolCall's
+          // new child thread — resolved through the SAME parentFlatten used
+          // by the Claude branch below (childThreadId is the bucket id,
+          // exactly like a Claude Agent/Task tool_use id), so nested
+          // sub-subagent spawns collapse onto their top-level ancestor the
+          // identical way. Every subsequent event tagged with that child's
+          // threadId is attributed via parentId/`parent`, the same
+          // contract the client already reads for the Claude path.
+          const resolveCodexParent = (threadId?: string): string | undefined => {
+            if (!threadId || threadId === capturedSession) return undefined;
+            return parentFlatten.resolve(threadId) ?? undefined;
+          };
           for await (const nev of runCodexTurn({
             prompt: message,
             cwd: workspace,
@@ -445,33 +459,43 @@ export async function POST(req: Request) {
                 });
                 break;
               }
-              case "thinking_start":
-                send("thinking", {});
+              case "thinking_start": {
+                const parent = resolveCodexParent(nev.threadId);
+                send("thinking", parent ? { parent } : {});
                 break;
-              case "thinking_delta":
-                send("thinking_delta", { text: nev.text });
+              }
+              case "thinking_delta": {
+                const parent = resolveCodexParent(nev.threadId);
+                send("thinking_delta", { text: nev.text, ...(parent ? { parent } : {}) });
                 break;
-              case "text_delta":
-                send("delta", { text: nev.text });
+              }
+              case "text_delta": {
+                const parent = resolveCodexParent(nev.threadId);
+                send("delta", { text: nev.text, ...(parent ? { parent } : {}) });
                 break;
+              }
               case "text": {
-                parts.push({ type: "text", text: nev.text });
-                send("text", { text: nev.text });
+                const parent = resolveCodexParent(nev.threadId);
+                parts.push({ type: "text", text: nev.text, ...(parent ? { parentId: parent } : {}) });
+                send("text", { text: nev.text, ...(parent ? { parent } : {}) });
                 break;
               }
               case "tool": {
+                const parent = resolveCodexParent(nev.threadId);
                 const input = capToolInput(nev.input);
                 const part: Extract<Part, { type: "tool" }> = {
                   type: "tool",
                   id: nev.id,
                   name: nev.name,
                   input,
+                  ...(parent ? { parentId: parent } : {}),
                 };
                 parts.push(part);
-                send("tool", { id: nev.id, name: nev.name, input });
+                send("tool", { id: nev.id, name: nev.name, input, ...(parent ? { parent } : {}) });
                 break;
               }
               case "tool_result": {
+                const parent = resolveCodexParent(nev.threadId);
                 const part = parts.find(
                   (p): p is Extract<Part, { type: "tool" }> =>
                     p.type === "tool" && p.id === nev.id,
@@ -482,7 +506,49 @@ export async function POST(req: Request) {
                 const output = capToolOutput(nev.output);
                 part.output = output;
                 part.isError = nev.isError;
-                send("tool_result", { id: nev.id, output, isError: nev.isError });
+                send("tool_result", { id: nev.id, output, isError: nev.isError, ...(parent ? { parent } : {}) });
+                break;
+              }
+              case "spawn": {
+                // The sender is a top-level (root) thread -> resolveCodexParent
+                // returns undefined -> this spawn's own part has no parentId,
+                // making it TOP-LEVEL bucket-worthy (see session-view.tsx's
+                // agentBuckets: agent + id + parentOf===undefined). A sender
+                // that's itself a subagent resolves to that ancestor's id
+                // instead — same flattening the Claude branch does for a
+                // subagent-of-a-subagent.
+                const parent = resolveCodexParent(nev.parentThreadId);
+                if (parent) parentFlatten.noteSpawn(nev.childThreadId, parent);
+                const agent = { type: nev.model, description: nev.prompt };
+                const input = capToolInput({ prompt: nev.prompt });
+                const part: Extract<Part, { type: "tool" }> = {
+                  type: "tool",
+                  id: nev.childThreadId,
+                  name: "spawnAgent",
+                  input,
+                  agent,
+                  ...(parent ? { parentId: parent } : {}),
+                };
+                parts.push(part);
+                send("tool", {
+                  id: nev.childThreadId,
+                  name: "spawnAgent",
+                  input,
+                  agent,
+                  ...(parent ? { parent } : {}),
+                });
+                break;
+              }
+              case "spawn_result": {
+                const part = parts.find(
+                  (p): p is Extract<Part, { type: "tool" }> =>
+                    p.type === "tool" && p.id === nev.childThreadId,
+                );
+                if (!part || part.output !== undefined) break;
+                const output = capToolOutput(nev.output);
+                part.output = output;
+                part.isError = nev.isError;
+                send("tool_result", { id: nev.childThreadId, output, isError: nev.isError });
                 break;
               }
               case "usage": {
@@ -501,9 +567,11 @@ export async function POST(req: Request) {
                 };
                 break;
               }
-              case "error":
-                send("error", { message: nev.message });
+              case "error": {
+                const parent = resolveCodexParent(nev.threadId);
+                send("error", { message: nev.message, ...(parent ? { parent } : {}) });
                 break;
+              }
             }
           }
         } else {
