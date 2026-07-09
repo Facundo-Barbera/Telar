@@ -2,7 +2,7 @@ import type { WorkUnitState } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 
-// THE state badge — one color language shared by runs, the dashboard, and
+// THE state badge — one color language shared by looms, the dashboard, and
 // project surfaces. preparing/running/verifying animate (work in flight);
 // done reads as default/primary; failed destructive; needs-review amber;
 // queued outline; halted/skipped muted.

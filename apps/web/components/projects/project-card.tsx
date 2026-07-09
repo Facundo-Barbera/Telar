@@ -193,7 +193,7 @@ export function ProjectCard({
       </CardContent>
 
       <CardFooter className="justify-between gap-2">
-        {/* Planning-first: a session (read-only, quick to start) leads; a run
+        {/* Planning-first: a session (read-only, quick to start) leads; a loom
             (which writes) is the secondary action. */}
         <div className="flex items-center gap-2">
           <Button
@@ -212,11 +212,11 @@ export function ProjectCard({
             variant="outline"
             size="sm"
             onClick={() =>
-              router.push(`/runs?new=1&project=${encodeURIComponent(entry.name)}`)
+              router.push(`/looms?new=1&project=${encodeURIComponent(entry.name)}`)
             }
           >
             <PlayIcon />
-            New run
+            New loom
           </Button>
         </div>
         <span className="font-mono text-[10px] text-muted-foreground/60">

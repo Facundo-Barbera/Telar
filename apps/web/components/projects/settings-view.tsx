@@ -483,7 +483,7 @@ export function ProjectSettings({ name }: { name: string }) {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
                     label="Account"
-                    hint="Default account for new sessions and runs in this project."
+                    hint="Default account for new sessions and looms in this project."
                   >
                     <Select
                       value={form.account}
@@ -501,7 +501,7 @@ export function ProjectSettings({ name }: { name: string }) {
                       </SelectContent>
                     </Select>
                   </Field>
-                  <Field label="Adapter" hint="Workflow flavor for runs.">
+                  <Field label="Adapter" hint="Workflow flavor for looms.">
                     <Select
                       value={form.adapter}
                       onValueChange={(v) =>
@@ -525,7 +525,7 @@ export function ProjectSettings({ name }: { name: string }) {
                 <Field
                   htmlFor="base-branch"
                   label="Base branch"
-                  hint="Branch runs cut their work from and target."
+                  hint="Branch looms cut their work from and target."
                 >
                   <Input
                     id="base-branch"
@@ -543,12 +543,12 @@ export function ProjectSettings({ name }: { name: string }) {
               <SectionCard
                 icon={CheckCircle2Icon}
                 title="Gates"
-                description="Commands whose exit code decides whether a run passes."
+                description="Commands whose exit code decides whether a loom passes."
               >
                 <div className="space-y-2">
                   {form.gates.length === 0 && (
                     <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
-                      No gates — runs pass on the agent&apos;s verdict alone.
+                      No gates — looms pass on the agent&apos;s verdict alone.
                     </p>
                   )}
                   {form.gates.map((gate, i) => (
@@ -617,7 +617,7 @@ export function ProjectSettings({ name }: { name: string }) {
               <SectionCard
                 icon={ShieldIcon}
                 title="Guardrails"
-                description="Paths and tools runs are fenced off from."
+                description="Paths and tools looms are fenced off from."
               >
                 <Field label="Protected paths">
                   <StringListEditor
@@ -645,7 +645,7 @@ export function ProjectSettings({ name }: { name: string }) {
               <SectionCard
                 icon={LinkIcon}
                 title="URLs"
-                description="Deployment targets the Verifier can drive after a run."
+                description="Deployment targets the Verifier can drive after a loom."
               >
                 <div className="space-y-4">
                   <Field htmlFor="url-dev" label="Dev">

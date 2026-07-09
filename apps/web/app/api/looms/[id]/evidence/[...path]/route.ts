@@ -1,7 +1,7 @@
 import { createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { runDir } from "@telar/core";
+import { loomDir } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
@@ -14,15 +14,15 @@ const CONTENT_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
 };
 
-// Read-only serve of a run's evidence file. Path-traversal guarded: the
-// resolved target must stay inside <run>/evidence.
+// Read-only serve of a loom's evidence file. Path-traversal guarded: the
+// resolved target must stay inside <loom>/evidence.
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string; path: string[] }> },
 ) {
   const { id, path: segments } = await params;
 
-  const evidenceDir = path.join(runDir(id), "evidence");
+  const evidenceDir = path.join(loomDir(id), "evidence");
   const target = path.resolve(evidenceDir, ...segments);
 
   // Reject anything resolving outside the evidence dir (.., absolute, symlink-ish).

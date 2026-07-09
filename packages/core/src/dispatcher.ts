@@ -1,16 +1,16 @@
 // Dispatcher: fire-and-forget seam between request handlers and the executor.
-// Persistence is wired here (runs.ts); abort handles live only in this
-// process's memory — cancel works while the run's process is alive.
+// Persistence is wired here (looms.ts); abort handles live only in this
+// process's memory — cancel works while the loom's process is alive.
 import fs from "node:fs";
 import path from "node:path";
 import { ModelPolicy, type AccountProfile } from "./schemas";
 import { getProject, telarDir } from "./manifest";
-import { createRun, saveRun, appendEvent, type Run, type RunKind } from "./runs";
-import { executeRun } from "./executor";
+import { createLoom, saveLoom, appendEvent, type Loom, type LoomKind } from "./looms";
+import { executeLoom } from "./executor";
 
-export type StartRunInput = {
+export type StartLoomInput = {
   project: string;
-  kind: RunKind;
+  kind: LoomKind;
   title: string;
   prompt: string;
   acceptanceCriteria?: string[];
@@ -21,53 +21,53 @@ export type DispatcherDeps = { accounts: Record<string, AccountProfile>; policy?
 
 const active = new Map<string, AbortController>();
 
-export function startRun(input: StartRunInput, deps: DispatcherDeps): Run {
+export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
   const { manifest } = getProject(input.project);
-  const run = createRun({
+  const loom = createLoom({
     project: input.project,
     kind: input.kind,
     title: input.title,
     prompt: input.prompt,
     account: manifest.account,
   });
-  run.acceptanceCriteria = input.acceptanceCriteria;
-  run.target = input.target;
+  loom.acceptanceCriteria = input.acceptanceCriteria;
+  loom.target = input.target;
   const abort = new AbortController();
-  active.set(run.id, abort);
-  executeRun(run, manifest, {
+  active.set(loom.id, abort);
+  executeLoom(loom, manifest, {
     policy: deps.policy ?? loadPolicy(),
     accounts: deps.accounts,
     maxAttempts: input.maxAttempts,
     abort,
-    onState: saveRun,
-    onEvent: (ev) => appendEvent(run.id, ev),
+    onState: saveLoom,
+    onEvent: (ev) => appendEvent(loom.id, ev),
   })
     .catch((err: unknown) => {
-      // executeRun contractually never rejects — guard persistence anyway.
-      run.state = "failed";
-      run.error = err instanceof Error ? err.message : String(err);
+      // executeLoom contractually never rejects — guard persistence anyway.
+      loom.state = "failed";
+      loom.error = err instanceof Error ? err.message : String(err);
       // Persistence may share the fs failure that caused the rejection — a
       // throw here would surface as an unhandled rejection and crash the
       // server. Attempt each write independently.
       try {
-        appendEvent(run.id, { type: "error", message: run.error });
+        appendEvent(loom.id, { type: "error", message: loom.error });
       } catch {}
       try {
-        saveRun(run);
+        saveLoom(loom);
       } catch {}
     })
-    .finally(() => active.delete(run.id));
-  return run;
+    .finally(() => active.delete(loom.id));
+  return loom;
 }
 
-export function cancelRun(id: string): boolean {
+export function cancelLoom(id: string): boolean {
   const ctl = active.get(id);
   if (!ctl) return false;
   ctl.abort();
   return true;
 }
 
-export const activeRunIds = (): string[] => [...active.keys()];
+export const activeLoomIds = (): string[] => [...active.keys()];
 
 export function loadPolicy(): ModelPolicy {
   try {

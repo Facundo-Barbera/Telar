@@ -1,4 +1,4 @@
-import { getRun, readEvents } from "@telar/core";
+import { getLoom, readEvents } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
@@ -6,9 +6,9 @@ export const dynamic = "force-dynamic";
 const TERMINAL = new Set(["done", "needs-review", "halted", "failed", "skipped"]);
 const POLL_MS = 400;
 
-// SSE tail of a run: full Run snapshot + every event from line 0, then poll —
-// new events as `ev`, a changed run as `run`, and `end` once terminal + drained.
-// The run dir may not exist yet on connect; we keep polling until it appears.
+// SSE tail of a loom: full Loom snapshot + every event from line 0, then poll —
+// new events as `ev`, a changed loom as `run`, and `end` once terminal + drained.
+// The loom dir may not exist yet on connect; we keep polling until it appears.
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -24,7 +24,7 @@ export async function GET(
     start(controller) {
       let nextLine = 0;
       let lastUpdatedAt = -1;
-      let sentInitialRun = false;
+      let sentInitialLoom = false;
 
       const onAbort = () => stop();
 
@@ -54,30 +54,30 @@ export async function GET(
 
       const tick = () => {
         if (closed) return;
-        const run = getRun(id);
-        if (!run) return; // dir not there yet — keep polling until it appears
+        const loom = getLoom(id);
+        if (!loom) return; // dir not there yet — keep polling until it appears
 
-        // First sighting: emit the full run snapshot before any events.
-        if (!sentInitialRun) {
-          sentInitialRun = true;
-          send("run", run);
-          lastUpdatedAt = run.updatedAt;
+        // First sighting: emit the full loom snapshot before any events.
+        if (!sentInitialLoom) {
+          sentInitialLoom = true;
+          send("run", loom);
+          lastUpdatedAt = loom.updatedAt;
         }
 
-        // Drain newly-appended events (state events land before the run.json that
-        // reflects them, so a terminal run is always fully covered here).
+        // Drain newly-appended events (state events land before the loom.json that
+        // reflects them, so a terminal loom is always fully covered here).
         const { events, nextLine: nl } = readEvents(id, nextLine);
         for (const ev of events) send("ev", ev);
         nextLine = nl;
 
-        // Then a fresh run snapshot if it moved since we last sent one.
-        if (run.updatedAt !== lastUpdatedAt) {
-          lastUpdatedAt = run.updatedAt;
-          send("run", run);
+        // Then a fresh loom snapshot if it moved since we last sent one.
+        if (loom.updatedAt !== lastUpdatedAt) {
+          lastUpdatedAt = loom.updatedAt;
+          send("run", loom);
         }
 
-        if (TERMINAL.has(run.state)) {
-          send("end", run);
+        if (TERMINAL.has(loom.state)) {
+          send("end", loom);
           stop();
         }
       };

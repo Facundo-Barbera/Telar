@@ -18,7 +18,7 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import type { ProjectManifest, RegistryEntry, Run } from "@telar/core";
+import type { ProjectManifest, RegistryEntry, Loom } from "@telar/core";
 import type { ChatSummary } from "@/lib/store";
 import { fmtAgo, fmtCost } from "@/lib/format";
 import { modelById } from "@/lib/models";
@@ -46,7 +46,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
 import { ArchiveButton } from "@/components/session/archive-button";
-import { isTerminal, sumCost } from "@/components/runs/utils";
+import { isTerminal, sumCost } from "@/components/looms/utils";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -214,7 +214,7 @@ function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
           </div>
           {gates.length === 0 ? (
             <p className="text-xs text-muted-foreground/60">
-              No gates — runs pass on the agent&apos;s verdict alone.
+              No gates — looms pass on the agent&apos;s verdict alone.
             </p>
           ) : (
             <div className="space-y-1">
@@ -432,18 +432,18 @@ function ArchivedSessions({ name }: { name: string }) {
   );
 }
 
-function RunRow({ run }: { run: Run }) {
-  const attempts = run.attempts.length;
+function LoomRow({ loom }: { loom: Loom }) {
+  const attempts = loom.attempts.length;
   return (
     <Link
-      href={`/runs/${run.id}`}
+      href={`/looms/${loom.id}`}
       className="flex items-center gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
     >
-      <StateBadge state={run.state} className="shrink-0" />
+      <StateBadge state={loom.state} className="shrink-0" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{run.title}</div>
+        <div className="truncate text-sm font-medium">{loom.title}</div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-mono">{run.kind}</span>
+          <span className="font-mono">{loom.kind}</span>
           <span className="text-border">·</span>
           <span>
             {attempts} {attempts === 1 ? "attempt" : "attempts"}
@@ -452,10 +452,10 @@ function RunRow({ run }: { run: Run }) {
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5">
         <span className="font-mono text-xs">
-          {fmtCost(sumCost(run.attempts))}
+          {fmtCost(sumCost(loom.attempts))}
         </span>
         <span className="text-xs text-muted-foreground">
-          {fmtAgo(run.updatedAt)}
+          {fmtAgo(loom.updatedAt)}
         </span>
       </div>
     </Link>
@@ -473,23 +473,23 @@ export default function ProjectDetailPage({
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [chats, setChats] = useState<ChatMeta[] | null>(null);
-  const [runs, setRuns] = useState<Run[] | null>(null);
+  const [looms, setLooms] = useState<Loom[] | null>(null);
   const [chatsError, setChatsError] = useState<string | null>(null);
-  const [runsError, setRunsError] = useState<string | null>(null);
+  const [loomsError, setLoomsError] = useState<string | null>(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
 
   const sessionsHref = `/projects/${encodeURIComponent(name)}/sessions/new`;
-  const newRunHref = `/runs?new=1&project=${encodeURIComponent(name)}`;
+  const newLoomHref = `/looms?new=1&project=${encodeURIComponent(name)}`;
 
   const load = useCallback(async () => {
     let projectsRes: Response;
     let chatsRes: Response;
-    let runsRes: Response;
+    let loomsRes: Response;
     try {
-      [projectsRes, chatsRes, runsRes] = await Promise.all([
+      [projectsRes, chatsRes, loomsRes] = await Promise.all([
         fetch("/api/projects"),
         fetch(`/api/chats?project=${encodeURIComponent(name)}`),
-        fetch("/api/runs"),
+        fetch("/api/looms"),
       ]);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
@@ -517,7 +517,7 @@ export default function ProjectDetailPage({
       return;
     }
 
-    // Sessions + runs are section-scoped — a failure degrades a section, not
+    // Sessions + looms are section-scoped — a failure degrades a section, not
     // the page. An HTTP-level failure surfaces a retryable error in the section
     // instead of leaving it stuck on the loading skeleton forever.
     if (chatsRes.ok) {
@@ -531,16 +531,16 @@ export default function ProjectDetailPage({
     } else {
       setChatsError(`Couldn't load sessions (${chatsRes.status}).`);
     }
-    if (runsRes.ok) {
+    if (loomsRes.ok) {
       try {
-        const d = (await runsRes.json()) as { runs?: Run[] };
-        setRuns((d.runs ?? []).filter((r) => r.project === name));
-        setRunsError(null);
+        const d = (await loomsRes.json()) as { looms?: Loom[] };
+        setLooms((d.looms ?? []).filter((r) => r.project === name));
+        setLoomsError(null);
       } catch {
-        setRunsError("Couldn't parse the runs response.");
+        setLoomsError("Couldn't parse the looms response.");
       }
     } else {
-      setRunsError(`Couldn't load runs (${runsRes.status}).`);
+      setLoomsError(`Couldn't load looms (${loomsRes.status}).`);
     }
   }, [name]);
 
@@ -555,14 +555,14 @@ export default function ProjectDetailPage({
     return () => window.removeEventListener("telar:refresh", onRefresh);
   }, [load]);
 
-  // Poll while any of this project's runs is still in flight.
+  // Poll while any of this project's looms is still in flight.
   useEffect(() => {
-    if (!runs) return;
-    const inFlight = runs.some((r) => !isTerminal(r.state));
+    if (!looms) return;
+    const inFlight = looms.some((r) => !isTerminal(r.state));
     if (!inFlight) return;
     const t = setInterval(() => void load(), 5000);
     return () => clearInterval(t);
-  }, [runs, load]);
+  }, [looms, load]);
 
   // Unknown project — designed error state.
   if (status === "missing") {
@@ -688,10 +688,10 @@ export default function ProjectDetailPage({
             <Button
               variant="outline"
               size="sm"
-              render={<Link href={newRunHref} />}
+              render={<Link href={newLoomHref} />}
             >
               <PlayIcon />
-              New run
+              New loom
             </Button>
             <Button
               variant="ghost"
@@ -722,7 +722,7 @@ export default function ProjectDetailPage({
                   <EmptyState
                     icon={MessagesSquareIcon}
                     title="No sessions yet"
-                    description="Sessions explore and prepare; runs execute."
+                    description="Sessions explore and prepare; looms execute."
                     action={
                       <Button
                         variant="outline"
@@ -760,34 +760,34 @@ export default function ProjectDetailPage({
               {chats !== null && <ArchivedSessions name={entry.name} />}
             </section>
 
-            {/* Runs */}
+            {/* Looms */}
             <section className="flex flex-col gap-2">
-              <SectionLabel count={runs?.length}>Runs</SectionLabel>
-              {runs !== null ? (
-                runs.length === 0 ? (
+              <SectionLabel count={looms?.length}>Looms</SectionLabel>
+              {looms !== null ? (
+                looms.length === 0 ? (
                   <EmptyState
                     icon={SparklesIcon}
-                    title="No runs yet"
-                    description="Weave a run to let Telar make the change and prove it through the gates."
+                    title="No looms yet"
+                    description="Weave a loom to let Telar make the change and prove it through the gates."
                     action={
                       <Button
                         variant="outline"
-                        render={<Link href={newRunHref} />}
+                        render={<Link href={newLoomHref} />}
                       >
                         <PlayIcon />
-                        New run
+                        New loom
                       </Button>
                     }
                   />
                 ) : (
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {runs.map((run) => (
-                      <RunRow key={run.id} run={run} />
+                    {looms.map((loom) => (
+                      <LoomRow key={loom.id} loom={loom} />
                     ))}
                   </div>
                 )
-              ) : runsError ? (
-                <SectionError message={runsError} onRetry={() => void load()} />
+              ) : loomsError ? (
+                <SectionError message={loomsError} onRetry={() => void load()} />
               ) : (
                 <ListSkeleton rows={2} />
               )}

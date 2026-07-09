@@ -10,7 +10,7 @@ import {
   RefreshCwIcon,
   SettingsIcon,
 } from "lucide-react";
-import type { Run } from "@telar/core";
+import type { Loom } from "@telar/core";
 import { useAccounts } from "@/lib/use-accounts";
 import {
   Sidebar,
@@ -33,7 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { StateBadge } from "@/components/common/state-badge";
-import { isTerminal } from "@/components/runs/utils";
+import { isTerminal } from "@/components/looms/utils";
 
 // Auto-refresh plan usage on mount when a snapshot is missing or older than
 // this — keeps the sidebar honest without a manual click.
@@ -240,11 +240,11 @@ function PlanBlock({
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboardIcon },
   { href: "/projects", label: "Projects", icon: FolderGit2Icon },
-  { href: "/runs", label: "Runs", icon: ActivityIcon },
+  { href: "/looms", label: "Looms", icon: ActivityIcon },
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ] as const;
 
-function NavGroup({ activeRuns }: { activeRuns: number }) {
+function NavGroup({ activeLooms }: { activeLooms: number }) {
   const router = useRouter();
   const pathname = usePathname();
   return (
@@ -263,9 +263,9 @@ function NavGroup({ activeRuns }: { activeRuns: number }) {
                   <Icon className="size-4 shrink-0" />
                   <span>{label}</span>
                 </SidebarMenuButton>
-                {href === "/runs" && activeRuns > 0 && (
+                {href === "/looms" && activeLooms > 0 && (
                   <SidebarMenuBadge className="animate-pulse bg-primary text-primary-foreground">
-                    {activeRuns}
+                    {activeLooms}
                   </SidebarMenuBadge>
                 )}
               </SidebarMenuItem>
@@ -277,27 +277,27 @@ function NavGroup({ activeRuns }: { activeRuns: number }) {
   );
 }
 
-function ActiveRunsGroup({ runs }: { runs: Run[] }) {
+function ActiveLoomsGroup({ looms }: { looms: Loom[] }) {
   const router = useRouter();
   const pathname = usePathname();
-  if (runs.length === 0) return null;
+  if (looms.length === 0) return null;
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Active runs</SidebarGroupLabel>
+      <SidebarGroupLabel>Active looms</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
-          {runs.map((run) => (
-            <SidebarMenuItem key={run.id}>
+          {looms.map((loom) => (
+            <SidebarMenuItem key={loom.id}>
               <SidebarMenuButton
-                isActive={pathname === `/runs/${run.id}`}
-                onClick={() => router.push(`/runs/${run.id}`)}
-                title={run.title}
+                isActive={pathname === `/looms/${loom.id}`}
+                onClick={() => router.push(`/looms/${loom.id}`)}
+                title={loom.title}
               >
                 <StateBadge
-                  state={run.state}
+                  state={loom.state}
                   className="shrink-0 gap-1 px-1.5 py-0 text-[10px]"
                 />
-                <span className="truncate text-xs">{run.title}</span>
+                <span className="truncate text-xs">{loom.title}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
@@ -309,7 +309,7 @@ function ActiveRunsGroup({ runs }: { runs: Run[] }) {
 
 // The 5 most recently touched projects — sessions now live inside a project, so
 // this replaces the old flat "Sessions" list. A pulsing dot marks a project
-// with a run in flight. Hidden entirely when there are no projects.
+// with a loom in flight. Hidden entirely when there are no projects.
 function RecentProjectsGroup({ projects }: { projects: RecentProject[] }) {
   const pathname = usePathname();
   if (projects.length === 0) return null;
@@ -365,7 +365,7 @@ function TelarSidebarHeader() {
 function SidebarBody() {
   const { accounts } = useAccounts();
   const tierOf = (name: string) => accounts.find((a) => a.name === name)?.displayTier;
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [looms, setLooms] = useState<Loom[]>([]);
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
@@ -410,13 +410,13 @@ function SidebarBody() {
     }
   }, [refetchUsage]);
 
-  // Self-fetching: active runs, per-project recency inputs (chats + projects),
+  // Self-fetching: active looms, per-project recency inputs (chats + projects),
   // and plan usage — refreshed on mount, on the global "telar:refresh" signal,
   // and on a slow interval as a safety net.
   const loadAll = useCallback(() => {
-    fetch("/api/runs")
+    fetch("/api/looms")
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setRuns(Array.isArray(d.runs) ? d.runs : []))
+      .then((d) => d && setLooms(Array.isArray(d.looms) ? d.looms : []))
       .catch(() => {});
     // Chats feed per-project recency only (no rows rendered) — keep just those
     // that anchor to a project.
@@ -476,16 +476,16 @@ function SidebarBody() {
     });
   }, [accounts, refetchUsage, runRefresh]);
 
-  const activeRuns = runs.filter((r) => !isTerminal(r.state));
-  const activeProjectNames = new Set(activeRuns.map((r) => r.project));
+  const activeLooms = looms.filter((r) => !isTerminal(r.state));
+  const activeProjectNames = new Set(activeLooms.map((r) => r.project));
 
-  // Recency per project = the freshest touch (chat or run); projects with no
+  // Recency per project = the freshest touch (chat or loom); projects with no
   // activity fall back to when they were registered. Take the 5 most recent.
   const recency = new Map<string, number>();
   const bump = (name: string, ts: number) =>
     recency.set(name, Math.max(recency.get(name) ?? 0, ts));
   for (const c of chats) if (c.project) bump(c.project, c.updatedAt);
-  for (const r of runs) bump(r.project, r.updatedAt);
+  for (const r of looms) bump(r.project, r.updatedAt);
   const recentProjects: RecentProject[] = projects
     .map((p) => ({
       name: p.entry.name,
@@ -503,8 +503,8 @@ function SidebarBody() {
   return (
     <>
       <SidebarContent>
-        <NavGroup activeRuns={activeRuns.length} />
-        <ActiveRunsGroup runs={activeRuns} />
+        <NavGroup activeLooms={activeLooms.length} />
+        <ActiveLoomsGroup looms={activeLooms} />
         <RecentProjectsGroup projects={recentProjects} />
       </SidebarContent>
 

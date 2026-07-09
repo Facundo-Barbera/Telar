@@ -923,7 +923,7 @@ function ToolStepGroup({
 // locked and shown read-only in the heartbeat bar. Sessions are full
 // Claude Code sessions: reads (Read/Grep/Glob) auto-run, while writes,
 // edits, and commands gate through canUseTool — the permission cards, Auto
-// mode, and guardrails. Runs are the separate deterministic-gate lane.
+// mode, and guardrails. Looms are the separate deterministic-gate lane.
 export function SessionView(props: {
   project: string;
   account: string;
@@ -2479,11 +2479,11 @@ function SessionViewInner({
                 variant="outline"
                 size="sm"
                 onClick={() =>
-                  router.push(`/runs?new=1&project=${encodeURIComponent(project)}`)
+                  router.push(`/looms?new=1&project=${encodeURIComponent(project)}`)
                 }
               >
                 <PlayIcon />
-                Start run
+                Start loom
               </Button>
             </PromptInputTools>
             {/* ml-auto/self-end: when the tools row wraps onto multiple lines

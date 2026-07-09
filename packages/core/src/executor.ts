@@ -1,11 +1,11 @@
 // Executor: the L1 stage loop — attempt, verify with gates, decide, retry.
-// Pure w.r.t. persistence: mutates the run object and emits events; the caller
+// Pure w.r.t. persistence: mutates the loom object and emits events; the caller
 // persists via onState/onEvent. Retries resume the previous attempt's session.
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
 import { runGates, type GateResult } from "./gates";
-import { runDir, type AttemptRecord, type Run, type RunKind } from "./runs";
+import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { ModelPolicy, Verdict } from "./schemas";
 import type { AccountProfile, ProjectManifest, VerifierReport, WorkUnitState } from "./schemas";
 import { verify } from "./verifier";
@@ -16,19 +16,19 @@ export type ExecuteOpts = {
   maxAttempts?: number;
   abort?: AbortController;
   onEvent?: (ev: { type: string } & Record<string, unknown>) => void;
-  onState?: (run: Run) => void;
+  onState?: (loom: Loom) => void;
 };
 
-const MAX_TURNS: Record<RunKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
+const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
 const BASE_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"];
 
 const tail = (s: string, n: number) => (s.length > n ? s.slice(-n) : s);
 
-function firstPrompt(run: Run, manifest: ProjectManifest): string {
+function firstPrompt(loom: Loom, manifest: ProjectManifest): string {
   const protectedPaths = manifest.guardrails.protectedPaths;
   return [
-    `# ${run.title}`,
-    run.prompt,
+    `# ${loom.title}`,
+    loom.prompt,
     protectedPaths.length
       ? `Guardrails: the following paths are absolutely forbidden to modify: ${protectedPaths.join(", ")}.`
       : "",
@@ -71,7 +71,7 @@ function retryPrompt(
   return parts.join("\n\n");
 }
 
-// How the Verifier's run classifies. "skip" = not run / not applicable / errored;
+// How the Verifier's loom classifies. "skip" = not run / not applicable / errored;
 // callers also pass "skip" when the builder never succeeded (nothing to verify).
 export type Verification = "skip" | "pass" | "fail" | "flaky";
 
@@ -174,10 +174,10 @@ export function classify(report: VerifierReport): Verification {
 }
 
 // Drive the Verifier over the running app: attaches the report to the attempt,
-// relativizes evidence paths, emits {type:"verifier"}, and classifies the run.
-// Best-effort — a verify failure must never break the run (classifies "skip").
+// relativizes evidence paths, emits {type:"verifier"}, and classifies the loom.
+// Best-effort — a verify failure must never break the loom (classifies "skip").
 export async function runVerification(
-  run: Run,
+  loom: Loom,
   manifest: ProjectManifest,
   attempt: AttemptRecord,
   emit: (ev: { type: string } & Record<string, unknown>) => void,
@@ -185,19 +185,19 @@ export async function runVerification(
   url?: string,
 ): Promise<{ verification: Verification; report: VerifierReport | null }> {
   const target = url ?? manifest.urls?.dev;
-  if (!run.acceptanceCriteria?.length || !target) return { verification: "skip", report: null };
+  if (!loom.acceptanceCriteria?.length || !target) return { verification: "skip", report: null };
   try {
-    const evidenceDir = path.join(runDir(run.id), "evidence");
+    const evidenceDir = path.join(loomDir(loom.id), "evidence");
     let designGuidelines: string | undefined;
     if (manifest.designRules) {
       try {
         designGuidelines = fs.readFileSync(path.join(manifest.root, manifest.designRules), "utf8");
       } catch {
-        // best-effort: missing/unreadable design-rules file never breaks the run
+        // best-effort: missing/unreadable design-rules file never breaks the loom
       }
     }
     const report = await verify(
-      { name: run.title, acceptanceCriteria: run.acceptanceCriteria },
+      { name: loom.title, acceptanceCriteria: loom.acceptanceCriteria },
       { url: target, evidenceDir, account, headless: true, designGuidelines },
     );
     if (!report) {
@@ -205,7 +205,7 @@ export async function runVerification(
       return { verification: "skip", report: null };
     }
     // Rewrite absolute evidence paths under evidenceDir to relative so the UI
-    // can serve them via /api/runs/<id>/evidence/<relpath>.
+    // can serve them via /api/looms/<id>/evidence/<relpath>.
     const relativize = (p?: string) => {
       if (!p || !path.isAbsolute(p)) return p;
       const rel = path.relative(evidenceDir, p);
@@ -224,9 +224,9 @@ export async function runVerification(
   }
 }
 
-// Pure outcome function for a verify run: no builder loop, so the mapping
+// Pure outcome function for a verify loom: no builder loop, so the mapping
 // from Verification to a terminal WorkUnitState is direct — no retries.
-export function decideVerifyRun(v: Verification): { state: WorkUnitState; error?: string } {
+export function decideVerifyLoom(v: Verification): { state: WorkUnitState; error?: string } {
   switch (v) {
     case "pass":
       return { state: "done" };
@@ -239,37 +239,37 @@ export function decideVerifyRun(v: Verification): { state: WorkUnitState; error?
   }
 }
 
-// Read-only run: drives verify() against run.target with no builder attempt.
+// Read-only loom: drives verify() against loom.target with no builder attempt.
 // runVerification already returns "skip" when the target URL or acceptance
-// criteria are missing, so a misconfigured verify run lands needs-review
+// criteria are missing, so a misconfigured verify loom lands needs-review
 // cleanly rather than crashing.
-async function executeVerifyRun(run: Run, manifest: ProjectManifest, opts: ExecuteOpts = {}): Promise<Run> {
+async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts = {}): Promise<Loom> {
   const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
   const setState = (s: WorkUnitState) => {
-    run.state = s;
+    loom.state = s;
     emit({ type: "state", state: s });
-    opts.onState?.(run);
+    opts.onState?.(loom);
   };
   const isAborted = () => opts.abort?.signal.aborted === true;
   const halt = () => {
     setState("halted");
-    return run;
+    return loom;
   };
 
   try {
     if (isAborted()) return halt();
 
-    const targetKey = run.target ?? "dev";
+    const targetKey = loom.target ?? "dev";
     const url = manifest.urls?.[targetKey];
     const policy = opts.policy ?? ModelPolicy.parse({});
 
     const attempt: AttemptRecord = { n: 1, role: "verifier", model: policy.dev, startedAt: Date.now() };
-    run.attempts.push(attempt);
-    opts.onState?.(run);
+    loom.attempts.push(attempt);
+    opts.onState?.(loom);
 
     setState("verifying");
     const { verification, report } = await runVerification(
-      run,
+      loom,
       manifest,
       attempt,
       emit,
@@ -277,51 +277,51 @@ async function executeVerifyRun(run: Run, manifest: ProjectManifest, opts: Execu
       url,
     );
     attempt.endedAt = Date.now();
-    opts.onState?.(run);
+    opts.onState?.(loom);
 
     if (isAborted()) return halt();
 
-    const d = decideVerifyRun(verification);
-    if (d.error) run.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
+    const d = decideVerifyLoom(verification);
+    if (d.error) loom.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
     setState(d.state);
-    return run;
+    return loom;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try {
       if (isAborted()) return halt();
       emit({ type: "error", message });
-      run.error = message;
+      loom.error = message;
       setState("failed");
     } catch {
-      run.state = isAborted() ? "halted" : "failed";
-      if (run.state === "failed") run.error ??= message;
+      loom.state = isAborted() ? "halted" : "failed";
+      if (loom.state === "failed") loom.error ??= message;
     }
-    return run;
+    return loom;
   }
 }
 
-export async function executeRun(
-  run: Run,
+export async function executeLoom(
+  loom: Loom,
   manifest: ProjectManifest,
   opts: ExecuteOpts = {},
-): Promise<Run> {
-  if (run.kind === "verify") return executeVerifyRun(run, manifest, opts);
+): Promise<Loom> {
+  if (loom.kind === "verify") return executeVerifyLoom(loom, manifest, opts);
   const policy = opts.policy ?? ModelPolicy.parse({});
-  // Clamp: <= 0 would skip the loop and resolve a still-"queued" run.
+  // Clamp: <= 0 would skip the loop and resolve a still-"queued" loom.
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
-  const maxTurns = MAX_TURNS[run.kind];
+  const maxTurns = MAX_TURNS[loom.kind];
   const tools = BASE_TOOLS.filter((t) => !manifest.guardrails.disallowedTools.includes(t));
 
   const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
   const setState = (s: WorkUnitState) => {
-    run.state = s;
+    loom.state = s;
     emit({ type: "state", state: s });
-    opts.onState?.(run);
+    opts.onState?.(loom);
   };
   const isAborted = () => opts.abort?.signal.aborted === true;
   const halt = () => {
     setState("halted");
-    return run;
+    return loom;
   };
 
   try {
@@ -338,17 +338,17 @@ export async function executeRun(
 
       const role = n === maxAttempts ? "careful" : "dev";
       const model = policy[role];
-      const resume = run.attempts[run.attempts.length - 1]?.sessionId;
+      const resume = loom.attempts[loom.attempts.length - 1]?.sessionId;
 
       setState("running");
       emit({ type: "attempt", n, role, model });
       const attempt: AttemptRecord = { n, role, model, startedAt: Date.now() };
-      run.attempts.push(attempt);
-      opts.onState?.(run);
+      loom.attempts.push(attempt);
+      opts.onState?.(loom);
 
       const prompt: string =
         n === 1
-          ? firstPrompt(run, manifest)
+          ? firstPrompt(loom, manifest)
           : retryPrompt(failing, lastVerdict, verdictWasNull, verifierRepair || undefined);
       const verdict: Verdict | null = await agent(prompt, {
         schema: Verdict,
@@ -365,7 +365,7 @@ export async function executeRun(
           if (e.type === "session") {
             attempt.sessionId = e.sessionId;
             emit({ type: "session", sessionId: e.sessionId });
-            opts.onState?.(run);
+            opts.onState?.(loom);
           } else if (e.type === "text") {
             emit({ type: "text", text: e.text });
           } else if (e.type === "tool") {
@@ -373,7 +373,7 @@ export async function executeRun(
           } else if (e.type === "result") {
             attempt.costUsd = e.costUsd;
             emit({ type: "agent-result", subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
-            opts.onState?.(run);
+            opts.onState?.(loom);
           }
         },
       });
@@ -389,7 +389,7 @@ export async function executeRun(
       attempt.verdict = verdict;
       attempt.endedAt = Date.now();
       if (verdict) emit({ type: "verdict", verdict });
-      opts.onState?.(run);
+      opts.onState?.(loom);
 
       if (isAborted()) return halt();
 
@@ -404,7 +404,7 @@ export async function executeRun(
       let verification: Verification = "skip";
       let report: VerifierReport | null = null;
       if (builderOk) {
-        const vr = await runVerification(run, manifest, attempt, emit, opts.accounts?.[manifest.account]);
+        const vr = await runVerification(loom, manifest, attempt, emit, opts.accounts?.[manifest.account]);
         verification = vr.verification;
         report = vr.report;
       }
@@ -424,24 +424,24 @@ export async function executeRun(
 
       if (decision.action === "done") {
         setState("done");
-        return run;
+        return loom;
       }
       if (decision.action === "needs-review") {
-        if (gatesConfigured && gateRun.ok && verdict && !verdict.ok) run.error = verdict.blocker;
-        else if (verification === "fail") run.error = `verification failed: ${report?.summary ?? ""}`;
-        else if (decision.error !== undefined) run.error = decision.error;
+        if (gatesConfigured && gateRun.ok && verdict && !verdict.ok) loom.error = verdict.blocker;
+        else if (verification === "fail") loom.error = `verification failed: ${report?.summary ?? ""}`;
+        else if (decision.error !== undefined) loom.error = decision.error;
         setState("needs-review");
-        return run;
+        return loom;
       }
       if (decision.action === "failed") {
-        run.error =
+        loom.error =
           gatesConfigured && !gateRun.ok
             ? failing.map((r) => r.name).join(", ")
             : verdict
               ? (verdict.blocker ?? verdict.summary)
               : "agent never reported a verdict";
         setState("failed");
-        return run;
+        return loom;
       }
 
       // retry: carry a Verifier-driven repair brief only when the Verifier drove
@@ -453,7 +453,7 @@ export async function executeRun(
         verifierRepair = "";
       }
     }
-    return run; // unreachable: the last attempt always returns above
+    return loom; // unreachable: the last attempt always returns above
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // Callbacks (onEvent/onState) may be the very thing that threw (e.g. a
@@ -461,12 +461,12 @@ export async function executeRun(
     try {
       if (isAborted()) return halt();
       emit({ type: "error", message });
-      run.error = message;
+      loom.error = message;
       setState("failed");
     } catch {
-      run.state = isAborted() ? "halted" : "failed";
-      if (run.state === "failed") run.error ??= message;
+      loom.state = isAborted() ? "halted" : "failed";
+      if (loom.state === "failed") loom.error ??= message;
     }
-    return run;
+    return loom;
   }
 }

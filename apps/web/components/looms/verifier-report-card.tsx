@@ -53,7 +53,7 @@ function textEvidence(evidence: Evidence[]) {
   );
 }
 
-function EvidenceImage({ runId, evidence }: { runId: string; evidence: Evidence }) {
+function EvidenceImage({ loomId, evidence }: { loomId: string; evidence: Evidence }) {
   const [broken, setBroken] = useState(false);
   if (broken) {
     return (
@@ -66,7 +66,7 @@ function EvidenceImage({ runId, evidence }: { runId: string; evidence: Evidence 
     <figure className="flex flex-col gap-1">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={`/api/runs/${runId}/evidence/${evidence.path}`}
+        src={`/api/looms/${loomId}/evidence/${evidence.path}`}
         alt={evidence.label || "screenshot"}
         loading="lazy"
         onError={() => setBroken(true)}
@@ -82,10 +82,10 @@ function EvidenceImage({ runId, evidence }: { runId: string; evidence: Evidence 
 }
 
 function CriterionRow({
-  runId,
+  loomId,
   criterion,
 }: {
-  runId: string;
+  loomId: string;
   criterion: CriterionResult;
 }) {
   const [open, setOpen] = useState(false);
@@ -109,7 +109,7 @@ function CriterionRow({
       {shots.length > 0 && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {shots.map((e, i) => (
-            <EvidenceImage key={e.path ?? i} runId={runId} evidence={e} />
+            <EvidenceImage key={e.path ?? i} loomId={loomId} evidence={e} />
           ))}
         </div>
       )}
@@ -169,10 +169,10 @@ function CriterionRow({
 }
 
 function DesignFindingRow({
-  runId,
+  loomId,
   finding,
 }: {
-  runId: string;
+  loomId: string;
   finding: DesignFinding;
 }) {
   const badge = DESIGN_SEVERITY_BADGE[finding.severity];
@@ -203,7 +203,7 @@ function DesignFindingRow({
       {shots.length > 0 && (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {shots.map((e, i) => (
-            <EvidenceImage key={e.path ?? i} runId={runId} evidence={e} />
+            <EvidenceImage key={e.path ?? i} loomId={loomId} evidence={e} />
           ))}
         </div>
       )}
@@ -212,10 +212,10 @@ function DesignFindingRow({
 }
 
 export function VerifierReportCard({
-  runId,
+  loomId,
   report,
 }: {
-  runId: string;
+  loomId: string;
   report: VerifierReport;
 }) {
   return (
@@ -251,7 +251,7 @@ export function VerifierReportCard({
       {report.criteria.length > 0 && (
         <CardContent className="flex flex-col gap-2">
           {report.criteria.map((c, i) => (
-            <CriterionRow key={c.criterion || i} runId={runId} criterion={c} />
+            <CriterionRow key={c.criterion || i} loomId={loomId} criterion={c} />
           ))}
         </CardContent>
       )}
@@ -262,7 +262,7 @@ export function VerifierReportCard({
             Design findings ({report.designFindings.length})
           </span>
           {report.designFindings.map((f, i) => (
-            <DesignFindingRow key={`${f.title}-${i}`} runId={runId} finding={f} />
+            <DesignFindingRow key={`${f.title}-${i}`} loomId={loomId} finding={f} />
           ))}
         </CardContent>
       )}

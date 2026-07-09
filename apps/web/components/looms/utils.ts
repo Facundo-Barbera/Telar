@@ -1,7 +1,7 @@
-// Run-specific helpers — state predicates, cost summing, and the duration
-// formatters the run views need. Cross-surface formatters (fmtAgo, fmtCost,
+// Loom-specific helpers — state predicates, cost summing, and the duration
+// formatters the loom views need. Cross-surface formatters (fmtAgo, fmtCost,
 // shortId) live in @/lib/format so every page shares one language.
-import type { AttemptRecord, RunKind, WorkUnitState } from "@telar/core";
+import type { AttemptRecord, LoomKind, WorkUnitState } from "@telar/core";
 
 const TERMINAL: readonly WorkUnitState[] = [
   "done",
@@ -38,7 +38,7 @@ export function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export const KIND_INFO: Record<RunKind, { label: string; blurb: string }> = {
+export const KIND_INFO: Record<LoomKind, { label: string; blurb: string }> = {
   quickfix: {
     label: "Quickfix",
     blurb: "A small, surgical change — one focused fix, verified fast.",

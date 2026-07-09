@@ -17,7 +17,7 @@ import {
   ShieldIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import type { ProjectManifest, RegistryEntry, Run } from "@telar/core";
+import type { ProjectManifest, RegistryEntry, Loom } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
-import { fmtDuration, isTerminal, sumCost } from "@/components/runs/utils";
+import { fmtDuration, isTerminal, sumCost } from "@/components/looms/utils";
 import { fmtAgo, fmtCost } from "@/lib/format";
 
 // Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
@@ -104,25 +104,25 @@ function ViewAll({ href }: { href: string }) {
   );
 }
 
-// A live tile for one non-terminal run — state, ticking elapsed, project.
-function ActiveRunCard({ run, nowTs }: { run: Run; nowTs: number }) {
+// A live tile for one non-terminal loom — state, ticking elapsed, project.
+function ActiveLoomCard({ loom, nowTs }: { loom: Loom; nowTs: number }) {
   return (
-    <Link href={`/runs/${run.id}`} className="block">
+    <Link href={`/looms/${loom.id}`} className="block">
       <Card size="sm" className="gap-2 transition-shadow hover:ring-foreground/20">
         <CardContent className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
-            <StateBadge state={run.state} />
+            <StateBadge state={loom.state} />
             <span className="ml-auto flex items-center gap-1 font-mono text-xs text-muted-foreground tabular-nums">
               <ClockIcon className="size-3.5" />
-              {fmtDuration(nowTs - run.createdAt)}
+              {fmtDuration(nowTs - loom.createdAt)}
             </span>
           </div>
-          <span className="truncate text-sm font-medium">{run.title}</span>
+          <span className="truncate text-sm font-medium">{loom.title}</span>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <FolderGit2Icon className="size-3.5 shrink-0" />
-            <span className="truncate">{run.project}</span>
+            <span className="truncate">{loom.project}</span>
             <span className="text-border">·</span>
-            <span className="font-mono">{run.kind}</span>
+            <span className="font-mono">{loom.kind}</span>
           </div>
         </CardContent>
       </Card>
@@ -130,58 +130,58 @@ function ActiveRunCard({ run, nowTs }: { run: Run; nowTs: number }) {
   );
 }
 
-// A needs-review / failed run with its error snippet.
-function AttentionRow({ run }: { run: Run }) {
+// A needs-review / failed loom with its error snippet.
+function AttentionRow({ loom }: { loom: Loom }) {
   return (
     <Link
-      href={`/runs/${run.id}`}
+      href={`/looms/${loom.id}`}
       className="flex items-start gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
     >
-      <StateBadge state={run.state} className="mt-0.5 shrink-0" />
+      <StateBadge state={loom.state} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{run.title}</span>
+          <span className="truncate text-sm font-medium">{loom.title}</span>
           <span className="shrink-0 truncate text-xs text-muted-foreground">
-            {run.project}
+            {loom.project}
           </span>
         </div>
-        {run.error && (
+        {loom.error && (
           <p
             className={cn(
               "mt-1 line-clamp-2 font-mono text-xs",
-              run.state === "failed" ? "text-destructive" : "text-amber-300",
+              loom.state === "failed" ? "text-destructive" : "text-amber-300",
             )}
           >
-            {run.error}
+            {loom.error}
           </p>
         )}
       </div>
       <span className="shrink-0 text-xs text-muted-foreground">
-        {fmtAgo(run.updatedAt)}
+        {fmtAgo(loom.updatedAt)}
       </span>
     </Link>
   );
 }
 
-// A compact terminal-run row for the recent-outcomes list.
-function RecentRow({ run }: { run: Run }) {
+// A compact terminal-loom row for the recent-outcomes list.
+function RecentRow({ loom }: { loom: Loom }) {
   return (
     <Link
-      href={`/runs/${run.id}`}
+      href={`/looms/${loom.id}`}
       className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
     >
-      <StateBadge state={run.state} className="shrink-0" />
+      <StateBadge state={loom.state} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate text-sm font-medium">
-        {run.title}
+        {loom.title}
       </span>
       <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:inline">
-        {run.project}
+        {loom.project}
       </span>
       <span className="shrink-0 font-mono text-xs text-muted-foreground">
-        {fmtCost(sumCost(run.attempts))}
+        {fmtCost(sumCost(loom.attempts))}
       </span>
       <span className="w-14 shrink-0 text-right text-xs text-muted-foreground">
-        {fmtAgo(run.updatedAt)}
+        {fmtAgo(loom.updatedAt)}
       </span>
     </Link>
   );
@@ -320,8 +320,8 @@ function AccountUsage({ account, snap }: { account: string; snap: PlanSnapshot }
 }
 
 export default function DashboardPage() {
-  const [runs, setRuns] = useState<Run[] | null>(null);
-  const [runsError, setRunsError] = useState<string | null>(null);
+  const [looms, setLooms] = useState<Loom[] | null>(null);
+  const [loomsError, setLoomsError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionMeta[] | null>(null);
@@ -329,16 +329,16 @@ export default function DashboardPage() {
   const [nowTs, setNowTs] = useState(() => Date.now());
 
   const load = useCallback(() => {
-    fetch("/api/runs")
+    fetch("/api/looms")
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((d) => {
-        setRuns(Array.isArray(d.runs) ? d.runs : []);
-        setRunsError(null);
+        setLooms(Array.isArray(d.looms) ? d.looms : []);
+        setLoomsError(null);
       })
-      .catch((e) => setRunsError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setLoomsError(e instanceof Error ? e.message : String(e)));
 
     fetch("/api/projects")
       .then((r) => {
@@ -376,11 +376,11 @@ export default function DashboardPage() {
     return () => window.removeEventListener("telar:refresh", load);
   }, [load]);
 
-  const activeRuns = useMemo(
-    () => (runs ? runs.filter((r) => !isTerminal(r.state)) : []),
-    [runs],
+  const activeLooms = useMemo(
+    () => (looms ? looms.filter((r) => !isTerminal(r.state)) : []),
+    [looms],
   );
-  const hasActive = activeRuns.length > 0;
+  const hasActive = activeLooms.length > 0;
 
   // While work is in flight, poll (5s) and tick the elapsed clocks (1s).
   useEffect(() => {
@@ -393,12 +393,12 @@ export default function DashboardPage() {
     };
   }, [hasActive, load]);
 
-  const attention = runs
-    ? runs
+  const attention = looms
+    ? looms
         .filter((r) => r.state === "needs-review" || r.state === "failed")
         .slice(0, 5)
     : [];
-  const recent = runs ? runs.filter((r) => isTerminal(r.state)).slice(0, 8) : [];
+  const recent = looms ? looms.filter((r) => isTerminal(r.state)).slice(0, 8) : [];
   const planEntries = Object.entries(plan).sort(([a], [b]) =>
     a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
@@ -409,25 +409,25 @@ export default function DashboardPage() {
         title="telar"
         description="What's weaving now, what needs attention, and every project on the loom."
         actions={
-          <Button render={<Link href="/runs?new=1" />}>
+          <Button render={<Link href="/looms?new=1" />}>
             <PlusIcon />
-            New run
+            New loom
           </Button>
         }
       />
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl space-y-8 px-6 py-6">
-          {/* Runs area: active, needs-attention, recent — one loading/error gate. */}
-          {runs === null ? (
-            runsError ? (
+          {/* Looms area: active, needs-attention, recent — one loading/error gate. */}
+          {looms === null ? (
+            loomsError ? (
               <EmptyState
                 icon={TriangleAlertIcon}
                 iconClassName="text-destructive/60"
-                title="Couldn't load runs"
+                title="Couldn't load looms"
                 description={
                   <span className="font-mono text-xs break-words">
-                    {runsError}
+                    {loomsError}
                   </span>
                 }
                 action={
@@ -451,31 +451,31 @@ export default function DashboardPage() {
               <section>
                 <SectionHeading
                   icon={ActivityIcon}
-                  count={activeRuns.length || undefined}
+                  count={activeLooms.length || undefined}
                 >
                   Active now
                 </SectionHeading>
-                {activeRuns.length === 0 ? (
+                {activeLooms.length === 0 ? (
                   <EmptyState
                     className="py-10"
                     icon={CircleDashedIcon}
                     title="The loom is idle"
-                    description="No runs in flight. Start one and watch it weave."
+                    description="No looms in flight. Start one and watch it weave."
                     action={
                       <Button
                         variant="outline"
                         size="sm"
-                        render={<Link href="/runs?new=1" />}
+                        render={<Link href="/looms?new=1" />}
                       >
                         <PlusIcon />
-                        New run
+                        New loom
                       </Button>
                     }
                   />
                 ) : (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    {activeRuns.map((run) => (
-                      <ActiveRunCard key={run.id} run={run} nowTs={nowTs} />
+                    {activeLooms.map((loom) => (
+                      <ActiveLoomCard key={loom.id} loom={loom} nowTs={nowTs} />
                     ))}
                   </div>
                 )}
@@ -487,8 +487,8 @@ export default function DashboardPage() {
                     Needs attention
                   </SectionHeading>
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {attention.map((run) => (
-                      <AttentionRow key={run.id} run={run} />
+                    {attention.map((loom) => (
+                      <AttentionRow key={loom.id} loom={loom} />
                     ))}
                   </div>
                 </section>
@@ -498,13 +498,13 @@ export default function DashboardPage() {
                 <section>
                   <SectionHeading
                     icon={HistoryIcon}
-                    action={<ViewAll href="/runs" />}
+                    action={<ViewAll href="/looms" />}
                   >
-                    Recent runs
+                    Recent looms
                   </SectionHeading>
                   <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {recent.map((run) => (
-                      <RecentRow key={run.id} run={run} />
+                    {recent.map((loom) => (
+                      <RecentRow key={loom.id} loom={loom} />
                     ))}
                   </div>
                 </section>
@@ -512,7 +512,7 @@ export default function DashboardPage() {
             </>
           )}
 
-          {/* Recent sessions — the planning surface, back-to-back with runs. */}
+          {/* Recent sessions — the planning surface, back-to-back with looms. */}
           <section>
             <SectionHeading
               icon={MessagesSquareIcon}
@@ -538,7 +538,7 @@ export default function DashboardPage() {
                 className="py-10"
                 icon={MessagesSquareIcon}
                 title="Plan something"
-                description="Start a session from a project — sessions explore and prepare a change before a run writes it."
+                description="Start a session from a project — sessions explore and prepare a change before a loom writes it."
                 action={
                   <Button
                     variant="outline"

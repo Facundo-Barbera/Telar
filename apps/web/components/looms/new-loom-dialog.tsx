@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2Icon } from "lucide-react";
-import type { RunKind } from "@telar/core";
+import type { LoomKind } from "@telar/core";
 import {
   Dialog,
   DialogContent,
@@ -27,11 +27,11 @@ import { KIND_INFO } from "./utils";
 
 type ProjectOption = { name: string; account: string };
 
-const KINDS: RunKind[] = ["quickfix", "story", "custom", "verify"];
+const KINDS: LoomKind[] = ["quickfix", "story", "custom", "verify"];
 const TARGETS = ["dev", "preview", "prod"] as const;
 type Target = (typeof TARGETS)[number];
 
-export function NewRunDialog({
+export function NewLoomDialog({
   open,
   onOpenChange,
   defaultProject,
@@ -40,12 +40,12 @@ export function NewRunDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultProject?: string | null;
-  onCreated: (runId: string) => void;
+  onCreated: (loomId: string) => void;
 }) {
   // null = not yet loaded, [] = loaded but none registered.
   const [projects, setProjects] = useState<ProjectOption[] | null>(null);
   const [project, setProject] = useState("");
-  const [kind, setKind] = useState<RunKind>("quickfix");
+  const [kind, setKind] = useState<LoomKind>("quickfix");
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [criteria, setCriteria] = useState("");
@@ -119,7 +119,7 @@ export function NewRunDialog({
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean);
-      const res = await fetch("/api/runs", {
+      const res = await fetch("/api/looms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -134,7 +134,7 @@ export function NewRunDialog({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       window.dispatchEvent(new Event("telar:refresh"));
-      onCreated(data.run.id);
+      onCreated(data.loom.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSubmitting(false);
@@ -146,7 +146,7 @@ export function NewRunDialog({
       <DialogContent className="sm:max-w-lg">
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>New run</DialogTitle>
+            <DialogTitle>New loom</DialogTitle>
             <DialogDescription>
               Hand a project to the executor — it attempts, verifies with gates,
               and retries on its own.
@@ -162,7 +162,7 @@ export function NewRunDialog({
               >
                 Add one
               </Link>{" "}
-              to start a run.
+              to start a loom.
             </div>
           ) : (
             <>
@@ -218,7 +218,7 @@ export function NewRunDialog({
                 </label>
                 <Select
                   value={kind}
-                  onValueChange={(v) => v && setKind(v as RunKind)}
+                  onValueChange={(v) => v && setKind(v as LoomKind)}
                 >
                   <SelectTrigger className="w-full" size="default">
                     <SelectValue>{KIND_INFO[kind].label}</SelectValue>
@@ -245,7 +245,7 @@ export function NewRunDialog({
                 <Input
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Short name for this run"
+                  placeholder="Short name for this loom"
                   autoComplete="off"
                 />
               </div>
@@ -303,7 +303,7 @@ export function NewRunDialog({
                   className="resize-none font-mono text-xs leading-relaxed"
                 />
                 <p className="text-xs text-muted-foreground">
-                  One per line — the Verifier checks each after the run.
+                  One per line — the Verifier checks each after the loom finishes.
                 </p>
               </div>
             </>
@@ -323,7 +323,7 @@ export function NewRunDialog({
             </Button>
             <Button type="submit" disabled={!canSubmit}>
               {submitting && <Loader2Icon className="animate-spin" />}
-              Start run
+              Start loom
             </Button>
           </DialogFooter>
         </form>

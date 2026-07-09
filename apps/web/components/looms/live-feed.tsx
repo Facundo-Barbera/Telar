@@ -9,7 +9,7 @@ import {
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { GateResult, RunEvent, Verdict, WorkUnitState } from "@telar/core";
+import type { GateResult, LoomEvent, Verdict, WorkUnitState } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -25,7 +25,7 @@ function Separator({ children }: { children: React.ReactNode }) {
   );
 }
 
-function renderEvent(ev: RunEvent, i: number): React.ReactNode {
+function renderEvent(ev: LoomEvent, i: number): React.ReactNode {
   switch (ev.type) {
     case "attempt":
       return (
@@ -124,7 +124,7 @@ function renderEvent(ev: RunEvent, i: number): React.ReactNode {
   }
 }
 
-function shimmerLabel(events: RunEvent[], state: WorkUnitState): string {
+function shimmerLabel(events: LoomEvent[], state: WorkUnitState): string {
   if (state === "verifying") return "Verifying…";
   if (state === "preparing") return "Preparing…";
   for (let i = events.length - 1; i >= 0; i--) {
@@ -139,7 +139,7 @@ export function LiveFeed({
   events,
   state,
 }: {
-  events: RunEvent[];
+  events: LoomEvent[];
   state: WorkUnitState;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);

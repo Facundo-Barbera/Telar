@@ -78,10 +78,10 @@ function GateRow({ gate }: { gate: GateResult }) {
 
 export function AttemptCard({
   attempt,
-  runId,
+  loomId,
 }: {
   attempt: AttemptRecord;
-  runId: string;
+  loomId: string;
 }) {
   const running = attempt.endedAt === undefined;
   const verdict = attempt.verdict ?? null;
@@ -155,7 +155,7 @@ export function AttemptCard({
         )}
 
         {attempt.verifierReport && (
-          <VerifierReportCard runId={runId} report={attempt.verifierReport} />
+          <VerifierReportCard loomId={loomId} report={attempt.verifierReport} />
         )}
       </CardContent>
     </Card>

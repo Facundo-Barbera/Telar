@@ -50,7 +50,7 @@ export type EvidenceKind = z.infer<typeof EvidenceKind>;
 
 export const Evidence = z.object({
   kind: EvidenceKind,
-  // Path under the run's evidence dir, OR inline text for small blobs
+  // Path under the loom's evidence dir, OR inline text for small blobs
   // (a11ySnapshot / console line). Large binaries (png/trace) are always paths.
   path: z.string().optional(),
   text: z.string().optional(),

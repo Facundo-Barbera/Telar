@@ -269,13 +269,13 @@ export function RegisterProjectDialog({
                     Gates
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    Commands whose exit code decides a run.
+                    Commands whose exit code decides a loom.
                   </span>
                 </div>
                 <div className="space-y-2">
                   {gates.length === 0 && (
                     <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
-                      No gates — runs pass on the agent&apos;s verdict alone.
+                      No gates — looms pass on the agent&apos;s verdict alone.
                     </p>
                   )}
                   {gates.map((gate, i) => (
