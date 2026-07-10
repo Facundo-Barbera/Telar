@@ -307,7 +307,13 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        // min-w-0: as a flex child of the sidebar wrapper, the inset defaults
+        // to min-width:auto and refuses to shrink below its content's intrinsic
+        // width — so a page with wide content (a code block, a long tool line)
+        // pushes the whole shell past the viewport and scrolls the page
+        // sideways. min-w-0 lets it shrink to its flex share; wide content then
+        // scroll/clip within their own containers instead of the page.
+        "relative flex w-full min-w-0 flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}
