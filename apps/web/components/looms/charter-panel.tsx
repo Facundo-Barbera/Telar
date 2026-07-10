@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ChevronRightIcon, WorkflowIcon } from "lucide-react";
 import type { Charter } from "@telar/core";
-import { isWoven } from "@telar/core";
+import { isWoven } from "@/components/looms/utils";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";

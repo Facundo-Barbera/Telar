@@ -1,8 +1,18 @@
 // Loom-specific helpers — state predicates, cost summing, and the duration
 // formatters the loom views need. Cross-surface formatters (fmtAgo, fmtCost,
 // shortId) live in @/lib/format so every page shares one language.
-import type { AttemptRecord, Loom, LoomKind, WorkUnitState } from "@telar/core";
-import { isWoven } from "@telar/core";
+import type { AttemptRecord, Charter, Loom, LoomKind, WorkUnitState } from "@telar/core";
+
+// Derived CLIENT-SIDE on purpose: importing isWoven from @telar/core drags the
+// core barrel (engine.ts → the Node-only Agent SDK, which needs async_hooks)
+// into the browser bundle and breaks the build. A loom/charter is "woven"
+// (orchestrates threads) when its Charter carries a non-empty decomposition.
+export function isWoven(x: Loom | Charter | null | undefined): boolean {
+  const d =
+    (x as Charter | undefined)?.decomposition ??
+    (x as Loom | undefined)?.charter?.decomposition;
+  return (d?.length ?? 0) > 0;
+}
 
 const TERMINAL: readonly WorkUnitState[] = [
   "done",

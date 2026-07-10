@@ -11,7 +11,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { Loom, LoomEvent } from "@telar/core";
-import { isWoven } from "@telar/core";
+import { isWoven } from "@/components/looms/utils";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
