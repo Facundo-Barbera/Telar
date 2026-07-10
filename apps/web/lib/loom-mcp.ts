@@ -24,6 +24,7 @@ import {
   readContract,
   saveLoom,
   startLoomFromBundle,
+  updateDraftObjectiveFromBundle,
   writeBundleFile,
   writeContract,
 } from "@telar/core";
@@ -102,6 +103,10 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           } catch (e) {
             return errResult(e instanceof Error ? e.message : String(e));
           }
+          // objective.md is the single source of truth for the draft's
+          // objective — keep the loom's prompt/title tracking it LIVE, so the
+          // god-view never diverges from the bundle (docs/loom-model.md §5).
+          if (path === "objective.md") updateDraftObjectiveFromBundle(opts.link.loomId);
           return okResult(`Wrote "${path}" to the draft bundle (loom ${opts.link.loomId}).`);
         },
       ),
@@ -169,13 +174,6 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           if (!loomId) {
             return errResult("No draft loom yet — call draft_bundle_file first to start one.");
           }
-          if (title?.trim()) {
-            const loom = getLoom(loomId);
-            if (loom) {
-              loom.title = title.trim();
-              saveLoom(loom);
-            }
-          }
           try {
             // `by` is opts.account — the chat's own server-resolved identity,
             // never a value read from tool input (§M.6).
@@ -185,6 +183,13 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
               { accounts: Object.fromEntries(listAccounts().map((a) => [a.name, a])), policy: loadPolicy() },
               { sessionId: opts.getSessionId() ?? undefined },
             );
+            // Apply an explicit title override AFTER start: startLoomFromBundle
+            // reconciles title from objective.md, so setting it before would be
+            // clobbered. The human's chosen title is the last word.
+            if (title?.trim()) {
+              started.title = title.trim();
+              saveLoom(started);
+            }
             return okResult(JSON.stringify({ loomId: started.id, url: `/looms/${started.id}` }, null, 2));
           } catch (e) {
             return errResult(e instanceof Error ? e.message : String(e));

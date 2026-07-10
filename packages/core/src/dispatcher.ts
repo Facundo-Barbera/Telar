@@ -18,7 +18,7 @@ import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type Lo
 import { executeLoom, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, validateCharter } from "./scoping";
-import { appendSteering, readContract, writeProvenance } from "./bundle";
+import { appendSteering, readBundleFile, readContract, writeProvenance } from "./bundle";
 
 export type StartLoomInput = {
   project: string;
@@ -252,10 +252,61 @@ export function createDraftLoom(input: { project: string; title: string; objecti
     project: input.project,
     kind: "custom",
     title: input.title,
+    // PROVISIONAL seed only — a first-use placeholder so the god-view has a
+    // prompt/title before the planner writes the real objective. Once
+    // spec/objective.md exists it is the single source of truth and
+    // updateDraftObjectiveFromBundle overwrites both of these.
     prompt: input.objective,
     account,
     draft: true,
   });
+}
+
+// A concise title (~60 chars) derived from an objective: its first markdown
+// heading, else its first sentence/line.
+function titleFromObjective(objective: string): string {
+  const heading = objective.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/m);
+  const firstLine = objective.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? objective;
+  const base = (heading ? heading[1] : firstLine).trim();
+  const sentence = base.split(/(?<=[.!?])\s/)[0].trim().replace(/\s+/g, " ");
+  return sentence.length > 60 ? sentence.slice(0, 60).trimEnd() : sentence;
+}
+
+// docs/loom-model.md §5 — reconcile a DRAFT loom's prompt/title with the
+// authoritative spec/objective.md the planner writes. objective.md is the
+// single source of truth for a bundle loom's objective; the seed passed to
+// createDraftLoom is a provisional placeholder this overwrites once real
+// content exists. No-op unless the loom is a draft AND objective.md is present
+// and non-trivial (so an empty/whitespace file never clobbers the seed).
+export function updateDraftObjectiveFromBundle(loomId: string): void {
+  const loom = getLoom(loomId);
+  if (!loom || loom.draft !== true) return;
+  const objective = readBundleFile(loomId, "objective.md")?.trim();
+  if (!objective) return;
+  loom.prompt = objective;
+  loom.title = titleFromObjective(objective);
+  saveLoom(loom);
+}
+
+// A meta-request to create/start the loom (or a bare pointer) is NOT an
+// objective. Conservative by design — it only fires when such a phrase is the
+// DOMINANT content, so a real objective that merely mentions "build" in passing
+// still starts. The semantic guard is the planner system prompt; this is the
+// hard backstop at the human-approved commit point.
+const META_REQUEST = /\b(draft|create|make|start|build)\s+(the\s+|a\s+)?loom\b|never\s*mind|let'?s\s+work\s+on\b/gi;
+const OBJECTIVE_GATE_MSG =
+  "Write a concrete objective describing the change to make (not a request to create the loom) into objective.md, then start again.";
+
+// Returns an error message if objective.md is not real work, else null.
+function objectiveGateError(objective: string): string | null {
+  if (!objective) return OBJECTIVE_GATE_MSG;
+  const isMeta = META_REQUEST.test(objective);
+  META_REQUEST.lastIndex = 0; // `g` flag makes .test stateful — reset
+  if (!isMeta) return null;
+  // Strip the meta phrase(s) and issue-number/punctuation noise; if barely any
+  // real content remains, the objective is dominated by the meta-request.
+  const remainder = objective.replace(META_REQUEST, " ").replace(/[#\d\s.,!?;:'"()\-]+/g, " ").trim();
+  return remainder.length < 40 ? OBJECTIVE_GATE_MSG : null;
 }
 
 // The commit moment (docs/loom-model.md §5, §M.6): a session finalizes a
@@ -269,7 +320,7 @@ export async function startLoomFromBundle(
   deps: DispatcherDeps,
   opts?: { sessionId?: string; maxAttempts?: number },
 ): Promise<Loom> {
-  const loom = getLoom(loomId);
+  let loom = getLoom(loomId);
   if (!loom) throw new Error(`loom not found: ${loomId}`);
   if (!loom.draft) throw new Error("loom is not a draft awaiting start");
 
@@ -285,6 +336,19 @@ export async function startLoomFromBundle(
   if (!contract || errors.length) {
     throw new Error(`bundle has no valid verification contract: ${errors.join("; ")}`);
   }
+
+  // RECONCILE (§5): make objective.md drive prompt/title before we commit, so
+  // a started loom always weaves from the distilled objective, never the raw
+  // chat seed — even if the tool path skipped the live reconcile. Re-read so
+  // the draft->started write below carries the reconciled values.
+  updateDraftObjectiveFromBundle(loomId);
+  loom = getLoom(loomId)!;
+
+  // OBJECTIVE-QUALITY GATE: the human-approved commit point rejects a bundle
+  // whose objective is missing or is a meta-request to create the loom rather
+  // than the change to make — otherwise the builder loops on "draft the loom".
+  const gateErr = objectiveGateError(readBundleFile(loomId, "objective.md")?.trim() ?? "");
+  if (gateErr) throw new Error(gateErr);
 
   // CROSS-PROCESS GUARD (docs/loom-model.md §M.8): the draft->started flip
   // below is a plain read-modify-write on loom.json with no file lock or

@@ -107,7 +107,12 @@ const PLANNER_SYSTEM_PROMPT = `You are helping the user plan a LOOM in Telar —
 3. Show the user the plan (read_bundle) and refine until they're happy.
 4. When the spec is solid AND the user confirms, call start_loom. This ASKS THE USER TO APPROVE — you cannot start a loom yourself; that human approval is required by design. After it starts, tell the user the loom is building and verifying autonomously and that they can watch it in the god-view.
 Do NOT write the feature's code yourself — the loom's builder does that. Keep your messages concise and guide the user through the plan.
-When you need to clarify something, ask it as a plain chat message and wait for the user's reply — never use a structured question/interactive tool; the chat has no UI to answer those.`;
+When you need to clarify something, ask it as a plain chat message and wait for the user's reply — never use a structured question/interactive tool; the chat has no UI to answer those.
+
+OBJECTIVE — the most important thing you write. objective.md is the single source of truth for what the loom builds; write it (via draft_bundle_file, path "objective.md") BEFORE calling start_loom. It must:
+- Describe the CONCRETE CHANGE to make in the project — the actual feature/fix/refactor and its acceptance shape — distilled from the WHOLE conversation.
+- NEVER be the meta-request to create/draft/start the loom, a restatement like "let's work on #109", or a raw fragment of the user's chat message. "Create the loom" is not a task.
+If the user's ask is vague or is only a pointer (an issue number, "the thing we discussed"), ask focused questions and read the referenced material until you can state the real objective — do not draft a placeholder objective.`;
 
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
