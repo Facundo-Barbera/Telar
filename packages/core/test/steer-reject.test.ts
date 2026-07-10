@@ -12,7 +12,7 @@ beforeEach(() => {
   process.env.TELAR_HOME = home;
 });
 
-const { rejectLoom, steerLoom } = await import("../src/dispatcher");
+const { rejectLoom, resumeLoom, steerLoom } = await import("../src/dispatcher");
 const { createLoom, getLoom, readEvents, saveLoom } = await import("../src/looms");
 const { readBundleFile } = await import("../src/bundle");
 const { createProject } = await import("../src/manifest");
@@ -145,11 +145,26 @@ describe("rejectLoom (§A)", () => {
     expect(events.filter((e) => e.type === "rejected").length).toBe(1);
   });
 
+  test("also valid from failed (send a dead-ended loom back, re-queues + re-dispatches)", async () => {
+    const m = makeProject();
+    const loom = loomInState(m.name, "failed");
+    loom.error = "boom";
+    saveLoom(loom);
+    const f = fakeDeps();
+    const out = await rejectLoom(loom.id, "handle the null case", "you", f.deps);
+    expect(f.calls).toBe(1); // re-dispatched into the verified loop
+    expect(out.state).not.toBe("done");
+    expect(out.error).toBeNull(); // error cleared on the way back to work
+    expect(out.prompt).toContain("handle the null case");
+    const { events } = readEvents(loom.id);
+    expect(events.filter((e) => e.type === "rejected").length).toBe(1);
+  });
+
   test("invalid from other states", async () => {
     const m = makeProject();
     for (const state of ["running", "queued", "done"] as const) {
       const loom = loomInState(m.name, state);
-      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready', 'blocked', or 'needs-review'/);
+      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready', 'blocked', 'needs-review', or 'failed'/);
     }
   });
 
@@ -157,5 +172,50 @@ describe("rejectLoom (§A)", () => {
     const m = makeProject();
     const loom = loomInState(m.name, "ready");
     await expect(rejectLoom(loom.id, "   ", "you", fakeDeps().deps)).rejects.toThrow(/feedback/);
+  });
+});
+
+describe("resumeLoom (§A) — no-feedback retry", () => {
+  test("from failed: re-queues, clears error, re-dispatches, never done", () => {
+    const m = makeProject();
+    const loom = loomInState(m.name, "failed");
+    loom.error = "boom";
+    saveLoom(loom);
+    const f = fakeDeps();
+
+    const out = resumeLoom(loom.id, f.deps);
+
+    expect(f.calls).toBe(1); // re-entered the verified loop
+    expect(out.state).not.toBe("done");
+    expect(out.error).toBeNull();
+
+    const { events } = readEvents(loom.id);
+    const resumed = events.filter((e) => e.type === "resumed");
+    expect(resumed.length).toBe(1);
+    expect(resumed[0]!.from).toBe("failed");
+  });
+
+  test("also valid from needs-review and blocked", () => {
+    const m = makeProject();
+    for (const state of ["needs-review", "blocked"] as const) {
+      const loom = loomInState(m.name, state);
+      const f = fakeDeps();
+      const out = resumeLoom(loom.id, f.deps);
+      expect(f.calls).toBe(1);
+      expect(out.state).not.toBe("done");
+    }
+  });
+
+  test("from a terminal non-failed state (done) throws and does not re-dispatch", () => {
+    const m = makeProject();
+    const loom = loomInState(m.name, "done");
+    const f = fakeDeps();
+    expect(() => resumeLoom(loom.id, f.deps)).toThrow(/only valid from 'failed', 'needs-review', or 'blocked'/);
+    expect(f.calls).toBe(0);
+    expect(getLoom(loom.id)!.state).toBe("done"); // untouched
+  });
+
+  test("missing loom throws", () => {
+    expect(() => resumeLoom("loom_nope", fakeDeps().deps)).toThrow(/not found/);
   });
 });

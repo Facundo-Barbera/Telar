@@ -526,21 +526,46 @@ export async function steerLoom(id: string, directive: string, by: string, deps:
 // docs/loom-model.md §A — REJECT sends a loom back to work with feedback so it
 // re-enters the verified loop; it never reaches `done`. Valid from `ready` (the
 // owner is unhappy with green work), `blocked` (a paused loom the owner
-// un-sticks with guidance), or (P5) `needs-review` (the owner rejects an
-// unverified loom's work outright rather than answering it). `by` is
-// server-derived.
+// un-sticks with guidance), `needs-review` (P5 — the owner rejects an
+// unverified loom's work outright rather than answering it), or `failed` (a
+// dead-ended attempt the owner sends back with corrective feedback rather than
+// abandoning). `by` is server-derived.
 export async function rejectLoom(id: string, feedback: string, by: string, deps: DispatcherDeps): Promise<Loom> {
   if (!by?.trim()) throw new Error("rejectLoom requires a non-blank `by`");
   if (!feedback?.trim()) throw new Error("rejectLoom requires non-empty feedback");
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
-  if (loom.state !== "ready" && loom.state !== "blocked" && loom.state !== "needs-review") {
-    throw new Error(`reject is only valid from 'ready', 'blocked', or 'needs-review' (loom is '${loom.state}')`);
+  if (loom.state !== "ready" && loom.state !== "blocked" && loom.state !== "needs-review" && loom.state !== "failed") {
+    throw new Error(`reject is only valid from 'ready', 'blocked', 'needs-review', or 'failed' (loom is '${loom.state}')`);
   }
 
   appendSteering(id, { kind: "reject", text: feedback, by });
   appendEvent(id, { type: "rejected", feedback, by });
   loom.prompt = `${loom.prompt}\n\n## Rejection feedback (${by})\n${feedback.trim()}`;
+
+  // Back to work, re-entering the verified loop. Never `done`.
+  loom.state = "queued";
+  loom.error = null;
+  appendEvent(id, { type: "state", state: "queued" });
+  saveLoom(loom);
+
+  reDispatch(loom, deps);
+  return loom;
+}
+
+// docs/loom-model.md §A — RESUME is a no-feedback retry: send a stuck loom back
+// into the SAME verified loop with no new directive. Valid from `failed` (a
+// dead-ended attempt the owner wants re-run as-is), `needs-review`, or
+// `blocked`. Like steer/reject it re-enters dispatchExecution and RE-VERIFIES,
+// so it can only land back at `ready`, never jump to `done` (the moat holds).
+export function resumeLoom(id: string, deps: DispatcherDeps): Loom {
+  const loom = getLoom(id);
+  if (!loom) throw new Error(`loom not found: ${id}`);
+  if (loom.state !== "failed" && loom.state !== "needs-review" && loom.state !== "blocked") {
+    throw new Error(`resume is only valid from 'failed', 'needs-review', or 'blocked' (loom is '${loom.state}')`);
+  }
+
+  appendEvent(id, { type: "resumed", from: loom.state });
 
   // Back to work, re-entering the verified loop. Never `done`.
   loom.state = "queued";
