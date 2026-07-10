@@ -11,6 +11,7 @@
 - **Lazy-spawn + single-instance.** First dispatch → web calls `ensureRunner()`: read `~/.telar/runner.json` (`{pid,port,token}`, 0600), health-check `GET /health`; if dead, `spawn(detached).unref()` and poll. An `O_EXCL` `~/.telar/runner.lock` (same primitive `startLoomFromBundle` already uses) keeps it single-instance. **[OPEN: lifecycle — idle self-exit vs explicit `bun runner` vs stay-until-killed. This is the one call that needs the human.]**
 - **Loopback HTTP control channel.** Runner binds `127.0.0.1:<ephemeral>`; web POSTs `/dispatch/loom`, `/stop/loom`, (2b) `/dispatch/session`, `/stop/session`, `/permission-decision`, presenting the token. **The READ path does NOT move** — `GET /api/looms/[id]/events` and `GET /api/chat/[sessionId]/events` keep tailing `events.ndjson`/`loom.json`/`live.ndjson` off disk, unchanged. Only dispatch/stop/permission-decision cross the wire.
 - **Env parity:** the spawned runner must inherit `TELAR_HOME` and any `CLAUDE_CONFIG_DIR`, so `getProject`/`accountEnv` resolve identically.
+- **Build-agnostic resolution:** `ensureRunner()` must not hardcode the dev source path — resolve the runner through one seam that works under `bun dev` today AND a bundled/static build later (see "Packaging & static build").
 
 ---
 
@@ -66,9 +67,19 @@ The turn loop in `apps/web/app/api/chat/route.ts` (the `ReadableStream.start()` 
 
 ---
 
+## Packaging & static build
+
+Telar runs on `bun dev` today but will eventually be bundled into a static/standalone build (self-hosted, even if just for one user). The runner must be **build-agnostic** from the start:
+
+- **Runner resolution — one seam, two backings.** `ensureRunner()` must not hardcode `bun <packages/runner/src/main.ts>`. Order: (1) if `TELAR_RUNNER_URL` is set, **connect-only** (don't spawn — production points at a supervised runner); (2) else if `TELAR_RUNNER_BIN` is set, spawn that (the bundled artifact); (3) else fall back to the dev source under `bun`. The build produces the runner artifact — e.g. `bun build --compile` a single-file `telar-runner` executable alongside the Next standalone output — and the packaged app sets `TELAR_RUNNER_BIN`/`TELAR_RUNNER_URL`.
+- **`@telar/core` is raw `.ts` today** (fine under bun's loader); a static build must bundle/compile core into both the web output and the runner. Keep the runner importing `@telar/core` by workspace so `bun build --compile` inlines it.
+- **Lifecycle becomes env-configurable, not baked to dev.** Dev: lazy-spawn (zero-config). Production/bundled: run the runner as a supervised long-lived process (service/process-manager) and set `TELAR_RUNNER_URL` so the web app connects instead of spawning. So the "lingers after Ctrl-C" worry is **dev-only**; the static build gets a proper daemon.
+
+This reframes the lifecycle open-decision below: it's only about the *dev* default, since production is a supervised service pointed at by `TELAR_RUNNER_URL`.
+
 ## Open decisions for the human
 
-1. **Runner lifecycle (the big one):** lazy-spawn + idle self-exit (zero-config, but lingers after Ctrl-C `bun dev`) · explicit `bun runner` beside `bun dev` (clean, two commands) · lazy-spawn stay-until-killed (permanent background process).
+1. **Runner lifecycle — DEV ONLY** (production is a supervised service via `TELAR_RUNNER_URL`, see "Packaging & static build"): for `bun dev`, lazy-spawn + idle self-exit (zero-config, but lingers briefly after Ctrl-C) · explicit `bun runner` beside `bun dev` (clean, two commands) · lazy-spawn stay-until-killed. Default recommendation: lazy-spawn + idle self-exit.
 2. Control-channel: ephemeral port + shared token in `runner.json` (0600), `127.0.0.1`-bound — confirm the token requirement.
 3. 2b POST fidelity: proxy the runner SSE (recommended) vs tail `live.ndjson` with deltas on disk.
 4. Env parity: confirm the spawn inherits the web server's `TELAR_HOME`/`CLAUDE_CONFIG_DIR`.
