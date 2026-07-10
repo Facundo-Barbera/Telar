@@ -72,6 +72,30 @@ Telar's whole vocabulary is then just: **Loom** (a unit of work), **Thread / wea
 
 ---
 
+## §V. The loom is one surface — the orchestrator on top of its operators (2026-07-09, revised)
+
+Locked with the owner against the **integrated god-view mockup** (the reference we build from). Supersedes the first §V draft — a linear "steps × agents" stepper — which was wrong: it flattened the orchestrator-on-top-of-operators hierarchy and made a fundamentally cyclic loop look linear.
+
+**The frame is the original god-view**, in the established design language: a compact Charter strip, the orchestrator on top, the operators (threads) below, a right rail (decision log + steer), the moat line at the foot. One surface per loom; a single-agent loom is a **weave of one** — the same frame with one operator.
+
+**1. The orchestrator sits ON TOP of the operators.** A conductor band above the weave shows the loop it owns — `plan → schedule → observe → decide ↻` — with the live **tick** (its latest decision) and the concurrency governor (agents in flight / budget). This is ultracode one level down, made watchable; the operators are explicitly "what it is weaving."
+
+**2. The loop is non-linear, and the steps are the orchestrator's to choose.** There is **no loom-level progress bar** and **no hard-coded step spine.** Each **operator (thread)** runs its **own** sequence of steps, and *the orchestrator decides what they are* for the work at hand — not a fixed `build → gate → verify → decide` enum. The one thing it cannot skip or author away is **verification** (deterministic gates + the critic panel): that is the moat, applied to every step's output, not a step the orchestrator invents. Each operator keeps its **own repair loop** (verify ✗ → back, bounded). Threads run at their own pace (pipeline, not lock-step); dependents unblock as prerequisites pass; a blocked thread parks while the rest weave on. The UI renders **whatever steps actually ran**, derived per-operator (never a fixed rail); the **decision log** is the narrative, not a stepper. *(Full orchestrator-authored steps arrive with the dynamic weaver, §W / Phase C; the model + UI stop hard-coding the spine now.)*
+
+**3. Every agent has its own view — and its own transcript.** Click an operator → its agent view: pipeline · current action · fanned-out sub-agents · files · the critic panel. Each carries **Overview / Transcript** tabs; the transcript picker spans the **operator, each fanned-out sub-agent, and each critic**, showing that agent's raw session (assistant reasoning · tool calls · results; for critics, the Playwright drive + verdict). The header states the moat plainly — builders have Write/Edit/Bash; critics are read-only on a different account.
+
+**4. Verify is the kicker, and it lives inside the thread.** Deterministic gates are table stakes. The edge is the **critic panel driving the real product with Playwright** to judge intent and gaps — *"what did the user want, and what are they missing?"* (§4 Layer 2). Each lens shows verdict, summary, findings, evidence, and the URL it drove; a failing blocker sends the thread back to repair. Nothing reaches `done` without surviving it; no agent self-certifies (the moat line anchors the view).
+
+**5. The spec never invades the workspace.** The Charter strip is compact (objective + a few chips + Revise); the full Spec Bundle — objective, the falsifiable contract, context files (a BMAD story, a mockup, golden data) — opens in a **drawer**, over the view, never colonizing it.
+
+**6. The loom is execution; planning is upstream.** The human's time goes into the **Loom Session** — a prompt (or BMAD epics, or a feature brief) becomes a full Spec Bundle + contract. Then the loom executes mostly autonomously. Two human gates bracket it: **Launch** (`start_loom`, its own moment) and **Accept** (§A — lands/commits the work). Everything between is autonomous and independently verified.
+
+**Design.** Keep the established god-view visual language (the reference mockup) — reuse the app's real components; do not introduce a divergent look.
+
+**Build order.** Phase A — the god-view frame + the agent view (with transcripts) + the spec drawer, foregrounding the Playwright critic panel, rendered against today's data. Phase B — the two gates (Launch surface; Accept-commits + wire Steer/Reject, #35). Phase C — the dynamic weaver: the orchestrator staffs operators at runtime (#32). Phase D — per-loom run initializer (#33) + out-of-process execution (#36), underneath.
+
+---
+
 ## 2. The Spec Bundle — a Loom weaves from a directory, not a prompt
 
 A Loom is anchored to a **Spec Bundle**: a working directory of artifacts the loom and its agents read.
