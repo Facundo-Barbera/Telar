@@ -63,7 +63,17 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
   const env: Record<string, string | undefined> = { ...process.env };
   if (!account) return env;
   const p = providerOf(account.provider);
-  if (account.configDir) env[p.configDirEnv] = expandHome(account.configDir);
+  if (account.configDir) {
+    env[p.configDirEnv] = expandHome(account.configDir);
+  } else {
+    // No configDir means "the provider's BASE login" (the unset-var Keychain
+    // default, per accounts.ts). We must ACTIVELY DELETE the config-dir env var
+    // — not merely skip setting it — because `env` starts from process.env, so
+    // an ambient value (e.g. the server itself was launched under
+    // CLAUDE_CONFIG_DIR=~/.claude-work) would otherwise leak this account onto a
+    // DIFFERENT login. That is the "personal silently resolves to work" bug.
+    delete env[p.configDirEnv];
+  }
   const mode = account.authMode ?? "subscription";
   if (mode !== "subscription") {
     const target = p.tokenEnvByMode[mode];
