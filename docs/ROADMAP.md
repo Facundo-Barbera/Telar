@@ -57,7 +57,7 @@ OAuth client, storing the token in its account-decoupled project store. **Design
 strictly more capable than Claude Code's DCR-only).
 
 - [x] **Stage A — core OAuth engine** — PRM/AS discovery, client-identity ladder, PKCE, token exchange + refresh, record store; SSRF/state/audience/redirect guards; mocked-fetch tests
-- [ ] **Stage B — connect flow + UI** — `/api/mcp/oauth/callback` + Connect/Reconnect/Disconnect per server, async refresh-on-resolve injection in `mcp.ts`, live Supabase test
+- [x] **Stage B — connect flow + UI** — connect/callback/status/disconnect routes + PKCE-state pending store, `mcp.ts` auto-inject + best-effort refresh-on-resolve, Connect/Reconnect/Disconnect UI. _(Live Supabase test pending — yours to run.)_
 - [ ] **v2 — CIMD hosted client-doc** — stand up the client-metadata URL to flip the top tier on
 
 ## Phase C — Durable execution (out-of-process)

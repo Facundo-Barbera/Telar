@@ -7,6 +7,7 @@
 // place MCP tokens are read.
 import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { getProject } from "./manifest";
+import { getRecord, needsRefresh, refreshRecord } from "./mcp-oauth";
 import { deleteSecret, readSecret, writeSecret } from "./secrets";
 import type { McpValue } from "./schemas";
 
@@ -89,12 +90,41 @@ export function resolveProjectMcpServers(projectName: string): Record<string, Sd
         env: resolveRecord(cfg.env, projectName, name),
       };
     } else {
+      const headers = resolveRecord(cfg.headers, projectName, name);
+      // Telar-owned OAuth (docs/mcp-oauth-design.md §3/§5): for an http server
+      // that declares auth.type === "oauth", auto-inject the managed Bearer
+      // token from the mirrored mcp:<project>:<server> slot — unless the user
+      // already wired an Authorization header themselves. A missing token warns
+      // + injects an empty Bearer (401s later), exactly like any other missing
+      // secret; it never throws. resolveValue is reused so the warn behavior is
+      // identical to the manual { secret } path.
+      if (cfg.auth?.type === "oauth" && !Object.keys(headers).some((h) => h.toLowerCase() === "authorization")) {
+        headers.Authorization = resolveValue({ secret: name, prefix: "Bearer " }, projectName, name);
+      }
       out[name] = {
         type: "http",
         url: cfg.url,
-        headers: resolveRecord(cfg.headers, projectName, name),
+        headers,
       };
     }
   }
   return out;
+}
+
+// Before a run, refresh any near-expiry Telar-owned OAuth tokens so the Bearer
+// resolveProjectMcpServers injects is live (docs/mcp-oauth-design.md §5). Each
+// server is isolated in try/catch and BEST-EFFORT: a refresh failure (network,
+// revoked refresh token) must never throw out of here — a stale token just 401s
+// at use. No-op when the project declares no oauth servers.
+export async function refreshProjectMcpAuth(project: string): Promise<void> {
+  const servers = getProject(project).manifest.mcpServers;
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (cfg.transport !== "http" || cfg.auth?.type !== "oauth") continue;
+    try {
+      const record = getRecord(project, name);
+      if (record && needsRefresh(record)) await refreshRecord(record);
+    } catch {
+      // Best-effort: swallow so one server's refresh failure can't abort a run.
+    }
+  }
 }

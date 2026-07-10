@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
-import { resolveProjectMcpServers } from "./mcp";
+import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
 import { type BuildPiece, runBuildFanout } from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
@@ -560,8 +560,11 @@ export async function executeLoom(
   const runBuildStep = async (
     prompt: string,
     ctx: { model: string; resume?: string; attempt: AttemptRecord },
-  ): Promise<Verdict | null> =>
-    agent(prompt, {
+  ): Promise<Verdict | null> => {
+    // Refresh any near-expiry Telar-owned MCP OAuth tokens before resolving the
+    // servers so the injected Bearer is live (docs/mcp-oauth-design.md §5).
+    await refreshProjectMcpAuth(manifest.name);
+    return agent(prompt, {
       schema: Verdict,
       cwd: manifest.root,
       model: ctx.model,
@@ -593,6 +596,7 @@ export async function executeLoom(
         }
       },
     });
+  };
 
   // Scope a build-fanout piece's prompt to its allowedPaths (mirrors
   // firstPrompt's guardrails framing) and run it as its own agent() call
@@ -604,8 +608,11 @@ export async function executeLoom(
   // model and vanishing from opts.onEvent / attempt.costUsd.
   const makePieceBuilder =
     (ctx: { model: string; attempt: AttemptRecord }) =>
-    (piece: BuildPiece, cwd: string): Promise<Verdict | null> =>
-      agent(
+    async (piece: BuildPiece, cwd: string): Promise<Verdict | null> => {
+      // Refresh near-expiry MCP OAuth tokens before resolving the servers, same
+      // as runBuildStep (docs/mcp-oauth-design.md §5).
+      await refreshProjectMcpAuth(manifest.name);
+      return agent(
         [
           `# ${piece.title}`,
           piece.prompt,
@@ -649,6 +656,7 @@ export async function executeLoom(
           },
         },
       );
+    };
 
   // Runs the build step for one attempt: the fanned-out multi-builder path
   // when opts.buildFanout supplies >=2 disjoint pieces, else the single

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2Icon,
+  Link2OffIcon,
+  LinkIcon,
   PlusIcon,
   RotateCwIcon,
   SaveIcon,
@@ -10,7 +12,12 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +43,18 @@ import { Switch } from "@/components/ui/switch";
 // than importing types across the client boundary.
 type McpSecretRefJson = { secret: string; prefix?: string };
 type McpValueJson = string | McpSecretRefJson;
+// Telar-owned OAuth block on an http server (schemas.ts McpOAuthConfig). Mirrored
+// locally like the shapes above and carried through verbatim so editing/Saving a
+// server never drops its auth config; the UI only reads auth.type to decide
+// whether to render the Connect panel.
+type McpAuthJson = {
+  type: "oauth";
+  scopes?: string[];
+  clientId?: string;
+  clientSecret?: McpSecretRefJson;
+  authorizationServer?: string;
+  redirectPath?: string;
+};
 type McpServerJson =
   | {
       transport: "stdio";
@@ -47,6 +66,7 @@ type McpServerJson =
       transport: "http";
       url: string;
       headers?: Record<string, McpValueJson>;
+      auth?: McpAuthJson;
     };
 type McpServersJson = Record<string, McpServerJson>;
 
@@ -72,6 +92,7 @@ type Server = {
   args: string[];
   url: string;
   entries: EntryRow[]; // env (stdio) or headers (http)
+  auth?: McpAuthJson; // http-only; preserved verbatim across edits/saves
 };
 
 let uid = 0;
@@ -114,6 +135,7 @@ function serversFromManifest(mcp: McpServersJson): Server[] {
         args: [],
         url: cfg.url,
         entries: rowsFromValues(cfg.headers),
+        auth: cfg.auth,
       };
     }
     return {
@@ -158,6 +180,7 @@ function assemble(servers: Server[]): McpServersJson {
         transport: "http",
         url: s.url,
         ...(Object.keys(headers).length ? { headers } : {}),
+        ...(s.auth ? { auth: s.auth } : {}),
       };
     } else {
       const env = valuesFromRows(s.entries);
@@ -408,6 +431,110 @@ function EntryEditor({
   );
 }
 
+// --- Telar-owned OAuth connection (docs/mcp-oauth-design.md §5). One panel per
+// http server whose config has auth.type === "oauth". Connect/Reconnect POST to
+// the connect route to derive the authorization URL server-side, then navigate
+// the browser to it (the OAuth redirect flow leaves the SPA to hit the
+// authorization server and returns via the callback route); Disconnect + status
+// are same-origin fetches. Status is best-effort — unknown ⇒ just show "Connect".
+type OAuthStatus = "connected" | "expired";
+
+// Tolerant read of the status route so the UI survives whatever exact shape the
+// oauth routes expose (they may not exist yet): a bare "connected"/"expired"
+// string per server, or a { connected, expired } object. Anything unrecognized
+// is omitted, which the panels render as "Connect".
+function normalizeOAuthStatus(raw: unknown): Record<string, OAuthStatus> {
+  const src = (raw as { servers?: Record<string, unknown> } | null)?.servers;
+  if (!src || typeof src !== "object") return {};
+  const out: Record<string, OAuthStatus> = {};
+  for (const [server, v] of Object.entries(src)) {
+    if (v === "connected" || v === "expired") out[server] = v;
+    else if (v && typeof v === "object") {
+      const o = v as { connected?: boolean; expired?: boolean };
+      if (o.expired) out[server] = "expired";
+      else if (o.connected) out[server] = "connected";
+    }
+  }
+  return out;
+}
+
+function OAuthConnect({
+  status,
+  busy,
+  onConnect,
+  onDisconnect,
+}: {
+  status?: OAuthStatus;
+  busy: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border p-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-foreground">
+          OAuth connection
+        </span>
+        {status === "connected" && (
+          <Badge variant="secondary" className="text-[10px]">
+            <CheckCircle2Icon />
+            Connected
+          </Badge>
+        )}
+        {status === "expired" && (
+          <Badge variant="destructive" className="text-[10px]">
+            <TriangleAlertIcon />
+            Expired
+          </Badge>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {status ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onConnect}
+                disabled={busy}
+              >
+                <RotateCwIcon />
+                Reconnect
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-destructive"
+                onClick={onDisconnect}
+                disabled={busy}
+              >
+                {busy ? <Spinner /> : <Link2OffIcon />}
+                Disconnect
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onConnect}
+              disabled={busy}
+            >
+              <LinkIcon />
+              Connect
+            </Button>
+          )}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {status
+          ? "Telar owns this server's login and injects the token for every execution account — no header needed."
+          : "Connect once; Telar manages the OAuth login and injects the token for every account and session."}
+      </p>
+    </div>
+  );
+}
+
 export function McpSettings({ name }: { name: string }) {
   const [servers, setServers] = useState<Server[] | null>(null);
   const [origServers, setOrigServers] = useState<McpServersJson>({});
@@ -419,6 +546,15 @@ export function McpSettings({ name }: { name: string }) {
   const [conflict, setConflict] = useState(false);
   const [saved, setSaved] = useState(false);
   const [busyToken, setBusyToken] = useState<number | null>(null);
+
+  const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>(
+    {},
+  );
+  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
+  const [oauthNotice, setOauthNotice] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -458,6 +594,51 @@ export function McpSettings({ name }: { name: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Best-effort OAuth connection status per server. A missing/!ok route (the
+  // oauth routes may not be up yet) leaves the map empty → panels show "Connect".
+  const loadOAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/mcp/oauth/status?project=${encodeURIComponent(name)}`,
+      );
+      if (!res.ok) return;
+      setOauthStatus(normalizeOAuthStatus(await res.json()));
+    } catch {
+      // status unknown — panels fall back to "Connect"
+    }
+  }, [name]);
+
+  useEffect(() => {
+    void loadOAuthStatus();
+  }, [loadOAuthStatus]);
+
+  // The callback route redirects back here with ?mcpConnected=<server> on
+  // success or ?mcpOAuthError=<message> on failure (the message already names
+  // the server). Surface it inline, then scrub the query so a refresh doesn't
+  // replay it. On success, re-pull status so the pill flips live.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("mcpConnected");
+    const error = params.get("mcpOAuthError");
+    if (!connected && !error) return;
+    setOauthNotice(
+      error
+        ? { kind: "error", text: error }
+        : {
+            kind: "success",
+            text: connected ? `Connected ${connected}.` : "MCP server connected.",
+          },
+    );
+    for (const k of ["mcpConnected", "mcpOAuthError"]) params.delete(k);
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
+    );
+    if (connected) void loadOAuthStatus();
+  }, [loadOAuthStatus]);
 
   const refreshTokens = useCallback(async () => {
     try {
@@ -558,6 +739,60 @@ export function McpSettings({ name }: { name: string }) {
     }
   };
 
+  // Start the browser OAuth flow: POST to derive the authorization URL entirely
+  // server-side (the connect route only accepts POST), then navigate the browser
+  // to it. On success we leave the SPA and return via the callback route; only
+  // failures come back here to surface as a notice.
+  const connect = async (server: string) => {
+    setOauthBusy(server);
+    setOauthNotice(null);
+    try {
+      const res = await fetch("/api/mcp/oauth/connect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: name, server }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.url) {
+        throw new Error(
+          data.error ?? `Couldn't start OAuth connect (${res.status}).`,
+        );
+      }
+      window.location.href = data.url;
+    } catch (e) {
+      setOauthNotice({
+        kind: "error",
+        text: e instanceof Error ? e.message : String(e),
+      });
+      setOauthBusy(null);
+    }
+  };
+
+  const disconnect = async (server: string) => {
+    if (
+      !window.confirm(
+        `Disconnect OAuth for "${server}"? Telar forgets the stored token immediately; you can reconnect anytime.`,
+      )
+    )
+      return;
+    setOauthBusy(server);
+    try {
+      await fetch("/api/mcp/oauth/disconnect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: name, server }),
+      });
+      await loadOAuthStatus();
+    } catch {
+      // best-effort — loadOAuthStatus reflects the true persisted state
+    } finally {
+      setOauthBusy(null);
+    }
+  };
+
   const save = async () => {
     if (!servers) return;
     setSaving(true);
@@ -631,6 +866,43 @@ export function McpSettings({ name }: { name: string }) {
             </AlertDescription>
           </Alert>
         )}
+        {oauthNotice &&
+          (oauthNotice.kind === "error" ? (
+            <Alert variant="destructive">
+              <TriangleAlertIcon />
+              <AlertTitle>OAuth connection failed</AlertTitle>
+              <AlertDescription className="font-mono text-xs break-words">
+                {oauthNotice.text}
+              </AlertDescription>
+              <AlertAction>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setOauthNotice(null)}
+                  aria-label="Dismiss"
+                >
+                  <XIcon />
+                </Button>
+              </AlertAction>
+            </Alert>
+          ) : (
+            <Alert>
+              <CheckCircle2Icon />
+              <AlertTitle>{oauthNotice.text}</AlertTitle>
+              <AlertAction>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setOauthNotice(null)}
+                  aria-label="Dismiss"
+                >
+                  <XIcon />
+                </Button>
+              </AlertAction>
+            </Alert>
+          ))}
 
         {servers === null ? (
           loadError ? (
@@ -753,6 +1025,16 @@ export function McpSettings({ name }: { name: string }) {
                     />
                   </Field>
                 )}
+
+                {server.transport === "http" &&
+                  server.auth?.type === "oauth" && (
+                    <OAuthConnect
+                      status={oauthStatus[server.key]}
+                      busy={oauthBusy === server.key}
+                      onConnect={() => void connect(server.key)}
+                      onDisconnect={() => void disconnect(server.key)}
+                    />
+                  )}
 
                 <Field
                   label={server.transport === "http" ? "Headers" : "Environment"}
