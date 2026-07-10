@@ -13,6 +13,7 @@
 import { createSdkMcpServer, tool, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import {
+  addWatch,
   cancelLoom,
   ContractAssertion,
   createDraftLoom,
@@ -29,6 +30,7 @@ import {
   startLoomFromBundle,
   steerLoom,
   updateDraftObjectiveFromBundle,
+  WorkUnitState,
   writeBundleFile,
   writeContract,
 } from "@telar/core";
@@ -50,6 +52,9 @@ export const LOOM_AUTO_TOOLS = [
   "mcp__loom__reject_loom",
   "mcp__loom__resume_loom",
   "mcp__loom__cancel_loom",
+  // Registering a background watch is inert (it spends nothing and returns
+  // immediately — docs/watchers-design.md §5), so it must never spam a card.
+  "mcp__loom__watch_loom",
 ] as const;
 
 // The commit tool — deliberately NEVER added to `allowedTools` and hard-routed
@@ -282,6 +287,43 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           try {
             const cancelled = cancelLoom(id);
             return okResult(JSON.stringify({ loomId: id, cancelled }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      // Register a BACKGROUND watch (docs/watchers-design.md §5). Inert and
+      // non-blocking: it persists a Watch record and returns AT ONCE — the
+      // reaction arrives later as a new turn, it never awaits a loom event.
+      // `sessionId` is server-derived via opts.getSessionId(), NEVER from input.
+      tool(
+        "watch_loom",
+        "Register a background watch on a loom: when it transitions into a trigger state (needs-review / blocked / failed / done / ready by default), this session is alerted and reacts in-conversation. Returns IMMEDIATELY — it does NOT block the turn on any loom event. Defaults to this session's linked loom when loomId is omitted.",
+        { loomId: z.string().optional(), triggerStates: z.array(WorkUnitState).optional() },
+        async ({ loomId, triggerStates }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to watch a specific loom.");
+          // sessionId is server-derived; a not-yet-persisted session has no id
+          // to own the watch, so bail rather than write an orphaned record.
+          const sessionId = opts.getSessionId();
+          if (!sessionId) {
+            return errResult(
+              "This session isn't persisted yet — send a message so it gets an id, then register the watch.",
+            );
+          }
+          try {
+            const watch = addWatch({
+              loomId: id,
+              sessionId,
+              triggerStates,
+            });
+            return okResult(
+              JSON.stringify(
+                { watchId: watch.id, loomId: watch.loomId, triggerStates: watch.triggerStates },
+                null,
+                2,
+              ),
+            );
           } catch (e) {
             return errResult(e instanceof Error ? e.message : String(e));
           }

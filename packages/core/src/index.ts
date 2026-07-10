@@ -5,6 +5,7 @@ export * from "./mcp";
 export * from "./accounts";
 export * from "./engine";
 export * from "./manifest";
+export * from "./watches";
 export * from "./gates";
 export * from "./run-server";
 export * from "./looms";
