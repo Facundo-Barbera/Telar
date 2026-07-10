@@ -34,7 +34,7 @@ state is recoverable and legible.
 - [x] `reDispatch` never strands a loom in `queued` — setup failures land in `failed` with the reason
 - [x] Report is concise + markdown-rendered + roomier transcript
 - [x] **Guard project config (#44)** — self-healing manifest cache: a wiped `telar.yaml` restores from the registry's last-good copy instead of bricking the project (malformed still errors)
-- [ ] **Boot / crash recovery** — reconcile looms stuck mid-flight after a restart; unstick stranded Threads _(P5)_
+- [x] **Boot / crash recovery (P5)** — `reconcileStuckLooms()` runs on server boot and marks in-flight-but-runnerless looms `failed`/resumable (no more hand-unsticking)
 - [ ] **Validate the repair leg live** — prove builder → verify → repair → pass on a real task
 
 ## Phase B — Drive looms from where you work
@@ -45,7 +45,7 @@ are agent-drivable on any loom on request; **accept stays a human click**. Watch
 are a true background process — you keep chatting; it reacts when state changes.)_
 
 - [x] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools, auto-run, default to the linked loom (moat: no `accept_loom`)
-- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat _(needs design; likely rides Phase C)_
+- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat. **Designed → [`watchers-design.md`](./watchers-design.md)** (v1 client-driven, ships now; v2 rides Phase C for tab-closed)
 - [ ] **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends; easier to track, harder to clobber
 
 ## Phase C — Durable execution (out-of-process)
@@ -81,6 +81,7 @@ The moat is only real if it's demonstrated on live features.
 
 ---
 
-_Last frontier update: Phase A down to boot-recovery + a live repair-leg proof;
-Phase B.1 steering tools shipped — next is the **watcher/background-process design**
-(likely paired with Phase C's out-of-process runner)._
+_Last frontier update: Phase A down to just a live repair-leg proof; Phase B.1
+steering + P5 boot-recovery shipped, watcher design drafted. Next fork: build the
+**v1 watcher** now (tab-open-only) or pull **Phase C** forward so watchers ship
+tab-closed-capable._
