@@ -229,6 +229,10 @@ export const ModelPolicy = z.object({
   fast: z.string().default("haiku"),
   dev: z.string().default("sonnet"),
   careful: z.string().default("opus"),
+  // Optional per-build turn cap override. Absent → the per-kind MAX_TURNS
+  // defaults apply. Set high (e.g. 400) in ~/.telar/policy.json to effectively
+  // lift the ceiling for early testing without losing the rail entirely.
+  maxTurns: z.number().int().positive().optional(),
 });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;
 

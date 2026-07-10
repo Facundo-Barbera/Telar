@@ -538,7 +538,7 @@ export async function executeLoom(
   const policy = opts.policy ?? ModelPolicy.parse({});
   // Clamp: <= 0 would skip the loop and resolve a still-"queued" loom.
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
-  const maxTurns = MAX_TURNS[loom.kind];
+  const maxTurns = policy.maxTurns ?? MAX_TURNS[loom.kind];
   const tools = BASE_TOOLS.filter((t) => !manifest.guardrails.disallowedTools.includes(t));
 
   const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
