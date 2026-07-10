@@ -14,7 +14,7 @@ import {
   type Provenance,
 } from "./schemas";
 import { getProject, telarDir } from "./manifest";
-import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type LoomKind } from "./looms";
+import { createLoom, saveLoom, appendEvent, getLoom, listLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
@@ -594,6 +594,55 @@ export function resumeLoom(id: string, deps: DispatcherDeps): Loom {
 }
 
 export const activeLoomIds = (): string[] => [...active.keys()];
+
+// The in-flight states — a loom in one of these is mid-run and expects a live
+// runner in `active`. Distinct from the paused/awaiting states (charter-review,
+// ready, blocked, needs-review — no runner by design) and the TERMINAL_STATES
+// above (done, halted, failed, skipped — finished).
+const IN_FLIGHT_STATES: ReadonlySet<Loom["state"]> = new Set([
+  "queued",
+  "scoping",
+  "preparing",
+  "running",
+  "verifying",
+]);
+
+const RESTART_ERROR =
+  "Interrupted by a server restart — resume to pick it back up (no work was lost that a re-run can't reproduce).";
+
+// BOOT RECONCILIATION. The `active` map lives ONLY in this process's memory: a
+// code edit hot-reloads the web server, killing every in-flight runner and
+// wiping `active`, which strands each of those looms on disk in an in-flight
+// state with no runner and no path forward. Called once at boot, this marks
+// each genuinely-stranded loom `failed` with a human-readable reason so the
+// AcceptancePanel offers "resume" (resume is valid from `failed`). A loom is
+// STUCK only if its state is in-flight AND its id is NOT in activeLoomIds()
+// (no live runner in THIS process) — paused/awaiting and terminal looms are
+// left untouched. We do NOT auto-re-dispatch: a restart is usually a code
+// change that would immediately re-kill them, and a mass re-dispatch would
+// stampede the budget — leave them resumable. Each loom's writes are wrapped so
+// one failure never aborts the whole sweep. Returns the reconciled list (for
+// logging).
+export function reconcileStuckLooms(): { id: string; from: string }[] {
+  const live = new Set(activeLoomIds());
+  const reconciled: { id: string; from: string }[] = [];
+  for (const loom of listLooms()) {
+    if (!IN_FLIGHT_STATES.has(loom.state) || live.has(loom.id)) continue;
+    const from = loom.state;
+    try {
+      loom.state = "failed";
+      if (!loom.error) loom.error = RESTART_ERROR;
+      if ("updatedAt" in loom) loom.updatedAt = Date.now();
+      appendEvent(loom.id, { type: "error", message: loom.error });
+      appendEvent(loom.id, { type: "state", state: "failed" });
+      saveLoom(loom);
+      reconciled.push({ id: loom.id, from });
+    } catch {
+      // One loom's failed write must never abort the sweep.
+    }
+  }
+  return reconciled;
+}
 
 export function loadPolicy(): ModelPolicy {
   try {
