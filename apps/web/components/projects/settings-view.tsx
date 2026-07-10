@@ -42,6 +42,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { SettingsPermissions } from "@/components/projects/settings-permissions";
 import { SettingsDanger } from "@/components/projects/settings-danger";
+import { McpSettings } from "@/components/settings/mcp-settings";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -710,6 +711,10 @@ export function ProjectSettings({ name }: { name: string }) {
               </p>
             </SectionCard>
           )}
+
+          {/* MCP servers — manifest-backed, but self-loading & independent so a
+              broken form above doesn't block token management. */}
+          <McpSettings name={name} />
 
           {/* Permissions — registry-scoped, independent of the manifest. */}
           <SettingsPermissions project={name} />

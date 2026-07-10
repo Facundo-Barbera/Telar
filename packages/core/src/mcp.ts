@@ -7,7 +7,7 @@
 // place MCP tokens are read.
 import type { McpServerConfig as SdkMcpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { getProject } from "./manifest";
-import { readSecret, writeSecret } from "./secrets";
+import { deleteSecret, readSecret, writeSecret } from "./secrets";
 import type { McpValue } from "./schemas";
 
 // MCP tokens live under a distinct namespace so they can never collide with an
@@ -20,6 +20,34 @@ export function setMcpToken(project: string, key: string, token: string): void {
 
 export function getMcpToken(project: string, key: string): string | undefined {
   return readSecret(mcpKey(project, key));
+}
+
+// Forget a stored MCP token. Returns true if one existed and was removed.
+export function clearMcpToken(project: string, key: string): boolean {
+  return deleteSecret(mcpKey(project, key));
+}
+
+// Is a token stored for this secret key? (Never returns the value itself.)
+export function hasMcpToken(project: string, key: string): boolean {
+  return getMcpToken(project, key) !== undefined;
+}
+
+// The distinct secret keys a project's manifest declares across every MCP
+// server's env/headers { secret } refs — the set of tokens the UI must let the
+// user fill. Sorted + deduped; [] when the project declares no mcpServers.
+export function declaredMcpSecretKeys(project: string): string[] {
+  const servers = getProject(project).manifest.mcpServers;
+  const keys = new Set<string>();
+  const scan = (rec: Record<string, McpValue> | undefined) => {
+    for (const v of Object.values(rec ?? {})) {
+      if (typeof v !== "string") keys.add(v.secret);
+    }
+  };
+  for (const cfg of Object.values(servers)) {
+    if (cfg.transport === "stdio") scan(cfg.env);
+    else scan(cfg.headers);
+  }
+  return [...keys].sort();
 }
 
 // One warning per missing token key (per process) — a server with a missing

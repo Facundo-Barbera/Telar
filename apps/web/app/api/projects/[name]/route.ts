@@ -80,6 +80,7 @@ export async function PATCH(
     ...(body.baseBranch != null ? { baseBranch: body.baseBranch } : {}),
     ...(body.adapter != null ? { adapter: body.adapter } : {}),
     ...(body.gates != null ? { gates: body.gates } : {}),
+    ...(body.mcpServers != null ? { mcpServers: body.mcpServers } : {}),
     ...(body.guardrails != null
       ? { guardrails: { ...rawGuardrails, ...body.guardrails } }
       : {}),

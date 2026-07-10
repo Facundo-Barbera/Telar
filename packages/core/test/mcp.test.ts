@@ -11,7 +11,13 @@ beforeEach(() => {
 });
 
 const { createProject } = await import("../src/manifest");
-const { resolveProjectMcpServers, setMcpToken } = await import("../src/mcp");
+const {
+  resolveProjectMcpServers,
+  setMcpToken,
+  clearMcpToken,
+  hasMcpToken,
+  declaredMcpSecretKeys,
+} = await import("../src/mcp");
 
 // A registered project whose manifest carries stdio + http MCP servers, both
 // authed via { secret } refs plus one literal env value.
@@ -88,5 +94,47 @@ describe("resolveProjectMcpServers", () => {
     createProject(root3, {});
     expect(resolveProjectMcpServers(p3)).toEqual({});
     fs.rmSync(root3, { recursive: true, force: true });
+  });
+});
+
+describe("declaredMcpSecretKeys", () => {
+  test("collects distinct { secret } keys across env + headers, sorted", () => {
+    expect(declaredMcpSecretKeys(project)).toEqual(["gh", "linear"]);
+  });
+
+  test("a project with no mcpServers → []", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-none-"));
+    const p = path.basename(root);
+    createProject(root, {});
+    expect(declaredMcpSecretKeys(p)).toEqual([]);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("literal (non-ref) values contribute no keys", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-lit-"));
+    const p = path.basename(root);
+    createProject(root, {
+      mcpServers: {
+        srv: { transport: "stdio", command: "x", env: { LOG_LEVEL: "debug" } },
+      },
+    });
+    expect(declaredMcpSecretKeys(p)).toEqual([]);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("clearMcpToken / hasMcpToken", () => {
+  test("set → has → clear round-trip", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-clear-"));
+    const p = path.basename(root);
+    createProject(root, {});
+    expect(hasMcpToken(p, "tok")).toBe(false);
+    setMcpToken(p, "tok", "s3cr3t");
+    expect(hasMcpToken(p, "tok")).toBe(true);
+    expect(clearMcpToken(p, "tok")).toBe(true);
+    expect(hasMcpToken(p, "tok")).toBe(false);
+    // Clearing an absent token reports false.
+    expect(clearMcpToken(p, "tok")).toBe(false);
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });
