@@ -194,7 +194,11 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
 
     const charter = await (deps.draftCharterFn ?? draftCharterDefault)(
       { prompt: input.prompt, manifest, proofStrategy: input.proofStrategy },
-      { account: deps.accounts?.[manifest.account], model: deps.policy?.dev },
+      {
+        account: deps.accounts?.[manifest.account],
+        model: deps.policy?.dev,
+        onEvent: (ev) => appendEvent(loom.id, ev),
+      },
     );
 
     const v = validateCharter(charter);
@@ -412,7 +416,11 @@ export async function startLoomFromBundle(
           contract: readContract(loomId).contract,
           manifest,
         },
-        { account: deps.accounts?.[manifest.account], model: (deps.policy ?? loadPolicy()).dev },
+        {
+          account: deps.accounts?.[manifest.account],
+          model: (deps.policy ?? loadPolicy()).dev,
+          onEvent: (ev) => appendEvent(loomId, ev),
+        },
       );
     } catch {
       charter = undefined; // any planner failure -> single-builder fallback

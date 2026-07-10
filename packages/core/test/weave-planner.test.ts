@@ -369,6 +369,36 @@ describe("planWeaveFromBundle (injected fake agent, no live model)", () => {
     expect(captured!.prompt).not.toContain("- ALL:");
   });
 
+  test("forwards the agent's engine events (incl. the cost-bearing result) to deps.onEvent", async () => {
+    const canned = cannedFourNodeCharter();
+    // A fake agent that emits the same engine events agent() does — the
+    // cost-bearing one MUST stay type "result" with a numeric costUsd (the
+    // client sums costUsd across feed "result" events during scoping).
+    const fakeAgent = (async (_promptText: string, opts: any) => {
+      opts.onEvent?.({ type: "text", text: "planning" });
+      opts.onEvent?.({ type: "result", subtype: "success", costUsd: 0.42, turns: 3 });
+      return canned;
+    }) as unknown as typeof import("../src/engine").agent;
+
+    const forwarded: any[] = [];
+    await planWeaveFromBundle(
+      {
+        loomId: "loom_unit_events",
+        objective: "Deliver the four workstreams",
+        bundleFiles: [],
+        contract: { version: 1, assertions: WORKSTREAM_ASSERTIONS },
+        manifest: fakeManifest,
+      },
+      { agent: fakeAgent, onEvent: (e) => forwarded.push(e) },
+    );
+
+    const result = forwarded.find((e) => e.type === "result");
+    expect(result).toBeDefined();
+    expect(typeof result.costUsd).toBe("number");
+    expect(result.costUsd).toBe(0.42);
+    expect(forwarded.some((e) => e.type === "text")).toBe(true);
+  });
+
   test("NEVER throws — a null model result degrades to a minimal non-weaving charter", async () => {
     const fallback = await planWeaveFromBundle(
       {

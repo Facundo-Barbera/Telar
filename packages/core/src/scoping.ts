@@ -1,7 +1,7 @@
 // Phase 0 — Scoping & the Charter (docs/loom-orchestrator.md §5). draftCharter
 // is a READ-ONLY agent() pass — Read/Grep/Glob only, restrictTools enforced —
 // mirroring verifier.ts's read-only guarantee exactly. It never mutates the repo.
-import { agent } from "./engine";
+import { agent, type EngineEvent } from "./engine";
 import {
   Charter as CharterSchema,
   type AccountProfile,
@@ -100,7 +100,15 @@ function findCycle(edges: ReadonlyArray<readonly [string, string[]]>): string[] 
 
 // Injectable so tests never invoke a live model — see verifier.ts for the
 // same pattern (VerifyOpts.account/model).
-export type DraftCharterDeps = { agent?: typeof agent; account?: AccountProfile; model?: string };
+export type DraftCharterDeps = {
+  agent?: typeof agent;
+  account?: AccountProfile;
+  model?: string;
+  // Forwarded into agent() so the scoping run's engine events (text/tool/
+  // tool-result and the {type:"result",costUsd} event) reach the loom stream —
+  // without it the god-view sees nothing during scoping and cost stays $0.
+  onEvent?: (e: EngineEvent) => void;
+};
 
 const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
 
@@ -155,6 +163,7 @@ Rules:
     settingSources: [],
     account: deps.account,
     model: deps.model,
+    onEvent: deps.onEvent,
   });
 
   if (!charter) {
@@ -275,6 +284,7 @@ Rules:
     settingSources: [],
     account: deps.account,
     model: deps.model,
+    onEvent: deps.onEvent,
   });
 
   if (!charter) {
