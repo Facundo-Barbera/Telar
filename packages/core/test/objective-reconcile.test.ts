@@ -29,6 +29,18 @@ const fakeRunLoom = async (l: any) => {
   return l;
 };
 
+// startLoomFromBundle now runs the AI weave-planner before dispatch; inject a
+// fake that returns a NON-weaving charter so these gate tests stay on the
+// single-builder path (and never touch a live model).
+const fakePlanNonWoven = (async () => ({
+  objective: "x",
+  proofStrategy: "verifier-criteria",
+  scope: { allowedPaths: [], forbiddenPaths: [] },
+  budget: { maxParallelThreads: 3, maxAgents: 12, maxCriticAgents: 3 },
+  decomposition: [],
+  version: 1,
+})) as any;
+
 describe("updateDraftObjectiveFromBundle", () => {
   test("overwrites the provisional seed prompt/title from objective.md", () => {
     const manifest = makeProject("reconcile-basic");
@@ -134,6 +146,7 @@ describe("startLoomFromBundle objective gate", () => {
     );
     const started = await startLoomFromBundle(loom.id, "alice", {
       accounts: {},
+      planWeaveFn: fakePlanNonWoven,
       runLoomFn: fakeRunLoom as any,
     });
     expect(started.draft).toBe(false);
@@ -145,6 +158,7 @@ describe("startLoomFromBundle objective gate", () => {
     const loom = bundleWithObjective("gate-short", "Add a dark-mode toggle to the settings page.");
     const started = await startLoomFromBundle(loom.id, "alice", {
       accounts: {},
+      planWeaveFn: fakePlanNonWoven,
       runLoomFn: fakeRunLoom as any,
     });
     expect(started.draft).toBe(false);

@@ -27,6 +27,26 @@ function makeProject(name: string) {
   return createProject(root, { name });
 }
 
+// startLoomFromBundle now runs the AI weave-planner before dispatch, so the
+// dispatch is deferred behind an await. Every test injects a fake planWeaveFn
+// (no live model) that returns a NON-weaving charter, so behavior stays on the
+// single-builder path these tests already exercised.
+const fakePlanNonWoven = (async () => ({
+  objective: "x",
+  proofStrategy: "verifier-criteria",
+  scope: { allowedPaths: [], forbiddenPaths: [] },
+  budget: { maxParallelThreads: 3, maxAgents: 12, maxCriticAgents: 3 },
+  decomposition: [],
+  version: 1,
+})) as any;
+
+async function waitFor(pred: () => boolean, ms = 2000): Promise<void> {
+  const start = Date.now();
+  while (!pred() && Date.now() - start < ms) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe("createDraftLoom", () => {
   test("yields a draft loom that is queued, not dispatched, and unlisted", () => {
     const manifest = makeProject("draft-basic");
@@ -112,7 +132,13 @@ describe("startLoomFromBundle", () => {
       return l;
     };
 
-    const started = await startLoomFromBundle(loom.id, "alice", { accounts: {}, runLoomFn: fakeRunLoom as any });
+    const started = await startLoomFromBundle(loom.id, "alice", {
+      accounts: {},
+      planWeaveFn: fakePlanNonWoven,
+      runLoomFn: fakeRunLoom as any,
+    });
+    // Dispatch is deferred behind the (fake) weave-planner — wait for it.
+    await waitFor(() => calls === 1);
 
     expect(started.draft).toBe(false);
     expect(calls).toBe(1);
@@ -152,7 +178,11 @@ describe("startLoomFromBundle", () => {
       return l;
     };
 
-    const started = await startLoomFromBundle(loom.id, "alice", { accounts: {}, runLoomFn: fakeRunLoom as any });
+    const started = await startLoomFromBundle(loom.id, "alice", {
+      accounts: {},
+      planWeaveFn: fakePlanNonWoven,
+      runLoomFn: fakeRunLoom as any,
+    });
     expect(started.draft).toBe(false);
 
     // Simulate a second process that read loom.json before the winner's
@@ -162,7 +192,11 @@ describe("startLoomFromBundle", () => {
     saveLoom(stale);
 
     await expect(
-      startLoomFromBundle(loom.id, "bob", { accounts: {}, runLoomFn: fakeRunLoom as any }),
+      startLoomFromBundle(loom.id, "bob", {
+        accounts: {},
+        planWeaveFn: fakePlanNonWoven,
+        runLoomFn: fakeRunLoom as any,
+      }),
     ).rejects.toThrow(/concurrent start/);
   });
 });

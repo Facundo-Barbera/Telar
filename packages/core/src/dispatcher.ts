@@ -17,8 +17,9 @@ import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
-import { draftCharter as draftCharterDefault, needsScoping, validateCharter } from "./scoping";
-import { appendSteering, readBundleFile, readContract, writeProvenance } from "./bundle";
+import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
+import { appendSteering, readBundleFile, readContract, snapshotBundle, writeProvenance } from "./bundle";
+import { wireChildBundle } from "./weave-contracts";
 
 export type StartLoomInput = {
   project: string;
@@ -36,6 +37,7 @@ export type DispatcherDeps = {
   policy?: ModelPolicy;
   // Injectors — tests swap these for fakes so no live agent/model runs.
   draftCharterFn?: typeof draftCharterDefault;
+  planWeaveFn?: typeof planWeaveFromBundle;
   runLoomFn?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<Loom>;
 };
 
@@ -65,6 +67,10 @@ function makeOnFailure(loom: Loom): (err: unknown) => void {
 function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDeps, abort: AbortController): Promise<Loom> {
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
+  // The root's full Verification Contract — wireChildBundle filters it down to
+  // each Thread's own subGoalId slice. Null (a non-bundle woven root) yields
+  // an empty slice, so children fall back to their SubGoal acceptanceCriteria.
+  const rootAssertions = readContract(loom.id).contract?.assertions ?? [];
   return runWeave(loom, decomposition, {
     spawnChild: (sg) => {
       const child = createLoom({
@@ -76,12 +82,14 @@ function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherD
         parentLoomId: loom.id,
         subGoalId: sg.id,
       });
-      child.acceptanceCriteria = sg.acceptanceCriteria;
+      // Give the Thread its OWN Spec Bundle: root context files copied in,
+      // objective narrowed to the SubGoal, contract filtered to its slice.
+      wireChildBundle(loom.id, child, sg, rootAssertions);
       saveLoom(child);
       return child;
     },
     runChild: (child) =>
-      executeLoom(child, manifest, {
+      (deps.runLoomFn ?? executeLoom)(child, manifest, {
         policy,
         accounts: deps.accounts,
         abort,
@@ -380,7 +388,48 @@ export async function startLoomFromBundle(
   active.set(loom.id, abort);
   const onFailure = makeOnFailure(loom);
 
-  dispatchExecution(loom, manifest, deps, abort, { maxAttempts: opts?.maxAttempts })
+  // AUTO-WEAVE (docs/loom-model.md §5/§W): the human already approved this
+  // bundle at the provenance point, so there is NO charter-review gate. An AI
+  // planner reads the (frozen) Spec Bundle and MAY emit a decomposition; if it
+  // does, we assign the charter and dispatchExecution fans the work across
+  // Threads. The planner degrades to today's single-builder path on ANY
+  // failure — a throw, a null/invalid charter, or a non-weaving one — so it can
+  // never reject an already-started loom. Fire-and-forget with the same
+  // persistence guard the other dispatch chains use; the synchronous `return
+  // loom` below is unchanged.
+  loom.state = "scoping";
+  appendEvent(loomId, { type: "state", state: "scoping" });
+  saveLoom(loom);
+
+  (async () => {
+    let charter: Charter | undefined;
+    try {
+      charter = await (deps.planWeaveFn ?? planWeaveFromBundle)(
+        {
+          loomId,
+          objective: loom.prompt,
+          bundleFiles: snapshotBundle(loomId).files,
+          contract: readContract(loomId).contract,
+          manifest,
+        },
+        { account: deps.accounts?.[manifest.account], model: (deps.policy ?? loadPolicy()).dev },
+      );
+    } catch {
+      charter = undefined; // any planner failure -> single-builder fallback
+    }
+
+    if (charter) {
+      const v = validateCharter(charter);
+      if (v.ok && isWoven(charter)) {
+        charter.approvedBy = "auto:weave-planner";
+        loom.charter = charter;
+        saveLoom(loom);
+        appendEvent(loomId, { type: "charter-approved", by: "auto:weave-planner" });
+      }
+    }
+
+    return dispatchExecution(loom, manifest, deps, abort, { maxAttempts: opts?.maxAttempts });
+  })()
     .catch(onFailure)
     .finally(() => active.delete(loom.id));
 

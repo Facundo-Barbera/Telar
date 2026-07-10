@@ -20,6 +20,7 @@ export * from "./budget";
 export type { ThreadView, LedgerView, Decision as OrchestratorDecision } from "./tick";
 export { readySubGoals, validateDecision, tick, EST_COST_PER_AGENT } from "./tick";
 export * from "./weave";
+export * from "./weave-contracts";
 export * from "./scoping";
 export * from "./proof-templates";
 export * from "./dispatcher";
