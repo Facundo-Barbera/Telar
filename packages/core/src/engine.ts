@@ -174,6 +174,12 @@ export async function agent<S extends z.ZodRawShape>(
           ? { tools: (opts.tools ?? ["Read", "Grep", "Glob"]).filter((t) => !t.startsWith("mcp__")) }
           : {}),
         mcpServers: { out, ...opts.extraMcpServers },
+        // Telar OWNS the MCP surface: only the servers we pass here (emit_result
+        // + the project's telar.yaml servers) are used. Ignore the repo's own
+        // .mcp.json, user settings, and plugin MCP that settingSources would
+        // otherwise pull in — those are the user's local Claude config, not
+        // Telar's, and leak in as confusing duplicate/unauthenticated servers.
+        strictMcpConfig: true,
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
         // Belt-and-suspenders against settingSources: a repo's own .claude
         // settings can widen its own allow rules, but an explicit SDK

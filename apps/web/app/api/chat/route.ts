@@ -885,6 +885,12 @@ export async function POST(req: Request) {
             // their OWN token-injected env/headers — resolved decoupled from
             // accountEnv above, so account-switching can't rotate MCP auth.
             mcpServers: { loom: loomMcpServer, ...(project ? resolveProjectMcpServers(project) : {}) },
+            // Telar OWNS the MCP surface: use ONLY the servers above (loom +
+            // the project's telar.yaml servers). settingSources ["project",
+            // "local"] would otherwise pull in the repo's .mcp.json / the
+            // user's local Claude MCP config — leaking in confusing duplicate,
+            // unauthenticated servers (e.g. a second Supabase). Ignore them.
+            strictMcpConfig: true,
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
             maxTurns: 25,

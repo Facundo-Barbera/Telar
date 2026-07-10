@@ -61,9 +61,16 @@ auth?: {
 };
 ```
 
-When `auth.type === "oauth"`, Telar manages the token itself and **auto-injects**
-`Authorization: Bearer <managed-token>` — the user does NOT hand-wire the header.
-Static `{ secret }` headers remain for non-OAuth servers, unchanged.
+**OAuth is auto-detected, not declared** (this is how VS Code / Cursor / Claude
+Code work). Telar probes an http server (`probeMcpAuth`); a `401` + `WWW-Authenticate`
+(or a resolvable PRM well-known) means it needs OAuth, and the UI surfaces **Connect**
+automatically — no yaml `auth` block and no toggle required. The `auth` block above is
+**optional overrides only**: a manual `clientId` fallback for when DCR/CIMD aren't
+available (tier 3), plus `scopes` / `authorizationServer` pins. Its absence does NOT
+disable OAuth. **Injection is keyed on a stored OAuth record**, not on the block: once
+connected, `resolveProjectMcpServers` auto-injects `Authorization: Bearer <token>`
+(never over an explicit header). Static `{ secret }` headers stay for non-OAuth
+servers, unchanged.
 
 ## 4. Stored OAuth record
 
