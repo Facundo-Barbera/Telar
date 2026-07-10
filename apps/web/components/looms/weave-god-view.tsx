@@ -63,11 +63,11 @@ function summarize(decomposition: SubGoal[], threads: Loom[]) {
   return { total: allIds.length, counts };
 }
 
-export function EpicGodView({ loom, feed }: { loom: Loom; feed: LoomEvent[] }) {
+export function WeaveGodView({ loom, feed }: { loom: Loom; feed: LoomEvent[] }) {
   const [threads, setThreads] = useState<Loom[]>([]);
 
   // listChildLooms does a full listLooms() directory scan, so poll deliberately
-  // coarser than the 400ms events-route poll — and only while the epic is live.
+  // coarser than the 400ms events-route poll — and only while the weave is live.
   useEffect(() => {
     let cancelled = false;
     const fetchThreads = () => {
@@ -118,9 +118,9 @@ export function EpicGodView({ loom, feed }: { loom: Loom; feed: LoomEvent[] }) {
           {total === 0 ? (
             <EmptyState icon={WorkflowIcon} title="No threads spawned yet." />
           ) : (
-            // `children` here is the epic's spawned child Looms (data), not a JSX children slot.
+            // `children` here is the weave's spawned child Looms (data), not a JSX children slot.
             // eslint-disable-next-line react/no-children-prop
-            <ThreadTree decomposition={decomposition} children={threads} epicId={loom.id} />
+            <ThreadTree decomposition={decomposition} children={threads} weaveId={loom.id} />
           )}
         </section>
 

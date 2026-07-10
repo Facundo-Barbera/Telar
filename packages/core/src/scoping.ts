@@ -16,20 +16,18 @@ export function needsScoping(input: { acceptanceCriteria?: string[]; charter?: C
 }
 
 // PURE. Validates a drafted (or hand-authored) Charter against Telar's
-// invariants — most importantly the MOAT GUARD: an epic with zero required
-// subgoals would make rollupEpic vacuously "done" (M7.1 finding). Returns
-// every violation found, not just the first.
+// invariants — most importantly the MOAT GUARD: a woven charter with zero
+// required subgoals would make rollupWeave vacuously "done" (M7.1 finding).
+// Returns every violation found, not just the first.
 export function validateCharter(c: Charter): { ok: boolean; errors: string[] } {
   const errors: string[] = [];
 
   if (!c.objective || !c.objective.trim()) errors.push("objective must be non-empty");
 
-  if (c.shape === "epic") {
-    if (!c.decomposition.length) {
-      errors.push("an epic charter must have a non-empty decomposition");
-    } else if (!c.decomposition.some((sg) => sg.required)) {
+  if (c.decomposition.length) {
+    if (!c.decomposition.some((sg) => sg.required)) {
       errors.push(
-        "an epic charter must have at least one required subgoal (a decomposition with zero required subgoals is vacuously \"done\")",
+        "a woven charter must have at least one required subgoal (a decomposition with zero required subgoals is vacuously \"done\")",
       );
     }
   }
@@ -116,7 +114,8 @@ export async function draftCharter(
   const task = `You are drafting a Telar Charter for the following objective. This is a
 READ-ONLY scoping pass — you may read the repository to understand context, but
 you must NOT write, edit, or run anything. Decide whether this objective is a
-single self-contained "leaf" or must be decomposed into an "epic".
+single self-contained change, or must be decomposed into sub-goals (a weave of
+Threads).
 
 --- Objective ---
 ${input.prompt}
@@ -129,13 +128,13 @@ ${templatesBlock}
 
 ${input.storyMarkdown ? `--- Story ---\n${input.storyMarkdown}\n` : ""}
 Rules:
-- If this objective decomposes naturally, set shape:"epic" and produce a
-  decomposition[] of SubGoals. EACH subgoal must be provable INDEPENDENTLY
-  (its own proofStrategy + acceptanceCriteria), not by inspecting the whole.
-- An epic decomposition MUST include at least one subgoal with required:true —
+- If this objective decomposes naturally, produce a decomposition[] of
+  SubGoals — a non-empty decomposition is what makes this Charter weave
+  Threads. EACH subgoal must be provable INDEPENDENTLY (its own proofStrategy
+  + acceptanceCriteria), not by inspecting the whole.
+- A woven decomposition MUST include at least one subgoal with required:true —
   a decomposition with zero required subgoals is invalid and will be rejected.
-- If it is a single self-contained change, set shape:"leaf" and leave
-  decomposition empty.
+- If it is a single self-contained change, leave decomposition empty.
 - Fill scope (allowedPaths/forbiddenPaths) and budget conservatively.
 - Set proofStrategy to the strategy that will actually prove this done.`;
 
@@ -152,14 +151,13 @@ Rules:
 
   if (!charter) {
     // agent() returns null only if the model never emitted a result — surface
-    // a minimal, invalid leaf charter so validateCharter's caller sees a clear
+    // a minimal, non-weaving charter so validateCharter's caller sees a clear
     // failure rather than a thrown exception from a null-deref downstream.
     return CharterSchema.parse({
       objective: input.prompt,
       proofStrategy: strategy,
       scope: {},
       budget: {},
-      shape: "leaf",
     });
   }
   return charter;

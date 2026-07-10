@@ -12,7 +12,7 @@ describe("decideVerifyLoom", () => {
   });
 
   test("pass on a CHILD verify loom (has parentLoomId) -> done", () => {
-    expect(decideVerifyLoom("pass", { parentLoomId: "epic_1" })).toEqual({ state: "done" });
+    expect(decideVerifyLoom("pass", { parentLoomId: "root_1" })).toEqual({ state: "done" });
   });
 
   test("fail -> needs-review 'verification failed'", () => {

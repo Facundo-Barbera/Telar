@@ -156,8 +156,11 @@ export const ProjectManifest = z.object({
   adapter: z.enum(["plain", "bmad"]).default("plain"),
   account: z.string().default("personal"), // AccountProfile.name — routes billing/limits
   // Human-approval policy for a drafted Charter (docs/loom-orchestrator.md §5).
-  // "auto" never pauses; "human-required-for-epics" pauses only for shape:"epic"
-  // (default — quickfix/leaf stays frictionless); "human-required" always pauses.
+  // "auto" never pauses; "human-required-for-epics" pauses only when the
+  // charter weaves (isWoven — has a decomposition) (default — a non-weaving
+  // charter stays frictionless); "human-required" always pauses.
+  // TODO(P4b): rename "for-epics" policy value — kept as-is here to avoid an
+  // on-disk telar.yaml migration; out of scope for this pass.
   charterPolicy: z
     .enum(["auto", "human-required-for-epics", "human-required"])
     .default("human-required-for-epics"),
@@ -194,6 +197,8 @@ export type ModelPolicy = z.infer<typeof ModelPolicy>;
 // Loom, drafted in Phase 0 scoping. Additive: absent on today's quickfix/
 // story/custom/verify looms, which keep behaving exactly as before.
 
+// TODO(P4b): dissolves when the weave goes dynamic (docs/loom-model.md §W) —
+// the Verification Contract becomes the proof, not an enumerated strategy.
 export const ProofStrategy = z.enum(["quickfix", "bmad-story", "verifier-criteria", "custom"]);
 export type ProofStrategy = z.infer<typeof ProofStrategy>;
 
@@ -232,14 +237,29 @@ export const Charter = z.object({
   proofStrategy: ProofStrategy,
   scope: ScopeBoundary,
   budget: Budget,
-  shape: z.enum(["leaf", "epic"]),
-  decomposition: z.array(SubGoal).default([]), // epic only
+  // No `shape` field (docs/loom-model.md §W) — "epic-ness" is not a type.
+  // Whether a Charter weaves is derived from `decomposition` — see isWoven.
+  decomposition: z.array(SubGoal).default([]), // non-empty iff this charter weaves threads
   version: z.number().default(1),
   approvedBy: z.string().optional(), // "you" | "auto:<policy>"
   scopingSessionId: z.string().optional(), // the drafting session — resumable for takeover
   rationale: z.string().optional(), // structured decomposition reasoning
 });
 export type Charter = z.infer<typeof Charter>;
+
+// PURE. docs/loom-model.md §W — "epic-ness" is derived, never declared: a
+// woven root is anything with a non-empty decomposition. Structurally typed
+// (not `Charter | Loom`) so this has no dependency on looms.ts (avoiding a
+// schemas.ts <-> looms.ts import cycle) — it works on a bare Charter OR on a
+// Loom, whose decomposition (when it weaves) lives at `.charter.decomposition`.
+// A charter that weaves always had a decomposition and one that doesn't never
+// did (validateCharter guarantees it), so this is behavior-identical to the
+// retired `shape === "epic"` check.
+export function isWoven(
+  x?: { decomposition?: SubGoal[]; charter?: { decomposition?: SubGoal[] } } | null,
+): boolean {
+  return (x?.decomposition?.length ?? x?.charter?.decomposition?.length ?? 0) > 0;
+}
 
 // --- Verification Contract (docs/loom-model.md §M.1, §2) — the falsifiable-
 // by-construction proof spec that anchors a Spec Bundle. "Structured" means

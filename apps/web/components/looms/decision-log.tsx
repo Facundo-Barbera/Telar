@@ -77,7 +77,7 @@ function decisionEntry(ev: LoomEvent, key: string): Entry | null {
 
 function eventEntry(ev: LoomEvent, key: string): Entry | null {
   if (ev.type === "decision") return decisionEntry(ev, key);
-  if (ev.type === "epic-child-spawned") {
+  if (ev.type === "weave-child-spawned") {
     const subGoalId = String(ev.subGoalId);
     const childId = String(ev.childId);
     return {
@@ -94,7 +94,7 @@ function eventEntry(ev: LoomEvent, key: string): Entry | null {
       ),
     };
   }
-  if (ev.type === "epic-rollup") {
+  if (ev.type === "weave-rollup") {
     const state = String(ev.state);
     const dot =
       state === "done" ? DOT.primary : state === "failed" ? DOT.destructive : DOT.amber;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fanoutSize, prioritize, type BudgetState } from "../src/budget";
 import { readySubGoals, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";
-import { runEpic } from "../src/epic";
+import { runWeave } from "../src/weave";
 import type { Charter, SubGoal } from "../src/schemas";
 import type { Loom } from "../src/looms";
 
@@ -27,7 +27,6 @@ function charter(decomposition: SubGoal[], budgetOverrides: Partial<Charter["bud
     proofStrategy: "custom",
     scope: { allowedPaths: [], forbiddenPaths: [] },
     budget: { maxParallelThreads: 3, maxAgents: 12, ...budgetOverrides },
-    shape: "epic",
     decomposition,
     version: 1,
   };
@@ -220,18 +219,18 @@ describe("tick (pure scheduler) — scenario table", () => {
   });
 });
 
-// ---- runEpic + tick loop, with fakes (no disk/agents) ----------------------
+// ---- runWeave + tick loop, with fakes (no disk/agents) ----------------------
 
-describe("runEpic wired to the tick loop (fakes)", () => {
-  test("N=5 independent subgoals, maxAgents=2: pool cap holds, peak concurrency <= 2, all 5 run, epic folds to ready (§A)", async () => {
+describe("runWeave wired to the tick loop (fakes)", () => {
+  test("N=5 independent subgoals, maxAgents=2: pool cap holds, peak concurrency <= 2, all 5 run, weave folds to ready (§A)", async () => {
     const decomposition = Array.from({ length: 5 }, (_, i) => subGoal({ id: `s${i + 1}` }));
-    const epic = fakeLoom({ role: "epic", charter: charter(decomposition, { maxAgents: 2 }) });
+    const weave = fakeLoom({ charter: charter(decomposition, { maxAgents: 2 }) });
 
     let concurrent = 0;
     let peak = 0;
     const ran: string[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         concurrent++;
@@ -253,10 +252,10 @@ describe("runEpic wired to the tick loop (fakes)", () => {
 
   test("dependency chain a -> b -> c runs in strict order", async () => {
     const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] }), subGoal({ id: "c", dependsOn: ["b"] })];
-    const epic = fakeLoom({ role: "epic" });
+    const weave = fakeLoom();
     const order: string[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         order.push(child.subGoalId!);
@@ -269,12 +268,12 @@ describe("runEpic wired to the tick loop (fakes)", () => {
     expect(order).toEqual(["a", "b", "c"]);
   });
 
-  test("a required subgoal's failure ends the epic failed/needs-review, and finish-loom is never emitted before all required are done", async () => {
+  test("a required subgoal's failure ends the weave failed/needs-review, and finish-loom is never emitted before all required are done", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
-    const epic = fakeLoom({ role: "epic" });
+    const weave = fakeLoom();
     const decisions: unknown[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         child.state = child.subGoalId === "s2" ? "failed" : "done";
@@ -292,11 +291,11 @@ describe("runEpic wired to the tick loop (fakes)", () => {
 
   test("decision log never contains finish-loom before all required subgoals are done (no tick-vs-tick contradiction)", async () => {
     const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] })];
-    const epic = fakeLoom({ role: "epic" });
+    const weave = fakeLoom();
     const decisions: { action: string }[] = [];
     let aDone = false;
 
-    await runEpic(epic, decomposition, {
+    await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         if (child.subGoalId === "a") aDone = true;
@@ -325,10 +324,10 @@ describe("runEpic wired to the tick loop (fakes)", () => {
 
   test("pool cap is respected even when charter is absent (default maxAgents=12)", async () => {
     const decomposition = Array.from({ length: 3 }, (_, i) => subGoal({ id: `s${i + 1}` }));
-    const epic = fakeLoom({ role: "epic" }); // no charter
+    const weave = fakeLoom(); // no charter
     const spawned: string[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => {
         spawned.push(sg.id);
         return fakeLoom({ subGoalId: sg.id, state: "queued" });
@@ -343,12 +342,12 @@ describe("runEpic wired to the tick loop (fakes)", () => {
     expect(result.state).toBe("ready");
   });
 
-  test("finish-loom while an optional sibling is still running: runEpic doesn't return until that sibling settles (no orphaned in-flight child)", async () => {
+  test("finish-loom while an optional sibling is still running: runWeave doesn't return until that sibling settles (no orphaned in-flight child)", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2", required: false })];
-    const epic = fakeLoom({ role: "epic" });
+    const weave = fakeLoom();
     let s2Settled = false;
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         if (child.subGoalId === "s1") {
@@ -364,18 +363,18 @@ describe("runEpic wired to the tick loop (fakes)", () => {
     });
 
     expect(result.state).toBe("ready");
-    // The bug: runEpic returned while s2's runChild promise was still in
+    // The bug: runWeave returned while s2's runChild promise was still in
     // flight, abandoning it to a detached closure. The fix drains `running`
-    // before rollup, so by the time runEpic resolves, s2 must have settled.
+    // before rollup, so by the time runWeave resolves, s2 must have settled.
     expect(s2Settled).toBe(true);
   });
 
   test("escalate on a required failure still drains a still-running sibling before returning", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
-    const epic = fakeLoom({ role: "epic" });
+    const weave = fakeLoom();
     let s2Settled = false;
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(weave, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         if (child.subGoalId === "s1") {

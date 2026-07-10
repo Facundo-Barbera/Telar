@@ -1,9 +1,9 @@
-// The concurrency/spend budget for an orchestrator's control loop
+// The concurrency/spend budget for the weaver's control loop
 // (docs/loom-orchestrator.md §7). PURE — no I/O, no Date.now: callers pass
 // `now`/state in. This is the shared agent pool that fanoutSize/tick/
 // validateDecision gate concurrency against via Charter.budget.maxAgents.
 // NOTE: Charter.budget.maxParallelThreads (schemas.ts) is not read anywhere
-// in this module or tick.ts/epic.ts — maxAgents is the only axis actually
+// in this module or tick.ts/weave.ts — maxAgents is the only axis actually
 // enforced today.
 import type { SubGoal } from "./schemas";
 

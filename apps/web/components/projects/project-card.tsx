@@ -216,7 +216,7 @@ export function ProjectCard({
             }
           >
             <PlayIcon />
-            New loom
+            New loom session
           </Button>
         </div>
         <span className="font-mono text-[10px] text-muted-foreground/60">

@@ -44,7 +44,6 @@ function charter(overrides: Partial<Charter> = {}): Charter {
     proofStrategy: "custom",
     scope: { allowedPaths: [], forbiddenPaths: [] },
     budget: { maxParallelThreads: 3, maxAgents: 12 },
-    shape: "leaf",
     decomposition: [],
     version: 1,
     ...overrides,
@@ -78,9 +77,8 @@ describe("needsScoping (pure)", () => {
 });
 
 describe("validateCharter (pure)", () => {
-  test("epic with zero required subgoals -> ok:false (the MOAT GUARD)", () => {
+  test("a woven charter with zero required subgoals -> ok:false (the MOAT GUARD)", () => {
     const c = charter({
-      shape: "epic",
       decomposition: [subGoal({ id: "s1", required: false }), subGoal({ id: "s2", required: false })],
     });
     const r = validateCharter(c);
@@ -90,7 +88,6 @@ describe("validateCharter (pure)", () => {
 
   test("duplicate subgoal ids -> error", () => {
     const c = charter({
-      shape: "epic",
       decomposition: [subGoal({ id: "s1" }), subGoal({ id: "s1" })],
     });
     const r = validateCharter(c);
@@ -100,7 +97,6 @@ describe("validateCharter (pure)", () => {
 
   test("dependsOn referencing a missing subgoal id -> error", () => {
     const c = charter({
-      shape: "epic",
       decomposition: [subGoal({ id: "s1", dependsOn: ["nope"] })],
     });
     const r = validateCharter(c);
@@ -110,7 +106,6 @@ describe("validateCharter (pure)", () => {
 
   test("a dependency cycle -> error", () => {
     const c = charter({
-      shape: "epic",
       decomposition: [
         subGoal({ id: "s1", dependsOn: ["s2"] }),
         subGoal({ id: "s2", dependsOn: ["s1"] }),
@@ -121,9 +116,8 @@ describe("validateCharter (pure)", () => {
     expect(r.errors.some((e) => /cycle/i.test(e))).toBe(true);
   });
 
-  test("a valid epic (>=1 required, unique ids, acyclic deps) -> ok:true", () => {
+  test("a valid woven charter (>=1 required, unique ids, acyclic deps) -> ok:true", () => {
     const c = charter({
-      shape: "epic",
       decomposition: [
         subGoal({ id: "s1", required: true }),
         subGoal({ id: "s2", required: false, dependsOn: ["s1"] }),
@@ -133,8 +127,8 @@ describe("validateCharter (pure)", () => {
     expect(r).toEqual({ ok: true, errors: [] });
   });
 
-  test("a valid leaf with empty decomposition -> ok:true", () => {
-    const c = charter({ shape: "leaf", decomposition: [] });
+  test("a valid non-weaving charter with empty decomposition -> ok:true", () => {
+    const c = charter({ decomposition: [] });
     expect(validateCharter(c)).toEqual({ ok: true, errors: [] });
   });
 
@@ -149,7 +143,6 @@ describe("validateCharter (pure)", () => {
 describe("draftCharter (injected fake agent, no live model)", () => {
   test("returns the canned charter, calls the agent read-only, and includes proof-template guidance", async () => {
     const canned = charter({
-      shape: "epic",
       proofStrategy: "bmad-story",
       decomposition: [subGoal({ id: "s1", required: true, proofStrategy: "bmad-story" })],
     });
@@ -214,10 +207,9 @@ describe("approveCharter (real TELAR_HOME, fake execution)", () => {
       title: "t",
       prompt: "do it",
       account: manifest.account,
-      role: "leaf",
     });
     loom.state = "charter-review";
-    loom.charter = charter({ shape: "leaf" });
+    loom.charter = charter({ decomposition: [] });
     saveLoom(loom);
 
     const fakeRunLoom = async (l: any) => {

@@ -97,7 +97,7 @@ export type BundleSnapshot = {
   files: { path: string; contents: string }[];
 };
 
-// The immutable per-tick view (§2) — the orchestrator binds to this, never to
+// The immutable per-tick view (§2) — the weaver binds to this, never to
 // a live directory it could re-read mid-thread.
 export function snapshotBundle(id: string): BundleSnapshot {
   const files = listBundleFiles(id).map((p) => ({ path: p, contents: readBundleFile(id, p) ?? "" }));

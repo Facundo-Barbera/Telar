@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronRightIcon, WorkflowIcon } from "lucide-react";
 import type { Charter } from "@telar/core";
+import { isWoven } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -108,7 +109,7 @@ export function CharterPanel({
                 {charter.proofStrategy}
               </Badge>
               <Badge variant="secondary" className="font-mono text-[10px]">
-                {charter.shape}
+                {isWoven(charter) ? "woven" : "single"}
               </Badge>
             </div>
 

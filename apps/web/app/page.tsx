@@ -327,7 +327,7 @@ export default function DashboardPage() {
         actions={
           <Button render={<Link href="/looms?new=1" />}>
             <PlusIcon />
-            New loom
+            New loom session
           </Button>
         }
       />
@@ -384,7 +384,7 @@ export default function DashboardPage() {
                         render={<Link href="/looms?new=1" />}
                       >
                         <PlusIcon />
-                        New loom
+                        New loom session
                       </Button>
                     }
                   />

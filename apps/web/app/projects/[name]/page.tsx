@@ -691,7 +691,7 @@ export default function ProjectDetailPage({
               render={<Link href={newLoomHref} />}
             >
               <PlayIcon />
-              New loom
+              New loom session
             </Button>
             <Button
               variant="ghost"
@@ -775,7 +775,7 @@ export default function ProjectDetailPage({
                         render={<Link href={newLoomHref} />}
                       >
                         <PlayIcon />
-                        New loom
+                        New loom session
                       </Button>
                     }
                   />
