@@ -90,6 +90,13 @@ export type Loom = {
   // time, or the commit failed (a commit failure is recorded as a
   // "commit-failed" event and NEVER thrown out of accept).
   commit?: string;
+  // docs/loom-model.md §A/§M (P5) — set true when the owner closed this loom
+  // via an AUDITED OVERRIDE instead of a clean accept: it reached `done` from
+  // a state that was NOT independently verified (`needs-review`/`blocked`) or
+  // via an explicit override co-sign, rather than from a green `ready`. The
+  // matching `accepted` event carries `override:true`. Absent/false = a clean
+  // accept of green.
+  acceptedOverride?: boolean;
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
@@ -326,12 +333,21 @@ function recordLanding(loom: Loom, by: string, git: GitRunner): void {
   }
 }
 
-// §A / §M.2 (docs/loom-model.md): the ONLY path "ready" -> "done". A NORMAL
-// accept requires the loom to already be "ready" (verification green). An
-// OVERRIDE accept (opts.override) promotes a non-ready loom (e.g. a red/
-// needs-review loom) but requires opts.cosignedBy — the human co-sign §M.2
-// mandates for accepting anything less than a clean green — never the
-// default accept button.
+// §A / §M.2 (docs/loom-model.md): the ONLY path to "done". There are three
+// ways in, and only the first is a "clean" accept:
+//  1. CLEAN — from `ready` (independently verified green). override:false.
+//  2. OWNER OVERRIDE (P5) — from `needs-review` (verification red/incomplete)
+//     or `blocked` (paused on a prerequisite/decision). The loom was NOT
+//     independently verified, so the owner closing it is a distinct, AUDITED
+//     override: recorded as `accepted {override:true}` + the `acceptedOverride`
+//     flag, never a silent clean accept. The owner's server-derived `by` IS
+//     the §M.2 human touch these states require; a `cosignedBy` may still be
+//     attached but is not demanded from here. auto-detected by state — the
+//     caller need not pass opts.override.
+//  3. EXPLICIT OVERRIDE — from any OTHER non-ready state, still gated behind
+//     an explicit opts.override + opts.cosignedBy co-sign (never the default
+//     accept button).
+// All three LAND the diff and reach `done`; nothing else can.
 export function acceptLoom(
   id: string,
   by: string,
@@ -346,6 +362,7 @@ export function acceptLoom(
   if (loom.state === "done") throw new Error("loom already accepted");
   const git = opts?.git ?? defaultGitRunner;
 
+  // (1) CLEAN accept of green — override:false (no flag, no override on event).
   if (loom.state === "ready") {
     loom.state = "done";
     appendEvent(id, { type: "accepted", by });
@@ -354,11 +371,19 @@ export function acceptLoom(
     return loom;
   }
 
-  if (!opts?.override || !opts.cosignedBy?.trim()) {
+  // (2) OWNER OVERRIDE: needs-review / blocked are directly override-acceptable
+  // by the owner. (3) any other non-ready state still needs an explicit co-sign.
+  const ownerOverride = loom.state === "needs-review" || loom.state === "blocked";
+  if (!ownerOverride && (!opts?.override || !opts.cosignedBy?.trim())) {
     throw new Error("accepting a non-ready loom requires an override co-sign");
   }
+
+  const fromState = loom.state;
   loom.state = "done";
-  appendEvent(id, { type: "accepted", by, override: true, cosignedBy: opts.cosignedBy });
+  loom.acceptedOverride = true; // the audited-override flag (§A/§M)
+  const ev: { type: string } & Record<string, unknown> = { type: "accepted", by, override: true, fromState };
+  if (opts?.cosignedBy?.trim()) ev.cosignedBy = opts.cosignedBy;
+  appendEvent(id, ev);
   recordLanding(loom, by, git); // §A: accept LANDS the work (never throws)
   saveLoom(loom);
   return loom;

@@ -4,10 +4,13 @@ export const dynamic = "force-dynamic";
 
 // Owner-only "close the loom" action (docs/loom-model.md §A) — structurally
 // cannot be told who accepted or forced to override: no body is read at all,
-// only the id route param. Acceptor identity is server-fixed ("you"). A
-// normal accept requires the loom already be "ready"; acceptLoom throws
-// otherwise, which we surface as 400. The override/cosign path (§M.2) is
-// deliberately not exposed here — that's a future explicit-override UI.
+// only the id route param. Acceptor identity is server-fixed ("you").
+// acceptLoom auto-detects the accept KIND from the loom's state: a clean
+// accept from `ready`, or (P5) an AUDITED OVERRIDE from `needs-review`/
+// `blocked` (recorded override:true — the server-derived `by` is the human
+// touch, so no separate cosign UI is needed for those states). Any other
+// non-ready state needs the explicit override+cosign path, which acceptLoom
+// throws for here (surfaced as 400) — that remains a future explicit-override UI.
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },

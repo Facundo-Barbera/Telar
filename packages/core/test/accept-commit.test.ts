@@ -146,10 +146,10 @@ describe("acceptLoom lands the work (§A)", () => {
     expect(events.some((e) => e.type === "commit-failed")).toBe(true);
   });
 
-  test("override accept (non-ready) also lands the work", () => {
+  test("override accept (explicit cosign, `failed`) also lands the work", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "red land", prompt: "x", account: "personal" });
-    loom.state = "needs-review";
+    loom.state = "failed";
     saveLoom(loom);
     const { runner } = scriptedGit({
       "rev-parse --is-inside-work-tree": { status: 0, stdout: "true\n", stderr: "" },
@@ -159,19 +159,44 @@ describe("acceptLoom lands the work (§A)", () => {
 
     const accepted = acceptLoom(loom.id, "alice", { override: true, cosignedBy: "bob", git: runner });
     expect(accepted.state).toBe("done");
+    expect(accepted.acceptedOverride).toBe(true);
     expect(accepted.commit).toBe("deadbeef");
   });
 
-  // §A moat invariant: `done` is reachable ONLY via acceptLoom, and only from
-  // ready (or override+cosign). Landing the work must not weaken that gate.
-  test("a non-ready loom without a co-sign still cannot reach done (no commit attempted)", () => {
+  // P5 (docs/loom-model.md §A/§M): an OWNER OVERRIDE from needs-review still
+  // LANDS the work — no cosign required — recording it as an audited override.
+  test("owner override accept from `needs-review` lands the work (no cosign)", () => {
+    const m = makeProject();
+    const loom = createLoom({ project: m.name, kind: "custom", title: "review land", prompt: "x", account: "personal" });
+    loom.state = "needs-review";
+    saveLoom(loom);
+    const { runner } = scriptedGit({
+      "rev-parse --is-inside-work-tree": { status: 0, stdout: "true\n", stderr: "" },
+      "status --porcelain": { status: 0, stdout: " M a\n", stderr: "" },
+      "rev-parse HEAD": { status: 0, stdout: "cafef00d\n", stderr: "" },
+    });
+
+    const accepted = acceptLoom(loom.id, "alice", { git: runner });
+    expect(accepted.state).toBe("done");
+    expect(accepted.acceptedOverride).toBe(true);
+    expect(accepted.commit).toBe("cafef00d");
+
+    const { events } = readEvents(loom.id);
+    expect(events.some((e) => e.type === "accepted" && e.override === true)).toBe(true);
+    expect(events.some((e) => e.type === "committed" && e.sha === "cafef00d")).toBe(true);
+  });
+
+  // §A moat invariant: `done` is reachable ONLY via acceptLoom, and a truly
+  // abnormal non-ready state (not needs-review/blocked) still needs the
+  // explicit co-sign. Landing the work must not weaken that gate.
+  test("a `failed` loom without a co-sign still cannot reach done (no commit attempted)", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "x", account: "personal" });
-    loom.state = "needs-review";
+    loom.state = "failed";
     saveLoom(loom);
     const { runner, calls } = scriptedGit({});
     expect(() => acceptLoom(loom.id, "alice", { git: runner })).toThrow(/override co-sign/);
-    expect(getLoom(loom.id)!.state).toBe("needs-review");
+    expect(getLoom(loom.id)!.state).toBe("failed");
     expect(calls.length).toBe(0);
   });
 });

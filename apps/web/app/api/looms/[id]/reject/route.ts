@@ -2,9 +2,10 @@ import { getLoom, listAccounts, loadPolicy, rejectLoom } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
-// docs/loom-model.md §A — REJECT sends a verified (`ready`) or paused
-// (`blocked`) loom back to work with feedback; it re-enters the verified loop
-// and never reaches `done`. The rejecter identity (`by`) is bound server-side
+// docs/loom-model.md §A — REJECT sends a verified (`ready`), paused
+// (`blocked`), or (P5) unverified (`needs-review`) loom back to work with
+// feedback; it re-enters the verified loop and never reaches `done`; rejectLoom
+// enforces the state guard. The rejecter identity (`by`) is bound server-side
 // ("you"), NEVER read from the request body — only `feedback` is taken from
 // the caller.
 export async function POST(

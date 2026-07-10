@@ -2,10 +2,11 @@ import { getLoom, listAccounts, loadPolicy, steerLoom } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
-// docs/loom-model.md §A — from `ready` the owner may STEER: add a directive
-// and the loom re-enters the verified loop (never jumps to `done`). The
-// acceptor/steerer identity (`by`) is bound server-side ("you"), NEVER read
-// from the request body — only `directive` is taken from the caller.
+// docs/loom-model.md §A — the owner may STEER from `ready` OR (P5)
+// `needs-review`: add a directive and the loom re-enters the verified loop
+// (never jumps to `done`); steerLoom enforces the state guard. The steerer
+// identity (`by`) is bound server-side ("you"), NEVER read from the request
+// body — only `directive` is taken from the caller.
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },

@@ -105,23 +105,26 @@ describe("acceptLoom (real TELAR_HOME)", () => {
     expect(acceptedEvents[0]!.override).toBeUndefined();
   });
 
-  test("accepting a non-ready loom throws without a co-sign", () => {
+  // A truly abnormal non-ready state (not needs-review/blocked, which the owner
+  // can override directly — see below) still needs the explicit co-sign.
+  test("accepting a `failed` loom throws without an override co-sign", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
-    loom.state = "needs-review";
+    loom.state = "failed";
     saveLoom(loom);
 
     expect(() => acceptLoom(loom.id, "alice")).toThrow(/override co-sign/);
     expect(() => acceptLoom(loom.id, "alice", { override: true })).toThrow(/override co-sign/); // no cosignedBy
-    expect(getLoom(loom.id)!.state).toBe("needs-review");
+    expect(getLoom(loom.id)!.state).toBe("failed");
   });
 
-  test("accepting a non-ready (red) loom succeeds with {override:true, cosignedBy}", () => {
+  test("accepting a `failed` loom succeeds with {override:true, cosignedBy}", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
-    loom.state = "needs-review";
+    loom.state = "failed";
     saveLoom(loom);
 
     const accepted = acceptLoom(loom.id, "alice", { override: true, cosignedBy: "bob" });
     expect(accepted.state).toBe("done");
+    expect(accepted.acceptedOverride).toBe(true);
 
     const { events } = readEvents(loom.id);
     const acceptedEvents = events.filter((e) => e.type === "accepted");
@@ -129,6 +132,30 @@ describe("acceptLoom (real TELAR_HOME)", () => {
     expect(acceptedEvents[0]!.override).toBe(true);
     expect(acceptedEvents[0]!.cosignedBy).toBe("bob");
   });
+
+  // P5 (docs/loom-model.md §A/§M): the owner may close a `needs-review` or
+  // `blocked` loom directly — NOT independently verified, so it is an AUDITED
+  // OVERRIDE (override:true event + acceptedOverride flag), never a clean
+  // accept, and the server-derived `by` is the human touch (no cosign needed).
+  for (const from of ["needs-review", "blocked"] as const) {
+    test(`accept from '${from}' is an audited override: override:true + flag, no cosign, -> done`, () => {
+      const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+      loom.state = from;
+      saveLoom(loom);
+
+      const accepted = acceptLoom(loom.id, "alice"); // no override/cosign opts
+      expect(accepted.state).toBe("done");
+      expect(accepted.acceptedOverride).toBe(true);
+      expect(getLoom(loom.id)!.state).toBe("done");
+
+      const { events } = readEvents(loom.id);
+      const acceptedEvents = events.filter((e) => e.type === "accepted");
+      expect(acceptedEvents.length).toBe(1);
+      expect(acceptedEvents[0]!.by).toBe("alice");
+      expect(acceptedEvents[0]!.override).toBe(true);
+      expect(acceptedEvents[0]!.fromState).toBe(from);
+    });
+  }
 
   test("accepting an already-'done' loom throws", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });

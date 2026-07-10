@@ -71,11 +71,23 @@ describe("steerLoom (§A)", () => {
     expect(readBundleFile(loom.id, "steering.md")).toContain("focus on error handling");
   });
 
-  test("only valid from ready", async () => {
+  test("also valid from needs-review (answer & resume, re-verifies)", async () => {
     const m = makeProject();
-    for (const state of ["running", "queued", "done", "blocked", "needs-review"] as const) {
+    const loom = loomInState(m.name, "needs-review");
+    const f = fakeDeps();
+    const out = await steerLoom(loom.id, "the answer is: use utf-8", "you", f.deps);
+    expect(f.calls).toBe(1); // re-dispatched into the verified loop
+    expect(out.state).not.toBe("done");
+    expect(out.prompt).toContain("the answer is: use utf-8");
+    const { events } = readEvents(loom.id);
+    expect(events.filter((e) => e.type === "steered").length).toBe(1);
+  });
+
+  test("invalid from states other than ready / needs-review", async () => {
+    const m = makeProject();
+    for (const state of ["running", "queued", "done", "blocked"] as const) {
       const loom = loomInState(m.name, state);
-      await expect(steerLoom(loom.id, "d", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready'/);
+      await expect(steerLoom(loom.id, "d", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready' or 'needs-review'/);
       expect(getLoom(loom.id)!.state).toBe(state);
     }
   });
@@ -121,11 +133,23 @@ describe("rejectLoom (§A)", () => {
     expect(out.state).not.toBe("done");
   });
 
+  test("also valid from needs-review (reject unverified work, re-verifies)", async () => {
+    const m = makeProject();
+    const loom = loomInState(m.name, "needs-review");
+    const f = fakeDeps();
+    const out = await rejectLoom(loom.id, "wrong approach, redo it", "you", f.deps);
+    expect(f.calls).toBe(1);
+    expect(out.state).not.toBe("done");
+    expect(out.prompt).toContain("wrong approach, redo it");
+    const { events } = readEvents(loom.id);
+    expect(events.filter((e) => e.type === "rejected").length).toBe(1);
+  });
+
   test("invalid from other states", async () => {
     const m = makeProject();
-    for (const state of ["running", "queued", "done", "needs-review"] as const) {
+    for (const state of ["running", "queued", "done"] as const) {
       const loom = loomInState(m.name, state);
-      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready' or 'blocked'/);
+      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready', 'blocked', or 'needs-review'/);
     }
   });
 

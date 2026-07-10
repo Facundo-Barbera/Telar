@@ -371,19 +371,21 @@ function reDispatch(loom: Loom, deps: DispatcherDeps): void {
     });
 }
 
-// docs/loom-model.md §A — from `ready` the owner may STEER: record a directive
-// and re-dispatch so the loom continues and RE-VERIFIES; it never auto-promotes
-// to `done`. `by` is server-derived (never from the request body). The
-// directive is recorded durably in the bundle steering log AND folded into the
-// loom's prompt so the re-dispatched builder actually acts on it.
+// docs/loom-model.md §A — the owner may STEER: record a directive and
+// re-dispatch so the loom continues and RE-VERIFIES; it never auto-promotes to
+// `done`. Valid from the verified `ready` milestone AND (P5) from
+// `needs-review` — steering an unverified loom re-enters the SAME verified
+// loop, so an owner's "answer & resume" (a directive that answers the review
+// question) needs no new verb. `by` is server-derived (never from the request
+// body). The directive is recorded durably in the bundle steering log AND
+// folded into the loom's prompt so the re-dispatched builder acts on it.
 export async function steerLoom(id: string, directive: string, by: string, deps: DispatcherDeps): Promise<Loom> {
   if (!by?.trim()) throw new Error("steerLoom requires a non-blank `by`");
   if (!directive?.trim()) throw new Error("steerLoom requires a non-empty directive");
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
-  // §A: steering is offered FROM the verified `ready` milestone.
-  if (loom.state !== "ready") {
-    throw new Error(`steer is only valid from 'ready' (loom is '${loom.state}')`);
+  if (loom.state !== "ready" && loom.state !== "needs-review") {
+    throw new Error(`steer is only valid from 'ready' or 'needs-review' (loom is '${loom.state}')`);
   }
 
   appendSteering(id, { kind: "steer", text: directive, by });
@@ -400,17 +402,19 @@ export async function steerLoom(id: string, directive: string, by: string, deps:
   return loom;
 }
 
-// docs/loom-model.md §A — REJECT sends a verified/blocked loom back to work
-// with feedback so it re-enters the verified loop; it never reaches `done`.
-// Valid from `ready` (the owner is unhappy with green work) or `blocked` (a
-// paused loom the owner un-sticks with guidance). `by` is server-derived.
+// docs/loom-model.md §A — REJECT sends a loom back to work with feedback so it
+// re-enters the verified loop; it never reaches `done`. Valid from `ready` (the
+// owner is unhappy with green work), `blocked` (a paused loom the owner
+// un-sticks with guidance), or (P5) `needs-review` (the owner rejects an
+// unverified loom's work outright rather than answering it). `by` is
+// server-derived.
 export async function rejectLoom(id: string, feedback: string, by: string, deps: DispatcherDeps): Promise<Loom> {
   if (!by?.trim()) throw new Error("rejectLoom requires a non-blank `by`");
   if (!feedback?.trim()) throw new Error("rejectLoom requires non-empty feedback");
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
-  if (loom.state !== "ready" && loom.state !== "blocked") {
-    throw new Error(`reject is only valid from 'ready' or 'blocked' (loom is '${loom.state}')`);
+  if (loom.state !== "ready" && loom.state !== "blocked" && loom.state !== "needs-review") {
+    throw new Error(`reject is only valid from 'ready', 'blocked', or 'needs-review' (loom is '${loom.state}')`);
   }
 
   appendSteering(id, { kind: "reject", text: feedback, by });
