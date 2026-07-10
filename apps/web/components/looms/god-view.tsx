@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   CircleCheck,
@@ -68,6 +69,18 @@ function CharterStrip({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void
 
   const hasChips = !!charter && (!!charter.proofStrategy || scopePaths.length > 0 || budgetBits.length > 0);
 
+  // A 4KB objective must not swallow the page: keep it clamped to ~11 lines and
+  // only offer the toggle once the collapsed text actually clips.
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const objectiveRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    const el = objectiveRef.current;
+    if (!el || expanded) return; // measure against the collapsed clamp only
+    setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [objective, expanded]);
+
   return (
     <Card>
       <CardContent className="flex flex-col gap-3">
@@ -98,7 +111,28 @@ function CharterStrip({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void
           </div>
         </div>
 
-        <p className="text-sm leading-relaxed text-foreground/90">{objective}</p>
+        <div className="flex flex-col gap-1.5">
+          <p
+            ref={objectiveRef}
+            className={cn(
+              "text-sm leading-relaxed whitespace-pre-wrap text-foreground/90",
+              expanded ? "max-h-[28rem] overflow-y-auto" : "max-h-[15rem] overflow-hidden",
+            )}
+          >
+            {objective}
+          </p>
+          {overflows && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setExpanded((v) => !v)}
+              className="h-auto self-start px-2 py-1 text-xs text-muted-foreground"
+            >
+              {expanded ? "Show less" : "Show more"}
+              <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
+            </Button>
+          )}
+        </div>
 
         {hasChips && (
           <div className="flex flex-wrap gap-1.5">
