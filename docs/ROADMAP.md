@@ -1,0 +1,85 @@
+# Telar — Roadmap & Path to Success
+
+> **Thesis:** Generation is solved; **verification is the moat.** A loom never
+> auto-accepts its own work — a human accepts, always. Everything below is in
+> service of making that trustworthy, observable, and drivable from where you work.
+
+This file is the **living work tracker** (it replaces the ephemeral todo list).
+Edit it freely: check boxes as things land, add items under the right phase, move
+the **▶ You are here** marker as the frontier advances. Keep entries one line;
+link to a design doc when one exists.
+
+**Definition of success:** you can hand Telar a real multi-issue objective, watch
+it fan out into Threads, *see why* each one passed or stalled, steer/accept/reject
+it from your session, and trust that nothing reaches `done` without your sign-off —
+all while it keeps running if you reload or walk away.
+
+**Design docs:** [`loom-model.md`](./loom-model.md) ·
+[`loom-orchestrator.md`](./loom-orchestrator.md) ·
+[`runtime-architecture.md`](./runtime-architecture.md) ·
+[`verifier-agent.md`](./verifier-agent.md) ·
+[`phase-2-runner-plan.md`](./phase-2-runner-plan.md)
+
+---
+
+## Phase A — A single loom you can trust end-to-end &nbsp;`▶ You are here`
+
+Make one woven loom fully usable: it plans, fans out, verifies, and every terminal
+state is recoverable and legible.
+
+- [x] Weave-planner — bundle looms decompose into parallel Threads (no more single-agent collapse)
+- [x] Owner actions on Threads — accept / steer / reject / resume, moat-protected root
+- [x] Failure legibility — failing gate/critic/verdict surfaced; woven cost aggregated
+- [x] Turn cap is liftable — `maxTurns` override in `~/.telar/policy.json` (default rails stay)
+- [x] `reDispatch` never strands a loom in `queued` — setup failures land in `failed` with the reason
+- [x] Report is concise + markdown-rendered + roomier transcript
+- [ ] **Boot / crash recovery** — reconcile looms stuck mid-flight after a restart; unstick stranded Threads _(P5)_
+- [ ] **Guard project config** — a build must not wipe its repo's own `telar.yaml` (see Phase B `.telar/` dir)
+- [ ] **Validate the repair leg live** — prove builder → verify → repair → pass on a real task
+
+## Phase B — Drive looms from where you work
+
+The session that plans a loom should also be able to steer it, and watch it in the
+background — the session as cockpit. _(Decisions locked: steer/reject/resume/cancel
+are agent-drivable on any loom on request; **accept stays a human click**. Watchers
+are a true background process — you keep chatting; it reacts when state changes.)_
+
+- [ ] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools (moat: no `accept_loom` auto-run)
+- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat
+- [ ] **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends; easier to track, harder to clobber
+
+## Phase C — Durable execution (out-of-process)
+
+Today looms run inside the web dev-server process, so a code edit or reload can kill
+in-flight work. Move execution out of process so runs survive.
+
+- [ ] **Phase 2 — `telar-runner`** — out-of-process execution → see [`phase-2-runner-plan.md`](./phase-2-runner-plan.md)
+- [ ] **Run initializer** — per-loom environment + dedicated app server (dynamic verify URL)
+- [ ] **Keychain-backed MCP token storage** _(deferred)_
+
+## Phase D — Scale the weave & the roster
+
+Once one Thread is trustworthy, widen it.
+
+- [ ] **Sub-thread build fan-out** — wire `splitBuild`/`decideBuildFanout` so a Thread can use N parallel builders (built in M7.3b, never wired)
+- [ ] **P4 — dynamic weaver** — methodology-neutral extraction; the Verification Contract becomes the proof, not an enumerated strategy
+- [ ] **Curated agent roster** — via the SDK `agents` option
+
+## Phase E — Verification depth, live-proven
+
+The moat is only real if it's demonstrated on live features.
+
+- [ ] **M3 distillation** — green-run acceptance + spec-lint gate wiring (exploratory run → deterministic `.spec.ts`)
+- [ ] **M4 monitoring** — cron trigger + prod guardrails + terminal-state alert hook
+- [ ] **M6 design-QA** — prove design findings on an ugly-but-functional feature
+- [ ] **M5 hardening & scale**
+
+## Housekeeping
+
+- [ ] Account `displayTier` plan labels (5x / 20x) + in-app login UI
+- [ ] Clean up `[demo]` looms _(pending explicit OK — no `rm` without authorization)_
+
+---
+
+_Last frontier update: Phase A nearly closed; Phase B is next up (session-driven
+steering + background watchers)._
