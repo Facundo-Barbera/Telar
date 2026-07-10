@@ -61,22 +61,43 @@ export default function LoomDetailPage() {
     loomRef.current = loom;
   }, [loom]);
 
-  // A missing/deleted loom id never errors the SSE stream (the route stays open,
-  // polling for a dir that will never appear), so probe the loom endpoint — which
-  // 404s for unknown ids — to surface the "can't open this loom" state.
+  // Load the loom via a plain GET and then poll it. This is resilient to the
+  // SSE stream being starved when a loom executes in-process (the build agent
+  // hammers the same Node event loop), which otherwise left the god-view on
+  // skeletons forever — the SSE was the ONLY setter of `loom`. The event
+  // stream still drives the live feed; this guarantees the loom itself renders
+  // and keeps current (and 404s surface the "can't open this loom" state).
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    fetch(`/api/looms/${id}`)
-      .then((res) => {
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/looms/${id}`);
         if (cancelled) return;
-        if (res.status === 404) setError("This loom doesn't exist.");
-      })
-      .catch(() => {
-        /* transient — the event stream still governs the live view */
-      });
+        if (res.status === 404) {
+          setError("This loom doesn't exist.");
+          return;
+        }
+        const data = (await res.json()) as { loom?: Loom };
+        if (data.loom) {
+          setLoom(data.loom);
+          setError(null);
+        }
+      } catch {
+        /* transient — the next poll retries */
+      }
+    };
+    void load();
+    const t = setInterval(() => {
+      if (loomRef.current && isTerminal(loomRef.current.state)) {
+        clearInterval(t);
+        return;
+      }
+      void load();
+    }, 2000);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, [id]);
 
