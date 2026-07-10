@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { fmtAgo, shortId } from "@/lib/format";
+import { MessageResponse } from "@/components/ai-elements/message";
 
 // The GET /api/looms/[id]/spec response shape — the bundle manifest
 // (docs/loom-model.md §2): objective + files + the Verification Contract
@@ -136,9 +137,9 @@ export function SpecBundle({ loomId }: { loomId: string }) {
             <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
               Objective
             </h3>
-            <p className="max-w-[70ch] text-sm leading-relaxed whitespace-pre-wrap">
+            <MessageResponse className="max-w-[70ch] text-sm leading-relaxed">
               {bundle.objective}
-            </p>
+            </MessageResponse>
           </div>
         )}
 

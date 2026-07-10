@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   BotIcon,
@@ -992,7 +991,6 @@ function SessionViewInner({
   initialRole?: "planner";
   planner?: boolean;
 }) {
-  const router = useRouter();
   const textInput = usePromptInputController().textInput;
 
   // Seed once from the server-resolved transcript. Later prop changes are
@@ -1644,11 +1642,11 @@ function SessionViewInner({
                     if (typeof parsed.loomId === "string" && typeof parsed.url === "string") {
                       setLoomHandoff({ loomId: parsed.loomId, url: parsed.url });
                       setHandoffDismissed(false);
-                      // Loom Session (docs/loom-model.md §5): auto-navigate to
-                      // the god-view the instant the loom starts. A normal
-                      // session (planner unset) keeps the passive banner/chip
-                      // above as its only affordance — unchanged.
-                      if (planner) router.push(parsed.url);
+                      // Loom Session (docs/loom-model.md §5): never
+                      // auto-navigate away from the planning session — the
+                      // "Loom started" banner below (with its new-tab "View
+                      // god-view" link) is the only affordance, for planner
+                      // and normal sessions alike.
                     }
                   } catch {
                     // Non-JSON output — nothing to surface.
@@ -2212,7 +2210,10 @@ function SessionViewInner({
                 The spec bundle is committed and weaving — watch it unfold in the god-view.
               </p>
             </div>
-            <Button size="sm" render={<Link href={loomHandoff.url} />}>
+            <Button
+              size="sm"
+              render={<Link href={loomHandoff.url} target="_blank" rel="noopener noreferrer" />}
+            >
               View god-view
               <ExternalLinkIcon />
             </Button>
