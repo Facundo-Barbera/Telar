@@ -114,15 +114,13 @@ When every criterion has a verdict and its evidence, call emit_result exactly
 once with the complete VerifierReport. Emitting is the ONLY way your work counts;
 if you never emit, Telar records the verification as failed.`;
 
-// Portable resolution of the @playwright/mcp CLI. Precedence: explicit opt ->
-// env -> walk up from this module to the workspace and find the installed
-// cli.js (chmod +x, node shebang -> spawnable directly). Falls back to the bare
-// command name (PATH lookup) so there is NO machine-specific path in source.
-export function resolvePlaywrightMcpBin(explicit?: string): string {
-  if (explicit) return explicit;
-  if (process.env.TELAR_PLAYWRIGHT_MCP_BIN) return process.env.TELAR_PLAYWRIGHT_MCP_BIN;
-  let dir = import.meta.dirname;
-  for (let i = 0; i < 8 && dir !== path.dirname(dir); i++, dir = path.dirname(dir)) {
+// Walk up from `startDir` (at most 8 levels) looking for an installed
+// @playwright/mcp cli.js / bin. Returns null (never throws) when `startDir`
+// isn't a real, non-empty path or nothing is found by the time it reaches the
+// filesystem root — the caller decides what to fall back to.
+function walkUpForPlaywrightMcpBin(startDir: string | undefined): string | null {
+  let dir = startDir;
+  for (let i = 0; i < 8 && typeof dir === "string" && dir !== "" && dir !== path.dirname(dir); i++) {
     const candidates = [
       path.join(dir, "apps/web/node_modules/@playwright/mcp/cli.js"),
       path.join(dir, "node_modules/@playwright/mcp/cli.js"),
@@ -140,7 +138,37 @@ export function resolvePlaywrightMcpBin(explicit?: string): string {
     } catch {
       /* no store at this level */
     }
+    dir = path.dirname(dir);
   }
+  return null;
+}
+
+// Portable resolution of the @playwright/mcp CLI. Precedence: explicit opt ->
+// env -> walk up from this module to the workspace, then walk up from
+// process.cwd(), and find the installed cli.js (chmod +x, node shebang ->
+// spawnable directly). Falls back to the bare command name (PATH lookup) so
+// there is NO machine-specific path in source.
+//
+// `startDir` overrides the module-relative walk-up's starting point —
+// production callers never pass it (it defaults to `import.meta.dirname`);
+// it exists so tests can simulate `import.meta.dirname` being
+// undefined/empty without depending on the bundler that produces that. Under
+// Turbopack's bundled Next.js dev server, `import.meta.dirname` CAN be
+// undefined — walking up from it used to call path.dirname(undefined) and
+// throw the exact `The "path" argument must be of type string. Received
+// undefined` the Critic Panel hit, so walkUpForPlaywrightMcpBin only ever
+// walks once it has confirmed there is a real string to walk up from.
+// process.cwd() is always a real string, and for a `next dev`/`bun run dev`
+// process it typically IS (or is under) the project root — so a second
+// walk-up from cwd keeps resolution working for a real loom driven from the
+// dev server even when import.meta.dirname is unusable there.
+export function resolvePlaywrightMcpBin(explicit?: string, startDir?: string): string {
+  if (explicit) return explicit;
+  if (process.env.TELAR_PLAYWRIGHT_MCP_BIN) return process.env.TELAR_PLAYWRIGHT_MCP_BIN;
+  const moduleRelative = walkUpForPlaywrightMcpBin(startDir !== undefined ? startDir : import.meta.dirname);
+  if (moduleRelative) return moduleRelative;
+  const cwdRelative = walkUpForPlaywrightMcpBin(process.cwd());
+  if (cwdRelative) return cwdRelative;
   return "playwright-mcp"; // last resort: PATH lookup — never a machine-specific path
 }
 
