@@ -2,12 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  PlusIcon,
-  RotateCwIcon,
-  SparklesIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+import { RotateCwIcon, SparklesIcon, TriangleAlertIcon } from "lucide-react";
 import type { Loom } from "@telar/core";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -16,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { LoomCard } from "@/components/looms/loom-card";
-import { NewLoomDialog } from "@/components/looms/new-loom-dialog";
 import { PlanLoomButton } from "@/components/looms/plan-loom-button";
 import { isTerminal } from "@/components/looms/utils";
 
@@ -27,9 +21,7 @@ function LoomsInner() {
   const [looms, setLooms] = useState<Loom[] | null>(null);
   const [active, setActive] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [defaultProject, setDefaultProject] = useState<string | null>(null);
-  const autoOpened = useRef(false);
+  const autoRedirected = useRef(false);
 
   const loadLooms = useCallback(async () => {
     try {
@@ -58,14 +50,17 @@ function LoomsInner() {
     return () => window.removeEventListener("telar:refresh", onRefresh);
   }, [loadLooms]);
 
-  // Auto-open the New-loom dialog once when arrived via ?new=1&project=<name>.
+  // Legacy `?new=1&project=<name>` deep links (dashboard/project-page "New
+  // loom" CTAs predating the loom-session front door) now redirect straight
+  // into a loom session for that project — a loom begins only from a
+  // session, never a one-click dialog. No project hint: land on the tab
+  // itself, where "New loom session" offers the picker.
   useEffect(() => {
-    if (autoOpened.current) return;
+    if (autoRedirected.current) return;
     if (searchParams.get("new") === "1") {
-      autoOpened.current = true;
-      setDefaultProject(searchParams.get("project"));
-      setDialogOpen(true);
-      router.replace("/looms");
+      autoRedirected.current = true;
+      const project = searchParams.get("project");
+      router.replace(project ? `/looms/plan/${encodeURIComponent(project)}` : "/looms");
     }
   }, [searchParams, router]);
 
@@ -78,28 +73,12 @@ function LoomsInner() {
     return () => clearInterval(t);
   }, [looms, active, loadLooms]);
 
-  const onCreated = useCallback(
-    (id: string) => {
-      setDialogOpen(false);
-      router.push(`/looms/${id}`);
-    },
-    [router],
-  );
-
   return (
     <div className="flex h-dvh flex-col">
       <PageHeader
         title="Looms"
         description="Autonomous work on your projects — attempt, verify, retry."
-        actions={
-          <>
-            <Button variant="outline" onClick={() => setDialogOpen(true)}>
-              <PlusIcon />
-              New loom
-            </Button>
-            <PlanLoomButton />
-          </>
-        }
+        actions={<PlanLoomButton />}
       />
 
       <div className="flex-1 overflow-y-auto">
@@ -148,15 +127,7 @@ function LoomsInner() {
               icon={SparklesIcon}
               title="No looms yet"
               description="A loom begins from a planning session — describe what you want, then make it real."
-              action={
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  <PlanLoomButton />
-                  <Button variant="outline" onClick={() => setDialogOpen(true)}>
-                    <PlusIcon />
-                    New loom
-                  </Button>
-                </div>
-              }
+              action={<PlanLoomButton />}
             />
           )}
 
@@ -193,13 +164,6 @@ function LoomsInner() {
           )}
         </div>
       </div>
-
-      <NewLoomDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        defaultProject={defaultProject}
-        onCreated={onCreated}
-      />
     </div>
   );
 }

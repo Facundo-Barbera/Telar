@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   BotIcon,
@@ -945,6 +946,14 @@ export function SessionView(props: {
   // "Plan a loom" front door (?role=planner) — a hint only, see the page's
   // own comment. Drives the empty-state framing below, nothing else.
   initialRole?: "planner";
+  // Opt-in, additive (docs/loom-model.md §5's "Loom Session"): true only for
+  // the dedicated planning surface that lives in the Looms tab
+  // (/looms/plan/[project]). When mcp__loom__start_loom succeeds, a planner
+  // session auto-navigates to the god-view instead of just showing the
+  // passive handoff banner/chip a normal project session gets — see the
+  // "tool_result" case below. Undefined/false (every existing call site)
+  // leaves that behavior completely unchanged.
+  planner?: boolean;
 }) {
   // The slash-command menu and account lock both need to read/drive the
   // composer's text value from outside <PromptInput> itself — the provider
@@ -963,6 +972,7 @@ function SessionViewInner({
   initialChat,
   initialTitle,
   initialRole,
+  planner,
 }: {
   project: string;
   account: string;
@@ -970,7 +980,9 @@ function SessionViewInner({
   initialChat?: InitialChat;
   initialTitle?: string;
   initialRole?: "planner";
+  planner?: boolean;
 }) {
+  const router = useRouter();
   const textInput = usePromptInputController().textInput;
 
   // Seed once from the server-resolved transcript. Later prop changes are
@@ -1616,6 +1628,11 @@ function SessionViewInner({
                     if (typeof parsed.loomId === "string" && typeof parsed.url === "string") {
                       setLoomHandoff({ loomId: parsed.loomId, url: parsed.url });
                       setHandoffDismissed(false);
+                      // Loom Session (docs/loom-model.md §5): auto-navigate to
+                      // the god-view the instant the loom starts. A normal
+                      // session (planner unset) keeps the passive banner/chip
+                      // above as its only affordance — unchanged.
+                      if (planner) router.push(parsed.url);
                     }
                   } catch {
                     // Non-JSON output — nothing to surface.
