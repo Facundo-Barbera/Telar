@@ -1066,8 +1066,53 @@ export function McpSettings({ name }: { name: string }) {
         : prev,
     );
 
-  const removeServer = (id: number) =>
+  // Removing a server persists IMMEDIATELY (like clearing a token) rather than
+  // only editing the draft — a bare "×" that needs a separate Save reads as
+  // "delete doesn't work". We persist just this deletion against the last-saved
+  // set (origServers) so any other in-progress draft edits are left untouched.
+  const removeServer = async (id: number) => {
+    const target = servers?.find((s) => s.id === id);
+    if (!target) return;
+    const key = target.key.trim();
+    const persisted = !target.isNew && !!origServers && key in origServers;
+    if (
+      persisted &&
+      !window.confirm(`Remove MCP server "${key}"? This updates telar.yaml immediately.`)
+    )
+      return;
     setServers((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));
+    // A never-saved server has nothing on disk to remove.
+    if (!persisted || !origServers) return;
+    setSaving(true);
+    setSaveError(null);
+    setConflict(false);
+    try {
+      const next: McpServersJson = { ...origServers };
+      delete next[key];
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mcpServers: next }),
+      });
+      if (res.status === 409) {
+        setConflict(true);
+        return;
+      }
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        manifest?: { mcpServers?: McpServersJson };
+      };
+      if (!res.ok || !data.manifest)
+        throw new Error(data.error ?? `Remove failed (${res.status}).`);
+      setOrigServers(assemble(serversFromManifest(data.manifest.mcpServers ?? {})));
+      window.dispatchEvent(new Event("telar:refresh"));
+      void loadStatus();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const setToken = async (row: EntryRow) => {
     const key = row.secretKey.trim();
