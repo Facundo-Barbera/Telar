@@ -192,6 +192,48 @@ export async function discover(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// (a.probe) Best-effort OAuth DETECTION for the UI (docs/mcp-oauth-design.md
+// §3: "OAuth is auto-detected, not declared"). A server needs OAuth when it
+// either answers a probe with a 401 + WWW-Authenticate `resource_metadata`
+// pointer (RFC 9728) OR exposes a resolvable protected-resource-metadata
+// well-known that lists an authorization server. Anything else — a 200, a
+// challenge-less response, or ANY network/parse error — is reported as "no
+// OAuth": we NEVER throw and NEVER claim OAuth on an unknown. Reuses the same
+// probe/WWW-Authenticate/PRM helpers as discover().
+// ---------------------------------------------------------------------------
+
+export async function probeMcpAuth(
+  serverUrl: string,
+  opts?: { fetchImpl?: typeof fetch },
+): Promise<{ requiresOAuth: boolean; resourceMetadataUrl?: string }> {
+  const fetchImpl = opts?.fetchImpl ?? globalThis.fetch;
+  try {
+    // (1) Probe the server. A 401 carrying a resource_metadata pointer is the
+    // strongest RFC 9728 signal — return it without a further fetch.
+    try {
+      const probe = await fetchImpl(serverUrl);
+      if (probe.status === 401) {
+        const pointer = parseResourceMetadata(probe.headers.get("www-authenticate"));
+        if (pointer) return { requiresOAuth: true, resourceMetadataUrl: pointer };
+      }
+    } catch {
+      // Probe network hiccup — the well-known fallback below still applies.
+    }
+    // (2) Fall back to a resolvable protected-resource-metadata well-known that
+    // actually names an authorization server (what discover() would consume).
+    const prmUrl = prmWellKnownUrl(canonicalResource(serverUrl));
+    const prm = await fetchJson(fetchImpl, prmUrl); // throws on non-2xx / bad JSON
+    if (Array.isArray(prm?.authorization_servers) && prm.authorization_servers.length > 0) {
+      return { requiresOAuth: true, resourceMetadataUrl: prmUrl };
+    }
+    return { requiresOAuth: false };
+  } catch {
+    // Any network/parse failure (incl. the well-known 404) → not OAuth.
+    return { requiresOAuth: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // (b) Client-identity ladder (docs/mcp-oauth-design.md §2): first that applies.
 // ---------------------------------------------------------------------------
 

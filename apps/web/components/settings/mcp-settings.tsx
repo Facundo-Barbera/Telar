@@ -9,6 +9,7 @@ import {
   RotateCwIcon,
   SaveIcon,
   ServerIcon,
+  Settings2Icon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
@@ -40,13 +41,15 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 
 // The API returns plain JSON — we mirror the @telar/core shapes locally rather
-// than importing types across the client boundary.
+// than importing values across the client boundary (a type-only import is fine,
+// but the shapes are small so we keep them inline).
 type McpSecretRefJson = { secret: string; prefix?: string };
 type McpValueJson = string | McpSecretRefJson;
-// Telar-owned OAuth block on an http server (schemas.ts McpOAuthConfig). Mirrored
-// locally like the shapes above and carried through verbatim so editing/Saving a
-// server never drops its auth config; the UI only reads auth.type to decide
-// whether to render the Connect panel.
+// Telar-owned OAuth block on an http server (schemas.ts McpOAuthConfig). OAuth is
+// AUTODETECTED, not declared (docs/mcp-oauth-design.md §3): this block is now
+// purely OPTIONAL overrides — a manual clientId / scopes fallback plus AS pins.
+// Carried through verbatim so editing/Saving a server never drops fields the UI
+// doesn't expose (clientSecret / authorizationServer / redirectPath).
 type McpAuthJson = {
   type: "oauth";
   scopes?: string[];
@@ -92,7 +95,8 @@ type Server = {
   args: string[];
   url: string;
   entries: EntryRow[]; // env (stdio) or headers (http)
-  auth?: McpAuthJson; // http-only; preserved verbatim across edits/saves
+  auth?: McpAuthJson; // http-only overrides; preserved verbatim across edits/saves
+  isNew?: boolean; // freshly added, not yet saved — renders the minimal add card
 };
 
 let uid = 0;
@@ -167,6 +171,24 @@ function valuesFromRows(rows: EntryRow[]): Record<string, McpValueJson> {
   return out;
 }
 
+// Normalize the optional OAuth override block: trim clientId, drop empty scopes,
+// and carry the fields the UI doesn't expose (clientSecret / AS pin / redirect
+// path) through verbatim. Present-but-bare blocks round-trip as `{ type }`; the
+// block is only written when it actually exists on the server (advanced was
+// touched) — autodetect never fabricates one.
+function cleanAuth(auth?: McpAuthJson): McpAuthJson | undefined {
+  if (!auth) return undefined;
+  const out: McpAuthJson = { type: "oauth" };
+  const clientId = auth.clientId?.trim();
+  if (clientId) out.clientId = clientId;
+  const scopes = auth.scopes?.map((s) => s.trim()).filter(Boolean);
+  if (scopes && scopes.length) out.scopes = scopes;
+  if (auth.clientSecret) out.clientSecret = auth.clientSecret;
+  if (auth.authorizationServer?.trim()) out.authorizationServer = auth.authorizationServer;
+  if (auth.redirectPath?.trim()) out.redirectPath = auth.redirectPath;
+  return out;
+}
+
 // Assemble the mcpServers record for the PATCH body, skipping blank server
 // names. Empty env/headers are omitted so a bare server round-trips cleanly.
 function assemble(servers: Server[]): McpServersJson {
@@ -176,11 +198,12 @@ function assemble(servers: Server[]): McpServersJson {
     if (!key) continue;
     if (s.transport === "http") {
       const headers = valuesFromRows(s.entries);
+      const auth = cleanAuth(s.auth);
       out[key] = {
         transport: "http",
         url: s.url,
         ...(Object.keys(headers).length ? { headers } : {}),
-        ...(s.auth ? { auth: s.auth } : {}),
+        ...(auth ? { auth } : {}),
       };
     } else {
       const env = valuesFromRows(s.entries);
@@ -195,15 +218,18 @@ function assemble(servers: Server[]): McpServersJson {
   return out;
 }
 
+// New servers default to http with just a name + URL (the minimal add card);
+// stdio, headers and advanced overrides live behind Configure.
 function newServer(): Server {
   return {
     id: nextId(),
     key: "new-server",
-    transport: "stdio",
+    transport: "http",
     command: "",
     args: [],
     url: "",
     entries: [],
+    isNew: true,
   };
 }
 
@@ -431,106 +457,414 @@ function EntryEditor({
   );
 }
 
-// --- Telar-owned OAuth connection (docs/mcp-oauth-design.md §5). One panel per
-// http server whose config has auth.type === "oauth". Connect/Reconnect POST to
-// the connect route to derive the authorization URL server-side, then navigate
-// the browser to it (the OAuth redirect flow leaves the SPA to hit the
-// authorization server and returns via the callback route); Disconnect + status
-// are same-origin fetches. Status is best-effort — unknown ⇒ just show "Connect".
-type OAuthStatus = "connected" | "expired";
+// --- Autodetected OAuth status (docs/mcp-oauth-design.md §3). The status route
+// probes every http server and returns { requiresOAuth, connected, expiresAt? };
+// stdio servers aren't in the map (the UI shows them as "Local" from transport).
+type HttpStatus = { requiresOAuth: boolean; connected: boolean; expiresAt?: number };
 
 // Tolerant read of the status route so the UI survives whatever exact shape the
-// oauth routes expose (they may not exist yet): a bare "connected"/"expired"
-// string per server, or a { connected, expired } object. Anything unrecognized
-// is omitted, which the panels render as "Connect".
-function normalizeOAuthStatus(raw: unknown): Record<string, OAuthStatus> {
+// route exposes (it may lag a redeploy): a { servers: { [name]: {...} } } object.
+// Anything unrecognized is omitted, which renders as the "Checking…" pill.
+function normalizeStatus(raw: unknown): Record<string, HttpStatus> {
   const src = (raw as { servers?: Record<string, unknown> } | null)?.servers;
   if (!src || typeof src !== "object") return {};
-  const out: Record<string, OAuthStatus> = {};
+  const out: Record<string, HttpStatus> = {};
   for (const [server, v] of Object.entries(src)) {
-    if (v === "connected" || v === "expired") out[server] = v;
-    else if (v && typeof v === "object") {
-      const o = v as { connected?: boolean; expired?: boolean };
-      if (o.expired) out[server] = "expired";
-      else if (o.connected) out[server] = "connected";
+    if (v && typeof v === "object") {
+      const o = v as {
+        requiresOAuth?: unknown;
+        connected?: unknown;
+        expiresAt?: unknown;
+      };
+      out[server] = {
+        requiresOAuth: o.requiresOAuth === true,
+        connected: o.connected === true,
+        expiresAt: typeof o.expiresAt === "number" ? o.expiresAt : undefined,
+      };
     }
   }
   return out;
 }
 
-function OAuthConnect({
+// The single at-a-glance pill on each compact card.
+function StatusPill({
+  transport,
   status,
-  busy,
+}: {
+  transport: Transport;
+  status?: HttpStatus;
+}) {
+  if (transport === "stdio") {
+    return (
+      <Badge variant="outline" className="text-[10px]">
+        Local
+      </Badge>
+    );
+  }
+  if (!status) {
+    return (
+      <Badge variant="outline" className="text-[10px] text-muted-foreground">
+        <Spinner />
+        Checking…
+      </Badge>
+    );
+  }
+  if (status.connected) {
+    return (
+      <Badge variant="secondary" className="text-[10px]">
+        <CheckCircle2Icon />
+        Connected
+      </Badge>
+    );
+  }
+  if (status.requiresOAuth) {
+    return (
+      <Badge variant="outline" className="text-[10px]">
+        <LinkIcon />
+        Requires sign-in
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="secondary" className="text-[10px]">
+      Ready
+    </Badge>
+  );
+}
+
+// One MCP server. COMPACT by default (name + status pill + Connect); Configure
+// expands the full manual editor; a freshly added server shows a minimal
+// name + URL card until it's saved.
+function ServerCard({
+  server,
+  status,
+  expanded,
+  tokens,
+  busyToken,
+  oauthBusy,
+  onToggleConfigure,
+  onPatchServer,
+  onPatchAuth,
+  onRemove,
+  onPatchRow,
+  onSetToken,
+  onClearToken,
   onConnect,
   onDisconnect,
 }: {
-  status?: OAuthStatus;
-  busy: boolean;
+  server: Server;
+  status?: HttpStatus;
+  expanded: boolean;
+  tokens: Record<string, boolean>;
+  busyToken: number | null;
+  oauthBusy: string | null;
+  onToggleConfigure: () => void;
+  onPatchServer: (patch: Partial<Server>) => void;
+  onPatchAuth: (patch: { clientId?: string; scopes?: string[] }) => void;
+  onRemove: () => void;
+  onPatchRow: (rowId: number, patch: Partial<EntryRow>) => void;
+  onSetToken: (row: EntryRow) => void;
+  onClearToken: (row: EntryRow) => void;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
+  const busy = oauthBusy === server.key;
+  const isHttp = server.transport === "http";
+  const showConnect = isHttp && !!status && (status.connected || status.requiresOAuth);
+
+  const connectControls = showConnect ? (
+    status!.connected ? (
+      <>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onConnect}
+          disabled={busy}
+        >
+          <RotateCwIcon />
+          Reconnect
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={onDisconnect}
+          disabled={busy}
+        >
+          {busy ? <Spinner /> : <Link2OffIcon />}
+          Disconnect
+        </Button>
+      </>
+    ) : (
+      <Button
+        type="button"
+        variant="default"
+        size="sm"
+        onClick={onConnect}
+        disabled={busy}
+      >
+        {busy ? <Spinner /> : <LinkIcon />}
+        Connect
+      </Button>
+    )
+  ) : null;
+
   return (
-    <div className="space-y-2 rounded-md border border-border p-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-foreground">
-          OAuth connection
-        </span>
-        {status === "connected" && (
-          <Badge variant="secondary" className="text-[10px]">
-            <CheckCircle2Icon />
-            Connected
-          </Badge>
-        )}
-        {status === "expired" && (
-          <Badge variant="destructive" className="text-[10px]">
-            <TriangleAlertIcon />
-            Expired
-          </Badge>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {status ? (
+    <div className="space-y-3 rounded-lg border border-border p-3">
+      {expanded ? (
+        // FULL manual editor — transport, URL/command, headers/env, advanced
+        // OAuth overrides, and Remove. Everything beyond name + status lives here.
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Input
+              value={server.key}
+              onChange={(e) => onPatchServer({ key: e.target.value })}
+              placeholder="server-name"
+              className="h-8 flex-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Server name"
+            />
+            <Select
+              value={server.transport}
+              onValueChange={(v) =>
+                v && onPatchServer({ transport: String(v) as Transport })
+              }
+            >
+              <SelectTrigger className="h-8 w-28 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stdio">stdio</SelectItem>
+                <SelectItem value="http">http</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {server.transport === "stdio" ? (
             <>
+              <Field label="Command">
+                <Input
+                  value={server.command}
+                  onChange={(e) => onPatchServer({ command: e.target.value })}
+                  placeholder="npx"
+                  className="h-8 font-mono text-xs"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </Field>
+              <Field label="Args">
+                <StringListEditor
+                  values={server.args}
+                  onChange={(args) => onPatchServer({ args })}
+                  placeholder="-y"
+                  addLabel="Add arg"
+                  emptyLabel="No args."
+                  ariaPrefix="Arg"
+                />
+              </Field>
+            </>
+          ) : (
+            <Field label="URL">
+              <Input
+                value={server.url}
+                onChange={(e) => onPatchServer({ url: e.target.value })}
+                placeholder="https://mcp.example.com"
+                className="h-8 font-mono text-xs"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </Field>
+          )}
+
+          <Field
+            label={server.transport === "http" ? "Headers" : "Environment"}
+          >
+            <div className="space-y-2">
+              {server.entries.length === 0 && (
+                <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
+                  {server.transport === "http"
+                    ? "No headers."
+                    : "No environment variables."}
+                </p>
+              )}
+              {server.entries.map((row) => (
+                <EntryEditor
+                  key={row.id}
+                  server={server}
+                  row={row}
+                  hasToken={
+                    !!row.secretKey.trim() && !!tokens[row.secretKey.trim()]
+                  }
+                  busyToken={busyToken === row.id}
+                  onChange={(patch) => onPatchRow(row.id, patch)}
+                  onRemove={() =>
+                    onPatchServer({
+                      entries: server.entries.filter((r) => r.id !== row.id),
+                    })
+                  }
+                  onSetToken={() => onSetToken(row)}
+                  onClearToken={() => onClearToken(row)}
+                />
+              ))}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={onConnect}
-                disabled={busy}
+                onClick={() =>
+                  onPatchServer({ entries: [...server.entries, newRow()] })
+                }
               >
-                <RotateCwIcon />
-                Reconnect
+                <PlusIcon />
+                {server.transport === "http" ? "Add header" : "Add env"}
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-destructive"
-                onClick={onDisconnect}
-                disabled={busy}
-              >
-                {busy ? <Spinner /> : <Link2OffIcon />}
-                Disconnect
-              </Button>
-            </>
-          ) : (
+            </div>
+          </Field>
+
+          {server.transport === "http" && (
+            <details className="rounded-md border border-dashed border-border px-2.5 py-2">
+              <summary className="cursor-pointer text-xs font-medium text-foreground">
+                Advanced · OAuth client (optional)
+              </summary>
+              <div className="mt-2 space-y-2">
+                <p className="text-[11px] text-muted-foreground">
+                  OAuth is auto-detected — leave this empty unless the server
+                  can&apos;t self-register and needs a pre-registered client ID
+                  from its dashboard.
+                </p>
+                <Field label="Client ID">
+                  <Input
+                    value={server.auth?.clientId ?? ""}
+                    onChange={(e) => onPatchAuth({ clientId: e.target.value })}
+                    placeholder="pre-registered client id"
+                    className="h-8 font-mono text-xs"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+                <Field label="Scopes">
+                  <StringListEditor
+                    values={server.auth?.scopes ?? []}
+                    onChange={(scopes) => onPatchAuth({ scopes })}
+                    placeholder="read:all"
+                    addLabel="Add scope"
+                    emptyLabel="Default scopes."
+                    ariaPrefix="Scope"
+                  />
+                </Field>
+              </div>
+            </details>
+          )}
+
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+            >
+              <XIcon />
+              Remove server
+            </Button>
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={onConnect}
-              disabled={busy}
+              onClick={onToggleConfigure}
             >
-              <LinkIcon />
-              Connect
+              Done
             </Button>
-          )}
+          </div>
         </div>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {status
-          ? "Telar owns this server's login and injects the token for every execution account — no header needed."
-          : "Connect once; Telar manages the OAuth login and injects the token for every account and session."}
-      </p>
+      ) : server.isNew && server.transport === "http" ? (
+        // MINIMAL add card — name + URL only, for the default http transport. A
+        // new server switched to stdio in Configure falls through to the compact
+        // card below (which shows the stdio · command summary) instead of this
+        // URL-only card, which would misrepresent it.
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Input
+              value={server.key}
+              onChange={(e) => onPatchServer({ key: e.target.value })}
+              placeholder="server-name"
+              className="h-8 flex-1 font-mono text-xs"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Server name"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 text-muted-foreground hover:text-destructive"
+              onClick={onRemove}
+              aria-label={`Remove server ${server.key}`}
+            >
+              <XIcon />
+            </Button>
+          </div>
+          <Input
+            value={server.url}
+            onChange={(e) => onPatchServer({ url: e.target.value })}
+            placeholder="https://mcp.example.com"
+            className="h-8 w-full font-mono text-xs"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="Server URL"
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onToggleConfigure}
+            >
+              <Settings2Icon />
+              Configure
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              stdio, headers &amp; advanced live in Configure.
+            </span>
+          </div>
+        </div>
+      ) : (
+        // COMPACT card — name + status pill + Connect + Configure. Nothing else.
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1 basis-40">
+              <div className="truncate font-mono text-xs font-medium text-foreground">
+                {server.key}
+              </div>
+              <div className="truncate text-[11px] text-muted-foreground">
+                {server.transport === "http"
+                  ? server.url || "http endpoint"
+                  : `stdio · ${server.command || "no command"}`}
+              </div>
+            </div>
+            <StatusPill transport={server.transport} status={status} />
+            {connectControls}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={onToggleConfigure}
+              aria-label={`Configure ${server.key}`}
+            >
+              <Settings2Icon />
+            </Button>
+          </div>
+          {isHttp && status?.connected && (
+            <p className="text-[11px] text-muted-foreground">
+              Telar owns this login and injects the token for every execution
+              account — no header needed.
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -547,9 +881,10 @@ export function McpSettings({ name }: { name: string }) {
   const [saved, setSaved] = useState(false);
   const [busyToken, setBusyToken] = useState<number | null>(null);
 
-  const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>(
-    {},
-  );
+  // Which cards have the full Configure editor open (by server id).
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  const [httpStatus, setHttpStatus] = useState<Record<string, HttpStatus>>({});
   const [oauthBusy, setOauthBusy] = useState<string | null>(null);
   const [oauthNotice, setOauthNotice] = useState<{
     kind: "success" | "error";
@@ -595,23 +930,24 @@ export function McpSettings({ name }: { name: string }) {
     void load();
   }, [load]);
 
-  // Best-effort OAuth connection status per server. A missing/!ok route (the
-  // oauth routes may not be up yet) leaves the map empty → panels show "Connect".
-  const loadOAuthStatus = useCallback(async () => {
+  // Autodetected per-server status — fetched async and non-blocking, so cards
+  // render immediately and the pill fills in. A missing/!ok route (it may lag a
+  // redeploy) leaves the map empty → pills show "Checking…".
+  const loadStatus = useCallback(async () => {
     try {
       const res = await fetch(
         `/api/mcp/oauth/status?project=${encodeURIComponent(name)}`,
       );
       if (!res.ok) return;
-      setOauthStatus(normalizeOAuthStatus(await res.json()));
+      setHttpStatus(normalizeStatus(await res.json()));
     } catch {
-      // status unknown — panels fall back to "Connect"
+      // status unknown — pills stay on "Checking…"
     }
   }, [name]);
 
   useEffect(() => {
-    void loadOAuthStatus();
-  }, [loadOAuthStatus]);
+    void loadStatus();
+  }, [loadStatus]);
 
   // The callback route redirects back here with ?mcpConnected=<server> on
   // success or ?mcpOAuthError=<message> on failure (the message already names
@@ -637,8 +973,8 @@ export function McpSettings({ name }: { name: string }) {
       "",
       window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
     );
-    if (connected) void loadOAuthStatus();
-  }, [loadOAuthStatus]);
+    if (connected) void loadStatus();
+  }, [loadStatus]);
 
   const refreshTokens = useCallback(async () => {
     try {
@@ -677,10 +1013,44 @@ export function McpSettings({ name }: { name: string }) {
     }
   }, [dirty]);
 
+  const toggleConfigure = useCallback(
+    (id: number) =>
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      }),
+    [],
+  );
+
+  const openConfigure = useCallback(
+    (id: number) =>
+      setExpanded((prev) => (prev.has(id) ? prev : new Set(prev).add(id))),
+    [],
+  );
+
   const patchServer = (id: number, patch: Partial<Server>) =>
     setServers((prev) =>
+      prev ? prev.map((s) => (s.id === id ? { ...s, ...patch } : s)) : prev,
+    );
+
+  // Fold the two editable overrides into the (lazily created) auth block. Empty
+  // values are trimmed away at assemble by cleanAuth — including empty scope rows
+  // still being typed, which stay put here so the row doesn't vanish on add.
+  const patchAuth = (
+    id: number,
+    patch: { clientId?: string; scopes?: string[] },
+  ) =>
+    setServers((prev) =>
       prev
-        ? prev.map((s) => (s.id === id ? { ...s, ...patch } : s))
+        ? prev.map((s) => {
+            if (s.id !== id) return s;
+            const auth: McpAuthJson = { type: "oauth", ...s.auth };
+            if (patch.clientId !== undefined) auth.clientId = patch.clientId;
+            if (patch.scopes !== undefined) auth.scopes = patch.scopes;
+            return { ...s, auth };
+          })
         : prev,
     );
 
@@ -695,6 +1065,9 @@ export function McpSettings({ name }: { name: string }) {
           }))
         : prev,
     );
+
+  const removeServer = (id: number) =>
+    setServers((prev) => (prev ? prev.filter((s) => s.id !== id) : prev));
 
   const setToken = async (row: EntryRow) => {
     const key = row.secretKey.trim();
@@ -742,21 +1115,24 @@ export function McpSettings({ name }: { name: string }) {
   // Start the browser OAuth flow: POST to derive the authorization URL entirely
   // server-side (the connect route only accepts POST), then navigate the browser
   // to it. On success we leave the SPA and return via the callback route; only
-  // failures come back here to surface as a notice.
-  const connect = async (server: string) => {
-    setOauthBusy(server);
+  // failures come back here. A 422 needsClientId means discovery worked but no
+  // client identity is available — open Configure so the user can add one.
+  const connect = async (server: Server) => {
+    setOauthBusy(server.key);
     setOauthNotice(null);
     try {
       const res = await fetch("/api/mcp/oauth/connect", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project: name, server }),
+        body: JSON.stringify({ project: name, server: server.key }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         url?: string;
         error?: string;
+        needsClientId?: boolean;
       };
       if (!res.ok || !data.url) {
+        if (data.needsClientId) openConfigure(server.id);
         throw new Error(
           data.error ?? `Couldn't start OAuth connect (${res.status}).`,
         );
@@ -771,23 +1147,23 @@ export function McpSettings({ name }: { name: string }) {
     }
   };
 
-  const disconnect = async (server: string) => {
+  const disconnect = async (server: Server) => {
     if (
       !window.confirm(
-        `Disconnect OAuth for "${server}"? Telar forgets the stored token immediately; you can reconnect anytime.`,
+        `Disconnect OAuth for "${server.key}"? Telar forgets the stored token immediately; you can reconnect anytime.`,
       )
     )
       return;
-    setOauthBusy(server);
+    setOauthBusy(server.key);
     try {
       await fetch("/api/mcp/oauth/disconnect", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project: name, server }),
+        body: JSON.stringify({ project: name, server: server.key }),
       });
-      await loadOAuthStatus();
+      await loadStatus();
     } catch {
-      // best-effort — loadOAuthStatus reflects the true persisted state
+      // best-effort — loadStatus reflects the true persisted state
     } finally {
       setOauthBusy(null);
     }
@@ -819,8 +1195,11 @@ export function McpSettings({ name }: { name: string }) {
       const mcp = data.manifest.mcpServers ?? {};
       setServers(serversFromManifest(mcp));
       setOrigServers(assemble(serversFromManifest(mcp)));
+      setExpanded(new Set());
       setSaved(true);
       window.dispatchEvent(new Event("telar:refresh"));
+      // Re-probe: newly saved http servers now have a URL to detect OAuth on.
+      void loadStatus();
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -935,156 +1314,28 @@ export function McpSettings({ name }: { name: string }) {
             )}
 
             {servers.map((server) => (
-              <div
+              <ServerCard
                 key={server.id}
-                className="space-y-3 rounded-lg border border-border p-3"
-              >
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={server.key}
-                    onChange={(e) =>
-                      patchServer(server.id, { key: e.target.value })
-                    }
-                    placeholder="server-name"
-                    className="h-8 flex-1 font-mono text-xs"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-label="Server name"
-                  />
-                  <Select
-                    value={server.transport}
-                    onValueChange={(v) =>
-                      v &&
-                      patchServer(server.id, {
-                        transport: String(v) as Transport,
-                      })
-                    }
-                  >
-                    <SelectTrigger className="h-8 w-28 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="stdio">stdio</SelectItem>
-                      <SelectItem value="http">http</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="shrink-0 text-muted-foreground hover:text-destructive"
-                    onClick={() =>
-                      setServers((prev) =>
-                        prev
-                          ? prev.filter((s) => s.id !== server.id)
-                          : prev,
-                      )
-                    }
-                    aria-label={`Remove server ${server.key}`}
-                  >
-                    <XIcon />
-                  </Button>
-                </div>
-
-                {server.transport === "stdio" ? (
-                  <>
-                    <Field label="Command">
-                      <Input
-                        value={server.command}
-                        onChange={(e) =>
-                          patchServer(server.id, { command: e.target.value })
-                        }
-                        placeholder="npx"
-                        className="h-8 font-mono text-xs"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </Field>
-                    <Field label="Args">
-                      <StringListEditor
-                        values={server.args}
-                        onChange={(args) => patchServer(server.id, { args })}
-                        placeholder="-y"
-                        addLabel="Add arg"
-                        emptyLabel="No args."
-                        ariaPrefix="Arg"
-                      />
-                    </Field>
-                  </>
-                ) : (
-                  <Field label="URL">
-                    <Input
-                      value={server.url}
-                      onChange={(e) =>
-                        patchServer(server.id, { url: e.target.value })
-                      }
-                      placeholder="https://mcp.example.com"
-                      className="h-8 font-mono text-xs"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
-                )}
-
-                {server.transport === "http" &&
-                  server.auth?.type === "oauth" && (
-                    <OAuthConnect
-                      status={oauthStatus[server.key]}
-                      busy={oauthBusy === server.key}
-                      onConnect={() => void connect(server.key)}
-                      onDisconnect={() => void disconnect(server.key)}
-                    />
-                  )}
-
-                <Field
-                  label={server.transport === "http" ? "Headers" : "Environment"}
-                >
-                  <div className="space-y-2">
-                    {server.entries.length === 0 && (
-                      <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
-                        {server.transport === "http"
-                          ? "No headers."
-                          : "No environment variables."}
-                      </p>
-                    )}
-                    {server.entries.map((row) => (
-                      <EntryEditor
-                        key={row.id}
-                        server={server}
-                        row={row}
-                        hasToken={
-                          !!row.secretKey.trim() &&
-                          !!tokens[row.secretKey.trim()]
-                        }
-                        busyToken={busyToken === row.id}
-                        onChange={(patch) => patchRow(row.id, patch)}
-                        onRemove={() =>
-                          patchServer(server.id, {
-                            entries: server.entries.filter(
-                              (r) => r.id !== row.id,
-                            ),
-                          })
-                        }
-                        onSetToken={() => void setToken(row)}
-                        onClearToken={() => void clearToken(row)}
-                      />
-                    ))}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        patchServer(server.id, {
-                          entries: [...server.entries, newRow()],
-                        })
-                      }
-                    >
-                      <PlusIcon />
-                      {server.transport === "http" ? "Add header" : "Add env"}
-                    </Button>
-                  </div>
-                </Field>
-              </div>
+                server={server}
+                status={
+                  server.transport === "http"
+                    ? httpStatus[server.key]
+                    : undefined
+                }
+                expanded={expanded.has(server.id)}
+                tokens={tokens}
+                busyToken={busyToken}
+                oauthBusy={oauthBusy}
+                onToggleConfigure={() => toggleConfigure(server.id)}
+                onPatchServer={(patch) => patchServer(server.id, patch)}
+                onPatchAuth={(patch) => patchAuth(server.id, patch)}
+                onRemove={() => removeServer(server.id)}
+                onPatchRow={patchRow}
+                onSetToken={(row) => void setToken(row)}
+                onClearToken={(row) => void clearToken(row)}
+                onConnect={() => void connect(server)}
+                onDisconnect={() => void disconnect(server)}
+              />
             ))}
 
             {pendingTokens && (

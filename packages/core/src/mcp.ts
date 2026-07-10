@@ -91,14 +91,15 @@ export function resolveProjectMcpServers(projectName: string): Record<string, Sd
       };
     } else {
       const headers = resolveRecord(cfg.headers, projectName, name);
-      // Telar-owned OAuth (docs/mcp-oauth-design.md §3/§5): for an http server
-      // that declares auth.type === "oauth", auto-inject the managed Bearer
-      // token from the mirrored mcp:<project>:<server> slot — unless the user
-      // already wired an Authorization header themselves. A missing token warns
-      // + injects an empty Bearer (401s later), exactly like any other missing
-      // secret; it never throws. resolveValue is reused so the warn behavior is
-      // identical to the manual { secret } path.
-      if (cfg.auth?.type === "oauth" && !Object.keys(headers).some((h) => h.toLowerCase() === "authorization")) {
+      // Telar-owned OAuth (docs/mcp-oauth-design.md §3): OAuth is DETECTED, not
+      // declared — injection is keyed on a STORED OAuth record (a successful
+      // Connect), NOT on the optional `auth` block. For any http server that has
+      // a record, auto-inject the managed Bearer from the mirrored
+      // mcp:<project>:<server> slot — unless the user already wired an
+      // Authorization header themselves (case-insensitive; theirs wins).
+      // resolveValue is reused so the warn behavior is identical to the manual
+      // { secret } path; it never throws.
+      if (getRecord(projectName, name) && !Object.keys(headers).some((h) => h.toLowerCase() === "authorization")) {
         headers.Authorization = resolveValue({ secret: name, prefix: "Bearer " }, projectName, name);
       }
       out[name] = {
@@ -112,14 +113,14 @@ export function resolveProjectMcpServers(projectName: string): Record<string, Sd
 }
 
 // Before a run, refresh any near-expiry Telar-owned OAuth tokens so the Bearer
-// resolveProjectMcpServers injects is live (docs/mcp-oauth-design.md §5). Each
+// resolveProjectMcpServers injects is live (docs/mcp-oauth-design.md §5). Keyed
+// on a stored record (a successful Connect), not on the `auth` block. Each
 // server is isolated in try/catch and BEST-EFFORT: a refresh failure (network,
 // revoked refresh token) must never throw out of here — a stale token just 401s
-// at use. No-op when the project declares no oauth servers.
+// at use. No-op when no server has a record.
 export async function refreshProjectMcpAuth(project: string): Promise<void> {
   const servers = getProject(project).manifest.mcpServers;
-  for (const [name, cfg] of Object.entries(servers)) {
-    if (cfg.transport !== "http" || cfg.auth?.type !== "oauth") continue;
+  for (const name of Object.keys(servers)) {
     try {
       const record = getRecord(project, name);
       if (record && needsRefresh(record)) await refreshRecord(record);

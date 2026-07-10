@@ -3,8 +3,17 @@ import { putPending } from "@/lib/mcp-oauth-pending";
 
 export const dynamic = "force-dynamic";
 
-// Start a browser OAuth connect for an http MCP server whose manifest declares
-// `auth.type === "oauth"` (docs/mcp-oauth-design.md §5). EVERYTHING is derived
+// The client-identity ladder throws this when it can resolve no client: the AS
+// does neither CIMD nor DCR and no manual clientId is configured. We surface it
+// as an actionable 422 (+ needsClientId) so the UI can prompt for a manual
+// clientId in Configure → Advanced instead of showing a blank 5xx.
+const NO_CLIENT_STRATEGY = "no usable client-identity strategy";
+
+// Start a browser OAuth connect for an http MCP server. OAuth is DETECTED, not
+// declared (docs/mcp-oauth-design.md §3): we allow Connect for ANY http server
+// and never gate on an `auth.type === "oauth"` block. The manifest `auth`, when
+// present, is passed to beginConnect only as OPTIONAL overrides (manual clientId
+// / scopes / AS pin); its absence does NOT disable OAuth. EVERYTHING is derived
 // server-side from the manifest — the client only names { project, server }; we
 // never trust a client-supplied verifier/state. beginConnect runs discovery →
 // the client-identity ladder → PKCE → the authorization URL; we stash the
@@ -27,18 +36,28 @@ export async function POST(req: Request) {
   if (!cfg) {
     return Response.json({ error: `Unknown MCP server "${server}" in project "${project}".` }, { status: 404 });
   }
-  if (cfg.transport !== "http" || cfg.auth?.type !== "oauth") {
-    return Response.json({ error: `MCP server "${server}" is not an OAuth server.` }, { status: 400 });
+  if (cfg.transport !== "http") {
+    return Response.json({ error: `MCP server "${server}" is not an http server.` }, { status: 400 });
   }
 
+  // Optional overrides only — an absent block means pure autodetect.
+  const auth = cfg.auth ?? { type: "oauth" as const };
+
   try {
-    const ctx = await beginConnect({ project, server, serverUrl: cfg.url, auth: cfg.auth });
+    const ctx = await beginConnect({ project, server, serverUrl: cfg.url, auth });
     putPending({ project, server, ctx, createdAt: Date.now() });
     return Response.json({ url: ctx.authorizationUrl });
   } catch (e) {
-    return Response.json(
-      { error: e instanceof Error ? e.message : "failed to begin OAuth connect" },
-      { status: 502 },
-    );
+    const message = e instanceof Error ? e.message : "failed to begin OAuth connect";
+    if (message.includes(NO_CLIENT_STRATEGY)) {
+      return Response.json(
+        {
+          error: `"${server}" can't self-register — add a client ID under Configure → Advanced (from the server's dashboard), Save, then Connect again.`,
+          needsClientId: true,
+        },
+        { status: 422 },
+      );
+    }
+    return Response.json({ error: message }, { status: 502 });
   }
 }

@@ -17,6 +17,7 @@ afterAll(() => {
 const {
   canonicalResource,
   discover,
+  probeMcpAuth,
   decideClientStrategy,
   ensureClient,
   generatePkce,
@@ -133,6 +134,47 @@ describe("discover", () => {
     expect(d.registrationEndpoint).toBe(AS.registerEndpoint);
     expect(calls.some((c) => c.url === server)).toBe(false); // never probed the resource
     expect(calls.some((c) => c.url === prmUrl)).toBe(false); // never fetched PRM
+  });
+});
+
+// --- probeMcpAuth (best-effort OAuth detection) ----------------------------
+describe("probeMcpAuth", () => {
+  const server = "https://mcp.example.com/mcp";
+  const prmUrl = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp";
+
+  test("true on a 401 carrying a WWW-Authenticate resource_metadata pointer", async () => {
+    const { fetchImpl } = makeFetch({
+      [server]: () =>
+        new Response(null, { status: 401, headers: { "WWW-Authenticate": `Bearer resource_metadata="${prmUrl}"` } }),
+    });
+    const r = await probeMcpAuth(server, { fetchImpl });
+    expect(r.requiresOAuth).toBe(true);
+    expect(r.resourceMetadataUrl).toBe(prmUrl);
+  });
+
+  test("true when the PRM well-known resolves even without a 401 pointer", async () => {
+    const { fetchImpl } = makeFetch({
+      [server]: () => new Response(null, { status: 401 }), // 401 but NO pointer
+      [prmUrl]: () => Response.json({ authorization_servers: [AS.issuer] }),
+    });
+    const r = await probeMcpAuth(server, { fetchImpl });
+    expect(r.requiresOAuth).toBe(true);
+    expect(r.resourceMetadataUrl).toBe(prmUrl);
+  });
+
+  test("false on a 200 with no challenge and no well-known", async () => {
+    const { fetchImpl } = makeFetch({
+      [server]: () => new Response("ok", { status: 200 }),
+      // no PRM well-known route → 404 → not OAuth
+    });
+    const r = await probeMcpAuth(server, { fetchImpl });
+    expect(r.requiresOAuth).toBe(false);
+    expect(r.resourceMetadataUrl).toBeUndefined();
+  });
+
+  test("false (never throws) on a network error", async () => {
+    const r = await probeMcpAuth(server, { fetchImpl: noFetch });
+    expect(r.requiresOAuth).toBe(false);
   });
 });
 

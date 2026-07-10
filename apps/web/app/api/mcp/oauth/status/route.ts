@@ -1,10 +1,17 @@
-import { getProject, getRecord } from "@telar/core";
+import { getProject, getRecord, probeMcpAuth } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
-// Connection status for a project's OAuth MCP servers — for the settings UI to
-// render connected / expired / not-connected per server. WRITE-nothing and
-// LEAK-nothing: only booleans + a non-secret expiry/scope, never the token.
+// Per-server connection/detection status for the settings UI. For EVERY http
+// server we report { requiresOAuth, connected, expiresAt? }:
+//   - requiresOAuth: probeMcpAuth(cfg.url) — OAuth is DETECTED, not declared
+//     (docs/mcp-oauth-design.md §3). Probes run CONCURRENTLY; probeMcpAuth is
+//     best-effort and already swallows network/parse errors (a down or non-OAuth
+//     server ⇒ false), and we wrap it again so this route NEVER 500s.
+//   - connected/expiresAt: from the stored OAuth record (a successful Connect),
+//     never a `auth` block. WRITE-nothing, LEAK-nothing — only booleans + a
+//     non-secret expiry, never the token.
+// stdio servers are omitted; the UI renders those as "Local" from the transport.
 export async function GET(req: Request) {
   const project = new URL(req.url).searchParams.get("project")?.trim() ?? "";
   if (!project) {
@@ -18,21 +25,30 @@ export async function GET(req: Request) {
     return Response.json({ error: e instanceof Error ? e.message : "unknown project" }, { status: 404 });
   }
 
-  const now = Date.now();
-  const status: Record<string, { connected: boolean; expired?: boolean; expiresAt?: number; scope?: string }> = {};
-  for (const [name, cfg] of Object.entries(servers)) {
-    if (cfg.transport !== "http" || cfg.auth?.type !== "oauth") continue;
-    const rec = getRecord(project, name);
-    status[name] = rec
-      ? {
-          connected: Boolean(rec.tokens.accessToken),
-          expired: rec.tokens.expiresAt !== undefined && now >= rec.tokens.expiresAt,
-          expiresAt: rec.tokens.expiresAt,
-          scope: rec.tokens.scope,
+  const entries = await Promise.all(
+    Object.entries(servers)
+      .filter(([, cfg]) => cfg.transport === "http")
+      .map(async ([name, cfg]) => {
+        const url = cfg.transport === "http" ? cfg.url : "";
+        let requiresOAuth = false;
+        try {
+          ({ requiresOAuth } = await probeMcpAuth(url));
+        } catch {
+          // best-effort — an unreachable/non-OAuth server just reports false.
         }
-      : { connected: false };
-  }
-  // The settings UI's normalizeOAuthStatus reads `servers`, keyed by server name,
-  // and derives the pill from the connected/expired booleans (never the token).
-  return Response.json({ servers: status });
+        const rec = getRecord(project, name);
+        return [
+          name,
+          {
+            requiresOAuth,
+            connected: Boolean(rec?.tokens.accessToken),
+            expiresAt: rec?.tokens.expiresAt,
+          },
+        ] as const;
+      }),
+  );
+
+  // Keyed by server name; the settings UI's normalizeStatus reads `servers` and
+  // derives the pill (Connected / Requires sign-in / Ready) from these flags.
+  return Response.json({ servers: Object.fromEntries(entries) });
 }

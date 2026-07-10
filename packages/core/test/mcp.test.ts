@@ -43,28 +43,43 @@ createProject(projRoot, {
   },
 });
 
-// A project whose manifest carries Telar-owned OAuth http servers alongside a
-// non-oauth http server, to exercise the auto-injection path.
+// A project exercising record-gated injection: OAuth is DETECTED (a stored
+// Connect record), never declared. Injection keys on the record, not the
+// optional `auth` block.
 const oauthRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-oauth-"));
 const oproj = path.basename(oauthRoot);
 createProject(oauthRoot, {
   mcpServers: {
-    // oauth server whose token is mirrored under mcp:<project>:supabase.
-    supabase: { transport: "http", url: "https://mcp.supabase.com/mcp", auth: { type: "oauth" } },
-    // oauth server that ALSO declares an explicit Authorization header — the
+    // Recorded server with NO auth block — injection fires purely on the record.
+    supabase: { transport: "http", url: "https://mcp.supabase.com/mcp" },
+    // Has an `auth` block but NO Connect record → must NOT inject.
+    declaredNoRecord: { transport: "http", url: "https://mcp.declared.com/mcp", auth: { type: "oauth" } },
+    // Recorded server that ALSO declares an explicit Authorization header — the
     // user's value must win over the injected Bearer.
     withExplicit: {
       transport: "http",
       url: "https://mcp.example.com/mcp",
       headers: { Authorization: "Bearer explicit" },
-      auth: { type: "oauth" },
     },
-    // oauth server with no token stored yet → empty Bearer, no throw.
-    noToken: { transport: "http", url: "https://mcp.notoken.com/mcp", auth: { type: "oauth" } },
-    // non-oauth http server: never gets an injected Authorization even if a
-    // token happens to be mirrored under its name.
+    // Plain http server, no record: never gets an injected Authorization even if
+    // a token happens to be mirrored under its name.
     plain: { transport: "http", url: "https://mcp.plain.com/mcp" },
   },
+});
+
+// A minimal Connect record (only the fields injection/refresh read), so the
+// resolver's record-gated Bearer injection fires for a project's server.
+const recordFor = (proj: string, server: string) => ({
+  project: proj,
+  server,
+  resource: `https://${server}.example.com/mcp`,
+  as: {
+    issuer: "https://as.example.com",
+    authorizationEndpoint: "https://as.example.com/authorize",
+    tokenEndpoint: "https://as.example.com/token",
+  },
+  client: { strategy: "manual" as const, id: "client_abc" },
+  tokens: { accessToken: "at" },
 });
 
 // A separate project for the refresh path, isolated so cross-test token writes
@@ -73,8 +88,9 @@ const refreshRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-refresh-"))
 const rproj = path.basename(refreshRoot);
 createProject(refreshRoot, {
   mcpServers: {
-    api: { transport: "http", url: "https://api.example.com/mcp", auth: { type: "oauth" } },
-    stdiosrv: { transport: "stdio", command: "x" }, // must be skipped by refresh
+    // No auth block: refresh is keyed on the stored record, not the block.
+    api: { transport: "http", url: "https://api.example.com/mcp" },
+    stdiosrv: { transport: "stdio", command: "x" }, // never gets a record → skipped
   },
 });
 
@@ -138,30 +154,35 @@ describe("resolveProjectMcpServers", () => {
   });
 });
 
-describe("resolveProjectMcpServers — Telar-owned OAuth injection", () => {
-  test("injects Authorization: Bearer <mirrored token> for an oauth http server", () => {
+describe("resolveProjectMcpServers — record-gated OAuth injection", () => {
+  test("injects Bearer <mirrored token> for a recorded server with NO auth block", () => {
+    putRecord(recordFor(oproj, "supabase"));
     setMcpToken(oproj, "supabase", "mirrored_tok");
     const supabase = resolveProjectMcpServers(oproj).supabase as Http;
     expect(supabase.headers.Authorization).toBe("Bearer mirrored_tok");
   });
 
-  test("does not overwrite an Authorization the user already declared", () => {
-    // A mirrored token exists, but the explicit header must win.
+  test("does NOT inject for an auth-block server that has no Connect record", () => {
+    // A token happens to be mirrored, but with no record injection must not fire.
+    setMcpToken(oproj, "declaredNoRecord", "should_be_ignored");
+    const srv = resolveProjectMcpServers(oproj).declaredNoRecord as Http;
+    expect(srv.headers.Authorization).toBeUndefined();
+    expect(srv.headers).toEqual({});
+  });
+
+  test("never overwrites an Authorization the user already declared", () => {
+    // Recorded AND explicitly headered — the user's value must win.
+    putRecord(recordFor(oproj, "withExplicit"));
     setMcpToken(oproj, "withExplicit", "should_be_ignored");
     const srv = resolveProjectMcpServers(oproj).withExplicit as Http;
     expect(srv.headers.Authorization).toBe("Bearer explicit");
   });
 
-  test("does not inject for a non-oauth http server (even if a token is mirrored)", () => {
+  test("does not inject for a plain http server with no record", () => {
     setMcpToken(oproj, "plain", "unused");
     const plain = resolveProjectMcpServers(oproj).plain as Http;
     expect(plain.headers.Authorization).toBeUndefined();
     expect(plain.headers).toEqual({});
-  });
-
-  test("a missing oauth token → empty Bearer, does not throw", () => {
-    const noToken = resolveProjectMcpServers(oproj).noToken as Http;
-    expect(noToken.headers.Authorization).toBe("Bearer ");
   });
 });
 
@@ -191,13 +212,13 @@ describe("refreshProjectMcpAuth", () => {
     }
   };
 
-  test("no-op (and never fetches) when the project has no oauth servers", async () => {
+  test("no-op (and never fetches) when no server has a Connect record", async () => {
     let called = false;
     await withMockFetch((async () => {
       called = true;
       return new Response("{}");
     }) as typeof fetch, async () => {
-      // `project` has only stdio + a non-oauth http server.
+      // `project` (stdio + linear http) has no OAuth records at all.
       await refreshProjectMcpAuth(project);
     });
     expect(called).toBe(false);
