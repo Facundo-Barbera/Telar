@@ -60,7 +60,11 @@ export type McpServerConfig = z.infer<typeof McpServerConfig>;
 
 export const Verdict = z.object({
   ok: z.boolean(),
-  summary: z.string(),
+  summary: z
+    .string()
+    .describe(
+      "A concise 1-3 sentence summary of what you changed and why, in plain prose. Do NOT write an essay, a numbered list of every file, or a play-by-play — the file list goes in files_touched and the timeline is already captured. Markdown is allowed for light emphasis.",
+    ),
   files_touched: z.array(z.string()).default([]),
   blocker: z.string().nullable().default(null),
 });

@@ -97,7 +97,7 @@ function firstPrompt(loom: Loom, manifest: ProjectManifest): string {
     protectedPaths.length
       ? `Guardrails: the following paths are absolutely forbidden to modify: ${protectedPaths.join(", ")}.`
       : "",
-    "Make focused changes, verify your own work, and when done call emit_result with your Verdict (ok, summary, files_touched, blocker).",
+    "Make focused changes, verify your own work, and when done call emit_result with your Verdict (ok, summary, files_touched, blocker). Keep summary to a brief 1-3 sentence overview of what changed and why — not an essay or a per-file list.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -612,7 +612,7 @@ export async function executeLoom(
           piece.allowedPaths.length
             ? `You may ONLY modify files under: ${piece.allowedPaths.join(", ")}. Do not touch anything else.`
             : "",
-          "When done, call emit_result with your Verdict (ok, summary, files_touched, blocker).",
+          "When done, call emit_result with your Verdict (ok, summary, files_touched, blocker). Keep summary to a brief 1-3 sentence overview of what changed and why — not an essay or a per-file list.",
         ]
           .filter(Boolean)
           .join("\n\n"),
