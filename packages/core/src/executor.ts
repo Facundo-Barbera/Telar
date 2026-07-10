@@ -11,6 +11,7 @@ import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, type PanelSignals } from "./panel";
 import { runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
+import { startProjectServer } from "./run-server";
 import { ModelPolicy, Verdict } from "./schemas";
 import type {
   AccountProfile,
@@ -369,7 +370,27 @@ export async function runVerification(
 }> {
   const target = url ?? manifest.urls?.dev;
   const { contract } = readContract(loom.id);
-  if (contract) return runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts);
+  if (contract) {
+    // docs/loom-model.md D13 (run initializer, minimal): a bundle loom with
+    // no usable target (no `url` override, no urls.dev) but a configured
+    // `devCommand` gets its OWN dev server on a free port instead of the
+    // panel silently skipping — torn down again right after this attempt's
+    // panel run, win or lose. A project with a static url is unchanged: this
+    // path never runs when `target` is already set.
+    if (!target && manifest.devCommand) {
+      let server: Awaited<ReturnType<typeof startProjectServer>> | undefined;
+      try {
+        server = await startProjectServer(manifest.root, manifest.devCommand, { abort: opts?.abort });
+        return await runPanelVerification(loom, manifest, attempt, emit, contract, account, server.url, opts);
+      } catch (err) {
+        emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
+        return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+      } finally {
+        await server?.stop();
+      }
+    }
+    return runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts);
+  }
 
   // §M.1/§M.2: a loom that required a Verification Contract to START
   // (loom.contractRequired, stamped by startLoomFromBundle's CONTRACT GATE)

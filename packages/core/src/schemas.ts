@@ -182,6 +182,12 @@ export const ProjectManifest = z.object({
     })
     .optional(),
   designRules: z.string().optional(), // path (relative to root) to a design-guidelines doc the Verifier reads
+  // docs/loom-model.md D13 (run initializer): the command that starts this
+  // project's own dev server (e.g. "bun run dev"). When a bundle loom's
+  // Critic Panel has no usable target (no `url` override, no urls.dev), the
+  // executor spins this up on a free port and tears it down after — never a
+  // replacement for urls.dev when one is already configured.
+  devCommand: z.string().optional(),
 });
 export type ProjectManifest = z.infer<typeof ProjectManifest>;
 
