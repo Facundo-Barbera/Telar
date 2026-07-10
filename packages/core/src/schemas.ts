@@ -43,6 +43,22 @@ export type McpSecretRef = z.infer<typeof McpSecretRef>;
 export const McpValue = z.union([z.string(), McpSecretRef]);
 export type McpValue = z.infer<typeof McpValue>;
 
+// Telar-owned OAuth for an http MCP server (docs/mcp-oauth-design.md §3).
+// Optional + additive: absent → today's manual-token behavior is unchanged.
+// When present, Telar acts as the OAuth client and auto-injects the managed
+// Bearer token; the fields here are only pins/overrides + the tier-3 manual
+// (pre-registered) client fallback. Secrets never live in telar.yaml — a
+// confidential client's secret is a { secret } ref into the secret store.
+export const McpOAuthConfig = z.object({
+  type: z.literal("oauth"),
+  scopes: z.array(z.string()).optional(),
+  clientId: z.string().optional(), // tier-3 manual/pre-registered client id
+  clientSecret: McpSecretRef.optional(), // confidential clients only
+  authorizationServer: z.string().optional(), // skip PRM discovery, pin this issuer
+  redirectPath: z.string().optional(), // default "/api/mcp/oauth/callback"
+});
+export type McpOAuthConfig = z.infer<typeof McpOAuthConfig>;
+
 export const McpServerConfig = z.discriminatedUnion("transport", [
   z.object({
     transport: z.literal("stdio"),
@@ -54,6 +70,7 @@ export const McpServerConfig = z.discriminatedUnion("transport", [
     transport: z.literal("http"),
     url: z.string(),
     headers: z.record(z.string(), McpValue).optional(),
+    auth: McpOAuthConfig.optional(),
   }),
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;

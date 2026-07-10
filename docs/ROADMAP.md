@@ -45,8 +45,20 @@ are agent-drivable on any loom on request; **accept stays a human click**. Watch
 are a true background process — you keep chatting; it reacts when state changes.)_
 
 - [x] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools, auto-run, default to the linked loom (moat: no `accept_loom`)
-- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat. **Designed → [`watchers-design.md`](./watchers-design.md)** (v1 client-driven, ships now; v2 rides Phase C for tab-closed)
+- [x] **Watchers (v1 client-driven)** — a session watches a loom, reacts to state changes, surfaces a card + injects a follow-up turn without blocking the chat. **Designed → [`watchers-design.md`](./watchers-design.md)**; v2 (tab-closed) rides Phase C
 - [ ] **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends; easier to track, harder to clobber
+
+## Phase F — Telar-owned MCP auth (current priority)
+
+MCP servers (Supabase, GitHub…) bind their OAuth login to the account that logged
+in — so switching execution account breaks the MCP. Telar owns the login as the
+OAuth client, storing the token in its account-decoupled project store. **Designed →
+[`mcp-oauth-design.md`](./mcp-oauth-design.md)** (CIMD → DCR → manual client ladder;
+strictly more capable than Claude Code's DCR-only).
+
+- [x] **Stage A — core OAuth engine** — PRM/AS discovery, client-identity ladder, PKCE, token exchange + refresh, record store; SSRF/state/audience/redirect guards; mocked-fetch tests
+- [ ] **Stage B — connect flow + UI** — `/api/mcp/oauth/callback` + Connect/Reconnect/Disconnect per server, async refresh-on-resolve injection in `mcp.ts`, live Supabase test
+- [ ] **v2 — CIMD hosted client-doc** — stand up the client-metadata URL to flip the top tier on
 
 ## Phase C — Durable execution (out-of-process)
 
