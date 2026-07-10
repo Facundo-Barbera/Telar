@@ -17,7 +17,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { StateBadge } from "@/components/common/state-badge";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
-import { AcceptancePanel, DoneConfirmation } from "@/components/looms/acceptance-panel";
 import { LoomGodView } from "@/components/looms/god-view";
 import { AgentViewDrawer } from "@/components/looms/agent-view";
 import { SpecDrawer } from "@/components/looms/spec-bundle";
@@ -299,27 +298,19 @@ export default function LoomDetailPage() {
           <CharterReview loom={loom} />
         ) : (
           <>
-            {loom.state === "ready" && (
-              <div className="mx-auto w-full max-w-5xl px-4 pt-4">
-                <AcceptancePanel loom={loom} onAccepted={(l) => setLoom(l)} />
-              </div>
-            )}
-            {loom.state === "done" && (
-              <div className="mx-auto w-full max-w-5xl px-4 pt-4">
-                <DoneConfirmation loom={loom} by={acceptedBy} />
-              </div>
-            )}
-            <div className="godview">
-              <LoomGodView
-                view={view}
-                loom={loom}
-                threads={threads}
-                onOpenOperator={setOpenOperatorId}
-                onViewSpec={() => setSpecOpen(true)}
-              />
-            </div>
-            {/* Non-invasive overlay drawers — fixed-position, mounted outside
-                the `.godview` main frame so they never reflow it. */}
+            {/* The unified god-view frame. The owner's intervention panel
+                (accept/steer/reject) lives inside it, in the right rail. */}
+            <LoomGodView
+              view={view}
+              loom={loom}
+              threads={threads}
+              onOpenOperator={setOpenOperatorId}
+              onViewSpec={() => setSpecOpen(true)}
+              onIntervened={(l) => setLoom(l)}
+              acceptedBy={acceptedBy}
+            />
+            {/* Non-invasive overlay drawers — the agent view slides in over a
+                scrim; the spec drawer is separate. */}
             <AgentViewDrawer
               operator={view.operators.find((o) => o.id === openOperatorId) ?? null}
               onClose={() => setOpenOperatorId(null)}

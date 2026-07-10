@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { FileIcon, ScrollTextIcon, TriangleAlertIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { FileIcon, ScrollTextIcon, ShieldCheckIcon, TriangleAlertIcon } from "lucide-react";
 import type { AssertionType, ContractAssertion, VerificationContract } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { fmtAgo, shortId } from "@/lib/format";
 import { MessageResponse } from "@/components/ai-elements/message";
 
@@ -206,13 +214,6 @@ export function SpecBundle({ loomId }: { loomId: string }) {
 // colonizes the main view. Self-fetches once per loom; guards a missing bundle.
 // ---------------------------------------------------------------------------
 
-function assertionDetail(a: ContractAssertion): string | null {
-  if (a.type === "live-critic") return a.observable ? `observes: ${a.observable}` : null;
-  if (a.expectedFile) return a.expectedFile;
-  if (a.expected) return a.expected;
-  return null;
-}
-
 function useSpecBundle(loomId: string, active: boolean) {
   const [bundle, setBundle] = useState<SpecBundleData | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -254,117 +255,116 @@ export function SpecDrawer({
   }, [open]);
   const { bundle, loaded } = useSpecBundle(loomId, everOpened);
 
-  const close = useCallback(() => onClose(), [onClose]);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
-
   const files = bundle?.files ?? [];
   const assertions = bundle?.contract?.assertions ?? [];
   const contractErrors = bundle?.contractErrors ?? [];
   const hasBundle = !!bundle && (files.length > 0 || !!bundle.contract || !!bundle.objective);
 
   return (
-    <div className="godview">
-      <div className={cn("scrim", open && "open")} onClick={close} />
-      <aside className={cn("drawer", open && "open")} aria-label="Spec bundle" aria-hidden={!open}>
-        <div className="dh">
-          <div className="av-title">
-            <span className="nm">Spec Bundle</span>
-            {bundle && <span className="mid">{shortId(bundle.version)}</span>}
+    <Sheet
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <SheetContent side="right" className="w-full gap-0 p-0 data-[side=right]:sm:max-w-lg">
+        <SheetHeader className="border-b">
+          <div className="flex items-center gap-2 pr-8">
+            <ScrollTextIcon className="size-4 shrink-0 text-muted-foreground" />
+            <SheetTitle>Spec Bundle</SheetTitle>
+            {bundle && (
+              <SheetDescription className="font-mono text-[11px]">
+                {shortId(bundle.version)}
+              </SheetDescription>
+            )}
           </div>
-          <button className="x" onClick={close} aria-label="Close" style={{ marginLeft: "auto" }}>
-            ✕
-          </button>
-        </div>
-        <div className="db">
-          {!loaded ? (
-            <div className="pend">◷ Loading the spec bundle…</div>
-          ) : !hasBundle ? (
-            <div className="pend">◷ This loom has no spec bundle.</div>
-          ) : (
-            <>
-              {bundle!.objective && (
-                <>
-                  <div className="kh">objective.md</div>
-                  <MessageResponse className="spec-obj">{bundle!.objective}</MessageResponse>
-                </>
-              )}
+        </SheetHeader>
 
-              {contractErrors.length > 0 && (
-                <>
-                  <div className="kh">Verification contract · issues</div>
-                  <div className="warnbox">
-                    {contractErrors.map((e, i) => (
-                      <span key={i}>⚠ {e}</span>
-                    ))}
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-4 p-4">
+            {!loaded ? (
+              <p className="text-sm text-muted-foreground">Loading the spec bundle…</p>
+            ) : !hasBundle ? (
+              <p className="text-sm text-muted-foreground">This loom has no spec bundle.</p>
+            ) : (
+              <>
+                {bundle!.objective && (
+                  <div className="flex flex-col gap-1.5">
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Objective
+                    </h3>
+                    <MessageResponse className="text-sm leading-relaxed">
+                      {bundle!.objective}
+                    </MessageResponse>
                   </div>
-                </>
-              )}
+                )}
 
-              {assertions.length > 0 && (
-                <>
-                  <div className="kh">
-                    Verification contract · {assertions.length} assertion{assertions.length === 1 ? "" : "s"}
+                {contractErrors.length > 0 && (
+                  <div className="flex flex-col gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-300">
+                      <TriangleAlertIcon className="size-3.5 shrink-0" />
+                      Verification contract issues
+                    </div>
+                    <ul className="flex flex-col gap-0.5 pl-5 text-xs text-amber-700 dark:text-amber-200/90">
+                      {contractErrors.map((e, i) => (
+                        <li key={i} className="list-disc">
+                          {e}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                  {assertions.map((a) => {
-                    const detail = assertionDetail(a);
-                    return (
-                      <div key={a.id} className="assert">
-                        <span className="ax">{a.id}</span>
-                        <span className="atxt">
-                          {a.description}
-                          {detail && (
-                            <>
-                              {" "}
-                              <span className="m">{detail}</span>
-                            </>
-                          )}
-                        </span>
-                        <span className={cn("blk", !a.blocker && "soft")}>
-                          {a.blocker ? "blocker" : "advisory"}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
+                )}
 
-              {files.length > 0 && (
-                <>
-                  <div className="kh">Context files</div>
-                  <div className="filelist">
-                    {files.map((f) => (
-                      <a
-                        key={f}
-                        href={`/api/looms/${loomId}/spec/${f}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <span className="fi">📄</span>
-                        <span className="fn">{f}</span>
-                      </a>
-                    ))}
+                {assertions.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Verification contract · {assertions.length} assertion
+                      {assertions.length === 1 ? "" : "s"}
+                    </h3>
+                    <div className="flex flex-col gap-2">
+                      {assertions.map((a) => (
+                        <AssertionRow key={a.id} loomId={loomId} assertion={a} />
+                      ))}
+                    </div>
                   </div>
-                </>
-              )}
+                )}
 
-              <div className="moat" style={{ margin: "22px 0 0" }}>
-                <span className="lock">🔒</span>
-                <span>
-                  The contract is the yardstick. Loosening an assertion under a failing verdict needs a human
-                  co-sign — editing the yardstick is <b>set_verdict in disguise</b>.
-                </span>
-              </div>
-            </>
-          )}
-        </div>
-      </aside>
-    </div>
+                {files.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Context files
+                    </h3>
+                    <ul className="flex flex-col gap-1">
+                      {files.map((f) => (
+                        <li key={f} className="min-w-0">
+                          <a
+                            href={`/api/looms/${loomId}/spec/${f}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                          >
+                            <FileIcon className="size-3.5 shrink-0" />
+                            <span className="truncate">{f}</span>
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+                  <ShieldCheckIcon className="mt-0.5 size-4 shrink-0" />
+                  <span>
+                    The contract is the yardstick. Loosening an assertion under a failing verdict
+                    needs a human co-sign — editing the yardstick is{" "}
+                    <span className="font-medium text-foreground/80">set_verdict in disguise</span>.
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
   );
 }

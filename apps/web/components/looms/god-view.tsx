@@ -1,51 +1,49 @@
 "use client";
 
 import { useMemo } from "react";
+import {
+  ArrowUpRight,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Eye,
+  Loader2,
+  MessageSquare,
+  RefreshCw,
+  RotateCcw,
+  ShieldCheck,
+  Workflow,
+  X,
+} from "lucide-react";
 import type { Loom, SubGoal } from "@telar/core";
 import type {
+  DecisionKind,
   DecisionLogEntry,
-  GodStatusKind,
   GodView,
   Operator,
   Orchestrator,
   Step,
 } from "./godview";
+import { StatusBadge } from "./status";
+import { AcceptancePanel, DoneConfirmation } from "./acceptance-panel";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { fmtAgo, shortId } from "@/lib/format";
 
-// The locked mockup (scratchpad/loom-godview-integrated.html) renders one
-// unified frame for every non-scoping loom: a compact charter strip, an
-// orchestrator bar on top, THE WEAVE (operator thread cards), a right rail
-// (decision log + steer), and the moat. All layout classes live under the
-// `.godview` scope in globals.css; this component only wires derived data
-// (deriveGodView) onto that structure. A single loom shows exactly one
-// operator (a weave of one); a woven loom shows one card per child thread.
-
-// ---------------------------------------------------------------------------
-// Shared vocabulary — god-status → mockup card/pill classes.
-// ---------------------------------------------------------------------------
-
-const CARD_CLASS: Record<GodStatusKind, string> = {
-  run: "s-run",
-  repair: "s-repair",
-  verify: "s-verify",
-  done: "s-done",
-  block: "s-block",
-  wait: "s-wait",
-};
-
-const PILL_GLYPH: Record<GodStatusKind, string> = {
-  run: "◐",
-  repair: "↺",
-  verify: "▶",
-  done: "✓",
-  block: "✋",
-  wait: "◷",
-};
-
-// ---------------------------------------------------------------------------
-// Charter strip — objective + a few chips + View spec / Revise.
-// ---------------------------------------------------------------------------
+// The unified god-view frame for every non-scoping loom, re-skinned onto the
+// app's native shadcn language (bg-card / muted-foreground / neutral badges —
+// exactly like the session view): a charter card, an orchestrator card, THE
+// WEAVE of operator cards, a right rail (the owner's intervention panel + the
+// orchestrator log), and the moat. Layout is Tailwind + shadcn primitives; the
+// only data source is deriveGodView (godview.ts). A single loom is a weave of
+// one operator; a woven loom shows one card per child thread.
 
 const PROOF_LABEL: Record<string, string> = {
   quickfix: "quickfix",
@@ -53,6 +51,10 @@ const PROOF_LABEL: Record<string, string> = {
   "verifier-criteria": "criteria",
   custom: "custom",
 };
+
+// ---------------------------------------------------------------------------
+// Charter card — objective + a few chips + View spec / Revise.
+// ---------------------------------------------------------------------------
 
 function CharterStrip({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void }) {
   const charter = loom.charter;
@@ -64,88 +66,151 @@ function CharterStrip({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void
   if (budget?.maxCostUsd != null) budgetBits.push(`≤ $${budget.maxCostUsd}`);
   if (budget?.maxWallClockHours != null) budgetBits.push(`≤ ${budget.maxWallClockHours}h`);
 
+  const hasChips = !!charter && (!!charter.proofStrategy || scopePaths.length > 0 || budgetBits.length > 0);
+
   return (
-    <section className="charter">
-      <div className="ch-top">
-        <span className="k">Charter</span>
-        {charter?.approvedBy && (
-          <span className="ok">
-            ✓ approved by {charter.approvedBy}
-            {charter.version ? ` · v${charter.version}` : ""}
+    <Card>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Charter
           </span>
-        )}
-        <div className="spacer" />
-        <button className="btn ghost sm" onClick={onViewSpec}>
-          View spec ↗
-        </button>
-        <button className="btn ghost sm" disabled title="Charter revision — coming soon">
-          Revise
-        </button>
-      </div>
-      <p className="obj">{objective}</p>
-      {charter && (
-        <div className="meta">
-          {charter.proofStrategy && (
-            <span className="chip">
-              proof · {PROOF_LABEL[charter.proofStrategy] ?? charter.proofStrategy}
+          {charter?.approvedBy && (
+            <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+              <CircleCheck className="size-3.5" />
+              approved by {charter.approvedBy}
+              {charter.version ? ` · v${charter.version}` : ""}
             </span>
           )}
-          {scopePaths.length > 0 && (
-            <span className="chip">scope · {scopePaths.slice(0, 2).join(" · ")}</span>
-          )}
-          {budgetBits.length > 0 && <span className="chip">budget · {budgetBits.join(" · ")}</span>}
+          <div className="ml-auto flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={onViewSpec}>
+              View spec
+              <ArrowUpRight />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled
+              title="Charter revision — coming soon"
+            >
+              Revise
+            </Button>
+          </div>
         </div>
-      )}
-    </section>
+
+        <p className="text-sm leading-relaxed text-foreground/90">{objective}</p>
+
+        {hasChips && (
+          <div className="flex flex-wrap gap-1.5">
+            {charter!.proofStrategy && (
+              <Badge variant="secondary" className="font-normal">
+                proof · {PROOF_LABEL[charter!.proofStrategy] ?? charter!.proofStrategy}
+              </Badge>
+            )}
+            {scopePaths.length > 0 && (
+              <Badge variant="secondary" className="max-w-full font-normal">
+                <span className="truncate">scope · {scopePaths.slice(0, 2).join(" · ")}</span>
+              </Badge>
+            )}
+            {budgetBits.length > 0 && (
+              <Badge variant="secondary" className="font-normal">
+                budget · {budgetBits.join(" · ")}
+              </Badge>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator bar — the loop, the live tick, the concurrency governor.
+// Orchestrator card — the loop, the live tick, the concurrency governor.
 // ---------------------------------------------------------------------------
 
 const LOOP: Orchestrator["loopStage"][] = ["plan", "schedule", "observe", "decide"];
 
 function OrchestratorBar({ orchestrator }: { orchestrator: Orchestrator }) {
   const { loopStage, tick, governor } = orchestrator;
-  const pct =
-    governor.budget > 0 ? Math.min(100, (governor.inFlight / governor.budget) * 100) : 0;
+  const { inFlight, max } = governor;
+  const pct = max && max > 0 ? Math.min(100, (inFlight / max) * 100) : 0;
+
+  // Truthful live count — never an invented denominator. "idle" when nothing is
+  // in flight (a parked loom reads honestly); "N / max active" + a meter only
+  // when the charter declared a real cap.
+  const governorLabel =
+    inFlight === 0
+      ? "idle"
+      : max != null
+        ? `${inFlight} / ${max} active`
+        : `${inFlight} agent${inFlight === 1 ? "" : "s"} active`;
 
   return (
-    <section className="orch">
-      <div className="obar">
-        <div className="badge">
-          <span className="glyph">✳</span>
-          <span>
-            <span className="lbl">Orchestrator</span>
-            <br />
-            <span className="who">weaver · fresh context · owns the loop</span>
-          </span>
-        </div>
-        <div className="loop">
-          {LOOP.map((s, i) => (
-            <span key={s} className="contents">
-              <span className={cn("v", s === loopStage && "on")}>{s}</span>
-              {i < LOOP.length - 1 ? <span className="arr">→</span> : <span className="cyc">↻</span>}
+    <Card>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <Workflow className="size-4" />
             </span>
-          ))}
-        </div>
-        <div className="gov">
-          <span className="n mono">
-            {governor.inFlight} / {governor.budget} agents
-          </span>
-          <div className="meter">
-            <i style={{ width: `${pct}%` }} />
+            <div className="flex flex-col leading-tight">
+              <span className="text-sm font-medium">Orchestrator</span>
+              <span className="text-xs text-muted-foreground">
+                weaver · fresh context · owns the loop
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 text-xs">
+            {LOOP.map((s, i) => (
+              <span key={s} className="flex items-center gap-1">
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5",
+                    s === loopStage
+                      ? "bg-foreground/10 font-medium text-foreground"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {s}
+                </span>
+                {i < LOOP.length - 1 ? (
+                  <ChevronRight className="size-3 text-muted-foreground/50" />
+                ) : (
+                  <RefreshCw className="size-3 text-muted-foreground/50" />
+                )}
+              </span>
+            ))}
+          </div>
+
+          <div className="ml-auto flex min-w-[130px] flex-col gap-1.5">
+            <span
+              className={cn(
+                "text-xs tabular-nums",
+                inFlight === 0 ? "text-muted-foreground" : "text-foreground",
+              )}
+            >
+              {governorLabel}
+            </span>
+            {max != null && <Progress value={pct} />}
           </div>
         </div>
-      </div>
-      <div className="tick">
-        <span className="live-dot" />
-        <span>
-          <b>Tick:</b> {tick}
-        </span>
-      </div>
-    </section>
+
+        <Separator />
+
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              inFlight === 0 ? "bg-muted-foreground/40" : "bg-emerald-500",
+            )}
+          />
+          <span>
+            <span className="font-medium text-foreground/70">Tick:</span> {tick}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -157,8 +222,8 @@ type DepInfo = { hasDeps: boolean; waitsOn: string[] };
 
 // Layout-only dependency derivation (godview.ts's Operator omits the graph):
 // map each operator (= a child thread) to its subgoal's dependsOn, and list any
-// dep whose thread hasn't reached "done" yet. Single looms have no threads → no
-// deps. Guarded against a missing charter / empty threads.
+// dep whose thread hasn't reached "done" yet. Single looms have no threads, so
+// no deps. Guarded against a missing charter / empty threads.
 function deriveDeps(loom: Loom, threads: Loom[]): Map<string, DepInfo> {
   const out = new Map<string, DepInfo>();
   const decomposition: SubGoal[] = loom.charter?.decomposition ?? [];
@@ -196,68 +261,79 @@ function summarize(operators: Operator[]): string {
   return bits.join(" · ");
 }
 
-// One derived step, rendered as a muted chip (the palette is intentionally
-// calm — one quiet signal, not a highlighter). `fanCount` only decorates a
-// live Build with its parallel-builder count.
+// One derived step as a calm chip — one quiet signal, not a highlighter.
+// `fanCount` only decorates a live Build with its parallel-builder count.
 function StageCell({ step, fanCount }: { step: Step; fanCount: number }) {
-  const cls = ["stage"];
-  if (step.state === "done") cls.push("done");
-  else if (step.state === "active") cls.push("active");
-  else if (step.state === "failed") cls.push("failed");
+  const { state } = step;
   const label =
-    step.name === "Build" && step.state === "active" && fanCount > 0
+    step.name === "Build" && state === "active" && fanCount > 0
       ? `Build ×${fanCount}`
       : step.name;
-  const suffix = step.state === "failed" ? " ✗" : "";
-  return <div className={cls.join(" ")}>{label}{suffix}</div>;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[11px]",
+        state === "failed"
+          ? "text-destructive"
+          : state === "active"
+            ? "text-foreground"
+            : state === "done"
+              ? "text-muted-foreground"
+              : "text-muted-foreground/60",
+      )}
+    >
+      {state === "done" && <Check className="size-3 text-emerald-600 dark:text-emerald-400" />}
+      {state === "active" && <Loader2 className="size-3 animate-spin" />}
+      {state === "failed" && <X className="size-3 text-destructive" />}
+      {label}
+    </span>
+  );
 }
 
 function OperatorNote({ op, dep }: { op: Operator; dep: DepInfo | undefined }) {
   const kind = op.status.kind;
 
+  // needs-review and blocked both wear the "block" pill but mean opposite
+  // things: couldn't-prove vs. a real parked question. Keep the copy honest.
   if (kind === "block") {
+    const isReview = op.state === "needs-review";
+    const Icon = isReview ? Eye : CircleAlert;
     return (
-      <div className="t-note">
-        <span className="flag" style={{ color: "var(--accent)" }}>
-          paused
-        </span>
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <Icon className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
         <span>
-          Parked for a decision the orchestrator won&apos;t guess — the weave keeps running around
-          it.
+          {isReview
+            ? "Couldn't independently verify — no executable check ran. Review it and decide from the panel."
+            : "Parked for a decision the orchestrator won't guess — answer it in the panel to resume; the weave keeps running around it."}
         </span>
-      </div>
+      </p>
     );
   }
   if (kind === "repair" && op.repairs > 0) {
     return (
-      <div className="t-note">
-        <span className="flag" style={{ color: "var(--repair)" }}>
-          verify ✗
-        </span>
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <RotateCcw className="mt-0.5 size-3.5 shrink-0 text-destructive" />
         <span>
           Verify failed — the failing criterion + repro were handed back to the builder (attempt{" "}
           {op.repairs + 1}).
         </span>
-      </div>
+      </p>
     );
   }
   if (kind === "wait" && dep?.waitsOn.length) {
     return (
-      <div className="t-note">
-        <span style={{ color: "var(--ink-faint)" }}>
-          Waits on {dep.waitsOn.join(", ")} — scheduled the moment they pass.
-        </span>
-      </div>
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <Clock className="mt-0.5 size-3.5 shrink-0" />
+        <span>Waits on {dep.waitsOn.join(", ")} — scheduled the moment they pass.</span>
+      </p>
     );
   }
   if (kind === "done") {
     return (
-      <div className="t-note">
-        <span className="flag" style={{ color: "var(--ok)" }}>
-          done
-        </span>
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
         <span>Verified against its story and promoted.</span>
-      </div>
+      </p>
     );
   }
   return null;
@@ -276,10 +352,9 @@ function OperatorCard({
   const fanCount = op.subAgents.length;
 
   return (
-    <article
-      className={cn("thread", CARD_CLASS[kind], dep?.hasDeps && "dep")}
-      tabIndex={0}
+    <Card
       role="button"
+      tabIndex={0}
       onClick={() => onOpen(op.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -287,50 +362,57 @@ function OperatorCard({
           onOpen(op.id);
         }
       }}
+      className={cn(
+        "cursor-pointer transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+        dep?.hasDeps && "border-l-2 border-l-border",
+      )}
     >
-      <div className="t-row">
-        <span className="t-name">{op.name}</span>
-        <span className="t-id">{shortId(op.id)}</span>
-        <div className="t-right">
-          <span className="drill">open agent ↳</span>
-          <span className={cn("pill", kind)}>
-            {PILL_GLYPH[kind]} {op.status.label}
-          </span>
-        </div>
-      </div>
-
-      {op.steps.length > 0 && (
-        <div className="stages">
-          {op.steps.map((s, i) => (
-            <StageCell key={`${s.name}-${i}`} step={s} fanCount={fanCount} />
-          ))}
-        </div>
-      )}
-
-      {fanCount > 0 && (
-        <div className="fanout">
-          <span className="lead">fanned out →</span>
-          {op.subAgents.map((s) => (
-            <span key={s.id} className={cn("agent-chip", s.done && "done")}>
-              <span className="sp" /> {s.name}
+      <CardContent className="flex flex-col gap-2.5">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium">{op.name}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">{shortId(op.id)}</span>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="hidden items-center gap-0.5 text-xs text-muted-foreground sm:flex">
+              open agent
+              <ChevronRight className="size-3" />
             </span>
-          ))}
+            <StatusBadge kind={kind} state={op.state} active={op.active} label={op.status.label} />
+          </div>
         </div>
-      )}
 
-      <OperatorNote op={op} dep={dep} />
+        {op.steps.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            {op.steps.map((s, i) => (
+              <span key={`${s.name}-${i}`} className="flex items-center gap-1">
+                <StageCell step={s} fanCount={fanCount} />
+                {i < op.steps.length - 1 && (
+                  <ChevronRight className="size-3 text-muted-foreground/40" />
+                )}
+              </span>
+            ))}
+          </div>
+        )}
 
-      {kind === "block" && (
-        <div className="t-actions" onClick={(e) => e.stopPropagation()}>
-          <button className="btn accent sm" disabled title="Steering — coming soon">
-            Answer &amp; resume
-          </button>
-          <button className="btn ghost sm" disabled title="Coming soon">
-            Take over in chat →
-          </button>
-        </div>
-      )}
-    </article>
+        {fanCount > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>Fanned out</span>
+            <ChevronRight className="size-3" />
+            {op.subAgents.map((s) => (
+              <Badge key={s.id} variant="outline" className="gap-1 font-normal">
+                {s.done ? (
+                  <Check className="text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Loader2 className="animate-spin" />
+                )}
+                {s.name}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        <OperatorNote op={op} dep={dep} />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -348,17 +430,21 @@ function Weave({
   const deps = useMemo(() => deriveDeps(loom, threads), [loom, threads]);
 
   return (
-    <section>
-      <div className="weave-head">
-        <h2>The weave</h2>
-        <span className="cnt">{summarize(operators)}</span>
-        <span className="hint">click any to open its agent view</span>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-muted-foreground">The weave</span>
+          <span className="text-xs text-muted-foreground/60">{summarize(operators)}</span>
+        </div>
+        <Separator />
+        <p className="text-xs text-muted-foreground/70">
+          Operators the orchestrator is weaving — select one to open its agent view.
+        </p>
       </div>
-      <div className="threads">
+
+      <div className="flex flex-col gap-2.5">
         {operators.length === 0 ? (
-          <div className="t-note" style={{ marginTop: 8 }}>
-            <span style={{ color: "var(--ink-faint)" }}>No operators weaving yet.</span>
-          </div>
+          <p className="text-xs text-muted-foreground">No operators weaving yet.</p>
         ) : (
           operators.map((op) => (
             <OperatorCard key={op.id} op={op} dep={deps.get(op.id)} onOpen={onOpenOperator} />
@@ -370,71 +456,101 @@ function Weave({
 }
 
 // ---------------------------------------------------------------------------
-// Right rail — decision log + steer box + launched-from-session link.
+// Right rail — the owner's intervention panel + the orchestrator log.
 // ---------------------------------------------------------------------------
 
-const LOG_CLASS: Record<DecisionLogEntry["kind"], string> = {
-  plan: "plan",
-  ok: "ok",
-  fail: "fail",
-  block: "block",
-  info: "",
+const LOG_ICON: Record<DecisionKind, { Icon: typeof Check; className: string }> = {
+  ok: { Icon: Check, className: "text-emerald-600 dark:text-emerald-400" },
+  fail: { Icon: CircleX, className: "text-destructive" },
+  block: { Icon: CircleAlert, className: "text-amber-600 dark:text-amber-400" },
+  plan: { Icon: Workflow, className: "text-muted-foreground" },
+  info: { Icon: ChevronRight, className: "text-muted-foreground" },
 };
 
-function RightRail({ log, loom }: { log: DecisionLogEntry[]; loom: Loom }) {
-  // godview.ts derives the log oldest→newest; the rail shows newest first so
+function LogRow({ e }: { e: DecisionLogEntry }) {
+  const { Icon, className } = LOG_ICON[e.kind];
+  return (
+    <li className="flex items-start gap-2 text-xs">
+      <Icon className={cn("mt-0.5 size-3.5 shrink-0", className)} />
+      <span className="min-w-0 flex-1 text-muted-foreground">
+        <span className="font-medium text-foreground/80">{e.title}</span>
+        {e.detail ? ` ${e.detail}` : ""}
+      </span>
+      <span className="shrink-0 text-[10px] text-muted-foreground/60">{fmtAgo(e.ts)}</span>
+    </li>
+  );
+}
+
+function RightRail({
+  log,
+  loom,
+  acceptedBy,
+  onIntervened,
+}: {
+  log: DecisionLogEntry[];
+  loom: Loom;
+  acceptedBy?: string;
+  onIntervened?: (loom: Loom) => void;
+}) {
+  // godview.ts derives the log oldest-to-newest; the rail shows newest first so
   // the latest move is visible without scrolling.
   const entries = useMemo(() => [...log].reverse(), [log]);
   const sessionId = loom.charter?.scopingSessionId;
 
   return (
-    <aside className="rail">
-      <div className="card">
-        <div className="hd">
-          <span className="k">Orchestrator log</span>
-          <span className="who">weaver</span>
-        </div>
-        <div className="bd">
+    <aside className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
+      {/* Primary panel: the owner's move. Both self-gate by loom.state, so
+          mounting them unconditionally is safe — AcceptancePanel renders for
+          ready/needs-review/blocked, DoneConfirmation only for done. */}
+      <AcceptancePanel loom={loom} onAccepted={onIntervened} />
+      <DoneConfirmation loom={loom} by={acceptedBy} />
+
+      <Card>
+        <CardContent className="flex flex-col gap-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Orchestrator log</span>
+            <span className="ml-auto text-[10px] text-muted-foreground/60">weaver</span>
+          </div>
+          <Separator />
           {entries.length === 0 ? (
-            <div className="empty">No decisions yet.</div>
+            <p className="text-xs text-muted-foreground">No decisions yet.</p>
           ) : (
-            <ul className="log">
+            <ul className="flex flex-col gap-2">
               {entries.map((e, i) => (
-                <li key={`${e.ts}-${i}`} className={LOG_CLASS[e.kind]}>
-                  <b>{e.title}</b>
-                  {e.detail ? ` ${e.detail}` : ""}
-                  <span className="t">{fmtAgo(e.ts)}</span>
-                </li>
+                <LogRow key={`${e.ts}-${i}`} e={e} />
               ))}
             </ul>
           )}
-        </div>
-      </div>
-
-      <div className="card steer">
-        <div className="hd">
-          <span className="k">Steer this loom</span>
-        </div>
-        <div className="bd">
-          <textarea
-            placeholder="e.g. 'For a declined card, use the “try another card” copy.'"
-            disabled
-          />
-          <div className="foot">
-            <button className="btn accent sm" disabled title="Steering — coming soon">
-              Send directive
-            </button>
-            <span className="hint">Picked up at the next thread boundary.</span>
-          </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {sessionId && (
-        <a className="from-chat" href="#">
-          💬 Launched from session {shortId(sessionId)} →
-        </a>
+        <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+          <MessageSquare className="size-3.5 shrink-0" />
+          Launched from session {shortId(sessionId)}
+        </div>
       )}
     </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The moat.
+// ---------------------------------------------------------------------------
+
+function Moat() {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+      <ShieldCheck className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <span>
+        <span className="font-medium text-foreground/80">
+          The weave can&apos;t come off the loom on its own.
+        </span>{" "}
+        Promotion to done needs a passing{" "}
+        <span className="font-medium text-foreground/80">independent</span> verify — no thread, the
+        orchestrator, or a chat marks itself done.
+      </span>
+    </div>
   );
 }
 
@@ -448,41 +564,44 @@ export function LoomGodView({
   threads,
   onOpenOperator,
   onViewSpec,
+  onIntervened,
+  acceptedBy,
 }: {
   view: GodView;
   loom: Loom;
   threads: Loom[];
   onOpenOperator: (id: string) => void;
   onViewSpec: () => void;
+  // Propagates a re-dispatched loom up after an accept/steer/reject so the page
+  // reflects the new state immediately (it also polls, but this is instant).
+  onIntervened?: (loom: Loom) => void;
+  acceptedBy?: string;
 }) {
   return (
-    <>
-      <CharterStrip loom={loom} onViewSpec={onViewSpec} />
-      <OrchestratorBar orchestrator={view.orchestrator} />
-
-      <div className="rel">
-        <span>operators the orchestrator is weaving</span>
-        <span className="ln" />
-        <span>↓ click any to open its agent view</span>
-      </div>
-
-      <div className="content">
-        <Weave
-          operators={view.operators}
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4">
+      {/* One two-column workspace: the orchestrator + weave flow on the left,
+          a persistent rail (intervention / done + log) on the right spanning
+          the whole height — not a stack of full-width cards. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <CharterStrip loom={loom} onViewSpec={onViewSpec} />
+          <OrchestratorBar orchestrator={view.orchestrator} />
+          <Weave
+            operators={view.operators}
+            loom={loom}
+            threads={threads}
+            onOpenOperator={onOpenOperator}
+          />
+        </div>
+        <RightRail
+          log={view.decisionLog}
           loom={loom}
-          threads={threads}
-          onOpenOperator={onOpenOperator}
+          acceptedBy={acceptedBy}
+          onIntervened={onIntervened}
         />
-        <RightRail log={view.decisionLog} loom={loom} />
       </div>
 
-      <div className="moat">
-        <span className="lock">🔒</span>
-        <span>
-          <b>The weave can&apos;t come off the loom on its own.</b> Promotion to done needs a passing{" "}
-          <b>independent</b> verify — no thread, the orchestrator, or a chat marks itself done.
-        </span>
-      </div>
-    </>
+      <Moat />
+    </div>
   );
 }

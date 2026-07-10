@@ -120,7 +120,10 @@ export type DecisionLogEntry = {
   detail?: string;
 };
 
-export type Governor = { inFlight: number; budget: number };
+// `max` is set ONLY when the charter actually declares a maxAgents cap — no
+// invented denominator. The bar reads honestly ("2 agents active" / "idle")
+// and only shows N/max + a meter when a real cap exists.
+export type Governor = { inFlight: number; max?: number };
 
 export type Orchestrator = {
   loopStage: LoopStage;
@@ -554,14 +557,14 @@ export function deriveGodView(loom: Loom, threads: Loom[], events: LoomEvent[]):
     : operators[0]?.active
       ? 1 + operators[0].subAgents.filter((s) => !s.done).length
       : 0;
-  const budget = loom.charter?.budget?.maxAgents ?? 12;
+  const max = loom.charter?.budget?.maxAgents;
 
   return {
     woven,
     orchestrator: {
       loopStage: deriveLoopStage(loom, operators),
       tick: deriveTick(loom, events),
-      governor: { inFlight, budget },
+      governor: { inFlight, ...(max != null ? { max } : {}) },
     },
     operators,
     decisionLog: deriveDecisionLog(events),
