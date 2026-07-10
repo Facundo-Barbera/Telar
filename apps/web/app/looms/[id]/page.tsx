@@ -11,27 +11,18 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { Loom, LoomEvent } from "@telar/core";
-import { isWoven } from "@/components/looms/utils";
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { StateBadge } from "@/components/common/state-badge";
-import { AttemptCard } from "@/components/looms/attempt-card";
-import { LiveFeed } from "@/components/looms/live-feed";
-import { WeaveGodView } from "@/components/looms/weave-god-view";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
-import { SpecBundle } from "@/components/looms/spec-bundle";
-import { AcceptancePanel } from "@/components/looms/acceptance-panel";
-import {
-  fmtDuration,
-  isActive,
-  isAwaitingOwner,
-  isTerminal,
-  sumCost,
-} from "@/components/looms/utils";
+import { AcceptancePanel, DoneConfirmation } from "@/components/looms/acceptance-panel";
+import { LoomGodView } from "@/components/looms/god-view";
+import { AgentViewDrawer } from "@/components/looms/agent-view";
+import { SpecDrawer } from "@/components/looms/spec-bundle";
+import { deriveGodView } from "@/components/looms/godview";
+import { fmtDuration, isAwaitingOwner, isTerminal, sumCost } from "@/components/looms/utils";
 import { fmtCost } from "@/lib/format";
 
 function BackLink() {
@@ -52,9 +43,18 @@ export default function LoomDetailPage() {
 
   const [loom, setLoom] = useState<Loom | null>(null);
   const [feed, setFeed] = useState<LoomEvent[]>([]);
+  const [threads, setThreads] = useState<Loom[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [nowTs, setNowTs] = useState(() => Date.now());
+
+  // Drawer state — owned here, exposed for the Drawers stage:
+  //   • openOperatorId → the agent-view drawer (keyed by operator id; null = closed)
+  //   • specOpen       → the spec-bundle drawer
+  // The god-view frame only sets these (card click, "View spec"); the drawers
+  // that consume them mount at this level in the Drawers stage.
+  const [openOperatorId, setOpenOperatorId] = useState<string | null>(null);
+  const [specOpen, setSpecOpen] = useState(false);
 
   const loomRef = useRef<Loom | null>(null);
   useEffect(() => {
@@ -137,6 +137,37 @@ export default function LoomDetailPage() {
     return () => es.close();
   }, [id]);
 
+  // Poll the weave's child threads — the operators of a WOVEN loom. Coarser
+  // than the loom/event polls because listChildLooms does a full directory
+  // scan; only runs while the weave is live. A single (non-woven) loom simply
+  // returns no threads, and the god-view derives its one operator from `loom`.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    const fetchThreads = () => {
+      fetch(`/api/looms/${id}/threads`)
+        .then((res) => res.json())
+        .then((data: { threads?: Loom[] }) => {
+          if (!cancelled) setThreads(data.threads ?? []);
+        })
+        .catch(() => {
+          /* transient — the next poll recovers */
+        });
+    };
+    fetchThreads();
+    const t = setInterval(() => {
+      if (loomRef.current && isTerminal(loomRef.current.state)) {
+        clearInterval(t);
+        return;
+      }
+      fetchThreads();
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [id]);
+
   // Tick the elapsed clock while the loom is live. Settled looms (terminal or
   // awaiting the owner) freeze the displayed elapsed, so ticking is wasted work.
   useEffect(() => {
@@ -199,8 +230,19 @@ export default function LoomDetailPage() {
     ? loom.updatedAt - loom.createdAt
     : nowTs - loom.createdAt;
   const totalCost = sumCost(loom.attempts);
-  const preparing = loom.attempts.length === 0 && isActive(loom.state);
   const showCancel = nonTerminal && !isAwaitingOwner(loom.state);
+
+  // The whole running/verifying/ready/terminal surface is now ONE unified
+  // god-view — a single loom is a weave of one operator, a woven loom weaves
+  // its child threads. deriveGodView guards missing data (no attempts, no
+  // panel, no charter, empty threads) so this never throws.
+  const view = deriveGodView(loom, threads, feed);
+
+  // Who accepted — read off the durable "accepted" event so the done
+  // confirmation can name them; the server fixes this to "you" today.
+  const acceptedBy =
+    (feed.findLast((e) => e.type === "accepted")?.by as string | undefined) ??
+    undefined;
 
   return (
     <div className="flex h-dvh flex-col">
@@ -256,67 +298,34 @@ export default function LoomDetailPage() {
         ) : loom.state === "charter-review" ? (
           <CharterReview loom={loom} />
         ) : (
-          <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4">
+          <>
             {loom.state === "ready" && (
-              <AcceptancePanel loom={loom} onAccepted={(l) => setLoom(l)} />
-            )}
-            <SpecBundle loomId={loom.id} />
-            {isWoven(loom) ? (
-              <WeaveGodView loom={loom} feed={feed} />
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <section className="flex flex-col gap-3">
-                  <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                    Attempts
-                  </h2>
-                  {loom.error && (
-                    <div
-                      className={cn(
-                        "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm",
-                        loom.state === "failed"
-                          ? "border-destructive/30 bg-destructive/10 text-destructive"
-                          : "border-amber-500/30 bg-amber-500/10 text-amber-300",
-                      )}
-                    >
-                      <TriangleAlertIcon className="mt-px size-4 shrink-0" />
-                      <span className="leading-snug">{loom.error}</span>
-                    </div>
-                  )}
-                  {loom.attempts.length === 0 ? (
-                    preparing ? (
-                      <Card size="sm">
-                        <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2Icon className="size-4 animate-spin" />
-                          Preparing the first attempt…
-                        </CardContent>
-                      </Card>
-                    ) : (
-                      <p className="px-1 text-sm text-muted-foreground">
-                        {loom.state === "queued"
-                          ? "Queued — waiting to start."
-                          : "No attempts recorded."}
-                      </p>
-                    )
-                  ) : (
-                    loom.attempts.map((attempt) => (
-                      <AttemptCard key={attempt.n} attempt={attempt} loomId={loom.id} />
-                    ))
-                  )}
-                </section>
-
-                <section className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-0 lg:self-start">
-                  <h2 className="px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                    Live feed
-                  </h2>
-                  <Card size="sm" className="min-w-0">
-                    <CardContent className="min-w-0">
-                      <LiveFeed events={feed} state={loom.state} />
-                    </CardContent>
-                  </Card>
-                </section>
+              <div className="mx-auto w-full max-w-5xl px-4 pt-4">
+                <AcceptancePanel loom={loom} onAccepted={(l) => setLoom(l)} />
               </div>
             )}
-          </div>
+            {loom.state === "done" && (
+              <div className="mx-auto w-full max-w-5xl px-4 pt-4">
+                <DoneConfirmation loom={loom} by={acceptedBy} />
+              </div>
+            )}
+            <div className="godview">
+              <LoomGodView
+                view={view}
+                loom={loom}
+                threads={threads}
+                onOpenOperator={setOpenOperatorId}
+                onViewSpec={() => setSpecOpen(true)}
+              />
+            </div>
+            {/* Non-invasive overlay drawers — fixed-position, mounted outside
+                the `.godview` main frame so they never reflow it. */}
+            <AgentViewDrawer
+              operator={view.operators.find((o) => o.id === openOperatorId) ?? null}
+              onClose={() => setOpenOperatorId(null)}
+            />
+            <SpecDrawer loomId={loom.id} open={specOpen} onClose={() => setSpecOpen(false)} />
+          </>
         )}
       </div>
     </div>
