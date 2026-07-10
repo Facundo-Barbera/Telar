@@ -151,6 +151,20 @@ export function writeContract(id: string, contract: VerificationContract, opts?:
   writeBundleFile(id, CONTRACT_FILE, JSON.stringify(contract, null, 2));
 }
 
+export const STEERING_FILE = "steering.md";
+
+// docs/loom-model.md §A/§6 — durable, auditable record of an owner's steering
+// directive or rejection feedback, appended (never overwritten) to the Spec
+// Bundle so it becomes part of the next snapshot the re-dispatched loom reads.
+// A deliberate bundle version bump, not silent mutation (§2).
+export function appendSteering(id: string, entry: { kind: "steer" | "reject"; text: string; by: string }): void {
+  const prior = readBundleFile(id, STEERING_FILE) ?? "";
+  const stamp = new Date().toISOString();
+  const label = entry.kind === "steer" ? "Steer" : "Reject";
+  const section = `## ${label} — ${entry.by} — ${stamp}\n\n${entry.text.trim()}\n`;
+  writeBundleFile(id, STEERING_FILE, prior ? `${prior}\n${section}` : `# Steering log\n\n${section}`);
+}
+
 export const PROVENANCE_FILE = "provenance.json";
 
 // Validates (assertProvenance — throws on a blank approver, §M.6) then

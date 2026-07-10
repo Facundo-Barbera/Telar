@@ -1,10 +1,12 @@
 // Loom persistence in ~/.telar/looms/<id>/ — loom.json (current state, atomic
 // rewrite) + events.ndjson (append-only log, tailed by the UI via line offset).
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Charter, PanelReport, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
+import { getProject } from "./manifest";
 
 const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
 const loomsDir = () => path.join(telarDir(), "looms");
@@ -82,6 +84,12 @@ export type Loom = {
   // FAILURE, never a silent downgrade to the legacy no-panel skip path —
   // see runVerification in executor.ts.
   contractRequired?: boolean;
+  // docs/loom-model.md §A — the git sha of the commit acceptLoom LANDED into
+  // the project working tree when the owner closed the loom (ready->done).
+  // Absent when the project isn't a git repo, the tree was clean at accept
+  // time, or the commit failed (a commit failure is recorded as a
+  // "commit-failed" event and NEVER thrown out of accept).
+  commit?: string;
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
@@ -215,13 +223,120 @@ export function appendEvent(id: string, ev: { type: string } & Record<string, un
   fs.appendFileSync(path.join(dir, "events.ndjson"), JSON.stringify({ ...ev, ts: Date.now() }) + "\n");
 }
 
+// An injectable git runner (docs/loom-model.md §A — landing the work): given
+// the project root and argv, run git and report its exit status + output. The
+// default shells out; tests swap in a fake so no real git process runs and no
+// working tree is touched. The runner owns pointing git at `root` (`git -C`).
+export type GitRunResult = { status: number; stdout: string; stderr: string };
+export type GitRunner = (root: string, args: string[]) => GitRunResult;
+
+const defaultGitRunner: GitRunner = (root, args) => {
+  try {
+    const stdout = execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: unknown; stderr?: unknown };
+    return {
+      status: typeof e.status === "number" ? e.status : 1,
+      stdout: e.stdout ? String(e.stdout) : "",
+      stderr: e.stderr ? String(e.stderr) : String(err),
+    };
+  }
+};
+
+type LandResult =
+  | { committed: true; sha: string }
+  | { committed: false; skipped: string }
+  | { committed: false; error: string };
+
+// docs/loom-model.md §A — "acceptance LANDS the work." Commit the loom's
+// changes in the project working tree on accept. Pure of process exit: every
+// failure mode is returned, never thrown, so accept can transition to `done`
+// regardless. Skips gracefully when the root is not a git repo or the tree is
+// already clean.
+function landWorkingTree(loom: Loom, by: string, git: GitRunner): LandResult {
+  let root: string;
+  try {
+    root = getProject(loom.project).manifest.root;
+  } catch (err) {
+    return { committed: false, error: `cannot resolve project root: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return { committed: false, skipped: "not a git repository" };
+  }
+
+  const status = git(root, ["status", "--porcelain"]);
+  if (status.status !== 0) {
+    return { committed: false, error: `git status failed: ${status.stderr.trim()}` };
+  }
+  if (!status.stdout.trim()) {
+    return { committed: false, skipped: "working tree clean" };
+  }
+
+  const add = git(root, ["add", "-A"]);
+  if (add.status !== 0) {
+    return { committed: false, error: `git add failed: ${add.stderr.trim()}` };
+  }
+
+  // No `--author` (docs/loom-model.md §A): let git use the user's own config.
+  const message = `feat(loom): ${loom.title}\n\nLoom: ${loom.id}\nAccepted-by: ${by}`;
+  const commit = git(root, ["commit", "-m", message]);
+  if (commit.status !== 0) {
+    return { committed: false, error: `git commit failed: ${commit.stderr.trim()}` };
+  }
+
+  const head = git(root, ["rev-parse", "HEAD"]);
+  if (head.status !== 0 || !head.stdout.trim()) {
+    return { committed: false, error: `git rev-parse HEAD failed: ${head.stderr.trim()}` };
+  }
+  return { committed: true, sha: head.stdout.trim() };
+}
+
+// docs/loom-model.md §A — on the accept transition to `done`, LAND the work
+// and record the outcome on the loom (commit sha + event) without ever
+// letting a git failure escape accept. Mutates `loom` in place; the caller
+// saves it.
+function recordLanding(loom: Loom, by: string, git: GitRunner): void {
+  let res: LandResult;
+  try {
+    res = landWorkingTree(loom, by, git);
+  } catch (err) {
+    // landWorkingTree is contractually total, but a git runner throwing
+    // (e.g. an injected fake) must still never surface out of accept.
+    res = { committed: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.committed) {
+    loom.commit = res.sha;
+    try {
+      appendEvent(loom.id, { type: "committed", sha: res.sha, by });
+    } catch {}
+  } else if ("error" in res) {
+    try {
+      appendEvent(loom.id, { type: "commit-failed", error: res.error, by });
+    } catch {}
+  } else {
+    try {
+      appendEvent(loom.id, { type: "commit-skipped", reason: res.skipped, by });
+    } catch {}
+  }
+}
+
 // §A / §M.2 (docs/loom-model.md): the ONLY path "ready" -> "done". A NORMAL
 // accept requires the loom to already be "ready" (verification green). An
 // OVERRIDE accept (opts.override) promotes a non-ready loom (e.g. a red/
 // needs-review loom) but requires opts.cosignedBy — the human co-sign §M.2
 // mandates for accepting anything less than a clean green — never the
 // default accept button.
-export function acceptLoom(id: string, by: string, opts?: { override?: boolean; cosignedBy?: string }): Loom {
+export function acceptLoom(
+  id: string,
+  by: string,
+  opts?: { override?: boolean; cosignedBy?: string; git?: GitRunner },
+): Loom {
   // §A: "done" is reachable solely through a human (or an authenticated
   // human delegate) — a blank/missing `by` must never slip through, exactly
   // as assertProvenance rejects a blank approvedBy for the provenance gate.
@@ -229,10 +344,12 @@ export function acceptLoom(id: string, by: string, opts?: { override?: boolean; 
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
   if (loom.state === "done") throw new Error("loom already accepted");
+  const git = opts?.git ?? defaultGitRunner;
 
   if (loom.state === "ready") {
     loom.state = "done";
     appendEvent(id, { type: "accepted", by });
+    recordLanding(loom, by, git); // §A: accept LANDS the work (never throws)
     saveLoom(loom);
     return loom;
   }
@@ -242,6 +359,7 @@ export function acceptLoom(id: string, by: string, opts?: { override?: boolean; 
   }
   loom.state = "done";
   appendEvent(id, { type: "accepted", by, override: true, cosignedBy: opts.cosignedBy });
+  recordLanding(loom, by, git); // §A: accept LANDS the work (never throws)
   saveLoom(loom);
   return loom;
 }

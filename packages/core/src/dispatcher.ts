@@ -18,7 +18,7 @@ import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type Lo
 import { executeLoom, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, validateCharter } from "./scoping";
-import { readContract, writeProvenance } from "./bundle";
+import { appendSteering, readContract, writeProvenance } from "./bundle";
 
 export type StartLoomInput = {
   project: string;
@@ -345,6 +345,86 @@ export function cancelLoom(id: string): boolean {
   appendEvent(id, { type: "state", state: "halted" });
   saveLoom(loom);
   return true;
+}
+
+// Shared re-dispatch tail for steer/reject (docs/loom-model.md §A): a loom
+// leaves `ready`/`blocked` and re-enters the SAME verified loop the initial
+// start uses (dispatchExecution) — so it RE-VERIFIES and can only land back in
+// `ready`, never `done` (terminalStateForCompletedLoom). Fire-and-forget with
+// the same persistence guard the other dispatch chains use. Any live process
+// for this id (there is none from `ready`/`blocked`, but be defensive) is
+// aborted first so we never run two executors against one loom.
+function reDispatch(loom: Loom, deps: DispatcherDeps): void {
+  const existing = active.get(loom.id);
+  if (existing) existing.abort();
+
+  const { manifest } = getProject(loom.project);
+  const abort = new AbortController();
+  active.set(loom.id, abort);
+  const onFailure = makeOnFailure(loom);
+
+  dispatchExecution(loom, manifest, deps, abort)
+    .catch(onFailure)
+    .finally(() => {
+      // Only clear if still ours — a concurrent reDispatch may have replaced it.
+      if (active.get(loom.id) === abort) active.delete(loom.id);
+    });
+}
+
+// docs/loom-model.md §A — from `ready` the owner may STEER: record a directive
+// and re-dispatch so the loom continues and RE-VERIFIES; it never auto-promotes
+// to `done`. `by` is server-derived (never from the request body). The
+// directive is recorded durably in the bundle steering log AND folded into the
+// loom's prompt so the re-dispatched builder actually acts on it.
+export async function steerLoom(id: string, directive: string, by: string, deps: DispatcherDeps): Promise<Loom> {
+  if (!by?.trim()) throw new Error("steerLoom requires a non-blank `by`");
+  if (!directive?.trim()) throw new Error("steerLoom requires a non-empty directive");
+  const loom = getLoom(id);
+  if (!loom) throw new Error(`loom not found: ${id}`);
+  // §A: steering is offered FROM the verified `ready` milestone.
+  if (loom.state !== "ready") {
+    throw new Error(`steer is only valid from 'ready' (loom is '${loom.state}')`);
+  }
+
+  appendSteering(id, { kind: "steer", text: directive, by });
+  appendEvent(id, { type: "steered", directive, by });
+  loom.prompt = `${loom.prompt}\n\n## Steering directive (${by})\n${directive.trim()}`;
+
+  // Leave `ready`, re-enter the verified loop. Never jump to `done`.
+  loom.state = "queued";
+  loom.error = null;
+  appendEvent(id, { type: "state", state: "queued" });
+  saveLoom(loom);
+
+  reDispatch(loom, deps);
+  return loom;
+}
+
+// docs/loom-model.md §A — REJECT sends a verified/blocked loom back to work
+// with feedback so it re-enters the verified loop; it never reaches `done`.
+// Valid from `ready` (the owner is unhappy with green work) or `blocked` (a
+// paused loom the owner un-sticks with guidance). `by` is server-derived.
+export async function rejectLoom(id: string, feedback: string, by: string, deps: DispatcherDeps): Promise<Loom> {
+  if (!by?.trim()) throw new Error("rejectLoom requires a non-blank `by`");
+  if (!feedback?.trim()) throw new Error("rejectLoom requires non-empty feedback");
+  const loom = getLoom(id);
+  if (!loom) throw new Error(`loom not found: ${id}`);
+  if (loom.state !== "ready" && loom.state !== "blocked") {
+    throw new Error(`reject is only valid from 'ready' or 'blocked' (loom is '${loom.state}')`);
+  }
+
+  appendSteering(id, { kind: "reject", text: feedback, by });
+  appendEvent(id, { type: "rejected", feedback, by });
+  loom.prompt = `${loom.prompt}\n\n## Rejection feedback (${by})\n${feedback.trim()}`;
+
+  // Back to work, re-entering the verified loop. Never `done`.
+  loom.state = "queued";
+  loom.error = null;
+  appendEvent(id, { type: "state", state: "queued" });
+  saveLoom(loom);
+
+  reDispatch(loom, deps);
+  return loom;
 }
 
 export const activeLoomIds = (): string[] => [...active.keys()];
