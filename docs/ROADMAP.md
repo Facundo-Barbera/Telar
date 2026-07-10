@@ -33,8 +33,8 @@ state is recoverable and legible.
 - [x] Turn cap is liftable — `maxTurns` override in `~/.telar/policy.json` (default rails stay)
 - [x] `reDispatch` never strands a loom in `queued` — setup failures land in `failed` with the reason
 - [x] Report is concise + markdown-rendered + roomier transcript
+- [x] **Guard project config (#44)** — self-healing manifest cache: a wiped `telar.yaml` restores from the registry's last-good copy instead of bricking the project (malformed still errors)
 - [ ] **Boot / crash recovery** — reconcile looms stuck mid-flight after a restart; unstick stranded Threads _(P5)_
-- [ ] **Guard project config** — a build must not wipe its repo's own `telar.yaml` (see Phase B `.telar/` dir)
 - [ ] **Validate the repair leg live** — prove builder → verify → repair → pass on a real task
 
 ## Phase B — Drive looms from where you work
@@ -44,8 +44,8 @@ background — the session as cockpit. _(Decisions locked: steer/reject/resume/c
 are agent-drivable on any loom on request; **accept stays a human click**. Watchers
 are a true background process — you keep chatting; it reacts when state changes.)_
 
-- [ ] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools (moat: no `accept_loom` auto-run)
-- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat
+- [x] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools, auto-run, default to the linked loom (moat: no `accept_loom`)
+- [ ] **Watchers as background processes** — a session registers a watcher; it reacts to a loom's state changes, surfaces them, and asks how to proceed — without blocking the chat _(needs design; likely rides Phase C)_
 - [ ] **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends; easier to track, harder to clobber
 
 ## Phase C — Durable execution (out-of-process)
@@ -81,5 +81,6 @@ The moat is only real if it's demonstrated on live features.
 
 ---
 
-_Last frontier update: Phase A nearly closed; Phase B is next up (session-driven
-steering + background watchers)._
+_Last frontier update: Phase A down to boot-recovery + a live repair-leg proof;
+Phase B.1 steering tools shipped — next is the **watcher/background-process design**
+(likely paired with Phase C's out-of-process runner)._
