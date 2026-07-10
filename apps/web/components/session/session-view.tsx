@@ -726,6 +726,10 @@ export function SessionView(props: {
   accounts: Array<{ name: string; displayTier?: string }>;
   initialChat?: InitialChat;
   initialTitle?: string;
+  // The route's session id (undefined for the "new" front door). Only used to
+  // seed sessionId when there's no persisted initialChat yet — the mid-turn
+  // cold-reload case; see the sessionId state below.
+  routeSessionId?: string;
   // Set only for a brand-new session arrived at via the Looms tab's
   // "Plan a loom" front door (?role=planner) — a hint only, see the page's
   // own comment. Drives the empty-state framing below, nothing else.
@@ -755,6 +759,7 @@ function SessionViewInner({
   accounts,
   initialChat,
   initialTitle,
+  routeSessionId,
   initialRole,
   planner,
 }: {
@@ -763,6 +768,7 @@ function SessionViewInner({
   accounts: Array<{ name: string; displayTier?: string }>;
   initialChat?: InitialChat;
   initialTitle?: string;
+  routeSessionId?: string;
   initialRole?: "planner";
   planner?: boolean;
 }) {
@@ -773,7 +779,7 @@ function SessionViewInner({
   // the URL to its new id, which re-renders this page with initialChat still
   // undefined — re-seeding would tear the live stream down.
   const [sessionId, setSessionId] = useState<string | null>(
-    initialChat?.id ?? null,
+    initialChat?.id ?? routeSessionId ?? null,
   );
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     seedMessages(initialChat),

@@ -140,6 +140,11 @@ export default async function SessionPage({
           initialChat={initialChat}
           initialTitle={chat?.title}
           initialRole={initialRole}
+          // The route's session id (undefined for the "new" front door). Lets
+          // SessionView seed a non-null sessionId on a cold reload of a
+          // mid-turn session whose transcript hasn't persisted yet — so the
+          // reconnect effect can tail the live stream instead of showing empty.
+          routeSessionId={id === "new" ? undefined : id}
         />
       </div>
     </div>
