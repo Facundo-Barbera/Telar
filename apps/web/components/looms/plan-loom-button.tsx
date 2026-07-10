@@ -6,6 +6,7 @@ import { Loader2Icon, WorkflowIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -69,23 +70,25 @@ export function PlanLoomButton({
         New loom session
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Start a loom session in which project?</DropdownMenuLabel>
-        {projects === null && (
-          <div className="flex items-center gap-1.5 px-1.5 py-1.5 text-xs text-muted-foreground">
-            <Loader2Icon className="size-3.5 animate-spin" />
-            Loading projects…
-          </div>
-        )}
-        {projects?.length === 0 && (
-          <p className="px-1.5 py-1.5 text-xs text-muted-foreground">
-            No registered projects yet.
-          </p>
-        )}
-        {projects?.map((p) => (
-          <DropdownMenuItem key={p.name} render={<Link href={hrefFor(p.name)} />}>
-            {p.name}
-          </DropdownMenuItem>
-        ))}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Start a loom session in which project?</DropdownMenuLabel>
+          {projects === null && (
+            <div className="flex items-center gap-1.5 px-1.5 py-1.5 text-xs text-muted-foreground">
+              <Loader2Icon className="size-3.5 animate-spin" />
+              Loading projects…
+            </div>
+          )}
+          {projects?.length === 0 && (
+            <p className="px-1.5 py-1.5 text-xs text-muted-foreground">
+              No registered projects yet.
+            </p>
+          )}
+          {projects?.map((p) => (
+            <DropdownMenuItem key={p.name} render={<Link href={hrefFor(p.name)} />}>
+              {p.name}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );
