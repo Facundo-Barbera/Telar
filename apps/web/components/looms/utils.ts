@@ -2,6 +2,7 @@
 // formatters the loom views need. Cross-surface formatters (fmtAgo, fmtCost,
 // shortId) live in @/lib/format so every page shares one language.
 import type { AttemptRecord, Loom, LoomKind, WorkUnitState } from "@telar/core";
+import { isWoven } from "@telar/core";
 
 const TERMINAL: readonly WorkUnitState[] = [
   "done",
@@ -69,24 +70,25 @@ export function stateRailClass(state: WorkUnitState): string {
   }
 }
 
-// A loom's kind-of-loom, independent of its state: epic (spawns threads),
-// verify (read-only judgment, no writes), or leaf (does the work itself).
-// role is set server-side (docs/loom-orchestrator.md §4); kind === "verify"
-// is the fallback signal for looms with no role set.
-export function loomRole(loom: Loom): "epic" | "verify" | "leaf" {
-  if (loom.role === "epic") return "epic";
+// A loom's kind-of-loom, independent of its state: woven (spawns threads),
+// verify (read-only judgment, no writes), or single (does the work itself).
+// docs/loom-model.md §W — "epic-ness" is not a stored type; woven is derived
+// structurally via isWoven (a non-empty Charter.decomposition). kind ===
+// "verify" is the fallback signal for looms that don't weave.
+export function loomRole(loom: Loom): "woven" | "verify" | "single" {
+  if (isWoven(loom)) return "woven";
   if (loom.kind === "verify") return "verify";
-  return "leaf";
+  return "single";
 }
 
-// Thread count for an epic's "epic · N threads" chip, read straight off the
-// root loom's already-fetched Charter — zero extra requests. null means
-// "unknown, no charter yet" (queued/scoping epic), distinct from 0 threads.
+// Thread count for a woven loom's weave chip, read straight off the root
+// loom's already-fetched Charter — zero extra requests. null means "unknown,
+// no charter yet" (queued/scoping loom), distinct from 0 threads.
 //
 // TODO: this undercounts orphan threads (children spawned under a prior
 // charter revision, no longer in `decomposition` — see thread-tree.tsx) since
-// resolving that needs the live /api/looms/[id]/threads fetch epic-god-view
-// is allowed to make per-epic-page. Do NOT "fix" this by looping
+// resolving that needs the live /api/looms/[id]/threads fetch weave-god-view
+// is allowed to make per-loom page. Do NOT "fix" this by looping
 // listChildLooms() inside the list route — that just moves the N+1 fetch
 // server-side instead of eliminating it. A batch-computed childCounts field
 // written into loom.json on state change (or an opt-in query param on

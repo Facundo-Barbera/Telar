@@ -62,12 +62,13 @@ export type Loom = {
   updatedAt: number;
   attempts: AttemptRecord[];
   error: string | null;
-  // Epic/child-Loom fields (docs/loom-orchestrator.md §4) — additive, absent on
-  // today's plain looms.
-  role?: "leaf" | "epic" | "thread";
-  parentLoomId?: string; // set on a child; points at the epic
+  // Weave/child-Loom fields (docs/loom-orchestrator.md §4) — additive, absent
+  // on today's plain looms. No stored "role" (docs/loom-model.md §W) — a
+  // child is identified by parentLoomId (isThread), a woven root by isWoven;
+  // nothing here declares a shape.
+  parentLoomId?: string; // set on a child; points at the weave's root loom
   subGoalId?: string; // which Charter.decomposition node this child proves
-  charter?: Charter; // the approved scope (root/epic loom)
+  charter?: Charter; // the approved scope (a woven root loom)
   // docs/loom-model.md §5/§M.6 — a loom whose Spec Bundle is still being
   // authored by a planning session. Exists on disk (so the god-view can
   // render the bundle-in-progress) but must not be listed or dispatched
@@ -85,9 +86,13 @@ export type Loom = {
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
 // list) once it's no longer a draft awaiting commit and isn't a child loom
-// (children render nested under their parent/epic). Pure so the web list
+// (children render nested under their woven root). Pure so the web list
 // route and any other consumer share one definition instead of inlining it.
 export const isListableLoom = (l: Loom): boolean => !l.draft && !l.parentLoomId;
+
+// PURE. docs/loom-model.md §W — a child loom (a "Thread") is identified by
+// having a parent, never by a stored role/shape.
+export const isThread = (l: Pick<Loom, "parentLoomId">): boolean => !!l.parentLoomId;
 
 // Idempotent, non-destructive legacy migration from ~/.telar/runs/ to
 // ~/.telar/looms/ (and run.json -> loom.json within each loom dir). Runs once
@@ -130,7 +135,6 @@ export function createLoom(init: {
   title: string;
   prompt: string;
   account: string;
-  role?: "leaf" | "epic" | "thread";
   parentLoomId?: string;
   subGoalId?: string;
   charter?: Charter;
@@ -198,8 +202,8 @@ export function listLooms(): Loom[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-// Child Looms of an epic — each its own loom.json (docs/loom-orchestrator.md
-// §4); no embedded lane state on the parent.
+// Child Looms (threads) of a woven root — each its own loom.json
+// (docs/loom-orchestrator.md §4); no embedded lane state on the parent.
 export function listChildLooms(parentId: string): Loom[] {
   return listLooms().filter((l) => l.parentLoomId === parentId);
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   ModelPolicy,
   assertProvenance,
+  isWoven,
   type AccountProfile,
   type Charter,
   type ProjectManifest,
@@ -15,7 +16,7 @@ import {
 import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, type ExecuteOpts } from "./executor";
-import { runEpic } from "./epic";
+import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, validateCharter } from "./scoping";
 import { readContract, writeProvenance } from "./bundle";
 
@@ -41,7 +42,7 @@ export type DispatcherDeps = {
 const active = new Map<string, AbortController>();
 
 // Persistence guard shared by every fire-and-forget background chain below —
-// executeLoom/runEpic/draftCharter contractually never reject, but a throw
+// executeLoom/runWeave/draftCharter contractually never reject, but a throw
 // here (e.g. a full disk) must never surface as an unhandled rejection and
 // crash the server. Each write is attempted independently.
 function makeOnFailure(loom: Loom): (err: unknown) => void {
@@ -57,13 +58,14 @@ function makeOnFailure(loom: Loom): (err: unknown) => void {
   };
 }
 
-// The epic branch: spawn+run child Looms for the charter's decomposition and
-// fold up via runEpic. Reused by both the fast path (charter supplied up
-// front) and the post-scoping dispatch (charter drafted then approved).
-function runEpicWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDeps, abort: AbortController): Promise<Loom> {
+// The weave branch: spawn+run child Looms (threads) for the charter's
+// decomposition and fold up via runWeave. Reused by both the fast path
+// (charter supplied up front) and the post-scoping dispatch (charter drafted
+// then approved).
+function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDeps, abort: AbortController): Promise<Loom> {
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
-  return runEpic(loom, decomposition, {
+  return runWeave(loom, decomposition, {
     spawnChild: (sg) => {
       const child = createLoom({
         project: loom.project,
@@ -71,7 +73,6 @@ function runEpicWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDe
         title: sg.title,
         prompt: sg.detail,
         account: manifest.account,
-        role: "leaf",
         parentLoomId: loom.id,
         subGoalId: sg.id,
       });
@@ -93,8 +94,8 @@ function runEpicWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDe
   });
 }
 
-// Post-charter dispatch: epic role -> the epic wiring; leaf role -> the plain
-// verified loop (executeLoom, or its test injector).
+// Post-charter dispatch: a woven charter -> the weave wiring; otherwise the
+// plain verified loop (executeLoom, or its test injector).
 function dispatchExecution(
   loom: Loom,
   manifest: ProjectManifest,
@@ -102,12 +103,7 @@ function dispatchExecution(
   abort: AbortController,
   opts: { maxAttempts?: number } = {},
 ): Promise<Loom> {
-  // TODO(loom-model P1): derive epic-ness from "has decomposition/children"
-  // rather than the stored charter.shape-derived loom.role (docs/loom-model.md
-  // §2 "Epic-ness is derived"). Left as-is: role is set in multiple places
-  // (below, and the scoping path) entangled with charterPolicy gating — a
-  // broad refactor is out of scope for this pass.
-  if (loom.role === "epic") return runEpicWiring(loom, manifest, deps, abort);
+  if (isWoven(loom)) return runWeaveWiring(loom, manifest, deps, abort);
   return (deps.runLoomFn ?? executeLoom)(loom, manifest, {
     policy: deps.policy ?? loadPolicy(),
     accounts: deps.accounts,
@@ -138,13 +134,13 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
   if (!scope) {
     // FAST PATH — byte-identical to today's behavior. No draftCharter call,
     // no "scoping" state. This is the regression guarantee.
-    if (input.charter?.shape === "epic" && input.charter.decomposition.length) {
-      // MOAT GUARD applies here too: a caller-supplied epic charter bypasses
+    if (isWoven(input.charter)) {
+      // MOAT GUARD applies here too: a caller-supplied woven charter bypasses
       // draftCharter (and its validateCharter call in the scoping path below)
       // by going straight through the fast path, so without this check a
       // zero-required-subgoal decomposition would roll up vacuously "done"
       // (the M7.1 finding) via a route validateCharter never sees.
-      const v = validateCharter(input.charter);
+      const v = validateCharter(input.charter!);
       if (!v.ok) {
         loom.error = v.errors.join("; ");
         loom.state = "needs-review";
@@ -153,17 +149,15 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
         active.delete(loom.id);
         return loom;
       }
-      loom.role = "epic";
       loom.charter = input.charter;
       saveLoom(loom);
-      runEpicWiring(loom, manifest, deps, abort)
+      runWeaveWiring(loom, manifest, deps, abort)
         .catch(onFailure)
         .finally(() => active.delete(loom.id));
       return loom;
     }
 
-    if (input.charter?.shape === "leaf") {
-      loom.role = "leaf";
+    if (input.charter) {
       loom.charter = input.charter;
     }
 
@@ -203,12 +197,11 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
     }
 
     loom.charter = charter;
-    loom.role = charter.shape === "epic" ? "epic" : "leaf";
     saveLoom(loom);
 
     const requiresHuman =
       manifest.charterPolicy === "human-required" ||
-      (manifest.charterPolicy === "human-required-for-epics" && charter.shape === "epic");
+      (manifest.charterPolicy === "human-required-for-epics" && isWoven(charter));
 
     if (requiresHuman) {
       setState("charter-review"); // paused — awaits approveCharter
@@ -261,7 +254,6 @@ export function createDraftLoom(input: { project: string; title: string; objecti
     title: input.title,
     prompt: input.objective,
     account,
-    role: "leaf",
     draft: true,
   });
 }

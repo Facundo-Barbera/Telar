@@ -11,6 +11,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { Loom, LoomEvent } from "@telar/core";
+import { isWoven } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { StateBadge } from "@/components/common/state-badge";
 import { AttemptCard } from "@/components/looms/attempt-card";
 import { LiveFeed } from "@/components/looms/live-feed";
-import { EpicGodView } from "@/components/looms/epic-god-view";
+import { WeaveGodView } from "@/components/looms/weave-god-view";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
 import { SpecBundle } from "@/components/looms/spec-bundle";
 import { AcceptancePanel } from "@/components/looms/acceptance-panel";
@@ -239,8 +240,8 @@ export default function LoomDetailPage() {
               <AcceptancePanel loom={loom} onAccepted={(l) => setLoom(l)} />
             )}
             <SpecBundle loomId={loom.id} />
-            {loom.role === "epic" ? (
-              <EpicGodView loom={loom} feed={feed} />
+            {isWoven(loom) ? (
+              <WeaveGodView loom={loom} feed={feed} />
             ) : (
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                 <section className="flex flex-col gap-3">

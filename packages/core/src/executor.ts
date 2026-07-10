@@ -146,8 +146,8 @@ export type Decision =
 
 // Pure: §A (docs/loom-model.md) — a completed ROOT loom (no parentLoomId)
 // lands "ready" (verified, awaiting owner acceptance via acceptLoom()), never
-// "done". A CHILD thread (has parentLoomId) is a sub-unit the orchestrator's
-// rollupEpic folds up, and that gate still needs "done" from its children.
+// "done". A CHILD thread (has parentLoomId) is a sub-unit the weaver's
+// rollupWeave folds up, and that gate still needs "done" from its children.
 export function terminalStateForCompletedLoom(loom: Pick<Loom, "parentLoomId">): WorkUnitState {
   return loom.parentLoomId ? "done" : "ready";
 }

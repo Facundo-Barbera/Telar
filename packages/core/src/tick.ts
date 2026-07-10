@@ -1,4 +1,4 @@
-// The orchestrator control loop (docs/loom-orchestrator.md §6). PURE
+// The weaver's control loop (docs/loom-orchestrator.md §6). PURE
 // deterministic scheduler: tick and validateDecision take a curated
 // LedgerView and return/validate a Decision — no I/O, no agent calls, no
 // Date.now (the caller passes `nowMs` in). This is where the moat lives in

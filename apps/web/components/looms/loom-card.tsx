@@ -5,7 +5,7 @@
 // layouts share the same data plumbing (role, rail, cost, age) so the list
 // and the dashboard visually rhyme instead of drifting per-page.
 import Link from "next/link";
-import { ClockIcon, FolderGit2Icon } from "lucide-react";
+import { ClockIcon, FolderGit2Icon, WorkflowIcon } from "lucide-react";
 import type { Loom } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -14,28 +14,29 @@ import { StateBadge } from "@/components/common/state-badge";
 import { fmtAgo, fmtCost } from "@/lib/format";
 import { fmtDuration, loomRole, stateRailClass, sumCost, threadCount } from "./utils";
 
-// EPIC identity marker — indigo, deliberately outside the state palette
+// WEAVE identity marker — indigo, deliberately outside the state palette
 // (sky/violet/primary/amber/destructive/muted, already owned by StateBadge +
-// the state rail) so an epic sitting in needs-review never shows two
-// competing amber signals: state stays amber, "this is an epic" stays
+// the state rail) so a woven loom sitting in needs-review never shows two
+// competing amber signals: state stays amber, "this weaves threads" stays
 // indigo, always.
-function EpicChip({ loom }: { loom: Loom }) {
-  if (loomRole(loom) !== "epic") return null;
+function WeaveChip({ loom }: { loom: Loom }) {
+  if (loomRole(loom) !== "woven") return null;
   const n = threadCount(loom);
   return (
     <Badge
       variant="outline"
       className="shrink-0 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-300"
     >
-      {n == null ? "epic" : `epic · ${n} thread${n === 1 ? "" : "s"}`}
+      <WorkflowIcon className="size-2.5" />
+      {n == null ? "weave" : `${n} thread${n === 1 ? "" : "s"}`}
     </Badge>
   );
 }
 
 // VERIFY looms are read-only judgments — no writes. A subtle outline-only
 // badge (rather than the plain mono text every other kind gets) marks that
-// distinction without competing with the epic chip's indigo or any state
-// color. Everything else (leaf, and epic's own kind) stays plain text.
+// distinction without competing with the weave chip's indigo or any state
+// color. Everything else (single, and verify's own kind) stays plain text.
 function KindLabel({ loom }: { loom: Loom }) {
   if (loomRole(loom) === "verify") {
     return (
@@ -105,7 +106,7 @@ export function LoomCard({
           <CardContent className="flex flex-col gap-2 pl-3">
             <div className="flex items-center gap-2">
               <StateBadge state={loom.state} />
-              <EpicChip loom={loom} />
+              <WeaveChip loom={loom} />
               {now != null && (
                 <span className="ml-auto flex items-center gap-1 font-mono text-xs text-muted-foreground tabular-nums">
                   <ClockIcon className="size-3.5" />
@@ -148,7 +149,7 @@ export function LoomCard({
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {loom.title}
           </span>
-          <EpicChip loom={loom} />
+          <WeaveChip loom={loom} />
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <KindLabel loom={loom} />

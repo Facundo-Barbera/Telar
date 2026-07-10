@@ -1,11 +1,12 @@
-// Epic roll-up & the orchestrator control loop (docs/loom-orchestrator.md
-// §4/§6/§7/§11). An epic Loom never builds anything itself — it only spawns
-// and folds up child Looms. rollupEpic is the ONLY completion path: every
-// required SubGoal's child must have independently reached "done" via
-// executeLoom's decide() (children keep landing on "done" — the epic is the
-// root the owner accepts, so the epic itself rolls up to "ready", never
-// "done" — docs/loom-model.md §A). This is the composed moat — do not add
-// another branch that returns "ready"/"done" here.
+// The weave roll-up & the weaver's control loop (docs/loom-orchestrator.md
+// §4/§6/§7/§11; vocabulary per docs/loom-model.md §W). A woven root Loom
+// never builds anything itself — it only spawns and folds up child Looms
+// (threads). rollupWeave is the ONLY completion path: every required
+// SubGoal's child must have independently reached "done" via executeLoom's
+// decide() (children keep landing on "done" — the woven root is the thing
+// the owner accepts, so it rolls up to "ready", never "done" —
+// docs/loom-model.md §A). This is the composed moat — do not add another
+// branch that returns "ready"/"done" here.
 import type { Loom } from "./looms";
 import type { Charter, SubGoal, WorkUnitState } from "./schemas";
 import { tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
@@ -13,16 +14,16 @@ import type { BudgetState } from "./budget";
 
 // Pure: no persistence, no agent calls — just fold child states up against
 // the decomposition per the required-subgoal contract.
-export function rollupEpic(
+export function rollupWeave(
   children: Loom[],
   decomposition: SubGoal[],
 ): { state: WorkUnitState; error?: string } {
   const required = decomposition.filter((sg) => sg.required);
   // Defense-in-depth against the M7.1 vacuous-"done" hole: validateCharter
   // (scoping.ts) already rejects a zero-required decomposition before it
-  // reaches runEpic via dispatcher.ts, but rollupEpic is exported public API
-  // (index.ts) — guard here too so a caller that bypasses validateCharter
-  // can't make `required.every(...)` trivially true.
+  // reaches runWeave via dispatcher.ts, but rollupWeave is exported public
+  // API (index.ts) — guard here too so a caller that bypasses
+  // validateCharter can't make `required.every(...)` trivially true.
   if (required.length === 0) {
     return { state: "needs-review", error: "decomposition has zero required subgoals (invalid charter)" };
   }
@@ -32,8 +33,8 @@ export function rollupEpic(
   }
 
   const allRequiredDone = required.every((sg) => childBySubGoal.get(sg.id)?.state === "done");
-  // §A: the epic is the root the owner accepts — it lands "ready", never
-  // "done", even though the gate is still every required child === "done".
+  // §A: the woven root is the thing the owner accepts — it lands "ready",
+  // never "done", even though the gate is still every required child === "done".
   if (allRequiredDone) return { state: "ready" };
 
   const failedRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state === "failed");
@@ -46,14 +47,14 @@ export function rollupEpic(
   return { state: "needs-review", error: "unresolved" };
 }
 
-export type RunEpicDeps = {
+export type RunWeaveDeps = {
   spawnChild: (sg: SubGoal) => Loom;
   runChild: (child: Loom) => Promise<Loom>;
-  onState?: (epic: Loom) => void;
+  onState?: (loom: Loom) => void;
   onEvent?: (ev: { type: string } & Record<string, unknown>) => void;
   abort?: AbortController;
   // Injected clock — tick/validateDecision stay pure (no Date.now inside
-  // them); runEpic reads `now()` once per tick and passes it through the
+  // them); runWeave reads `now()` once per tick and passes it through the
   // LedgerView. Defaults to the wall clock outside tests.
   now?: () => number;
 };
@@ -63,20 +64,21 @@ function childCostUsd(child: Loom): number {
 }
 
 // Pure w.r.t. persistence — all side effects (spawning/running children,
-// persisting the epic) come through injected deps, mirroring executeLoom.
-// INTERNALS ONLY changed from the naive wave scheduler to the tick loop
-// (docs/loom-orchestrator.md §6/§7); the exported signature is unchanged.
-export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpicDeps): Promise<Loom> {
+// persisting the woven root) come through injected deps, mirroring
+// executeLoom. INTERNALS ONLY changed from the naive wave scheduler to the
+// tick loop (docs/loom-orchestrator.md §6/§7); the exported signature is
+// unchanged.
+export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWeaveDeps): Promise<Loom> {
   const emit = (ev: { type: string } & Record<string, unknown>) => deps.onEvent?.(ev);
   const setState = (s: WorkUnitState) => {
-    epic.state = s;
+    loom.state = s;
     emit({ type: "state", state: s });
-    deps.onState?.(epic);
+    deps.onState?.(loom);
   };
   const isAborted = () => deps.abort?.signal.aborted === true;
   const halt = () => {
     setState("halted");
-    return epic;
+    return loom;
   };
   const now = deps.now ?? (() => Date.now());
 
@@ -86,16 +88,15 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
     setState("preparing");
 
     // A LedgerView-shaped charter: decomposition is always the param passed
-    // in (mirrors rollupEpic's own signature), other fields come from
-    // epic.charter when present, else safe epic-shape defaults — tests
-    // routinely run an epic Loom with no charter at all.
-    const baseCharter = epic.charter;
+    // in (mirrors rollupWeave's own signature), other fields come from
+    // loom.charter when present, else safe woven-root defaults — tests
+    // routinely run a woven Loom with no charter at all.
+    const baseCharter = loom.charter;
     const charterView: Charter = {
-      objective: baseCharter?.objective ?? epic.title,
+      objective: baseCharter?.objective ?? loom.title,
       proofStrategy: baseCharter?.proofStrategy ?? "custom",
       scope: baseCharter?.scope ?? { allowedPaths: [], forbiddenPaths: [] },
       budget: baseCharter?.budget ?? { maxParallelThreads: 3, maxAgents: 12, maxCriticAgents: 3 },
-      shape: "epic",
       decomposition,
       version: baseCharter?.version ?? 1,
       approvedBy: baseCharter?.approvedBy,
@@ -116,7 +117,7 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
 
     const spawn = (sg: SubGoal) => {
       const child = deps.spawnChild(sg);
-      emit({ type: "epic-child-spawned", subGoalId: sg.id, childId: child.id });
+      emit({ type: "weave-child-spawned", subGoalId: sg.id, childId: child.id });
       runningThread.set(sg.id, { id: child.id, subGoalId: sg.id, state: "running" });
       // Attach the recording .then BEFORE this promise is placed into
       // `running` — since it always runs strictly before the wrapper
@@ -140,7 +141,7 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
 
       iterations++;
       if (iterations > maxIterations) {
-        epic.error = "orchestrator exceeded its safety iteration bound";
+        loom.error = "weaver exceeded its safety iteration bound";
         break;
       }
 
@@ -191,7 +192,7 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
 
       if (d.action === "hold") {
         if (running.size === 0) {
-          epic.error = "no ready threads and none in flight (blocked)";
+          loom.error = "no ready threads and none in flight (blocked)";
           break;
         }
         await Promise.race(running.values());
@@ -203,14 +204,14 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
       }
 
       if (d.action === "escalate") {
-        epic.error = d.reason ?? "escalated";
+        loom.error = d.reason ?? "escalated";
         break;
       }
 
       // "repair" is a directive-path/thread-level action (§9); tick() never
-      // emits it for an epic's own control loop. Escalate defensively rather
-      // than loop forever on an unhandled action.
-      epic.error = d.action === "repair" ? `unexpected repair decision for thread ${d.threadId}` : "unhandled decision";
+      // emits it for the weaver's own control loop. Escalate defensively
+      // rather than loop forever on an unhandled action.
+      loom.error = d.action === "repair" ? `unexpected repair decision for thread ${d.threadId}` : "unhandled decision";
       break;
     }
 
@@ -227,25 +228,25 @@ export async function runEpic(epic: Loom, decomposition: SubGoal[], deps: RunEpi
     }
 
     const children = [...finished.values()];
-    const r = rollupEpic(children, decomposition);
+    const r = rollupWeave(children, decomposition);
     // rollup is authoritative for state: a genuinely "ready" rollup (every
     // required child done) always wins, clearing any stray escalate/
     // iteration-bound error string.
-    epic.error = r.state === "ready" ? null : (r.error ?? epic.error ?? null);
+    loom.error = r.state === "ready" ? null : (r.error ?? loom.error ?? null);
     setState(r.state);
-    emit({ type: "epic-rollup", state: r.state });
-    return epic;
+    emit({ type: "weave-rollup", state: r.state });
+    return loom;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try {
       if (isAborted()) return halt();
       emit({ type: "error", message });
-      epic.error = message;
+      loom.error = message;
       setState("failed");
     } catch {
-      epic.state = isAborted() ? "halted" : "failed";
-      if (epic.state === "failed") epic.error ??= message;
+      loom.state = isAborted() ? "halted" : "failed";
+      if (loom.state === "failed") loom.error ??= message;
     }
-    return epic;
+    return loom;
   }
 }

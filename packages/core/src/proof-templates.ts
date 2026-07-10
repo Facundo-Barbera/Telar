@@ -16,7 +16,7 @@ export const PROOF_TEMPLATES: Record<ProofStrategy, ProofTemplate> = {
     strategy: "quickfix",
     label: "Quickfix",
     guidance:
-      "A small, self-contained leaf fix. No decomposition — one builder attempt, " +
+      "A small, self-contained fix. No decomposition — one builder attempt, " +
       "proven by the project's deterministic gates (lint/typecheck/test/build) plus " +
       "an independent Verifier pass when acceptance criteria and a target URL are " +
       "given. Keep scope minimal: touch only what the fix requires.",
@@ -26,12 +26,12 @@ export const PROOF_TEMPLATES: Record<ProofStrategy, ProofTemplate> = {
     strategy: "bmad-story",
     label: "BMAD story",
     guidance:
-      "A BMAD story (leaf or epic). Translate the story into concrete acceptance " +
-      "criteria before building; for an epic, decompose into SubGoals that each map " +
-      "to their own story slice. Each leaf/SubGoal is proven by the independent " +
-      "Verifier driving the running app against its acceptance criteria — the " +
-      "story is done only when the Verifier confirms it, never on the builder's " +
-      "self-report alone.",
+      "A BMAD story (self-contained or decomposed). Translate the story into " +
+      "concrete acceptance criteria before building; when it decomposes, break it " +
+      "into SubGoals that each map to their own story slice. Each SubGoal is proven " +
+      "by the independent Verifier driving the running app against its acceptance " +
+      "criteria — the story is done only when the Verifier confirms it, never on " +
+      "the builder's self-report alone.",
     verifyMechanism: "verifier",
   },
   "verifier-criteria": {
@@ -50,8 +50,9 @@ export const PROOF_TEMPLATES: Record<ProofStrategy, ProofTemplate> = {
     label: "Custom",
     guidance:
       "An open escape hatch for a proof shape that doesn't fit the other templates. " +
-      "Write a proofPlan in prose describing exactly how this leaf/SubGoal will be " +
-      "proven done, and choose the verifyMechanism that actually enforces it: " +
+      "Write a proofPlan in prose describing exactly how this SubGoal (or the whole " +
+      "Charter, when it doesn't decompose) will be proven done, and choose the " +
+      "verifyMechanism that actually enforces it: " +
       "\"gate\" (a deterministic check), \"verifier\" (the independent Verifier), or " +
       "\"human-signoff\" (a human must approve before this can be marked done).",
     verifyMechanism: "verifier",

@@ -12,7 +12,7 @@ beforeEach(() => {
 });
 
 const { terminalStateForCompletedLoom } = await import("../src/executor");
-const { rollupEpic } = await import("../src/epic");
+const { rollupWeave } = await import("../src/weave");
 const { acceptLoom, appendEvent, createLoom, getLoom, readEvents, saveLoom } = await import("../src/looms");
 import type { Loom } from "../src/looms";
 import type { SubGoal } from "../src/schemas";
@@ -55,25 +55,25 @@ function fakeLoom(overrides: Partial<Loom> = {}): Loom {
 }
 
 describe("terminalStateForCompletedLoom (the executor.ts:532 branch, unit-tested directly)", () => {
-  test("a completed ROOT leaf loom (no parentLoomId) reaches 'ready', not 'done'", () => {
-    const root = fakeLoom({ role: "leaf" }); // no parentLoomId
+  test("a completed ROOT loom (no parentLoomId) reaches 'ready', not 'done'", () => {
+    const root = fakeLoom(); // no parentLoomId
     expect(terminalStateForCompletedLoom(root)).toBe("ready");
   });
 
   test("a completed CHILD thread (has parentLoomId) still reaches 'done'", () => {
-    const child = fakeLoom({ role: "leaf", parentLoomId: "fake_epic" });
+    const child = fakeLoom({ parentLoomId: "fake_root" });
     expect(terminalStateForCompletedLoom(child)).toBe("done");
   });
 });
 
-describe("rollupEpic (§A retarget)", () => {
-  test("all required children done -> epic rollup state 'ready'", () => {
+describe("rollupWeave (§A retarget)", () => {
+  test("all required children done -> weave rollup state 'ready'", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "done" }),
     ];
-    expect(rollupEpic(children, decomposition)).toEqual({ state: "ready" });
+    expect(rollupWeave(children, decomposition)).toEqual({ state: "ready" });
   });
 
   test("a required child not done -> not 'ready' (needs-review)", () => {
@@ -82,7 +82,7 @@ describe("rollupEpic (§A retarget)", () => {
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "running" }),
     ];
-    const r = rollupEpic(children, decomposition);
+    const r = rollupWeave(children, decomposition);
     expect(r.state).not.toBe("ready");
     expect(r.state).toBe("needs-review");
   });

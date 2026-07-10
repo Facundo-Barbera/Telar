@@ -128,7 +128,7 @@ function ThreadRow({
 }
 
 // Joins the Charter's decomposition (source of truth for ordering, titles,
-// dependsOn) against the epic's spawned child Looms by subGoalId. Documented
+// dependsOn) against the weave's spawned child Looms by subGoalId. Documented
 // assumption: authors declare dependencies before dependents in
 // `decomposition` — a true topological sort is out of scope.
 //
@@ -141,13 +141,13 @@ function ThreadRow({
 export function ThreadTree({
   decomposition,
   children,
-  epicId,
+  weaveId,
 }: {
   decomposition: SubGoal[];
   children: Loom[];
-  epicId: string;
+  weaveId: string;
 }) {
-  void epicId; // not needed for row links (each links to its own child.id) — kept for signature parity
+  void weaveId; // not needed for row links (each links to its own child.id) — kept for signature parity
 
   const childBySubGoal = new Map<string, Loom>();
   for (const c of children) {

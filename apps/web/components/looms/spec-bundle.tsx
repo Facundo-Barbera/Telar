@@ -11,7 +11,7 @@ import { fmtAgo, shortId } from "@/lib/format";
 // The GET /api/looms/[id]/spec response shape — the bundle manifest
 // (docs/loom-model.md §2): objective + files + the Verification Contract
 // (or its validation errors, §M.1) + provenance (§M.6). No zod import here —
-// this mirrors how EpicGodView/CharterReview treat fetched JSON, as a plain
+// this mirrors how WeaveGodView/CharterReview treat fetched JSON, as a plain
 // shape, not a runtime-validated one.
 type SpecBundleProvenance = { approvedBy: string; humanApprovedAt: number; sessionId?: string };
 

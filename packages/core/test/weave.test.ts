@@ -3,14 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-epic-"));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-weave-"));
 process.env.TELAR_HOME = home;
 // bun test runs all files in one process — re-pin the env before every test
 beforeEach(() => {
   process.env.TELAR_HOME = home;
 });
 
-const { rollupEpic, runEpic } = await import("../src/epic");
+const { rollupWeave, runWeave } = await import("../src/weave");
 const { createLoom, listChildLooms, saveLoom, getLoom } = await import("../src/looms");
 import type { Loom } from "../src/looms";
 import type { SubGoal } from "../src/schemas";
@@ -53,14 +53,14 @@ function subGoal(overrides: Partial<SubGoal> = {}): SubGoal {
   };
 }
 
-describe("rollupEpic (pure)", () => {
-  test("all required children done -> ready (§A: the epic is the root the owner accepts)", () => {
+describe("rollupWeave (pure)", () => {
+  test("all required children done -> ready (§A: the root loom is the thing the owner accepts)", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "done" }),
     ];
-    expect(rollupEpic(children, decomposition)).toEqual({ state: "ready" });
+    expect(rollupWeave(children, decomposition)).toEqual({ state: "ready" });
   });
 
   test("a required child failed -> failed", () => {
@@ -69,7 +69,7 @@ describe("rollupEpic (pure)", () => {
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "failed" }),
     ];
-    const r = rollupEpic(children, decomposition);
+    const r = rollupWeave(children, decomposition);
     expect(r.state).toBe("failed");
     expect(r.error).toBe("s2: failed");
   });
@@ -80,7 +80,7 @@ describe("rollupEpic (pure)", () => {
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "needs-review" }),
     ];
-    const r = rollupEpic(children, decomposition);
+    const r = rollupWeave(children, decomposition);
     expect(r.state).toBe("needs-review");
     expect(r.error).toBe("s2: not done");
   });
@@ -91,25 +91,25 @@ describe("rollupEpic (pure)", () => {
       fakeLoom({ subGoalId: "s1", state: "done" }),
       fakeLoom({ subGoalId: "s2", state: "failed" }),
     ];
-    expect(rollupEpic(children, decomposition)).toEqual({ state: "ready" });
+    expect(rollupWeave(children, decomposition)).toEqual({ state: "ready" });
   });
 
   test("a required subgoal with no child -> needs-review", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [fakeLoom({ subGoalId: "s1", state: "done" })];
-    const r = rollupEpic(children, decomposition);
+    const r = rollupWeave(children, decomposition);
     expect(r.state).toBe("needs-review");
     expect(r.error).toBe("s2: not done");
   });
 });
 
-describe("runEpic (fakes, no disk/agents)", () => {
-  test("folds up to ready (§A) with two independent subgoals; children isolated from the epic object", async () => {
+describe("runWeave (fakes, no disk/agents)", () => {
+  test("folds up to ready (§A) with two independent subgoals; children isolated from the root object", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
-    const epic = fakeLoom({ role: "epic" });
+    const root = fakeLoom();
     const spawnedSubGoalIds: string[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(root, decomposition, {
       spawnChild: (sg) => {
         spawnedSubGoalIds.push(sg.id);
         return fakeLoom({ subGoalId: sg.id, state: "queued" });
@@ -122,17 +122,17 @@ describe("runEpic (fakes, no disk/agents)", () => {
 
     expect(result.state).toBe("ready");
     expect(spawnedSubGoalIds.sort()).toEqual(["s1", "s2"]);
-    // Isolation at the object level: the epic doesn't embed child attempts/states.
+    // Isolation at the object level: the root doesn't embed child attempts/states.
     expect((result as unknown as Record<string, unknown>).children).toBeUndefined();
     expect((result as unknown as Record<string, unknown>).threads).toBeUndefined();
     expect(result.attempts).toEqual([]);
   });
 
-  test("a required child's failure fails the epic", async () => {
+  test("a required child's failure fails the root", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
-    const epic = fakeLoom({ role: "epic" });
+    const root = fakeLoom();
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(root, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         child.state = child.subGoalId === "s2" ? "failed" : "done";
@@ -145,10 +145,10 @@ describe("runEpic (fakes, no disk/agents)", () => {
 
   test("respects dependsOn ordering across waves", async () => {
     const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] })];
-    const epic = fakeLoom({ role: "epic" });
+    const root = fakeLoom();
     const order: string[] = [];
 
-    const result = await runEpic(epic, decomposition, {
+    const result = await runWeave(root, decomposition, {
       spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
       runChild: async (child) => {
         order.push(child.subGoalId!);
@@ -163,36 +163,35 @@ describe("runEpic (fakes, no disk/agents)", () => {
 });
 
 describe("write isolation (real TELAR_HOME)", () => {
-  test("epic and child each get their own loom.json; listChildLooms scopes correctly; parent embeds no child data", () => {
-    const epic = createLoom({ project: "p", kind: "custom", title: "epic", prompt: "x", account: "personal", role: "epic" });
+  test("root and child each get their own loom.json; listChildLooms scopes correctly; parent embeds no child data", () => {
+    const root = createLoom({ project: "p", kind: "custom", title: "root", prompt: "x", account: "personal" });
     const child = createLoom({
       project: "p",
       kind: "quickfix",
       title: "child",
       prompt: "y",
       account: "personal",
-      role: "leaf",
-      parentLoomId: epic.id,
+      parentLoomId: root.id,
       subGoalId: "s1",
     });
-    saveLoom(epic);
+    saveLoom(root);
     saveLoom(child);
 
-    const epicFile = path.join(home, "looms", epic.id, "loom.json");
+    const rootFile = path.join(home, "looms", root.id, "loom.json");
     const childFile = path.join(home, "looms", child.id, "loom.json");
-    expect(fs.existsSync(epicFile)).toBe(true);
+    expect(fs.existsSync(rootFile)).toBe(true);
     expect(fs.existsSync(childFile)).toBe(true);
-    expect(epicFile).not.toBe(childFile);
+    expect(rootFile).not.toBe(childFile);
 
-    const children = listChildLooms(epic.id);
+    const children = listChildLooms(root.id);
     expect(children.map((c) => c.id)).toEqual([child.id]);
 
-    const onDisk = JSON.parse(fs.readFileSync(epicFile, "utf8"));
+    const onDisk = JSON.parse(fs.readFileSync(rootFile, "utf8"));
     expect(onDisk.children).toBeUndefined();
     expect(onDisk.threads).toBeUndefined();
     expect(onDisk.attempts).toEqual([]);
 
-    expect(getLoom(epic.id)!.parentLoomId).toBeUndefined();
-    expect(getLoom(child.id)!.parentLoomId).toBe(epic.id);
+    expect(getLoom(root.id)!.parentLoomId).toBeUndefined();
+    expect(getLoom(child.id)!.parentLoomId).toBe(root.id);
   });
 });
