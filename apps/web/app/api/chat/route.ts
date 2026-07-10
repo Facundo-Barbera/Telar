@@ -26,6 +26,7 @@ import {
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
+import { appendSessionEvent, startSessionLog } from "@/lib/session-log";
 import {
   createLoomMcpServer,
   LOOM_AUTO_TOOLS,
@@ -283,6 +284,13 @@ export async function POST(req: Request) {
           );
         } catch {
           // client went away — keep consuming so we still persist the turn
+        }
+        // Mirror every event (except the token-level firehose) into the
+        // session's live log so a reconnecting client can tail the in-flight
+        // turn (Phase 1b). capturedSession is only truthy after system:init,
+        // which is exactly when startSessionLog has opened the file.
+        if (capturedSession && event !== "delta" && event !== "thinking_delta") {
+          appendSessionEvent(capturedSession, event, data);
         }
       };
 
@@ -632,6 +640,11 @@ export async function POST(req: Request) {
             switch (nev.type) {
               case "session": {
                 capturedSession = nev.sessionId;
+                setChatRunSession(runId, capturedSession);
+                // Open the live log (truncate + write the `user` header) BEFORE
+                // the first send() so the session event is the log's second line
+                // and a reconnecting client can tail this turn (Phase 1b).
+                startSessionLog(capturedSession, message);
                 send("session", {
                   sessionId: capturedSession,
                   slashCommands: [],
@@ -892,6 +905,10 @@ export async function POST(req: Request) {
             };
             capturedSession = init.session_id;
             setChatRunSession(runId, capturedSession);
+            // Open the live log (truncate + write the `user` header) BEFORE the
+            // first send() so the session event is the log's second line and a
+            // reconnecting client can tail this turn (Phase 1b).
+            startSessionLog(capturedSession, message);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -1399,6 +1416,10 @@ export async function POST(req: Request) {
         // instead of leaving it to whatever natural conclusion it reaches on
         // its own after the HTTP response has already closed.
         if (titlePromise) abort.abort();
+        // Terminal marker the live-tail subscriber closes on. Written BEFORE
+        // endChatRun so a still-connected subscriber reads "closed" while the
+        // run is technically still registered as live (Phase 1b).
+        if (capturedSession) appendSessionEvent(capturedSession, "closed", {});
         endChatRun(runId);
         try {
           controller.close();

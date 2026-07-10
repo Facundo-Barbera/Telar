@@ -262,6 +262,36 @@ export type InitialChat = {
 
 const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
 
+// Reads an SSE stream frame-by-frame: accumulate decoded chunks, split on the
+// blank-line record separator, parse each record's `event:`/`data:` lines, and
+// hand (event, payload) to `onEvent`. Shared by the POST send() path and the
+// §1b reconnect subscriber; resolves when the reader is exhausted.
+async function consumeSSE(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onEvent: (event: string, payload: any) => void,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+    for (const chunk of chunks) {
+      let event = "";
+      let data = "";
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        if (line.startsWith("data: ")) data = line.slice(6);
+      }
+      if (!event || !data) continue;
+      const payload = JSON.parse(data);
+      onEvent(event, payload);
+    }
+  }
+}
+
 function BackLink({ href, label }: { href: string; label: string }) {
   return (
     <Link
@@ -854,6 +884,10 @@ function SessionViewInner({
     [accountProfiles, activeAccount],
   );
   const [status, setStatus] = useState<Status>("ready");
+  // Latest status for the reconnect effect's point-in-time "ready" gate, read
+  // via a ref so mutating status inside that effect can't re-trigger it.
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [thinking, setThinking] = useState(false);
   // True once the chat record is actually confirmed persisted server-side —
   // NOT the same as `sessionId` being set. sessionId is assigned the moment
@@ -907,6 +941,20 @@ function SessionViewInner({
   // with the POST so an explicit Stop can reach the DETACHED run. A client
   // disconnect (navigate/unmount) no longer stops the run.
   const runIdRef = useRef<string | null>(null);
+
+  // §1b: the current turn's assistant-message id, read by applyServerEvent so
+  // the extracted switch patches the right message on BOTH the POST path
+  // (send() pre-sets it) and the reconnect path (lazily created there).
+  const asstIdRef = useRef<string | null>(null);
+  // §1b: an "error" SSE event stashes its message here (formerly a local in
+  // send()); the POST path reads it after the read loop to render the banner.
+  const streamErrorRef = useRef<string | null>(null);
+  // §1b: subscriber to a live turn's event log when returning to a running
+  // session — its own AbortController, aborted on unmount / sessionId change.
+  // Aborting only closes THIS reader, never the detached server run.
+  const reconnectAbortRef = useRef<AbortController | null>(null);
+  // Guard so the reconnect effect attaches at most once per session id.
+  const reconnectedRef = useRef<string | null>(null);
 
   // The god-view handoff (docs/loom-model.md §5's "make this real" moment):
   // set the instant mcp__loom__start_loom's tool_result reports {loomId,
@@ -1138,90 +1186,30 @@ function SessionViewInner({
     [title],
   );
 
-  const send = useCallback(
-    async (text: string) => {
+  const applyServerEvent = useCallback((event: string, payload: any): void => {
+    // The reconnect log (session-log.ts) opens with a synthetic "user" event so
+    // a returning client renders the user bubble exactly how send() adds it
+    // optimistically. On the POST path this event never fires.
+    if (event === "user") {
       const userId = `m${nextId.current++}`;
-      const asstId = `m${nextId.current++}`;
-      // Fresh session (no id yet): the first user message names the thread,
-      // mirroring the title the store derives on save.
-      if (!sessionId) setTitle(text.slice(0, 60));
       setMessages((ms) => [
         ...ms,
-        { id: userId, role: "user", parts: [{ type: "text", text, done: true }] },
-        { id: asstId, role: "assistant", parts: [] },
+        { id: userId, role: "user", parts: [{ type: "text", text: payload.text, done: true }] },
       ]);
-      setStatus("submitted");
-      setThinking(false);
-
-      const abort = new AbortController();
-      abortRef.current = abort;
-      const runId =
-        globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
-      runIdRef.current = runId;
-
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            sessionId,
-            runId,
-            model,
-            project,
-            account: activeAccount,
-            ...(effort !== "default" ? { effort } : {}),
-            ...(provider === "codex" ? { sandbox, approvalPolicy } : { permissionMode }),
-            // Session<->Loom link (docs/loom-model.md §5): tells route.ts
-            // this is a planner turn BEFORE any Chat record exists (turn 1
-            // has no persisted chat.role yet) — see its own comment on why
-            // it reads this from the body at all. Omitted entirely for a
-            // normal (non-planner) session.
-            ...(planner ? { role: "planner" } : {}),
-          }),
-          signal: abort.signal,
-        });
-        if (!res.ok || !res.body) {
-          // A project/account rejected server-side (unknown/removed) answers
-          // with a plain JSON 400 before any SSE — surface its message.
-          let detail = `HTTP ${res.status}`;
-          try {
-            const body = await res.json();
-            if (body?.error) detail = body.error;
-          } catch {
-            /* not JSON — keep the status line */
-          }
-          throw new Error(detail);
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        // Set by the "error" case below instead of throwing there — throwing
-        // mid-loop would unwind out of the read loop and skip the server's
-        // trailing "saved"/"done" events (still sent from its finally block
-        // after a mid-turn error). We keep reading to the natural end of the
-        // stream and only surface the error once it actually closes.
-        let streamErrorMessage: string | null = null;
-
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const chunks = buffer.split("\n\n");
-          buffer = chunks.pop() ?? "";
-
-          for (const chunk of chunks) {
-            let event = "";
-            let data = "";
-            for (const line of chunk.split("\n")) {
-              if (line.startsWith("event: ")) event = line.slice(7);
-              if (line.startsWith("data: ")) data = line.slice(6);
-            }
-            if (!event || !data) continue;
-            const payload = JSON.parse(data);
-
-            switch (event) {
+      return;
+    }
+    // Every other event targets this turn's assistant message. On the POST path
+    // send() pre-created it and set asstIdRef; on reconnect there is none yet,
+    // so the first assistant-side event lazily creates it here (same shape
+    // send() uses) and records its id for the rest of the turn.
+    let asstId = asstIdRef.current;
+    if (!asstId) {
+      const id = `m${nextId.current++}`;
+      asstIdRef.current = id;
+      asstId = id;
+      setMessages((ms) => [...ms, { id, role: "assistant", parts: [] }]);
+    }
+    switch (event) {
               case "session":
                 // A newly minted session id — reflect it in the URL shallowly.
                 // router.replace here would be a real App Router navigation:
@@ -1535,11 +1523,127 @@ function SessionViewInner({
                 refresh();
                 break;
               case "error":
-                streamErrorMessage = payload.message;
+                streamErrorRef.current = payload.message;
                 break;
-            }
+    }
+  }, [sessionId, project]);
+
+  // §1b reconnect: returning to a session whose turn is STILL running. The
+  // page seeded prior turns from chats.json; here we tail the live event log so
+  // the in-flight turn (its "user" header + assistant events, none of them in
+  // chats.json yet) rebuilds and plays to completion. Runs at most once per
+  // session id, never while a local POST turn drives this mount (abortRef), and
+  // only for a real, confirmed session id that's currently idle.
+  useEffect(() => {
+    if (!sessionId) return;
+    if (statusRef.current !== "ready") return;
+    if (abortRef.current) return; // a local turn already owns this mount
+    if (reconnectedRef.current === sessionId) return;
+    reconnectedRef.current = sessionId;
+    // Fresh assistant container for the (not-yet-persisted) in-flight turn.
+    asstIdRef.current = null;
+
+    const abort = new AbortController();
+    reconnectAbortRef.current = abort;
+    let sawEvent = false;
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/events`, {
+          signal: abort.signal,
+        });
+        if (!res.ok || !res.body) return;
+        await consumeSSE(res.body.getReader(), (event, payload) => {
+          // First byte of a live turn — flip to streaming so the busy UI shows
+          // while applyServerEvent rebuilds it. A not-live session emits nothing
+          // (server gate) and the reader closes at once, leaving status ready.
+          if (!sawEvent) {
+            sawEvent = true;
+            setStatus("streaming");
           }
+          applyServerEvent(event, payload);
+        });
+        // The run's own "done" set cost/tokens but never touches status; once the
+        // log drains ("closed" → reader done), settle a still-streaming view back.
+        if (sawEvent) setStatus((s) => (s === "streaming" ? "ready" : s));
+      } catch {
+        // Aborted on unmount / sessionId change, or a dropped connection — the
+        // detached server run is untouched; a later mount can reconnect again.
+      }
+    })();
+
+    return () => {
+      abort.abort();
+      reconnectAbortRef.current = null;
+    };
+  }, [sessionId, applyServerEvent]);
+
+  const send = useCallback(
+    async (text: string) => {
+      const userId = `m${nextId.current++}`;
+      const asstId = `m${nextId.current++}`;
+      // Fresh session (no id yet): the first user message names the thread,
+      // mirroring the title the store derives on save.
+      if (!sessionId) setTitle(text.slice(0, 60));
+      setMessages((ms) => [
+        ...ms,
+        { id: userId, role: "user", parts: [{ type: "text", text, done: true }] },
+        { id: asstId, role: "assistant", parts: [] },
+      ]);
+      setStatus("submitted");
+      setThinking(false);
+
+      const abort = new AbortController();
+      abortRef.current = abort;
+      const runId =
+        globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
+      runIdRef.current = runId;
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            sessionId,
+            runId,
+            model,
+            project,
+            account: activeAccount,
+            ...(effort !== "default" ? { effort } : {}),
+            ...(provider === "codex" ? { sandbox, approvalPolicy } : { permissionMode }),
+            // Session<->Loom link (docs/loom-model.md §5): tells route.ts
+            // this is a planner turn BEFORE any Chat record exists (turn 1
+            // has no persisted chat.role yet) — see its own comment on why
+            // it reads this from the body at all. Omitted entirely for a
+            // normal (non-planner) session.
+            ...(planner ? { role: "planner" } : {}),
+          }),
+          signal: abort.signal,
+        });
+        if (!res.ok || !res.body) {
+          // A project/account rejected server-side (unknown/removed) answers
+          // with a plain JSON 400 before any SSE — surface its message.
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.error) detail = body.error;
+          } catch {
+            /* not JSON — keep the status line */
+          }
+          throw new Error(detail);
         }
+
+        const reader = res.body.getReader();
+        // The extracted switch (applyServerEvent) patches the assistant message
+        // via asstIdRef; reset the per-turn error sink before draining. An
+        // "error" event records its message on streamErrorRef instead of
+        // throwing mid-loop, so the server's trailing "saved"/"done" still land
+        // and we surface the error only once the stream closes.
+        asstIdRef.current = asstId;
+        streamErrorRef.current = null;
+        await consumeSSE(reader, applyServerEvent);
+        const streamErrorMessage = streamErrorRef.current;
         if (streamErrorMessage) {
           markToolsInterrupted(asstId);
           patch(asstId, (m) => ({
@@ -1582,7 +1686,7 @@ function SessionViewInner({
         runIdRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner],
+    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, applyServerEvent],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
