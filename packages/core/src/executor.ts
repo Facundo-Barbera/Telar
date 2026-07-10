@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
+import { resolveProjectMcpServers } from "./mcp";
 import { type BuildPiece, runBuildFanout } from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
@@ -569,6 +570,9 @@ export async function executeLoom(
       disallowedTools: manifest.guardrails.disallowedTools,
       settingSources: ["project", "local"],
       account: opts.accounts?.[manifest.account],
+      // Per-project MCP servers (docs/runtime-architecture.md §B) — each with
+      // its OWN token-injected env/headers, decoupled from the build account.
+      extraMcpServers: resolveProjectMcpServers(manifest.name),
       abort: opts.abort,
       ...(ctx.resume ? { resume: ctx.resume } : {}),
       onEvent: (e) => {
@@ -621,6 +625,7 @@ export async function executeLoom(
           disallowedTools: manifest.guardrails.disallowedTools,
           settingSources: ["project", "local"],
           account: opts.accounts?.[manifest.account],
+          extraMcpServers: resolveProjectMcpServers(manifest.name),
           abort: opts.abort,
           onEvent: (e) => {
             if (e.type === "session") {

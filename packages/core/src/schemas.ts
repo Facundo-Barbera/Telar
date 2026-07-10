@@ -29,6 +29,35 @@ export const AccountProfile = z.object({
 });
 export type AccountProfile = z.infer<typeof AccountProfile>;
 
+// --- Per-project MCP servers (docs/runtime-architecture.md §B) — manual-token
+// auth, DECOUPLED from the Claude account. telar.yaml is secret-free: an
+// env/header value is either a literal string OR a { secret, prefix? } ref
+// that NAMES a token in the secret store (resolved by mcp.ts, never here, and
+// never off accountEnv — so account-switching can't rotate MCP auth).
+export const McpSecretRef = z.object({
+  secret: z.string(), // secret key, namespaced at read time to `mcp:<project>:<secret>`
+  prefix: z.string().optional(), // literal prefix, e.g. "Bearer " for an Authorization header
+});
+export type McpSecretRef = z.infer<typeof McpSecretRef>;
+
+export const McpValue = z.union([z.string(), McpSecretRef]);
+export type McpValue = z.infer<typeof McpValue>;
+
+export const McpServerConfig = z.discriminatedUnion("transport", [
+  z.object({
+    transport: z.literal("stdio"),
+    command: z.string(),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), McpValue).optional(),
+  }),
+  z.object({
+    transport: z.literal("http"),
+    url: z.string(),
+    headers: z.record(z.string(), McpValue).optional(),
+  }),
+]);
+export type McpServerConfig = z.infer<typeof McpServerConfig>;
+
 export const Verdict = z.object({
   ok: z.boolean(),
   summary: z.string(),
@@ -188,6 +217,10 @@ export const ProjectManifest = z.object({
   // executor spins this up on a free port and tears it down after — never a
   // replacement for urls.dev when one is already configured.
   devCommand: z.string().optional(),
+  // Per-project MCP servers (docs/runtime-architecture.md §B), keyed by server
+  // name. Secret-free references only; tokens are resolved+injected per server
+  // by mcp.ts:resolveProjectMcpServers, decoupled from the Claude account.
+  mcpServers: z.record(z.string(), McpServerConfig).default({}),
 });
 export type ProjectManifest = z.infer<typeof ProjectManifest>;
 

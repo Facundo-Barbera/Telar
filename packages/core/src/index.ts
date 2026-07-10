@@ -1,6 +1,7 @@
 export * from "./schemas";
 export * from "./providers";
 export * from "./secrets";
+export * from "./mcp";
 export * from "./accounts";
 export * from "./engine";
 export * from "./manifest";

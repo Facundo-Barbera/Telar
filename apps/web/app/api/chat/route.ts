@@ -11,6 +11,7 @@ import {
   getAccount,
   getDefaultAccountName,
   getProject,
+  resolveProjectMcpServers,
   type ProjectManifest,
 } from "@telar/core";
 import {
@@ -880,7 +881,10 @@ export async function POST(req: Request) {
             // surface as mcp__loom__*, gated the same way every other tool
             // is: allowedTools for the safe read/draft ones, canUseTool +
             // the PreToolUse hook for start_loom.
-            mcpServers: { loom: loomMcpServer },
+            // Per-project MCP servers (docs/runtime-architecture.md §B) with
+            // their OWN token-injected env/headers — resolved decoupled from
+            // accountEnv above, so account-switching can't rotate MCP auth.
+            mcpServers: { loom: loomMcpServer, ...(project ? resolveProjectMcpServers(project) : {}) },
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
             maxTurns: 25,
