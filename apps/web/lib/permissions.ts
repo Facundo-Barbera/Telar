@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { LOOM_START_TOOL } from "./loom-mcp";
 
 // Claude Code-style permission rules, per project: "Write", "Edit",
 // "Bash(bun test:*)" — a bare tool name allows the tool, a parenthesized
@@ -454,6 +455,19 @@ export function resolvePending(id: string, decision: PermissionDecision): boolea
   if (decision.behavior === "allow" && decision.always) {
     const persistedRule = decision.rule ?? p.rule;
     for (const [otherId, other] of pending) {
+      // mcp__loom__start_loom is the loom moat's commit action (docs/
+      // loom-model.md §M.6) and must NEVER be satisfiable by coalescing onto
+      // someone else's "always allow" — every commit gets its own
+      // interactive approval, no exceptions. addRule already refuses to
+      // persist a rule for it (see route.ts's `toolName !== LOOM_START_TOOL`
+      // guard), but that alone doesn't stop THIS sweep: a bare
+      // "mcp__loom__start_loom" rule (the only option ruleOptionsFor offers
+      // for a non-Bash tool) matches ANY start_loom input via ruleMatches'
+      // `parsed.spec === null -> true` short-circuit, so without this
+      // exemption a human approving one loom's start_loom card would
+      // silently auto-approve every OTHER pending start_loom request in the
+      // same project too.
+      if (other.toolName === LOOM_START_TOOL) continue;
       if (other.project === p.project && ruleMatches(persistedRule, other.toolName, other.input)) {
         clearTimeout(other.timer);
         pending.delete(otherId);

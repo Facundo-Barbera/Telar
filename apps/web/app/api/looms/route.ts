@@ -22,8 +22,13 @@ const LOOM_TARGETS = new Set(["dev", "preview", "prod"]);
 export async function GET() {
   // A Loom is the listed unit. Its weaves (threads) are first-class child looms
   // shown INSIDE the god-view (via /api/looms/[id]/threads), never as separate
-  // top-level entries — so the list is roots only (no parentLoomId).
-  const looms = listLooms().filter((l) => !l.parentLoomId);
+  // top-level entries — so the list is roots only (no parentLoomId). Draft
+  // looms are also excluded: a draft's Spec Bundle is still being authored in
+  // a planning session (docs/loom-model.md §5) and must not appear until
+  // startLoomFromBundle commits it (draft:false). Kept as a local predicate
+  // (equivalent to @telar/core's isListableLoom) rather than importing it, to
+  // avoid coupling this route's typecheck timing to that sibling export.
+  const looms = listLooms().filter((l) => !l.draft && !l.parentLoomId);
   return Response.json({ looms, active: activeLoomIds() });
 }
 

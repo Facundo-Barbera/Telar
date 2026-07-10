@@ -71,6 +71,14 @@ export type Chat = {
   // predating mode selection, which read as "default" (the prior hardcoded
   // behavior).
   permissionMode?: ClientPermissionMode;
+  // Session<->Loom link (docs/loom-model.md §5): the loom this session is
+  // planning/steering, and which of the two roles it holds. Optional: most
+  // chats are plain sessions with no loom attached. Once set, persisted via
+  // appendTurn's undefined-guarded assignment below (see contextTokens for
+  // the same pattern) — an unrelated turn that omits these must never clobber
+  // a link a prior turn/route established.
+  loomId?: string;
+  role?: "planner" | "steerer";
   createdAt: number;
   updatedAt: number;
   costUsd: number;
@@ -272,6 +280,11 @@ export function appendTurn(opts: {
   account: string;
   project?: string;
   permissionMode?: ClientPermissionMode;
+  // Session<->Loom link — set once a session is attached to a loom (see
+  // Chat.loomId/role). Undefined means "no change"; only ever narrows a
+  // link in, never clears one (see the guarded assignment below).
+  loomId?: string;
+  role?: "planner" | "steerer";
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
   costUsd: number;
@@ -353,6 +366,10 @@ export function appendTurn(opts: {
   // caller from the last main-thread assistant message, not the step-summed
   // usage above) — overwrite, never accumulate.
   if (opts.contextTokens !== undefined) chat.contextTokens = opts.contextTokens;
+  // Session<->Loom link: guarded the same way — once a caller sets it, a
+  // later turn that doesn't pass loomId/role must not wipe it back out.
+  if (opts.loomId !== undefined) chat.loomId = opts.loomId;
+  if (opts.role !== undefined) chat.role = opts.role;
   chat.updatedAt = now;
   writeChats(chats);
 }

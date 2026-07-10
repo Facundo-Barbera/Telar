@@ -25,10 +25,13 @@ function BackLink({ href, label }: { href: string; label: string }) {
 
 export default async function SessionPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ name: string; id: string }>;
+  searchParams: Promise<{ role?: string }>;
 }) {
   const { name, id } = await params;
+  const { role: roleParam } = await searchParams;
 
   // The manifest fixes this project's default account. An unknown project is
   // a stable condition (it can't resolve mid-stream), so it's the one case
@@ -83,8 +86,18 @@ export default async function SessionPage({
         cacheReadTokens: chat.cacheReadTokens ?? 0,
         cacheCreateTokens: chat.cacheCreateTokens ?? 0,
         contextTokens: chat.contextTokens ?? 0,
+        loomId: chat.loomId,
+        role: chat.role,
       }
     : undefined;
+
+  // "Plan a loom" (the Looms tab's front door) links here with
+  // `?role=planner` on a brand-new session — a hint SessionView uses to show
+  // planning-mode framing before the chat's own Chat.role is ever persisted
+  // (that only happens once the loom MCP server's draft_bundle_file actually
+  // runs, see lib/loom-mcp.ts). Meaningless once a real chat exists — its own
+  // persisted role (above) always wins.
+  const initialRole = !chat && roleParam === "planner" ? "planner" : undefined;
 
   // An existing chat resumes with its own persisted account (the resume
   // transcript lives under that account's config dir — the manifest default
@@ -126,6 +139,7 @@ export default async function SessionPage({
           accounts={accounts}
           initialChat={initialChat}
           initialTitle={chat?.title}
+          initialRole={initialRole}
         />
       </div>
     </div>

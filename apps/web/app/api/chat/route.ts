@@ -26,6 +26,12 @@ import {
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { generateTitle } from "@/lib/titles";
 import {
+  createLoomMcpServer,
+  LOOM_AUTO_TOOLS,
+  LOOM_START_TOOL,
+  type LoomSessionLink,
+} from "@/lib/loom-mcp";
+import {
   createPending,
   resolvePending,
   readRules,
@@ -40,6 +46,7 @@ import {
 } from "@/lib/permissions";
 import {
   appendTurn,
+  getChat,
   logUsage,
   savePlanUsage,
   type Part,
@@ -260,6 +267,15 @@ export async function POST(req: Request) {
       // before init (e.g. session doesn't exist under this account's config
       // dir) must not persist a phantom empty turn under the client's guess.
       const resumeTarget = sessionId ?? null;
+      // Session<->Loom link (docs/loom-model.md §5): seeded from the resumed
+      // chat's own persisted loomId/role (a brand-new chat starts with
+      // neither). Mutated in place by the loom MCP server's tools as this
+      // turn runs — draft_bundle_file lazily sets it on first use — then
+      // threaded back through appendTurn below, the same per-turn
+      // persistence path store.ts already exposes for every other captured
+      // session field.
+      const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
+      const loomLink: LoomSessionLink = { loomId: existingChat?.loomId, role: existingChat?.role };
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
@@ -333,7 +349,18 @@ export async function POST(req: Request) {
           return { behavior: "allow", updatedInput: safeInput };
         }
         const rule = ruleFor(toolName, input);
-        if (readRules(project).some((r) => ruleMatches(r, toolName, input))) {
+        // mcp__loom__start_loom is the loom moat's commit action (docs/
+        // loom-model.md §M.6) — it must NEVER be satisfiable by a
+        // previously-persisted "always allow" rule, or a human's one-time
+        // approval of an earlier start_loom call would silently authorize
+        // every later one for the rest of this project's lifetime. Skip the
+        // stored-rules fast path for it unconditionally; it always falls
+        // through to the interactive prompt below (see also the `always`
+        // guard further down, which refuses to ever persist a rule for it).
+        if (
+          toolName !== LOOM_START_TOOL &&
+          readRules(project).some((r) => ruleMatches(r, toolName, input))
+        ) {
           return { behavior: "allow", updatedInput: input };
         }
         if (signal.aborted) return { behavior: "deny", message: "Aborted." };
@@ -365,7 +392,9 @@ export async function POST(req: Request) {
           // card (validated against `ruleOptions` by the permission route,
           // see isOfferedRule) — falls back to the prefix rule ruleFor
           // computed above when the user just clicked the default button.
-          if (decision.always) addRule(project, decision.rule ?? rule);
+          // Never persisted for start_loom (see the readRules skip above) —
+          // every commit gets its own interactive approval, no exceptions.
+          if (decision.always && toolName !== LOOM_START_TOOL) addRule(project, decision.rule ?? rule);
           // Never forward the SDK's own `suggestions` back as
           // `updatedPermissions`, even session-scoped ones. The SDK's
           // PermissionUpdate union includes `{type:'setMode', mode}` where
@@ -416,6 +445,31 @@ export async function POST(req: Request) {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
               permissionDecisionReason: decision.message,
+            },
+          };
+        }
+        // §M.6 / §6 moat guard: mcp__loom__start_loom dispatches a real loom
+        // — the one action in this whole toolset that spends money
+        // autonomously — and "no human starts a Loom alone" must hold in
+        // EVERY permission mode, not just "default". It's deliberately never
+        // in `allowedTools` (see the query() options below), but that alone
+        // only stops the SDK's pre-approval fast path; permissionMode
+        // "auto"/"acceptEdits" can still have the SDK's own classifier or
+        // accept-edits shortcut approve it WITHOUT ever invoking canUseTool
+        // (the same gap the guardrail re-check above exists to close).
+        // Hooks fire before that decision is finalized, so returning `ask`
+        // here — regardless of mode — force-routes it back through the
+        // interactive canUseTool permission card every single time; the
+        // human clicking Approve on that card IS the §M.6 human-approved
+        // provenance stamp startLoomFromBundle's `by` records.
+        if (input.tool_name === LOOM_START_TOOL) {
+          return {
+            continue: true,
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "ask",
+              permissionDecisionReason:
+                "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
             },
           };
         }
@@ -676,6 +730,20 @@ export async function POST(req: Request) {
             }
           }
         } else {
+        // The "loom" in-process MCP server (docs/loom-model.md §5) — draft/
+        // read tools plus the human-gated start_loom commit. `account` is
+        // this chat's own server-resolved identity (profile.name), never
+        // anything the model supplies — see loom-mcp.ts's start_loom, which
+        // stamps it as startLoomFromBundle's `by`/provenance. `getSessionId`
+        // reads `capturedSession` lazily: tool calls only ever run after the
+        // SDK's system:init message below has already set it.
+        const loomMcpServer = createLoomMcpServer({
+          project,
+          objectiveSeed: message,
+          account: profile.name,
+          link: loomLink,
+          getSessionId: () => capturedSession,
+        });
         const q = query({
           prompt: message,
           options: {
@@ -722,8 +790,23 @@ export async function POST(req: Request) {
               "WebSearch",
               "WebFetch",
               "ToolSearch",
+              // The loom moat's read/draft tools ONLY (docs/loom-model.md
+              // §5/§M.6) — auto-run so a planning session isn't spamming
+              // permission cards to write bundle files or propose a
+              // contract. mcp__loom__start_loom is deliberately excluded:
+              // it is the one tool in this server that dispatches a real
+              // loom, and must always go through the interactive
+              // canUseTool prompt (see preToolUseGuardrail's `ask`
+              // hard-route above and canUseTool's own always-allow-rule
+              // exclusion for it).
+              ...LOOM_AUTO_TOOLS,
             ],
             disallowedTools: manifest.guardrails.disallowedTools,
+            // The loom MCP server (see loomMcpServer above) — its tools
+            // surface as mcp__loom__*, gated the same way every other tool
+            // is: allowedTools for the safe read/draft ones, canUseTool +
+            // the PreToolUse hook for start_loom.
+            mcpServers: { loom: loomMcpServer },
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
             maxTurns: 25,
@@ -1211,6 +1294,12 @@ export async function POST(req: Request) {
               account: profile.name,
               project,
               permissionMode,
+              // Session<->Loom link (docs/loom-model.md §5): undefined
+              // means "no change" (appendTurn only ever narrows a link in,
+              // see its own comment) — loomLink stays untouched for a plain
+              // turn that never called a loom tool.
+              loomId: loomLink.loomId,
+              role: loomLink.role,
               userMessage: { role: "user", parts: [{ type: "text", text: message }] },
               assistantMessage: { role: "assistant", parts },
               costUsd,

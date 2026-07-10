@@ -17,6 +17,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { LoomCard } from "@/components/looms/loom-card";
 import { NewLoomDialog } from "@/components/looms/new-loom-dialog";
+import { PlanLoomButton } from "@/components/looms/plan-loom-button";
 import { isTerminal } from "@/components/looms/utils";
 
 function LoomsInner() {
@@ -91,10 +92,13 @@ function LoomsInner() {
         title="Looms"
         description="Autonomous work on your projects — attempt, verify, retry."
         actions={
-          <Button onClick={() => setDialogOpen(true)}>
-            <PlusIcon />
-            New loom
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setDialogOpen(true)}>
+              <PlusIcon />
+              New loom
+            </Button>
+            <PlanLoomButton />
+          </>
         }
       />
 
@@ -143,12 +147,15 @@ function LoomsInner() {
             <EmptyState
               icon={SparklesIcon}
               title="No looms yet"
-              description="Weave your first loom — pick a project and describe the work."
+              description="A loom begins from a planning session — describe what you want, then make it real."
               action={
-                <Button variant="outline" onClick={() => setDialogOpen(true)}>
-                  <PlusIcon />
-                  New loom
-                </Button>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <PlanLoomButton />
+                  <Button variant="outline" onClick={() => setDialogOpen(true)}>
+                    <PlusIcon />
+                    New loom
+                  </Button>
+                </div>
               }
             />
           )}

@@ -520,6 +520,36 @@ describe("pending registry", () => {
     expect(resolvePending(sibling.id, { behavior: "deny" })).toBe(true);
   });
 
+  test("security regression: approving one mcp__loom__start_loom card never coalesces another pending start_loom request (§M.6 — no auto-run, no forged approver)", async () => {
+    const LOOM_START_TOOL = "mcp__loom__start_loom";
+    // Two different draft looms in the same project each raise their own
+    // start_loom permission card around the same time.
+    const first = createPending(
+      "proj",
+      LOOM_START_TOOL,
+      { loomId: "loom_a" },
+      LOOM_START_TOOL,
+      undefined,
+      ruleOptionsFor(LOOM_START_TOOL, { loomId: "loom_a" }),
+    );
+    const second = createPending(
+      "proj",
+      LOOM_START_TOOL,
+      { loomId: "loom_b" },
+      LOOM_START_TOOL,
+      undefined,
+      ruleOptionsFor(LOOM_START_TOOL, { loomId: "loom_b" }),
+    );
+
+    // The human approves (even "always allow") the FIRST loom's card.
+    resolvePending(first.id, { behavior: "allow", always: true, rule: LOOM_START_TOOL });
+
+    // The SECOND, never-reviewed loom's start_loom request must still be
+    // sitting there waiting for its own interactive approval — not silently
+    // auto-approved via coalescing.
+    expect(resolvePending(second.id, { behavior: "deny" })).toBe(true);
+  });
+
   test("a plain (non-always) allow does not coalesce siblings", async () => {
     const a = createPending("proj", "Write", { file_path: "/x" }, "Write");
     const b = createPending("proj", "Write", { file_path: "/y" }, "Write");

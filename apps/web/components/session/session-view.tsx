@@ -8,6 +8,7 @@ import {
   BotIcon,
   CheckIcon,
   ChevronRightIcon,
+  ExternalLinkIcon,
   FileTextIcon,
   FolderSearchIcon,
   GlobeIcon,
@@ -20,7 +21,9 @@ import {
   TerminalIcon,
   TriangleAlertIcon,
   UserRoundIcon,
+  WorkflowIcon,
   WrenchIcon,
+  XIcon,
 } from "lucide-react";
 import {
   Conversation,
@@ -79,6 +82,11 @@ import { cn } from "@/lib/utils";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
 
 type Provider = "claude" | "codex";
+
+// Mirrors lib/loom-mcp.ts's own LOOM_START_TOOL export — kept as a plain
+// literal here (not imported) since that module pulls in server-only
+// @telar/core code that has no business in the client bundle.
+const LOOM_START_TOOL = "mcp__loom__start_loom";
 
 // Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
 // name/...) and stashed on that tool part so the tab strip and the B.3 chip
@@ -254,6 +262,11 @@ export type InitialChat = {
   cacheReadTokens: number;
   cacheCreateTokens: number;
   contextTokens: number;
+  // Session<->Loom link (docs/loom-model.md §5, store.ts's Chat.loomId/role)
+  // — set once this session's loom MCP tools have drafted/started a bundle.
+  // Seeds the header's persistent "Planning loom" chip on reload.
+  loomId?: string;
+  role?: "planner" | "steerer";
 };
 
 const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
@@ -928,6 +941,10 @@ export function SessionView(props: {
   accounts: Array<{ name: string; displayTier?: string }>;
   initialChat?: InitialChat;
   initialTitle?: string;
+  // Set only for a brand-new session arrived at via the Looms tab's
+  // "Plan a loom" front door (?role=planner) — a hint only, see the page's
+  // own comment. Drives the empty-state framing below, nothing else.
+  initialRole?: "planner";
 }) {
   // The slash-command menu and account lock both need to read/drive the
   // composer's text value from outside <PromptInput> itself — the provider
@@ -945,12 +962,14 @@ function SessionViewInner({
   accounts,
   initialChat,
   initialTitle,
+  initialRole,
 }: {
   project: string;
   account: string;
   accounts: Array<{ name: string; displayTier?: string }>;
   initialChat?: InitialChat;
   initialTitle?: string;
+  initialRole?: "planner";
 }) {
   const textInput = usePromptInputController().textInput;
 
@@ -1119,6 +1138,22 @@ function SessionViewInner({
   const [elapsed, setElapsed] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+
+  // The god-view handoff (docs/loom-model.md §5's "make this real" moment):
+  // set the instant mcp__loom__start_loom's tool_result reports {loomId,
+  // url} (see the "tool_result" case below), and seeded from the persisted
+  // chat on reload so the header chip survives a refresh. `dismissed` only
+  // hides the banner — the chip stays up for the life of the session either
+  // way, since the loom itself doesn't go away when the banner is closed.
+  const [loomHandoff, setLoomHandoff] = useState<{ loomId: string; url: string } | null>(
+    initialChat?.loomId ? { loomId: initialChat.loomId, url: `/looms/${initialChat.loomId}` } : null,
+  );
+  const [handoffDismissed, setHandoffDismissed] = useState(false);
+  // tool_use id -> tool name, populated as "tool" events arrive so the
+  // "tool_result" case (which only carries id/output/isError) can tell
+  // whether a given result belongs to start_loom. A ref, not state: purely
+  // internal bookkeeping that never drives a render itself.
+  const toolNamesRef = useRef<Map<string, string>>(new Map());
 
   // Agent types the live SDK session reports as available (init message's
   // `agents` list) — surfaced as a subtle one-liner on the tab strip, not its
@@ -1525,6 +1560,10 @@ function SessionViewInner({
                 const parent: string | undefined = payload.parent ?? undefined;
                 setStatus("streaming");
                 setThinking(false);
+                // Seed the name lookup the "tool_result" case below needs to
+                // recognize a start_loom result (that event carries only
+                // id/output/isError, never the name).
+                if (payload.id) toolNamesRef.current.set(payload.id, payload.name);
                 patch(asstId, (m) => {
                   const closed = closeThinking(m, parent);
                   return {
@@ -1563,6 +1602,25 @@ function SessionViewInner({
                       : p,
                   ),
                 }));
+                // The "make this real → god-view" moment (docs/loom-model.md
+                // §5): mcp__loom__start_loom's success result is
+                // `{loomId, url}` (lib/loom-mcp.ts's start_loom tool) —
+                // surface the handoff banner + header chip the instant it
+                // lands, live, without waiting for a reload.
+                if (
+                  !payload.isError &&
+                  toolNamesRef.current.get(payload.id) === LOOM_START_TOOL
+                ) {
+                  try {
+                    const parsed = JSON.parse(payload.output) as { loomId?: unknown; url?: unknown };
+                    if (typeof parsed.loomId === "string" && typeof parsed.url === "string") {
+                      setLoomHandoff({ loomId: parsed.loomId, url: parsed.url });
+                      setHandoffDismissed(false);
+                    }
+                  } catch {
+                    // Non-JSON output — nothing to surface.
+                  }
+                }
                 break;
               case "task_status":
                 // Authoritative completion signal for a backgrounded
@@ -2068,6 +2126,19 @@ function SessionViewInner({
             {shortId(sessionId)}
           </Badge>
         )}
+        {/* Persistent link back to this session's loom (docs/loom-model.md
+            §5) — up the instant start_loom's result lands live, and again on
+            every reload once Chat.loomId is persisted. */}
+        {loomHandoff && (
+          <Badge
+            variant="outline"
+            className="gap-1.5 border-primary/30 bg-primary/5 font-mono text-xs text-primary"
+            render={<Link href={loomHandoff.url} />}
+          >
+            <WorkflowIcon className="size-3" />
+            Planning loom
+          </Badge>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {busy && (
             <Shimmer className="text-xs">
@@ -2092,6 +2163,39 @@ function SessionViewInner({
           </Badge>
         </div>
       </div>
+
+      {/* The "make this real → god-view" handoff (docs/loom-model.md §5) —
+          prominent but never auto-navigating: the user may still want to
+          keep chatting (steer, ask questions) after the loom starts, so this
+          is a one-click link, not a redirect. Dismissible independently of
+          the header chip above, which stays up for the life of the session. */}
+      {loomHandoff && !handoffDismissed && (
+        <div className="shrink-0 border-b px-4 py-2.5">
+          <div className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+            <WorkflowIcon className="size-4 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">Loom started</p>
+              <p className="truncate text-xs text-muted-foreground">
+                The spec bundle is committed and weaving — watch it unfold in the god-view.
+              </p>
+            </div>
+            <Button size="sm" render={<Link href={loomHandoff.url} />}>
+              View god-view
+              <ExternalLinkIcon />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Dismiss"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setHandoffDismissed(true)}
+            >
+              <XIcon />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Main tab always present; a tab for a spawn appears the instant its
           tool-call part arrives (live) or is reconstructed from persisted
@@ -2121,8 +2225,12 @@ function SessionViewInner({
             renderAgentBucket(activeBucket)
           ) : messages.length === 0 ? (
             <ConversationEmptyState
-              title="Work in this repo"
-              description="Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
+              title={initialRole === "planner" ? "Plan a loom" : "Work in this repo"}
+              description={
+                initialRole === "planner"
+                  ? "Describe what you want built. Once the spec is ready, say “make this real” and this session commits the bundle and starts the loom."
+                  : "Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
+              }
             />
           ) : (
             messages.map((m) => {
