@@ -1581,6 +1581,7 @@ function SessionViewInner({
     return () => {
       abort.abort();
       reconnectAbortRef.current = null;
+      reconnectedRef.current = null;
     };
   }, [sessionId, applyServerEvent]);
 
