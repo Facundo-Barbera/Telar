@@ -25,6 +25,7 @@ import {
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { generateTitle } from "@/lib/titles";
+import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
   createLoomMcpServer,
   LOOM_AUTO_TOOLS,
@@ -137,8 +138,15 @@ export async function POST(req: Request) {
     // below is undefined for a brand-new session, so its own persisted
     // `role` can't tell us yet).
     role: rawRole,
+    // Client-generated id for THIS turn (docs/runtime-architecture.md §A.4).
+    // Known before the SDK session id exists, so Stop can target a brand-new
+    // session's first turn. Older clients omit it → we mint one (Stop-by-runId
+    // just won't be reachable for them, which matches the old behavior).
+    runId: rawRunId,
   } = await req.json();
   const role: "planner" | undefined = rawRole === "planner" ? "planner" : undefined;
+  const runId: string =
+    typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.
@@ -246,8 +254,13 @@ export async function POST(req: Request) {
   const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
   const workspace = manifest.root;
 
+  // Background turn (docs/runtime-architecture.md §A.4): the run is deliberately
+  // NOT bound to the request. A client disconnect (navigation, closed tab,
+  // hot-reload) must NOT abort it — the turn keeps working and persists on its
+  // own, like a loom. Only an explicit Stop (POST /api/chat/stop) or natural
+  // completion aborts it. Registered so Stop can find it by runId / session id.
   const abort = new AbortController();
-  req.signal.addEventListener("abort", () => abort.abort());
+  registerChatRun(runId, abort);
 
   // Fire title generation the instant the body is validated, in parallel
   // with the main turn below — only for a brand-new session (no resume
@@ -878,6 +891,7 @@ export async function POST(req: Request) {
               tools?: string[];
             };
             capturedSession = init.session_id;
+            setChatRunSession(runId, capturedSession);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -1385,6 +1399,7 @@ export async function POST(req: Request) {
         // instead of leaving it to whatever natural conclusion it reaches on
         // its own after the HTTP response has already closed.
         if (titlePromise) abort.abort();
+        endChatRun(runId);
         try {
           controller.close();
         } catch {

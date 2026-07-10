@@ -903,6 +903,10 @@ function SessionViewInner({
   const [elapsed, setElapsed] = useState(0);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // The current turn's server run id (docs/runtime-architecture.md §A.4) — sent
+  // with the POST so an explicit Stop can reach the DETACHED run. A client
+  // disconnect (navigate/unmount) no longer stops the run.
+  const runIdRef = useRef<string | null>(null);
 
   // The god-view handoff (docs/loom-model.md §5's "make this real" moment):
   // set the instant mcp__loom__start_loom's tool_result reports {loomId,
@@ -1151,6 +1155,9 @@ function SessionViewInner({
 
       const abort = new AbortController();
       abortRef.current = abort;
+      const runId =
+        globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
+      runIdRef.current = runId;
 
       try {
         const res = await fetch("/api/chat", {
@@ -1159,6 +1166,7 @@ function SessionViewInner({
           body: JSON.stringify({
             message: text,
             sessionId,
+            runId,
             model,
             project,
             account: activeAccount,
@@ -1571,6 +1579,7 @@ function SessionViewInner({
       } finally {
         setThinking(false);
         abortRef.current = null;
+        runIdRef.current = null;
       }
     },
     [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner],
@@ -2377,7 +2386,19 @@ function SessionViewInner({
             <PromptInputSubmit
               className="ml-auto shrink-0 self-end"
               status={status === "ready" ? undefined : status}
-              onStop={() => abortRef.current?.abort()}
+              onStop={() => {
+                // Stop the DETACHED server run — a mere disconnect no longer
+                // stops it (§A.4) — then close the local reader.
+                const rid = runIdRef.current;
+                if (rid) {
+                  void fetch("/api/chat/stop", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ runId: rid }),
+                  }).catch(() => {});
+                }
+                abortRef.current?.abort();
+              }}
             />
           </PromptInputFooter>
         </PromptInput>
