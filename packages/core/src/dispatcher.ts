@@ -479,17 +479,31 @@ function reDispatch(loom: Loom, deps: DispatcherDeps): void {
   const existing = active.get(loom.id);
   if (existing) existing.abort();
 
-  const { manifest } = getProject(loom.project);
   const abort = new AbortController();
-  active.set(loom.id, abort);
   const onFailure = makeOnFailure(loom);
 
-  dispatchExecution(loom, manifest, deps, abort)
-    .catch(onFailure)
-    .finally(() => {
-      // Only clear if still ours — a concurrent reDispatch may have replaced it.
-      if (active.get(loom.id) === abort) active.delete(loom.id);
-    });
+  try {
+    // Synchronous setup: getProject reads the project's telar.yaml and THROWS
+    // if the project left the registry or lost its manifest on disk. The caller
+    // (steer/reject/resume) has ALREADY persisted this loom as "queued", so a
+    // raw throw here would strand it "queued" with no runner forever. Route the
+    // failure through the same makeOnFailure guard the async path uses — bounce
+    // it back to "failed" with the real error — then RE-THROW so steer/reject/
+    // resume propagate it to their routes (ok:false). Never a false-positive
+    // terminal state, never a silent swallow.
+    const { manifest } = getProject(loom.project);
+    active.set(loom.id, abort);
+    dispatchExecution(loom, manifest, deps, abort)
+      .catch(onFailure)
+      .finally(() => {
+        // Only clear if still ours — a concurrent reDispatch may have replaced it.
+        if (active.get(loom.id) === abort) active.delete(loom.id);
+      });
+  } catch (err) {
+    if (active.get(loom.id) === abort) active.delete(loom.id);
+    onFailure(err);
+    throw err;
+  }
 }
 
 // docs/loom-model.md §A — the owner may STEER: record a directive and

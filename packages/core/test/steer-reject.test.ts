@@ -219,3 +219,92 @@ describe("resumeLoom (§A) — no-feedback retry", () => {
     expect(() => resumeLoom("loom_nope", fakeDeps().deps)).toThrow(/not found/);
   });
 });
+
+// The stranding guard (reDispatch): re-dispatch's synchronous setup resolves
+// the project (getProject reads telar.yaml). If that throws — the project left
+// the registry, or a registered root lost its telar.yaml on disk — the loom was
+// ALREADY persisted "queued" by the caller. It must bounce to "failed" (with the
+// real error) and the throw must propagate, so the loom is never stranded
+// "queued but nothing happening" and the HTTP route returns ok:false.
+describe("reDispatch — unresolvable project never strands a loom", () => {
+  // A loom pointing at a project name that was never registered — getProject
+  // throws "Unknown project".
+  function loomWithUnregisteredProject(state: Loom["state"]) {
+    const loom = createLoom({
+      project: `ghost-project-never-registered-${++n}`,
+      kind: "custom",
+      title: "t",
+      prompt: "base prompt",
+      account: "personal",
+    });
+    loom.state = state;
+    loom.error = "boom";
+    saveLoom(loom);
+    return loom;
+  }
+
+  // A loom on a registered project whose telar.yaml has since been deleted —
+  // getProject finds the registry entry but loadManifest throws.
+  function loomWithMissingManifest(state: Loom["state"]) {
+    n++;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-steer-reject-strand-${n}-`));
+    const m = createProject(root, { name: `steer-reject-strand-${n}` });
+    const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "base prompt", account: "personal" });
+    loom.state = state;
+    loom.error = "boom";
+    saveLoom(loom);
+    fs.rmSync(path.join(root, "telar.yaml"), { force: true }); // project loses its manifest
+    return loom;
+  }
+
+  test("resume: unregistered project -> throws, loom bounces to 'failed', not stranded 'queued'", () => {
+    const loom = loomWithUnregisteredProject("failed");
+    const f = fakeDeps();
+
+    expect(() => resumeLoom(loom.id, f.deps)).toThrow();
+    expect(f.calls).toBe(0); // never reached the executor
+
+    const after = getLoom(loom.id)!;
+    expect(after.state).toBe("failed");
+    expect(after.state).not.toBe("queued");
+    expect(after.error).toBeTruthy();
+  });
+
+  test("resume: registered root that lost its telar.yaml -> throws, loom is 'failed'", () => {
+    const loom = loomWithMissingManifest("failed");
+    const f = fakeDeps();
+
+    expect(() => resumeLoom(loom.id, f.deps)).toThrow();
+    expect(f.calls).toBe(0);
+
+    const after = getLoom(loom.id)!;
+    expect(after.state).toBe("failed");
+    expect(after.error).toBeTruthy();
+  });
+
+  test("reject: unresolvable project -> rejects, loom is 'failed' with the real error", async () => {
+    const loom = loomWithUnregisteredProject("failed");
+    const f = fakeDeps();
+
+    await expect(rejectLoom(loom.id, "handle the null case", "you", f.deps)).rejects.toThrow();
+    expect(f.calls).toBe(0);
+
+    const after = getLoom(loom.id)!;
+    expect(after.state).toBe("failed");
+    expect(after.state).not.toBe("queued");
+    expect(after.error).toBeTruthy();
+  });
+
+  test("steer: unresolvable project -> rejects, loom is 'failed', not stranded 'queued'", async () => {
+    const loom = loomWithUnregisteredProject("ready");
+    const f = fakeDeps();
+
+    await expect(steerLoom(loom.id, "focus on the edge case", "you", f.deps)).rejects.toThrow();
+    expect(f.calls).toBe(0);
+
+    const after = getLoom(loom.id)!;
+    expect(after.state).toBe("failed");
+    expect(after.state).not.toBe("queued");
+    expect(after.error).toBeTruthy();
+  });
+});
