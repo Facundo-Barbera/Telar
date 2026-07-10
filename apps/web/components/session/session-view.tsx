@@ -89,6 +89,16 @@ type Provider = "claude" | "codex";
 // @telar/core code that has no business in the client bundle.
 const LOOM_START_TOOL = "mcp__loom__start_loom";
 
+// The Loom Session's agent-first greeting (docs/loom-model.md §5, feature
+// #34): rendered ONLY as a fresh-session seed — see the `planner && !sessionId
+// && messages.length === 0` guard where it's used — never sent to the model,
+// never persisted, never billed. Purely a templated render so the agent
+// visibly speaks first; the instant the user sends anything, `messages`
+// stops being empty and this stops rendering, permanently, for the rest of
+// the session (it's not part of `messages` state at all).
+const PLANNER_GREETING =
+  "I'll help you plan a loom. Tell me what you'd like to build, and I'll shape it into a spec — the objective, any context, and a contract we can verify — then we start it together. What are we making?";
+
 // Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
 // name/...) and stashed on that tool part so the tab strip and the B.3 chip
 // both have a label without re-deriving it from raw input every render.
@@ -1411,6 +1421,12 @@ function SessionViewInner({
             account: activeAccount,
             ...(effort !== "default" ? { effort } : {}),
             ...(provider === "codex" ? { sandbox, approvalPolicy } : { permissionMode }),
+            // Session<->Loom link (docs/loom-model.md §5): tells route.ts
+            // this is a planner turn BEFORE any Chat record exists (turn 1
+            // has no persisted chat.role yet) — see its own comment on why
+            // it reads this from the body at all. Omitted entirely for a
+            // normal (non-planner) session.
+            ...(planner ? { role: "planner" } : {}),
           }),
           signal: abort.signal,
         });
@@ -1814,7 +1830,7 @@ function SessionViewInner({
         abortRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount],
+    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner],
   );
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -2240,6 +2256,17 @@ function SessionViewInner({
         <ConversationContent className="px-4">
           {activeBucket ? (
             renderAgentBucket(activeBucket)
+          ) : messages.length === 0 && planner && !sessionId ? (
+            // Agent-first greeting (feature #34): a templated assistant
+            // bubble — same Message/MessageContent/MessageResponse
+            // primitives the real transcript below uses, so it reads exactly
+            // like the agent spoke first — with no model call behind it.
+            // Gone the instant a real turn starts (messages.length > 0).
+            <Message from="assistant">
+              <MessageContent>
+                <MessageResponse>{PLANNER_GREETING}</MessageResponse>
+              </MessageContent>
+            </Message>
           ) : messages.length === 0 ? (
             <ConversationEmptyState
               title={initialRole === "planner" ? "Plan a loom" : "Work in this repo"}

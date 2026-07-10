@@ -95,6 +95,19 @@ const CODEX_SANDBOXES: Set<string> = new Set(CODEX_SANDBOX_PRESETS.map((p) => p.
 // just falls back to appendTurn's own message-prefix default.
 const TITLE_RACE_MS = 2_000;
 
+// Appended (never replacing) the "claude_code" preset system prompt for a
+// Loom Session (docs/loom-model.md §5's "planner" role) — see
+// `isPlannerSession` below. Guidance only: it does not grant any tool the
+// session doesn't already have (LOOM_AUTO_TOOLS/LOOM_START_TOOL + the
+// PreToolUse guardrail are the actual moat) and a non-planner session's
+// systemPrompt is completely unaffected.
+const PLANNER_SYSTEM_PROMPT = `You are helping the user plan a LOOM in Telar — an autonomous unit of work Telar will build and then independently verify. Your ONLY job in this session is planning, not coding. Workflow:
+1. Understand what the user wants to build (ask brief, focused questions).
+2. Draft a Spec Bundle with your loom tools: use draft_bundle_file to write the objective and any useful context (spec files, examples, constraints), and propose_contract to define a FALSIFIABLE Verification Contract — concrete, checkable assertions (golden-diff / value-equality / schema-match / contains / live-critic), never vague prose. propose_contract will reject an unfalsifiable contract.
+3. Show the user the plan (read_bundle) and refine until they're happy.
+4. When the spec is solid AND the user confirms, call start_loom. This ASKS THE USER TO APPROVE — you cannot start a loom yourself; that human approval is required by design. After it starts, tell the user the loom is building and verifying autonomously and that they can watch it in the god-view.
+Do NOT write the feature's code yourself — the loom's builder does that. Keep your messages concise and guide the user through the plan.`;
+
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
 // via includePartialMessages; client abort propagates to the subprocess.
@@ -109,7 +122,17 @@ export async function POST(req: Request) {
     permissionMode: rawPermissionMode = "default",
     sandbox: rawSandbox,
     approvalPolicy: rawApprovalPolicy,
+    // Session<->Loom link (docs/loom-model.md §5): the client (session-view.tsx)
+    // sends this IFF its `planner` prop is true. Only "planner" is a
+    // recognized value on the wire today (steerer sessions don't POST here
+    // this way yet) — anything else collapses to undefined so a stray/bad
+    // value can't be mistaken for a real planner turn. This is how turn 1
+    // knows it's a planner session BEFORE any Chat record exists (existingChat
+    // below is undefined for a brand-new session, so its own persisted
+    // `role` can't tell us yet).
+    role: rawRole,
   } = await req.json();
+  const role: "planner" | undefined = rawRole === "planner" ? "planner" : undefined;
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.
@@ -276,6 +299,14 @@ export async function POST(req: Request) {
       // session field.
       const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
       const loomLink: LoomSessionLink = { loomId: existingChat?.loomId, role: existingChat?.role };
+      // Whether this turn is part of a Loom Session (docs/loom-model.md §5's
+      // "planner" role) — the body's own `role` (authoritative for turn 1,
+      // before any Chat record exists) OR'd with the resumed chat's own
+      // already-persisted role (belt-and-suspenders for any later turn whose
+      // client omits it). Drives ONLY the appended system-prompt guidance
+      // below — never loom tool access/gating, which stays exactly as wired
+      // via LOOM_AUTO_TOOLS/LOOM_START_TOOL and the PreToolUse guardrail.
+      const isPlannerSession = role === "planner" || existingChat?.role === "planner";
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
@@ -752,7 +783,13 @@ export async function POST(req: Request) {
             model,
             ...(effort ? { effort: effort as EffortLevel } : {}),
             env: accountEnv(profile),
-            systemPrompt: { type: "preset", preset: "claude_code" },
+            // Planner guidance (docs/loom-model.md §5) is ADDITIVE via the
+            // preset's own `append` — a normal session's systemPrompt is
+            // byte-for-byte unchanged; only isPlannerSession turns get the
+            // extra paragraph tacked on after Claude Code's default prompt.
+            systemPrompt: isPlannerSession
+              ? { type: "preset", preset: "claude_code", append: PLANNER_SYSTEM_PROMPT }
+              : { type: "preset", preset: "claude_code" },
             permissionMode,
             // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
             // settings, hooks, and MCP servers. User-level settings stay out
