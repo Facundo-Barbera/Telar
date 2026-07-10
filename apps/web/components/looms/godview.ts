@@ -107,6 +107,7 @@ export type Operator = {
   repairs: number; // prior attempts whose panel verify failed
   subAgents: SubAgent[]; // intra-thread fan-out, [] when none / not captured
   files: FileTouched[]; // best-effort from the latest verdict, may be []
+  summary: string | null; // latest builder verdict's one-line summary, null when none
   critics: CriticVerdict[]; // latest attempt's panelReport.critics
   url: string; // panelReport.url ("" if none)
   roster: RosterEntry[]; // operator + sub-agents + critics, for the transcript tab
@@ -439,6 +440,7 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
     repairs,
     subAgents,
     files,
+    summary: latest?.verdict?.summary ?? null,
     critics,
     url,
     roster,

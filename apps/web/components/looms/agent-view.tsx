@@ -308,6 +308,15 @@ function Overview({
     <div className="flex flex-col gap-4">
       <FailureReason op={op} />
 
+      {op.summary && (
+        <div className="flex flex-col gap-2">
+          <SectionLabel>Summary</SectionLabel>
+          <div className="text-sm leading-relaxed">
+            <MessageResponse>{op.summary}</MessageResponse>
+          </div>
+        </div>
+      )}
+
       {op.steps.length > 0 && (
         <div className="flex flex-col gap-2">
           <SectionLabel>Steps so far</SectionLabel>
@@ -466,21 +475,24 @@ export function ScriptEntry({
         </p>
       );
     case "verdict":
+      // PASS/FAIL badge on top, the builder summary rendered as markdown prose
+      // below (same renderer as `say`) — not a raw one-liner. Badge-only when
+      // there's no summary text.
       return (
         <div
           className={cn(
-            "flex items-start gap-1.5 rounded-md border px-3 py-2 text-xs leading-relaxed",
+            "flex flex-col gap-2 rounded-md border px-3 py-2.5 leading-relaxed",
             e.ok
               ? "border-emerald-500/30 bg-emerald-500/[0.05]"
               : "border-destructive/40 bg-destructive/[0.05]",
           )}
         >
-          {e.ok ? (
-            <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-          ) : (
-            <CircleX className="mt-0.5 size-3.5 shrink-0 text-destructive" />
-          )}
-          <span className="text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-xs">
+            {e.ok ? (
+              <CircleCheck className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <CircleX className="size-3.5 shrink-0 text-destructive" />
+            )}
             <span
               className={cn(
                 "font-medium",
@@ -489,8 +501,12 @@ export function ScriptEntry({
             >
               {e.ok ? "PASS" : "FAIL"}
             </span>
-            {e.text ? ` — ${e.text}` : ""}
-          </span>
+          </div>
+          {e.text && (
+            <div className="text-sm leading-relaxed">
+              <MessageResponse>{e.text}</MessageResponse>
+            </div>
+          )}
         </div>
       );
     case "meta":
@@ -522,7 +538,7 @@ function TranscriptBody({ entry }: { entry: RosterEntry }) {
     );
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-4">
       {entry.transcript.entries.map((e, i) => (
         <ScriptEntry
           key={i}
