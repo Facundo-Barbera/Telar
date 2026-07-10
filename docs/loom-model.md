@@ -1,8 +1,8 @@
 # Telar — The Loom Model (Spec Bundles, Sessions & Adversarial Verification)
 
-**Status:** design draft (2026-07-09). The definition, entry, and proof layers of the loom, revised. Companion to `docs/loom-orchestrator.md` — that doc specifies the **engine** (the child-Loom ledger, the orchestrator control loop, budget/fan-out, the verified loop). This doc revises the **front door and the moat**: how a loom is *defined*, how it is *started*, and how "done" is *proven*. The engine is preserved; the definition/entry/verification layers are re-cut.
+**Status:** in build (2026-07-09). P1 (Spec Bundle) and P2 (Critic Panel) shipped; P3 (session front door) in progress; P4 (the dynamic weaver + methodology extraction, §W) and P5 (steering) next. See §8 for phase status. The definition, entry, and proof layers of the loom, revised. Companion to `docs/loom-orchestrator.md` — that doc specifies the **engine** (the child-Loom ledger, the orchestrator control loop, budget/fan-out, the verified loop). This doc revises the **front door and the moat**: how a loom is *defined*, how it is *started*, and how "done" is *proven*. The engine is preserved; the definition/entry/verification layers are re-cut.
 
-> Written in the loom vocabulary: **Telar** = the app/loom; a **Loom** = a unit of work; a **Thread** (weave) = a child loom; the **weaver** = the orchestrator.
+> Written in Telar's own vocabulary — **methodology-agnostic by design** (BMAD/epics/stories/sprints/TDD are ways to *produce* a bundle, never Telar types — see §W): **Telar** = the app; a **Loom** = a unit of work; a **Thread** (weave) = a child loom the weaver spawns; the **weaver** = the loom's orchestrator; the **Spec Bundle** + **Verification Contract** = the *what* and the *proof*.
 
 ---
 
@@ -46,6 +46,32 @@ A verified loop that *auto-promotes* to `done` still hands the last word to the 
 
 ---
 
+## §W. The weave is dynamic, and Telar has no methodology (2026-07-09)
+
+Two linked corrections, one principle: **Telar freezes nothing that intelligence should decide at runtime.**
+
+**1. The weave is dynamic — threads appear on the go, weaver-guided.** A Loom's sub-work is **not** a predefined `decomposition` list authored at planning time and exhausted by a scheduler (the M7 `Charter.decomposition` model — retired). The **weaver** plans continuously: each tick it reads the Spec Bundle (objective, contract, context files), the live ledger (threads spawned so far + their results), the budget, and any pending steering directives, and decides the next action — including **spawning a new Thread whose brief it authors on the spot**. The weave grows as it runs; threads materialize dynamically; the weaver adapts to what it discovers and to steering.
+
+This changes the *path*, never the *destination*. The moat was never in the decomposition — it is the fixed, human-authored **Verification Contract** + the independent **Critic Panel** + the deterministic **promotion gate** (§4, §A). The weaver has full freedom in *how* it weaves; nothing it does reaches `ready` without the panel passing the contract. It *proposes* completion; the gates + panel *decide*. A rogue or sloppy weaver still cannot self-certify — so orchestration freedom costs the moat nothing.
+
+The design law holds — **deterministic control flow in code; intelligence in the leaves**: the weaver's "what to spawn next" becomes an intelligent leaf (an `agent()` call), while the guards stay deterministic code invariants — `validateDecision` (each spawn's brief non-empty and inside `allowedPaths`/`protectedPaths`), budget hard-caps (cost / agents / wall-clock), `maxIterations`, and contract-gated termination. This also fixes the red-team's static-snapshot bug at its root (`runEpic` read the charter **once** at entry, §M.8) — re-planning per tick *is* the machinery that makes steering (§6) natural.
+
+**2. Telar has no methodology in its types.** BMAD/epics/stories/sprints/TDD are *ways to produce a Spec Bundle*, not Telar concepts. The methodology-flavored identifiers that leaked into the core are extracted — and mostly **dissolve** rather than get renamed, because a Loom should not *declare* a shape it can derive:
+
+| Methodology-flavored (out) | Telar (in) |
+|---|---|
+| `Loom.role: "epic" \| "leaf"` | derived: a **root** loom (no parent, the thing you own) vs a **thread** (`parentLoomId`); weaving is dynamic, not a type |
+| `Charter.shape: "epic" \| "leaf"` | gone |
+| `LoomKind: "quickfix" \| "story"` | gone — a Loom is anchored to a **bundle** |
+| `ProofStrategy: "bmad-story" \| …` | gone — the **Verification Contract** is the proof |
+| `kind: "verify"` | **kept** — a genuine read-only execution *mode*, not a methodology |
+| `epic.ts` · `runEpic` · `rollupEpic` · `EpicGodView` | `weave.ts` · `weave()` · `rollup()` · the weave view |
+| "orchestrator" | **weaver** |
+
+Telar's whole vocabulary is then just: **Loom** (a unit of work), **Thread / weave** (a child loom the weaver spawns), **weaver** (decides the weave), **Spec Bundle** + **Verification Contract** (the *what* and the *proof*). Nothing methodology-specific survives in the types.
+
+---
+
 ## 2. The Spec Bundle — a Loom weaves from a directory, not a prompt
 
 A Loom is anchored to a **Spec Bundle**: a working directory of artifacts the loom and its agents read.
@@ -59,7 +85,7 @@ A Loom is anchored to a **Spec Bundle**: a working directory of artifacts the lo
 **The naming metaphor (open):** in tapestry a **cartoon** is the master drawing the weaver works from behind the warp. The Spec Bundle is the loom's cartoon. We may adopt "Cartoon" as the product term; this doc uses "Spec Bundle / the Spec" to stay unambiguous. (Decision D0.)
 
 ### The Charter, revised
-The `Charter` stops being a JSON blob and becomes the **bundle manifest**: an index over the spec directory + the Verification Contract + decomposition pointers. Retired: `ProofStrategy` and `shape` enums. "Epic-ness" is **derived** — a Loom whose plan has sub-units is orchestrated; one without is a single leaf. The executor branches on *has children*, not on a declared type. `LoomKind`'s methodology-flavored values (`quickfix`/`story`) collapse into "a Loom with a bundle"; `verify` stays a genuine read-only execution **mode**.
+The `Charter` stops being a JSON blob and becomes the **bundle manifest**: an index over the spec directory + the Verification Contract. There is **no predefined `decomposition`** — the weave is planned *at runtime* by the weaver (§W), so "epic-ness" is not a type at all; a Loom is a **root** (the thing you own) or a **thread** (`parentLoomId`), and whether a root weaves threads is decided as it runs. Retired: `ProofStrategy`, `shape`, `role: epic|leaf`, and `LoomKind`'s methodology values (`quickfix`/`story`) — a Loom is simply "anchored to a bundle." `verify` stays a genuine read-only execution **mode**.
 
 ---
 
@@ -129,24 +155,25 @@ The messy interactive work happens in the session (the kitchen); its **output is
 | Layer | Verdict |
 |---|---|
 | Child-Loom ledger (`loom.json`/`events.ndjson`, single-writer) | **Keep** — a sub-unit is a child loom whatever the methodology |
-| Orchestrator loop + budget + fan-out (§6–7 of the engine doc) | **Keep** — schedules over *whatever* plan the bundle yields |
+| Orchestrator loop *as a static decomposition scheduler* | **Re-cut → the dynamic weaver** (§W) — plans the weave at runtime, spawns threads on the go; budget + fan-out kept |
 | Verified loop + the moat | **Keep, strengthen** — into the three-layer stack (§4) |
 | God-view shell | **Keep, extend** — now renders the Spec Bundle |
 | Evidence-serving path | **Keep, reuse** — serve `/spec` the same way |
 | `Charter` JSON blob | **Re-cut** → bundle manifest + Verification Contract |
-| `ProofStrategy` / `shape` enums | **Retire** → methodology in files; epic-ness derived |
+| `ProofStrategy` / `shape` / `role: epic\|leaf` / `LoomKind: story\|quickfix` | **Dissolve** (§W) → methodology lives in files; root/thread derived from `parentLoomId`; weaving is dynamic. `verify` mode kept. |
 | `draftCharter` (the sole scoping step) | **Demote** → one tool a planning session may call |
-| new-loom dialog "scope it" | **Replace** → "open a Loom Session" |
+| new-loom / create-loom dialog | **Delete, gone** (§W, P3) → a Loom begins only from a Loom Session; no one-click prompt→loom |
 | Single `Verifier` | **Multiply** → the Critic Panel |
 
 ---
 
 ## 8. Build phases (each shippable, each terminates on executable evidence)
 
-- **P1 — Spec Bundle substrate.** Bundle storage/versioning/snapshot; the Verification Contract schema; the manifest replaces the Charter blob; retire the enums (derive epic-ness). Bundle rendering in the god-view.
-- **P2 — Verification → three layers.** Sharpen the Verifier prompt from checker to *critic*; ground it in the bundle; make it a panel with a deterministic aggregation in `decide()`; adaptive sizing. Demote distilled specs to regression guards.
-- **P3 — Session↔Loom link.** The `Session.loomId`/`role` model; the moat-safe loom toolset; the **Loom Session** view in the Looms tab; the launch handoff → god-view.
-- **P4 — Steering & blockers.** Spec-revision directives (reconcile-at-boundary); the blocked/needs-human pause + prerequisite declaration + checked-at-start; in-loom steering sessions; boot-recovery for orphaned looms (§11 of the engine doc).
+- **P1 — Spec Bundle substrate. ✅ Shipped.** Bundle storage/versioning/snapshot; the falsifiable Verification Contract schema (§M.1); provenance (§M.6); the `ready`/`blocked` states (§A/§M.7); bundle rendering in the god-view.
+- **P2 — Verification → the Critic Panel. ✅ Shipped.** The Verifier reframed from checker to adversarial *critic*, grounded in the bundle; a panel with the pure §M.3/§M.4 invariants (`panelSize`/`aggregatePanel`); information isolation (§M.5); reserved critic budget (D11); `decide()` promotes to `ready` only on gates + panel.
+- **P3 — Session↔Loom front door. 🔄 In progress.** The session *is* the `Chat`; it gains `loomId`/`role` (§5). `startLoomFromBundle` — the provenance-gated commit — shipped; the moat-safe loom toolset + `start_loom` (permission-gated = the human-approval provenance stamp) + the handoff in flight. **Correction (locked):** the create-loom menu is **deleted**; a Loom begins only from a **Loom Session** that lives in the Looms tab and auto-navigates to the god-view on start.
+- **P4 — The dynamic weaver + vocabulary extraction (§W). ⏭ Next.** Re-cut `epic.ts` → `weave.ts` into a dynamic, weaver-guided loop (threads spawned on the go, plan-per-tick, contract-gated termination; deterministic guards: `validateDecision` scope, budget hard-caps, `maxIterations`). Dissolve the methodology enums (`shape`/`ProofStrategy`/`role: epic\|leaf`/`LoomKind: story\|quickfix`) across core + web + tests; rename orchestrator → weaver, `EpicGodView` → the weave view. Test-guarded like `runs → looms`.
+- **P5 — Steering, blockers & recovery. ⏭.** Spec-revision directives consumed at a thread boundary (most machinery lands in P4's per-tick re-planning); the `blocked`/needs-human pause + prerequisites declared and checked-at-start; in-loom steering sessions; boot-recovery for orphaned looms (§11 of the engine doc).
 
 ---
 
@@ -168,6 +195,8 @@ Red-team-hardened (§M) items are now code-invariants; what remains is genuine f
 - **D10 — Blocked-state policy.** Default block-timeout + escalation (notify? auto-halt? wait forever?) for a Loom paused on a missing prerequisite.
 - **D11 — Critic budget.** A reserved `maxCriticAgents` sub-pool vs the shared `maxAgents` pool (the red-team showed the panel can starve or be starved by build fan-out).
 - **D12 — The delegate (§A).** May a session agent auto-accept a *green* Loom on the owner's behalf under an explicit per-project policy (off by default), or must every `accept_loom` carry a human touch? Accepting *red* always needs the human co-sign regardless.
+
+**Resolved (2026-07-09, locked in code where shipped):** D8 → v1 same-model + information-isolation + a provider seam (Codex cross-provider deferred). D9 → the quick-bundle lane is built (`quickBundle`). D11 → reserved `maxCriticAgents` sub-pool. D12 → a delegate may accept a *green* Loom only under an explicit per-project policy, **off by default**; a *red* accept always needs the human. D5 → the session *is* the `Chat` record; it gains `loomId` + `role` (§5). Two decisions locked this round (§W): **the weave is dynamic** (threads planned at runtime, not a predefined decomposition) and **Telar carries no methodology in its types** (epic/story/`shape`/`ProofStrategy` dissolved). Still open: **D10** (blocked-state policy — leaning timeout→escalate, P5) and **D0** (Cartoon vs Spec Bundle naming).
 
 **Sequencing the red-team insists on:** lock D1 + the D3 floor *in code* before UI; build a minimal real directive-consumption path into `runEpic`/`tick` *before* P3 session UI; treat "co-sign to loosen a contract under a failing verdict" as a **P1 schema requirement**, not later polish.
 
