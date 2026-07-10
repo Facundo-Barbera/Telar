@@ -38,8 +38,53 @@ export type AgentOpts<S extends z.ZodRawShape> = {
 export type EngineEvent =
   | { type: "session"; sessionId: string }
   | { type: "text"; text: string }
-  | { type: "tool"; name: string }
+  | { type: "tool"; name: string; input?: unknown }
+  | { type: "tool-result"; name?: string; ok?: boolean; output?: string }
   | { type: "result"; subtype: string; costUsd?: number; turns?: number };
+
+// Cap on captured tool_result output so a single fat result (e.g. a big file
+// read) can't bloat the loom event stream / SSE payloads.
+const TOOL_OUTPUT_CAP = 4096;
+const toolOutputText = (content: unknown): string => {
+  // SDK tool_result content is either a string or an array of content blocks.
+  const raw =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((b: any) => (typeof b?.text === "string" ? b.text : JSON.stringify(b)))
+            .join("")
+        : JSON.stringify(content);
+  return raw.length > TOOL_OUTPUT_CAP ? raw.slice(0, TOOL_OUTPUT_CAP) + "…[truncated]" : raw;
+};
+
+// Cap a tool_use input the same way we cap tool_result output, so a huge
+// Write/Edit body (block.input) can't bloat events.ndjson or the SSE stream.
+// We preserve object structure — capping long string VALUES in place — so the
+// transcript preview (command/file_path/etc.) still resolves; only oversized
+// values are truncated. Deep/large containers fall back to a whole-JSON cap.
+const capToolInput = (input: unknown): unknown => {
+  const capString = (s: string) =>
+    s.length > TOOL_OUTPUT_CAP ? s.slice(0, TOOL_OUTPUT_CAP) + "…[truncated]" : s;
+  const walk = (v: unknown, depth: number): unknown => {
+    if (typeof v === "string") return capString(v);
+    if (depth <= 0 || v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, depth - 1));
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = walk(val, depth - 1);
+    return out;
+  };
+  const capped = walk(input, 6);
+  // Safety net: even after per-value capping, a pathologically wide/deep object
+  // could still be large. If so, fall back to a truncated JSON string.
+  try {
+    const json = JSON.stringify(capped);
+    if (json && json.length > TOOL_OUTPUT_CAP * 2) return json.slice(0, TOOL_OUTPUT_CAP * 2) + "…[truncated]";
+  } catch {
+    // non-serializable (cycles etc.) — hand back the structurally-capped value
+  }
+  return capped;
+};
 
 const MAX_CONCURRENT = 4;
 let active = 0;
@@ -108,6 +153,10 @@ export async function agent<S extends z.ZodRawShape>(
       ],
     });
 
+    // Map tool_use id -> tool name so a later tool_result (which only carries
+    // tool_use_id) can be labelled with the tool it came from.
+    const toolNames = new Map<string, string>();
+
     for await (const msg of query({
       prompt: `${promptText}\n\nWhen finished, call emit_result exactly once with your final result.`,
       options: {
@@ -137,7 +186,23 @@ export async function agent<S extends z.ZodRawShape>(
       } else if (msg.type === "assistant") {
         for (const block of (msg as any).message?.content ?? []) {
           if (block.type === "text") opts.onEvent?.({ type: "text", text: block.text });
-          if (block.type === "tool_use") opts.onEvent?.({ type: "tool", name: block.name });
+          if (block.type === "tool_use") {
+            toolNames.set(block.id, block.name);
+            opts.onEvent?.({ type: "tool", name: block.name, input: capToolInput(block.input) });
+          }
+        }
+      } else if (msg.type === "user") {
+        // Tool outputs surface as tool_result blocks on the synthetic user
+        // message that follows the assistant's tool_use. Best-effort capture.
+        for (const block of (msg as any).message?.content ?? []) {
+          if (block?.type === "tool_result") {
+            opts.onEvent?.({
+              type: "tool-result",
+              name: toolNames.get(block.tool_use_id),
+              ok: !block.is_error,
+              output: toolOutputText(block.content),
+            });
+          }
         }
       } else if (msg.type === "result") {
         opts.onEvent?.({

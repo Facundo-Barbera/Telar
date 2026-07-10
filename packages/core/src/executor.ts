@@ -579,7 +579,9 @@ export async function executeLoom(
         } else if (e.type === "text") {
           emit({ type: "text", text: e.text });
         } else if (e.type === "tool") {
-          emit({ type: "tool", name: e.name });
+          emit({ type: "tool", name: e.name, input: e.input });
+        } else if (e.type === "tool-result") {
+          emit({ type: "tool-result", name: e.name, ok: e.ok, output: e.output });
         } else if (e.type === "result") {
           ctx.attempt.costUsd = e.costUsd;
           emit({ type: "agent-result", subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
@@ -628,7 +630,9 @@ export async function executeLoom(
             } else if (e.type === "text") {
               emit({ type: "text", pieceId: piece.id, text: e.text });
             } else if (e.type === "tool") {
-              emit({ type: "tool", pieceId: piece.id, name: e.name });
+              emit({ type: "tool", pieceId: piece.id, name: e.name, input: e.input });
+            } else if (e.type === "tool-result") {
+              emit({ type: "tool-result", pieceId: piece.id, name: e.name, ok: e.ok, output: e.output });
             } else if (e.type === "result") {
               // Concurrent pieces each report their own cost — sum into the
               // one shared AttemptRecord.costUsd rather than the last writer
