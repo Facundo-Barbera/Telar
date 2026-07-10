@@ -13,6 +13,7 @@
 import { createSdkMcpServer, tool, type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import {
+  cancelLoom,
   ContractAssertion,
   createDraftLoom,
   getLoom,
@@ -22,22 +23,33 @@ import {
   listLooms,
   loadPolicy,
   readContract,
+  rejectLoom,
+  resumeLoom,
   saveLoom,
   startLoomFromBundle,
+  steerLoom,
   updateDraftObjectiveFromBundle,
   writeBundleFile,
   writeContract,
 } from "@telar/core";
 
-// The read/draft tools — safe to auto-run (route.ts adds these, and only
-// these, to `allowedTools`). Named here so the allow-list and the server
-// definition below can never drift apart.
+// The read/draft tools AND the lifecycle-drive tools (steer/reject/resume/
+// cancel) — safe to auto-run (route.ts adds these, and only these, to
+// `allowedTools`). The user DRIVES a running loom through the agent, so these
+// mustn't spam permission cards. NB `start_loom` (the commit) is deliberately
+// absent, and there is no accept tool — accept-to-done stays a human click
+// (docs/loom-model.md §M.6, the moat). Named here so the allow-list and the
+// server definition below can never drift apart.
 export const LOOM_AUTO_TOOLS = [
   "mcp__loom__draft_bundle_file",
   "mcp__loom__propose_contract",
   "mcp__loom__read_bundle",
   "mcp__loom__list_looms",
   "mcp__loom__get_loom",
+  "mcp__loom__steer_loom",
+  "mcp__loom__reject_loom",
+  "mcp__loom__resume_loom",
+  "mcp__loom__cancel_loom",
 ] as const;
 
 // The commit tool — deliberately NEVER added to `allowedTools` and hard-routed
@@ -77,6 +89,19 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
   // Shared by every tool below except draft_bundle_file (which lazily
   // creates the draft loom instead of erroring).
   const requireLoomId = (): string | null => opts.link.loomId ?? null;
+
+  // The lifecycle-drive tools (steer/reject/resume/cancel) target a loom by
+  // OPTIONAL id, defaulting to the session's linked loom — so any session can
+  // drive any loom by id, or its own linked one by default.
+  const resolveLoomId = (loomId?: string): string | null =>
+    loomId?.trim() || opts.link.loomId || null;
+
+  // The same DispatcherDeps start_loom builds — needed by steer/reject/resume
+  // (cancel takes none).
+  const buildDeps = () => ({
+    accounts: Object.fromEntries(listAccounts().map((a) => [a.name, a])),
+    policy: loadPolicy(),
+  });
 
   return createSdkMcpServer({
     name: "loom",
@@ -191,6 +216,72 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
               saveLoom(started);
             }
             return okResult(JSON.stringify({ loomId: started.id, url: `/looms/${started.id}` }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      // The lifecycle-drive tools (docs/loom-model.md §A) — auto-run so the
+      // human can DRIVE a running loom through the agent. Each re-enters the
+      // SAME verified loop and can only land back at `ready`, never `done`
+      // (the accept-to-done moat stays a human click). `loomId` is optional and
+      // defaults to the session's linked loom; `by` is ALWAYS opts.account, the
+      // chat's own server-resolved identity, never read from tool input (§M.6).
+      tool(
+        "steer_loom",
+        "Steer a RUNNING loom: record a directive and re-dispatch so it continues and RE-VERIFIES against its contract. Valid from 'ready' or 'needs-review'. Defaults to this session's linked loom when loomId is omitted.",
+        { loomId: z.string().optional(), directive: z.string() },
+        async ({ loomId, directive }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to steer a specific loom.");
+          try {
+            const loom = await steerLoom(id, directive, opts.account, buildDeps());
+            return okResult(JSON.stringify({ loomId: loom.id, state: loom.state }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      tool(
+        "reject_loom",
+        "Reject a loom's work and send it back with feedback so it re-enters the verified loop. Valid from 'ready', 'blocked', 'needs-review', or 'failed'. Defaults to this session's linked loom when loomId is omitted.",
+        { loomId: z.string().optional(), feedback: z.string() },
+        async ({ loomId, feedback }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to reject a specific loom.");
+          try {
+            const loom = await rejectLoom(id, feedback, opts.account, buildDeps());
+            return okResult(JSON.stringify({ loomId: loom.id, state: loom.state }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      tool(
+        "resume_loom",
+        "Resume a stuck loom as-is (no new directive) — re-run it through the SAME verified loop. Valid from 'failed', 'needs-review', or 'blocked'. Defaults to this session's linked loom when loomId is omitted.",
+        { loomId: z.string().optional() },
+        async ({ loomId }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to resume a specific loom.");
+          try {
+            const loom = resumeLoom(id, buildDeps());
+            return okResult(JSON.stringify({ loomId: loom.id, state: loom.state }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      tool(
+        "cancel_loom",
+        "Cancel (stop) a loom — abort a live executor, or halt a paused loom directly. Returns whether a loom was actually stopped. Defaults to this session's linked loom when loomId is omitted.",
+        { loomId: z.string().optional() },
+        async ({ loomId }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to cancel a specific loom.");
+          try {
+            const cancelled = cancelLoom(id);
+            return okResult(JSON.stringify({ loomId: id, cancelled }, null, 2));
           } catch (e) {
             return errResult(e instanceof Error ? e.message : String(e));
           }
