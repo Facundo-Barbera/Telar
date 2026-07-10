@@ -484,9 +484,11 @@ function reDispatch(loom: Loom, deps: DispatcherDeps): void {
 
   try {
     // Synchronous setup: getProject reads the project's telar.yaml and THROWS
-    // if the project left the registry or lost its manifest on disk. The caller
-    // (steer/reject/resume) has ALREADY persisted this loom as "queued", so a
-    // raw throw here would strand it "queued" with no runner forever. Route the
+    // if the project left the registry, or its manifest is unreadable with no
+    // cached copy to self-heal from (a wiped-but-cached telar.yaml is restored
+    // and does NOT throw). The caller (steer/reject/resume) has ALREADY persisted
+    // this loom as "queued", so a raw throw here would strand it "queued" with no
+    // runner forever. Route the
     // failure through the same makeOnFailure guard the async path uses — bounce
     // it back to "failed" with the real error — then RE-THROW so steer/reject/
     // resume propagate it to their routes (ok:false). Never a false-positive

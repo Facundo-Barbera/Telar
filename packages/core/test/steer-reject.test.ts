@@ -222,10 +222,11 @@ describe("resumeLoom (§A) — no-feedback retry", () => {
 
 // The stranding guard (reDispatch): re-dispatch's synchronous setup resolves
 // the project (getProject reads telar.yaml). If that throws — the project left
-// the registry, or a registered root lost its telar.yaml on disk — the loom was
-// ALREADY persisted "queued" by the caller. It must bounce to "failed" (with the
-// real error) and the throw must propagate, so the loom is never stranded
-// "queued but nothing happening" and the HTTP route returns ok:false.
+// the registry (or lost its telar.yaml with no cached copy to self-heal from) —
+// the loom was ALREADY persisted "queued" by the caller. It must bounce to
+// "failed" (with the real error) and the throw must propagate, so the loom is
+// never stranded "queued but nothing happening" and the HTTP route returns
+// ok:false.
 describe("reDispatch — unresolvable project never strands a loom", () => {
   // A loom pointing at a project name that was never registered — getProject
   // throws "Unknown project".
@@ -243,20 +244,6 @@ describe("reDispatch — unresolvable project never strands a loom", () => {
     return loom;
   }
 
-  // A loom on a registered project whose telar.yaml has since been deleted —
-  // getProject finds the registry entry but loadManifest throws.
-  function loomWithMissingManifest(state: Loom["state"]) {
-    n++;
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-steer-reject-strand-${n}-`));
-    const m = createProject(root, { name: `steer-reject-strand-${n}` });
-    const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "base prompt", account: "personal" });
-    loom.state = state;
-    loom.error = "boom";
-    saveLoom(loom);
-    fs.rmSync(path.join(root, "telar.yaml"), { force: true }); // project loses its manifest
-    return loom;
-  }
-
   test("resume: unregistered project -> throws, loom bounces to 'failed', not stranded 'queued'", () => {
     const loom = loomWithUnregisteredProject("failed");
     const f = fakeDeps();
@@ -267,18 +254,6 @@ describe("reDispatch — unresolvable project never strands a loom", () => {
     const after = getLoom(loom.id)!;
     expect(after.state).toBe("failed");
     expect(after.state).not.toBe("queued");
-    expect(after.error).toBeTruthy();
-  });
-
-  test("resume: registered root that lost its telar.yaml -> throws, loom is 'failed'", () => {
-    const loom = loomWithMissingManifest("failed");
-    const f = fakeDeps();
-
-    expect(() => resumeLoom(loom.id, f.deps)).toThrow();
-    expect(f.calls).toBe(0);
-
-    const after = getLoom(loom.id)!;
-    expect(after.state).toBe("failed");
     expect(after.error).toBeTruthy();
   });
 
@@ -306,5 +281,36 @@ describe("reDispatch — unresolvable project never strands a loom", () => {
     expect(after.state).toBe("failed");
     expect(after.state).not.toBe("queued");
     expect(after.error).toBeTruthy();
+  });
+});
+
+// Counterpart to the stranding guard: a registered root whose UNTRACKED
+// telar.yaml was wiped (e.g. a build agent's `git clean`) is NOT unresolvable —
+// getProject self-heals it from the registry's last-known-good cache. So
+// re-dispatch resolves the project, restores the file, and re-enters the
+// verified loop instead of bouncing the loom to "failed".
+describe("reDispatch — a wiped-but-cached telar.yaml self-heals, not strands", () => {
+  function loomWithWipedButCachedManifest(state: Loom["state"]) {
+    n++;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-steer-reject-heal-${n}-`));
+    const m = createProject(root, { name: `steer-reject-heal-${n}` }); // seeds the registry cache
+    const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "base prompt", account: "personal" });
+    loom.state = state;
+    loom.error = "boom";
+    saveLoom(loom);
+    fs.rmSync(path.join(root, "telar.yaml"), { force: true }); // untracked manifest wiped, cache survives
+    return { loom, root };
+  }
+
+  test("resume: registered root whose cached telar.yaml was wiped -> self-heals, re-dispatches, file restored", () => {
+    const { loom, root } = loomWithWipedButCachedManifest("failed");
+    const f = fakeDeps();
+
+    const out = resumeLoom(loom.id, f.deps);
+
+    expect(f.calls).toBe(1); // recovered and re-entered the verified loop
+    expect(out.state).not.toBe("done");
+    expect(out.error).toBeNull();
+    expect(fs.existsSync(path.join(root, "telar.yaml"))).toBe(true); // restored from cache
   });
 });

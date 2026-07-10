@@ -3,11 +3,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import { z } from "zod";
 import { ProjectManifest } from "./schemas";
 
-export type RegistryEntry = { name: string; root: string; addedAt: number };
+// `manifest` caches the last-known-good parsed manifest so getProject can
+// self-heal a telar.yaml wiped by a build agent's `git clean`/`checkout`.
+// Optional so pre-existing projects.json entries (without it) still parse.
+export type RegistryEntry = { name: string; root: string; addedAt: number; manifest?: ProjectManifest };
 
 export function telarDir(): string {
   return process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
@@ -65,6 +69,7 @@ export function registerProject(root: string): ProjectManifest {
     name: manifest.name,
     root: path.resolve(root),
     addedAt: reg[manifest.name]?.addedAt ?? Date.now(),
+    manifest, // seed the last-known-good cache
   };
   writeRegistry(reg);
   return manifest;
@@ -99,9 +104,31 @@ export function listProjects(): Array<{
 }
 
 export function getProject(name: string): { entry: RegistryEntry; manifest: ProjectManifest } {
-  const entry = readRegistry()[name];
+  const reg = readRegistry();
+  const entry = reg[name];
   if (!entry) throw new Error(`Unknown project "${name}" — not in the registry.`);
-  return { entry, manifest: loadManifest(entry.root) };
+
+  // Self-heal: telar.yaml is untracked, so a build agent's `git clean`/
+  // `checkout`/`reset` can wipe it. If the file is simply MISSING but we have a
+  // last-known-good cache, restore it from cache and carry on. A present-but-
+  // malformed/schema-invalid manifest is a real config error and must still
+  // throw (loadManifest surfaces it) — never mask that with a stale cache.
+  if (!fs.existsSync(manifestFile(entry.root))) {
+    if (entry.manifest) {
+      writeManifest(entry.root, entry.manifest);
+      return { entry, manifest: entry.manifest };
+    }
+    return { entry, manifest: loadManifest(entry.root) }; // no cache — throws as before
+  }
+
+  const manifest = loadManifest(entry.root);
+  // Refresh the cache whenever the live manifest drifts from what we remembered.
+  if (!isDeepStrictEqual(manifest, entry.manifest)) {
+    reg[name] = { ...entry, manifest };
+    writeRegistry(reg);
+    return { entry: reg[name], manifest };
+  }
+  return { entry, manifest };
 }
 
 export function unregisterProject(name: string): boolean {
