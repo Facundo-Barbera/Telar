@@ -62,6 +62,11 @@ export default function LoomDetailPage() {
   const [openOperatorId, setOpenOperatorId] = useState<string | null>(null);
   const [specOpen, setSpecOpen] = useState(false);
 
+  // Bumped when the owner acts on a Thread from its drawer (accept/steer/reject/
+  // resume) — forces an immediate /threads refetch so the child's new state
+  // shows without waiting out the 2.5s poll tick.
+  const [threadRefresh, setThreadRefresh] = useState(0);
+
   // The open woven child's own event tail — see the second EventSource below.
   const [threadFeed, setThreadFeed] = useState<LoomEvent[]>([]);
   const [childLoom, setChildLoom] = useState<Loom | null>(null);
@@ -183,7 +188,7 @@ export default function LoomDetailPage() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [id]);
+  }, [id, threadRefresh]);
 
   // Second event tail: the OPEN woven child's own stream. A woven child writes
   // its per-agent events to its OWN log (/api/looms/<childId>/events), never the
@@ -249,6 +254,10 @@ export default function LoomDetailPage() {
     }
   }, [id]);
 
+  // Owner acted on a Thread from its drawer — force an immediate /threads
+  // refetch so the child's post-intervention state (queued/…) shows at once.
+  const refreshThreads = useCallback(() => setThreadRefresh((n) => n + 1), []);
+
   if (error && !loom) {
     return (
       <div className="flex h-dvh flex-col">
@@ -308,7 +317,13 @@ export default function LoomDetailPage() {
     const c = (e as { costUsd?: number }).costUsd;
     return sum + (typeof c === "number" ? c : 0);
   }, 0);
-  const totalCost = sumCost(loom.attempts) + scopingCost;
+  // A WOVEN root never builds itself — its `attempts` is empty and ALL spend
+  // lives in the child Threads. Fold those in so the header reads the true weave
+  // cost instead of $0; a single loom adds nothing (threads is empty).
+  const totalCost =
+    sumCost(loom.attempts) +
+    scopingCost +
+    (isWoven(loom) ? threads.reduce((s, t) => s + sumCost(t.attempts), 0) : 0);
   const showCancel = nonTerminal && !isAwaitingOwner(loom.state);
 
   // The whole running/verifying/ready/terminal surface is now ONE unified
@@ -324,6 +339,15 @@ export default function LoomDetailPage() {
     childLoom && childLoom.id === openOperatorId
       ? deriveThreadOperator(childLoom, threadFeed)
       : null;
+
+  // The RAW loom behind the open operator — the root for a single loom, else the
+  // polled child Thread. The 2.5s /threads poll keeps this current, so it beats
+  // the live-tailed childLoom (whose EventSource ends on settle) as the source
+  // the intervention panel gates on. null when nothing's open.
+  const openLoom =
+    openOperatorId === loom.id
+      ? loom
+      : (threads.find((t) => t.id === openOperatorId) ?? null);
 
   // Who accepted — read off the durable "accepted" event so the done
   // confirmation can name them; the server fixes this to "you" today.
@@ -409,6 +433,8 @@ export default function LoomDetailPage() {
                 view.operators.find((o) => o.id === openOperatorId) ??
                 null
               }
+              loom={openLoom}
+              onIntervened={refreshThreads}
               onClose={() => setOpenOperatorId(null)}
             />
             <SpecDrawer loomId={loom.id} open={specOpen} onClose={() => setSpecOpen(false)} />

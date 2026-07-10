@@ -7,7 +7,6 @@ import {
   CircleCheck,
   CircleX,
   Clock,
-  Eye,
   FilePen,
   FilePlus,
   FlaskConical,
@@ -15,13 +14,13 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import type { CriticVerdict, Evidence } from "@telar/core";
+import type { CriticVerdict, Evidence, Loom } from "@telar/core";
 import type { Operator, RosterEntry, Step, TranscriptEntry } from "./godview";
+import { AcceptancePanel } from "./acceptance-panel";
 import { StatusBadge, statusVisual, TONE_ICON } from "./status";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { ToolStepRow } from "@/components/session/tool-step";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -68,6 +67,14 @@ function nowLine(op: Operator): string {
         ? "Couldn't independently verify this — no executable check ran to prove it. Review the deliverable, then accept it (an override), steer it, or send it back from the panel."
         : "Paused on a decision the orchestrator won't guess — answer it from the panel to resume. The rest of the weave keeps running around it.";
     case "repair":
+      // A terminal failed/halted Thread also wears the "repair" pill, but it is
+      // NOT reworking — it dead-ended. Only a live retry is actually reworking.
+      // `failed` is owner-actionable (the panel below offers Resume / Send back);
+      // `halted` is a stopped thread with NO panel action, so don't promise one.
+      if (op.state === "failed")
+        return "Dead-ended — the loop couldn't land this thread. Resume it to retry as-is, or send it back with feedback from the panel below.";
+      if (op.state === "halted")
+        return "Stopped — this thread was halted and isn't running. There's no action to take on it here.";
       return "Builder resumed with the failing criterion + a repro. Reworking against the contract.";
     case "verify":
       return op.state === "ready"
@@ -227,12 +234,80 @@ function VerifyPanel({ op, onGoto }: { op: Operator; onGoto: (key: string) => vo
   );
 }
 
-function Overview({ op, onGoto }: { op: Operator; onGoto: (key: string) => void }) {
+// WHY it stalled, in destructive tint — the loom's own error line as the
+// headline, then the specific blockers (red gates, must-clear critic lenses,
+// the builder verdict's blocker). Shown for a failed (dead-ended) or a
+// needs-review (couldn't-prove) Thread; null when there's nothing to explain.
+function FailureReason({ op }: { op: Operator }) {
+  if (op.state !== "failed" && op.state !== "needs-review") return null;
+  const { gates, critics, verdictBlocker } = op.failing;
+  const hasDetail = gates.length > 0 || critics.length > 0 || !!verdictBlocker;
+  if (!op.error && !hasDetail) return null;
+  const headline =
+    op.error ?? (op.state === "failed" ? "This thread failed." : "Couldn't be independently verified.");
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/[0.05] px-3 py-2.5">
+      <div className="flex items-center gap-1.5">
+        <CircleX className="size-3.5 shrink-0 text-destructive" />
+        <span className="text-xs font-medium tracking-wide text-destructive uppercase">
+          {op.state === "failed" ? "Failure reason" : "Why it can't be verified"}
+        </span>
+      </div>
+      <p className="text-xs leading-relaxed text-foreground/80">{headline}</p>
+      {hasDetail && (
+        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+          {gates.map((name) => (
+            <li key={`gate-${name}`} className="flex items-start gap-1.5">
+              <CircleX className="mt-0.5 size-3 shrink-0 text-destructive" />
+              <span>
+                gate <span className="font-mono text-[11px] text-foreground/70">{name}</span> failed
+              </span>
+            </li>
+          ))}
+          {critics.map((lens) => (
+            <li key={`critic-${lens}`} className="flex items-start gap-1.5">
+              <CircleX className="mt-0.5 size-3 shrink-0 text-destructive" />
+              <span>
+                blocker lens{" "}
+                <span className="font-mono text-[11px] text-foreground/70">{lens}</span> did not clear
+              </span>
+            </li>
+          ))}
+          {verdictBlocker && (
+            <li className="flex items-start gap-1.5">
+              <CircleAlert className="mt-0.5 size-3 shrink-0 text-destructive" />
+              <span>builder flagged: {verdictBlocker}</span>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Overview({
+  op,
+  loom,
+  onIntervened,
+  onGoto,
+}: {
+  op: Operator;
+  // The raw loom behind this operator — passed so the intervention panel can act
+  // on the Thread (accept/steer/reject/resume). Optional/absent for a stale
+  // cached view; the panel self-gates on loom.state and renders nothing until an
+  // owner-actionable state.
+  loom?: Loom | null;
+  onIntervened?: () => void;
+  onGoto: (key: string) => void;
+}) {
   const kind = op.status.kind;
   const nv = statusVisual(kind, op.state, op.active);
 
   return (
     <div className="flex flex-col gap-4">
+      <FailureReason op={op} />
+
       {op.steps.length > 0 && (
         <div className="flex flex-col gap-2">
           <SectionLabel>Steps so far</SectionLabel>
@@ -294,28 +369,11 @@ function Overview({ op, onGoto }: { op: Operator; onGoto: (key: string) => void 
         </div>
       )}
 
-      {kind === "block" && (
-        <div className="flex flex-col gap-2">
-          <SectionLabel>
-            {op.state === "needs-review" ? (
-              <Eye className="size-3.5 text-amber-600 dark:text-amber-400" />
-            ) : (
-              <CircleAlert className="size-3.5 text-amber-600 dark:text-amber-400" />
-            )}
-            Waiting on you
-          </SectionLabel>
-          <p className="rounded-md border border-amber-500/30 bg-amber-500/[0.05] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-            {op.state === "needs-review"
-              ? "The loop couldn't independently verify this — no executable check ran to prove it. Review the deliverable, then accept it (an override), steer it, or send it back from the intervention panel on this loom."
-              : "The orchestrator parked this thread on a decision it won't guess. Answer it from the intervention panel to resume — the rest of the weave kept running."}
-          </p>
-          <div>
-            <Button variant="outline" size="sm" disabled title="Session handoff — coming soon">
-              Take over in chat
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* The owner's move on THIS Thread — accept/steer/reject/resume, wired to
+          /api/looms/<childId>/…. Self-gates on loom.state, so it renders only in
+          an owner-actionable state (ready/needs-review/blocked/failed) and is
+          null otherwise. Replaces the old disabled "Take over in chat" stub. */}
+      {loom && <AcceptancePanel loom={loom} onAccepted={onIntervened} />}
 
       {op.files.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -535,9 +593,16 @@ function Transcript({
 
 export function AgentViewDrawer({
   operator,
+  loom,
+  onIntervened,
   onClose,
 }: {
   operator: Operator | null;
+  // The RAW loom behind the open operator (root for a single loom, else the
+  // child Thread) — powers the in-drawer intervention panel. onIntervened fires
+  // after an accept/steer/reject/resume so the page re-polls the Threads.
+  loom?: Loom | null;
+  onIntervened?: () => void;
   onClose: () => void;
 }) {
   const open = operator !== null;
@@ -548,6 +613,12 @@ export function AgentViewDrawer({
   const cacheRef = useRef<Operator | null>(operator);
   if (operator) cacheRef.current = operator;
   const op = operator ?? cacheRef.current;
+
+  // Cache the loom in step with the operator so the intervention panel doesn't
+  // flash away mid-close (openLoom goes null the instant the drawer closes).
+  const loomCacheRef = useRef<Loom | null>(loom ?? null);
+  if (loom) loomCacheRef.current = loom;
+  const drawerLoom = loom ?? loomCacheRef.current;
 
   // Reset tab/selection whenever a different operator opens.
   const openedId = operator?.id;
@@ -606,7 +677,12 @@ export function AgentViewDrawer({
               <ScrollArea className="min-h-0 flex-1">
                 <div className="p-4">
                   <TabsContent value="overview">
-                    <Overview op={op} onGoto={goto} />
+                    <Overview
+                      op={op}
+                      loom={drawerLoom}
+                      onIntervened={onIntervened}
+                      onGoto={goto}
+                    />
                   </TabsContent>
                   <TabsContent value="transcript">
                     <Transcript op={op} selected={agentKey} onSelect={setAgentKey} />

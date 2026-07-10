@@ -110,6 +110,12 @@ export type Operator = {
   critics: CriticVerdict[]; // latest attempt's panelReport.critics
   url: string; // panelReport.url ("" if none)
   roster: RosterEntry[]; // operator + sub-agents + critics, for the transcript tab
+  // WHY it stalled — surfaced verbatim so a failed/needs-review Thread explains
+  // itself. `error` is the child Loom's own error line; `failing` names the
+  // specific blockers (deterministic gates that went red, must-clear critic
+  // lenses that judged it unacceptable, and the builder verdict's blocker note).
+  error: string | null;
+  failing: { gates: string[]; critics: string[]; verdictBlocker?: string };
 };
 
 export type DecisionKind = "plan" | "ok" | "fail" | "block" | "info";
@@ -353,6 +359,15 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
   const critics = latest?.panelReport?.critics ?? [];
   const url = latest?.panelReport?.url ?? "";
 
+  // Why it stalled: the loom's own error line, plus the specific blockers from
+  // the latest attempt — red deterministic gates, must-clear critic lenses that
+  // failed, and the builder verdict's blocker note. All best-effort / may be [].
+  const failing: Operator["failing"] = {
+    gates: (latest?.gates ?? []).filter((g) => !g.ok).map((g) => g.name),
+    critics: critics.filter((c) => c.blocker && !c.ok).map((c) => c.lens),
+    ...(latest?.verdict?.blocker ? { verdictBlocker: latest.verdict.blocker } : {}),
+  };
+
   // Files: best-effort from the latest verdict's files_touched. We can't tell
   // add vs mod from a bare path, so everything is "mod"; empty is fine.
   const files: FileTouched[] = (latest?.verdict?.files_touched ?? []).map((path) => ({
@@ -427,6 +442,8 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
     critics,
     url,
     roster,
+    error: op.error,
+    failing,
   };
 }
 

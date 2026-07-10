@@ -3,11 +3,13 @@
 import { useCallback, useState } from "react";
 import {
   CircleCheckIcon,
+  CircleXIcon,
   CornerUpLeftIcon,
   GitCommitHorizontalIcon,
   HandIcon,
   Loader2Icon,
   PencilIcon,
+  RotateCcwIcon,
   SearchCheckIcon,
   SendIcon,
   XIcon,
@@ -20,23 +22,27 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 // §A (docs/loom-model.md): a Loom never marks itself finished. This panel is
-// the owner's intervention surface for the three states where the loop hands
-// back to a human — each renders a distinct posture, but they share the exact
-// same three server-provenanced moves ("you"):
+// the owner's intervention surface for the states where the loop hands back to
+// a human — each renders a distinct posture, but they share the same
+// server-provenanced moves ("you"):
 //   • Accept  → POST /accept  (no body)         → lands + commits → done
 //   • Steer   → POST /steer   { directive }      → re-enters the verified loop
 //   • Reject  → POST /reject  { feedback }        → re-enters the loop
+//   • Resume  → POST /resume  (no body)          → no-feedback retry of the loop
 // Accept auto-detects its kind server-side from loom.state: a clean accept of
 // `ready`, or an AUDITED OWNER OVERRIDE of `needs-review`/`blocked` (the human
 // touch stands in for a passing gate; the response carries acceptedOverride).
-// Steer/Reject reveal an inline note field; both re-verify and can only land
-// back in `ready`, never self-promote to done — the moat stays intact.
+// Steer/Reject/Resume reveal (or fire) but all re-verify and can only land back
+// in `ready`, never self-promote to done — the moat stays intact. `failed` is a
+// dead-ended attempt: no Accept at all (the moat forbids blessing failure) —
+// only Send back (reject with feedback) or Resume (retry as-is).
 
-type Variant = "ready" | "needs-review" | "blocked";
+type Variant = "ready" | "needs-review" | "blocked" | "failed";
 
-// The three intervention states. `ready` is a clean sign-off; the other two
-// are override/decision surfaces. Everything visual + copy lives here so the
-// component body is one shared machine.
+// The intervention states. `ready` is a clean sign-off; `needs-review`/`blocked`
+// are override/decision surfaces; `failed` is a dead-end the owner re-runs or
+// sends back. Everything visual + copy lives here so the component body is one
+// shared machine.
 const VARIANTS: Record<
   Variant,
   {
@@ -50,6 +56,8 @@ const VARIANTS: Record<
     body: string;
     showAccept: boolean;
     acceptLabel: string;
+    showSteer: boolean; // the note-opening steer/answer move (invalid from failed)
+    showResume: boolean; // the no-feedback retry (only from failed)
     // Primary move that opens the note field: for `blocked` the owner ANSWERS a
     // surfaced question (posts to /steer); elsewhere it's a plain steer.
     steerLabel: string;
@@ -70,6 +78,8 @@ const VARIANTS: Record<
     body: "Every required thread is done, hard gates are green, and the critic panel's blocker lenses cleared. The loop finished the work while you were gone — it has shipped nothing as done without you. Accepting is your call, not a formality.",
     showAccept: true,
     acceptLabel: "Accept",
+    showSteer: true,
+    showResume: false,
     steerLabel: "Steer",
     steerIcon: PencilIcon,
     noteLabel: "Add a directive — the loop re-verifies and lands back in ready.",
@@ -88,6 +98,8 @@ const VARIANTS: Record<
     body: "The loop couldn't independently verify this — no executable check ran to prove it. Review the deliverable below, then accept it (an override — your call, not a passing gate), steer it, or send it back.",
     showAccept: true,
     acceptLabel: "Accept (override)",
+    showSteer: true,
+    showResume: false,
     steerLabel: "Steer",
     steerIcon: PencilIcon,
     noteLabel: "Add a directive — the loop re-verifies and lands back in ready.",
@@ -106,25 +118,55 @@ const VARIANTS: Record<
     body: "The loop paused on a decision it won't guess. Answer it and the thread resumes — the rest of the weave kept running around it.",
     showAccept: false,
     acceptLabel: "",
+    showSteer: true,
+    showResume: false,
     steerLabel: "Answer & resume",
     steerIcon: SendIcon,
     noteLabel: "Your answer becomes the directive — the thread resumes with it.",
     notePlaceholder: "e.g. 'Use Stripe test mode; the sandbox keys are in .env.'",
     sendLabel: "Answer & resume",
   },
+  failed: {
+    card: "border-l-destructive/60 bg-destructive/[0.04] ring-destructive/20",
+    icon: CircleXIcon,
+    iconClass: "text-destructive",
+    headingClass: "text-destructive",
+    heading: "Dead-ended — send it back or retry",
+    badgeClass: "bg-destructive/15 text-destructive",
+    badge: "failed",
+    body: "The loop couldn't land this — the attempt ran out of road. Send it back with corrective feedback, or resume it to re-run as-is. Either way it re-enters the verified loop; the moat means it can't reach done without a passing independent verify.",
+    // No Accept: the moat forbids blessing a failure. Only send-back / retry.
+    showAccept: false,
+    acceptLabel: "",
+    showSteer: false,
+    showResume: true,
+    steerLabel: "",
+    steerIcon: PencilIcon,
+    noteLabel: "",
+    notePlaceholder: "",
+    sendLabel: "",
+  },
 };
 
 export function AcceptancePanel({
   loom,
   onAccepted,
+  allowAccept = true,
 }: {
   loom: Loom;
   // Propagates the updated loom up so the god-view refreshes. Named for the
   // original accept flow; reused verbatim by steer/reject (each returns the
   // re-dispatched loom).
   onAccepted?: (loom: Loom) => void;
+  // MOAT INTEGRITY: a woven ROOT must not blanket-override the whole weave to
+  // done while its child Threads are still unresolved. The god-view passes false
+  // to suppress the override-Accept (steer/reject/resume stay available) until
+  // every Thread lands. Defaults true — a plain loom or an individual Thread is
+  // always directly acceptable.
+  allowAccept?: boolean;
 }) {
   const [accepting, setAccepting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Which inline note field is open, and the pending network op. Only one of
   // steer/reject can be open at a time; opening one closes the other.
@@ -132,7 +174,7 @@ export function AcceptancePanel({
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
 
-  const busy = accepting || sending;
+  const busy = accepting || resuming || sending;
 
   const accept = useCallback(async () => {
     setAccepting(true);
@@ -148,6 +190,26 @@ export function AcceptancePanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setAccepting(false);
+    }
+  }, [loom.id, onAccepted]);
+
+  // Resume: a no-body retry that re-enters the verified loop (POST /resume →
+  // resumeLoom, valid from failed/needs-review/blocked). Mirrors accept's shape
+  // — same optimistic onAccepted + refresh — but never lands `done`.
+  const resume = useCallback(async () => {
+    setResuming(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/looms/${loom.id}/resume`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? "Couldn't resume the loom.");
+      }
+      onAccepted?.((data as { loom: Loom }).loom);
+      window.dispatchEvent(new Event("telar:refresh"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setResuming(false);
     }
   }, [loom.id, onAccepted]);
 
@@ -193,13 +255,15 @@ export function AcceptancePanel({
     }
   }, [loom.id, mode, note, onAccepted]);
 
-  // Self-gated like SpecBundle: safe to mount unconditionally. Renders only
-  // for the three states where the loop hands back to the owner — `ready`
-  // (clean sign-off), `needs-review` and `blocked` (override / decision).
+  // Self-gated like SpecBundle: safe to mount unconditionally. Renders only for
+  // the states where the loop hands back to the owner — `ready` (clean sign-off),
+  // `needs-review`/`blocked` (override / decision), and `failed` (retry / send
+  // back). Every other state is null.
   if (
     loom.state !== "ready" &&
     loom.state !== "needs-review" &&
-    loom.state !== "blocked"
+    loom.state !== "blocked" &&
+    loom.state !== "failed"
   ) {
     return null;
   }
@@ -216,6 +280,9 @@ export function AcceptancePanel({
   const files = verdict?.files_touched ?? [];
   // For `blocked`, the surfaced question is stored on loom.error.
   const question = loom.state === "blocked" ? loom.error : null;
+  // For `failed`, surface the terminal reason (loom.error) so the owner sees WHY
+  // before deciding to resume or send back.
+  const failureReason = loom.state === "failed" ? loom.error : null;
 
   return (
     <Card className={cn("border-l-2", v.card)}>
@@ -249,6 +316,13 @@ export function AcceptancePanel({
           </div>
         )}
 
+        {/* failed: the terminal reason, so the decision to retry/send back is informed. */}
+        {failureReason && (
+          <div className="rounded-md border border-destructive/25 bg-destructive/[0.06] px-3 py-2 text-xs leading-relaxed text-destructive">
+            {failureReason}
+          </div>
+        )}
+
         {/* needs-review: the deliverable to review before overriding. */}
         {loom.state === "needs-review" && verdict && (
           <div className="flex flex-col gap-2 rounded-md bg-muted/30 p-2.5 ring-1 ring-border">
@@ -275,8 +349,10 @@ export function AcceptancePanel({
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Accept keeps the muted-emerald tint in every variant; the label
-              (and the server's acceptedOverride flag) marks the override. */}
-          {v.showAccept && (
+              (and the server's acceptedOverride flag) marks the override.
+              `allowAccept` gates it off for a woven root with unresolved
+              Threads — the moat forbids a blanket override of the weave. */}
+          {v.showAccept && allowAccept && (
             <Button
               onClick={accept}
               disabled={busy}
@@ -286,15 +362,25 @@ export function AcceptancePanel({
               {v.acceptLabel}
             </Button>
           )}
-          <Button
-            variant="outline"
-            onClick={() => openMode("steer")}
-            disabled={busy}
-            aria-pressed={mode === "steer"}
-          >
-            <SteerIcon />
-            {v.steerLabel}
-          </Button>
+          {/* Resume (failed): a no-feedback retry — re-runs the loop as-is. It
+              re-verifies, so it can only land back in ready, never done. */}
+          {v.showResume && (
+            <Button onClick={resume} disabled={busy}>
+              {resuming ? <Loader2Icon className="animate-spin" /> : <RotateCcwIcon />}
+              Resume
+            </Button>
+          )}
+          {v.showSteer && (
+            <Button
+              variant="outline"
+              onClick={() => openMode("steer")}
+              disabled={busy}
+              aria-pressed={mode === "steer"}
+            >
+              <SteerIcon />
+              {v.steerLabel}
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => openMode("reject")}

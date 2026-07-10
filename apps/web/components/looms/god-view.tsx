@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
   Check,
@@ -515,14 +515,83 @@ function LogRow({ e }: { e: DecisionLogEntry }) {
   );
 }
 
+// MOAT INTEGRITY (woven root): the weave can't be signed off while any child
+// Thread is still unresolved (working or awaiting the owner). This note names
+// what's left and points the owner at the child cards below, which open each
+// Thread's drawer where it can be resolved. It renders only when there IS
+// something unresolved — so its presence is exactly the reason the root
+// override-Accept is suppressed.
+function WovenAcceptanceGate({ unresolved }: { unresolved: Loom[] }) {
+  // "awaiting you" is ONLY the states the owner can actually resolve from a
+  // Thread's drawer panel (AcceptancePanel gates on exactly these). `halted` is
+  // deliberately excluded: it's a stopped/dead-ended Thread with no panel action
+  // and core resumeLoom/rejectLoom reject it — so it must not be sold as
+  // actionable. It's reported separately as "stopped" so the count stays honest
+  // (it's still why the root can't be accepted) without overpromising a move.
+  const needsYou = unresolved.filter(
+    (t) => t.state === "needs-review" || t.state === "blocked" || t.state === "failed",
+  ).length;
+  const halted = unresolved.filter((t) => t.state === "halted").length;
+  const weaving = unresolved.length - needsYou - halted;
+
+  const parts: ReactNode[] = [];
+  if (needsYou > 0)
+    parts.push(
+      <span key="needs" className="font-medium text-foreground/80">
+        {needsYou} Thread{needsYou === 1 ? "" : "s"} awaiting you
+      </span>,
+    );
+  if (weaving > 0)
+    parts.push(
+      <span key="weaving">
+        {weaving} Thread{weaving === 1 ? "" : "s"} still weaving
+      </span>,
+    );
+  if (halted > 0)
+    parts.push(
+      <span key="halted">
+        {halted} Thread{halted === 1 ? "" : "s"} stopped
+      </span>,
+    );
+
+  return (
+    <Card className="border-l-2 border-l-amber-500/60 bg-amber-500/[0.04]">
+      <CardContent className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+            The weave can&apos;t be accepted yet
+          </span>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {parts.map((node, i) => (
+            <span key={i}>
+              {i > 0 ? ", " : ""}
+              {node}
+            </span>
+          ))}
+          {parts.length > 0 ? ". " : ""}
+          Open each flagged Thread in the weave below to resolve it — the root
+          becomes acceptable only once every Thread lands. Accepting here can
+          never blanket-override an unresolved Thread.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RightRail({
   log,
   loom,
+  threads,
+  woven,
   acceptedBy,
   onIntervened,
 }: {
   log: DecisionLogEntry[];
   loom: Loom;
+  threads: Loom[];
+  woven: boolean;
   acceptedBy?: string;
   onIntervened?: (loom: Loom) => void;
 }) {
@@ -531,12 +600,33 @@ function RightRail({
   const entries = useMemo(() => [...log].reverse(), [log]);
   const sessionId = loom.charter?.scopingSessionId;
 
+  // A woven root's unresolved children: anything not settled-good (done/ready/
+  // skipped). While any remain, the root override-Accept is suppressed and the
+  // gate note explains why. A single loom has no threads — always empty.
+  const unresolved = useMemo(
+    () =>
+      woven
+        ? threads.filter(
+            (t) => t.state !== "done" && t.state !== "ready" && t.state !== "skipped",
+          )
+        : [],
+    [woven, threads],
+  );
+
   return (
     <aside className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
       {/* Primary panel: the owner's move. Both self-gate by loom.state, so
           mounting them unconditionally is safe — AcceptancePanel renders for
-          ready/needs-review/blocked, DoneConfirmation only for done. */}
-      <AcceptancePanel loom={loom} onAccepted={onIntervened} />
+          ready/needs-review/blocked/failed, DoneConfirmation only for done.
+          `allowAccept` is false while a woven root has unresolved Threads, so
+          the override-Accept can't blanket-promote the weave; steer/reject/
+          resume stay, and the gate note above says what's outstanding. */}
+      {unresolved.length > 0 && <WovenAcceptanceGate unresolved={unresolved} />}
+      <AcceptancePanel
+        loom={loom}
+        onAccepted={onIntervened}
+        allowAccept={unresolved.length === 0}
+      />
       <DoneConfirmation loom={loom} by={acceptedBy} />
 
       <Card>
@@ -630,6 +720,8 @@ export function LoomGodView({
         <RightRail
           log={view.decisionLog}
           loom={loom}
+          threads={threads}
+          woven={view.woven}
           acceptedBy={acceptedBy}
           onIntervened={onIntervened}
         />
