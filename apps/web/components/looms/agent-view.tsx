@@ -348,7 +348,7 @@ function Overview({ op, onGoto }: { op: Operator; onGoto: (key: string) => void 
 // Transcript tab.
 // ---------------------------------------------------------------------------
 
-function ScriptEntry({
+export function ScriptEntry({
   e,
   open,
   onToggle,

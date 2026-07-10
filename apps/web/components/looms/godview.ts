@@ -246,7 +246,7 @@ function deriveSteps(op: Loom, latest: AttemptRecord | undefined): Step[] {
 
 const evPiece = (ev: LoomEvent) => (ev as { pieceId?: string }).pieceId;
 
-function eventsToTranscript(events: LoomEvent[], pieceId?: string): TranscriptEntry[] {
+export function eventsToTranscript(events: LoomEvent[], pieceId?: string): TranscriptEntry[] {
   const out: TranscriptEntry[] = [];
   for (const ev of events) {
     const p = evPiece(ev);
@@ -428,6 +428,15 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
     url,
     roster,
   };
+}
+
+// A WOVEN child's transcript IS captured — in the CHILD's own event log, which
+// the god-view page tails via a second EventSource and passes in here. So a
+// woven child gets the SAME real transcript as a single loom, keyed on its own
+// events. (deriveGodView still passes [] for the roster grid; the drawer swaps
+// in this live-tailed operator when the child is opened.)
+export function deriveThreadOperator(child: Loom, events: LoomEvent[]): Operator {
+  return deriveOperator(child, events, true);
 }
 
 // ---------------------------------------------------------------------------

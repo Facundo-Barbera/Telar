@@ -20,8 +20,15 @@ import { CharterReview, ScopingCharter } from "@/components/looms/charter-review
 import { LoomGodView } from "@/components/looms/god-view";
 import { AgentViewDrawer } from "@/components/looms/agent-view";
 import { SpecDrawer } from "@/components/looms/spec-bundle";
-import { deriveGodView } from "@/components/looms/godview";
-import { fmtDuration, isAwaitingOwner, isTerminal, sumCost } from "@/components/looms/utils";
+import { ScopingFeed, WorkstreamsPreview } from "@/components/looms/scoping-view";
+import { deriveGodView, deriveThreadOperator } from "@/components/looms/godview";
+import {
+  fmtDuration,
+  isAwaitingOwner,
+  isTerminal,
+  isWoven,
+  sumCost,
+} from "@/components/looms/utils";
 import { fmtCost } from "@/lib/format";
 
 function BackLink() {
@@ -55,10 +62,21 @@ export default function LoomDetailPage() {
   const [openOperatorId, setOpenOperatorId] = useState<string | null>(null);
   const [specOpen, setSpecOpen] = useState(false);
 
+  // The open woven child's own event tail — see the second EventSource below.
+  const [threadFeed, setThreadFeed] = useState<LoomEvent[]>([]);
+  const [childLoom, setChildLoom] = useState<Loom | null>(null);
+
   const loomRef = useRef<Loom | null>(null);
   useEffect(() => {
     loomRef.current = loom;
   }, [loom]);
+
+  // Latest threads read via a ref so the child-tail effect below can key on the
+  // open operator id ALONE — without resubscribing every 2.5s poll tick.
+  const threadsRef = useRef<Loom[]>(threads);
+  useEffect(() => {
+    threadsRef.current = threads;
+  }, [threads]);
 
   // Load the loom via a plain GET and then poll it. This is resilient to the
   // SSE stream being starved when a loom executes in-process (the build agent
@@ -167,6 +185,50 @@ export default function LoomDetailPage() {
     };
   }, [id]);
 
+  // Second event tail: the OPEN woven child's own stream. A woven child writes
+  // its per-agent events to its OWN log (/api/looms/<childId>/events), never the
+  // root feed — so its drawer would otherwise read "transcript not captured
+  // yet". Mirrors the root tail's buffer pattern (clear on open, push on ev,
+  // capture the child Loom, close on end). Keyed on the open operator id alone
+  // (threads/loom read via refs) so it only (re)subscribes when a DIFFERENT
+  // child opens, and stays idle for a non-woven operator — whose transcript
+  // already rides the root feed.
+  useEffect(() => {
+    const child = threadsRef.current.find((t) => t.id === openOperatorId);
+    const isWovenChild = !!openOperatorId && isWoven(loomRef.current) && !!child;
+    if (!isWovenChild) {
+      setThreadFeed([]);
+      setChildLoom(null);
+      return;
+    }
+    setChildLoom(child ?? null);
+    const es = new EventSource(`/api/looms/${openOperatorId}/events`);
+    let ended = false;
+    let buffer: LoomEvent[] = [];
+
+    es.addEventListener("open", () => {
+      buffer = [];
+      setThreadFeed([]);
+    });
+    es.addEventListener("run", (e) => {
+      setChildLoom(JSON.parse((e as MessageEvent).data) as Loom);
+    });
+    es.addEventListener("ev", (e) => {
+      buffer.push(JSON.parse((e as MessageEvent).data) as LoomEvent);
+      setThreadFeed([...buffer]);
+    });
+    es.addEventListener("end", (e) => {
+      ended = true;
+      setChildLoom(JSON.parse((e as MessageEvent).data) as Loom);
+      es.close();
+    });
+    es.onerror = () => {
+      if (ended) es.close();
+    };
+
+    return () => es.close();
+  }, [openOperatorId]);
+
   // Tick the elapsed clock while the loom is live. Settled looms (terminal or
   // awaiting the owner) freeze the displayed elapsed, so ticking is wasted work.
   useEffect(() => {
@@ -225,10 +287,28 @@ export default function LoomDetailPage() {
 
   const nonTerminal = !isTerminal(loom.state);
   const settled = isTerminal(loom.state) || isAwaitingOwner(loom.state);
-  const elapsedMs = settled
-    ? loom.updatedAt - loom.createdAt
-    : nowTs - loom.createdAt;
-  const totalCost = sumCost(loom.attempts);
+
+  // Run-accurate elapsed: anchor to the CURRENT run, not first creation. The
+  // last attempt's start wins; before any attempt (queued/scoping) fall back to
+  // the last state/started event, then creation. On settle, freeze against the
+  // last attempt's end (the moment work stopped) rather than updatedAt.
+  const lastAttempt = loom.attempts.at(-1);
+  const scopingAnchor =
+    [...feed].reverse().find((e) => e.type === "state" || e.type === "started")
+      ?.ts ?? loom.updatedAt;
+  const runStart = lastAttempt?.startedAt ?? scopingAnchor ?? loom.createdAt;
+  const runEnd = settled ? (lastAttempt?.endedAt ?? loom.updatedAt) : nowTs;
+  const elapsedMs = runEnd - runStart;
+
+  // Fold live scoping spend into the header total: the weave-planner appends
+  // `result` events (each with costUsd) to the feed while scoping, before any
+  // attempt exists to carry that cost. Updates live via the SSE feed.
+  const scopingCost = feed.reduce((sum, e) => {
+    if (e.type !== "result") return sum;
+    const c = (e as { costUsd?: number }).costUsd;
+    return sum + (typeof c === "number" ? c : 0);
+  }, 0);
+  const totalCost = sumCost(loom.attempts) + scopingCost;
   const showCancel = nonTerminal && !isAwaitingOwner(loom.state);
 
   // The whole running/verifying/ready/terminal surface is now ONE unified
@@ -236,6 +316,14 @@ export default function LoomDetailPage() {
   // its child threads. deriveGodView guards missing data (no attempts, no
   // panel, no charter, empty threads) so this never throws.
   const view = deriveGodView(loom, threads, feed);
+
+  // When a woven child's drawer is open, prefer its live-tailed operator (with a
+  // real transcript from the child's own stream) over the roster's transcript-
+  // less one. Guarded on the open id so it clears cleanly the moment we close.
+  const liveThreadOp =
+    childLoom && childLoom.id === openOperatorId
+      ? deriveThreadOperator(childLoom, threadFeed)
+      : null;
 
   // Who accepted — read off the durable "accepted" event so the done
   // confirmation can name them; the server fixes this to "you" today.
@@ -293,7 +381,11 @@ export default function LoomDetailPage() {
 
       <div className="flex-1 overflow-y-auto">
         {loom.state === "scoping" ? (
-          <ScopingCharter />
+          <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-8">
+            <ScopingCharter />
+            <WorkstreamsPreview loomId={loom.id} />
+            <ScopingFeed events={feed} />
+          </div>
         ) : loom.state === "charter-review" ? (
           <CharterReview loom={loom} />
         ) : (
@@ -312,7 +404,11 @@ export default function LoomDetailPage() {
             {/* Non-invasive overlay drawers — the agent view slides in over a
                 scrim; the spec drawer is separate. */}
             <AgentViewDrawer
-              operator={view.operators.find((o) => o.id === openOperatorId) ?? null}
+              operator={
+                liveThreadOp ??
+                view.operators.find((o) => o.id === openOperatorId) ??
+                null
+              }
               onClose={() => setOpenOperatorId(null)}
             />
             <SpecDrawer loomId={loom.id} open={specOpen} onClose={() => setSpecOpen(false)} />

@@ -11,14 +11,14 @@ import { CharterPanel } from "./charter-panel";
 // `loom` and this unmounts itself the moment state moves off "scoping".
 export function ScopingCharter() {
   return (
-    <div className="mx-auto max-w-xl px-4 py-8">
+    <div className="flex flex-col gap-3">
       <Card size="sm">
         <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2Icon className="size-4 animate-spin" />
           Drafting the charter…
         </CardContent>
       </Card>
-      <p className="px-1 pt-3 text-sm text-muted-foreground">
+      <p className="px-1 text-sm text-muted-foreground">
         A live agent is scoping this goal — proof strategy, budget, and (for
         larger work) a decomposition into sub-goals. This costs tokens.
       </p>

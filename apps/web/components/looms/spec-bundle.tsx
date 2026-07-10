@@ -24,7 +24,7 @@ import { MessageResponse } from "@/components/ai-elements/message";
 // shape, not a runtime-validated one.
 type SpecBundleProvenance = { approvedBy: string; humanApprovedAt: number; sessionId?: string };
 
-type SpecBundleData = {
+export type SpecBundleData = {
   version: string;
   files: string[];
   objective: string | null;
@@ -32,6 +32,18 @@ type SpecBundleData = {
   contractErrors: string[];
   provenance: SpecBundleProvenance | null;
 };
+
+// Breathing room for rendered objective/roadmap markdown: a padded container
+// plus per-block vertical rhythm so headings, paragraphs, lists and code don't
+// run together. Each selector targets a distinct element so nothing conflicts;
+// MessageResponse already zeroes the first/last child's outer margin.
+const PROSE_SPACING = cn(
+  "rounded-lg bg-muted/20 px-3.5 py-3 text-sm leading-relaxed",
+  "[&_p]:my-2.5",
+  "[&_h1]:mt-5 [&_h1]:mb-2 [&_h2]:mt-5 [&_h2]:mb-2 [&_h3]:mt-4 [&_h3]:mb-2",
+  "[&_ul]:my-2.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-1",
+  "[&_pre]:my-3 [&_blockquote]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:pl-3",
+);
 
 const ASSERTION_TYPE_LABEL: Record<AssertionType, string> = {
   "golden-diff": "golden diff",
@@ -214,7 +226,7 @@ export function SpecBundle({ loomId }: { loomId: string }) {
 // colonizes the main view. Self-fetches once per loom; guards a missing bundle.
 // ---------------------------------------------------------------------------
 
-function useSpecBundle(loomId: string, active: boolean) {
+export function useSpecBundle(loomId: string, active: boolean) {
   const [bundle, setBundle] = useState<SpecBundleData | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -293,7 +305,7 @@ export function SpecDrawer({
                     <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       Objective
                     </h3>
-                    <MessageResponse className="text-sm leading-relaxed">
+                    <MessageResponse className={PROSE_SPACING}>
                       {bundle!.objective}
                     </MessageResponse>
                   </div>
