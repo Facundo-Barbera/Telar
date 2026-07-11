@@ -17,7 +17,7 @@ import type {
   PanelReport,
   WorkUnitState,
 } from "@telar/core";
-import { isTerminal, isWoven } from "./utils";
+import { isSingleThreadWeave, isTerminal, isWoven } from "./utils";
 
 export { isWoven, isTerminal } from "./utils";
 
@@ -119,12 +119,57 @@ export type Operator = {
   failing: { gates: string[]; critics: string[]; verdictBlocker?: string };
 };
 
-export type DecisionKind = "plan" | "ok" | "fail" | "block" | "info";
+// The WHY behind a scheduling decision — the deterministic policy inputs Phase 2
+// captured on the `decision` event's `rationale`: the critical-path scores, the
+// binding fan-out term, a budget/clock snapshot, and (when a proposed decision
+// was rejected as invalid) the reason it was downgraded to hold. Read verbatim
+// off the event; every field is optional so a pre-Phase-2 event degrades to a
+// bare row rather than throwing.
+export type RationaleView = {
+  summary?: string;
+  ranked?: { id: string; score: number }[]; // (a) critical-path scores, highest-first
+  fanout?: {
+    pieces: number;
+    capByPool: number;
+    capByBudget: number;
+    chosen: number;
+    binding: "pieces" | "pool" | "budget" | "pool-exhausted" | string;
+  };
+  budget?: {
+    spentUsd: number;
+    inFlight: number;
+    budgetLeftUsd: number | null; // null/∞ = uncapped (Infinity serializes to null)
+    wallClockRemainingMs: number | null; // null = no wall-clock cap
+    maxCostUsd?: number;
+  };
+  rejected?: string; // (d) the reason the proposed decision was rejected
+};
+
+export type DecisionKind = "plan" | "ok" | "fail" | "block" | "info" | "observe";
 export type DecisionLogEntry = {
   ts: number;
   kind: DecisionKind;
   title: string;
   detail?: string;
+  rationale?: RationaleView; // the expandable "why", when the event carried one
+};
+
+// The decomposition graph the weaver planned, joined to live thread state so the
+// plan reads as a living map rather than a static list. Derived from the `plan`
+// event (Phase 2) with a charter-decomposition fallback; `singleThread` marks a
+// weave-of-one so the UI renders the honest one-node case instead of a fake DAG.
+export type PlanNodeState = WorkUnitState | "pending";
+export type PlanNode = {
+  id: string;
+  title: string;
+  dependsOn: string[];
+  required: boolean;
+  state: PlanNodeState;
+};
+export type Plan = {
+  nodes: PlanNode[];
+  rationale: string | null; // the weaver's decomposition reasoning, when authored
+  singleThread: boolean;
 };
 
 // `max` is set ONLY when the charter actually declares a maxAgents cap — no
@@ -136,6 +181,7 @@ export type Orchestrator = {
   loopStage: LoopStage;
   tick: string; // one-line summary of the latest decision
   governor: Governor;
+  plan: Plan; // the decomposition graph the weaver is executing
 };
 
 export type GodView = {
@@ -494,8 +540,11 @@ function summarizeDecision(d: DecisionEvt): string {
 
 function deriveTick(loom: Loom, events: LoomEvent[]): string {
   const lastDecision = [...events].reverse().find((e) => e.type === "decision") as
-    | { decision?: DecisionEvt }
+    | { decision?: DecisionEvt; rationale?: { summary?: string } }
     | undefined;
+  // Prefer the weaver's own deterministic rationale summary (Phase 2) — it names
+  // the head + the binding term — over the coarse action-only fallback.
+  if (lastDecision?.rationale?.summary) return lastDecision.rationale.summary;
   if (lastDecision?.decision) return summarizeDecision(lastDecision.decision);
 
   const lastPanel = [...events].reverse().find(
@@ -511,9 +560,56 @@ function deriveTick(loom: Loom, events: LoomEvent[]): string {
   return `Loom is ${loom.state}`;
 }
 
+type PlanEvt = {
+  decomposition?: { id: string; title: string; dependsOn?: string[]; required?: boolean }[];
+  rationale?: string | null;
+};
+
+// The plan the weaver is executing: nodes from the latest `plan` event (Phase 2)
+// or, absent one, the charter's decomposition — each joined to its thread's live
+// state so the graph reads as a living map. A weave-of-one is flagged so the UI
+// shows the honest single-node case (with its "by construction" rationale)
+// instead of a degenerate one-box "DAG".
+function derivePlan(loom: Loom, threads: Loom[], events: LoomEvent[]): Plan {
+  const planEvt = [...events].reverse().find((e) => e.type === "plan") as PlanEvt | undefined;
+
+  const stateBySub = new Map<string, WorkUnitState>();
+  for (const t of threads) if (t.subGoalId) stateBySub.set(t.subGoalId, t.state);
+
+  const raw = planEvt?.decomposition ?? loom.charter?.decomposition ?? [];
+  const nodes: PlanNode[] = raw.map((sg) => ({
+    id: sg.id,
+    title: sg.title,
+    dependsOn: sg.dependsOn ?? [],
+    required: sg.required ?? true,
+    state: stateBySub.get(sg.id) ?? "pending",
+  }));
+
+  return {
+    nodes,
+    rationale: planEvt?.rationale ?? loom.charter?.rationale ?? null,
+    singleThread: isSingleThreadWeave(loom),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Decision log from the event stream.
 // ---------------------------------------------------------------------------
+
+// Narrow the raw `rationale` object off a `decision` event into RationaleView.
+// Defensive by design — an old event (no rationale) or a partial one yields
+// only the fields that are actually present, so the row degrades, never throws.
+function toRationaleView(r: unknown): RationaleView | undefined {
+  if (!r || typeof r !== "object") return undefined;
+  const o = r as Record<string, unknown>;
+  const view: RationaleView = {};
+  if (typeof o.summary === "string") view.summary = o.summary;
+  if (Array.isArray(o.ranked)) view.ranked = o.ranked as RationaleView["ranked"];
+  if (o.fanout && typeof o.fanout === "object") view.fanout = o.fanout as RationaleView["fanout"];
+  if (o.budget && typeof o.budget === "object") view.budget = o.budget as RationaleView["budget"];
+  if (typeof o.rejected === "string") view.rejected = o.rejected;
+  return Object.keys(view).length > 0 ? view : undefined;
+}
 
 function deriveDecisionLog(events: LoomEvent[]): DecisionLogEntry[] {
   const log: DecisionLogEntry[] = [];
@@ -526,9 +622,21 @@ function deriveDecisionLog(events: LoomEvent[]): DecisionLogEntry[] {
       case "decision": {
         const d = (ev as { decision?: DecisionEvt }).decision;
         if (!d) break;
+        const rationale = toRationaleView((ev as { rationale?: unknown }).rationale);
         const kind: DecisionKind =
           d.action === "escalate" ? "block" : d.action === "finish-loom" ? "ok" : d.action === "hold" ? "info" : "plan";
-        log.push({ ts, kind, title: summarizeDecision(d) });
+        // Prefer the weaver's own rationale summary as the row title (it names the
+        // head + the binding term); fall back to the action-only summary.
+        log.push({ ts, kind, title: rationale?.summary ?? summarizeDecision(d), rationale });
+        break;
+      }
+      case "observe": {
+        // A child settled — surface which one, its rollup state, and the subgoals
+        // THIS settle newly unblocked (Phase 2's readiness delta).
+        const o = ev as { subGoalId?: string; state?: string; unblocked?: string[] };
+        const unblocked = Array.isArray(o.unblocked) ? o.unblocked : [];
+        const tail = unblocked.length > 0 ? ` → unblocked ${unblocked.join(", ")}` : "";
+        log.push({ ts, kind: "observe", title: `${o.subGoalId ?? "a thread"} settled · ${o.state ?? "?"}${tail}` });
         break;
       }
       case "weave-child-spawned":
@@ -593,6 +701,7 @@ export function deriveGodView(loom: Loom, threads: Loom[], events: LoomEvent[]):
       loopStage: deriveLoopStage(loom, operators),
       tick: deriveTick(loom, events),
       governor: { inFlight, ...(max != null ? { max } : {}) },
+      plan: derivePlan(loom, threads, events),
     },
     operators,
     decisionLog: deriveDecisionLog(events),

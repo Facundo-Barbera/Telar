@@ -26,17 +26,22 @@ import type {
   GodView,
   Operator,
   Orchestrator,
+  Plan,
+  PlanNode,
+  PlanNodeState,
+  RationaleView,
   Step,
 } from "./godview";
 import { StatusBadge } from "./status";
 import { AcceptancePanel, DoneConfirmation } from "./acceptance-panel";
+import { fmtDuration } from "./utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { fmtAgo, shortId } from "@/lib/format";
+import { fmtAgo, fmtCost, shortId } from "@/lib/format";
 
 // The unified god-view frame for every non-scoping loom, re-skinned onto the
 // app's native shadcn language (bg-card / muted-foreground / neutral badges —
@@ -164,7 +169,38 @@ function CharterStrip({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void
 
 const LOOP: Orchestrator["loopStage"][] = ["plan", "schedule", "observe", "decide"];
 
-function OrchestratorBar({ orchestrator }: { orchestrator: Orchestrator }) {
+// The orchestrator is the centerpiece: ONE card that stacks the live loop +
+// governor (LoopGovernor), the plan-as-living-map (PlanGraph), and the
+// click-to-explain decision timeline (DecisionTimeline).
+function OrchestratorPanel({
+  orchestrator,
+  log,
+}: {
+  orchestrator: Orchestrator;
+  log: DecisionLogEntry[];
+}) {
+  const hasPlan = orchestrator.plan.nodes.length > 0;
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-4">
+        <LoopGovernor orchestrator={orchestrator} />
+        {hasPlan && (
+          <>
+            <Separator />
+            <PlanGraph plan={orchestrator.plan} />
+          </>
+        )}
+        <Separator />
+        <DecisionTimeline log={log} />
+      </CardContent>
+    </Card>
+  );
+}
+
+// The panel header: identity + the plan→schedule→observe→decide loop, the
+// concurrency governor, and the live tick. (Formerly OrchestratorBar's body,
+// verbatim — it no longer owns a Card; OrchestratorPanel does.)
+function LoopGovernor({ orchestrator }: { orchestrator: Orchestrator }) {
   const { loopStage, tick, governor } = orchestrator;
   const { inFlight, max } = governor;
   const pct = max && max > 0 ? Math.min(100, (inFlight / max) * 100) : 0;
@@ -180,71 +216,177 @@ function OrchestratorBar({ orchestrator }: { orchestrator: Orchestrator }) {
         : `${inFlight} agent${inFlight === 1 ? "" : "s"} active`;
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-              <Workflow className="size-4" />
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex items-center gap-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+            <Workflow className="size-4" />
+          </span>
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm font-medium">Orchestrator</span>
+            <span className="text-xs text-muted-foreground">
+              weaver · fresh context · owns the loop
             </span>
-            <div className="flex flex-col leading-tight">
-              <span className="text-sm font-medium">Orchestrator</span>
-              <span className="text-xs text-muted-foreground">
-                weaver · fresh context · owns the loop
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1 text-xs">
-            {LOOP.map((s, i) => (
-              <span key={s} className="flex items-center gap-1">
-                <span
-                  className={cn(
-                    "rounded px-1.5 py-0.5",
-                    s === loopStage
-                      ? "bg-foreground/10 font-medium text-foreground"
-                      : "text-muted-foreground",
-                  )}
-                >
-                  {s}
-                </span>
-                {i < LOOP.length - 1 ? (
-                  <ChevronRight className="size-3 text-muted-foreground/50" />
-                ) : (
-                  <RefreshCw className="size-3 text-muted-foreground/50" />
-                )}
-              </span>
-            ))}
-          </div>
-
-          <div className="ml-auto flex min-w-[130px] flex-col gap-1.5">
-            <span
-              className={cn(
-                "text-xs tabular-nums",
-                inFlight === 0 ? "text-muted-foreground" : "text-foreground",
-              )}
-            >
-              {governorLabel}
-            </span>
-            {max != null && <Progress value={pct} />}
           </div>
         </div>
 
-        <Separator />
+        <div className="flex items-center gap-1 text-xs">
+          {LOOP.map((s, i) => (
+            <span key={s} className="flex items-center gap-1">
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5",
+                  s === loopStage
+                    ? "bg-foreground/10 font-medium text-foreground"
+                    : "text-muted-foreground",
+                )}
+              >
+                {s}
+              </span>
+              {i < LOOP.length - 1 ? (
+                <ChevronRight className="size-3 text-muted-foreground/50" />
+              ) : (
+                <RefreshCw className="size-3 text-muted-foreground/50" />
+              )}
+            </span>
+          ))}
+        </div>
 
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="ml-auto flex min-w-[130px] flex-col gap-1.5">
           <span
             className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              inFlight === 0 ? "bg-muted-foreground/40" : "bg-emerald-500",
+              "text-xs tabular-nums",
+              inFlight === 0 ? "text-muted-foreground" : "text-foreground",
             )}
-          />
-          <span>
-            <span className="font-medium text-foreground/70">Tick:</span> {tick}
+          >
+            {governorLabel}
           </span>
+          {max != null && <Progress value={pct} />}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+
+      <Separator />
+
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            inFlight === 0 ? "bg-muted-foreground/40" : "bg-emerald-500",
+          )}
+        />
+        <span>
+          <span className="font-medium text-foreground/70">Tick:</span> {tick}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// The plan as a living map: one row per subgoal, its dot colored by live state
+// (pulsing while active), deps named, and the weaver's shaping rationale.
+const ACTIVE_PLAN_STATES: readonly PlanNodeState[] = ["preparing", "running", "verifying"];
+const isActivePlanState = (s: PlanNodeState) => ACTIVE_PLAN_STATES.includes(s);
+
+// State → dot color, within the file's semantics (emerald=done, amber=needs-you,
+// destructive=failed, muted=idle/skipped, foreground=active-neutral).
+const PLAN_DOT: Record<PlanNodeState, string> = {
+  done: "bg-emerald-500",
+  ready: "bg-amber-500",
+  "needs-review": "bg-amber-500",
+  blocked: "bg-amber-500",
+  preparing: "bg-foreground",
+  running: "bg-foreground",
+  verifying: "bg-foreground",
+  failed: "bg-destructive",
+  halted: "bg-destructive",
+  skipped: "bg-muted-foreground/30",
+  pending: "bg-muted-foreground/30",
+  queued: "bg-muted-foreground/30",
+  scoping: "bg-muted-foreground/30",
+  "charter-review": "bg-muted-foreground/30",
+};
+
+function planStateLabel(s: PlanNodeState): string {
+  switch (s) {
+    case "pending":
+      return "pending";
+    case "running":
+    case "preparing":
+      return "building";
+    case "verifying":
+      return "verifying";
+    case "ready":
+      return "awaiting you";
+    case "done":
+      return "done";
+    case "needs-review":
+      return "needs review";
+    case "blocked":
+      return "blocked";
+    case "failed":
+      return "failed";
+    case "halted":
+      return "halted";
+    case "skipped":
+      return "skipped";
+    default:
+      return String(s);
+  }
+}
+
+function PlanNodeRow({ node }: { node: PlanNode }) {
+  const active = isActivePlanState(node.state);
+  return (
+    <li className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            "size-2 shrink-0 rounded-full",
+            PLAN_DOT[node.state] ?? "bg-muted-foreground/30",
+            active && "animate-pulse",
+          )}
+        />
+        <span className="truncate text-sm text-foreground/90">{node.title}</span>
+        <span className="font-mono text-[10px] text-muted-foreground">{node.id}</span>
+        {!node.required && (
+          <Badge variant="secondary" className="px-1 py-0 text-[10px] font-normal">
+            optional
+          </Badge>
+        )}
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70">
+          {planStateLabel(node.state)}
+        </span>
+      </div>
+      {node.dependsOn.length > 0 && (
+        <span className="pl-4 text-[11px] text-muted-foreground">
+          waits on {node.dependsOn.join(", ")}
+        </span>
+      )}
+    </li>
+  );
+}
+
+function PlanGraph({ plan }: { plan: Plan }) {
+  if (plan.nodes.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Plan</span>
+        <span className="text-xs text-muted-foreground/60">
+          {plan.singleThread ? "weave of one" : `${plan.nodes.length} subgoals`}
+        </span>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {plan.nodes.map((n) => (
+          <PlanNodeRow key={n.id} node={n} />
+        ))}
+      </ul>
+      {plan.rationale && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+          {plan.singleThread ? plan.rationale : `Why this shape: ${plan.rationale}`}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -499,19 +641,152 @@ const LOG_ICON: Record<DecisionKind, { Icon: typeof Check; className: string }> 
   block: { Icon: CircleAlert, className: "text-amber-600 dark:text-amber-400" },
   plan: { Icon: Workflow, className: "text-muted-foreground" },
   info: { Icon: ChevronRight, className: "text-muted-foreground" },
+  observe: { Icon: Eye, className: "text-muted-foreground" },
 };
 
-function LogRow({ e }: { e: DecisionLogEntry }) {
-  const { Icon, className } = LOG_ICON[e.kind];
+// The decision timeline — the orchestrator's moves, newest first, each row
+// click-to-explain when it carries a rationale.
+function DecisionTimeline({ log }: { log: DecisionLogEntry[] }) {
+  // godview.ts derives the log oldest-to-newest; show newest first so the
+  // latest move is visible without scrolling.
+  const entries = useMemo(() => [...log].reverse(), [log]);
   return (
-    <li className="flex items-start gap-2 text-xs">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Decisions</span>
+        <span className="ml-auto text-[10px] text-muted-foreground/60">
+          newest first · click to explain
+        </span>
+      </div>
+      {entries.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No decisions yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {entries.map((e, i) => (
+            <DecisionRow key={`${e.ts}-${i}`} e={e} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DecisionRow({ e }: { e: DecisionLogEntry }) {
+  const [open, setOpen] = useState(false);
+  const { Icon, className } = LOG_ICON[e.kind];
+  const hasDetail =
+    !!e.rationale &&
+    ((e.rationale.ranked?.length ?? 0) > 0 ||
+      !!e.rationale.fanout ||
+      !!e.rationale.budget ||
+      !!e.rationale.rejected);
+
+  const body = (
+    <div className="flex items-start gap-2">
       <Icon className={cn("mt-0.5 size-3.5 shrink-0", className)} />
-      <span className="min-w-0 flex-1 text-muted-foreground">
+      <span className="min-w-0 flex-1 text-xs text-muted-foreground">
         <span className="font-medium text-foreground/80">{e.title}</span>
         {e.detail ? ` ${e.detail}` : ""}
       </span>
+      {hasDetail && (
+        <ChevronDown
+          className={cn("mt-0.5 size-3 text-muted-foreground/50", open && "rotate-180")}
+        />
+      )}
       <span className="shrink-0 text-[10px] text-muted-foreground/60">{fmtAgo(e.ts)}</span>
+    </div>
+  );
+
+  if (!hasDetail) return <li>{body}</li>;
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        {body}
+      </button>
+      {open && <RationaleDetail r={e.rationale!} />}
     </li>
+  );
+}
+
+// HONEST-DATA HELPERS: Infinity serializes to null over JSON/SSE, and
+// isFinite(null) === true — so guard on both typeof and isFinite, and tolerate
+// the runtime null the TS types don't admit. Never render "null"/"Infinity".
+function fmtCap(n: number | null | undefined): string {
+  return typeof n === "number" && isFinite(n) ? String(n) : "∞";
+}
+function fmtBudgetLeft(v: number | null | undefined): string {
+  return typeof v === "number" && isFinite(v) ? fmtCost(v) : "uncapped";
+}
+function fmtWallClock(ms: number | null | undefined): string | null {
+  if (typeof ms !== "number") return null;
+  if (ms <= 0) return "0s left";
+  return `${fmtDuration(ms)} left`;
+}
+
+const BINDING_EXPLANATION: Record<string, string> = {
+  pieces: "all ready pieces fit the pool + budget",
+  pool: "the agent pool was the binding limit",
+  budget: "the cost budget was the binding limit",
+  "pool-exhausted": "the pool was full — nothing could start",
+};
+
+// The WHY behind a decision, indented under its row.
+function RationaleDetail({ r }: { r: RationaleView }) {
+  const wall = r.budget ? fmtWallClock(r.budget.wallClockRemainingMs) : null;
+  return (
+    <div className="mt-1.5 flex flex-col gap-2 border-l-2 border-border pl-3 text-[11px] text-muted-foreground">
+      {r.ranked && r.ranked.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="font-medium text-foreground/70">Priority (critical-path first)</span>
+          <div className="flex flex-wrap gap-1">
+            {r.ranked.map((x, i) => (
+              <span
+                key={x.id}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 font-mono",
+                  i === 0 && "text-foreground",
+                )}
+              >
+                {x.id} · unblocks {x.score}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {r.fanout && (
+        <p>
+          <span className="font-medium text-foreground/70">Fan-out:</span> scheduled{" "}
+          {r.fanout.chosen} of {r.fanout.pieces} ready —{" "}
+          {BINDING_EXPLANATION[r.fanout.binding] ?? String(r.fanout.binding)}.{" "}
+          <span className="text-muted-foreground/60">
+            (pool room {fmtCap(r.fanout.capByPool)}, budget room {fmtCap(r.fanout.capByBudget)})
+          </span>
+        </p>
+      )}
+
+      {r.budget && (
+        <p className="flex flex-wrap gap-x-1 tabular-nums">
+          <span className="font-medium text-foreground/70">Budget:</span>
+          <span>
+            {fmtCost(r.budget.spentUsd)} spent · {r.budget.inFlight} in flight ·{" "}
+            {fmtBudgetLeft(r.budget.budgetLeftUsd)} left{wall ? ` · ${wall}` : ""}
+          </span>
+        </p>
+      )}
+
+      {r.rejected && (
+        <p className="flex items-start gap-1 text-amber-600 dark:text-amber-400">
+          <CircleAlert className="mt-0.5 size-3 shrink-0" />
+          <span>Proposed decision was rejected ({r.rejected}) → held instead.</span>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -581,23 +856,18 @@ function WovenAcceptanceGate({ unresolved }: { unresolved: Loom[] }) {
 }
 
 function RightRail({
-  log,
   loom,
   threads,
   woven,
   acceptedBy,
   onIntervened,
 }: {
-  log: DecisionLogEntry[];
   loom: Loom;
   threads: Loom[];
   woven: boolean;
   acceptedBy?: string;
   onIntervened?: (loom: Loom) => void;
 }) {
-  // godview.ts derives the log oldest-to-newest; the rail shows newest first so
-  // the latest move is visible without scrolling.
-  const entries = useMemo(() => [...log].reverse(), [log]);
   const sessionId = loom.charter?.scopingSessionId;
 
   // A woven root's unresolved children: anything not settled-good (done/ready/
@@ -628,25 +898,6 @@ function RightRail({
         allowAccept={unresolved.length === 0}
       />
       <DoneConfirmation loom={loom} by={acceptedBy} />
-
-      <Card>
-        <CardContent className="flex flex-col gap-2.5">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Orchestrator log</span>
-            <span className="ml-auto text-[10px] text-muted-foreground/60">weaver</span>
-          </div>
-          <Separator />
-          {entries.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No decisions yet.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {entries.map((e, i) => (
-                <LogRow key={`${e.ts}-${i}`} e={e} />
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
 
       {sessionId && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
@@ -709,7 +960,7 @@ export function LoomGodView({
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex min-w-0 flex-col gap-4">
           <CharterStrip loom={loom} onViewSpec={onViewSpec} />
-          <OrchestratorBar orchestrator={view.orchestrator} />
+          <OrchestratorPanel orchestrator={view.orchestrator} log={view.decisionLog} />
           <Weave
             operators={view.operators}
             loom={loom}
@@ -718,7 +969,6 @@ export function LoomGodView({
           />
         </div>
         <RightRail
-          log={view.decisionLog}
           loom={loom}
           threads={threads}
           woven={view.woven}
