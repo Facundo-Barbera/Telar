@@ -79,7 +79,7 @@ there is no `accept_loom`.
 real, replayable verifier process for a finished loom; a red verdict still gates the
 terminal state. Green-gate: core tests + core/web tsc.
 
-## ▶ M2 — Drive the weave: steer & inspect
+## ✅ M2 — Drive the weave: steer & inspect  ·  *shipped `7888040`*
 
 *Finishes the cockpit. Fills the **Chat** tab stub.*
 
@@ -93,7 +93,7 @@ terminal state. Green-gate: core tests + core/web tsc.
 **Done when:** you can open a Chat tab that already knows the loom and steer it, and
 open any operator to read its actual session. Green-gate as above.
 
-## M3 — Isolated, consolidated deliverables
+## ▶ M3 — Isolated, consolidated deliverables
 
 *The work product is clean and reviewable.*
 
