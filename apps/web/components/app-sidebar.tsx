@@ -353,18 +353,18 @@ function RecentProjectsGroup({ projects }: { projects: RecentProject[] }) {
 function TelarSidebarHeader() {
   const router = useRouter();
   return (
-    <SidebarHeader className="border-b">
-      <div className="flex items-center justify-between gap-1">
+    <SidebarHeader className="h-14 justify-center border-b">
+      <div className="flex items-center justify-between gap-1 pr-1">
         <button
           type="button"
           onClick={() => router.push("/")}
-          className="flex items-center px-2 py-1 text-left outline-none"
+          className="flex items-center rounded-md px-2 py-1 text-left outline-none"
         >
           <span className="font-heading text-lg font-semibold tracking-tight">
             telar
           </span>
         </button>
-        <SidebarTrigger className="text-sidebar-foreground/70" />
+        <SidebarTrigger />
       </div>
     </SidebarHeader>
   );

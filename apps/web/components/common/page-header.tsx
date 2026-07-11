@@ -20,9 +20,10 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        // Fixed height so a header with a description isn't taller than a
-        // title-only one — every top bar reads as the same band.
-        "flex h-14 shrink-0 items-center gap-3 border-b px-4",
+        // A consistent floor (h-14) so a title-only header matches a
+        // title+description one; min- (not fixed) lets a rich header (tags +
+        // path) grow instead of clipping its text.
+        "flex min-h-14 shrink-0 items-center gap-3 border-b px-4 py-2",
         className,
       )}
     >
