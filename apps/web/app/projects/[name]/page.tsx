@@ -9,9 +9,12 @@ import {
   ChevronRightIcon,
   FileCogIcon,
   FolderXIcon,
+  GlobeIcon,
+  LinkIcon,
   MessagesSquareIcon,
   PlayIcon,
   RotateCwIcon,
+  ServerIcon,
   SettingsIcon,
   ShieldIcon,
   SparklesIcon,
@@ -42,6 +45,11 @@ import {
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  HealthDot,
+  normalizeStatus,
+  type HttpStatus,
+} from "@/components/settings/mcp-health";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
@@ -193,11 +201,109 @@ function SectionError({
   );
 }
 
-function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
-  const { gates, guardrails } = manifest;
+// A muted uppercase section heading inside the Manifest rail, with an optional
+// leading icon — the shared look for Gates / Guardrails / URLs / MCP servers.
+function RailHeading({
+  icon: Icon,
+  children,
+}: {
+  icon?: React.ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase">
+      {Icon && <Icon className="size-3" />}
+      {children}
+    </div>
+  );
+}
+
+// Read-only summary of a project's telar.yaml: gates, guardrails, configured
+// URLs, and MCP servers with their live connection health. Editing lives on the
+// settings page (the header gear); this rail is a glance, not a control panel —
+// the one exception being a Connect shortcut for a server that needs sign-in.
+function ManifestCard({
+  name,
+  manifest,
+}: {
+  name: string;
+  manifest: ProjectManifest;
+}) {
+  const { gates, guardrails, urls, mcpServers } = manifest;
   const noGuards =
     guardrails.protectedPaths.length === 0 &&
     guardrails.disallowedTools.length === 0;
+
+  const urlEntries = (["dev", "preview", "prod"] as const)
+    .map((k) => [k, urls?.[k]] as const)
+    .filter((e): e is [(typeof e)[0], string] => !!e[1]);
+  const serverEntries = Object.entries(mcpServers);
+  const hasHttp = serverEntries.some(([, c]) => c.transport === "http");
+
+  // Live per-server health, from the same status route the settings page uses.
+  // Only fetched when there's an http server to probe; stdio shows as "Local".
+  const [status, setStatus] = useState<Record<string, HttpStatus>>({});
+  const [connecting, setConnecting] = useState<string | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    if (!hasHttp) return;
+    try {
+      const res = await fetch(
+        `/api/mcp/oauth/status?project=${encodeURIComponent(name)}`,
+      );
+      if (!res.ok) return;
+      setStatus(normalizeStatus(await res.json()));
+    } catch {
+      // status unknown — dots stay on "checking"
+    }
+  }, [name, hasHttp]);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  // Inline Connect shortcut for a needs-sign-in server: the same OAuth popup the
+  // settings page opens. That popup lands on the settings page, which posts to
+  // its opener and closes itself — we just poll for the close, then re-pull
+  // status so the dot flips green. Full connect/reconnect/disconnect stays in
+  // settings; this is the one action worth taking the instant you spot amber.
+  const connect = async (server: string) => {
+    setConnecting(server);
+    try {
+      const res = await fetch("/api/mcp/oauth/connect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ project: name, server }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.url) {
+        throw new Error(data.error ?? `Couldn't start OAuth (${res.status}).`);
+      }
+      const popup = window.open(
+        data.url,
+        "telar-mcp-oauth",
+        "popup,width=520,height=720",
+      );
+      if (!popup) {
+        window.location.href = data.url;
+        return;
+      }
+      const poll = window.setInterval(() => {
+        if (popup.closed) {
+          window.clearInterval(poll);
+          setConnecting((c) => (c === server ? null : c));
+          void loadStatus();
+        }
+      }, 800);
+    } catch {
+      // Popup blocked or the connect route errored — clear busy; the settings
+      // page (header gear) carries the full flow with proper error surfacing.
+      setConnecting((c) => (c === server ? null : c));
+    }
+  };
 
   return (
     <Card size="sm">
@@ -209,9 +315,7 @@ function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <div className="text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase">
-            Gates
-          </div>
+          <RailHeading>Gates</RailHeading>
           {gates.length === 0 ? (
             <p className="text-xs text-muted-foreground/60">
               No gates — looms pass on the agent&apos;s verdict alone.
@@ -239,10 +343,7 @@ function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
         </div>
 
         <div className="space-y-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase">
-            <ShieldIcon className="size-3" />
-            Guardrails
-          </div>
+          <RailHeading icon={ShieldIcon}>Guardrails</RailHeading>
           {noGuards ? (
             <p className="text-xs text-muted-foreground/60">
               No guardrails — nothing fenced off.
@@ -288,6 +389,100 @@ function ManifestCard({ manifest }: { manifest: ProjectManifest }) {
             </div>
           )}
         </div>
+
+        <div className="space-y-1.5">
+          <RailHeading icon={GlobeIcon}>URLs</RailHeading>
+          {urlEntries.length === 0 ? (
+            <p className="text-xs text-muted-foreground/60">
+              No URLs configured.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {urlEntries.map(([label, url]) => (
+                <div
+                  key={label}
+                  className="flex items-baseline justify-between gap-3 rounded-md bg-muted/40 px-2 py-1"
+                >
+                  <span className="shrink-0 text-xs font-medium capitalize">
+                    {label}
+                  </span>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                    title={url}
+                  >
+                    {url}
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-1.5">
+          <RailHeading icon={ServerIcon}>MCP servers</RailHeading>
+          {serverEntries.length === 0 ? (
+            <p className="text-xs text-muted-foreground/60">
+              No MCP servers configured.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {serverEntries.map(([sName, cfg]) => {
+                const st =
+                  cfg.transport === "http" ? status[sName] : undefined;
+                const enabled = cfg.enabled !== false;
+                const needsAuth =
+                  cfg.transport === "http" && st?.health === "needs-auth";
+                return (
+                  <div
+                    key={sName}
+                    className={cn(
+                      "flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1",
+                      !enabled && "opacity-60",
+                    )}
+                  >
+                    <HealthDot transport={cfg.transport} status={st} />
+                    <span
+                      className="min-w-0 flex-1 truncate text-xs font-medium"
+                      title={sName}
+                    >
+                      {sName}
+                    </span>
+                    {!enabled ? (
+                      <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground/70 uppercase">
+                        off
+                      </span>
+                    ) : needsAuth ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 shrink-0 gap-1 px-2 text-[11px]"
+                        onClick={() => void connect(sName)}
+                        disabled={connecting === sName}
+                      >
+                        {connecting === sName ? (
+                          <Spinner />
+                        ) : (
+                          <LinkIcon className="size-3" />
+                        )}
+                        Connect
+                      </Button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <Link
+          href={`/projects/${encodeURIComponent(name)}/settings`}
+          className="block text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+        >
+          Edit configuration in settings →
+        </Link>
       </CardContent>
     </Card>
   );
@@ -797,7 +992,7 @@ export default function ProjectDetailPage({
           {/* Manifest / reference rail */}
           <div className="lg:sticky lg:top-4 lg:self-start">
             {manifest ? (
-              <ManifestCard manifest={manifest} />
+              <ManifestCard name={entry.name} manifest={manifest} />
             ) : (
               <Alert variant="destructive">
                 <BanIcon />
