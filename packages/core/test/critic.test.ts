@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { criticPrompt, runCritic, runPanel, type CriticContext } from "../src/critic";
+import { createProject } from "../src/manifest";
 import { panelSize, type LensSpec, type PanelSignals } from "../src/panel";
 import type { AgentOpts } from "../src/engine";
 import type { CriticVerdict } from "../src/schemas";
@@ -137,6 +138,48 @@ describe("runCritic", () => {
     const lens: LensSpec = { class: "intent", lens: "intent/acceptance", blocker: true };
     const verdict = await runCritic(lens, ctx, { evidenceDir, run });
     expect(verdict).toBeNull();
+  });
+});
+
+// A critic gets the SAME project MCP servers the builder gets (read-only is
+// enforced by the server URL, so this is purely additive tool access). We prove
+// the wiring by capturing the opts the injected runner receives — never a live
+// call, and never a change to the prompt.
+describe("runCritic — project MCP access", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-critic-home-"));
+  const projRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-critic-proj-"));
+  const projectName = path.basename(projRoot);
+  beforeAll(() => {
+    process.env.TELAR_HOME = home;
+    createProject(projRoot, {
+      mcpServers: { db: { transport: "stdio", command: "x", args: ["--read-only"] } },
+    });
+  });
+  beforeEach(() => {
+    process.env.TELAR_HOME = home;
+  });
+
+  const lens: LensSpec = { class: "intent", lens: "intent/acceptance", blocker: true };
+
+  const captureExtra = async (opts: Parameters<typeof runCritic>[2]) => {
+    let extra: Record<string, unknown> = {};
+    const run = (async (_task: string, o: AgentOpts<any>) => {
+      extra = o.extraMcpServers as Record<string, unknown>;
+      return fakeVerdict();
+    }) as any;
+    await runCritic(lens, ctx, { ...opts, run });
+    return extra;
+  };
+
+  test("includes the project's MCP servers alongside playwright when project is set", async () => {
+    const extra = await captureExtra({ evidenceDir, project: projectName });
+    expect(extra.playwright).toBeDefined();
+    expect(extra.db).toBeDefined();
+  });
+
+  test("only playwright when no project is set (back-compat)", async () => {
+    const extra = await captureExtra({ evidenceDir });
+    expect(Object.keys(extra)).toEqual(["playwright"]);
   });
 });
 

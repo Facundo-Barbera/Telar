@@ -324,6 +324,7 @@ async function runPanelVerification(
       maxCriticAgents,
       evidenceDir,
       account,
+      project: manifest.name,
       abort: opts?.abort,
       run: opts?.run,
       onEvent: (e: PanelEvent) => {
@@ -419,7 +420,7 @@ export async function runVerification(
     }
     const report = await verify(
       { name: loom.title, acceptanceCriteria: loom.acceptanceCriteria },
-      { url: target, evidenceDir, account, headless: true, designGuidelines },
+      { url: target, evidenceDir, account, headless: true, designGuidelines, project: manifest.name },
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });

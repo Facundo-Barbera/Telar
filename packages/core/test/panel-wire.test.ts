@@ -24,6 +24,13 @@ const { createLoom } = await import("../src/looms");
 const { writeBundleFile, writeContract } = await import("../src/bundle");
 const { decide, runVerification, terminalStateForCompletedLoom } = await import("../src/executor");
 const { classifyPanel } = await import("../src/panel");
+const { createProject } = await import("../src/manifest");
+
+// Register project "p" (empty mcpServers) so runVerification's MCP wiring
+// (resolveProjectMcpServers/refreshProjectMcpAuth keyed on manifest.name) resolves
+// instead of throwing on an unknown project. The panel uses an injected `run`, so
+// the resolved server set is irrelevant to these composition assertions.
+createProject(fs.mkdtempSync(path.join(os.tmpdir(), "telar-panel-wire-p-")), { name: "p" });
 
 const manifest = ProjectManifest.parse({
   name: "p",

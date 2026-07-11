@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
+import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
 import { VerifierReport, type AccountProfile } from "./schemas";
 
 // Read app source to map criteria → UI (never write) + accessibility-first
@@ -184,6 +185,9 @@ export type VerifyOpts = {
   model?: string;
   abort?: AbortController;
   designGuidelines?: string;
+  // The project whose manifest MCP servers to make available (read-only,
+  // enforced by the server URL's ?read_only=true). Absent → playwright only.
+  project?: string;
 };
 
 export async function verify(
@@ -219,6 +223,10 @@ Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${op
     ...(opts.storageState ? ["--storage-state", opts.storageState] : []),
   ];
 
+  // Refresh any near-expiry Telar-owned MCP OAuth tokens before resolving the
+  // project servers so the injected Bearer is live (best-effort; never throws).
+  if (opts.project) await refreshProjectMcpAuth(opts.project);
+
   return agent(task, {
     schema: VerifierReport,
     tools: VERIFIER_TOOLS,
@@ -241,6 +249,9 @@ Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${op
         alwaysLoad: true,
         timeout: 90000,
       },
+      // Project MCP servers (same access the builder gets); read-only is
+      // enforced by each server URL's ?read_only=true, so nothing extra needed.
+      ...(opts.project ? resolveProjectMcpServers(opts.project) : {}),
     },
   });
 }

@@ -22,6 +22,7 @@ import { CriticVerdict, PanelReport } from "./schemas";
 import type { LensSpec, PanelSignals } from "./panel";
 import { panelSize } from "./panel";
 import { agent, type EngineEvent } from "./engine";
+import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
 import { VERIFIER_TOOLS, resolvePlaywrightMcpBin } from "./verifier";
 
 // The Spec Bundle slice + running app a critic is grounded in. Deliberately
@@ -139,6 +140,9 @@ export type CriticRunOpts = {
   abort?: AbortController;
   maxTurns?: number;
   onEvent?: (e: EngineEvent) => void;
+  // The project whose manifest MCP servers to make available (read-only,
+  // enforced by the server URL's ?read_only=true). Absent → playwright only.
+  project?: string;
   // Injectable agent runner — defaults to the real engine agent() call so
   // tests can supply a mock and never make a live call.
   run?: typeof agent;
@@ -163,6 +167,10 @@ export async function runCritic(
     ...(opts.storageState ? ["--storage-state", opts.storageState] : []),
   ];
 
+  // Refresh any near-expiry Telar-owned MCP OAuth tokens before resolving the
+  // project servers so the injected Bearer is live (best-effort; never throws).
+  if (opts.project) await refreshProjectMcpAuth(opts.project);
+
   const result = await run(criticPrompt(lens, ctx), {
     schema: CriticVerdict,
     tools: VERIFIER_TOOLS,
@@ -177,6 +185,9 @@ export async function runCritic(
     onEvent: opts.onEvent,
     extraMcpServers: {
       playwright: { type: "stdio", command: playwrightBin, args, alwaysLoad: true, timeout: 90000 },
+      // Project MCP servers (same access the builder gets); read-only is
+      // enforced by each server URL's ?read_only=true, so nothing extra needed.
+      ...(opts.project ? resolveProjectMcpServers(opts.project) : {}),
     },
   });
 
@@ -237,6 +248,7 @@ export async function runPanel(ctx: CriticContext, opts: RunPanelOpts): Promise<
         model: opts.model,
         abort: opts.abort,
         maxTurns: opts.maxTurns,
+        project: opts.project,
         run: opts.run,
         onEvent: (e) => {
           if (e.type === "result" && e.costUsd != null) {
