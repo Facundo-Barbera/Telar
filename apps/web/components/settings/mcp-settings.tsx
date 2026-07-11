@@ -958,6 +958,21 @@ export function McpSettings({ name }: { name: string }) {
     const connected = params.get("mcpConnected");
     const error = params.get("mcpOAuthError");
     if (!connected && !error) return;
+    // If this page instance is the OAuth popup, hand the result back to the
+    // opener that started Connect and close — don't render the full settings
+    // page inside the popup.
+    if (window.opener && window.opener !== window) {
+      try {
+        window.opener.postMessage(
+          { type: "telar-mcp-oauth", connected, error },
+          window.location.origin,
+        );
+      } catch {
+        // opener gone / cross-origin — fall through to the inline notice below
+      }
+      window.close();
+      return;
+    }
     setOauthNotice(
       error
         ? { kind: "error", text: error }
@@ -974,6 +989,28 @@ export function McpSettings({ name }: { name: string }) {
       window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
     );
     if (connected) void loadStatus();
+  }, [loadStatus]);
+
+  // Receive the OAuth result from the popup opened in `connect` (same-origin
+  // postMessage) and flip the status pill live, no page navigation.
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      const d = e.data as { type?: string; connected?: string; error?: string };
+      if (d?.type !== "telar-mcp-oauth") return;
+      setOauthBusy(null);
+      setOauthNotice(
+        d.error
+          ? { kind: "error", text: d.error }
+          : {
+              kind: "success",
+              text: d.connected ? `Connected ${d.connected}.` : "MCP server connected.",
+            },
+      );
+      if (d.connected) void loadStatus();
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
   }, [loadStatus]);
 
   const refreshTokens = useCallback(async () => {
@@ -1182,7 +1219,26 @@ export function McpSettings({ name }: { name: string }) {
           data.error ?? `Couldn't start OAuth connect (${res.status}).`,
         );
       }
-      window.location.href = data.url;
+      // Open the login in a popup so this settings page stays put. The callback
+      // redirects the popup back here (?mcpConnected/?mcpOAuthError); that popup
+      // instance posts the result to this opener and closes itself (see the
+      // effects above). If the popup is blocked, fall back to same-window nav.
+      const popup = window.open(
+        data.url,
+        "telar-mcp-oauth",
+        "popup,width=520,height=720",
+      );
+      if (!popup) {
+        window.location.href = data.url;
+        return;
+      }
+      const poll = window.setInterval(() => {
+        if (popup.closed) {
+          window.clearInterval(poll);
+          setOauthBusy((cur) => (cur === server.key ? null : cur));
+          void loadStatus();
+        }
+      }, 800);
     } catch (e) {
       setOauthNotice({
         kind: "error",
