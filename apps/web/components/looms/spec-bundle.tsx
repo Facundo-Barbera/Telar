@@ -56,7 +56,7 @@ const ASSERTION_TYPE_LABEL: Record<AssertionType, string> = {
   db: "db",
 };
 
-function AssertionRow({
+export function AssertionRow({
   loomId,
   assertion,
 }: {

@@ -5,7 +5,10 @@
 // into the child (G3 verify-not-skipped), spawn-or-reuse with session
 // continuity + no orphan across a steer (G4 session-resume), and reconcile
 // marking only the root (G5 no double-strand). No live agent runs — runLoomFn
-// is faked and the integration-verify producer no-ops on the contractless root.
+// is faked. NOTE (M1): a plain custom loom is no longer contractless — the
+// dispatcher choke point synthesizes + persists a Verification Contract, so the
+// child takes the panel path (G3 below) and the integration-verify producer can
+// fire; the fake runLoomFn still never spins a real panel/agent.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -20,6 +23,7 @@ beforeEach(() => {
 });
 
 const { singleThreadDecomposition, startLoom, steerLoom, reconcileStuckLooms } = await import("../src/dispatcher");
+const { readContract } = await import("../src/bundle");
 const { createLoom, getLoom, listChildLooms, saveLoom } = await import("../src/looms");
 const { validateCharter } = await import("../src/scoping");
 const { createProject } = await import("../src/manifest");
@@ -138,13 +142,30 @@ describe("universal routing (weave-of-one) end-to-end", () => {
     expect(charter.decomposition[0]!.required).toBe(true);
     expect(validateCharter(charter).ok).toBe(true);
 
-    // G3 — verification is NOT silently skipped: the criteria reach the child
-    // via wireChildBundle's legacy-verify else-branch (contractless custom loom).
+    // G3 (M1) — verification is NOT silently skipped, and the loom is no longer
+    // contractless: the M1 choke point SYNTHESIZES a Verification Contract from
+    // the root's prose acceptanceCriteria (one live-critic per criterion,
+    // subGoalId:"ALL", synthesized:true) and PERSISTS it to the root. The
+    // weave-of-one child inherits the ALL slice → its OWN synthesized
+    // contract.json + contractRequired:true (the panel path), NOT the legacy
+    // acceptanceCriteria degrade. Forcing a contract on every loom is the
+    // explicit M1 invariant that replaces the pre-M1 contractless routing.
     expect(seen.length).toBe(1);
     const child = seen[0]!;
     expect(child.parentLoomId).toBe(root.id);
     expect(child.subGoalId).toBe("s1");
-    expect(child.acceptanceCriteria).toEqual(["must do X"]);
+    expect(child.contractRequired).toBe(true); // panel path, not legacy degrade
+    expect(child.acceptanceCriteria).toBeUndefined(); // no legacy degrade
+    // The root carries the persisted synthesized contract...
+    const rootContract = readContract(root.id).contract;
+    expect(rootContract?.synthesized).toBe(true);
+    expect(rootContract?.assertions).toEqual([
+      { id: "synth-0", subGoalId: "ALL", description: "must do X", type: "live-critic", observable: "must do X", blocker: true },
+    ]);
+    // ...and the child's filtered slice is the same synthesized ALL assertion.
+    const childContract = readContract(child.id).contract;
+    expect(childContract?.synthesized).toBe(true);
+    expect(childContract?.assertions.map((a) => a.id)).toEqual(["synth-0"]);
   });
 
   test("G4: steer reuses the SAME child (session continuity, no orphan) and refreshes its prompt", async () => {

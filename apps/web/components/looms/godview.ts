@@ -12,9 +12,11 @@ import type {
   CriticVerdict,
   Evidence,
   GateResult,
+  LensSpec,
   Loom,
   LoomEvent,
   PanelReport,
+  VerifierReport,
   WorkUnitState,
 } from "@telar/core";
 import { isSingleThreadWeave, isTerminal, isWoven } from "./utils";
@@ -189,7 +191,57 @@ export type GodView = {
   orchestrator: Orchestrator;
   operators: Operator[];
   decisionLog: DecisionLogEntry[];
+  verify: VerifyView; // the Verify tab's derivation (M1)
 };
+
+// ---------------------------------------------------------------------------
+// Verify tab (M1) — the INDEPENDENT verdict surface. Every field is derived,
+// never fabricated: an unverified loom reads "not verified yet", a verify that
+// ran no executable check reads "no executable check ran". The builder's own
+// self-report is carried walled-off (`builderVerdict`) and NEVER merged into the
+// independent `verdict` — that separation IS the moat.
+// ---------------------------------------------------------------------------
+
+// A re-derived, pure outcome. `pending` = not verified yet; `skip` = a verify
+// ran but no executable/independent check produced a verdict.
+export type AssertionOutcome = "pass" | "fail" | "flaky" | "skip" | "pending";
+
+// One entry in the live verifier/critic process timeline, folded from the §2
+// process events. `who` is "verifier" (legacy path) or a critic lens label.
+export type VerifyStep =
+  | { k: "text"; who: string; text: string }
+  | { k: "tool"; who: string; name: string; input?: string }
+  | { k: "observation"; who: string; kind: string; output?: string }
+  | { k: "sized"; sized: LensSpec[]; sizedFrom?: Record<string, number> }
+  | { k: "critic-start"; lens: string; blocker: boolean };
+
+export type VerifyReport = {
+  scope: "integration" | "thread";
+  id: string; // the loom whose evidence dir backs this report (root or child)
+  title: string;
+  verdict: AssertionOutcome; // re-derived, INDEPENDENT of the builder's verdict
+  source: "panel" | "verifier" | "gates" | "none";
+  panelRequired: boolean; // when a skip is unpromotable (authored contract, no evidence)
+  reason?: string; // the panel's own aggregation reason (from verify-summary), when a panel ran
+  gates: GateResult[];
+  critics: CriticVerdict[];
+  legacy: VerifierReport | null; // the single-Verifier report, when the legacy path ran
+  mustClearFailed: string[]; // blocker lenses that did NOT clear
+  advisory: string[]; // non-blocker (advisory) lenses
+  url?: string; // the app URL the panel/verifier drove, when captured
+  steps: VerifyStep[]; // the live process timeline, [] when none captured in this feed
+  builderVerdict: { ok: boolean; summary: string } | null; // self-report, walled off
+};
+
+export type VerifyView = {
+  root: VerifyReport | null; // the end-of-orchestration integration verify (from feed)
+  threads: VerifyReport[]; // per-thread verifies (from each thread's latest attempt)
+  moatNote: string;
+};
+
+const MOAT_NOTE =
+  "A green verify lands the loom in ready (awaiting a human accept) — never done. " +
+  "A red integration verdict demotes the weave to needs-review. Nothing here can mark itself done.";
 
 // ---------------------------------------------------------------------------
 // Small predicates on attempts / panels.
@@ -674,6 +726,228 @@ function deriveDecisionLog(events: LoomEvent[]): DecisionLogEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Verify tab derivation (M1).
+// ---------------------------------------------------------------------------
+
+const asStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
+const optStr = (v: unknown): string | undefined =>
+  typeof v === "string" && v.length > 0 ? v : undefined;
+
+// Sized blocker lenses that never reported a verdict (crash/timeout/no emit) —
+// core drops them from `critics` (critic.ts) but keeps them in `sized`, and
+// aggregatePanel (panel.ts) treats a missing blocker lens as a failure to clear.
+// We must mirror that exactly, else a thread core deemed unverifiable would
+// render as a fabricated green. Also names them so "must clear" explains the fail.
+function missingBlockerLenses(pr: PanelReport | null | undefined): string[] {
+  const critics = pr?.critics ?? [];
+  return (pr?.sized ?? [])
+    .filter((l) => l.blocker && !critics.some((c) => c.lens === l.lens))
+    .map((l) => l.lens);
+}
+
+// Re-classify a completed panel INDEPENDENTLY (mirrors panel.ts:aggregatePanel's
+// §M.3 floor + blocker rules) — never trusts a builder self-report. An empty or
+// floorless panel is not a pass; it's honestly "skip" (no floor) / "fail".
+function classifyPanelPure(pr: PanelReport | null | undefined): AssertionOutcome {
+  const critics = pr?.critics ?? [];
+  if (critics.length === 0) return "skip";
+  const hasFloor = critics.some(
+    (c) => (c.class === "adversarial" || c.class === "reproduction") && c.blocker,
+  );
+  if (!hasFloor) return "fail"; // floorless panel is illegal — never a silent pass
+  if (critics.some((c) => c.blocker && !c.ok)) return "fail";
+  // A sized blocker lens that never reported must fail the panel, same as core.
+  if (missingBlockerLenses(pr).length > 0) return "fail";
+  const blockerFindings = critics.flatMap((c) => c.findings.filter((f) => f.severity === "blocker"));
+  return blockerFindings.length > 0 ? "fail" : "pass";
+}
+
+// Fold the §2 verifier/critic process events into an ordered live timeline. Any
+// feed missing these events yields [] — the UI then says so honestly rather than
+// inventing a stream.
+function foldVerifySteps(feed: LoomEvent[]): VerifyStep[] {
+  const steps: VerifyStep[] = [];
+  for (const ev of feed) {
+    const e = ev as Record<string, unknown>;
+    switch (ev.type) {
+      case "verifier-text":
+        steps.push({ k: "text", who: "verifier", text: asStr(e.text) });
+        break;
+      case "critic-text":
+        steps.push({ k: "text", who: asStr(e.lens) || "critic", text: asStr(e.text) });
+        break;
+      case "verifier-step":
+        steps.push({ k: "tool", who: "verifier", name: asStr(e.name) || "tool", input: optStr(e.input) });
+        break;
+      case "critic-step":
+        steps.push({ k: "tool", who: asStr(e.lens) || "critic", name: asStr(e.name) || "tool", input: optStr(e.input) });
+        break;
+      case "verifier-observation":
+        steps.push({ k: "observation", who: "verifier", kind: asStr(e.kind) || "result", output: optStr(e.output) });
+        break;
+      case "critic-observation":
+        steps.push({ k: "observation", who: asStr(e.lens) || "critic", kind: asStr(e.kind) || "result", output: optStr(e.output) });
+        break;
+      case "panel-sized":
+        steps.push({
+          k: "sized",
+          sized: (Array.isArray(e.sized) ? (e.sized as LensSpec[]) : []),
+          sizedFrom: (e.sizedFrom && typeof e.sizedFrom === "object"
+            ? (e.sizedFrom as Record<string, number>)
+            : undefined),
+        });
+        break;
+      case "critic-start":
+        steps.push({ k: "critic-start", lens: asStr(e.lens) || "critic", blocker: !!e.blocker });
+        break;
+    }
+  }
+  return steps;
+}
+
+const ACTIVE_VERIFY_STATES: readonly WorkUnitState[] = ["queued", "preparing", "running", "verifying"];
+
+// A thread's INDEPENDENT verdict, re-derived from its latest attempt's artifacts
+// (panel → verifier → gates). Never reads the builder's own verdict.
+function threadVerdict(t: Loom, latest: AttemptRecord | undefined): AssertionOutcome {
+  if (latest?.panelReport && latest.panelReport.critics.length > 0) {
+    return classifyPanelPure(latest.panelReport);
+  }
+  if (latest?.verifierReport) return latest.verifierReport.ok ? "pass" : "fail";
+  if (gatesRan(latest?.gates)) return gatesFailed(latest?.gates) ? "fail" : "pass";
+  if (!latest) return "pending";
+  if (ACTIVE_VERIFY_STATES.includes(t.state)) return "pending";
+  return "skip"; // settled, but no executable/independent check produced a verdict
+}
+
+// A per-thread report, reconstructed PURELY from the loom's latest attempt — no
+// events needed (the attempt carries panelReport/verifierReport/gates/verdict).
+function threadReport(t: Loom): VerifyReport {
+  const latest = t.attempts.at(-1);
+  const pr = latest?.panelReport ?? null;
+  const vr = latest?.verifierReport ?? null;
+  const gates = latest?.gates ?? [];
+  const critics = pr?.critics ?? [];
+  const source: VerifyReport["source"] = pr ? "panel" : vr ? "verifier" : gates.length > 0 ? "gates" : "none";
+  return {
+    scope: "thread",
+    id: t.id,
+    title: t.title,
+    verdict: threadVerdict(t, latest),
+    source,
+    // A contract-required loom that skips was HELD (no promotion); a plain one is
+    // promotable. We can't read the attempt's runtime panelRequired, so proxy it
+    // off contractRequired — the field that drove that very decision in core.
+    panelRequired: t.contractRequired ?? false,
+    reason: undefined,
+    gates,
+    critics,
+    legacy: vr,
+    mustClearFailed: [
+      ...critics.filter((c) => c.blocker && !c.ok).map((c) => c.lens),
+      ...missingBlockerLenses(pr).map((l) => `${l} (no verdict)`),
+    ],
+    advisory: critics.filter((c) => !c.blocker).map((c) => c.lens),
+    url: pr?.url || vr?.url || undefined,
+    steps: [],
+    builderVerdict: latest?.verdict ? { ok: latest.verdict.ok, summary: latest.verdict.summary } : null,
+  };
+}
+
+// The end-of-orchestration INTEGRATION verify, folded from the ROOT feed. A woven
+// root never builds itself, so every panel/gate/critic event on its own log comes
+// from runIntegrationVerify. Returns null until an integration verify has actually
+// left a trace (no fabricated "pending" block).
+function rootReport(loom: Loom, feed: LoomEvent[]): VerifyReport | null {
+  const rev = [...feed].reverse();
+  const term = rev.find((e) => e.type === "integration-verify" || e.type === "weave-verify") as
+    | { verification?: string }
+    | undefined;
+  const lastPanel = rev.find(
+    (e) => e.type === "panel" && !!(e as { report?: PanelReport | null }).report,
+  ) as { report?: PanelReport | null } | undefined;
+  const summary = rev.find((e) => e.type === "verify-summary") as
+    | { source?: string; panelRequired?: boolean; reason?: string }
+    | undefined;
+
+  // Latest GateResult per name (a re-verify re-runs the same gates).
+  const gateMap = new Map<string, GateResult>();
+  for (const e of feed) {
+    if (e.type !== "gate") continue;
+    const g = (e as { result?: GateResult }).result;
+    if (g) gateMap.set(g.name, g);
+  }
+  const gates = [...gateMap.values()];
+  const pr = lastPanel?.report ?? null;
+
+  // Nothing to show until an integration verify actually ran or emitted evidence.
+  if (!term && !pr && gates.length === 0) return null;
+
+  const critics = pr?.critics ?? [];
+  const v = term?.verification;
+  const verdict: AssertionOutcome =
+    v === "pass" || v === "fail" || v === "flaky" || v === "skip"
+      ? v
+      : pr
+        ? classifyPanelPure(pr)
+        : gates.length > 0
+          ? gates.every((g) => g.ok)
+            ? "pass"
+            : "fail"
+          : "pending";
+
+  const s = summary?.source;
+  const source: VerifyReport["source"] =
+    s === "panel" || s === "verifier" || s === "gates"
+      ? s
+      : pr
+        ? "panel"
+        : gates.length > 0
+          ? "gates"
+          : "none";
+
+  return {
+    scope: "integration",
+    id: loom.id,
+    title: "Integration verify — the whole weave",
+    verdict,
+    source,
+    panelRequired: summary?.panelRequired ?? true,
+    reason: summary?.reason,
+    gates,
+    critics,
+    legacy: null,
+    mustClearFailed: [
+      ...critics.filter((c) => c.blocker && !c.ok).map((c) => c.lens),
+      ...missingBlockerLenses(pr).map((l) => `${l} (no verdict)`),
+    ],
+    advisory: critics.filter((c) => !c.blocker).map((c) => c.lens),
+    url: pr?.url || undefined,
+    steps: foldVerifySteps(feed),
+    builderVerdict: null,
+  };
+}
+
+// The Verify tab's whole derivation. Mirrors deriveGodView's operator split: a
+// WOVEN root's threads are its child looms (their verifies ride each child's
+// attempt); a single loom is its own one thread (its verify + process steps ride
+// the root feed). The integration `root` report is folded from the root feed and
+// is present only once an integration re-verify has run.
+export function deriveVerify(loom: Loom, threads: Loom[], feed: LoomEvent[]): VerifyView {
+  const woven = isWoven(loom);
+  const threadLooms = woven ? threads : [loom];
+  const threadReports = threadLooms.map(threadReport);
+  // A single loom's verifier/critic process events land on the root feed — attach
+  // them to its one thread report so its live timeline is inspectable too.
+  if (!woven && threadReports[0]) threadReports[0].steps = foldVerifySteps(feed);
+  return {
+    root: woven ? rootReport(loom, feed) : null,
+    threads: threadReports,
+    moatNote: MOAT_NOTE,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------
 
@@ -705,5 +979,6 @@ export function deriveGodView(loom: Loom, threads: Loom[], events: LoomEvent[]):
     },
     operators,
     decisionLog: deriveDecisionLog(events),
+    verify: deriveVerify(loom, threads, events),
   };
 }

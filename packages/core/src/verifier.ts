@@ -8,7 +8,7 @@
 // availability under bypassPermissions — see engine.ts restrictTools.
 import fs from "node:fs";
 import path from "node:path";
-import { agent } from "./engine";
+import { agent, type EngineEvent } from "./engine";
 import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
 import { VerifierReport, type AccountProfile } from "./schemas";
 
@@ -188,6 +188,10 @@ export type VerifyOpts = {
   // The project whose manifest MCP servers to make available (read-only,
   // enforced by the server URL's ?read_only=true). Absent → playwright only.
   project?: string;
+  // M1 (D2): forward the verifier agent's live engine events so the executor
+  // can bridge them into verifier-step/-observation/-text loom events. Purely
+  // additive inspection — never gates the verdict.
+  onEvent?: (e: EngineEvent) => void;
 };
 
 export async function verify(
@@ -241,6 +245,7 @@ Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${op
     account: opts.account,
     abort: opts.abort,
     maxTurns: 40,
+    onEvent: opts.onEvent,
     extraMcpServers: {
       playwright: {
         type: "stdio",

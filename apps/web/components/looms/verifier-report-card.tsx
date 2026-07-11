@@ -41,11 +41,11 @@ const DESIGN_SEVERITY_BADGE: Record<
   nit: { className: "bg-muted text-muted-foreground", label: "nit" },
 };
 
-function screenshots(evidence: Evidence[]) {
+export function screenshots(evidence: Evidence[]) {
   return evidence.filter((e) => e.kind === "screenshot" && e.path);
 }
 
-function textEvidence(evidence: Evidence[]) {
+export function textEvidence(evidence: Evidence[]) {
   return evidence.filter(
     (e) =>
       (e.kind === "console" || e.kind === "network") &&
@@ -53,7 +53,7 @@ function textEvidence(evidence: Evidence[]) {
   );
 }
 
-function EvidenceImage({ loomId, evidence }: { loomId: string; evidence: Evidence }) {
+export function EvidenceImage({ loomId, evidence }: { loomId: string; evidence: Evidence }) {
   const [broken, setBroken] = useState(false);
   if (broken) {
     return (
@@ -168,7 +168,7 @@ function CriterionRow({
   );
 }
 
-function DesignFindingRow({
+export function DesignFindingRow({
   loomId,
   finding,
 }: {

@@ -20,8 +20,8 @@ import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, 
 import { executeLoom, runIntegrationVerify, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
-import { appendSteering, readBundleFile, readContract, snapshotBundle, writeProvenance } from "./bundle";
-import { wireChildBundle } from "./weave-contracts";
+import { appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
+import { synthesizeContract, wireChildBundle } from "./weave-contracts";
 
 export type StartLoomInput = {
   project: string;
@@ -127,9 +127,25 @@ function runWeaveWiring(
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
   // The root's full Verification Contract — wireChildBundle filters it down to
-  // each Thread's own subGoalId slice. Null (a non-bundle woven root) yields
-  // an empty slice, so children fall back to their SubGoal acceptanceCriteria.
-  const rootAssertions = readContract(loom.id).contract?.assertions ?? [];
+  // each Thread's own subGoalId slice.
+  //
+  // M1 (D0.3, D1.3): the UNIVERSAL choke point every loom passes through. If
+  // the root has NO contract (a plain custom loom, a non-bundle woven root),
+  // SYNTHESIZE one from its prose acceptanceCriteria/prompt and PERSIST it to
+  // the root contract.json — this is the M1 invariant that EVERY loom ends up
+  // with a contract. Persisting (not just building in-memory) is what makes
+  // runIntegrationVerify's readContract non-null → full re-verify actually
+  // fires. Idempotent: an authored contract (readContract non-null) is never
+  // overwritten, and a re-dispatch reads the persisted synthesized contract
+  // back → never re-synthesized. The first-ever write is unrestricted (its
+  // co-sign only triggers when a PRIOR contract exists on a started loom).
+  let { contract } = readContract(loom.id);
+  if (!contract) {
+    contract = synthesizeContract(loom);
+    writeContract(loom.id, contract);
+  }
+  const rootAssertions = contract.assertions;
+  const rootSynthesized = contract.synthesized === true;
   return runWeave(loom, decomposition, {
     spawnChild: (sg) => {
       const existing = listChildLooms(loom.id).find((c) => c.subGoalId === sg.id);
@@ -159,7 +175,7 @@ function runWeaveWiring(
       });
       // Give the Thread its OWN Spec Bundle: root context files copied in,
       // objective narrowed to the SubGoal, contract filtered to its slice.
-      wireChildBundle(loom.id, child, sg, rootAssertions);
+      wireChildBundle(loom.id, child, sg, rootAssertions, rootSynthesized);
       saveLoom(child);
       return child;
     },

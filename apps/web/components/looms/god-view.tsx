@@ -21,8 +21,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { Loom, SubGoal } from "@telar/core";
+import type { CriticFinding, CriticVerdict, GateResult, Loom, SubGoal } from "@telar/core";
 import type {
+  AssertionOutcome,
   DecisionKind,
   DecisionLogEntry,
   GodView,
@@ -33,10 +34,26 @@ import type {
   PlanNodeState,
   RationaleView,
   Step,
+  VerifyReport,
+  VerifyStep,
+  VerifyView,
 } from "./godview";
 import { StatusBadge } from "./status";
 import { AcceptancePanel, DoneConfirmation } from "./acceptance-panel";
+import {
+  DesignFindingRow,
+  EvidenceImage,
+  screenshots,
+  textEvidence,
+  VerifierReportCard,
+} from "./verifier-report-card";
+import { AssertionRow, useSpecBundle } from "./spec-bundle";
 import { fmtDuration } from "./utils";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -963,6 +980,563 @@ function ComingSoon({
 }
 
 // ---------------------------------------------------------------------------
+// Verify tab (M1) — the INDEPENDENT verdict surface. Renders the contract, the
+// gate run, the critic panel (must-clear vs advisory, findings + evidence), the
+// live verifier process, and the legacy report — for the root integration verify
+// AND each Thread. Every state is honest: "not verified yet" and "no executable
+// check ran" are first-class, never a fabricated pass or invented evidence.
+// ---------------------------------------------------------------------------
+
+const OUTCOME_BADGE: Record<
+  AssertionOutcome,
+  { label: string; className: string; Icon: LucideIcon }
+> = {
+  pass: {
+    label: "passed",
+    className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+    Icon: CircleCheck,
+  },
+  fail: {
+    label: "failed",
+    className: "bg-destructive/15 text-destructive",
+    Icon: CircleX,
+  },
+  flaky: {
+    label: "flaky",
+    className: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    Icon: CircleAlert,
+  },
+  skip: {
+    label: "no executable check ran",
+    className: "bg-muted text-muted-foreground",
+    Icon: CircleAlert,
+  },
+  pending: {
+    label: "not verified yet",
+    className: "bg-muted text-muted-foreground",
+    Icon: Clock,
+  },
+};
+
+function VerdictBadge({ verdict }: { verdict: AssertionOutcome }) {
+  const b = OUTCOME_BADGE[verdict];
+  return (
+    <Badge className={cn("gap-1 font-mono text-[10px]", b.className)}>
+      <b.Icon className="size-3" />
+      {b.label}
+    </Badge>
+  );
+}
+
+const FINDING_SEVERITY: Record<CriticFinding["severity"], string> = {
+  blocker: "bg-destructive/15 text-destructive",
+  major: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  minor: "bg-sky-500/15 text-sky-600 dark:text-sky-400",
+  nit: "bg-muted text-muted-foreground",
+};
+
+// A single critic finding — same fields as a DesignFinding minus `category`, so
+// rendered with its own compact row (reusing EvidenceImage for screenshots).
+function CriticFindingRow({ loomId, finding }: { loomId: string; finding: CriticFinding }) {
+  const shots = screenshots(finding.evidence);
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
+      <div className="flex items-start gap-2 text-sm">
+        <Badge className={cn("mt-px shrink-0 font-mono text-[10px]", FINDING_SEVERITY[finding.severity])}>
+          {finding.severity}
+        </Badge>
+        <span className="leading-snug font-medium">{finding.title}</span>
+      </div>
+      <p className="pl-1 text-xs text-muted-foreground">{finding.detail}</p>
+      {finding.recommendation && (
+        <p className="pl-1 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Fix:</span> {finding.recommendation}
+        </p>
+      )}
+      {shots.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {shots.map((e, i) => (
+            <EvidenceImage key={e.path ?? i} loomId={loomId} evidence={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One critic lens's verdict: pass/fail + must-clear/advisory + summary, its
+// findings and evidence expandable. A blocker lens that DIDN'T clear reads red.
+function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: CriticVerdict }) {
+  const [open, setOpen] = useState(false);
+  const shots = screenshots(critic.evidence);
+  const texts = textEvidence(critic.evidence);
+  const hasDetail = critic.findings.length > 0 || shots.length > 0 || texts.length > 0;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {critic.ok ? (
+          <CircleCheck className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <CircleX className="size-3.5 shrink-0 text-destructive" />
+        )}
+        <span className="text-sm font-medium">{critic.lens}</span>
+        <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
+          {critic.class}
+        </Badge>
+        <Badge
+          className={cn(
+            "font-mono text-[10px]",
+            critic.blocker
+              ? "bg-destructive/15 text-destructive"
+              : "bg-muted text-muted-foreground",
+          )}
+        >
+          {critic.blocker ? "must clear" : "advisory"}
+        </Badge>
+      </div>
+      {critic.summary && <p className="pl-1 text-xs text-muted-foreground">{critic.summary}</p>}
+
+      {shots.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {shots.map((e, i) => (
+            <EvidenceImage key={e.path ?? i} loomId={loomId} evidence={e} />
+          ))}
+        </div>
+      )}
+
+      {hasDetail && critic.findings.length > 0 && (
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-md py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+            <span>
+              {critic.findings.length} finding{critic.findings.length === 1 ? "" : "s"}
+            </span>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col gap-2 pt-1">
+            {critic.findings.map((f, i) => (
+              <CriticFindingRow key={`${f.title}-${i}`} loomId={loomId} finding={f} />
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {texts.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {texts.map((e, i) => (
+            <div key={e.path ?? i} className="flex flex-col gap-1">
+              <span className="font-mono text-[10px] text-muted-foreground/70">
+                {e.kind}
+                {e.label ? ` · ${e.label}` : ""}
+              </span>
+              <pre className="max-h-40 overflow-auto rounded-md bg-background/60 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground ring-1 ring-border">
+                {e.text ?? e.path}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GateRunRow({ gate }: { gate: GateResult }) {
+  const [open, setOpen] = useState(false);
+  const hasOutput = gate.output.trim().length > 0;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
+      <div className="flex items-center gap-2">
+        {gate.ok ? (
+          <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <X className="size-3.5 shrink-0 text-destructive" />
+        )}
+        <span className="font-mono text-xs">{gate.name}</span>
+        <Badge
+          className={cn(
+            "font-mono text-[10px]",
+            gate.ok
+              ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+              : "bg-destructive/15 text-destructive",
+          )}
+        >
+          {gate.timedOut ? "timed out" : gate.ok ? "pass" : "fail"}
+        </Badge>
+        <span className="ml-auto text-[10px] text-muted-foreground/70 tabular-nums">
+          {gate.exitCode != null ? `exit ${gate.exitCode}` : ""} · {fmtDuration(gate.durationMs)}
+        </span>
+      </div>
+      {hasOutput && (
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-md py-0.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+            <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+            <span>Output</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-1">
+            <pre className="max-h-56 overflow-auto rounded-md bg-background/60 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground ring-1 ring-border">
+              {gate.output}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
+// The live verifier/critic process — snapshot → act → observe, in the order it
+// happened. Click any step to expand its input/output. Empty ⇒ not rendered.
+function ProcessTimeline({ steps }: { steps: VerifyStep[] }) {
+  const [open, setOpen] = useState(false);
+  if (steps.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 rounded-md text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        <ChevronDown className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
+        Process timeline
+        <span className="text-muted-foreground/60">
+          {steps.length} step{steps.length === 1 ? "" : "s"}
+        </span>
+      </button>
+      {open && (
+        <ol className="flex flex-col gap-1 border-l-2 border-border pl-3">
+          {steps.map((s, i) => (
+            <ProcessStepRow key={i} step={s} />
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function ProcessStepRow({ step }: { step: VerifyStep }) {
+  if (step.k === "sized") {
+    return (
+      <li className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="font-medium text-foreground/70">panel sized →</span>
+        {step.sized.length === 0 ? (
+          <span>no lenses</span>
+        ) : (
+          step.sized.map((l) => (
+            <Badge key={l.lens} variant="outline" className="font-mono text-[10px]">
+              {l.lens}
+              {l.blocker ? " ·must" : ""}
+            </Badge>
+          ))
+        )}
+      </li>
+    );
+  }
+  if (step.k === "critic-start") {
+    return (
+      <li className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="size-1.5 shrink-0 rounded-full bg-foreground/40" />
+        <span className="font-medium text-foreground/70">{step.lens}</span>
+        <span>started</span>
+        {step.blocker && (
+          <Badge className="bg-destructive/15 font-mono text-[9px] text-destructive">must clear</Badge>
+        )}
+      </li>
+    );
+  }
+  if (step.k === "text") {
+    return (
+      <li className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+        <span className="font-mono text-[10px] text-muted-foreground/60">{step.who}</span>
+        <span className="leading-snug">{step.text}</span>
+      </li>
+    );
+  }
+  // tool / observation — an expandable single-line row.
+  return <ProcessIORow step={step} />;
+}
+
+function ProcessIORow({ step }: { step: Extract<VerifyStep, { k: "tool" | "observation" }> }) {
+  const [open, setOpen] = useState(false);
+  const label = step.k === "tool" ? step.name : step.kind;
+  const body = step.k === "tool" ? step.input : step.output;
+  const verb = step.k === "tool" ? "calls" : "saw";
+  return (
+    <li className="flex flex-col gap-0.5">
+      <button
+        type="button"
+        onClick={() => body && setOpen((v) => !v)}
+        className={cn(
+          "flex items-center gap-1.5 rounded-md text-left text-[11px] text-muted-foreground",
+          body && "transition-colors hover:text-foreground",
+        )}
+      >
+        <span className="font-mono text-[10px] text-muted-foreground/60">{step.who}</span>
+        <span>{verb}</span>
+        <span className="font-mono text-foreground/70">{label}</span>
+        {body && (
+          <ChevronRight className={cn("size-3 text-muted-foreground/50", open && "rotate-90")} />
+        )}
+      </button>
+      {open && body && (
+        <pre className="ml-2 max-h-40 overflow-auto rounded-md bg-background/60 p-2 font-mono text-[10px] leading-relaxed text-muted-foreground ring-1 ring-border">
+          {body}
+        </pre>
+      )}
+    </li>
+  );
+}
+
+// The Verification Contract, client-fetched from the Spec Bundle (it lives there,
+// not on the loom/events). Split into must-clear vs advisory. A synthesized
+// contract is honestly labeled.
+function VerifyContract({ loomId }: { loomId: string }) {
+  const { bundle, loaded } = useSpecBundle(loomId, true);
+  const assertions = bundle?.contract?.assertions ?? [];
+  if (!loaded || assertions.length === 0) return null;
+  const synthesized = bundle?.contract?.synthesized === true;
+  const blockers = assertions.filter((a) => a.blocker);
+  const advisory = assertions.filter((a) => !a.blocker);
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <ShieldCheck className="size-4 shrink-0 text-muted-foreground" />
+          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Verification contract
+          </span>
+          <span className="text-xs text-muted-foreground/60">
+            {assertions.length} assertion{assertions.length === 1 ? "" : "s"}
+          </span>
+          {synthesized && (
+            <Badge variant="secondary" className="font-normal" title="Auto-derived from this loom's acceptance criteria / prompt">
+              synthesized
+            </Badge>
+          )}
+        </div>
+        {synthesized && (
+          <p className="text-[11px] leading-relaxed text-muted-foreground/80">
+            No contract was authored, so this yardstick was auto-derived from the loom&apos;s
+            acceptance criteria (prose, judged live by the critic panel).
+          </p>
+        )}
+        {blockers.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {blockers.map((a) => (
+              <AssertionRow key={a.id} loomId={loomId} assertion={a} />
+            ))}
+          </div>
+        )}
+        {advisory.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <span className="text-[11px] font-medium text-muted-foreground">Advisory</span>
+            {advisory.map((a) => (
+              <AssertionRow key={a.id} loomId={loomId} assertion={a} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// A "why this verdict" line for a skip — honest about whether promotion is held.
+function skipNote(report: VerifyReport): string {
+  if (report.verdict !== "skip") return "";
+  return report.panelRequired
+    ? "No independent evidence was captured — promotion is held (this contract requires a passing panel)."
+    : "No executable check ran (no live target / no evidence). This is a promotable skip, judged as the legacy path would.";
+}
+
+function VerifyReportBlock({
+  report,
+  moatNote,
+  defaultOpen,
+}: {
+  report: VerifyReport;
+  moatNote?: string;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen ?? false);
+  const critics = report.critics;
+  const mustClear = critics.filter((c) => c.blocker);
+  const advisory = critics.filter((c) => !c.blocker);
+  const isIntegration = report.scope === "integration";
+  const note = skipNote(report);
+
+  const hasBody =
+    report.gates.length > 0 ||
+    critics.length > 0 ||
+    !!report.legacy ||
+    report.steps.length > 0 ||
+    !!report.builderVerdict;
+
+  const header = (
+    <div className="flex flex-wrap items-center gap-2">
+      {hasBody ? (
+        <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground/60", !open && "-rotate-90")} />
+      ) : (
+        <span className="size-4 shrink-0" />
+      )}
+      <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
+        {isIntegration ? "integration" : "thread"}
+      </Badge>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">{report.title}</span>
+      <VerdictBadge verdict={report.verdict} />
+    </div>
+  );
+
+  return (
+    <Card className={cn(isIntegration && "border-l-2 border-l-primary/40")}>
+      <CardContent className="flex flex-col gap-4">
+        {hasBody ? (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            {header}
+          </button>
+        ) : (
+          header
+        )}
+
+        {report.reason && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground/70">Why:</span> {report.reason}
+          </p>
+        )}
+        {note && (
+          <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>{note}</span>
+          </p>
+        )}
+        {isIntegration && moatNote && (
+          <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/20 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+            <span>{moatNote}</span>
+          </div>
+        )}
+        {report.url && (
+          <p className="truncate font-mono text-[11px] text-muted-foreground/70">
+            drove {report.url}
+          </p>
+        )}
+
+        {open && hasBody && (
+          <div className="flex flex-col gap-4">
+            {report.gates.length > 0 && (
+              <>
+                <Separator />
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Gate run ({report.gates.length})
+                  </span>
+                  {report.gates.map((g) => (
+                    <GateRunRow key={g.name} gate={g} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {critics.length > 0 && (
+              <>
+                <Separator />
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Critic panel ({critics.length})
+                  </span>
+                  {mustClear.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[11px] font-medium text-muted-foreground/80">
+                        Must clear
+                      </span>
+                      {mustClear.map((c, i) => (
+                        <CriticVerdictRow key={`${c.lens}-${i}`} loomId={report.id} critic={c} />
+                      ))}
+                    </div>
+                  )}
+                  {advisory.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[11px] font-medium text-muted-foreground/80">
+                        Advisory
+                      </span>
+                      {advisory.map((c, i) => (
+                        <CriticVerdictRow key={`${c.lens}-${i}`} loomId={report.id} critic={c} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {report.steps.length > 0 && (
+              <>
+                <Separator />
+                <ProcessTimeline steps={report.steps} />
+              </>
+            )}
+
+            {report.legacy && (
+              <>
+                <Separator />
+                <VerifierReportCard loomId={report.id} report={report.legacy} />
+              </>
+            )}
+
+            {report.builderVerdict && (
+              <>
+                <Separator />
+                <div className="flex flex-col gap-1 rounded-lg border border-dashed bg-muted/10 p-2.5">
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                    <Eye className="size-3.5" />
+                    Builder&apos;s self-report (not the verdict)
+                  </span>
+                  <p className="text-xs text-muted-foreground">{report.builderVerdict.summary}</p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function VerifyPanel({ view, loom }: { view: VerifyView; loom: Loom }) {
+  const { root, threads } = view;
+  const nothingYet =
+    !root && threads.every((t) => t.verdict === "pending" && t.source === "none" && t.steps.length === 0);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <VerifyContract loomId={loom.id} />
+
+      {nothingYet ? (
+        <ComingSoon
+          icon={ShieldCheck}
+          title="Not verified yet"
+          description="Once the verifier runs, every check it ran — the gate results, the critic panel with what it saw in the running app, and why it passed or held — will appear here."
+        />
+      ) : (
+        <>
+          {root && <VerifyReportBlock report={root} moatNote={view.moatNote} defaultOpen />}
+          {threads.length > 1 && (
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-xs font-medium text-muted-foreground">Per-thread verifies</span>
+              <span className="text-xs text-muted-foreground/60">{threads.length} threads</span>
+            </div>
+          )}
+          {threads.map((t) => (
+            <VerifyReportBlock key={t.id} report={t} defaultOpen={!root && threads.length === 1} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The moat.
 // ---------------------------------------------------------------------------
 
@@ -1051,11 +1625,7 @@ export function LoomGodView({
           </TabsContent>
 
           <TabsContent value="verify" className="pt-2">
-            <ComingSoon
-              icon={ShieldCheck}
-              title="Verify"
-              description="The verifier's process — every check it ran, what it saw in the running app, and why it passed or held — will live here."
-            />
+            <VerifyPanel view={view.verify} loom={loom} />
           </TabsContent>
 
           <TabsContent value="chat" className="pt-2">

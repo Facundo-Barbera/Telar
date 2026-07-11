@@ -379,6 +379,12 @@ export type ContractAssertion = z.infer<typeof ContractAssertion>;
 export const VerificationContract = z.object({
   version: z.number().default(1),
   assertions: z.array(ContractAssertion).default([]),
+  // M1: true when this contract was AUTO-SYNTHESIZED from a loom's prose
+  // acceptanceCriteria/prompt (weave-contracts.synthesizeContract), not
+  // authored by a human/agent. A synthesized contract is inherently prose
+  // (all live-critic) — validateContract skips ONLY the non-live-critic
+  // hard-gate floor for it (see below); every other falsifiability rule stays.
+  synthesized: z.boolean().optional(),
 });
 export type VerificationContract = z.infer<typeof VerificationContract>;
 
@@ -403,7 +409,12 @@ export function validateContract(
   // §M.1's red-team target: an all-live-critic contract is prose judged by
   // prose, with no falsifiable hard gate at all. Mirror §M.3's panel floor
   // ("≥1 adversarial lens always blocks") at the contract level.
-  if (assertions.length && assertions.every((a) => a.type === "live-critic")) {
+  // M1 (D0.1): a SYNTHESIZED contract is derived from prose acceptanceCriteria/
+  // prompt — there is nothing falsifiable to turn into a hard gate, so this
+  // floor is skipped for it (reproducing today's legacy prose-judged-by-LLM
+  // behavior). The floor remains a quality bar for human/agent-AUTHORED
+  // contracts, which never set the flag. Every other rule below still applies.
+  if (!c.synthesized && assertions.length && assertions.every((a) => a.type === "live-critic")) {
     errors.push("contract must have at least one non-live-critic (hard-gate) assertion");
   }
 

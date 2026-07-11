@@ -197,7 +197,17 @@ export async function runCritic(
 
 export type PanelEvent =
   | { type: "critic-cost"; lens: string; costUsd: number }
-  | { type: "critic-verdict"; lens: string; verdict: CriticVerdictType | null };
+  | { type: "critic-verdict"; lens: string; verdict: CriticVerdictType | null; durationMs?: number; turns?: number }
+  // M1 (D2): additive verifier-process events surfacing the panel's live work.
+  // `panel-sized` fires once before any lens runs; the per-lens `critic-start`/
+  // `critic-step`/`critic-observation`/`critic-text` stream each critic's
+  // tool-by-tool loop. None carry control-flow weight — they are opportunistic
+  // inspection signals only.
+  | { type: "panel-sized"; sized: LensSpec[]; sizedFrom: Record<string, number> }
+  | { type: "critic-start"; lens: string; class: CriticClass; blocker: boolean }
+  | { type: "critic-step"; lens: string; name: string; input?: string }
+  | { type: "critic-observation"; lens: string; kind: string; output?: string }
+  | { type: "critic-text"; lens: string; text: string };
 
 // Omit + redeclare `onEvent`, not a plain `&`: CriticRunOpts.onEvent is typed
 // (e: EngineEvent) => void, and a bare intersection would force callers into
@@ -211,6 +221,19 @@ export type RunPanelOpts = Omit<CriticRunOpts, "onEvent"> & {
   retryBlockerOnly?: boolean; // retry-awareness: re-run only blocker lenses + a fresh reproduction lens
   onEvent?: (e: PanelEvent) => void;
 };
+
+// Stringify an engine tool `input` (already size-capped by the engine's
+// capToolInput) for a critic-step event field — strings pass through, anything
+// else is JSON-serialized best-effort. Never throws.
+function capEventText(input: unknown): string | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "string") return input;
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
 
 // A retry re-runs only the lenses that must clear, plus a fresh reproduction
 // pass (never reused from a prior run — "fresh" means driven cold again).
@@ -231,6 +254,17 @@ export async function runPanel(ctx: CriticContext, opts: RunPanelOpts): Promise<
   const sized = panelSize(opts.signals);
   const lenses = opts.retryBlockerOnly ? retryLenses(sized) : sized;
 
+  const sizedFrom: Record<string, number> = {
+    diffLines: opts.signals.diffLines,
+    filesTouched: opts.signals.filesTouched,
+    filesOutsideAllowed: opts.signals.filesOutsideAllowed,
+    protectedPathsTouched: opts.signals.protectedPathsTouched ? 1 : 0,
+    priorFailingCritics: opts.signals.priorFailingCritics,
+  };
+  // M1 (D2): announce the sized panel BEFORE any lens runs so the Verify tab can
+  // show which lenses are pending and why (the sizedFrom audit trail).
+  opts.onEvent?.({ type: "panel-sized", sized: lenses, sizedFrom });
+
   const verdicts: (CriticVerdictType | null)[] = new Array(lenses.length).fill(null);
   let cursor = 0;
 
@@ -239,6 +273,11 @@ export async function runPanel(ctx: CriticContext, opts: RunPanelOpts): Promise<
       const i = cursor++;
       if (i >= lenses.length) return;
       const lens = lenses[i]!;
+      // M1 (D2): mark this lens started so a crashed/never-emitting blocker is
+      // visible in the timeline (aggregatePanel's `sized` still fails it).
+      opts.onEvent?.({ type: "critic-start", lens: lens.lens, class: lens.class, blocker: lens.blocker });
+      let durationMs: number | undefined;
+      let turns: number | undefined;
       const verdict = await runCritic(lens, ctx, {
         evidenceDir: opts.evidenceDir,
         playwrightBin: opts.playwrightBin,
@@ -251,26 +290,28 @@ export async function runPanel(ctx: CriticContext, opts: RunPanelOpts): Promise<
         project: opts.project,
         run: opts.run,
         onEvent: (e) => {
-          if (e.type === "result" && e.costUsd != null) {
-            opts.onEvent?.({ type: "critic-cost", lens: lens.lens, costUsd: e.costUsd });
+          // M1 (D2): forward the critic's live tool-by-tool loop (no longer drop
+          // everything but `result`). `lens` scopes each step to its critic.
+          if (e.type === "result") {
+            if (e.costUsd != null) opts.onEvent?.({ type: "critic-cost", lens: lens.lens, costUsd: e.costUsd });
+            durationMs = undefined; // durationMs isn't on the engine result; turns is
+            turns = e.turns;
+          } else if (e.type === "text") {
+            opts.onEvent?.({ type: "critic-text", lens: lens.lens, text: e.text });
+          } else if (e.type === "tool") {
+            opts.onEvent?.({ type: "critic-step", lens: lens.lens, name: e.name, input: capEventText(e.input) });
+          } else if (e.type === "tool-result") {
+            opts.onEvent?.({ type: "critic-observation", lens: lens.lens, kind: e.name ?? "result", output: e.output });
           }
         },
       });
       verdicts[i] = verdict;
-      opts.onEvent?.({ type: "critic-verdict", lens: lens.lens, verdict });
+      opts.onEvent?.({ type: "critic-verdict", lens: lens.lens, verdict, durationMs, turns });
     }
   }
 
   const poolSize = Math.max(1, Math.min(maxCriticAgents, lenses.length || 1));
   await Promise.all(Array.from({ length: poolSize }, () => worker()));
-
-  const sizedFrom: Record<string, number> = {
-    diffLines: opts.signals.diffLines,
-    filesTouched: opts.signals.filesTouched,
-    filesOutsideAllowed: opts.signals.filesOutsideAllowed,
-    protectedPathsTouched: opts.signals.protectedPathsTouched ? 1 : 0,
-    priorFailingCritics: opts.signals.priorFailingCritics,
-  };
 
   return PanelReport.parse({
     url: ctx.url,

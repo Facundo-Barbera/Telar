@@ -123,6 +123,15 @@ export function aggregatePanel(
   return { pass: true, blockerFindings, reason: "floor present, all blocker lenses cleared, no blocker findings" };
 }
 
+// panelReason(): PURE. Surfaces aggregatePanel's human-readable reason string
+// for a completed PanelReport (the same strings §M.3 already produces) so the
+// executor can carry it onto a verify-summary event and the Verify tab can show
+// WHY the panel passed/failed. Empty critics → the classifyPanel "skip" reason.
+export function panelReason(report: PanelReport): string {
+  if (report.critics.length === 0) return "no critic reported a verdict (nothing judged)";
+  return aggregatePanel(report.critics, report.sized).reason;
+}
+
 // classifyPanel(): maps a PanelReport to the executor's Verification lattice
 // (skip|pass|fail — see executor.ts:classify). Empty critics = nothing
 // judged -> "skip", never an auto-promote, mirroring classify()'s own rule.

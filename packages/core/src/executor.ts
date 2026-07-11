@@ -9,7 +9,7 @@ import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
 import { type BuildPiece, runBuildFanout } from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
-import { classifyPanel, type PanelSignals } from "./panel";
+import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { startProjectServer } from "./run-server";
@@ -321,7 +321,10 @@ export async function runContractGates(
   deterministic: ContractAssertion[],
   manifest: ProjectManifest,
   cwd: string,
-  onGate?: (r: GateResult) => void,
+  // M1 (D2): the gate callback now also receives the ASSERTION it ran, so a
+  // gate loom event can carry {assertionId, assertionType} tying the result
+  // back to its contract assertion (manifest-gate emits stay id-less).
+  onGate?: (r: GateResult, a: ContractAssertion) => void,
   runner: (gate: Gate, cwd: string) => Promise<GateResult> = runGate,
 ): Promise<GateResult[]> {
   const results: GateResult[] = [];
@@ -344,7 +347,7 @@ export async function runContractGates(
       r = await runner({ name: a.id, run: a.expected ?? "" }, cwd);
     }
     results.push(r);
-    onGate?.(r);
+    onGate?.(r, a);
   }
   return results;
 }
@@ -364,6 +367,12 @@ async function runPanelVerification(
   account?: AccountProfile,
   target?: string,
   opts?: { abort?: AbortController; run?: typeof agent },
+  // M1 (D0.4): whether this contract was auto-synthesized. A synthesized
+  // contract that cannot obtain live evidence (no target, panel threw) returns
+  // a PROMOTABLE skip (panelRequired:false) — byte-identical to the legacy
+  // `!target → skip` a plain acceptanceCriteria loom used to get. Authored
+  // contracts keep panelRequired:true (moat: no evidence ⇒ no promotion).
+  synthesized = false,
 ): Promise<{
   verification: Verification;
   report: VerifierReport | null;
@@ -383,7 +392,7 @@ async function runPanelVerification(
   }
   if (!target) {
     emit({ type: "panel", n: attempt.n, report: null });
-    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+    return { verification: "skip", report: null, panelReport: null, panelRequired: !synthesized };
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
@@ -432,8 +441,21 @@ async function runPanelVerification(
           // §M "panel cost is real spend": flow it into the attempt, not just the event stream.
           attempt.costUsd = (attempt.costUsd ?? 0) + e.costUsd;
           emit({ type: "critic-cost", lens: e.lens, costUsd: e.costUsd });
-        } else {
-          emit({ type: "critic-verdict", lens: e.lens, verdict: e.verdict });
+        } else if (e.type === "critic-verdict") {
+          emit({ type: "critic-verdict", lens: e.lens, verdict: e.verdict, durationMs: e.durationMs, turns: e.turns });
+        } else if (e.type === "panel-sized") {
+          // M1 (D2): re-emit the panel-process events onto the loom log so the
+          // Verify tab can fold a live tool-by-tool timeline. n scopes them to
+          // this attempt.
+          emit({ type: "panel-sized", n: attempt.n, sized: e.sized, sizedFrom: e.sizedFrom });
+        } else if (e.type === "critic-start") {
+          emit({ type: "critic-start", lens: e.lens, class: e.class, blocker: e.blocker });
+        } else if (e.type === "critic-step") {
+          emit({ type: "critic-step", lens: e.lens, name: e.name, input: e.input });
+        } else if (e.type === "critic-observation") {
+          emit({ type: "critic-observation", lens: e.lens, kind: e.kind, output: e.output });
+        } else if (e.type === "critic-text") {
+          emit({ type: "critic-text", lens: e.lens, text: e.text });
         }
       },
     });
@@ -443,8 +465,50 @@ async function runPanelVerification(
     return { verification: classifyPanel(panelReport), report: null, panelReport, panelRequired: true };
   } catch (err) {
     emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
-    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+    return { verification: "skip", report: null, panelReport: null, panelRequired: !synthesized };
   }
+}
+
+// Stringify a verifier engine tool `input` (already engine-capped) for a
+// verifier-step event. Strings pass through; anything else JSON best-effort.
+function capVerifierInput(input: unknown): string | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "string") return input;
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
+// M1 (D2): emit the terminal `verify-summary` once a verification settles —
+// the single event the Verify tab reads for the headline verdict. `source` is
+// derived from which report is present (panel → verifier → gates), `reason`
+// from panelReason when a panel ran, and blockerFindings is the count of
+// blocker-severity critic findings. Purely additive; never gates anything.
+function emitVerifySummary(
+  emit: (ev: { type: string } & Record<string, unknown>) => void,
+  n: number,
+  res: {
+    verification: Verification;
+    report: VerifierReport | null;
+    panelReport?: PanelReport | null;
+    panelRequired: boolean;
+  },
+): void {
+  const source: "panel" | "verifier" | "gates" = res.panelReport ? "panel" : res.report ? "verifier" : "gates";
+  const blockerFindings = res.panelReport
+    ? res.panelReport.critics.flatMap((c) => c.findings.filter((f) => f.severity === "blocker")).length
+    : 0;
+  emit({
+    type: "verify-summary",
+    n,
+    verification: res.verification,
+    source,
+    panelRequired: res.panelRequired,
+    blockerFindings,
+    ...(res.panelReport ? { reason: panelReason(res.panelReport) } : {}),
+  });
 }
 
 // Drive the Verifier over the running app: attaches the report to the attempt,
@@ -473,6 +537,9 @@ export async function runVerification(
   const target = url ?? manifest.urls?.dev;
   const { contract } = readContract(loom.id);
   if (contract) {
+    // M1 (D0.4): a synthesized contract's no-evidence skips stay promotable
+    // (byte-identical to legacy); authored contracts keep panelRequired:true.
+    const isSynth = contract.synthesized === true;
     // Unit 4: an all-deterministic contract has no agent-judged slice, so the
     // panel is skipped and no live target is needed — never spin up a dev
     // server for a zero-browser backend verify.
@@ -483,19 +550,28 @@ export async function runVerification(
     // panel silently skipping — torn down again right after this attempt's
     // panel run, win or lose. A project with a static url is unchanged: this
     // path never runs when `target` is already set.
-    if (panelRequired && !target && manifest.devCommand) {
+    // M1 (D0.4): a SYNTHESIZED loom with no target behaves like legacy (a
+    // promotable skip, no dev server) — `&& !isSynth` keeps the spin-up
+    // behavior exclusive to authored contracts.
+    if (panelRequired && !target && manifest.devCommand && !isSynth) {
       let server: Awaited<ReturnType<typeof startProjectServer>> | undefined;
       try {
         server = await startProjectServer(manifest.root, manifest.devCommand, { abort: opts?.abort });
-        return await runPanelVerification(loom, manifest, attempt, emit, contract, account, server.url, opts);
+        const res = await runPanelVerification(loom, manifest, attempt, emit, contract, account, server.url, opts, isSynth);
+        emitVerifySummary(emit, attempt.n, res);
+        return res;
       } catch (err) {
         emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
-        return { verification: "skip", report: null, panelReport: null, panelRequired: true };
+        const res = { verification: "skip" as Verification, report: null, panelReport: null, panelRequired: !isSynth };
+        emitVerifySummary(emit, attempt.n, res);
+        return res;
       } finally {
         await server?.stop();
       }
     }
-    return runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts);
+    const res = await runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts, isSynth);
+    emitVerifySummary(emit, attempt.n, res);
+    return res;
   }
 
   // §M.1/§M.2: a loom that required a Verification Contract to START
@@ -524,11 +600,31 @@ export async function runVerification(
     }
     const report = await verify(
       { name: loom.title, acceptanceCriteria: loom.acceptanceCriteria },
-      { url: target, evidenceDir, account, headless: true, designGuidelines, project: manifest.name },
+      {
+        url: target,
+        evidenceDir,
+        account,
+        headless: true,
+        designGuidelines,
+        project: manifest.name,
+        // M1 (D2): bridge the verifier agent's live engine events into
+        // verifier-step/-observation/-text loom events (inspection only).
+        onEvent: (e) => {
+          if (e.type === "tool") {
+            emit({ type: "verifier-step", n: attempt.n, phase: "verifier", name: e.name, input: capVerifierInput(e.input) });
+          } else if (e.type === "tool-result") {
+            emit({ type: "verifier-observation", n: attempt.n, phase: "verifier", kind: e.name ?? "result", output: e.output });
+          } else if (e.type === "text") {
+            emit({ type: "verifier-text", n: attempt.n, text: e.text });
+          }
+        },
+      },
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
-      return { verification: "skip", report: null, panelRequired: false };
+      const res = { verification: "skip" as Verification, report: null, panelRequired: false };
+      emitVerifySummary(emit, attempt.n, res);
+      return res;
     }
     // Rewrite absolute evidence paths under evidenceDir to relative so the UI
     // can serve them via /api/looms/<id>/evidence/<relpath>.
@@ -543,7 +639,9 @@ export async function runVerification(
     // Persisted by the caller's onState when the next setState fires (this
     // module stays pure w.r.t. persistence — see the file header).
     emit({ type: "verifier", n: attempt.n, report });
-    return { verification: classify(report), report, panelRequired: false };
+    const res = { verification: classify(report), report, panelRequired: false };
+    emitVerifySummary(emit, attempt.n, res);
+    return res;
   } catch (err) {
     emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
     return { verification: "skip", report: null, panelRequired: false };
@@ -603,10 +701,22 @@ export async function runIntegrationVerify(
   // no single SubGoal (subGoalId === "ALL" OR unlabelled). Per-SubGoal
   // assertions were each proven by that child's own executeLoom verify.
   const allSlice = contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
-  const allContract: VerificationContract = { version: contract.version, assertions: allSlice };
+  // M1 (D3.1): PRESERVE the synthesized flag when rebuilding the ALL contract.
+  // A synthesized root's ALL slice is all-live-critic; dropping the flag would
+  // re-impose the hard-gate floor and validateContract would reject it → the
+  // producer would no-op and full re-verify would never fire. With the flag
+  // carried through, an all-live-critic synthesized ALL slice validates and the
+  // producer fires for EVERY woven root that folds to `ready`.
+  const allContract: VerificationContract = {
+    version: contract.version,
+    assertions: allSlice,
+    synthesized: contract.synthesized,
+  };
   // A real ALL contract only if it has a falsifiable hard gate (same floor
-  // wireChildBundle uses). No ALL contract ⇒ no-op producer.
+  // wireChildBundle uses) — OR it is synthesized (floor skipped). No ALL
+  // contract ⇒ no-op producer.
   if (allSlice.length === 0 || validateContract(allContract).length !== 0) return null;
+  const isSynth = allContract.synthesized === true;
 
   const emit = opts.emit ?? (() => {});
   const policy = opts.policy ?? ModelPolicy.parse({});
@@ -630,7 +740,7 @@ export async function runIntegrationVerify(
     deterministic,
     manifest,
     manifest.root,
-    (r) => emit({ type: "gate", result: r }),
+    (r, a) => emit({ type: "gate", result: r, assertionId: a.id, assertionType: a.type }),
     opts.gateRunner,
   );
   attempt.gates = gates;
@@ -645,10 +755,17 @@ export async function runIntegrationVerify(
   } else if (agentJudged.length > 0) {
     // Pass the ALL contract EXPLICITLY (runPanelVerification re-partitions it and
     // only shows the panel the agent-judged slice) — never overwrites contract.json.
-    const pv = await runPanelVerification(loom, manifest, attempt, emit, allContract, account, target, {
-      abort: opts.abort,
-      run: opts.run,
-    });
+    const pv = await runPanelVerification(
+      loom,
+      manifest,
+      attempt,
+      emit,
+      allContract,
+      account,
+      target,
+      { abort: opts.abort, run: opts.run },
+      isSynth,
+    );
     verification = pv.verification;
     panelReport = pv.panelReport ?? null;
   } else {
@@ -658,6 +775,14 @@ export async function runIntegrationVerify(
 
   attempt.endedAt = Date.now();
   emit({ type: "integration-verify", verification, gatesOk });
+  // M1 (D2): terminal summary for the integration verify (source derived like
+  // runVerification's — a panel ran ⇒ "panel", else the gate result ⇒ "gates").
+  emitVerifySummary(emit, attempt.n, {
+    verification,
+    report: null,
+    panelReport,
+    panelRequired: !isSynth,
+  });
   return { verification, gatesOk, panelReport, gates };
 }
 
@@ -953,7 +1078,9 @@ export async function executeLoom(
         ? partitionAssertions(routedContract.assertions).deterministic
         : [];
       const contractGateResults = deterministic.length
-        ? await runContractGates(deterministic, manifest, manifest.root, (r) => emit({ type: "gate", result: r }))
+        ? await runContractGates(deterministic, manifest, manifest.root, (r, a) =>
+            emit({ type: "gate", result: r, assertionId: a.id, assertionType: a.type }),
+          )
         : [];
       const mergedGates = [...gateRun.results, ...contractGateResults];
       attempt.gates = mergedGates;
