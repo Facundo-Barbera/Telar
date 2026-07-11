@@ -327,19 +327,22 @@ export async function ensureClient(opts: {
     return { strategy: "manual", id: opts.auth.clientId!, secret: resolveClientSecret(opts.project, opts.auth.clientSecret) };
   }
 
-  // DCR: reuse a persisted registration for THIS server; else reuse a client
-  // already registered with the SAME authorization server (a DCR client belongs
-  // to the AS/account, not one MCP server — re-registering per server mints a
-  // duplicate OAuth app, and some servers, e.g. Supabase, then reject the fresh
-  // client_id with "Unrecognized client_id"); else register once.
+  // DCR: a DCR client is AS/account-scoped and is only PROVEN good once it has
+  // yielded a token. Reuse a proven client on this AS FIRST (this server's own
+  // completed record, else any completed record on the same issuer) — this
+  // avoids minting a duplicate OAuth app per server and dodges servers (e.g.
+  // Supabase) that reject a freshly-minted client_id with "Unrecognized
+  // client_id". It also OVERRIDES a stale client this server may have persisted
+  // mid-flow from an aborted connect. persistClient keeps any existing tokens.
+  const proven = findWorkingDcrClient(opts.project, opts.server, opts.as.issuer);
+  if (proven) {
+    persistClient(opts.project, opts.server, opts.resource, opts.as, proven);
+    return proven;
+  }
+  // Else reuse this server's own not-yet-completed registration (so a Connect
+  // retried before it completes doesn't register a second app), else register.
   const existing = getRecord(opts.project, opts.server);
   if (existing?.client.strategy === "dcr" && existing.client.id) return existing.client;
-
-  const shared = findDcrClientForIssuer(opts.as.issuer);
-  if (shared) {
-    persistClient(opts.project, opts.server, opts.resource, opts.as, shared);
-    return shared;
-  }
 
   const client = await dcrRegister({
     registrationEndpoint: opts.as.registrationEndpoint!,
@@ -534,15 +537,23 @@ export function getRecord(project: string, server: string): McpOAuthRecord | und
   return readStore().records[recordKey(project, server)];
 }
 
-// Find a DCR client already registered with the given authorization server, in
-// ANY stored record. A DCR client is AS/account-scoped, so every MCP server that
-// shares an issuer can (and should) reuse one registration instead of minting a
-// new OAuth app per server.
-function findDcrClientForIssuer(issuer: string): OAuthClient | undefined {
-  for (const rec of Object.values(readStore().records)) {
-    if (rec.as?.issuer === issuer && rec.client?.strategy === "dcr" && rec.client.id) {
-      return rec.client;
-    }
+// Find a DCR client from a COMPLETED connect (one that yielded a token) on the
+// given authorization server — this server's own record first, else any record
+// on the same issuer. A DCR client is AS/account-scoped, so every server that
+// shares an issuer can reuse one proven registration; requiring a token avoids
+// reusing a stale client left behind by an aborted connect.
+function findWorkingDcrClient(
+  project: string,
+  server: string,
+  issuer: string,
+): OAuthClient | undefined {
+  const records = readStore().records;
+  const isProven = (r: McpOAuthRecord | undefined): boolean =>
+    !!r && r.client?.strategy === "dcr" && !!r.client.id && !!r.tokens?.accessToken;
+  const own = records[recordKey(project, server)];
+  if (isProven(own)) return own!.client;
+  for (const r of Object.values(records)) {
+    if (r.as?.issuer === issuer && isProven(r)) return r.client;
   }
   return undefined;
 }
