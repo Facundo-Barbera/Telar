@@ -327,9 +327,19 @@ export async function ensureClient(opts: {
     return { strategy: "manual", id: opts.auth.clientId!, secret: resolveClientSecret(opts.project, opts.auth.clientSecret) };
   }
 
-  // DCR: reuse a persisted registration, else register once and persist it.
+  // DCR: reuse a persisted registration for THIS server; else reuse a client
+  // already registered with the SAME authorization server (a DCR client belongs
+  // to the AS/account, not one MCP server — re-registering per server mints a
+  // duplicate OAuth app, and some servers, e.g. Supabase, then reject the fresh
+  // client_id with "Unrecognized client_id"); else register once.
   const existing = getRecord(opts.project, opts.server);
   if (existing?.client.strategy === "dcr" && existing.client.id) return existing.client;
+
+  const shared = findDcrClientForIssuer(opts.as.issuer);
+  if (shared) {
+    persistClient(opts.project, opts.server, opts.resource, opts.as, shared);
+    return shared;
+  }
 
   const client = await dcrRegister({
     registrationEndpoint: opts.as.registrationEndpoint!,
@@ -522,6 +532,19 @@ function writeStore(store: OAuthStore): void {
 
 export function getRecord(project: string, server: string): McpOAuthRecord | undefined {
   return readStore().records[recordKey(project, server)];
+}
+
+// Find a DCR client already registered with the given authorization server, in
+// ANY stored record. A DCR client is AS/account-scoped, so every MCP server that
+// shares an issuer can (and should) reuse one registration instead of minting a
+// new OAuth app per server.
+function findDcrClientForIssuer(issuer: string): OAuthClient | undefined {
+  for (const rec of Object.values(readStore().records)) {
+    if (rec.as?.issuer === issuer && rec.client?.strategy === "dcr" && rec.client.id) {
+      return rec.client;
+    }
+  }
+  return undefined;
 }
 
 export function putRecord(record: McpOAuthRecord): void {

@@ -234,6 +234,35 @@ describe("ensureClient", () => {
     expect(registrations).toBe(1); // NO re-registration
   });
 
+  test("DCR reuses a client already registered with the SAME issuer (different server)", async () => {
+    const project = "proj-shared";
+    // A distinct issuer so this reuse assertion is isolated from other tests'
+    // records (findDcrClientForIssuer scans the whole store by design).
+    const as = asMeta({ issuer: "https://shared-issuer.example.com", registrationEndpoint: AS.registerEndpoint });
+    // A completed record for server "A" already holds a DCR client on this issuer.
+    putRecord({
+      project,
+      server: "A",
+      resource: "https://mcp.example.com/a",
+      as,
+      client: { strategy: "dcr", id: "shared-1", secret: "s1" },
+      tokens: { accessToken: "tokA" },
+    });
+    // Connecting a NEW server "B" on the same issuer reuses "shared-1" — no
+    // registration (noFetch throws if any network call is attempted).
+    const c = await ensureClient({
+      project,
+      server: "B",
+      resource: "https://mcp.example.com/b",
+      as,
+      auth: { type: "oauth" },
+      redirectUri: "http://localhost:3131/api/mcp/oauth/callback",
+      fetchImpl: noFetch,
+    });
+    expect(c.id).toBe("shared-1");
+    expect(getRecord(project, "B")?.client.id).toBe("shared-1"); // persisted for B too
+  });
+
   test("manual client path when no registration_endpoint (no network)", async () => {
     const c = await ensureClient({
       project: "proj-manual",
