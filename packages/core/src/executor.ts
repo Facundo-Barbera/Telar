@@ -13,7 +13,7 @@ import { classifyPanel, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { startProjectServer } from "./run-server";
-import { ModelPolicy, Verdict } from "./schemas";
+import { ModelPolicy, validateContract, Verdict } from "./schemas";
 import type {
   AccountProfile,
   ContractAssertion,
@@ -548,6 +548,117 @@ export async function runVerification(
     emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
     return { verification: "skip", report: null, panelRequired: false };
   }
+}
+
+// Unit 6 (docs §8 MVP): the end-of-orchestration ALL-scope integration verify
+// PRODUCER's default runner, wired by the dispatcher onto a woven root's
+// runWeave deps. It reads the root's full Verification Contract, isolates the
+// cross-cutting ALL/unlabelled slice (the properties of the assembled whole no
+// single child owns — the exact convention wireChildBundle uses), and runs it
+// through the SAME Unit-4 primitives executeLoom's build loop uses:
+//   - deterministic assertions -> runContractGates (exit-code gates, NO browser)
+//   - agent-judged assertions   -> runPanelVerification (only if a slice exists
+//                                  AND a live target does)
+// The ALL contract is passed to runPanelVerification EXPLICITLY, so this never
+// overwrites the root's on-disk contract.json. It is a real ALL contract only
+// when the slice is non-empty AND passes validateContract's falsifiable-hard-
+// gate floor (same floor wireChildBundle applies); otherwise returns null and
+// the producer is a no-op (back-compat: a woven root with no ALL contract folds
+// up exactly as today). INFORMATIONAL: this only PRODUCES + RECORDS a verdict
+// (pushes an integration AttemptRecord onto the loom); it never touches
+// loom.state — weave.ts records latestVerdict alongside the authoritative
+// rollup state, and Unit 7 will read it back to gate finish-loom.
+//
+// Combine: a red deterministic gate ⇒ "fail"; else the panel's verdict if a
+// panel ran; else (all-deterministic ALL slice, gates green) ⇒ "pass" — a real
+// zero-browser backend integration verdict. `gateRunner`/`run` are injectable
+// so the whole runner is hermetic in tests (no real process, no agent, no
+// browser). NOTE (design §3): this deliberately uses the direct
+// runContractGates + runPanelVerification pair rather than runVerification —
+// runVerification reads the WHOLE on-disk contract and, for an all-deterministic
+// contract, returns "skip" WITHOUT running gates, so it is the wrong entry for a
+// sub-slice.
+export async function runIntegrationVerify(
+  loom: Loom,
+  manifest: ProjectManifest,
+  opts: {
+    policy?: ModelPolicy;
+    accounts?: Record<string, AccountProfile>;
+    url?: string;
+    abort?: AbortController;
+    emit?: (ev: { type: string } & Record<string, unknown>) => void;
+    gateRunner?: (gate: Gate, cwd: string) => Promise<GateResult>;
+    run?: typeof agent;
+  } = {},
+): Promise<{
+  verification: Verification;
+  gatesOk: boolean;
+  panelReport?: PanelReport | null;
+  gates?: GateResult[];
+} | null> {
+  const { contract } = readContract(loom.id);
+  if (!contract) return null; // no bundle contract on the root
+
+  // The cross-cutting integration slice: assertions the assembled whole owns,
+  // no single SubGoal (subGoalId === "ALL" OR unlabelled). Per-SubGoal
+  // assertions were each proven by that child's own executeLoom verify.
+  const allSlice = contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
+  const allContract: VerificationContract = { version: contract.version, assertions: allSlice };
+  // A real ALL contract only if it has a falsifiable hard gate (same floor
+  // wireChildBundle uses). No ALL contract ⇒ no-op producer.
+  if (allSlice.length === 0 || validateContract(allContract).length !== 0) return null;
+
+  const emit = opts.emit ?? (() => {});
+  const policy = opts.policy ?? ModelPolicy.parse({});
+  const account = opts.accounts?.[manifest.account];
+  const target = opts.url ?? manifest.urls?.dev;
+
+  // Evidence trail on the ROOT loom — additive, never touches child verdicts.
+  const attempt: AttemptRecord = {
+    n: (loom.attempts?.length ?? 0) + 1,
+    role: "integration",
+    model: policy.dev,
+    startedAt: Date.now(),
+  };
+  loom.attempts.push(attempt);
+
+  const { deterministic, agentJudged } = partitionAssertions(allSlice);
+
+  // Deterministic ALL slice -> exit-code gates (Unit 4, no browser). For a pure
+  // backend ALL contract, agentJudged is empty so the panel never runs.
+  const gates = await runContractGates(
+    deterministic,
+    manifest,
+    manifest.root,
+    (r) => emit({ type: "gate", result: r }),
+    opts.gateRunner,
+  );
+  attempt.gates = gates;
+  const gatesOk = gates.every((r) => r.ok);
+
+  let verification: Verification;
+  let panelReport: PanelReport | null = null;
+  if (!gatesOk) {
+    // A red deterministic gate settles the ALL verdict "fail" — no need to run
+    // the panel to prose-judge an already-falsified whole.
+    verification = "fail";
+  } else if (agentJudged.length > 0) {
+    // Pass the ALL contract EXPLICITLY (runPanelVerification re-partitions it and
+    // only shows the panel the agent-judged slice) — never overwrites contract.json.
+    const pv = await runPanelVerification(loom, manifest, attempt, emit, allContract, account, target, {
+      abort: opts.abort,
+      run: opts.run,
+    });
+    verification = pv.verification;
+    panelReport = pv.panelReport ?? null;
+  } else {
+    // All-deterministic ALL slice, gates green -> a real zero-browser pass.
+    verification = "pass";
+  }
+
+  attempt.endedAt = Date.now();
+  emit({ type: "integration-verify", verification, gatesOk });
+  return { verification, gatesOk, panelReport, gates };
 }
 
 // Pure outcome function for a verify loom: no builder loop, so the mapping

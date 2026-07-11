@@ -162,6 +162,168 @@ describe("runWeave (fakes, no disk/agents)", () => {
   });
 });
 
+describe("runWeave — integration verify producer (Unit 6, injected fake)", () => {
+  // A woven loom that folds up to "ready" runs EXACTLY ONE integration verify
+  // (the injected runner), records the verdict + emits weave-verify, and leaves
+  // its terminal state UNCHANGED (informational — Unit 7 gates on it).
+  test("records latestVerdict + emits weave-verify; state stays ready even on a fail verdict", async () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
+    const root = fakeLoom();
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    let calls = 0;
+    let seenLoom: Loom | undefined;
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        child.state = "done";
+        return child;
+      },
+      onEvent: (ev) => events.push(ev),
+      // Fake runner: no executor, no disk, no agent, no browser.
+      runIntegrationVerify: async (l) => {
+        calls++;
+        seenLoom = l;
+        return { verification: "fail", gatesOk: false };
+      },
+    });
+
+    // State is authoritative from rollup and UNCHANGED vs the no-producer path.
+    expect(result.state).toBe("ready");
+    // The verdict is recorded where a later tick / the UI reads it.
+    expect(result.latestVerdict).toBe("fail");
+    // Exactly ONE integration verify, over the woven root itself.
+    expect(calls).toBe(1);
+    expect(seenLoom).toBe(root);
+    // The event is on the root's stream for the UI + a later tick.
+    const wv = events.filter((e) => e.type === "weave-verify");
+    expect(wv.length).toBe(1);
+    expect(wv[0]).toMatchObject({ verification: "fail", gatesOk: false });
+    // weave-verify is emitted AFTER the rollup (recorded alongside, not before).
+    expect(events.findIndex((e) => e.type === "weave-verify")).toBeGreaterThan(
+      events.findIndex((e) => e.type === "weave-rollup"),
+    );
+  });
+
+  test("a pass verdict is recorded but still never changes the ready state", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      runIntegrationVerify: async () => ({ verification: "pass", gatesOk: true }),
+    });
+
+    expect(result.state).toBe("ready");
+    expect(result.latestVerdict).toBe("pass");
+  });
+
+  test("a throwing integration verify never demotes the loom (best-effort, stays ready)", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      onEvent: (ev) => events.push(ev),
+      // The producer (or a saveLoom/appendEvent inside it) throws. It must be
+      // swallowed — an informational verify can't reach the outer catch and
+      // demote a correctly-woven "ready" loom to "failed".
+      runIntegrationVerify: async () => {
+        throw new Error("verify blew up");
+      },
+    });
+
+    expect(result.state).toBe("ready"); // NOT demoted to "failed"
+    expect(result.latestVerdict).toBeUndefined(); // no verdict leaked
+    expect(events.some((e) => e.type === "weave-verify")).toBe(false);
+    expect(events.some((e) => e.type === "weave-verify-error")).toBe(true);
+  });
+
+  test("NO ALL contract (runner returns null) -> nothing recorded, unchanged", async () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
+    const root = fakeLoom();
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    let calls = 0;
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      onEvent: (ev) => events.push(ev),
+      runIntegrationVerify: async () => {
+        calls++;
+        return null; // no ALL contract
+      },
+    });
+
+    expect(result.state).toBe("ready");
+    expect(result.latestVerdict).toBeUndefined();
+    expect(calls).toBe(1); // asked once; got null
+    expect(events.some((e) => e.type === "weave-verify")).toBe(false);
+  });
+
+  test("seam not injected at all -> byte-identical to today (no producer)", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      onEvent: (ev) => events.push(ev),
+    });
+
+    expect(result.state).toBe("ready");
+    expect(result.latestVerdict).toBeUndefined();
+    expect(events.some((e) => e.type === "weave-verify")).toBe(false);
+  });
+
+  test("a non-ready rollup (required child failed) NEVER runs the integration verify", async () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
+    const root = fakeLoom();
+    let calls = 0;
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        child.state = child.subGoalId === "s2" ? "failed" : "done";
+        return child;
+      },
+      runIntegrationVerify: async () => {
+        calls++;
+        return { verification: "pass", gatesOk: true };
+      },
+    });
+
+    expect(result.state).toBe("failed"); // rollup unchanged
+    expect(calls).toBe(0); // nothing coherent to integration-verify
+    expect(result.latestVerdict).toBeUndefined();
+  });
+
+  test("the recorded verdict lands in the persisted loom (onState) where Unit 7 / the UI reads it", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = createLoom({ project: "p", kind: "custom", title: "root", prompt: "x", account: "personal" });
+    let persisted = 0;
+
+    await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      onState: (l) => {
+        persisted++;
+        saveLoom(l);
+      },
+      runIntegrationVerify: async () => ({ verification: "flaky", gatesOk: true }),
+    });
+
+    // Read the loom back from disk exactly as a Unit-7 tick / the UI would.
+    const onDisk = getLoom(root.id)!;
+    expect(onDisk.latestVerdict).toBe("flaky");
+    expect(persisted).toBeGreaterThan(0);
+  });
+});
+
 describe("write isolation (real TELAR_HOME)", () => {
   test("root and child each get their own loom.json; listChildLooms scopes correctly; parent embeds no child data", () => {
     const root = createLoom({ project: "p", kind: "custom", title: "root", prompt: "x", account: "personal" });

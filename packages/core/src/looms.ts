@@ -97,6 +97,14 @@ export type Loom = {
   // matching `accepted` event carries `override:true`. Absent/false = a clean
   // accept of green.
   acceptedOverride?: boolean;
+  // Unit 6 (docs §8 MVP) — the string Verification of the end-of-orchestration
+  // ALL-scope integration verify, recorded on a WOVEN root after its children
+  // fold up to "ready". Mirrors ThreadView.latestVerdict (tick.ts). Purely
+  // INFORMATIONAL in this phase: it never changes loom.state (rollupWeave stays
+  // the only completion path). The UI reads it off loom.json; the Unit-7 tick
+  // will read it to gate finish-loom. Absent on plain looms and on woven roots
+  // with no ALL contract (no integration verify ran).
+  latestVerdict?: string;
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms

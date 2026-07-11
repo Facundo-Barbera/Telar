@@ -8,9 +8,10 @@
 // docs/loom-model.md §A). This is the composed moat — do not add another
 // branch that returns "ready"/"done" here.
 import type { Loom } from "./looms";
-import type { Charter, SubGoal, WorkUnitState } from "./schemas";
+import type { Charter, PanelReport, SubGoal, WorkUnitState } from "./schemas";
 import { tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
 import type { BudgetState } from "./budget";
+import type { GateResult } from "./gates";
 
 // Pure: no persistence, no agent calls — just fold child states up against
 // the decomposition per the required-subgoal contract.
@@ -57,6 +58,19 @@ export type RunWeaveDeps = {
   // them); runWeave reads `now()` once per tick and passes it through the
   // LedgerView. Defaults to the wall clock outside tests.
   now?: () => number;
+  // Unit 6 (docs §8 MVP): end-of-orchestration ALL-scope integration verify
+  // PRODUCER. Injected so weave.ts stays pure w.r.t. persistence AND free of
+  // any executor import — it only calls this runner and records the result.
+  // Returns null when there is no ALL contract to verify (no-op, back-compat).
+  // Production wires the exported runIntegrationVerify (executor.ts); tests
+  // inject a fake. Pushes an integration AttemptRecord onto the loom before it
+  // returns; weave records latestVerdict + emits weave-verify + persists.
+  runIntegrationVerify?: (loom: Loom) => Promise<{
+    verification: string;
+    gatesOk: boolean;
+    panelReport?: PanelReport | null;
+    gates?: GateResult[];
+  } | null>;
 };
 
 function childCostUsd(child: Loom): number {
@@ -236,6 +250,36 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     loom.error = r.state === "ready" ? null : (r.error ?? loom.error ?? null);
     setState(r.state);
     emit({ type: "weave-rollup", state: r.state });
+
+    // Unit 6 (docs §8 MVP): integration verify PRODUCER. Runs strictly AFTER
+    // setState(r.state) so the rollup state still wins — this is INFORMATIONAL,
+    // it never mutates loom.state or any finish/accept semantics (Unit 7 gates
+    // on it). Gated on r.state === "ready" (every required child self-reported
+    // done, weave.ts §A): exactly the §2 case where children each self-reported
+    // and no ALL verify has ever run — the whole point of catching a broken
+    // assembled whole. A failed/needs-review assembly has nothing coherent to
+    // integration-verify. A woven root with no ALL contract -> null -> no-op.
+    if (r.state === "ready" && deps.runIntegrationVerify) {
+      // Best-effort: its OWN try/catch so a throw — a rejecting runner, or a
+      // saveLoom/appendEvent disk error inside the block — can NEVER reach the
+      // outer catch and demote a correctly-woven "ready" loom to "failed". An
+      // informational verify must not change the outcome: record the error and
+      // drop it; the authoritative rollup state stands.
+      try {
+        const iv = await deps.runIntegrationVerify(loom); // null => no ALL contract
+        if (iv) {
+          loom.latestVerdict = iv.verification;
+          emit({ type: "weave-verify", verification: iv.verification, gatesOk: iv.gatesOk });
+          deps.onState?.(loom); // persist the verdict + the integration attempt
+        }
+      } catch (e) {
+        try {
+          emit({ type: "weave-verify-error", message: e instanceof Error ? e.message : String(e) });
+        } catch {
+          /* even the error event is best-effort — never let it demote the loom */
+        }
+      }
+    }
     return loom;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

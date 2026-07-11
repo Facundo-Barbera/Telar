@@ -15,7 +15,7 @@ import {
 } from "./schemas";
 import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, loomDir, type Loom, type LoomKind } from "./looms";
-import { executeLoom, type ExecuteOpts } from "./executor";
+import { executeLoom, runIntegrationVerify, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
 import { appendSteering, readBundleFile, readContract, snapshotBundle, writeProvenance } from "./bundle";
@@ -99,6 +99,18 @@ function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherD
     onState: saveLoom,
     onEvent: (ev) => appendEvent(loom.id, ev),
     abort,
+    // Unit 6 (docs §8 MVP): the end-of-orchestration ALL-scope integration
+    // verify producer. runWeave calls this once after the children fold up to
+    // "ready"; the result (latestVerdict + an integration attempt) is recorded
+    // additively on the root. Its own panel/gate events append to the root's
+    // event stream via appendEvent.
+    runIntegrationVerify: (l) =>
+      runIntegrationVerify(l, manifest, {
+        policy,
+        accounts: deps.accounts,
+        abort,
+        emit: (ev) => appendEvent(l.id, ev),
+      }),
   });
 }
 
