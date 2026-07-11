@@ -39,6 +39,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 // The API returns plain JSON — we mirror the @telar/core shapes locally rather
 // than importing values across the client boundary (a type-only import is fine,
@@ -64,12 +66,14 @@ type McpServerJson =
       command: string;
       args?: string[];
       env?: Record<string, McpValueJson>;
+      enabled?: boolean;
     }
   | {
       transport: "http";
       url: string;
       headers?: Record<string, McpValueJson>;
       auth?: McpAuthJson;
+      enabled?: boolean;
     };
 type McpServersJson = Record<string, McpServerJson>;
 
@@ -96,6 +100,7 @@ type Server = {
   url: string;
   entries: EntryRow[]; // env (stdio) or headers (http)
   auth?: McpAuthJson; // http-only overrides; preserved verbatim across edits/saves
+  enabled?: boolean; // kill-switch; absent/true = live, explicit false = disabled
   isNew?: boolean; // freshly added, not yet saved — renders the minimal add card
 };
 
@@ -140,6 +145,7 @@ function serversFromManifest(mcp: McpServersJson): Server[] {
         url: cfg.url,
         entries: rowsFromValues(cfg.headers),
         auth: cfg.auth,
+        enabled: cfg.enabled,
       };
     }
     return {
@@ -150,6 +156,7 @@ function serversFromManifest(mcp: McpServersJson): Server[] {
       args: [...(cfg.args ?? [])],
       url: "",
       entries: rowsFromValues(cfg.env),
+      enabled: cfg.enabled,
     };
   });
 }
@@ -196,6 +203,9 @@ function assemble(servers: Server[]): McpServersJson {
   for (const s of servers) {
     const key = s.key.trim();
     if (!key) continue;
+    // `enabled` defaults to true — only an explicit `false` is written, so an
+    // untouched/live server round-trips clean (same policy as headers/auth).
+    const disabled = s.enabled === false ? { enabled: false as const } : {};
     if (s.transport === "http") {
       const headers = valuesFromRows(s.entries);
       const auth = cleanAuth(s.auth);
@@ -204,6 +214,7 @@ function assemble(servers: Server[]): McpServersJson {
         url: s.url,
         ...(Object.keys(headers).length ? { headers } : {}),
         ...(auth ? { auth } : {}),
+        ...disabled,
       };
     } else {
       const env = valuesFromRows(s.entries);
@@ -212,6 +223,7 @@ function assemble(servers: Server[]): McpServersJson {
         command: s.command,
         args: s.args.map((a) => a.trim()).filter(Boolean),
         ...(Object.keys(env).length ? { env } : {}),
+        ...disabled,
       };
     }
   }
@@ -458,9 +470,17 @@ function EntryEditor({
 }
 
 // --- Autodetected OAuth status (docs/mcp-oauth-design.md §3). The status route
-// probes every http server and returns { requiresOAuth, connected, expiresAt? };
-// stdio servers aren't in the map (the UI shows them as "Local" from transport).
-type HttpStatus = { requiresOAuth: boolean; connected: boolean; expiresAt?: number };
+// probes every http server and returns { requiresOAuth, connected, expiresAt?,
+// health? }; stdio servers aren't in the map (shown as "Local" from transport).
+// `health` is the live authenticated liveness probe (checkMcpHealth) — absent
+// until the route responds, which the health dot renders as "checking".
+type McpHealth = "connected" | "needs-auth" | "error";
+type HttpStatus = {
+  requiresOAuth: boolean;
+  connected: boolean;
+  expiresAt?: number;
+  health?: McpHealth;
+};
 
 // Tolerant read of the status route so the UI survives whatever exact shape the
 // route exposes (it may lag a redeploy): a { servers: { [name]: {...} } } object.
@@ -475,62 +495,63 @@ function normalizeStatus(raw: unknown): Record<string, HttpStatus> {
         requiresOAuth?: unknown;
         connected?: unknown;
         expiresAt?: unknown;
+        health?: unknown;
       };
+      const h = o.health;
       out[server] = {
         requiresOAuth: o.requiresOAuth === true,
         connected: o.connected === true,
         expiresAt: typeof o.expiresAt === "number" ? o.expiresAt : undefined,
+        health:
+          h === "connected" || h === "needs-auth" || h === "error"
+            ? h
+            : undefined,
       };
     }
   }
   return out;
 }
 
-// The single at-a-glance pill on each compact card.
-function StatusPill({
+// A very small colored liveness dot next to the server name, driven by the live
+// health probe (checkMcpHealth) the status route runs. green=connected,
+// amber=needs-auth, red=error; neutral gray both while "checking" (before the
+// route responds) and for stdio ("local"). The text StatusPill stays as the
+// secondary label. Updates whenever loadStatus re-runs (connect/disconnect/save).
+function HealthDot({
   transport,
   status,
 }: {
   transport: Transport;
   status?: HttpStatus;
 }) {
-  if (transport === "stdio") {
-    return (
-      <Badge variant="outline" className="text-[10px]">
-        Local
-      </Badge>
-    );
-  }
-  if (!status) {
-    return (
-      <Badge variant="outline" className="text-[10px] text-muted-foreground">
-        <Spinner />
-        Checking…
-      </Badge>
-    );
-  }
-  if (status.connected) {
-    return (
-      <Badge variant="secondary" className="text-[10px]">
-        <CheckCircle2Icon />
-        Connected
-      </Badge>
-    );
-  }
-  if (status.requiresOAuth) {
-    return (
-      <Badge variant="outline" className="text-[10px]">
-        <LinkIcon />
-        Requires sign-in
-      </Badge>
-    );
-  }
+  const state: McpHealth | "checking" | "local" =
+    transport === "stdio"
+      ? "local"
+      : !status || !status.health
+        ? "checking"
+        : status.health;
+  const { color, label } = {
+    connected: { color: "bg-emerald-500", label: "Connected" },
+    "needs-auth": { color: "bg-amber-400", label: "Needs sign-in" },
+    error: { color: "bg-destructive", label: "Unreachable" },
+    checking: { color: "bg-muted-foreground/40", label: "Checking…" },
+    local: { color: "bg-muted-foreground/40", label: "Local" },
+  }[state];
   return (
-    <Badge variant="secondary" className="text-[10px]">
-      Ready
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger
+        className={cn(
+          "size-1.5 shrink-0 cursor-help rounded-full outline-none",
+          color,
+        )}
+        aria-label={`Health: ${label}`}
+      />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
+
+// (The at-a-glance status is now the HealthDot's colour + hover tooltip.)
 
 // One MCP server. COMPACT by default (name + status pill + Connect); Configure
 // expands the full manual editor; a freshly added server shows a minimal
@@ -542,7 +563,9 @@ function ServerCard({
   tokens,
   busyToken,
   oauthBusy,
+  saving,
   onToggleConfigure,
+  onToggleEnabled,
   onPatchServer,
   onPatchAuth,
   onRemove,
@@ -558,7 +581,9 @@ function ServerCard({
   tokens: Record<string, boolean>;
   busyToken: number | null;
   oauthBusy: string | null;
+  saving: boolean;
   onToggleConfigure: () => void;
+  onToggleEnabled: (next: boolean) => void;
   onPatchServer: (patch: Partial<Server>) => void;
   onPatchAuth: (patch: { clientId?: string; scopes?: string[] }) => void;
   onRemove: () => void;
@@ -570,6 +595,8 @@ function ServerCard({
 }) {
   const busy = oauthBusy === server.key;
   const isHttp = server.transport === "http";
+  // Kill-switch state: absent/true = live, explicit false = disabled.
+  const isEnabled = server.enabled !== false;
   const showConnect = isHttp && !!status && (status.connected || status.requiresOAuth);
 
   const connectControls = showConnect ? (
@@ -612,7 +639,14 @@ function ServerCard({
   ) : null;
 
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
+    <div
+      className={cn(
+        "space-y-3 rounded-lg border border-border p-3 transition-opacity",
+        // De-emphasize a disabled server, but keep Connect/Configure/the toggle
+        // itself clickable (opacity doesn't block pointer events).
+        !isEnabled && "opacity-60",
+      )}
+    >
       {expanded ? (
         // FULL manual editor — transport, URL/command, headers/env, advanced
         // OAuth overrides, and Remove. Everything beyond name + status lives here.
@@ -831,13 +865,17 @@ function ServerCard({
           </div>
         </div>
       ) : (
-        // COMPACT card — name + status pill + Connect + Configure. Nothing else.
+        // COMPACT card — health dot + name + status pill + Connect + enable
+        // toggle + Configure. Nothing else.
         <>
           <div className="flex flex-wrap items-center gap-2">
             <ServerIcon className="size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1 basis-40">
-              <div className="truncate font-mono text-xs font-medium text-foreground">
-                {server.key}
+              <div className="flex items-center gap-1.5">
+                <HealthDot transport={server.transport} status={status} />
+                <div className="truncate font-mono text-xs font-medium text-foreground">
+                  {server.key}
+                </div>
               </div>
               <div className="truncate text-[11px] text-muted-foreground">
                 {server.transport === "http"
@@ -845,8 +883,13 @@ function ServerCard({
                   : `stdio · ${server.command || "no command"}`}
               </div>
             </div>
-            <StatusPill transport={server.transport} status={status} />
             {connectControls}
+            <Switch
+              checked={isEnabled}
+              onCheckedChange={(v) => onToggleEnabled(v === true)}
+              disabled={saving}
+              aria-label={`${isEnabled ? "Disable" : "Enable"} ${server.key}`}
+            />
             <Button
               type="button"
               variant="ghost"
@@ -857,11 +900,18 @@ function ServerCard({
               <Settings2Icon />
             </Button>
           </div>
-          {isHttp && status?.connected && (
+          {!isEnabled ? (
             <p className="text-[11px] text-muted-foreground">
-              Telar owns this login and injects the token for every execution
-              account — no header needed.
+              Off — not used in sessions.
             </p>
+          ) : (
+            isHttp &&
+            status?.connected && (
+              <p className="text-[11px] text-muted-foreground">
+                Telar owns this login and injects the token for every execution
+                account — no header needed.
+              </p>
+            )
           )}
         </>
       )}
@@ -1151,6 +1201,75 @@ export function McpSettings({ name }: { name: string }) {
     }
   };
 
+  // Flipping the enable kill-switch PERSISTS IMMEDIATELY (like removeServer),
+  // independent of the manifest Save. We optimistically update the draft, then
+  // PATCH a set built from the LAST-SAVED origServers with ONLY this server's
+  // `enabled` changed — so any other in-progress draft edits stay untouched.
+  // `enabled` defaults to true, so we omit it when enabling (clean telar.yaml)
+  // and write `enabled: false` when disabling, mirroring assemble().
+  const toggleEnabled = async (id: number, next: boolean) => {
+    const target = servers?.find((s) => s.id === id);
+    if (!target) return;
+    setServers((prev) =>
+      prev ? prev.map((s) => (s.id === id ? { ...s, enabled: next } : s)) : prev,
+    );
+    const key = target.key.trim();
+    const persisted = !target.isNew && !!origServers && key in origServers;
+    // A never-saved server only lives in the draft — nothing on disk to update.
+    if (!persisted || !origServers) return;
+    // Undo the optimistic flip if the write is rejected (409) or fails: disk is
+    // unchanged, so the Switch must snap back to the last-persisted state rather
+    // than keep showing the attempted one.
+    const revertOptimistic = () =>
+      setServers((prev) =>
+        prev
+          ? prev.map((s) =>
+              s.id === id ? { ...s, enabled: origServers[key]?.enabled } : s,
+            )
+          : prev,
+      );
+    setSaving(true);
+    setSaveError(null);
+    setConflict(false);
+    try {
+      const nextServers: McpServersJson = { ...origServers };
+      const cur = nextServers[key];
+      if (cur) {
+        if (next) {
+          const clean = { ...cur };
+          delete clean.enabled;
+          nextServers[key] = clean;
+        } else {
+          nextServers[key] = { ...cur, enabled: false };
+        }
+      }
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mcpServers: nextServers }),
+      });
+      if (res.status === 409) {
+        setConflict(true);
+        revertOptimistic();
+        return;
+      }
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        manifest?: { mcpServers?: McpServersJson };
+      };
+      if (!res.ok || !data.manifest)
+        throw new Error(data.error ?? `Update failed (${res.status}).`);
+      setOrigServers(assemble(serversFromManifest(data.manifest.mcpServers ?? {})));
+      window.dispatchEvent(new Event("telar:refresh"));
+      void loadStatus();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+      revertOptimistic();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const setToken = async (row: EntryRow) => {
     const key = row.secretKey.trim();
     if (!key || !row.token) return;
@@ -1427,7 +1546,9 @@ export function McpSettings({ name }: { name: string }) {
                 tokens={tokens}
                 busyToken={busyToken}
                 oauthBusy={oauthBusy}
+                saving={saving}
                 onToggleConfigure={() => toggleConfigure(server.id)}
+                onToggleEnabled={(next) => void toggleEnabled(server.id, next)}
                 onPatchServer={(patch) => patchServer(server.id, patch)}
                 onPatchAuth={(patch) => patchAuth(server.id, patch)}
                 onRemove={() => removeServer(server.id)}

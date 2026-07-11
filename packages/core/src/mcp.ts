@@ -82,6 +82,9 @@ export function resolveProjectMcpServers(projectName: string): Record<string, Sd
   const servers = getProject(projectName).manifest.mcpServers;
   const out: Record<string, SdkMcpServerConfig> = {};
   for (const [name, cfg] of Object.entries(servers)) {
+    // A server disabled via the manifest kill-switch is dropped entirely
+    // (absent/true stay live). schemas.ts: only `enabled: false` disables.
+    if (cfg.enabled === false) continue;
     if (cfg.transport === "stdio") {
       out[name] = {
         type: "stdio",
@@ -120,7 +123,8 @@ export function resolveProjectMcpServers(projectName: string): Record<string, Sd
 // at use. No-op when no server has a record.
 export async function refreshProjectMcpAuth(project: string): Promise<void> {
   const servers = getProject(project).manifest.mcpServers;
-  for (const name of Object.keys(servers)) {
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (cfg.enabled === false) continue; // best-effort: skip disabled servers
     try {
       const record = getRecord(project, name);
       if (record && needsRefresh(record)) await refreshRecord(record);

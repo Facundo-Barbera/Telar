@@ -94,11 +94,27 @@ createProject(refreshRoot, {
   },
 });
 
+// A project exercising the `enabled` kill-switch (schemas.ts: only enabled:false
+// disables; absent/true stay live).
+const enabledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-enabled-"));
+const eproj = path.basename(enabledRoot);
+createProject(enabledRoot, {
+  mcpServers: {
+    on: { transport: "stdio", command: "x", enabled: true },
+    off: { transport: "stdio", command: "y", enabled: false },
+    implicit: { transport: "stdio", command: "z" }, // enabled absent → live
+    // Disabled http server that ALSO has a Connect record — must still be
+    // dropped entirely (never materialized, no injected Bearer).
+    offRecorded: { transport: "http", url: "https://mcp.off.com/mcp", enabled: false },
+  },
+});
+
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(projRoot, { recursive: true, force: true });
   fs.rmSync(oauthRoot, { recursive: true, force: true });
   fs.rmSync(refreshRoot, { recursive: true, force: true });
+  fs.rmSync(enabledRoot, { recursive: true, force: true });
 });
 
 describe("resolveProjectMcpServers", () => {
@@ -183,6 +199,24 @@ describe("resolveProjectMcpServers — record-gated OAuth injection", () => {
     const plain = resolveProjectMcpServers(oproj).plain as Http;
     expect(plain.headers.Authorization).toBeUndefined();
     expect(plain.headers).toEqual({});
+  });
+});
+
+describe("resolveProjectMcpServers — enabled kill-switch", () => {
+  test("drops a server with enabled:false", () => {
+    expect(resolveProjectMcpServers(eproj).off).toBeUndefined();
+  });
+
+  test("keeps enabled:true and an absent enabled (both live)", () => {
+    const servers = resolveProjectMcpServers(eproj);
+    expect(servers.on).toBeDefined();
+    expect(servers.implicit).toBeDefined();
+  });
+
+  test("skips a disabled server even when it has a Connect record", () => {
+    putRecord(recordFor(eproj, "offRecorded"));
+    setMcpToken(eproj, "offRecorded", "mirrored_tok");
+    expect(resolveProjectMcpServers(eproj).offRecorded).toBeUndefined();
   });
 });
 

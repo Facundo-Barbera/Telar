@@ -18,6 +18,7 @@ const {
   canonicalResource,
   discover,
   probeMcpAuth,
+  checkMcpHealth,
   decideClientStrategy,
   ensureClient,
   generatePkce,
@@ -175,6 +176,57 @@ describe("probeMcpAuth", () => {
   test("false (never throws) on a network error", async () => {
     const r = await probeMcpAuth(server, { fetchImpl: noFetch });
     expect(r.requiresOAuth).toBe(false);
+  });
+});
+
+// --- checkMcpHealth (live authenticated liveness) --------------------------
+describe("checkMcpHealth", () => {
+  const server = "https://mcp.example.com/mcp";
+
+  test("'connected' on a 200 initialize response; POSTs a JSON-RPC initialize", async () => {
+    const { fetchImpl, calls } = makeFetch({
+      [server]: () => Response.json({ jsonrpc: "2.0", id: 1, result: {} }),
+    });
+    expect(await checkMcpHealth(server, { fetchImpl })).toBe("connected");
+    expect(calls[0].init!.method).toBe("POST");
+    const headers = calls[0].init!.headers as Record<string, string>;
+    expect(headers["MCP-Protocol-Version"]).toBe("2025-06-18");
+    expect(JSON.parse(String(calls[0].init!.body)).method).toBe("initialize");
+  });
+
+  test("'needs-auth' on a 401", async () => {
+    const { fetchImpl } = makeFetch({ [server]: () => new Response(null, { status: 401 }) });
+    expect(await checkMcpHealth(server, { fetchImpl })).toBe("needs-auth");
+  });
+
+  test("'needs-auth' on a WWW-Authenticate challenge (non-401)", async () => {
+    const { fetchImpl } = makeFetch({
+      [server]: () => new Response(null, { status: 403, headers: { "WWW-Authenticate": "Bearer" } }),
+    });
+    expect(await checkMcpHealth(server, { fetchImpl })).toBe("needs-auth");
+  });
+
+  test("'error' on a network failure (never throws)", async () => {
+    expect(await checkMcpHealth(server, { fetchImpl: noFetch })).toBe("error");
+  });
+
+  test("'error' on a non-ok, non-auth response (e.g. 500)", async () => {
+    const { fetchImpl } = makeFetch({ [server]: () => new Response("boom", { status: 500 }) });
+    expect(await checkMcpHealth(server, { fetchImpl })).toBe("error");
+  });
+
+  test("sends the Bearer header when a token is supplied", async () => {
+    const { fetchImpl, calls } = makeFetch({ [server]: () => Response.json({ result: {} }) });
+    await checkMcpHealth(server, { token: "tok123", fetchImpl });
+    const headers = calls[0].init!.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer tok123");
+  });
+
+  test("omits Authorization when no token is supplied", async () => {
+    const { fetchImpl, calls } = makeFetch({ [server]: () => Response.json({ result: {} }) });
+    await checkMcpHealth(server, { fetchImpl });
+    const headers = calls[0].init!.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
   });
 });
 

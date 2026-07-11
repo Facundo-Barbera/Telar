@@ -59,18 +59,23 @@ export const McpOAuthConfig = z.object({
 });
 export type McpOAuthConfig = z.infer<typeof McpOAuthConfig>;
 
+// `enabled` is an OPTIONAL kill-switch: absent or true keeps the server live
+// (today's behavior on every existing manifest); only an explicit `false`
+// disables it, so mcp.ts skips it when materializing/refreshing servers.
 export const McpServerConfig = z.discriminatedUnion("transport", [
   z.object({
     transport: z.literal("stdio"),
     command: z.string(),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), McpValue).optional(),
+    enabled: z.boolean().optional(),
   }),
   z.object({
     transport: z.literal("http"),
     url: z.string(),
     headers: z.record(z.string(), McpValue).optional(),
     auth: McpOAuthConfig.optional(),
+    enabled: z.boolean().optional(),
   }),
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;

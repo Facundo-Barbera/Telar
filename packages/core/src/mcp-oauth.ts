@@ -234,6 +234,51 @@ export async function probeMcpAuth(
 }
 
 // ---------------------------------------------------------------------------
+// (a.health) Live, AUTHENTICATED liveness check for the UI — distinct from
+// probeMcpAuth (which only detects whether OAuth is *required*). POSTs a minimal
+// MCP `initialize` JSON-RPC (Streamable HTTP transport) with the current token,
+// if any, and classifies the response:
+//   res.ok (2xx)                       → "connected"  (server answered as us)
+//   401 / a WWW-Authenticate challenge → "needs-auth" (token missing/expired)
+//   network/parse error or other non-ok → "error"
+// Best-effort: NEVER throws.
+// ---------------------------------------------------------------------------
+
+export async function checkMcpHealth(
+  serverUrl: string,
+  opts?: { token?: string; fetchImpl?: typeof fetch },
+): Promise<"connected" | "needs-auth" | "error"> {
+  const fetchImpl = opts?.fetchImpl ?? globalThis.fetch;
+  try {
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "MCP-Protocol-Version": "2025-06-18",
+    };
+    if (opts?.token) headers.Authorization = `Bearer ${opts.token}`;
+    const res = await fetchImpl(serverUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "telar", version: "0" },
+        },
+      }),
+    });
+    if (res.ok) return "connected";
+    if (res.status === 401 || res.headers.get("www-authenticate")) return "needs-auth";
+    return "error";
+  } catch {
+    return "error";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // (b) Client-identity ladder (docs/mcp-oauth-design.md §2): first that applies.
 // ---------------------------------------------------------------------------
 
