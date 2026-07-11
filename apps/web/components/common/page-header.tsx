@@ -1,6 +1,4 @@
 import type { ReactNode } from "react";
-import { Separator } from "@/components/ui/separator";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
 // The page chrome every top-level surface repeats: sidebar trigger, a hairline,
@@ -22,12 +20,12 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        "flex shrink-0 items-center gap-3 border-b px-4 py-3",
+        // Fixed height so a header with a description isn't taller than a
+        // title-only one — every top bar reads as the same band.
+        "flex h-14 shrink-0 items-center gap-3 border-b px-4",
         className,
       )}
     >
-      <SidebarTrigger />
-      <Separator orientation="vertical" className="h-4" />
       {leading}
       <div className="min-w-0 flex-1 space-y-0.5">
         <h1 className="truncate font-heading text-base font-semibold tracking-tight">

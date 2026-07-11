@@ -24,6 +24,8 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -352,15 +354,18 @@ function TelarSidebarHeader() {
   const router = useRouter();
   return (
     <SidebarHeader className="border-b">
-      <button
-        type="button"
-        onClick={() => router.push("/")}
-        className="flex items-center px-2 py-1 text-left outline-none"
-      >
-        <span className="font-heading text-lg font-semibold tracking-tight">
-          telar
-        </span>
-      </button>
+      <div className="flex items-center justify-between gap-1">
+        <button
+          type="button"
+          onClick={() => router.push("/")}
+          className="flex items-center px-2 py-1 text-left outline-none"
+        >
+          <span className="font-heading text-lg font-semibold tracking-tight">
+            telar
+          </span>
+        </button>
+        <SidebarTrigger className="text-sidebar-foreground/70" />
+      </div>
     </SidebarHeader>
   );
 }
@@ -557,6 +562,7 @@ export function AppSidebar() {
     <Sidebar>
       <TelarSidebarHeader />
       <SidebarBody />
+      <SidebarRail />
     </Sidebar>
   );
 }
