@@ -313,6 +313,7 @@ export const Charter = z.object({
   approvedBy: z.string().optional(), // "you" | "auto:<policy>"
   scopingSessionId: z.string().optional(), // the drafting session — resumable for takeover
   rationale: z.string().optional(), // structured decomposition reasoning
+  singleThread: z.boolean().optional(), // true iff a synthesized weave-of-one (§W); excluded from the epic policy/label sites
 });
 export type Charter = z.infer<typeof Charter>;
 
@@ -328,6 +329,18 @@ export function isWoven(
   x?: { decomposition?: SubGoal[]; charter?: { decomposition?: SubGoal[] } } | null,
 ): boolean {
   return (x?.decomposition?.length ?? x?.charter?.decomposition?.length ?? 0) > 0;
+}
+
+// PURE. A "weave of one": a loom routed universally through the weaver whose
+// decomposition is the deterministic single subgoal synthesized for a plain
+// custom loom (NOT a planner-authored epic). isWoven is TRUE for these (routing
+// truth — they ARE one-thread orchestrations), but the sites that encode
+// "epic-ness" as POLICY/LABEL must exclude them. Marked explicitly via the
+// singleThread flag (the dispatcher sets it); never inferred from length.
+export function isSingleThreadWeave(
+  x?: { singleThread?: boolean; charter?: { singleThread?: boolean } } | null,
+): boolean {
+  return (x?.singleThread ?? x?.charter?.singleThread) === true;
 }
 
 // --- Verification Contract (docs/loom-model.md §M.1, §2) — the falsifiable-

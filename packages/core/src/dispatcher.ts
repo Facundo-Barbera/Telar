@@ -7,14 +7,16 @@ import {
   ModelPolicy,
   assertProvenance,
   isWoven,
+  isSingleThreadWeave,
   type AccountProfile,
   type Charter,
   type ProjectManifest,
   type ProofStrategy,
   type Provenance,
+  type SubGoal,
 } from "./schemas";
 import { getProject, telarDir } from "./manifest";
-import { createLoom, saveLoom, appendEvent, getLoom, listLooms, loomDir, type Loom, type LoomKind } from "./looms";
+import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, runIntegrationVerify, type ExecuteOpts } from "./executor";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
@@ -60,11 +62,68 @@ function makeOnFailure(loom: Loom): (err: unknown) => void {
   };
 }
 
+// Fork C — a plain custom loom becomes a WEAVE OF ONE: a deterministic,
+// single-subgoal decomposition (no planner LLM). The one SubGoal carries the
+// loom's acceptanceCriteria (blocker #2) so wireChildBundle's legacy-verify
+// fallback keeps verification alive past executor.ts:514, and is required:true
+// so the moat's finish-loom gate (validateDecision / rollupWeave) is real.
+export function singleThreadDecomposition(loom: Loom): SubGoal[] {
+  return [
+    {
+      id: "s1",
+      title: loom.title,
+      detail: loom.prompt,                                   // -> child objective.md (weave-contracts.ts:37)
+      proofStrategy: loom.charter?.proofStrategy ?? "custom", // -> child kind "custom" (dispatcher.ts:78)
+      acceptanceCriteria: loom.acceptanceCriteria ?? [],      // CARRIED — blocker #2
+      dependsOn: [],
+      required: true,                                         // moat: finish-loom gates on this
+      status: "pending",
+    },
+  ];
+}
+
+// Attach (first dispatch) or refresh (re-dispatch of a weave-of-one) the
+// weave-of-one charter so isWoven(loom) is TRUE and runWeave has a decomposition
+// to schedule. A plain custom loom with no charter gets a minimal VALID charter;
+// a caller-supplied non-woven charter keeps its objective/scope/budget and just
+// gains the single subgoal. Marked singleThread:true so the two epic-POLICY/
+// LABEL sites can exclude it (blocker #4). A real (planner) epic is untouched.
+function ensureWoven(loom: Loom): void {
+  if (!isWoven(loom)) {
+    const base = loom.charter;
+    loom.charter = {
+      objective: base?.objective ?? loom.title,
+      proofStrategy: base?.proofStrategy ?? "custom",
+      scope: base?.scope ?? { allowedPaths: [], forbiddenPaths: [] },
+      budget: base?.budget ?? { maxParallelThreads: 1, maxAgents: 12, maxCriticAgents: 3 },
+      decomposition: singleThreadDecomposition(loom),
+      version: base?.version ?? 1,
+      approvedBy: base?.approvedBy ?? "auto:single-thread",
+      singleThread: true,
+    };
+    return;
+  }
+  // Re-dispatch of an EXISTING weave-of-one: regenerate the single subgoal so a
+  // steer/reject directive (folded into loom.prompt by steer/reject) reaches the
+  // reused child. Id stays "s1" so spawnChild's reuse-by-subGoalId still matches.
+  if (isSingleThreadWeave(loom)) {
+    loom.charter!.decomposition = singleThreadDecomposition(loom);
+  }
+}
+
 // The weave branch: spawn+run child Looms (threads) for the charter's
 // decomposition and fold up via runWeave. Reused by both the fast path
 // (charter supplied up front) and the post-scoping dispatch (charter drafted
 // then approved).
-function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherDeps, abort: AbortController): Promise<Loom> {
+function runWeaveWiring(
+  loom: Loom,
+  manifest: ProjectManifest,
+  deps: DispatcherDeps,
+  abort: AbortController,
+  opts: { maxAttempts?: number } = {},
+): Promise<Loom> {
+  // PRECONDITION: callers run ensureWoven (or supply a real woven charter)
+  // before dispatch, so loom.charter is always present here.
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
   // The root's full Verification Contract — wireChildBundle filters it down to
@@ -73,6 +132,22 @@ function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherD
   const rootAssertions = readContract(loom.id).contract?.assertions ?? [];
   return runWeave(loom, decomposition, {
     spawnChild: (sg) => {
+      const existing = listChildLooms(loom.id).find((c) => c.subGoalId === sg.id);
+      if (existing) {
+        // Blocker #3: REUSE the child so its persisted attempts[].sessionId
+        // resumes the prior builder session (executor.ts:924) and NO orphan is
+        // created. Refresh the fields a steer/reject may have changed so the
+        // resumed builder sees the new directive; KEEP attempts[] (the session
+        // chain) intact. Do NOT re-wireChildBundle (leave the existing bundle;
+        // steering folds into the prompt, not the contract).
+        existing.prompt = sg.detail;
+        existing.title = sg.title;
+        if (!existing.contractRequired) existing.acceptanceCriteria = sg.acceptanceCriteria;
+        existing.state = "queued";
+        existing.error = null;
+        saveLoom(existing);
+        return existing;
+      }
       const child = createLoom({
         project: loom.project,
         kind: sg.proofStrategy === "quickfix" ? "quickfix" : sg.proofStrategy === "bmad-story" ? "story" : "custom",
@@ -95,6 +170,7 @@ function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherD
         abort,
         onState: saveLoom,
         onEvent: (ev) => appendEvent(child.id, ev),
+        ...(opts.maxAttempts != null ? { maxAttempts: opts.maxAttempts } : {}),
       }),
     onState: saveLoom,
     onEvent: (ev) => appendEvent(loom.id, ev),
@@ -114,8 +190,7 @@ function runWeaveWiring(loom: Loom, manifest: ProjectManifest, deps: DispatcherD
   });
 }
 
-// Post-charter dispatch: a woven charter -> the weave wiring; otherwise the
-// plain verified loop (executeLoom, or its test injector).
+// Post-charter dispatch: UNIVERSAL ROUTING — every loom runs through runWeave.
 function dispatchExecution(
   loom: Loom,
   manifest: ProjectManifest,
@@ -123,15 +198,13 @@ function dispatchExecution(
   abort: AbortController,
   opts: { maxAttempts?: number } = {},
 ): Promise<Loom> {
-  if (isWoven(loom)) return runWeaveWiring(loom, manifest, deps, abort);
-  return (deps.runLoomFn ?? executeLoom)(loom, manifest, {
-    policy: deps.policy ?? loadPolicy(),
-    accounts: deps.accounts,
-    maxAttempts: opts.maxAttempts,
-    abort,
-    onState: saveLoom,
-    onEvent: (ev) => appendEvent(loom.id, ev),
-  });
+  // UNIVERSAL ROUTING: every loom runs through runWeave. A non-woven loom is
+  // given a deterministic single-subgoal charter first (weave-of-one); a real
+  // epic keeps its planner charter. Idempotent on re-dispatch — ensureWoven is a
+  // no-op-or-refresh once the loom weaves, so spawnChild REUSES the same child.
+  ensureWoven(loom);
+  saveLoom(loom);
+  return runWeaveWiring(loom, manifest, deps, abort, opts);
 }
 
 export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
@@ -180,15 +253,14 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
     if (input.charter) {
       loom.charter = input.charter;
     }
-
-    executeLoom(loom, manifest, {
-      policy: deps.policy ?? loadPolicy(),
-      accounts: deps.accounts,
-      maxAttempts: input.maxAttempts,
-      abort,
-      onState: saveLoom,
-      onEvent: (ev) => appendEvent(loom.id, ev),
-    })
+    // UNIVERSAL ROUTING (blocker #1): the dominant single-loom path becomes a
+    // weave-of-one. Attach the deterministic single-subgoal charter (Fork C) and
+    // run it through the SAME orchestrator every epic uses. The builder loop, the
+    // repair leg, and the moat live UNCHANGED inside the one child's executeLoom
+    // + rollupWeave.
+    ensureWoven(loom);
+    saveLoom(loom);
+    runWeaveWiring(loom, manifest, deps, abort, { maxAttempts: input.maxAttempts })
       .catch(onFailure)
       .finally(() => active.delete(loom.id));
     return loom;
@@ -225,7 +297,7 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
 
     const requiresHuman =
       manifest.charterPolicy === "human-required" ||
-      (manifest.charterPolicy === "human-required-for-epics" && isWoven(charter));
+      (manifest.charterPolicy === "human-required-for-epics" && isWoven(charter) && !isSingleThreadWeave(charter));
 
     if (requiresHuman) {
       setState("charter-review"); // paused — awaits approveCharter
@@ -639,6 +711,7 @@ export function reconcileStuckLooms(): { id: string; from: string }[] {
   const live = new Set(activeLoomIds());
   const reconciled: { id: string; from: string }[] = [];
   for (const loom of listLooms()) {
+    if (loom.parentLoomId) continue; // children recover via their root's re-weave (spawnChild reuse), never independently
     if (!IN_FLIGHT_STATES.has(loom.state) || live.has(loom.id)) continue;
     const from = loom.state;
     try {

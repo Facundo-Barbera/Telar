@@ -14,6 +14,18 @@ export function isWoven(x: Loom | Charter | null | undefined): boolean {
   return (d?.length ?? 0) > 0;
 }
 
+// Derived CLIENT-SIDE (mirrors the local isWoven above — no @telar/core value
+// import into the browser bundle). A "weave of one": a loom routed through the
+// weaver whose charter is the synthesized single-subgoal decomposition, marked
+// singleThread. isWoven is TRUE for these, so the sites that label/gate on
+// "epic-ness" exclude them via this flag (never inferred from length).
+export function isSingleThreadWeave(x: Loom | Charter | null | undefined): boolean {
+  const flag =
+    (x as Charter | undefined)?.singleThread ??
+    (x as Loom | undefined)?.charter?.singleThread;
+  return flag === true;
+}
+
 const TERMINAL: readonly WorkUnitState[] = [
   "done",
   "needs-review",
@@ -86,7 +98,7 @@ export function stateRailClass(state: WorkUnitState): string {
 // structurally via isWoven (a non-empty Charter.decomposition). kind ===
 // "verify" is the fallback signal for looms that don't weave.
 export function loomRole(loom: Loom): "woven" | "verify" | "single" {
-  if (isWoven(loom)) return "woven";
+  if (isWoven(loom) && !isSingleThreadWeave(loom)) return "woven";
   if (loom.kind === "verify") return "verify";
   return "single";
 }

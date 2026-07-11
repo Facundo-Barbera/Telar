@@ -16,7 +16,7 @@ const { getLoom, listChildLooms, readEvents } = await import("../src/looms");
 const { quickBundle, readBundleFile, readContract, writeBundleFile } = await import("../src/bundle");
 const { createProject } = await import("../src/manifest");
 const { planWeaveFromBundle } = await import("../src/scoping");
-const { isWoven } = await import("../src/schemas");
+const { isWoven, isSingleThreadWeave } = await import("../src/schemas");
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
@@ -251,8 +251,12 @@ describe("startLoomFromBundle — per-Thread contract degradation", () => {
   });
 });
 
-describe("startLoomFromBundle — fallback (non-weaving charter)", () => {
-  test("an empty decomposition leaves the loom non-woven and runs a single builder on the root", async () => {
+// Phase 1 (universal routing): a non-weaving planner result no longer runs a
+// builder directly on the root — dispatchExecution weaves-of-one, so the
+// fallback becomes exactly ONE child (one builder), never a multi-thread
+// fan-out, and the planner's own non-woven charter is never assigned.
+describe("startLoomFromBundle — fallback (non-weaving planner -> weave-of-one)", () => {
+  test("an empty planner decomposition weaves-of-one: exactly one child builder, not a fan-out", async () => {
     const manifest = makeProject("fallback-single");
     const objective = "Add a Retry-After header to every 429 response.";
     const loom = createDraftLoom({ project: manifest.name, title: "t", objective });
@@ -285,14 +289,17 @@ describe("startLoomFromBundle — fallback (non-weaving charter)", () => {
     });
     await waitFor(() => calls === 1);
 
-    expect(calls).toBe(1); // one builder attempt on the root, not a fan-out
+    expect(calls).toBe(1); // one builder attempt on the single child, not a fan-out
     const root = getLoom(loom.id)!;
-    expect(root.charter).toBeUndefined(); // non-weaving -> charter never assigned
-    expect(isWoven(root)).toBe(false);
-    expect(listChildLooms(loom.id).length).toBe(0); // no Threads spawned
+    // The planner's non-woven charter is rejected; the synthesized weave-of-one
+    // charter is attached instead (auto:single-thread).
+    expect(root.charter?.singleThread).toBe(true);
+    expect(isWoven(root)).toBe(true);
+    expect(isSingleThreadWeave(root)).toBe(true);
+    expect(listChildLooms(loom.id).length).toBe(1); // exactly one Thread (weave-of-one)
   });
 
-  test("a planner that THROWS degrades to a single builder on the root", async () => {
+  test("a planner that THROWS weaves-of-one: exactly one child builder, not a fan-out", async () => {
     const manifest = makeProject("fallback-throws");
     const objective = "Add a Retry-After header to every 429 response.";
     const loom = createDraftLoom({ project: manifest.name, title: "t", objective });
@@ -318,11 +325,12 @@ describe("startLoomFromBundle — fallback (non-weaving charter)", () => {
     });
     await waitFor(() => calls === 1);
 
-    expect(calls).toBe(1); // one builder attempt on the root, not a fan-out
+    expect(calls).toBe(1); // one builder attempt on the single child, not a fan-out
     const root = getLoom(loom.id)!;
-    expect(root.charter).toBeUndefined(); // planner threw -> charter never assigned
-    expect(isWoven(root)).toBe(false);
-    expect(listChildLooms(loom.id).length).toBe(0); // no Threads spawned
+    expect(root.charter?.singleThread).toBe(true); // planner threw -> weave-of-one synthesized
+    expect(isWoven(root)).toBe(true);
+    expect(isSingleThreadWeave(root)).toBe(true);
+    expect(listChildLooms(loom.id).length).toBe(1); // exactly one Thread (weave-of-one)
   });
 });
 
