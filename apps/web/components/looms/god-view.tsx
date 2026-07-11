@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
+  Boxes,
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,6 +19,7 @@ import {
   ShieldCheck,
   Workflow,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import type { Loom, SubGoal } from "@telar/core";
 import type {
@@ -40,6 +42,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { fmtAgo, fmtCost, shortId } from "@/lib/format";
 
@@ -796,7 +799,13 @@ function RationaleDetail({ r }: { r: RationaleView }) {
 // Thread's drawer where it can be resolved. It renders only when there IS
 // something unresolved — so its presence is exactly the reason the root
 // override-Accept is suppressed.
-function WovenAcceptanceGate({ unresolved }: { unresolved: Loom[] }) {
+function WovenAcceptanceGate({
+  unresolved,
+  onGoToThreads,
+}: {
+  unresolved: Loom[];
+  onGoToThreads?: () => void;
+}) {
   // "awaiting you" is ONLY the states the owner can actually resolve from a
   // Thread's drawer panel (AcceptancePanel gates on exactly these). `halted` is
   // deliberately excluded: it's a stopped/dead-ended Thread with no panel action
@@ -846,10 +855,21 @@ function WovenAcceptanceGate({ unresolved }: { unresolved: Loom[] }) {
             </span>
           ))}
           {parts.length > 0 ? ". " : ""}
-          Open each flagged Thread in the weave below to resolve it — the root
+          Open each flagged Thread in the Threads tab to resolve it — the root
           becomes acceptable only once every Thread lands. Accepting here can
           never blanket-override an unresolved Thread.
         </p>
+        {onGoToThreads && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onGoToThreads}
+            className="h-auto self-start px-2 py-1 text-xs"
+          >
+            Go to Threads
+            <ChevronRight />
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -861,12 +881,14 @@ function RightRail({
   woven,
   acceptedBy,
   onIntervened,
+  onGoToThreads,
 }: {
   loom: Loom;
   threads: Loom[];
   woven: boolean;
   acceptedBy?: string;
   onIntervened?: (loom: Loom) => void;
+  onGoToThreads?: () => void;
 }) {
   const sessionId = loom.charter?.scopingSessionId;
 
@@ -891,7 +913,9 @@ function RightRail({
           `allowAccept` is false while a woven root has unresolved Threads, so
           the override-Accept can't blanket-promote the weave; steer/reject/
           resume stay, and the gate note above says what's outstanding. */}
-      {unresolved.length > 0 && <WovenAcceptanceGate unresolved={unresolved} />}
+      {unresolved.length > 0 && (
+        <WovenAcceptanceGate unresolved={unresolved} onGoToThreads={onGoToThreads} />
+      )}
       <AcceptancePanel
         loom={loom}
         onAccepted={onIntervened}
@@ -906,6 +930,35 @@ function RightRail({
         </div>
       )}
     </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A calm placeholder for tabs whose surface lands in a later phase.
+// ---------------------------------------------------------------------------
+
+function ComingSoon({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Card className="border-dashed bg-muted/20">
+      <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
+        <Icon className="size-5 text-muted-foreground" />
+        <span className="text-sm font-medium">{title}</span>
+        <p className="max-w-sm text-xs leading-relaxed text-balance text-muted-foreground">
+          {description}
+        </p>
+        <span className="mt-1 rounded-full bg-muted px-2 py-0.5 text-[10px] tracking-wide text-muted-foreground uppercase">
+          coming soon
+        </span>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -952,28 +1005,75 @@ export function LoomGodView({
   onIntervened?: (loom: Loom) => void;
   acceptedBy?: string;
 }) {
+  const [tab, setTab] = useState("orchestrator");
+
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4">
-      {/* One two-column workspace: the orchestrator + weave flow on the left,
-          a persistent rail (intervention / done + log) on the right spanning
-          the whole height — not a stack of full-width cards. */}
+      {/* One two-column workspace: a tabbed cockpit on the left (orchestrator /
+          threads / verify / chat), a persistent rail (intervention / done +
+          log) on the right that stays reachable on every tab. */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="flex min-w-0 flex-col gap-4">
-          <CharterStrip loom={loom} onViewSpec={onViewSpec} />
-          <OrchestratorPanel orchestrator={view.orchestrator} log={view.decisionLog} />
-          <Weave
-            operators={view.operators}
-            loom={loom}
-            threads={threads}
-            onOpenOperator={onOpenOperator}
-          />
-        </div>
+        <Tabs value={tab} onValueChange={setTab} className="min-w-0">
+          <TabsList variant="line">
+            <TabsTrigger value="orchestrator">
+              <Workflow />
+              Orchestrator
+            </TabsTrigger>
+            <TabsTrigger value="threads">
+              <Boxes />
+              Threads
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {view.operators.length}
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="verify">
+              <ShieldCheck />
+              Verify
+            </TabsTrigger>
+            <TabsTrigger value="chat">
+              <MessageSquare />
+              Chat
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="orchestrator" className="flex flex-col gap-4 pt-2">
+            <CharterStrip loom={loom} onViewSpec={onViewSpec} />
+            <OrchestratorPanel orchestrator={view.orchestrator} log={view.decisionLog} />
+          </TabsContent>
+
+          <TabsContent value="threads" className="pt-2">
+            <Weave
+              operators={view.operators}
+              loom={loom}
+              threads={threads}
+              onOpenOperator={onOpenOperator}
+            />
+          </TabsContent>
+
+          <TabsContent value="verify" className="pt-2">
+            <ComingSoon
+              icon={ShieldCheck}
+              title="Verify"
+              description="The verifier's process — every check it ran, what it saw in the running app, and why it passed or held — will live here."
+            />
+          </TabsContent>
+
+          <TabsContent value="chat" className="pt-2">
+            <ComingSoon
+              icon={MessageSquare}
+              title="Chat"
+              description="Steer the orchestrator in a session pre-loaded with this loom's context — ask what's going on, or nudge the weave — here."
+            />
+          </TabsContent>
+        </Tabs>
+
         <RightRail
           loom={loom}
           threads={threads}
           woven={view.woven}
           acceptedBy={acceptedBy}
           onIntervened={onIntervened}
+          onGoToThreads={() => setTab("threads")}
         />
       </div>
 
