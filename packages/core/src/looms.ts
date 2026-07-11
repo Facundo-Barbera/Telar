@@ -267,12 +267,35 @@ type LandResult =
   | { committed: false; skipped: string }
   | { committed: false; error: string };
 
+// A loom PRODUCED BUILD OUTPUT iff it has a builder attempt — any attempt whose
+// role is not a pure-verification role. In today's shared-tree model only a
+// builder attempt writes the project tree; a verify-only or never-run loom
+// touched nothing, so committing on its behalf can only sweep unrelated files.
+// The `commit`/`worktree` clauses are forward-compat: `commit` is set only at
+// accept (recordLanding) and no `worktree` field exists yet, so both are inert
+// today and become correct once per-loom worktrees land.
+const VERIFY_ONLY_ROLES = new Set(["verifier", "integration"]);
+function producedBuildOutput(loom: Loom): boolean {
+  const built = loom.attempts.some((a) => !VERIFY_ONLY_ROLES.has(a.role));
+  return built || !!loom.commit || !!(loom as { worktree?: string }).worktree;
+}
+
 // docs/loom-model.md §A — "acceptance LANDS the work." Commit the loom's
 // changes in the project working tree on accept. Pure of process exit: every
 // failure mode is returned, never thrown, so accept can transition to `done`
-// regardless. Skips gracefully when the root is not a git repo or the tree is
-// already clean.
-function landWorkingTree(loom: Loom, by: string, git: GitRunner): LandResult {
+// regardless. Skips gracefully when the loom produced no build output (a
+// stranded/verify-only loom — never runs git add -A on unrelated files), when
+// the root is not a git repo, or when the tree is already clean.
+function landWorkingTree(loom: Loom, by: string, git: GitRunner, land: boolean): LandResult {
+  // No-sweep guard (FIRST, before any git call): only land when the caller
+  // determined there is work to land (a real builder attempt, or a state whose
+  // accept is the sole landing of a subtree's work). A stranded/never-built
+  // loom has nothing of its own in the shared tree, so `git add -A` could only
+  // scoop up whatever the user happened to have dirty. Skip landing entirely.
+  if (!land) {
+    return { committed: false, skipped: "loom produced no build output" };
+  }
+
   let root: string;
   try {
     root = getProject(loom.project).manifest.root;
@@ -316,10 +339,10 @@ function landWorkingTree(loom: Loom, by: string, git: GitRunner): LandResult {
 // and record the outcome on the loom (commit sha + event) without ever
 // letting a git failure escape accept. Mutates `loom` in place; the caller
 // saves it.
-function recordLanding(loom: Loom, by: string, git: GitRunner): void {
+function recordLanding(loom: Loom, by: string, git: GitRunner, land: boolean): void {
   let res: LandResult;
   try {
-    res = landWorkingTree(loom, by, git);
+    res = landWorkingTree(loom, by, git, land);
   } catch (err) {
     // landWorkingTree is contractually total, but a git runner throwing
     // (e.g. an injected fake) must still never surface out of accept.
@@ -341,21 +364,24 @@ function recordLanding(loom: Loom, by: string, git: GitRunner): void {
   }
 }
 
-// §A / §M.2 (docs/loom-model.md): the ONLY path to "done". There are three
-// ways in, and only the first is a "clean" accept:
-//  1. CLEAN — from `ready` (independently verified green). override:false.
-//  2. OWNER OVERRIDE (P5) — from `needs-review` (verification red/incomplete)
-//     or `blocked` (paused on a prerequisite/decision). The loom was NOT
-//     independently verified, so the owner closing it is a distinct, AUDITED
-//     override: recorded as `accepted {override:true}` + the `acceptedOverride`
-//     flag, never a silent clean accept. The owner's server-derived `by` IS
-//     the §M.2 human touch these states require; a `cosignedBy` may still be
-//     attached but is not demanded from here. auto-detected by state — the
-//     caller need not pass opts.override.
-//  3. EXPLICIT OVERRIDE — from any OTHER non-ready state, still gated behind
-//     an explicit opts.override + opts.cosignedBy co-sign (never the default
-//     accept button).
-// All three LAND the diff and reach `done`; nothing else can.
+// §A / §M.2 (docs/loom-model.md): the ONLY path to "done". There are exactly
+// two outcomes, keyed on state, and only the first is a "clean" accept:
+//  1. CLEAN — from `ready` (independently verified green). override:false, no
+//     flag.
+//  2. AUDITED OWNER OVERRIDE (P5) — from ANY other non-`done` state (`queued`,
+//     `scoping`, `charter-review`, `preparing`, `running`, `verifying`,
+//     `needs-review`, `blocked`, `halted`, `failed`, `skipped`). The loom was
+//     NOT independently verified, so the owner closing it is a distinct,
+//     AUDITED override: recorded as `accepted {override:true, fromState}` + the
+//     `acceptedOverride` flag, never a silent clean accept. The owner's
+//     server-derived `by` IS the §M.2 human touch these states require; a
+//     `cosignedBy` may still be attached but is never demanded — it is optional
+//     metadata, not a gate.
+// Both LAND the diff and reach `done`; nothing else can. Landing itself no
+// longer sweeps: a stranded/never-built loom produced no build output, so
+// recordLanding SKIPS the commit (see landWorkingTree) and the override is
+// audited (`accepted {override:true}` + `commit-skipped`) without touching
+// unrelated files in the shared tree.
 export function acceptLoom(
   id: string,
   by: string,
@@ -374,25 +400,34 @@ export function acceptLoom(
   if (loom.state === "ready") {
     loom.state = "done";
     appendEvent(id, { type: "accepted", by });
-    recordLanding(loom, by, git); // §A: accept LANDS the work (never throws)
+    // A clean accept always lands: a "ready" single loom built to get there, and
+    // a woven root — which has no builder attempt of its own — rolls up to
+    // "ready" from done children whose work its accept is the sole landing of.
+    recordLanding(loom, by, git, true); // §A: accept LANDS the work (never throws)
     saveLoom(loom);
     return loom;
   }
 
-  // (2) OWNER OVERRIDE: needs-review / blocked are directly override-acceptable
-  // by the owner. (3) any other non-ready state still needs an explicit co-sign.
-  const ownerOverride = loom.state === "needs-review" || loom.state === "blocked";
-  if (!ownerOverride && (!opts?.override || !opts.cosignedBy?.trim())) {
-    throw new Error("accepting a non-ready loom requires an override co-sign");
-  }
-
+  // (2) AUDITED OWNER OVERRIDE: every remaining non-`ready`/non-`done` state is
+  // a stranded, non-green loom the OWNER may close. No co-sign gate — the
+  // server-derived `by` is the human touch; `cosignedBy` is optional metadata.
   const fromState = loom.state;
   loom.state = "done";
   loom.acceptedOverride = true; // the audited-override flag (§A/§M)
   const ev: { type: string } & Record<string, unknown> = { type: "accepted", by, override: true, fromState };
   if (opts?.cosignedBy?.trim()) ev.cosignedBy = opts.cosignedBy;
   appendEvent(id, ev);
-  recordLanding(loom, by, git); // §A: accept LANDS the work (never throws)
+  // Land only when there's work to land: a real builder attempt, OR an override
+  // from a state whose accept lands a subtree's work (a woven root demoted to
+  // "needs-review", or a "blocked" loom that built). A stranded loom the owner
+  // is just closing (queued/scoping/preparing/running/verifying/failed-with-no-
+  // build/…) never cleanly built, so we do NOT git add -A the shared tree on its
+  // behalf — that would only sweep unrelated dirty files (the #55 footgun).
+  const land =
+    producedBuildOutput(loom) ||
+    fromState === "needs-review" ||
+    fromState === "blocked";
+  recordLanding(loom, by, git, land); // §A: accept LANDS the work (never throws)
   saveLoom(loom);
   return loom;
 }

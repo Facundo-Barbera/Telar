@@ -105,17 +105,28 @@ describe("acceptLoom (real TELAR_HOME)", () => {
     expect(acceptedEvents[0]!.override).toBeUndefined();
   });
 
-  // A truly abnormal non-ready state (not needs-review/blocked, which the owner
-  // can override directly — see below) still needs the explicit co-sign.
-  test("accepting a `failed` loom throws without an override co-sign", () => {
-    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
-    loom.state = "failed";
-    saveLoom(loom);
+  // #55 Fix 1: EVERY non-`ready`/non-`done` state is now an AUDITED OWNER
+  // OVERRIDE the server-derived `by` may close — no co-sign gate. `failed` and
+  // `queued` (the reported bug) both reach `done` with the audited flag/event.
+  for (const from of ["failed", "queued"] as const) {
+    test(`accept from '${from}' with no opts is an audited override -> done (no co-sign gate)`, () => {
+      const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+      loom.state = from;
+      saveLoom(loom);
 
-    expect(() => acceptLoom(loom.id, "alice")).toThrow(/override co-sign/);
-    expect(() => acceptLoom(loom.id, "alice", { override: true })).toThrow(/override co-sign/); // no cosignedBy
-    expect(getLoom(loom.id)!.state).toBe("failed");
-  });
+      const accepted = acceptLoom(loom.id, "alice"); // no override/cosign opts
+      expect(accepted.state).toBe("done");
+      expect(accepted.acceptedOverride).toBe(true);
+      expect(getLoom(loom.id)!.state).toBe("done");
+
+      const { events } = readEvents(loom.id);
+      const acceptedEvents = events.filter((e) => e.type === "accepted");
+      expect(acceptedEvents.length).toBe(1);
+      expect(acceptedEvents[0]!.by).toBe("alice");
+      expect(acceptedEvents[0]!.override).toBe(true);
+      expect(acceptedEvents[0]!.fromState).toBe(from);
+    });
+  }
 
   test("accepting a `failed` loom succeeds with {override:true, cosignedBy}", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });

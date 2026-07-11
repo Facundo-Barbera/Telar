@@ -6,11 +6,11 @@ export const dynamic = "force-dynamic";
 // cannot be told who accepted or forced to override: no body is read at all,
 // only the id route param. Acceptor identity is server-fixed ("you").
 // acceptLoom auto-detects the accept KIND from the loom's state: a clean
-// accept from `ready`, or (P5) an AUDITED OVERRIDE from `needs-review`/
-// `blocked` (recorded override:true — the server-derived `by` is the human
-// touch, so no separate cosign UI is needed for those states). Any other
-// non-ready state needs the explicit override+cosign path, which acceptLoom
-// throws for here (surfaced as 400) — that remains a future explicit-override UI.
+// accept from `ready`, or (P5) an AUDITED OVERRIDE from ANY other non-`done`
+// state (`queued`, `needs-review`, `blocked`, `failed`, …). Every override is
+// recorded override:true — the server-derived `by` is the human touch, so no
+// separate cosign UI is needed. Only an already-`done` loom is rejected here
+// (surfaced as 400).
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
