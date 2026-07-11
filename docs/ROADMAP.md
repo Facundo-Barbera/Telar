@@ -1,144 +1,169 @@
-# Telar — Roadmap & Path to Success
+# Telar — Roadmap to Completion
 
 > **Thesis:** Generation is solved; **verification is the moat.** A loom never
-> auto-accepts its own work — a human accepts, always. Everything below is in
-> service of making that trustworthy, observable, and drivable from where you work.
+> auto-accepts its own work — a human accepts, always. Everything below serves
+> making that trustworthy, observable, and drivable from where you work.
 
-This file is the **living work tracker** (it replaces the ephemeral todo list).
-Edit it freely: check boxes as things land, add items under the right phase, move
-the **▶ You are here** marker as the frontier advances. Keep entries one line;
-link to a design doc when one exists.
+**Definition of done (the product):** you hand Telar a real multi-issue objective;
+it fans out into Threads under a real orchestrator; you *see why* each decision was
+made and each Thread passed or stalled; you steer/accept/reject from a chat that
+knows the loom; nothing reaches `done` without your sign-off; and it keeps running
+if you reload or walk away.
 
-**Definition of success:** you can hand Telar a real multi-issue objective, watch
-it fan out into Threads, *see why* each one passed or stalled, steer/accept/reject
-it from your session, and trust that nothing reaches `done` without your sign-off —
-all while it keeps running if you reload or walk away.
+## How to read this file
 
-**Design docs:** [`loom-model.md`](./loom-model.md) ·
-[`loom-orchestrator.md`](./loom-orchestrator.md) ·
-[`runtime-architecture.md`](./runtime-architecture.md) ·
-[`verifier-agent.md`](./verifier-agent.md) ·
-[`watchers-design.md`](./watchers-design.md) ·
-[`mcp-oauth-design.md`](./mcp-oauth-design.md) ·
-[`phase-2-runner-plan.md`](./phase-2-runner-plan.md) ·
-[`verification-environments.md`](./verification-environments.md)
+This is the **single source of truth** for what's left (it replaces the todo list).
+Work is organized as **milestones**, not phases-of-phases. Each milestone is a
+**single, whole build pass** (one orchestrated workflow: design → implement →
+adversarially verify → integrate), sized to land a coherent, shippable capability —
+not an incremental sliver. Execute them **top to bottom**; the order respects
+dependencies. The `▶` marks the current milestone.
 
----
-
-## Phase A — A single loom you can trust end-to-end &nbsp;`▶ You are here`
-
-Make one woven loom fully usable: it plans, fans out, verifies, and every terminal
-state is recoverable and legible.
-
-- [x] Weave-planner — bundle looms decompose into parallel Threads (no more single-agent collapse)
-- [x] Owner actions on Threads — accept / steer / reject / resume, moat-protected root
-- [x] Failure legibility — failing gate/critic/verdict surfaced; woven cost aggregated
-- [x] Turn cap is liftable — `maxTurns` override in `~/.telar/policy.json` (default rails stay)
-- [x] `reDispatch` never strands a loom in `queued` — setup failures land in `failed` with the reason
-- [x] Report is concise + markdown-rendered + roomier transcript
-- [x] **Guard project config (#44)** — self-healing manifest cache: a wiped `telar.yaml` restores from the registry's last-good copy instead of bricking the project (malformed still errors)
-- [x] **Boot / crash recovery (P5)** — `reconcileStuckLooms()` runs on server boot and marks in-flight-but-runnerless looms `failed`/resumable (no more hand-unsticking)
-- [ ] **Validate the repair leg live** — prove builder → verify → repair → pass on a real task _(gated on Phase C's lane + Phase E's verification/loop: for a no-UI loom verification silently never runs, builders collide in a shared lane, and the tick loop escalates on the first transient failure — [`verification-environments.md`](./verification-environments.md) §2, §4/§5, §7)_
-
-## Phase B — Drive looms from where you work
-
-The session that plans a loom should also be able to steer it, and watch it in the
-background — the session as cockpit. _(Decisions locked: steer/reject/resume/cancel
-are agent-drivable on any loom on request; **accept stays a human click**. Watchers
-are a true background process — you keep chatting; it reacts when state changes.)_
-
-- [x] **Session → loom control tools** — `steer_loom` / `reject_loom` / `resume_loom` / `cancel_loom` MCP tools, auto-run, default to the linked loom (moat: no `accept_loom`)
-- [x] **Watchers (v1 client-driven)** — a session watches a loom, reacts to state changes, surfaces a card + injects a follow-up turn without blocking the chat. **Designed → [`watchers-design.md`](./watchers-design.md)**; v2 (tab-closed) rides Phase C
-- [ ] **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends; easier to track, harder to clobber
-
-## Phase F — Telar-owned MCP auth (current priority)
-
-MCP servers (Supabase, GitHub…) bind their OAuth login to the account that logged
-in — so switching execution account breaks the MCP. Telar owns the login as the
-OAuth client, storing the token in its account-decoupled project store. **Designed →
-[`mcp-oauth-design.md`](./mcp-oauth-design.md)** (CIMD → DCR → manual client ladder;
-strictly more capable than Claude Code's DCR-only).
-
-- [x] **Stage A — core OAuth engine** — PRM/AS discovery, client-identity ladder, PKCE, token exchange + refresh, record store; SSRF/state/audience/redirect guards; mocked-fetch tests
-- [x] **Stage B — connect flow + UI** — connect/callback/status/disconnect routes + PKCE-state pending store, `mcp.ts` auto-inject + best-effort refresh-on-resolve, Connect/Reconnect/Disconnect UI. _(Live Supabase: both ozom-gv servers connect green.)_
-- [x] **Loom agents use the project MCP servers** — verifier + critic now get the same read-only servers as the builder (URL-enforced `?read_only=true`); the project's Manifest rail surfaces each server's live health + an inline Connect shortcut
-- [ ] **v2 — CIMD hosted client-doc** — stand up the client-metadata URL to flip the top tier on
-
-## Phase C — Durable execution & the environment lane
-
-Today looms run inside the web dev-server process, so a code edit or reload can kill
-in-flight work — and there's no reproducible substrate to build or verify against.
-Move execution out of process, and give every loom a self-healing **environment
-lane** (`{ worktree @ commit, database, running services }`) — the substrate that
-unblocks both the builder and the verifier.
-
-- [ ] **Phase 2 — `telar-runner`** — out-of-process execution → see [`phase-2-runner-plan.md`](./phase-2-runner-plan.md)
-- [x] **Environment lane — `servers.yaml`** — per-project service recipe (schema + loader), `host-process` driver; `none` = today's static-url path, unchanged (`bd2c6de`, §4)
-- [x] **Grow `run-server.ts` into a lane** — `startLane`: `portStrategy` (fixed-probe vs dynamic-inject), `portInject`, templated `env`, real `readyCheck` replacing `defaultPoll` (`53663fe`, §4.2). _Per-lane `DATABASE_URL` template-clone rides the frozen lane (Phase E)._
-- [x] **Service supervisor** — continuous `healthcheck` + `restartPolicy`, crash-loop breaker, mid-edit tolerance window so it won't fight the builder (`2a020a0`, §4.4)
-- [ ] **Setup agent** (pre-loom, in the `preparing` state) — bring the env up, diagnose, ask the human; author a missing `servers.yaml`; fast-path `readyCheck` probe (§4.3)
-- [ ] **Keychain-backed MCP token storage** _(deferred)_
-
-## Phase E — Verification: real, looped, live-proven
-
-_(Sequenced ahead of Phase D — a Thread isn't trustworthy to widen until
-verification actually runs and loops.)_ Today auto-verification silently doesn't run
-for no-UI looms and sits at the leaf as a terminal gate
-([`verification-environments.md`](./verification-environments.md) §2). Make it a real
-signal: promote it to a scheduled **read-only thread-kind** run against a frozen
-snapshot, feed its verdict back into the tick loop so an unfinished loom continues,
-then prove depth on live features.
-
-- [x] **Assertion routing** — `command`/`gate`/`db` assertion kinds + deterministic routing to `gates.ts`, off the browser, so a backend loom verifies with no target (`ff83eb3`, §6.1)
-- [x] **Fix `decide()` `panelRequired` drop** — a required-but-skipped panel now retries / needs-review instead of a silent pass (`ff83eb3`, §6.1)
-- [x] **MVP — one `ALL` verify thread at end-of-orchestration** — the integration-verify producer runs one ALL-scope verify after a woven loom's children finish (`b33631a`, §6.2)
-- [x] **Verdict gates the terminal state** — a red `ALL` verdict demotes a woven loom `ready → needs-review` (broken whole can't clean-accept); green → `ready` (`06761af`, §7)
-- [x] **Transient-vs-terminal escalate** — tick escalates only on *terminal* failure (retries exhausted), tolerating a thread mid-retry — unblocks Phase A's repair-leg proof (`ccdd9f8`, §7)
-- [ ] **Verify thread-kind (frozen lane)** — promote the integration verify to a scheduled **read-only** thread on a frozen lane (worktree @ commit + template-cloned DB) + gates → evidence → panel → synthesis (§3, §6). _Needs a live Postgres — validate live._
-- [ ] **Auto-repair loop + convergence guards** — verify → repair → re-verify, bounded by budget + max-iterations + progress/regression detection + a human circuit-breaker (§7). _Runaway-prone — validate live._
-- [ ] **Checkpoint verify threads** per `subGoalId` — interleaved per-SubGoal verifies + a final `ALL` integration verify (§6.2)
-- [ ] **M3 distillation** — green-run acceptance + spec-lint gate wiring (exploratory run → deterministic `.spec.ts`)
-- [ ] **M4 monitoring** — cron trigger + prod guardrails + terminal-state alert hook
-- [ ] **M6 design-QA** — prove design findings on an ugly-but-functional feature
-- [ ] **M5 hardening & scale**
-
-_Moat (every item above): a green verify-thread only lands a loom `ready` and spawns
-more **work**, never acceptance — `ready → done` stays a human click, the verifier
-stays read-only, and there is no `accept_loom`._
-
-## Phase D — Scale the weave & the roster
-
-Once one Thread is trustworthy — verification actually runs and loops (Phase E) —
-widen it.
-
-- [ ] **Sub-thread build fan-out** — wire `splitBuild`/`decideBuildFanout` so a Thread can use N parallel builders (built in M7.3b, never wired)
-- [ ] **Disjoint-partition rule** — each agent owns non-overlapping files, or sequential steps with one writer per step, so multi-agent *mutating* threads don't recreate the shared-lane collision ([`verification-environments.md`](./verification-environments.md) §8)
-- [ ] **P4 — dynamic weaver** — methodology-neutral extraction; the Verification Contract becomes the proof, not an enumerated strategy
-- [ ] **Curated agent roster** — via the SDK `agents` option
-
-## Housekeeping
-
-- [ ] Account `displayTier` plan labels (5x / 20x) + in-app login UI
-- [ ] Clean up `[demo]` looms _(pending explicit OK — no `rm` without authorization)_
-- [ ] Orphaned untracked `apps/web/components/looms/loom-view.tsx` — references non-existent `deriveSteps`/`StepAgent`/`WeaveStep`, breaks `apps/web` tsc; nothing imports it (delete or finish)
+**The moat is invariant across every milestone:** a green verify only lands a loom
+`ready` (never `done`); `ready → done` is a human click; the verifier is read-only;
+there is no `accept_loom`.
 
 ---
 
-_Last frontier update: a full autonomous build run shipped the hermetically-verifiable
-core of the **verification-environments** design. **Phase C lane substrate** is done —
-`servers.yaml` schema+loader (`bd2c6de`), `run-server` → `startLane` with real
-`readyCheck` (`53663fe`), and the service supervisor (`2a020a0`). **Phase E** now has
-deterministic **assertion routing** so a backend loom actually verifies with no browser
-+ the `decide()` `panelRequired` fix (`ff83eb3`), the **transient-vs-terminal** escalate
-fix (`ccdd9f8`), the end-of-orchestration **integration-verify producer** (`b33631a`),
-and the **verdict gating the terminal state** — a red `ALL` verdict now demotes a woven
-loom to `needs-review` so a broken whole can't clean-accept (`06761af`). Plus the
-override-from-`queued` + no-sweep-landing fix (`fd58885`). Every unit was two-verifier
-checked; the moat held throughout (green → `ready`, never `done`).
-What remains is **live-validation-dependent**, deliberately not built blind: the
-**frozen-lane** verify thread (real Postgres template-clone, §5 Supabase wrinkle) and
-the **auto-repair loop + convergence guards** (runaway-prone). Next: **prove the repair
-leg live** on a real project (Phase A) — it's now unblocked, and the live run resolves
-the §10 lane-granularity open decisions that the frozen lane needs. Prior: Phase F Stage
-A+B (MCP reaches every loom agent read-only); Phase B.1 steering + v1 watchers + P5
-boot-recovery._
+## ✅ Shipped (foundation — do not rebuild)
+
+- **Orchestration is real for every loom.** A plain custom loom is a *weave of one*:
+  it routes through the same weaver every epic uses, with a deterministic
+  single-subgoal charter (no planner LLM). Repair leg + moat live inside the child.
+- **The weaver reports its reasoning.** `tick()` returns `{decision, rationale}`
+  (stays pure) — critical-path scores, the binding fan-out term, a budget/clock
+  snapshot, and any rejected-decision reason — plus `plan`/`observe` events.
+- **The loom cockpit.** The detail page is a tabbed cockpit — **Orchestrator**
+  (charter + the centerpiece: loop, plan-as-living-graph, click-to-explain decision
+  timeline), **Threads** (the weave of operator cards), **Verify** / **Chat**
+  (honest stubs, filled by M1 / M2). Header + accept/steer/reject rail + moat are
+  persistent across tabs.
+- **Verification, first pass.** Deterministic assertion routing (command/gate/db —
+  a backend loom verifies with no browser); a red integration verdict demotes a
+  woven loom `ready → needs-review`; tick escalates only on *terminal* failure.
+- **Repair leg proven live** — builder → verify(fail) → repair → verify(pass) →
+  ready, on a real task (verifier never sees acceptanceCriteria).
+- **Environment lane substrate** — `servers.yaml` schema+loader, `startLane` with a
+  real `readyCheck`, service supervisor (health/restart/crash-loop/mid-edit).
+- **Drive from the session** — `steer/reject/resume/cancel` MCP tools (no
+  `accept`), v1 client-driven watchers.
+- **MCP OAuth** (Stages A+B, `ui-live-feeds` branch — pending merge) — Telar owns
+  the login; verifier+critic get the project's read-only servers.
+- **Repeatable greenfield E2E harness** — empty dir → orchestrated, spec'd,
+  contract-verified minimal Next.js app → `ready` → self-teardown.
+- Boot/crash recovery (`reconcileStuckLooms`), self-healing manifest cache,
+  liftable turn cap, override-from-any-stranded-state, concise rendered report.
+
+---
+
+## ▶ M1 — Verification: mandatory, and you can watch it
+
+*The moat and your original ask ("how can I see the verifier's process?"). Fills the
+**Verify** tab stub.*
+
+- **Force a Verification Contract on every loom.** No loom runs without a spec —
+  the contract is a creation-time invariant, not an optional path. Contractless
+  custom looms get a synthesized minimal contract from their acceptanceCriteria.
+- **Capture the verifier's process as events.** The verifier emits its steps like a
+  builder transcript (what it checked, what it observed in the running app, each
+  gate result, each critic finding + evidence, its verdict reasoning) to the loom's
+  event log.
+- **Build the Verify tab.** Render that process: the contract's assertions, the
+  gate run, the critic panel (findings + evidence, must-clear vs advisory), and the
+  final verdict — for the root's integration verify *and* per-Thread verifies.
+- **Full integration re-verify on every loom** (was Fork A) — now unblocked by the
+  forced contract: the end-of-orchestration `ALL` verify runs for every loom, not
+  just ones that happened to carry a contract.
+
+**Done when:** you cannot create a loom without a contract; the Verify tab shows a
+real, replayable verifier process for a finished loom; a red verdict still gates the
+terminal state. Green-gate: core tests + core/web tsc.
+
+## M2 — Drive the weave: steer & inspect
+
+*Finishes the cockpit. Fills the **Chat** tab stub.*
+
+- **Chat tab** — steer the orchestrator in a session pre-loaded with the loom's
+  context (charter, plan, live decisions). Ask "what's going on"; nudge the weave.
+  Reuses the session→loom control tools (steer/reject/resume/cancel — never accept).
+- **Agent-session inspection** — the agent drawer shows each agent's real session
+  (builder + fan-out pieces + critics), resumable, with an honest "not captured"
+  state where a transcript genuinely isn't persisted.
+
+**Done when:** you can open a Chat tab that already knows the loom and steer it, and
+open any operator to read its actual session. Green-gate as above.
+
+## M3 — Isolated, consolidated deliverables
+
+*The work product is clean and reviewable.*
+
+- **Per-loom worktree isolation** — each loom (and its Threads) builds in its own
+  git worktree @ a base commit, so parallel builders never collide in a shared tree.
+- **Consolidation on completion** — a finished loom's work gathers into a single
+  final branch/deliverable, ready to review as one diff.
+
+**Done when:** a woven loom builds in isolation and lands as one consolidated branch;
+no cross-loom file collisions. (Foundation for the frozen-lane verify in M4.)
+
+## M4 — Close the verification loop  ·  *live-validation-gated*
+
+*Build the deterministic scaffolding + guards autonomously; the live proof needs a
+real Postgres and is runaway-prone, so validate the loop with a human in the seat.*
+
+- **Frozen-lane verify thread** — promote the integration verify to a scheduled
+  **read-only thread-kind** on a frozen lane (worktree @ commit + template-cloned
+  DB): gates → evidence → panel → synthesis.
+- **Checkpoint verify threads** per `subGoalId` — interleaved per-SubGoal verifies
+  plus the final `ALL` integration verify.
+- **Auto-repair loop + convergence guards** — verify → repair → re-verify, bounded
+  by budget + max-iterations + progress/regression detection + a human circuit-breaker.
+
+**Done when:** the loop converges on a real project under guards, and the moat holds
+(a green loop lands `ready`, never `done`).
+
+## M5 — Durable, out-of-process execution
+
+*A reload or a code edit must not kill in-flight work.*
+
+- **`telar-runner`** — move execution out of the web dev-server process
+  (see `phase-2-runner-plan.md`).
+- **Setup agent** (pre-loom `preparing` state) — bring the env up, diagnose, author
+  a missing `servers.yaml`, fast-path the `readyCheck`.
+
+**Done when:** a loom survives a web reload; a project with no `servers.yaml` is
+brought up by the setup agent.
+
+## M6 — Scale the weave  ·  *exploratory*
+
+- **Sub-thread build fan-out** — wire `splitBuild`/`decideBuildFanout` so a Thread
+  can use N parallel builders (built, never wired).
+- **Disjoint-partition rule** — each builder owns non-overlapping files (or
+  sequential steps, one writer each) so mutating multi-agent threads don't collide.
+- **Dynamic weaver (P4)** — methodology-neutral decomposition; the Verification
+  Contract is the proof, not an enumerated strategy.
+- **Curated agent roster** — via the SDK `agents` option.
+
+---
+
+## Housekeeping (fold into the nearest milestone)
+
+- **Reconcile the design docs to as-built** — this roadmap is now authoritative;
+  the design docs below still describe intent and lag reality in places.
+- **Orphan `apps/web/components/looms/loom-view.tsx`** — references non-existent
+  `deriveSteps`/`StepAgent`/`WeaveStep`, breaks `apps/web` tsc, nothing imports it.
+  Delete or finish (needs auth for removal — no `rm`).
+- **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends.
+- **MCP v2 — CIMD hosted client-doc** — stand up the client-metadata URL.
+- **Account `displayTier` labels (5x/20x) + in-app login UI.**
+- **Clean up `[demo]` looms** _(needs explicit OK — no `rm` without authorization)._
+- Later verification depth: M3 distillation (green-run → deterministic `.spec.ts`),
+  M4 monitoring (cron + prod guardrails + alert hook), M6 design-QA.
+
+## Design docs
+
+`loom-model.md` · `loom-orchestrator.md` · `runtime-architecture.md` ·
+`verifier-agent.md` · `verification-environments.md` · `watchers-design.md` ·
+`mcp-oauth-design.md` · `phase-2-runner-plan.md`
+
+_These are **design intent**; where they disagree with shipped behavior, this
+roadmap and the code win. Reconcile opportunistically as each milestone touches them._
