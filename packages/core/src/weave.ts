@@ -150,8 +150,9 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
           id: child.id,
           subGoalId,
           state: child.state,
+          runnerInFlight: false, // settled: its runChild promise resolved → terminal
         })),
-        ...runningThread.values(),
+        ...[...runningThread.values()].map((t) => ({ ...t, runnerInFlight: true })),
       ];
       const budget: BudgetState = {
         maxAgents,

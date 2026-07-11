@@ -49,7 +49,7 @@ function view(overrides: Partial<LedgerView> = {}): LedgerView {
 }
 
 function thread(overrides: Partial<ThreadView> = {}): ThreadView {
-  return { id: overrides.id ?? "t1", subGoalId: overrides.subGoalId ?? "s1", state: overrides.state ?? "running" };
+  return { id: overrides.id ?? "t1", subGoalId: overrides.subGoalId ?? "s1", state: overrides.state ?? "running", ...overrides };
 }
 
 let fakeN = 0;
@@ -216,6 +216,64 @@ describe("tick (pure scheduler) — scenario table", () => {
     const decomposition = [subGoal({ id: "a", dependsOn: ["ghost"] })];
     const v = view({ charter: charter(decomposition), threads: [] });
     expect(tick(v)).toEqual({ action: "escalate", reason: "no ready threads and none in flight (blocked)" });
+  });
+
+  test("terminally-failed required subgoal (runnerInFlight false) -> escalate with reason", () => {
+    const v = view({
+      threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done" })],
+      inFlight: 0,
+    });
+    expect(tick(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+  });
+
+  test("terminally-failed required subgoal (field absent) -> escalate (back-compat)", () => {
+    // No runnerInFlight field at all: reads as terminal, byte-identical to today.
+    const v = view({
+      threads: [thread({ subGoalId: "s1", state: "failed" }), thread({ subGoalId: "s2", state: "done" })],
+      inFlight: 0,
+    });
+    expect(tick(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+  });
+
+  test("transiently-failed required subgoal (runnerInFlight true) -> hold, NOT escalate", () => {
+    // A live runner still owns s1's thread -> its "failed" is mid-retry.
+    // runnerInFlight true ⟹ inFlight >= 1, so control routes to hold ("keep sampling").
+    const v = view({
+      threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: true }), thread({ subGoalId: "s2", state: "running", runnerInFlight: true })],
+      inFlight: 2,
+      budget: budget({ maxAgents: 2, inFlight: 2 }),
+    });
+    expect(tick(v)).toEqual({ action: "hold" });
+  });
+
+  test("transiently-failed required subgoal + ready sibling -> schedule other work, NOT escalate", () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
+    const v = view({
+      charter: charter(decomposition),
+      threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: true })],
+      inFlight: 1,
+      budget: budget({ maxAgents: 4, inFlight: 1 }),
+    });
+    const d = tick(v);
+    expect(d.action).toBe("schedule");
+    if (d.action === "schedule") expect(d.subGoalIds).toEqual(["s2"]);
+  });
+
+  test("hang guard: a transient failure that becomes terminal escalates on the next tick", () => {
+    // Tick 1: runner still in flight -> transient -> hold (keep sampling).
+    const transient = view({
+      threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: true }), thread({ subGoalId: "s2", state: "running", runnerInFlight: true })],
+      inFlight: 2,
+      budget: budget({ maxAgents: 2, inFlight: 2 }),
+    });
+    expect(tick(transient).action).toBe("hold");
+
+    // Tick 2: runner settled (retries exhausted) -> runnerInFlight false -> TERMINAL -> escalate.
+    const terminal = view({
+      threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done", runnerInFlight: false })],
+      inFlight: 0,
+    });
+    expect(tick(terminal)).toEqual({ action: "escalate", reason: "s1 failed" });
   });
 });
 

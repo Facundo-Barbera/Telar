@@ -12,6 +12,11 @@ export type ThreadView = {
   subGoalId: string;
   state: WorkUnitState;
   latestVerdict?: string;
+  // Terminality signal for the escalate path: true iff a live runner still
+  // owns this thread (its runChild promise is unsettled). A `state:"failed"`
+  // with runnerInFlight === true is mid-retry (transient), not a dead loom.
+  // Absent ⟹ terminal (back-compat: reads identical to today).
+  runnerInFlight?: boolean;
 };
 
 export type Decision =
@@ -109,7 +114,14 @@ export function tick(view: LedgerView): Decision {
     return { action: "finish-loom" };
   }
 
-  const failedRequired = required.find((sg) => threadBySubGoal.get(sg.id)?.state === "failed");
+  // Escalate only on TERMINAL failure: a required subgoal whose thread failed
+  // AND has no live runner in flight. A mid-retry failure (runnerInFlight true)
+  // falls through — it already owns a thread, so it routes to hold/schedule
+  // ("keep sampling") rather than a dead-loom escalate.
+  const failedRequired = required.find((sg) => {
+    const t = threadBySubGoal.get(sg.id);
+    return t?.state === "failed" && t.runnerInFlight !== true;
+  });
   if (failedRequired) {
     return { action: "escalate", reason: `${failedRequired.id} failed` };
   }
