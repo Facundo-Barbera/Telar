@@ -6,6 +6,7 @@ export * from "./mcp-oauth";
 export * from "./accounts";
 export * from "./engine";
 export * from "./manifest";
+export * from "./servers";
 export * from "./watches";
 export * from "./gates";
 export * from "./run-server";

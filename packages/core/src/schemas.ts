@@ -514,6 +514,87 @@ export type CriticVerdict = z.infer<typeof CriticVerdict>;
 // §M.4: panelSize() (the panel's analog of budget.ts:fanoutSize) is fed by
 // measurable post-build signals outside planner control — `sizedFrom` is the
 // audit trail of the raw signals it saw, never an AI-self-declared label.
+// --- Per-project environment lane recipe (docs/verification-environments.md §4).
+// servers.yaml is committable + secret-free (mirroring the mcpServers split):
+// it declares HOW to stand a project's services up for a lane. This unit is
+// schema + loader ONLY — port logic / spawning / supervisor are later Phase-E
+// units that consume these fields.
+
+// Where the OS-assigned dynamic port is flowed into the app. No universal
+// convention (§4.2), so model the three variants as a key-discriminated union.
+// `.strict()` prevents a typo'd variant key from silently passing.
+export const PortInject = z.union([
+  z.object({ env: z.string() }).strict(), // { env: "PORT" }
+  z.object({ arg: z.string() }).strict(), // { arg: "--port {port}" }
+  z.object({ file: z.string(), template: z.string().optional() }).strict(), // write chosen port into a file
+]);
+export type PortInject = z.infer<typeof PortInject>;
+
+// One-shot "is it up yet?" gate (§4.2 — NOT "any response"). Discriminated on kind.
+export const ReadyCheck = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("command"), run: z.string() }),
+  z.object({ kind: z.literal("http"), path: z.string(), status: z.number().int().default(200) }),
+]);
+export type ReadyCheck = z.infer<typeof ReadyCheck>;
+
+// Ongoing liveness probe → the supervisor (§4.4). intervalMs distinguishes it
+// from the one-shot ReadyCheck.
+export const HealthCheck = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("command"), run: z.string(), intervalMs: z.number().int().positive().default(5000) }),
+  z.object({
+    kind: z.literal("http"),
+    path: z.string(),
+    status: z.number().int().default(200),
+    intervalMs: z.number().int().positive().default(5000),
+  }),
+]);
+export type HealthCheck = z.infer<typeof HealthCheck>;
+
+export const RestartPolicy = z.object({
+  onCrash: z.boolean().default(true),
+  maxRestarts: z.number().int().nonnegative().default(3),
+  backoffMs: z.number().int().nonnegative().default(1000),
+});
+export type RestartPolicy = z.infer<typeof RestartPolicy>;
+
+export const ServiceConfig = z.object({
+  command: z.string(), // required: how to start this service
+  portStrategy: z.enum(["fixed", "dynamic"]), // REQUIRED, no default (§10: no silent strategy)
+  portInject: PortInject.optional(), // how the chosen port reaches the app (dynamic)
+  readyCheck: ReadyCheck.optional(), // one-shot readiness gate
+  healthcheck: HealthCheck.optional(), // ongoing liveness → supervisor
+  restartPolicy: RestartPolicy.optional(), // crash handling (supervisor)
+  reset: z.string().optional(), // command to return substrate to clean
+  dependsOn: z.array(z.string()).default([]), // other service keys this waits on
+  // Templated: "{port}", "{db.url}", "http://localhost:{port}". YAML coerces
+  // unquoted scalars (PORT: 8080 → number), so accept string|number|boolean and
+  // normalize to string rather than reject a natural-looking env block.
+  env: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v)),
+    )
+    .default({}),
+});
+export type ServiceConfig = z.infer<typeof ServiceConfig>;
+
+// Driver is LANE-LEVEL (top-level), not per-service (see design). "none" =
+// today's static-url path, unchanged. "host-process" is declared here; its
+// runtime behavior lands in a later unit.
+export const ServersDriver = z.enum(["none", "host-process"]);
+export type ServersDriver = z.infer<typeof ServersDriver>;
+
+export const ServersConfig = z.object({
+  version: z.number().default(1),
+  driver: ServersDriver.default("none"),
+  services: z.record(z.string(), ServiceConfig).default({}),
+});
+export type ServersConfig = z.infer<typeof ServersConfig>;
+
+// The graceful default: parse of {} yields all-defaults. resolveServersConfig
+// returns this when servers.yaml is absent → nothing changes today.
+export const EMPTY_SERVERS_CONFIG: ServersConfig = ServersConfig.parse({});
+
 export const PanelReport = z.object({
   url: z.string().default(""), // the app URL the panel drove
   critics: z.array(CriticVerdict).default([]),
