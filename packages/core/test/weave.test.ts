@@ -162,11 +162,12 @@ describe("runWeave (fakes, no disk/agents)", () => {
   });
 });
 
-describe("runWeave — integration verify producer (Unit 6, injected fake)", () => {
+describe("runWeave — integration verify producer + Unit 7 verdict gate (injected fake)", () => {
   // A woven loom that folds up to "ready" runs EXACTLY ONE integration verify
-  // (the injected runner), records the verdict + emits weave-verify, and leaves
-  // its terminal state UNCHANGED (informational — Unit 7 gates on it).
-  test("records latestVerdict + emits weave-verify; state stays ready even on a fail verdict", async () => {
+  // (the injected runner), records the verdict + emits weave-verify. Unit 7:
+  // a REAL red verdict ("fail"/"flaky") demotes the terminal state to
+  // "needs-review"; green ("pass"/"skip") and null keep "ready".
+  test("records latestVerdict + emits weave-verify; a fail verdict DEMOTES ready -> needs-review (Unit 7)", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const root = fakeLoom();
     const events: Array<{ type: string } & Record<string, unknown>> = [];
@@ -188,8 +189,9 @@ describe("runWeave — integration verify producer (Unit 6, injected fake)", () 
       },
     });
 
-    // State is authoritative from rollup and UNCHANGED vs the no-producer path.
-    expect(result.state).toBe("ready");
+    // Unit 7: a real red ALL verdict demotes the self-reported "ready".
+    expect(result.state).toBe("needs-review");
+    expect(result.error).toBe("integration verification fail");
     // The verdict is recorded where a later tick / the UI reads it.
     expect(result.latestVerdict).toBe("fail");
     // Exactly ONE integration verify, over the woven root itself.
@@ -203,6 +205,39 @@ describe("runWeave — integration verify producer (Unit 6, injected fake)", () 
     expect(events.findIndex((e) => e.type === "weave-verify")).toBeGreaterThan(
       events.findIndex((e) => e.type === "weave-rollup"),
     );
+    // The demotion is a real state transition emitted AFTER the verdict.
+    expect(events.findIndex((e) => e.type === "state" && e.state === "needs-review")).toBeGreaterThan(
+      events.findIndex((e) => e.type === "weave-verify"),
+    );
+  });
+
+  test("a flaky verdict DEMOTES ready -> needs-review (Unit 7 lean: a human looks)", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      runIntegrationVerify: async () => ({ verification: "flaky", gatesOk: true }),
+    });
+
+    expect(result.state).toBe("needs-review");
+    expect(result.error).toBe("integration verification flaky");
+    expect(result.latestVerdict).toBe("flaky");
+  });
+
+  test("a skip verdict (ran, nothing falsifiable) keeps ready", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "done"), child),
+      runIntegrationVerify: async () => ({ verification: "skip", gatesOk: true }),
+    });
+
+    expect(result.state).toBe("ready");
+    expect(result.latestVerdict).toBe("skip");
   });
 
   test("a pass verdict is recorded but still never changes the ready state", async () => {

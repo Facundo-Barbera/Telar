@@ -270,7 +270,19 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         if (iv) {
           loom.latestVerdict = iv.verification;
           emit({ type: "weave-verify", verification: iv.verification, gatesOk: iv.gatesOk });
-          deps.onState?.(loom); // persist the verdict + the integration attempt
+          // Unit 7 (docs §8): the ALL verdict is AUTHORITATIVE for the terminal
+          // state. A REAL red verdict (the ALL verify RAN and did not pass)
+          // demotes the self-reported "ready" to "needs-review" — the assembled
+          // whole can then only be closed via an AUDITED owner override, never a
+          // clean accept. "pass"/"skip" keep "ready". A THROW never reaches here
+          // (caught below) — fail-open: a broken checker is not a red verdict, so
+          // it must not demote a correctly-woven loom.
+          if (iv.verification === "fail" || iv.verification === "flaky") {
+            loom.error = `integration verification ${iv.verification}`;
+            setState("needs-review"); // emits {type:"state"} + persists via deps.onState
+          } else {
+            deps.onState?.(loom); // "pass"/"skip": persist the recorded verdict; state unchanged
+          }
         }
       } catch (e) {
         try {
