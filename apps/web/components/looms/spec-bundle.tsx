@@ -51,6 +51,9 @@ const ASSERTION_TYPE_LABEL: Record<AssertionType, string> = {
   "schema-match": "schema match",
   contains: "contains",
   "live-critic": "live critic",
+  command: "command",
+  gate: "gate",
+  db: "db",
 };
 
 function AssertionRow({
