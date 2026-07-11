@@ -57,7 +57,8 @@ OAuth client, storing the token in its account-decoupled project store. **Design
 strictly more capable than Claude Code's DCR-only).
 
 - [x] **Stage A — core OAuth engine** — PRM/AS discovery, client-identity ladder, PKCE, token exchange + refresh, record store; SSRF/state/audience/redirect guards; mocked-fetch tests
-- [x] **Stage B — connect flow + UI** — connect/callback/status/disconnect routes + PKCE-state pending store, `mcp.ts` auto-inject + best-effort refresh-on-resolve, Connect/Reconnect/Disconnect UI. _(Live Supabase test pending — yours to run.)_
+- [x] **Stage B — connect flow + UI** — connect/callback/status/disconnect routes + PKCE-state pending store, `mcp.ts` auto-inject + best-effort refresh-on-resolve, Connect/Reconnect/Disconnect UI. _(Live Supabase: both ozom-gv servers connect green.)_
+- [x] **Loom agents use the project MCP servers** — verifier + critic now get the same read-only servers as the builder (URL-enforced `?read_only=true`); the project's Manifest rail surfaces each server's live health + an inline Connect shortcut
 - [ ] **v2 — CIMD hosted client-doc** — stand up the client-metadata URL to flip the top tier on
 
 ## Phase C — Durable execution (out-of-process)
@@ -93,7 +94,8 @@ The moat is only real if it's demonstrated on live features.
 
 ---
 
-_Last frontier update: Phase A down to just a live repair-leg proof; Phase B.1
-steering + P5 boot-recovery shipped, watcher design drafted. Next fork: build the
-**v1 watcher** now (tab-open-only) or pull **Phase C** forward so watchers ship
-tab-closed-capable._
+_Last frontier update: Phase F Stage A+B shipped and MCP now reaches every loom
+agent read-only; Phase A down to just a live repair-leg proof; Phase B.1 steering,
+v1 watchers + P5 boot-recovery shipped. Next fork: **prove the repair leg live**
+(closes Phase A) vs. pull **Phase C** forward (durable out-of-process runs, which
+also unblocks tab-closed watchers) vs. **Phase F v2** (hosted CIMD client-doc)._
