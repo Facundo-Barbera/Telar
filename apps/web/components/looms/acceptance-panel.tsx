@@ -148,6 +148,39 @@ const VARIANTS: Record<
   },
 };
 
+// The `ready` sign-off's AI account of WHAT was verified and WHY it's
+// acceptable, sourced ONLY from prose the verification loop already wrote onto
+// the loom — never fabricated client-side. Fallback order, most authoritative
+// first:
+//   1. the INDEPENDENT Verifier report summary (legacy single-verifier path)
+//   2. a synthesis of the critic PANEL's per-lens summaries (no single
+//      panelReport.summary exists, so we join the critics' prose)
+//   3. the BUILDER's own Verdict summary (all that survives a gate-only loom)
+// Null when the latest attempt carries no prose at all — the panel then keeps
+// its static blurb as the graceful default. Reads the latest attempt because
+// that's the one the `ready` state was reached on.
+function deriveVerifiedSummary(
+  loom: Loom,
+): { text: string; sourceLabel: string } | null {
+  const latest = loom.attempts.at(-1);
+  if (!latest) return null;
+
+  const verifier = latest.verifierReport?.summary?.trim();
+  if (verifier) return { text: verifier, sourceLabel: "Independent verifier" };
+
+  const lensLines = (latest.panelReport?.critics ?? [])
+    .map((c) => c.summary?.trim())
+    .filter((s): s is string => Boolean(s));
+  if (lensLines.length > 0) {
+    return { text: lensLines.join(" "), sourceLabel: "Critic panel" };
+  }
+
+  const builder = latest.verdict?.summary?.trim();
+  if (builder) return { text: builder, sourceLabel: "Builder" };
+
+  return null;
+}
+
 export function AcceptancePanel({
   loom,
   onAccepted,
@@ -283,6 +316,10 @@ export function AcceptancePanel({
   // For `failed`, surface the terminal reason (loom.error) so the owner sees WHY
   // before deciding to resume or send back.
   const failureReason = loom.state === "failed" ? loom.error : null;
+  // For `ready`, the AI's prose account of what was verified — augments the
+  // static heading/blurb; null falls back to the blurb alone.
+  const verifiedSummary =
+    loom.state === "ready" ? deriveVerifiedSummary(loom) : null;
 
   return (
     <Card className={cn("border-l-2", v.card)}>
@@ -308,6 +345,21 @@ export function AcceptancePanel({
             </p>
           </div>
         </div>
+
+        {/* ready: the AI's prose account of WHAT was verified and why it's
+            acceptable — sourced from the loom's own verification record
+            (verifier → panel synthesis → builder verdict), never authored
+            here. Augments the heading; absent when the loom carries no prose. */}
+        {verifiedSummary && (
+          <div className="flex flex-col gap-1 rounded-md bg-emerald-500/[0.06] p-2.5 ring-1 ring-emerald-500/20">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-emerald-400/70">
+              {verifiedSummary.sourceLabel}
+            </span>
+            <p className="text-xs leading-snug text-foreground/80">
+              {verifiedSummary.text}
+            </p>
+          </div>
+        )}
 
         {/* blocked: the exact question the loop parked on. */}
         {question && (
