@@ -56,6 +56,27 @@ function defaultSpawn(command: string, cwd: string, env: NodeJS.ProcessEnv): Chi
   return nodeSpawn(command, { shell: true, cwd, env, detached: true, stdio: "ignore" });
 }
 
+// Supervision-only spawn (opt-in via StartLaneOpts.captureLogs): pipe stdout/
+// stderr so a ring buffer can feed `logTail()` on escalation. The default
+// non-supervised path keeps `stdio:"ignore"` (byte-identical) — logs cost
+// nothing until a caller asks to supervise.
+function defaultSpawnPiped(command: string, cwd: string, env: NodeJS.ProcessEnv): ChildProcess {
+  return nodeSpawn(command, { shell: true, cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+const LOG_TAIL_MAX = 16_384;
+
+// Attach a bounded ring buffer to a child's piped stdout/stderr. Returns the
+// getter used for `handle.logTail()`. Reused across restarts (same buffer).
+function attachLogTail(ring: { text: string }, child: ChildProcess): void {
+  const append = (chunk: unknown) => {
+    ring.text += String(chunk);
+    if (ring.text.length > LOG_TAIL_MAX) ring.text = ring.text.slice(-LOG_TAIL_MAX);
+  };
+  child.stdout?.on("data", append);
+  child.stderr?.on("data", append);
+}
+
 async function defaultPoll(url: string, signal: AbortSignal): Promise<boolean> {
   try {
     await fetch(url, { signal });
@@ -185,6 +206,14 @@ export type ServiceHandle = {
   port: number | null; // null: fixed service with no declared port
   url: string | null; // `http://localhost:${port}` when a port is known
   stop: () => Promise<void>;
+  // Restart seam (Unit 3, all OPTIONAL for back-compat). Present only on lanes
+  // brought up by startLane; the supervisor requires them. `isAlive`/`restart`
+  // read a mutable current-child cell, so they track the process across
+  // restarts. `logTail` is present only when `captureLogs` opts into piped
+  // stdio (else stdio stays "ignore" and no tail exists).
+  isAlive?: () => boolean; // child.exitCode === null && !child.killed
+  restart?: () => Promise<void>; // re-spawn on the SAME port; resolves ready, rejects on spawn/timeout
+  logTail?: () => string; // ring-buffered stdout/stderr for escalation
 };
 
 export type Lane = {
@@ -209,6 +238,31 @@ export type StartLaneOpts = {
   fetchImpl?: typeof fetch; // http readyCheck (default global fetch)
   runCommand?: RunCommand; // command readyCheck (default real exec)
   findPort?: () => Promise<number>; // default findFreePort
+  // Opt-in (Unit 3): pipe child stdio into a per-service ring buffer and expose
+  // it via `handle.logTail()` for escalation. Default false ⇒ stdio:"ignore".
+  captureLogs?: boolean;
+};
+
+// Everything a restart needs (Unit 3 §6): the resolved spec computed once
+// during the first bring-up and reused verbatim on every restart, so the same
+// port/env peers already baked into their config stays valid.
+type ResolvedService = {
+  name: string;
+  root: string;
+  command: string;
+  spawnEnv: NodeJS.ProcessEnv;
+  port: number | null;
+  url: string | null;
+  readyCheck?: ReadyCheck;
+};
+
+type BringUpDeps = {
+  spawnFn: (command: string, cwd: string, env: NodeJS.ProcessEnv) => ChildProcess;
+  fetchImpl: typeof fetch;
+  runCommand: RunCommand;
+  timeoutMs: number;
+  abortSignal?: AbortSignal;
+  onSpawn?: (child: ChildProcess) => void; // log-capture wiring
 };
 
 type ReadyPredicate = (signal: AbortSignal) => Promise<boolean>;
@@ -255,7 +309,7 @@ async function awaitReady(params: {
 
 // Real exec for command readyChecks: run the command to completion and report
 // its exit code. Injectable in the lane (opts.runCommand) so tests never exec.
-function defaultRunCommand(cmd: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<CommandResult> {
+export function defaultRunCommand(cmd: string, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = nodeSpawn(cmd, { shell: true, cwd, env, stdio: "ignore" });
     const onAbort = () => {
@@ -279,7 +333,7 @@ function defaultRunCommand(cmd: string, cwd: string, env: NodeJS.ProcessEnv, sig
 // §6: build the ready predicate for one service from its declared ReadyCheck.
 // http ⇒ status must equal the declared status; command ⇒ exit 0; absent ⇒
 // weak fallback (any response if a url exists, else ready once spawned).
-function makeReadyPredicate(
+export function makeReadyPredicate(
   readyCheck: ReadyCheck | undefined,
   ctx: {
     port: number | null;
@@ -396,6 +450,52 @@ function resolveTemplate(
   });
 }
 
+// Pure extraction (Unit 3 §7.1) of the spawn-and-await-ready body: spawn the
+// resolved spec, capture spawn errors, run the readiness gate. Byte-identical
+// to the inline first-pass logic; reused verbatim by `restart()`. `cleanupPeers`
+// tears down already-started peers on a first-pass failure (a restart passes a
+// no-op — the supervisor, not the lane, owns a restart's failure handling).
+async function bringUpService(
+  spec: ResolvedService,
+  deps: BringUpDeps,
+  cleanupPeers: () => Promise<void>,
+): Promise<ChildProcess> {
+  const child = deps.spawnFn(spec.command, spec.root, spec.spawnEnv);
+  deps.onSpawn?.(child);
+
+  let spawnError: Error | null = null;
+  child.once("error", (err) => {
+    spawnError = err instanceof Error ? err : new Error(String(err));
+  });
+
+  const cleanup = async (): Promise<void> => {
+    await killTree(child);
+    await cleanupPeers();
+  };
+
+  const predicate = makeReadyPredicate(spec.readyCheck, {
+    port: spec.port,
+    url: spec.url,
+    root: spec.root,
+    env: spec.spawnEnv,
+    fetchImpl: deps.fetchImpl,
+    runCommand: deps.runCommand,
+  });
+  await awaitReady({
+    predicate,
+    timeoutMs: deps.timeoutMs,
+    abortSignal: deps.abortSignal,
+    getSpawnError: () => spawnError,
+    cleanup,
+    messages: {
+      aborted: `lane: aborted while waiting for service "${spec.name}"`,
+      spawnError: (m) => `lane: failed to spawn service "${spec.name}": ${m}`,
+      timeout: `lane: service "${spec.name}" not ready within ${deps.timeoutMs}ms`,
+    },
+  });
+  return child;
+}
+
 /**
  * One-shot bring-up (§4) of a project's declared services: correct ports, real
  * readiness, self-referential env resolved — plus handles to stop them. Opt-in
@@ -408,7 +508,8 @@ export async function startLane(config: ServersConfig, root: string, opts: Start
   }
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const spawnFn = opts.spawnFn ?? defaultSpawn;
+  const captureLogs = opts.captureLogs ?? false;
+  const spawnFn = opts.spawnFn ?? (captureLogs ? defaultSpawnPiped : defaultSpawn);
   const fetchImpl = opts.fetchImpl ?? fetch;
   const runCommand = opts.runCommand ?? defaultRunCommand;
   const findPort = opts.findPort ?? findFreePort;
@@ -470,9 +571,22 @@ export async function startLane(config: ServersConfig, root: string, opts: Start
         }
       }
 
-      // (d) Spawn. injectEnv is applied last (authoritative).
+      // (d) Spawn + ready. injectEnv is applied last (authoritative). The
+      // resolved spec is captured so restart() can re-spawn on the SAME port
+      // (peers already baked this port/url into their env — §6).
       const spawnEnv: NodeJS.ProcessEnv = { ...baseEnv, ...resolvedEnv, ...injectEnv };
-      const child = spawnFn(command, root, spawnEnv);
+      const spec: ResolvedService = { name, root, command, spawnEnv, port, url, readyCheck: svc.readyCheck };
+
+      // Optional log ring (opt-in): the same buffer is re-attached on every
+      // restart so escalation sees the tail across the whole lifecycle.
+      const ring: { text: string } | null = captureLogs ? { text: "" } : null;
+      const onSpawn = ring ? (c: ChildProcess) => attachLogTail(ring, c) : undefined;
+      const bringUpDeps: BringUpDeps = { spawnFn, fetchImpl, runCommand, timeoutMs, abortSignal, onSpawn };
+
+      // (e) Bring up (first pass). On failure this tears down peers via cleanup.
+      // The mutable `child` cell is what stop/isAlive/restart read, so they
+      // always see the CURRENT process across restarts.
+      let child = await bringUpService(spec, bringUpDeps, cleanup);
 
       let stopped = false;
       const stop = async (): Promise<void> => {
@@ -482,28 +596,20 @@ export async function startLane(config: ServersConfig, root: string, opts: Start
       };
       started.push({ stop });
 
-      let spawnError: Error | null = null;
-      child.once("error", (err) => {
-        spawnError = err instanceof Error ? err : new Error(String(err));
-      });
-
-      // (e) Ready: the declared check against the deadline.
-      const predicate = makeReadyPredicate(svc.readyCheck, { port, url, root, env: spawnEnv, fetchImpl, runCommand });
-      await awaitReady({
-        predicate,
-        timeoutMs,
-        abortSignal,
-        getSpawnError: () => spawnError,
-        cleanup,
-        messages: {
-          aborted: `lane: aborted while waiting for service "${name}"`,
-          spawnError: (m) => `lane: failed to spawn service "${name}": ${m}`,
-          timeout: `lane: service "${name}" not ready within ${timeoutMs}ms`,
-        },
-      });
+      const isAlive = (): boolean => child.exitCode === null && !child.killed;
+      // restart(): kill the current child, re-spawn the SAME spec (same port),
+      // re-await readiness. Resolves when ready, rejects on spawn/timeout — the
+      // exact signal the crash-loop gate consumes. A restart failure does NOT
+      // tear down peers (no-op cleanupPeers); the supervisor owns that path.
+      const restart = async (): Promise<void> => {
+        if (stopped) return;
+        await killTree(child);
+        child = await bringUpService(spec, bringUpDeps, async () => {});
+      };
+      const logTail = ring ? () => ring.text : undefined;
 
       // (f) Record the handle for peers and the returned lane.
-      resolved[name] = { name, port, url, stop };
+      resolved[name] = { name, port, url, stop, isAlive, restart, logTail };
     } catch (e) {
       // Synchronous setup errors (bad template, missing port) haven't torn
       // down peers yet; awaitReady's cleanup already has (idempotent to redo).

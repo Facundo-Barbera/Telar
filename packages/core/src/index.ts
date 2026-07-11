@@ -10,6 +10,7 @@ export * from "./servers";
 export * from "./watches";
 export * from "./gates";
 export * from "./run-server";
+export * from "./supervisor";
 export * from "./looms";
 export * from "./executor";
 export * from "./budget";
