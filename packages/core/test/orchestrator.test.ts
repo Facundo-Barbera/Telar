@@ -166,16 +166,21 @@ describe("validateDecision (pure)", () => {
 // ---- tick -----------------------------------------------------------------
 
 describe("tick (pure scheduler) — scenario table", () => {
+  // Phase 2 shape change: tick now returns { decision, rationale } (rationale is
+  // more PURE computed output). These decision-shape tests read the .decision;
+  // the rationale is asserted separately below.
+  const decide = (v: LedgerView) => tick(v).decision;
+
   test("all required subgoals done -> finish-loom", () => {
     const v = view({
       threads: [thread({ subGoalId: "s1", state: "done" }), thread({ subGoalId: "s2", state: "done" })],
     });
-    expect(tick(v)).toEqual({ action: "finish-loom" });
+    expect(decide(v)).toEqual({ action: "finish-loom" });
   });
 
   test("ready subgoals + pool room -> schedule with agents = fanoutSize", () => {
     const v = view({ budget: budget({ maxAgents: 2 }) });
-    const d = tick(v);
+    const d = decide(v);
     expect(d.action).toBe("schedule");
     if (d.action === "schedule") {
       expect(d.subGoalIds.sort()).toEqual(["s1", "s2"]);
@@ -189,7 +194,7 @@ describe("tick (pure scheduler) — scenario table", () => {
       inFlight: 2,
       budget: budget({ maxAgents: 2, inFlight: 2 }),
     });
-    expect(tick(v)).toEqual({ action: "hold" });
+    expect(decide(v)).toEqual({ action: "hold" });
   });
 
   test("no ready subgoals and none in flight -> escalate (blocked)", () => {
@@ -200,7 +205,7 @@ describe("tick (pure scheduler) — scenario table", () => {
     });
     // "a" is a required thread in a terminal failed state -> escalate for that,
     // exercising the distinct "failed required" branch instead.
-    const d = tick(v);
+    const d = decide(v);
     expect(d.action).toBe("escalate");
   });
 
@@ -209,13 +214,13 @@ describe("tick (pure scheduler) — scenario table", () => {
       budget: budget({ maxAgents: 12, maxWallClockHours: 1, startedAtMs: 0 }),
       nowMs: 2 * 3600_000,
     });
-    expect(tick(v)).toEqual({ action: "escalate", reason: "wall-clock budget exhausted" });
+    expect(decide(v)).toEqual({ action: "escalate", reason: "wall-clock budget exhausted" });
   });
 
   test("truly blocked: not-required-failed but no ready & none running -> escalate (blocked)", () => {
     const decomposition = [subGoal({ id: "a", dependsOn: ["ghost"] })];
     const v = view({ charter: charter(decomposition), threads: [] });
-    expect(tick(v)).toEqual({ action: "escalate", reason: "no ready threads and none in flight (blocked)" });
+    expect(decide(v)).toEqual({ action: "escalate", reason: "no ready threads and none in flight (blocked)" });
   });
 
   test("terminally-failed required subgoal (runnerInFlight false) -> escalate with reason", () => {
@@ -223,7 +228,7 @@ describe("tick (pure scheduler) — scenario table", () => {
       threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done" })],
       inFlight: 0,
     });
-    expect(tick(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(v)).toEqual({ action: "escalate", reason: "s1 failed" });
   });
 
   test("terminally-failed required subgoal (field absent) -> escalate (back-compat)", () => {
@@ -232,7 +237,7 @@ describe("tick (pure scheduler) — scenario table", () => {
       threads: [thread({ subGoalId: "s1", state: "failed" }), thread({ subGoalId: "s2", state: "done" })],
       inFlight: 0,
     });
-    expect(tick(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(v)).toEqual({ action: "escalate", reason: "s1 failed" });
   });
 
   test("transiently-failed required subgoal (runnerInFlight true) -> hold, NOT escalate", () => {
@@ -243,7 +248,7 @@ describe("tick (pure scheduler) — scenario table", () => {
       inFlight: 2,
       budget: budget({ maxAgents: 2, inFlight: 2 }),
     });
-    expect(tick(v)).toEqual({ action: "hold" });
+    expect(decide(v)).toEqual({ action: "hold" });
   });
 
   test("transiently-failed required subgoal + ready sibling -> schedule other work, NOT escalate", () => {
@@ -254,7 +259,7 @@ describe("tick (pure scheduler) — scenario table", () => {
       inFlight: 1,
       budget: budget({ maxAgents: 4, inFlight: 1 }),
     });
-    const d = tick(v);
+    const d = decide(v);
     expect(d.action).toBe("schedule");
     if (d.action === "schedule") expect(d.subGoalIds).toEqual(["s2"]);
   });
@@ -266,14 +271,94 @@ describe("tick (pure scheduler) — scenario table", () => {
       inFlight: 2,
       budget: budget({ maxAgents: 2, inFlight: 2 }),
     });
-    expect(tick(transient).action).toBe("hold");
+    expect(decide(transient).action).toBe("hold");
 
     // Tick 2: runner settled (retries exhausted) -> runnerInFlight false -> TERMINAL -> escalate.
     const terminal = view({
       threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done", runnerInFlight: false })],
       inFlight: 0,
     });
-    expect(tick(terminal)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(terminal)).toEqual({ action: "escalate", reason: "s1 failed" });
+  });
+});
+
+// ---- tick rationale (Unit 2 — pure computed WHY) --------------------------
+
+describe("tick rationale (pure, deterministic scheduler policy)", () => {
+  test("schedule rationale carries priority scores, the head, and the binding fanout term", () => {
+    // hub unblocks a and b (score 2); leaf unblocks nothing (score 0). Pool of 2
+    // < 3 ready pieces, so the AGENT POOL is the binding clamp term.
+    const decomposition = [
+      subGoal({ id: "hub" }),
+      subGoal({ id: "a", dependsOn: ["hub"] }),
+      subGoal({ id: "b", dependsOn: ["hub"] }),
+      subGoal({ id: "leaf" }),
+    ];
+    const v = view({ charter: charter(decomposition) }); // default pool 12 fits both ready pieces
+    const { decision, rationale } = tick(v);
+
+    expect(decision.action).toBe("schedule");
+    // (a) prioritize ranking + scores: hub (2) before leaf (0), critical-path-first.
+    expect(rationale.ranked).toEqual([
+      { id: "hub", score: 2 },
+      { id: "leaf", score: 0 },
+    ]);
+    // (b) fanout clamp breakdown + binding term: 2 ready pieces (hub, leaf) both
+    // fit the pool + budget -> demand ("pieces") is the binding term.
+    expect(rationale.fanout).toMatchObject({ pieces: 2, chosen: 2, binding: "pieces" });
+    // The head appears in the summary with its downstream count.
+    expect(rationale.summary).toContain("hub first (unblocks 2 downstream)");
+  });
+
+  test("fanout binding term is 'pool' when the agent pool is the smallest cap", () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" }), subGoal({ id: "s3" })];
+    const v = view({ charter: charter(decomposition), budget: budget({ maxAgents: 2 }) }); // 3 ready, pool 2
+    const { decision, rationale } = tick(v);
+    expect(decision).toEqual({ action: "schedule", subGoalIds: ["s1", "s2"], agents: 2 });
+    expect(rationale.fanout).toMatchObject({ pieces: 3, capByPool: 2, chosen: 2, binding: "pool" });
+  });
+
+  test("fanout binding term is 'budget' when the cost budget is the smallest cap", () => {
+    // 3 ready pieces, pool 12, but budgetLeft 1.2 / 0.5 = floor 2 -> budget binds.
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" }), subGoal({ id: "s3" })];
+    const v = view({
+      charter: charter(decomposition, { maxAgents: 12 }),
+      budget: budget({ maxAgents: 12, maxCostUsd: 1.2, spentUsd: 0 }),
+    });
+    const { decision, rationale } = tick(v);
+    expect(decision.action).toBe("schedule");
+    if (decision.action === "schedule") expect(decision.agents).toBe(2);
+    expect(rationale.fanout).toMatchObject({ capByBudget: 2, chosen: 2, binding: "budget" });
+  });
+
+  test("the budget/clock snapshot rides on every decision (here: finish-loom)", () => {
+    const v = view({
+      threads: [thread({ subGoalId: "s1", state: "done" }), thread({ subGoalId: "s2", state: "done" })],
+      budget: budget({ maxAgents: 12, maxCostUsd: 10, spentUsd: 3, maxWallClockHours: 2, startedAtMs: 0 }),
+      inFlight: 0,
+      nowMs: 3600_000, // 1h elapsed of a 2h wall clock
+    });
+    const { decision, rationale } = tick(v);
+    expect(decision).toEqual({ action: "finish-loom" });
+    expect(rationale.budget).toEqual({
+      spentUsd: 3,
+      inFlight: 0,
+      maxCostUsd: 10,
+      budgetLeftUsd: 7,
+      wallClockRemainingMs: 3600_000, // 2h - 1h
+    });
+  });
+
+  test("wall-clock exhausted still returns a rationale with the snapshot (no ranked)", () => {
+    const v = view({
+      budget: budget({ maxAgents: 12, maxWallClockHours: 1, startedAtMs: 0 }),
+      nowMs: 2 * 3600_000,
+    });
+    const { decision, rationale } = tick(v);
+    expect(decision.action).toBe("escalate");
+    expect(rationale.budget.wallClockRemainingMs).toBeLessThan(0);
+    expect(rationale.ranked).toBeUndefined();
+    expect(rationale.summary).toContain("wall-clock");
   });
 });
 
@@ -448,6 +533,108 @@ describe("runWeave wired to the tick loop (fakes)", () => {
 
     expect(["failed", "needs-review"]).toContain(result.state);
     expect(s2Settled).toBe(true);
+  });
+});
+
+// ---- Phase 2 events: plan / observe / decision-rationale ---------------------
+
+describe("runWeave — plan / observe / decision events (fakes)", () => {
+  const doneRunner = async (child: Loom) => ((child.state = "done"), child);
+  const spawnFake = (sg: SubGoal) => fakeLoom({ subGoalId: sg.id, state: "queued" });
+
+  test("Unit 3: a plan event fires at weave start with the decomposition graph + charter rationale, before any decision", async () => {
+    const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] })];
+    const weave = fakeLoom({ charter: charter(decomposition) });
+    weave.charter!.rationale = "split along the API/DB seam";
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+
+    await runWeave(weave, decomposition, { spawnChild: spawnFake, runChild: doneRunner, onEvent: (ev) => events.push(ev) });
+
+    const plan = events.find((e) => e.type === "plan");
+    expect(plan).toBeDefined();
+    expect(plan!.rationale).toBe("split along the API/DB seam");
+    expect(plan!.decomposition).toEqual([
+      { id: "a", title: "title", dependsOn: [], required: true },
+      { id: "b", title: "title", dependsOn: ["a"], required: true },
+    ]);
+    // Plan precedes every scheduling decision — the loop is replayable from it.
+    expect(events.findIndex((e) => e.type === "plan")).toBeLessThan(events.findIndex((e) => e.type === "decision"));
+  });
+
+  test("Unit 3: singleThread weave-of-one uses the deterministic fallback rationale", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const weave = fakeLoom({ charter: charter(decomposition) });
+    weave.charter!.singleThread = true; // synthesized weave-of-one, no LLM rationale
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+
+    await runWeave(weave, decomposition, { spawnChild: spawnFake, runChild: doneRunner, onEvent: (ev) => events.push(ev) });
+
+    const plan = events.find((e) => e.type === "plan")!;
+    expect(plan.rationale).toBe("single thread by construction — no decomposition requested");
+  });
+
+  test("Unit 4: an observe event fires when a child settles, carrying its state + the newly-unblocked set", async () => {
+    const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] })];
+    const weave = fakeLoom();
+    const observes: Array<{ type: string } & Record<string, unknown>> = [];
+
+    await runWeave(weave, decomposition, {
+      spawnChild: spawnFake,
+      runChild: doneRunner,
+      onEvent: (ev) => {
+        if (ev.type === "observe") observes.push(ev);
+      },
+    });
+
+    expect(observes.length).toBe(2);
+    const aObs = observes.find((o) => o.subGoalId === "a")!;
+    expect(aObs.state).toBe("done");
+    expect(aObs.childId).toBeTypeOf("string");
+    expect(aObs.unblocked).toEqual(["b"]); // a done -> b becomes newly ready
+    const bObs = observes.find((o) => o.subGoalId === "b")!;
+    expect(bObs.state).toBe("done");
+    expect(bObs.unblocked).toEqual([]); // nothing depends on b
+  });
+
+  test("Unit 4: a failed child unblocks nothing (state carried honestly)", async () => {
+    const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["a"] })];
+    const weave = fakeLoom();
+    const observes: Array<{ type: string } & Record<string, unknown>> = [];
+
+    await runWeave(weave, decomposition, {
+      spawnChild: spawnFake,
+      runChild: async (child) => ((child.state = child.subGoalId === "a" ? "failed" : "done"), child),
+      onEvent: (ev) => {
+        if (ev.type === "observe") observes.push(ev);
+      },
+    });
+
+    const aObs = observes.find((o) => o.subGoalId === "a")!;
+    expect(aObs.state).toBe("failed");
+    expect(aObs.unblocked).toEqual([]); // a failed -> b stays blocked
+  });
+
+  test("Unit 2: the decision event carries { decision } (back-compat) plus the new rationale", async () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" }), subGoal({ id: "s3" })];
+    const weave = fakeLoom({ charter: charter(decomposition, { maxAgents: 2 }) }); // 3 ready, pool 2
+    const decisions: Array<{ type: string } & Record<string, unknown>> = [];
+
+    await runWeave(weave, decomposition, {
+      spawnChild: spawnFake,
+      runChild: doneRunner,
+      onEvent: (ev) => {
+        if (ev.type === "decision") decisions.push(ev);
+      },
+    });
+
+    // Every decision keeps the back-compat { decision } AND gains a rationale.
+    for (const ev of decisions) {
+      expect((ev.decision as { action?: string }).action).toBeTypeOf("string");
+      expect((ev.rationale as { summary?: string }).summary).toBeTypeOf("string");
+    }
+    // The first schedule fanned 3 ready pieces into a pool of 2 -> pool binds.
+    const firstSchedule = decisions.find((ev) => (ev.decision as { action?: string }).action === "schedule")!;
+    expect((firstSchedule.rationale as { fanout?: { binding?: string } }).fanout?.binding).toBe("pool");
   });
 });
 

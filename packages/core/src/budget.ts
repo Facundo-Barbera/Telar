@@ -20,31 +20,59 @@ export function budgetLeftUsd(b: BudgetState): number {
   return b.maxCostUsd == null ? Infinity : Math.max(0, b.maxCostUsd - b.spentUsd);
 }
 
+// The fan-out clamp, broken down: the three candidate terms of the min() plus
+// which one was binding (docs/loom-orchestrator.md §7). This is the honest
+// scheduler-policy input the rationale surfaces — pure, derived only from args.
+export type FanoutClamp = {
+  pieces: number; // max(1, independentPieces) — the demand side
+  capByPool: number; // maxAgents - inFlight
+  capByBudget: number; // floor(budgetLeftUsd / estCostPerAgent), or Infinity when uncapped
+  chosen: number; // the final n actually returned
+  binding: "pieces" | "pool" | "budget" | "pool-exhausted"; // the term that set `chosen`
+};
+
 // agents(phase) = clamp(independentPieces, 1, min(maxAgents - inFlight, floor(budgetLeftUsd / estCostPerAgent)))
 // — except the pool being full (capByPool <= 0) forces 0: no room to start anything.
-export function fanoutSize(
+export function fanoutClamp(
   independentPieces: number,
   args: { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number },
-): number {
+): FanoutClamp {
+  const pieces = Math.max(1, independentPieces);
   const capByPool = args.maxAgents - args.inFlight;
   const capByBudget =
     args.estCostPerAgent > 0 && isFinite(args.budgetLeftUsd)
       ? Math.floor(args.budgetLeftUsd / args.estCostPerAgent)
       : Infinity;
   const cap = Math.min(capByPool, capByBudget);
-  if (cap <= 0) return 0;
-  return Math.min(Math.max(1, independentPieces), cap);
+  if (cap <= 0) return { pieces, capByPool, capByBudget, chosen: 0, binding: "pool-exhausted" };
+  const chosen = Math.min(pieces, cap);
+  // Demand (pieces) binds when it fits under both caps; otherwise the smaller cap.
+  const binding = chosen === pieces ? "pieces" : capByPool <= capByBudget ? "pool" : "budget";
+  return { pieces, capByPool, capByBudget, chosen, binding };
+}
+
+export function fanoutSize(
+  independentPieces: number,
+  args: { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number },
+): number {
+  return fanoutClamp(independentPieces, args).chosen;
 }
 
 export function withinWallClock(b: BudgetState, nowMs: number): boolean {
   return b.maxWallClockHours == null ? true : nowMs - b.startedAtMs < b.maxWallClockHours * 3600_000;
 }
 
+// A ready subgoal paired with its critical-path score: how many other subgoals
+// transitively depend on it (= how much downstream work scheduling it unblocks).
+export type PriorityRank = { id: string; score: number };
+
 // Critical-path-first (docs/loom-orchestrator.md §7 open decision #8): rank a
 // ready subgoal by how many other subgoals transitively depend on it (unblocks
 // the most work first), descending; ties broken by id ascending for
 // determinism across ticks (decisionLogTail consistency depends on this).
-export function prioritize(readyIds: string[], decomposition: SubGoal[]): string[] {
+// Returns the {id, score} pairs — the raw material for the scheduler rationale
+// ("s3 first because it unblocks 4 downstream"). `prioritize` drops the scores.
+export function prioritizeScored(readyIds: string[], decomposition: SubGoal[]): PriorityRank[] {
   // dependents[x] = ids that directly dependOn x
   const dependents = new Map<string, string[]>();
   for (const sg of decomposition) {
@@ -69,5 +97,9 @@ export function prioritize(readyIds: string[], decomposition: SubGoal[]): string
 
   const scored = readyIds.map((id) => ({ id, score: transitiveDependentCount(id) }));
   scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return scored.map((s) => s.id);
+  return scored;
+}
+
+export function prioritize(readyIds: string[], decomposition: SubGoal[]): string[] {
+  return prioritizeScored(readyIds, decomposition).map((s) => s.id);
 }

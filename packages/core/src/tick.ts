@@ -5,7 +5,15 @@
 // the tick path: validateDecision makes "finish-loom" illegal unless every
 // required subgoal's thread is state === "done".
 import type { Charter, SubGoal, WorkUnitState } from "./schemas";
-import { type BudgetState, budgetLeftUsd, fanoutSize, prioritize, withinWallClock } from "./budget";
+import {
+  type BudgetState,
+  type FanoutClamp,
+  type PriorityRank,
+  budgetLeftUsd,
+  fanoutClamp,
+  prioritizeScored,
+  withinWallClock,
+} from "./budget";
 
 export type ThreadView = {
   id: string;
@@ -38,6 +46,29 @@ export type LedgerView = {
   budget: BudgetState;
   decisionLogTail: Decision[];
   nowMs: number;
+};
+
+// The budget/clock the decision was made against — a snapshot of view.budget +
+// view.nowMs, atomic-consistent with the Decision tick produced.
+export type BudgetSnapshot = {
+  spentUsd: number;
+  inFlight: number;
+  maxCostUsd?: number;
+  budgetLeftUsd: number; // Infinity when uncapped (serializes to null on persist)
+  wallClockRemainingMs: number | null; // null when no wall-clock cap
+};
+
+// LOCKED FORK B: the WHY behind a Decision, as honest DETERMINISTIC scheduler-
+// policy inputs (real numbers) — never model reasoning, never narrated prose.
+// Purely COMPUTED from the LedgerView (tick stays pure); the loop contributes
+// only `rejected` (validateDecision's dropped reason), since validation runs
+// after tick returns.
+export type Rationale = {
+  summary: string; // one-line policy statement built from the numbers below
+  budget: BudgetSnapshot; // (c) always present
+  ranked?: PriorityRank[]; // (a) critical-path scores, when readiness was evaluated
+  fanout?: FanoutClamp; // (b) the fan-out clamp + binding term, on schedule
+  rejected?: string; // (d) validateDecision reason, folded in by runWeave on downgrade
 };
 
 const REPAIRABLE_STATES: WorkUnitState[] = ["needs-review", "failed"];
@@ -99,11 +130,31 @@ export function validateDecision(d: Decision, view: LedgerView): { ok: boolean; 
 
 export const EST_COST_PER_AGENT = 0.5;
 
-export function tick(view: LedgerView): Decision {
+// Pure: the budget/clock snapshot (rationale piece c), read straight off the
+// view so it is atomic-consistent with the decision produced this tick.
+function budgetSnapshot(view: LedgerView): BudgetSnapshot {
+  const b = view.budget;
+  return {
+    spentUsd: b.spentUsd,
+    inFlight: view.inFlight,
+    maxCostUsd: b.maxCostUsd,
+    budgetLeftUsd: budgetLeftUsd(b),
+    wallClockRemainingMs:
+      b.maxWallClockHours == null ? null : b.maxWallClockHours * 3600_000 - (view.nowMs - b.startedAtMs),
+  };
+}
+
+export type TickResult = { decision: Decision; rationale: Rationale };
+
+export function tick(view: LedgerView): TickResult {
   const { charter, budget } = view;
+  const snapshot = budgetSnapshot(view);
 
   if (!withinWallClock(budget, view.nowMs)) {
-    return { action: "escalate", reason: "wall-clock budget exhausted" };
+    return {
+      decision: { action: "escalate", reason: "wall-clock budget exhausted" },
+      rationale: { summary: "wall-clock budget exhausted — escalating", budget: snapshot },
+    };
   }
 
   const threadBySubGoal = new Map<string, ThreadView>();
@@ -111,7 +162,10 @@ export function tick(view: LedgerView): Decision {
 
   const required = charter.decomposition.filter((sg) => sg.required);
   if (required.every((sg) => threadBySubGoal.get(sg.id)?.state === "done")) {
-    return { action: "finish-loom" };
+    return {
+      decision: { action: "finish-loom" },
+      rationale: { summary: "every required subgoal is done — finishing the weave", budget: snapshot },
+    };
   }
 
   // Escalate only on TERMINAL failure: a required subgoal whose thread failed
@@ -123,25 +177,48 @@ export function tick(view: LedgerView): Decision {
     return t?.state === "failed" && t.runnerInFlight !== true;
   });
   if (failedRequired) {
-    return { action: "escalate", reason: `${failedRequired.id} failed` };
+    return {
+      decision: { action: "escalate", reason: `${failedRequired.id} failed` },
+      rationale: { summary: `required subgoal ${failedRequired.id} failed terminally — escalating`, budget: snapshot },
+    };
   }
 
-  const ready = prioritize(readySubGoals(view), charter.decomposition);
+  const ranked = prioritizeScored(readySubGoals(view), charter.decomposition);
+  const ready = ranked.map((r) => r.id);
   const poolRoom = budget.maxAgents - view.inFlight;
   if (ready.length > 0 && poolRoom > 0) {
-    const n = fanoutSize(ready.length, {
+    const fanout = fanoutClamp(ready.length, {
       maxAgents: budget.maxAgents,
       inFlight: view.inFlight,
       budgetLeftUsd: budgetLeftUsd(budget),
       estCostPerAgent: EST_COST_PER_AGENT,
     });
-    if (n >= 1) {
-      return { action: "schedule", subGoalIds: ready.slice(0, n), agents: n };
+    if (fanout.chosen >= 1) {
+      const head = ranked[0];
+      const bind =
+        fanout.binding === "pieces"
+          ? "all ready pieces fit the pool + budget"
+          : fanout.binding === "pool"
+            ? "the agent pool is the binding limit"
+            : "the cost budget is the binding limit";
+      const lead = head ? `${head.id} first (unblocks ${head.score} downstream)` : "no ranked head";
+      return {
+        decision: { action: "schedule", subGoalIds: ready.slice(0, fanout.chosen), agents: fanout.chosen },
+        rationale: {
+          summary: `schedule ${fanout.chosen} — ${lead}; ${bind}`,
+          budget: snapshot,
+          ranked,
+          fanout,
+        },
+      };
     }
   }
 
   if (view.inFlight > 0) {
-    return { action: "hold" };
+    return {
+      decision: { action: "hold" },
+      rationale: { summary: "holding — waiting on in-flight threads before the next move", budget: snapshot, ranked },
+    };
   }
 
   // Distinguish genuinely blocked (no ready work at all) from ready work
@@ -149,8 +226,14 @@ export function tick(view: LedgerView): Decision {
   // maxAgents:0 charter) — same "nothing to schedule, nothing in flight"
   // shape, but a different root cause worth surfacing accurately.
   if (ready.length > 0) {
-    return { action: "escalate", reason: "ready threads exist but the agent pool has no room (maxAgents budget exhausted)" };
+    return {
+      decision: { action: "escalate", reason: "ready threads exist but the agent pool has no room (maxAgents budget exhausted)" },
+      rationale: { summary: "ready work exists but the agent pool has no room — escalating", budget: snapshot, ranked },
+    };
   }
 
-  return { action: "escalate", reason: "no ready threads and none in flight (blocked)" };
+  return {
+    decision: { action: "escalate", reason: "no ready threads and none in flight (blocked)" },
+    rationale: { summary: "no ready threads and none in flight — blocked, escalating", budget: snapshot, ranked },
+  };
 }

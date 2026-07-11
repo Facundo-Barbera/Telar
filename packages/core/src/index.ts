@@ -21,7 +21,14 @@ export * from "./budget";
 // Kept as `OrchestratorDecision` (not `WeaverDecision`) — apps/web imports
 // this exported alias (decision-log.tsx); renaming it is a cross-package
 // breaking change out of scope for this core-only, behavior-preserving pass.
-export type { ThreadView, LedgerView, Decision as OrchestratorDecision } from "./tick";
+export type {
+  ThreadView,
+  LedgerView,
+  Decision as OrchestratorDecision,
+  Rationale,
+  BudgetSnapshot,
+  TickResult,
+} from "./tick";
 export { readySubGoals, validateDecision, tick, EST_COST_PER_AGENT } from "./tick";
 export * from "./weave";
 export * from "./weave-contracts";

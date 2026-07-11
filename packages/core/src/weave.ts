@@ -9,7 +9,7 @@
 // branch that returns "ready"/"done" here.
 import type { Loom } from "./looms";
 import type { Charter, PanelReport, SubGoal, WorkUnitState } from "./schemas";
-import { tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
+import { readySubGoals, tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
 import type { BudgetState } from "./budget";
 import type { GateResult } from "./gates";
 
@@ -129,6 +129,46 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     let spentUsd = 0;
     let startedRunning = false;
 
+    // The live thread set (finished + in-flight), in the exact shape tick reads.
+    // Shared by the loop body and the observe-delta so both see one truth.
+    const currentThreads = (): ThreadView[] => [
+      ...[...finished.entries()].map(([subGoalId, child]) => ({
+        id: child.id,
+        subGoalId,
+        state: child.state,
+        runnerInFlight: false, // settled: its runChild promise resolved → terminal
+      })),
+      ...[...runningThread.values()].map((t) => ({ ...t, runnerInFlight: true })),
+    ];
+    // The ready subgoal set right now, via the pure scheduler primitive — so the
+    // observe event's "unblocked" delta matches tick's own readiness definition.
+    const readyIdsNow = (): string[] =>
+      readySubGoals({
+        charter: charterView,
+        threads: currentThreads(),
+        inFlight: running.size,
+        budget: { maxAgents, inFlight: running.size, spentUsd, startedAtMs, maxCostUsd, maxWallClockHours },
+        decisionLogTail: [],
+        nowMs: now(),
+      });
+
+    // Unit 3 — PLAN event at weave start: the decomposition graph + the one
+    // genuinely LLM-authored rationale (Charter.rationale). For a synthesized
+    // weave-of-one (charterView drops `singleThread`, so read it off baseCharter)
+    // an honest deterministic string stands in.
+    emit({
+      type: "plan",
+      decomposition: decomposition.map((sg) => ({
+        id: sg.id,
+        title: sg.title,
+        dependsOn: sg.dependsOn,
+        required: sg.required,
+      })),
+      rationale:
+        charterView.rationale ??
+        (baseCharter?.singleThread ? "single thread by construction — no decomposition requested" : null),
+    });
+
     const spawn = (sg: SubGoal) => {
       const child = deps.spawnChild(sg);
       emit({ type: "weave-child-spawned", subGoalId: sg.id, childId: child.id });
@@ -139,10 +179,16 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
       // below is guaranteed to observe the completed thread already moved
       // out of `running`/`runningThread` and into `finished`.
       const settle = deps.runChild(child).then((result) => {
+        // Ready set BEFORE recording the settle (child still counts as running).
+        const readyBefore = new Set(readyIdsNow());
         finished.set(sg.id, result);
         spentUsd += childCostUsd(result);
         runningThread.delete(sg.id);
         running.delete(sg.id);
+        // Unit 4 — OBSERVE event: which child settled, its rollup state, and the
+        // subgoals THIS settle newly unblocked (ready now, not ready a moment ago).
+        const unblocked = readyIdsNow().filter((id) => !readyBefore.has(id));
+        emit({ type: "observe", subGoalId: sg.id, childId: result.id, state: result.state, unblocked });
       });
       running.set(sg.id, settle);
     };
@@ -159,15 +205,6 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         break;
       }
 
-      const threads: ThreadView[] = [
-        ...[...finished.entries()].map(([subGoalId, child]) => ({
-          id: child.id,
-          subGoalId,
-          state: child.state,
-          runnerInFlight: false, // settled: its runChild promise resolved → terminal
-        })),
-        ...[...runningThread.values()].map((t) => ({ ...t, runnerInFlight: true })),
-      ];
       const budget: BudgetState = {
         maxAgents,
         inFlight: running.size,
@@ -178,19 +215,26 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
       };
       const view: LedgerView = {
         charter: charterView,
-        threads,
+        threads: currentThreads(),
         inFlight: running.size,
         budget,
         decisionLogTail: decisionLog.slice(-8),
         nowMs: now(),
       };
 
-      let d: Decision = tick(view);
+      // Unit 2 — the rationale rides alongside the decision. tick computes it
+      // purely from `view`; the loop folds in only validateDecision's reason,
+      // which is otherwise thrown away when an invalid decision is downgraded.
+      const { decision, rationale } = tick(view);
+      let d: Decision = decision;
       const v = validateDecision(d, view);
-      if (!v.ok) d = { action: "hold" }; // never apply an invalid decision
+      if (!v.ok) {
+        d = { action: "hold" }; // never apply an invalid decision
+        rationale.rejected = v.reason; // (d) the reason the original decision was rejected
+      }
 
       decisionLog.push(d);
-      emit({ type: "decision", decision: d });
+      emit({ type: "decision", decision: d, rationale });
 
       if (d.action === "schedule") {
         if (!startedRunning) {
