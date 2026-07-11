@@ -342,6 +342,12 @@ export const AssertionType = z.enum([
   "schema-match",
   "contains",
   "live-critic",
+  // Unit 4 (docs §2): OFFLINE, deterministic checks routed to the gate/command
+  // layer BEFORE the panel — passed by exit code, no LLM. Additive; the five
+  // above keep their exact current validation and panel routing.
+  "command", // a shell command in `expected`; pass = exit 0
+  "gate", // a named manifest gate (manifest.gates[].name) in `expected`; pass = that gate's command exits 0
+  "db", // a runnable DB command (pg_prove / psql -f …) in `expected`; pass = exit 0. A db needing a LIVE SQL connection (query in `expected` + `observable`) is DEFERRED to the panel / Unit 7.
 ]);
 export type AssertionType = z.infer<typeof AssertionType>;
 

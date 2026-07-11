@@ -196,8 +196,9 @@ describe("panel wiring: bundle loom -> the Critic Panel is the source of `verifi
     expect(classifyPanel(result.panelReport!)).toBe("skip"); // aggregatePanel's floor check never even runs
 
     // No deterministic gates configured -> the panel/Verifier IS the gate
-    // (§4 Layer 3, no-gates branch) -- an empty panel must never promote,
-    // mirroring the pre-existing no-gates "skip -> needs-review" rule.
+    // (§4 Layer 3, no-gates branch). Unit 4 (docs §5): a REQUIRED panel that
+    // skipped never promotes, and now earns the retry a transient skip
+    // deserves (was a silent bare needs-review that dropped the signal).
     expect(
       decide({
         gatesConfigured: false,
@@ -210,7 +211,22 @@ describe("panel wiring: bundle loom -> the Critic Panel is the source of `verifi
         flakyUsed: 0,
         maxFlaky: 2,
       }),
-    ).toEqual({ action: "needs-review" });
+    ).toEqual({ action: "retry" });
+    // Exhausted -> needs-review WITH the required-but-skipped error, never a
+    // silent promotion and never a bare needs-review that loses the reason.
+    expect(
+      decide({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: attempt.verdict!,
+        verification: result.verification,
+        panelRequired: result.panelRequired,
+        n: 3,
+        maxAttempts: 3,
+        flakyUsed: 0,
+        maxFlaky: 2,
+      }),
+    ).toEqual({ action: "needs-review", error: "panel verification required but did not run" });
 
     // §4 Layer 3: with hard gates ALSO configured, panelRequired must still
     // prevent the "skip" from carrying straight to "done" (this is the fix —

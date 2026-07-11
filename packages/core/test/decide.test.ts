@@ -129,6 +129,39 @@ describe("decide — NO-GATES + verdict.ok (Verifier IS the gate)", () => {
   });
 });
 
+// Unit 4 (docs §5): the !gatesConfigured branch used to DROP panelRequired —
+// its skip case returned a bare needs-review even when a mandatory panel never
+// ran, asymmetric with the gated branch and losing the retry a transient skip
+// deserves. The fix mirrors the gated branch ONLY in this case.
+describe("decide — NO-GATES + panelRequired skip fix (§5)", () => {
+  const noGates = { gatesConfigured: false, gatesOk: true, verdict: okVerdict };
+
+  test("panelRequired=true + skip, retryable -> retry (was a silent bare needs-review)", () => {
+    expect(run({ ...noGates, verification: "skip", panelRequired: true, n: 1, maxAttempts: 3 })).toEqual({
+      action: "retry",
+    });
+  });
+
+  test("panelRequired=true + skip, exhausted -> needs-review WITH the required-but-skipped error", () => {
+    expect(run({ ...noGates, verification: "skip", panelRequired: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "needs-review",
+      error: "panel verification required but did not run",
+    });
+  });
+
+  test("panelRequired=false (legacy/no-contract) + skip -> bare needs-review, UNCHANGED", () => {
+    expect(run({ ...noGates, verification: "skip", panelRequired: false })).toEqual({ action: "needs-review" });
+  });
+
+  test("panelRequired absent + skip -> bare needs-review, UNCHANGED", () => {
+    expect(run({ ...noGates, verification: "skip" })).toEqual({ action: "needs-review" });
+  });
+
+  test("panelRequired=true never changes an actual pass -> still done", () => {
+    expect(run({ ...noGates, verification: "pass", panelRequired: true })).toEqual({ action: "done" });
+  });
+});
+
 describe("decide — unchanged branches (verdict not ok / null)", () => {
   test("gated + gatesOk + verdict not ok -> needs-review with blocker", () => {
     expect(run({ verdict: badVerdict })).toEqual({ action: "needs-review", error: "boom" });

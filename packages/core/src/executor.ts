@@ -10,12 +10,13 @@ import { type BuildPiece, runBuildFanout } from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, type PanelSignals } from "./panel";
-import { runGates, type GateResult } from "./gates";
+import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { startProjectServer } from "./run-server";
 import { ModelPolicy, Verdict } from "./schemas";
 import type {
   AccountProfile,
+  ContractAssertion,
   PanelReport,
   ProjectManifest,
   VerificationContract,
@@ -211,7 +212,16 @@ export function decide(input: {
       // No deterministic gates — the Verifier IS the gate.
       switch (verification) {
         case "skip":
-          return { action: "needs-review" }; // nothing verified — unchanged
+          // Unit 4 (docs §5): mirror the gated branch (187-193). A mandatory
+          // panel that never ran deserves the retry a transient skip warrants,
+          // then lands needs-review WITH an error — never a silent bare
+          // needs-review that drops the required-but-skipped signal.
+          if (panelRequired) {
+            return canRetry
+              ? { action: "retry" }
+              : { action: "needs-review", error: "panel verification required but did not run" };
+          }
+          return { action: "needs-review" }; // no panel required — nothing verified, unchanged
         case "pass":
           return { action: "done" }; // promote
         case "fail":
@@ -260,6 +270,85 @@ export function classify(report: VerifierReport): Verification {
   return "pass";
 }
 
+// Unit 4 (docs §2). PURE. Partitions a contract's assertions by MODALITY, not
+// by target:
+//   - deterministic: command / gate / db-with-a-runnable-command — settled in
+//     the gate/command layer BEFORE the panel, pass/fail by exit code, no LLM.
+//   - agentJudged:   live-critic + the four existing value kinds (golden-diff /
+//     value-equality / schema-match / contains, already panel-judged today) +
+//     any db that needs a LIVE SQL connection (carries an `observable`, Unit 7).
+//
+// A db is runnable ONLY when it carries a command in `expected` and NO
+// `observable` — an `observable` marks the live-SQL variant deferred to the
+// panel. command/gate always route deterministic (validateContract already
+// guarantees their `expected`). Every EXISTING contract (live-critic +
+// value-equality) yields deterministic:[] / agentJudged:[all] — byte-identical
+// to pre-Unit-4.
+function isDeterministic(a: ContractAssertion): boolean {
+  const hasRunnable = !!a.expected && !!a.expected.trim();
+  switch (a.type) {
+    case "command":
+    case "gate":
+      return hasRunnable;
+    case "db":
+      return hasRunnable && !(a.observable && a.observable.trim());
+    default:
+      return false; // the five existing kinds stay agent-judged
+  }
+}
+
+export function partitionAssertions(assertions: ContractAssertion[]): {
+  deterministic: ContractAssertion[];
+  agentJudged: ContractAssertion[];
+} {
+  const deterministic: ContractAssertion[] = [];
+  const agentJudged: ContractAssertion[] = [];
+  for (const a of assertions) (isDeterministic(a) ? deterministic : agentJudged).push(a);
+  return { deterministic, agentJudged };
+}
+
+// Unit 4 (docs §3). Runs the deterministic assertions in the SAME gate/command
+// layer manifest gates use (runGate: detached process, exit code, 8KB output
+// tail, timeout) — no new process machinery. Each GateResult.name = a.id so a
+// red result names its assertion, and its output tail feeds the retry prompt
+// unchanged. `runner` is injectable for hermetic tests; it defaults to runGate.
+//   command      -> runGate({ name: a.id, run: a.expected })     // pass = exit 0
+//   gate         -> lookup manifest.gates where name === a.expected; run that
+//                   gate's command (missing name -> synthetic ok:false result,
+//                   never a silent pass)
+//   db(runnable) -> runGate({ name: a.id, run: a.expected })     // pass = exit 0
+export async function runContractGates(
+  deterministic: ContractAssertion[],
+  manifest: ProjectManifest,
+  cwd: string,
+  onGate?: (r: GateResult) => void,
+  runner: (gate: Gate, cwd: string) => Promise<GateResult> = runGate,
+): Promise<GateResult[]> {
+  const results: GateResult[] = [];
+  for (const a of deterministic) {
+    let r: GateResult;
+    if (a.type === "gate") {
+      const named = manifest.gates.find((g) => g.name === a.expected);
+      r = named
+        ? await runner({ name: a.id, run: named.run }, cwd)
+        : {
+            name: a.id,
+            ok: false,
+            exitCode: null,
+            output: `gate assertion ${a.id} references unknown manifest gate "${a.expected ?? ""}"`,
+            durationMs: 0,
+            timedOut: false,
+          };
+    } else {
+      // command | db(runnable): the runnable string lives in `expected`.
+      r = await runner({ name: a.id, run: a.expected ?? "" }, cwd);
+    }
+    results.push(r);
+    onGate?.(r);
+  }
+  return results;
+}
+
 // §4 Layer 2 (docs/loom-model.md): grounds the Critic Panel in the loom's
 // Spec Bundle and returns its aggregated classification — the new source of
 // `verification` for a bundle loom. `target` missing means nothing can be
@@ -281,13 +370,24 @@ async function runPanelVerification(
   panelReport?: PanelReport | null;
   panelRequired: boolean;
 }> {
+  // Unit 4 (docs §4): the panel only ever sees the AGENT-JUDGED slice — the
+  // deterministic assertions were already settled as gates (executeLoom) and
+  // must not be re-judged by prose. panelRequired = agentJudged.length > 0.
+  const { agentJudged } = partitionAssertions(contract.assertions);
+  // All-deterministic contract -> nothing for the panel to judge. Skip it
+  // entirely, panelRequired false, so the green merged gates alone promote via
+  // decide()'s gatesConfigured && gatesOk + skip + !panelRequired -> {done}
+  // path. This is the zero-browser backend verify.
+  if (agentJudged.length === 0) {
+    return { verification: "skip", report: null, panelReport: null, panelRequired: false };
+  }
   if (!target) {
     emit({ type: "panel", n: attempt.n, report: null });
     return { verification: "skip", report: null, panelReport: null, panelRequired: true };
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
-    const ctx: CriticContext = { featureName: loom.title, url: target, objective, assertions: contract.assertions };
+    const ctx: CriticContext = { featureName: loom.title, url: target, objective, assertions: agentJudged };
 
     // §M.4 measurable, post-build signals — never an AI-self-declared label.
     // filesTouched is the UNION of the builder's self-report and an
@@ -373,13 +473,17 @@ export async function runVerification(
   const target = url ?? manifest.urls?.dev;
   const { contract } = readContract(loom.id);
   if (contract) {
+    // Unit 4: an all-deterministic contract has no agent-judged slice, so the
+    // panel is skipped and no live target is needed — never spin up a dev
+    // server for a zero-browser backend verify.
+    const panelRequired = partitionAssertions(contract.assertions).agentJudged.length > 0;
     // docs/loom-model.md D13 (run initializer, minimal): a bundle loom with
     // no usable target (no `url` override, no urls.dev) but a configured
     // `devCommand` gets its OWN dev server on a free port instead of the
     // panel silently skipping — torn down again right after this attempt's
     // panel run, win or lose. A project with a static url is unchanged: this
     // path never runs when `target` is already set.
-    if (!target && manifest.devCommand) {
+    if (panelRequired && !target && manifest.devCommand) {
       let server: Awaited<ReturnType<typeof startProjectServer>> | undefined;
       try {
         server = await startProjectServer(manifest.root, manifest.devCommand, { abort: opts?.abort });
@@ -727,7 +831,21 @@ export async function executeLoom(
 
       setState("verifying");
       const gateRun = await runGates(manifest.gates, manifest.root, (r) => emit({ type: "gate", result: r }));
-      attempt.gates = gateRun.results;
+      // Unit 4 (docs §3): route the contract's DETERMINISTIC assertions
+      // (command / gate / db-with-a-runnable-command) into the SAME gate/command
+      // layer as extra gates, BEFORE the panel. For a no-UI backend contract
+      // (empty manifest.gates but N routed checks) this flips gatesConfigured
+      // true and judges the loom on real exit-code evidence — never a browser.
+      // Every existing contract partitions to deterministic:[] -> adds nothing.
+      const { contract: routedContract } = readContract(loom.id);
+      const deterministic = routedContract
+        ? partitionAssertions(routedContract.assertions).deterministic
+        : [];
+      const contractGateResults = deterministic.length
+        ? await runContractGates(deterministic, manifest, manifest.root, (r) => emit({ type: "gate", result: r }))
+        : [];
+      const mergedGates = [...gateRun.results, ...contractGateResults];
+      attempt.gates = mergedGates;
       attempt.verdict = verdict;
       attempt.endedAt = Date.now();
       if (verdict) emit({ type: "verdict", verdict });
@@ -735,14 +853,17 @@ export async function executeLoom(
 
       if (isAborted()) return halt();
 
-      const gatesConfigured = manifest.gates.length > 0;
-      failing = gateRun.results.filter((r) => !r.ok);
+      // Deterministic assertions are literally extra gates: they merge into
+      // gatesConfigured/gatesOk and flow through builderOk + decide() unchanged.
+      const gatesConfigured = manifest.gates.length + deterministic.length > 0;
+      const gatesOk = mergedGates.every((r) => r.ok);
+      failing = mergedGates.filter((r) => !r.ok);
       lastVerdict = verdict;
       verdictWasNull = verdict === null;
 
       // Drive the Verifier only when the builder succeeded — otherwise there is
       // nothing to verify and verification stays "skip" (no verify call).
-      const builderOk = verdict?.ok === true && (gatesConfigured ? gateRun.ok : true);
+      const builderOk = verdict?.ok === true && (gatesConfigured ? gatesOk : true);
       let verification: Verification = "skip";
       let report: VerifierReport | null = null;
       let panelRequired = false;
@@ -765,7 +886,7 @@ export async function executeLoom(
 
       const decision = decide({
         gatesConfigured,
-        gatesOk: gateRun.ok,
+        gatesOk,
         verdict,
         verification,
         panelRequired,
@@ -780,7 +901,7 @@ export async function executeLoom(
         return loom;
       }
       if (decision.action === "needs-review") {
-        if (gatesConfigured && gateRun.ok && verdict && !verdict.ok) loom.error = verdict.blocker;
+        if (gatesConfigured && gatesOk && verdict && !verdict.ok) loom.error = verdict.blocker;
         else if (verification === "fail") loom.error = `verification failed: ${report?.summary ?? ""}`;
         else if (decision.error !== undefined) loom.error = decision.error;
         setState("needs-review");
@@ -788,7 +909,7 @@ export async function executeLoom(
       }
       if (decision.action === "failed") {
         loom.error =
-          gatesConfigured && !gateRun.ok
+          gatesConfigured && !gatesOk
             ? failing.map((r) => r.name).join(", ")
             : verdict
               ? (verdict.blocker ?? verdict.summary)

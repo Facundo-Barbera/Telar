@@ -107,6 +107,30 @@ describe("validateContract (pure)", () => {
     ]);
     expect(validateContract(c)).toEqual([]);
   });
+
+  // Unit 4: the new command/gate/db kinds validate through the SAME non-live-
+  // critic else-branch — they require expected/expectedFile exactly like a
+  // value-equality, so a prose-only one is rejected as non-falsifiable, and a
+  // command/gate/db satisfies the anti-all-live-critic hard-gate floor.
+  test("accepts a valid command/gate/db contract (they carry a runnable in expected)", () => {
+    const c = contract([
+      assertion({ id: "c1", type: "command", expected: "bun test" }),
+      assertion({ id: "g1", type: "gate", expected: "lint" }),
+      assertion({ id: "d1", type: "db", expected: "pg_prove t/*.sql" }),
+    ]);
+    expect(validateContract(c)).toEqual([]);
+  });
+
+  test("a prose-only command is rejected as non-falsifiable, same as a prose-only value-equality", () => {
+    const errors = validateContract(contract([assertion({ id: "c1", type: "command" })]));
+    expect(errors).toContain("assertion c1 is prose-only: needs expected or expectedFile");
+  });
+
+  test("a lone command satisfies the anti-all-live-critic hard-gate floor", () => {
+    const errors = validateContract(contract([assertion({ id: "c1", type: "command", expected: "bun test" })]));
+    expect(errors).not.toContain("contract must have at least one non-live-critic (hard-gate) assertion");
+    expect(errors).toEqual([]);
+  });
 });
 
 describe("contractLoosenings (pure)", () => {
