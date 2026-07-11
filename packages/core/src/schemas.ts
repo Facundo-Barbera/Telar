@@ -560,6 +560,11 @@ export type RestartPolicy = z.infer<typeof RestartPolicy>;
 export const ServiceConfig = z.object({
   command: z.string(), // required: how to start this service
   portStrategy: z.enum(["fixed", "dynamic"]), // REQUIRED, no default (§10: no silent strategy)
+  // Additive (§7): the known port for a `fixed` service — needed when its
+  // readyCheck is http (`http://localhost:{port}{path}`) or a peer references
+  // it as `{svc.port}`/`{svc.url}`. Ignored for `dynamic` (which is assigned a
+  // free port at bring-up). Absent on a fixed service ⇒ port:null/url:null.
+  port: z.number().int().positive().optional(),
   portInject: PortInject.optional(), // how the chosen port reaches the app (dynamic)
   readyCheck: ReadyCheck.optional(), // one-shot readiness gate
   healthcheck: HealthCheck.optional(), // ongoing liveness → supervisor
