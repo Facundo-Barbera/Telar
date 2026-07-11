@@ -73,9 +73,9 @@ lane** (`{ worktree @ commit, database, running services }`) — the substrate t
 unblocks both the builder and the verifier.
 
 - [ ] **Phase 2 — `telar-runner`** — out-of-process execution → see [`phase-2-runner-plan.md`](./phase-2-runner-plan.md)
-- [ ] **Environment lane — `servers.yaml`** — per-project service recipe (schema + loader in `schemas.ts`), `host-process` driver; `none` = today's static-url path, unchanged. **Designed → [`verification-environments.md`](./verification-environments.md)** §4
-- [ ] **Grow `run-server.ts` into a lane** — `portStrategy` (fixed-probe vs dynamic-inject), `portInject`, templated self-referential `env`, real `readyCheck` replacing `defaultPoll`; per-lane `DATABASE_URL` → template-cloned DB (§4.2, §5)
-- [ ] **Service supervisor** — continuous `healthcheck` + `restartPolicy`, crash-loop breaker, mid-edit tolerance window so it won't fight the builder (§4.4)
+- [x] **Environment lane — `servers.yaml`** — per-project service recipe (schema + loader), `host-process` driver; `none` = today's static-url path, unchanged (`bd2c6de`, §4)
+- [x] **Grow `run-server.ts` into a lane** — `startLane`: `portStrategy` (fixed-probe vs dynamic-inject), `portInject`, templated `env`, real `readyCheck` replacing `defaultPoll` (`53663fe`, §4.2). _Per-lane `DATABASE_URL` template-clone rides the frozen lane (Phase E)._
+- [x] **Service supervisor** — continuous `healthcheck` + `restartPolicy`, crash-loop breaker, mid-edit tolerance window so it won't fight the builder (`2a020a0`, §4.4)
 - [ ] **Setup agent** (pre-loom, in the `preparing` state) — bring the env up, diagnose, ask the human; author a missing `servers.yaml`; fast-path `readyCheck` probe (§4.3)
 - [ ] **Keychain-backed MCP token storage** _(deferred)_
 
@@ -89,13 +89,13 @@ signal: promote it to a scheduled **read-only thread-kind** run against a frozen
 snapshot, feed its verdict back into the tick loop so an unfinished loom continues,
 then prove depth on live features.
 
-- [ ] **Verify thread-kind** — promote `runPanel` (`critic.ts`) from a leaf call to a scheduled, **read-only** verify thread (every agent read-only by construction) with its own frozen lane (worktree @ commit + cloned DB) and a gates → evidence → panel → synthesis pipeline. **Designed → [`verification-environments.md`](./verification-environments.md)** §3, §6
-- [ ] **Assertion routing** — add `command`/`gate`/`db` assertion kinds + planner routing so deterministic assertions run in `gates.ts`, off the browser (§6.1)
-- [ ] **Fix `decide()` `panelRequired` drop** — dropped in the `!gatesConfigured` branch (`executor.ts:209-214`); assertion routing sends deterministic assertions to gates first (§6.1)
-- [ ] **MVP — one `ALL` verify thread at end-of-orchestration** — the biggest gap today; end-only still beats zero real verification (§6.2)
-- [ ] **Verdict feeds the tick loop** — add a `verify` action + the last verdict as input in `tick.ts`; `finish-loom` requires a green `ALL` verdict — which lands the loom `ready`, never `done`; the human still clicks `ready → done` (§7)
-- [ ] **Convergence guards** — budget ceiling + hard max-iterations, progress + regression detection, human circuit-breaker at the budget/no-progress boundaries, so the verify→respawn spawn-until-done loop can't run away ([`verification-environments.md`](./verification-environments.md) §7)
-- [ ] **Transient-vs-terminal escalate** — `tick.ts:114` escalates on bare `state === "failed"`; escalate only on *terminal* failure (own retries exhausted) — this unblocks Phase A's repair-leg proof (§7)
+- [x] **Assertion routing** — `command`/`gate`/`db` assertion kinds + deterministic routing to `gates.ts`, off the browser, so a backend loom verifies with no target (`ff83eb3`, §6.1)
+- [x] **Fix `decide()` `panelRequired` drop** — a required-but-skipped panel now retries / needs-review instead of a silent pass (`ff83eb3`, §6.1)
+- [x] **MVP — one `ALL` verify thread at end-of-orchestration** — the integration-verify producer runs one ALL-scope verify after a woven loom's children finish (`b33631a`, §6.2)
+- [x] **Verdict gates the terminal state** — a red `ALL` verdict demotes a woven loom `ready → needs-review` (broken whole can't clean-accept); green → `ready` (`06761af`, §7)
+- [x] **Transient-vs-terminal escalate** — tick escalates only on *terminal* failure (retries exhausted), tolerating a thread mid-retry — unblocks Phase A's repair-leg proof (`ccdd9f8`, §7)
+- [ ] **Verify thread-kind (frozen lane)** — promote the integration verify to a scheduled **read-only** thread on a frozen lane (worktree @ commit + template-cloned DB) + gates → evidence → panel → synthesis (§3, §6). _Needs a live Postgres — validate live._
+- [ ] **Auto-repair loop + convergence guards** — verify → repair → re-verify, bounded by budget + max-iterations + progress/regression detection + a human circuit-breaker (§7). _Runaway-prone — validate live._
 - [ ] **Checkpoint verify threads** per `subGoalId` — interleaved per-SubGoal verifies + a final `ALL` integration verify (§6.2)
 - [ ] **M3 distillation** — green-run acceptance + spec-lint gate wiring (exploratory run → deterministic `.spec.ts`)
 - [ ] **M4 monitoring** — cron trigger + prod guardrails + terminal-state alert hook
@@ -120,22 +120,25 @@ widen it.
 
 - [ ] Account `displayTier` plan labels (5x / 20x) + in-app login UI
 - [ ] Clean up `[demo]` looms _(pending explicit OK — no `rm` without authorization)_
+- [ ] Orphaned untracked `apps/web/components/looms/loom-view.tsx` — references non-existent `deriveSteps`/`StepAgent`/`WeaveStep`, breaks `apps/web` tsc; nothing imports it (delete or finish)
 
 ---
 
-_Last frontier update: the **verification-environments** design
-([doc](./verification-environments.md)) traced a real backend loom
-(`loom_mrf6ewd9`) and found three symptoms of one root cause — auto-verification
-**silently never ran** for no-UI work, builders **collided in a shared lane**, and
-the tick loop **escalated on a transient failure**: no environment lane, wrong
-verification modality, verification stranded at the leaf. This reframes the path.
-Phase A's repair-leg proof is now gated on **both** the environment **lane** (Phase C,
-expanded into `servers.yaml` / `run-server`-lane / supervisor / setup-agent) and
-**verification-as-a-thread** (Phase E) — and Phase E now sequences **ahead of**
-Phase D, since a Thread isn't trustworthy to widen until verification runs and loops.
-New critical path: build the lane (it unblocks both builder and verifier) → promote
-verification to a scheduled read-only thread-kind → close the tick loop, with the
-**convergence guards shipping alongside the loop closure** (not with the build
-fan-out) so the verify→respawn loop can't run away. Prior: Phase F Stage A+B shipped
-(MCP now reaches every loom agent read-only); Phase B.1 steering + v1 watchers + P5
-boot-recovery shipped._
+_Last frontier update: a full autonomous build run shipped the hermetically-verifiable
+core of the **verification-environments** design. **Phase C lane substrate** is done —
+`servers.yaml` schema+loader (`bd2c6de`), `run-server` → `startLane` with real
+`readyCheck` (`53663fe`), and the service supervisor (`2a020a0`). **Phase E** now has
+deterministic **assertion routing** so a backend loom actually verifies with no browser
++ the `decide()` `panelRequired` fix (`ff83eb3`), the **transient-vs-terminal** escalate
+fix (`ccdd9f8`), the end-of-orchestration **integration-verify producer** (`b33631a`),
+and the **verdict gating the terminal state** — a red `ALL` verdict now demotes a woven
+loom to `needs-review` so a broken whole can't clean-accept (`06761af`). Plus the
+override-from-`queued` + no-sweep-landing fix (`fd58885`). Every unit was two-verifier
+checked; the moat held throughout (green → `ready`, never `done`).
+What remains is **live-validation-dependent**, deliberately not built blind: the
+**frozen-lane** verify thread (real Postgres template-clone, §5 Supabase wrinkle) and
+the **auto-repair loop + convergence guards** (runaway-prone). Next: **prove the repair
+leg live** on a real project (Phase A) — it's now unblocked, and the live run resolves
+the §10 lane-granularity open decisions that the frozen lane needs. Prior: Phase F Stage
+A+B (MCP reaches every loom agent read-only); Phase B.1 steering + v1 watchers + P5
+boot-recovery._
