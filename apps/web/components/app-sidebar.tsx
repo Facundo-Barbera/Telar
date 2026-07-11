@@ -24,8 +24,8 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import {
@@ -260,6 +260,7 @@ function NavGroup({ activeLooms }: { activeLooms: number }) {
               <SidebarMenuItem key={href}>
                 <SidebarMenuButton
                   isActive={active}
+                  tooltip={label}
                   onClick={() => router.push(href)}
                 >
                   <Icon className="size-4 shrink-0" />
@@ -352,18 +353,24 @@ function RecentProjectsGroup({ projects }: { projects: RecentProject[] }) {
 
 function TelarSidebarHeader() {
   const router = useRouter();
+  const { state } = useSidebar();
+  const collapsed = state === "collapsed";
   return (
     <SidebarHeader className="h-14 justify-center border-b">
-      <div className="flex items-center justify-between gap-1 pr-1">
-        <button
-          type="button"
-          onClick={() => router.push("/")}
-          className="flex items-center rounded-md px-2 py-1 text-left outline-none"
-        >
-          <span className="font-heading text-lg font-semibold tracking-tight">
-            telar
-          </span>
-        </button>
+      <div
+        className={`flex items-center gap-1 ${collapsed ? "justify-center" : "justify-between pr-1"}`}
+      >
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => router.push("/")}
+            className="flex items-center rounded-md px-2 py-1 text-left outline-none"
+          >
+            <span className="font-heading text-lg font-semibold tracking-tight">
+              telar
+            </span>
+          </button>
+        )}
         <SidebarTrigger />
       </div>
     </SidebarHeader>
@@ -508,14 +515,18 @@ function SidebarBody() {
     a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
 
+  const { state } = useSidebar();
+  const collapsed = state === "collapsed";
+
   return (
     <>
       <SidebarContent>
         <NavGroup activeLooms={activeLooms.length} />
-        <ActiveLoomsGroup looms={activeLooms} />
-        <RecentProjectsGroup projects={recentProjects} />
+        {!collapsed && <ActiveLoomsGroup looms={activeLooms} />}
+        {!collapsed && <RecentProjectsGroup projects={recentProjects} />}
       </SidebarContent>
 
+      {!collapsed && (
       <SidebarFooter className="border-t">
         <div className="space-y-3 p-2">
           <div className="flex items-center justify-between">
@@ -553,16 +564,16 @@ function SidebarBody() {
           )}
         </div>
       </SidebarFooter>
+      )}
     </>
   );
 }
 
 export function AppSidebar() {
   return (
-    <Sidebar>
+    <Sidebar collapsible="icon">
       <TelarSidebarHeader />
       <SidebarBody />
-      <SidebarRail />
     </Sidebar>
   );
 }
