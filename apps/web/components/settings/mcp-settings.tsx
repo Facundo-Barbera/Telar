@@ -39,7 +39,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  HealthDot,
+  normalizeStatus,
+  type HttpStatus,
+} from "@/components/settings/mcp-health";
 import { cn } from "@/lib/utils";
 
 // The API returns plain JSON — we mirror the @telar/core shapes locally rather
@@ -469,89 +473,8 @@ function EntryEditor({
   );
 }
 
-// --- Autodetected OAuth status (docs/mcp-oauth-design.md §3). The status route
-// probes every http server and returns { requiresOAuth, connected, expiresAt?,
-// health? }; stdio servers aren't in the map (shown as "Local" from transport).
-// `health` is the live authenticated liveness probe (checkMcpHealth) — absent
-// until the route responds, which the health dot renders as "checking".
-type McpHealth = "connected" | "needs-auth" | "error";
-type HttpStatus = {
-  requiresOAuth: boolean;
-  connected: boolean;
-  expiresAt?: number;
-  health?: McpHealth;
-};
-
-// Tolerant read of the status route so the UI survives whatever exact shape the
-// route exposes (it may lag a redeploy): a { servers: { [name]: {...} } } object.
-// Anything unrecognized is omitted, which renders as the "Checking…" pill.
-function normalizeStatus(raw: unknown): Record<string, HttpStatus> {
-  const src = (raw as { servers?: Record<string, unknown> } | null)?.servers;
-  if (!src || typeof src !== "object") return {};
-  const out: Record<string, HttpStatus> = {};
-  for (const [server, v] of Object.entries(src)) {
-    if (v && typeof v === "object") {
-      const o = v as {
-        requiresOAuth?: unknown;
-        connected?: unknown;
-        expiresAt?: unknown;
-        health?: unknown;
-      };
-      const h = o.health;
-      out[server] = {
-        requiresOAuth: o.requiresOAuth === true,
-        connected: o.connected === true,
-        expiresAt: typeof o.expiresAt === "number" ? o.expiresAt : undefined,
-        health:
-          h === "connected" || h === "needs-auth" || h === "error"
-            ? h
-            : undefined,
-      };
-    }
-  }
-  return out;
-}
-
-// A very small colored liveness dot next to the server name, driven by the live
-// health probe (checkMcpHealth) the status route runs. green=connected,
-// amber=needs-auth, red=error; neutral gray both while "checking" (before the
-// route responds) and for stdio ("local"). The text StatusPill stays as the
-// secondary label. Updates whenever loadStatus re-runs (connect/disconnect/save).
-function HealthDot({
-  transport,
-  status,
-}: {
-  transport: Transport;
-  status?: HttpStatus;
-}) {
-  const state: McpHealth | "checking" | "local" =
-    transport === "stdio"
-      ? "local"
-      : !status || !status.health
-        ? "checking"
-        : status.health;
-  const { color, label } = {
-    connected: { color: "bg-emerald-500", label: "Connected" },
-    "needs-auth": { color: "bg-amber-400", label: "Needs sign-in" },
-    error: { color: "bg-destructive", label: "Unreachable" },
-    checking: { color: "bg-muted-foreground/40", label: "Checking…" },
-    local: { color: "bg-muted-foreground/40", label: "Local" },
-  }[state];
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        className={cn(
-          "size-1.5 shrink-0 cursor-help rounded-full outline-none",
-          color,
-        )}
-        aria-label={`Health: ${label}`}
-      />
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-// (The at-a-glance status is now the HealthDot's colour + hover tooltip.)
+// HealthDot, HttpStatus and normalizeStatus now live in ./mcp-health so the
+// project detail page's Manifest rail shows the same live status dots.
 
 // One MCP server. COMPACT by default (name + status pill + Connect); Configure
 // expands the full manual editor; a freshly added server shows a minimal
