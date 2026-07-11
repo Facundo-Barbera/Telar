@@ -56,7 +56,7 @@ there is no `accept_loom`.
 
 ---
 
-## ▶ M1 — Verification: mandatory, and you can watch it
+## ✅ M1 — Verification: mandatory, and you can watch it  ·  *shipped `d7d8064`*
 
 *The moat and your original ask ("how can I see the verifier's process?"). Fills the
 **Verify** tab stub.*
@@ -79,7 +79,7 @@ there is no `accept_loom`.
 real, replayable verifier process for a finished loom; a red verdict still gates the
 terminal state. Green-gate: core tests + core/web tsc.
 
-## M2 — Drive the weave: steer & inspect
+## ▶ M2 — Drive the weave: steer & inspect
 
 *Finishes the cockpit. Fills the **Chat** tab stub.*
 
