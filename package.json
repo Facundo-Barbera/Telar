@@ -1,5 +1,12 @@
 {
   "name": "telar",
   "private": true,
+  "description": "Project-centric agentic dev tool on the Claude Agent SDK — self-verifying looms where a human always accepts.",
+  "license": "UNLICENSED",
+  "author": "Facundo Barbera <facundo.barbera@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Facundo-Barbera/Telar.git"
+  },
   "workspaces": ["apps/*", "packages/*"]
 }
