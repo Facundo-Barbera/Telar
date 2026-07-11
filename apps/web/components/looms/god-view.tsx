@@ -41,7 +41,6 @@ import type {
 import { StatusBadge } from "./status";
 import { AcceptancePanel, DoneConfirmation } from "./acceptance-panel";
 import {
-  DesignFindingRow,
   EvidenceImage,
   screenshots,
   textEvidence,
@@ -60,6 +59,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ChatTab } from "@/components/looms/chat-tab";
 import { cn } from "@/lib/utils";
 import { fmtAgo, fmtCost, shortId } from "@/lib/format";
 
@@ -1580,6 +1580,14 @@ export function LoomGodView({
   acceptedBy?: string;
 }) {
   const [tab, setTab] = useState("orchestrator");
+  // Mount the Chat tab lazily on first open, then keep it mounted (keepMounted
+  // below) so a live steering turn keeps streaming while the user is on another
+  // tab. Base UI hides an inactive kept-mounted panel via `hidden` — CSS-hidden,
+  // not unmounted — so the SessionView never tears its stream down on a switch.
+  const [chatOpened, setChatOpened] = useState(false);
+  useEffect(() => {
+    if (tab === "chat") setChatOpened(true);
+  }, [tab]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4">
@@ -1628,12 +1636,8 @@ export function LoomGodView({
             <VerifyPanel view={view.verify} loom={loom} />
           </TabsContent>
 
-          <TabsContent value="chat" className="pt-2">
-            <ComingSoon
-              icon={MessageSquare}
-              title="Chat"
-              description="Steer the orchestrator in a session pre-loaded with this loom's context — ask what's going on, or nudge the weave — here."
-            />
+          <TabsContent value="chat" className="pt-2" keepMounted>
+            {chatOpened && <ChatTab loom={loom} />}
           </TabsContent>
         </Tabs>
 

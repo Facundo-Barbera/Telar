@@ -745,6 +745,12 @@ export function SessionView(props: {
   // "tool_result" case below. Undefined/false (every existing call site)
   // leaves that behavior completely unchanged.
   planner?: boolean;
+  // Embedded steerer session (loom Chat tab). Sends role:"steerer"+loomId on
+  // the wire so route.ts binds the session to this loom; also suppresses the
+  // address-bar rewrite (the Chat tab keeps the /looms/[id] URL). Undefined
+  // everywhere else — a plain/planner session is unaffected.
+  steerer?: boolean;
+  loomId?: string;
 }) {
   // The slash-command menu and account lock both need to read/drive the
   // composer's text value from outside <PromptInput> itself — the provider
@@ -765,6 +771,8 @@ function SessionViewInner({
   routeSessionId,
   initialRole,
   planner,
+  steerer,
+  loomId,
 }: {
   project: string;
   account: string;
@@ -774,6 +782,8 @@ function SessionViewInner({
   routeSessionId?: string;
   initialRole?: "planner";
   planner?: boolean;
+  steerer?: boolean;
+  loomId?: string;
 }) {
   const textInput = usePromptInputController().textInput;
 
@@ -1259,11 +1269,17 @@ function SessionViewInner({
                 // persisted transcript from the new URL.
                 if (payload.sessionId !== sessionId) {
                   setSessionId(payload.sessionId);
-                  window.history.replaceState(
-                    null,
-                    "",
-                    `/projects/${encodeURIComponent(project)}/sessions/${payload.sessionId}`,
-                  );
+                  // An embedded steerer session (loom Chat tab) keeps the
+                  // /looms/[id] URL — never rewrite the address bar out from
+                  // under the cockpit. Its GET /api/looms/[id]/chat seed gives
+                  // cross-reload continuity instead.
+                  if (!steerer) {
+                    window.history.replaceState(
+                      null,
+                      "",
+                      `/projects/${encodeURIComponent(project)}/sessions/${payload.sessionId}`,
+                    );
+                  }
                 }
                 if (Array.isArray(payload.slashCommands)) {
                   setSdkSlashCommands(payload.slashCommands);
@@ -1663,8 +1679,10 @@ function SessionViewInner({
             // this is a planner turn BEFORE any Chat record exists (turn 1
             // has no persisted chat.role yet) — see its own comment on why
             // it reads this from the body at all. Omitted entirely for a
-            // normal (non-planner) session.
-            ...(planner ? { role: "planner" } : {}),
+            // normal (non-planner) session. A steerer session (loom Chat tab)
+            // additionally carries loomId so route.ts's turn-1 seed can bind the
+            // session to this loom (validated server-side against the project).
+            ...(planner ? { role: "planner" } : steerer ? { role: "steerer", loomId } : {}),
           }),
           signal: abort.signal,
         });

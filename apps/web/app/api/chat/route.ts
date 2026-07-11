@@ -10,8 +10,12 @@ import {
   accountEnv,
   getAccount,
   getDefaultAccountName,
+  getLoom,
   getProject,
+  readBundleFile,
+  readContract,
   resolveProjectMcpServers,
+  STEERING_FILE,
   type ProjectManifest,
 } from "@telar/core";
 import {
@@ -117,6 +121,68 @@ OBJECTIVE — the most important thing you write. objective.md is the single sou
 - NEVER be the meta-request to create/draft/start the loom, a restatement like "let's work on #109", or a raw fragment of the user's chat message. "Create the loom" is not a task.
 If the user's ask is vague or is only a pointer (an issue number, "the thing we discussed"), ask focused questions and read the referenced material until you can state the real objective — do not draft a placeholder objective.`;
 
+// Appended (never replacing) the "claude_code" preset for a STEERER Loop
+// Session (docs/loom-model.md §5) — the loom Chat tab. Like PLANNER above this
+// is guidance only: it grants ZERO tools (the moat lives in this text plus the
+// unchanged LOOM_AUTO_TOOLS/LOOM_START_TOOL gating + PreToolUse guardrail). The
+// hard rule below forbids any accept/promote/mark-done attempt — acceptance is
+// a human click made OUTSIDE this chat, and there is no accept_loom tool.
+const STEERER_SYSTEM_PROMPT = `You are embedded in the cockpit of a RUNNING loom as its steering session. Your
+job is to answer "what's going on?" and to redirect the loom on the owner's behalf.
+
+You can OBSERVE and STEER this loom with the mcp__loom__ tools, all of which
+default to THIS loom:
+  • get_loom / read_bundle — inspect state, verdict, objective, contract.
+  • steer_loom {directive} — fold a course correction in and re-run the verified loop.
+  • reject_loom {feedback} — send it back with feedback.
+  • resume_loom — retry without new feedback.
+  • cancel_loom — halt it.
+  • watch_loom — get woken as a chat turn on any state transition.
+
+On your FIRST turn, call watch_loom for this loom so state changes reach you.
+
+HARD RULE (the product's core invariant): you can steer/reject/resume/cancel, but
+you can NEVER accept, promote, approve, or mark this loom "done". There is no tool
+for that and there never will be — acceptance is a human click made outside this
+chat. Do not claim you accepted it; do not imply the work is done. If the owner
+asks you to accept it, tell them acceptance is theirs to make in the cockpit.`;
+
+// Keep the per-turn steerer append small: truncate a section to its last
+// `max` bytes, prefixing an elision marker so the model knows it's a tail.
+function tail(s: string, max: number): string {
+  return s.length <= max ? s : `…(truncated)…\n${s.slice(-max)}`;
+}
+
+// Guarded bundle read: a loom mid-flight may lack a file (objective/contract/
+// steering) — a missing section is simply omitted, never an error.
+function safeRead(fn: () => string | null | undefined): string | null {
+  try {
+    return fn() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Dynamic per-turn context for a steerer session: recomputed every turn so the
+// state + latest steering decisions are always fresh. Bounds each section so
+// the append stays reasonable. Server-only (value core imports are fine here).
+function buildSteererContext(loomId: string): string {
+  const loom = getLoom(loomId);
+  const objective = safeRead(() => readBundleFile(loomId, "objective.md"));
+  const contract = safeRead(() =>
+    JSON.stringify(readContract(loomId).contract, null, 2),
+  );
+  const steering = safeRead(() => readBundleFile(loomId, STEERING_FILE));
+  return [
+    `\n\n--- LIVE LOOM CONTEXT (id ${loomId}, state: ${loom?.state ?? "unknown"}) ---`,
+    objective && `# Objective\n${tail(objective, 4000)}`,
+    contract && `# Verification Contract\n${contract}`,
+    steering && `# Live steering decisions (append-only)\n${tail(steering, 4000)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
 // via includePartialMessages; client abort propagates to the subprocess.
@@ -132,21 +198,27 @@ export async function POST(req: Request) {
     sandbox: rawSandbox,
     approvalPolicy: rawApprovalPolicy,
     // Session<->Loom link (docs/loom-model.md §5): the client (session-view.tsx)
-    // sends this IFF its `planner` prop is true. Only "planner" is a
-    // recognized value on the wire today (steerer sessions don't POST here
-    // this way yet) — anything else collapses to undefined so a stray/bad
-    // value can't be mistaken for a real planner turn. This is how turn 1
-    // knows it's a planner session BEFORE any Chat record exists (existingChat
-    // below is undefined for a brand-new session, so its own persisted
-    // `role` can't tell us yet).
+    // sends this IFF its `planner` OR `steerer` prop is true. "planner" and
+    // "steerer" are the two recognized values on the wire — anything else
+    // collapses to undefined so a stray/bad value can't be mistaken for a real
+    // loom turn. This is how turn 1 knows it's a loom session BEFORE any Chat
+    // record exists (existingChat below is undefined for a brand-new session,
+    // so its own persisted `role` can't tell us yet). A "steerer" turn also
+    // carries `loomId` (below), validated before it's trusted.
     role: rawRole,
+    // Turn-1 wire seed for an embedded STEERER session (the loom Chat tab):
+    // the loom this session steers. Validated below against the anchoring
+    // project before it's ever trusted (a bad/foreign id fails safe to a plain
+    // session). Only meaningful when role === "steerer" and no Chat exists yet.
+    loomId: rawLoomId,
     // Client-generated id for THIS turn (docs/runtime-architecture.md §A.4).
     // Known before the SDK session id exists, so Stop can target a brand-new
     // session's first turn. Older clients omit it → we mint one (Stop-by-runId
     // just won't be reachable for them, which matches the old behavior).
     runId: rawRunId,
   } = await req.json();
-  const role: "planner" | undefined = rawRole === "planner" ? "planner" : undefined;
+  const role: "planner" | "steerer" | undefined =
+    rawRole === "planner" ? "planner" : rawRole === "steerer" ? "steerer" : undefined;
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
 
@@ -326,7 +398,20 @@ export async function POST(req: Request) {
       // persistence path store.ts already exposes for every other captured
       // session field.
       const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
-      const loomLink: LoomSessionLink = { loomId: existingChat?.loomId, role: existingChat?.role };
+      // Turn-1 wire seed for an embedded steerer session (mirrors the planner
+      // path, but steerer also binds a loomId). Validated: the loom must exist
+      // AND belong to the anchoring project — a bad/foreign id fails safe to a
+      // normal session, never binds to someone else's loom. Only ever consulted
+      // for a brand-new chat (existingChat's own persisted link wins otherwise).
+      let wireLoomId: string | undefined;
+      if (!existingChat && role === "steerer" && typeof rawLoomId === "string" && rawLoomId) {
+        const l = getLoom(rawLoomId);
+        if (l && l.project === project) wireLoomId = rawLoomId;
+      }
+      const loomLink: LoomSessionLink = {
+        loomId: existingChat?.loomId ?? wireLoomId,
+        role: existingChat?.role ?? (wireLoomId ? "steerer" : undefined),
+      };
       // Whether this turn is part of a Loom Session (docs/loom-model.md §5's
       // "planner" role) — the body's own `role` (authoritative for turn 1,
       // before any Chat record exists) OR'd with the resumed chat's own
@@ -335,6 +420,10 @@ export async function POST(req: Request) {
       // below — never loom tool access/gating, which stays exactly as wired
       // via LOOM_AUTO_TOOLS/LOOM_START_TOOL and the PreToolUse guardrail.
       const isPlannerSession = role === "planner" || existingChat?.role === "planner";
+      // A session is planner XOR steerer XOR neither — the steerer branch drives
+      // ONLY the appended system-prompt guidance + live-context block below,
+      // never loom tool access/gating (which stays exactly as wired).
+      const isSteererSession = loomLink.role === "steerer";
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
@@ -820,7 +909,17 @@ export async function POST(req: Request) {
             // preset's own `append` — a normal session's systemPrompt is
             // byte-for-byte unchanged; only isPlannerSession turns get the
             // extra paragraph tacked on after Claude Code's default prompt.
-            systemPrompt: isPlannerSession
+            systemPrompt: isSteererSession
+              ? {
+                  type: "preset",
+                  preset: "claude_code",
+                  // Static moat text + a per-turn live-context block (state +
+                  // latest steering recomputed every turn). loomLink.loomId is
+                  // non-null whenever isSteererSession (role === "steerer" is
+                  // only set alongside a resolved loomId, above).
+                  append: STEERER_SYSTEM_PROMPT + buildSteererContext(loomLink.loomId!),
+                }
+              : isPlannerSession
               ? { type: "preset", preset: "claude_code", append: PLANNER_SYSTEM_PROMPT }
               : { type: "preset", preset: "claude_code" },
             permissionMode,

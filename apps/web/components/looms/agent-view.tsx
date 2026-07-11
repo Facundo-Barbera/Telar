@@ -7,6 +7,7 @@ import {
   CircleCheck,
   CircleX,
   Clock,
+  Copy,
   FilePen,
   FilePlus,
   FlaskConical,
@@ -516,6 +517,58 @@ export function ScriptEntry({
   }
 }
 
+// The Agent-SDK session id for an agent lane (operator / fan-out piece),
+// shown short with a click-to-copy affordance. Identity only — read-only, no
+// resume path (loom-level resume lives in the AcceptancePanel; there is no
+// per-session resume endpoint, so we surface the id honestly, nothing more).
+function SessionIdChip({ sessionId }: { sessionId: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard?.writeText(sessionId).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          },
+          () => {},
+        );
+      }}
+      title={`Copy session id ${sessionId}`}
+      className="inline-flex items-center gap-1 rounded font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+    >
+      session {shortId(sessionId)}
+      {copied ? (
+        <Check className="size-3 text-emerald-500" />
+      ) : (
+        <Copy className="size-3 opacity-60" />
+      )}
+    </button>
+  );
+}
+
+// Compact identity header above a transcript body: the agent's role, its
+// session id (when captured), and — for a fan-out piece — a live/merged badge.
+// Honest by omission: no chip when a lane has no session id (critics never do).
+function AgentHeader({ entry }: { entry: RosterEntry }) {
+  const isCritic = entry.role === "critic";
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 font-medium">
+        {isCritic ? <FlaskConical className="size-3" /> : <Play className="size-3" />}
+        {isCritic ? "critic" : "builder"}
+      </span>
+      {entry.sessionId && <SessionIdChip sessionId={entry.sessionId} />}
+      {!isCritic && (
+        <Badge variant="secondary" className="text-[10px]">
+          {entry.done === true ? "merged" : "live"}
+        </Badge>
+      )}
+    </div>
+  );
+}
+
 function TranscriptBody({ entry }: { entry: RosterEntry }) {
   // Per-row expand state, keyed by entry index — lifted here (not inside
   // ToolStepRow) since the row is a controlled component; reset on remount
@@ -590,12 +643,17 @@ function Transcript({
           </button>
         ))}
       </div>
-      <p className="text-[11px] text-muted-foreground/70">
-        {active.role === "critic"
-          ? "read-only critic · different account · no Write/Edit/Bash"
-          : "builder · Write · Edit · Bash · resumable session"}
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p className="text-[11px] text-muted-foreground/70">
+          {active.role === "critic"
+            ? "read-only critic · different account · no Write/Edit/Bash"
+            : "builder · Write · Edit · Bash · resumable session"}
+        </p>
+        {active.sessionId && <SessionIdChip sessionId={active.sessionId} />}
+      </div>
       <Separator />
+      {/* Per-agent identity header — role, session id, live/merged. */}
+      <AgentHeader entry={active} />
       {/* key on the roster entry so per-row expand state resets when the
           picker switches to a different agent's transcript. */}
       <TranscriptBody key={active.key} entry={active} />

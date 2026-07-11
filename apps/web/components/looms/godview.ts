@@ -20,6 +20,7 @@ import type {
   WorkUnitState,
 } from "@telar/core";
 import { isSingleThreadWeave, isTerminal, isWoven } from "./utils";
+import { shortId } from "@/lib/format";
 
 export { isWoven, isTerminal } from "./utils";
 
@@ -96,6 +97,10 @@ export type RosterEntry = {
   label: string;
   role: "builder" | "critic";
   sessionId?: string;
+  // Sub-agent lifecycle for a fan-out piece: true once its lane merged/finished
+  // (from the subAgents `done` derivation), undefined = live/unknown. Drives the
+  // per-agent header's live/merged badge; never set for the operator or critics.
+  done?: boolean;
   transcript: Transcript;
 };
 
@@ -492,6 +497,21 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
     };
   });
 
+  // Session identity per lane: the executor emits {type:"session", sessionId}
+  // for the operator (no pieceId) and {type:"session", pieceId, sessionId} for
+  // each fan-out piece (executor.ts). Fold those into a map so the roster can
+  // identify each agent by its Agent-SDK session. Session events are metadata —
+  // they stay OUT of eventsToTranscript (the transcript body), surfaced only in
+  // the per-agent header.
+  const sessionByPiece = new Map<string | undefined, string>();
+  for (const ev of opEvents) {
+    if (ev.type === "session") {
+      const sid = (ev as { sessionId?: string }).sessionId;
+      if (sid) sessionByPiece.set(evPiece(ev), sid);
+    }
+  }
+  const subAgentDone = new Map(subAgents.map((s) => [s.id, s.done]));
+
   // Roster: operator + fan-out pieces + critics.
   const roster: RosterEntry[] = [];
 
@@ -499,7 +519,9 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
     key: "op",
     label: `operator ${op.id}`,
     role: "builder",
-    sessionId: latest?.sessionId,
+    // The event-stream session id (freshest) wins; fall back to the persisted
+    // attempt.sessionId so a payload without session events still identifies it.
+    sessionId: sessionByPiece.get(undefined) ?? latest?.sessionId,
     transcript: eventsAvailable
       ? { available: true, source: "events", entries: eventsToTranscript(opEvents, undefined) }
       : {
@@ -513,8 +535,10 @@ function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolea
   for (const id of pieces) {
     roster.push({
       key: id,
-      label: id,
+      label: `piece ${shortId(id)}`,
       role: "builder",
+      sessionId: sessionByPiece.get(id),
+      done: subAgentDone.get(id),
       transcript: { available: true, source: "events", entries: eventsToTranscript(opEvents, id) },
     });
   }
