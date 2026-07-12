@@ -45,10 +45,11 @@ import {
   threadPlannerEnabled,
   stepChecksEnabled,
   orchestratorVerifyEnabled,
+  laneEscalationEnabled,
 } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
-import { resolveServersConfig } from "./servers";
+import { resolveServersConfig, resolveRunbook } from "./servers";
 import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
 import type { SetupDeps } from "./setup/setup-agent";
 
@@ -402,6 +403,22 @@ export function partitionAssertions(assertions: ContractAssertion[]): {
   return { deterministic, agentJudged };
 }
 
+// M10.4 — PURE lane-viability check for the pre-flight escalation gate. A
+// contract's verification lane is VIABLE when EITHER nothing live is needed
+// (all-deterministic: no agent-judged assertions — the zero-browser backend
+// path) OR a live target is obtainable: manifest.devCommand set (M5 auto-spin
+// owns bringing it up) OR a servers recipe tier resolves to a real driver (a
+// repo servers.yaml OR an already-accepted `.telar/servers.yaml`). Reuses the
+// EXACT needsEnv predicate from runPanelVerification, so a previously-persisted
+// recipe means the lane is viable and the pre-flight NEVER re-asks. PURE over
+// already-resolved inputs (one filesystem tier read) — it cannot loop or spawn.
+export function isLaneViable(manifest: ProjectManifest, assertions: ContractAssertion[]): boolean {
+  const { agentJudged } = partitionAssertions(assertions);
+  if (agentJudged.length === 0) return true; // all-deterministic — no live lane needed
+  if (manifest.devCommand) return true; // M5 auto-spin brings the dev server up
+  return resolveServersConfig(manifest.root).driver !== "none"; // repo or accepted .telar tier
+}
+
 // Unit 4 (docs §3). Runs the deterministic assertions in the SAME gate/command
 // layer manifest gates use (runGate: detached process, exit code, 8KB output
 // tail, timeout) — no new process machinery. Each GateResult.name = a.id so a
@@ -509,7 +526,23 @@ async function runPanelVerification(
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
-    const ctx: CriticContext = { featureName: loom.title, url: target, objective, assertions: agentJudged };
+    // M10.4 (laneEscalation) — the SINGLE production consumer of resolveRunbook:
+    // feed the accepted `.telar/runbook.md` narrative into the live-critic panel
+    // as READ-ONLY DRIVE context (how to reach/seed/login/drive the app), so the
+    // learned "reused-forever" narrative is actually used on reuse. Gated behind
+    // the flag AND null-guarded — off / no accepted runbook ⇒ driveContext unset ⇒
+    // the ctx + critic prompt are byte-identical. This is prompt CONTEXT only: the
+    // judge's read-only tool wall (VERIFIER_TOOLS/restrictTools/denylist) and the
+    // LensSpec-stamped class/blocker are untouched, and it never reaches the
+    // deterministic gates (those settled in executeLoom, prose-independent).
+    const driveContext = laneEscalationEnabled(manifest) ? resolveRunbook(manifest.root) : null;
+    const ctx: CriticContext = {
+      featureName: loom.title,
+      url: target,
+      objective,
+      assertions: agentJudged,
+      ...(driveContext ? { driveContext } : {}),
+    };
 
     // §M.4 measurable, post-build signals — never an AI-self-declared label.
     // filesTouched is the UNION of the builder's self-report and an

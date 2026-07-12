@@ -25,9 +25,9 @@ import {
   splitBuild as splitBuildDefault,
   type BuildPiece,
 } from "./build-fanout";
-import { getProject, listProjects, telarDir } from "./manifest";
+import { getProject, listProjects, telarDir, writeManifest } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
-import { buildIntegrationRepairBrief, executeLoom, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
+import { buildIntegrationRepairBrief, executeLoom, isLaneViable, partitionAssertions, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
 import {
   autoRepairEnabled,
   createConsolidationBranch,
@@ -47,11 +47,12 @@ import { appendSteering, readBundleFile, readContract, snapshotBundle, writeCont
 import { synthesizeContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { envReviewEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
+import { envReviewEnabled, laneEscalationEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
 import { runSetupAgent } from "./setup/setup-agent";
 import { superviseStartLane } from "./verify-lane";
 import type { Lane, StartLaneOpts } from "./run-server";
-import { writeAcceptedServersConfig } from "./servers";
+import { writeAcceptedServersConfig, writeAcceptedRunbook } from "./servers";
+import type { ContractAssertion } from "./schemas";
 
 export type StartLoomInput = {
   project: string;
@@ -95,6 +96,31 @@ function makeOnFailure(loom: Loom): (err: unknown) => void {
       saveLoom(loom);
     } catch {}
   };
+}
+
+// M10.4 (laneEscalation) — the ONLY place in packages/core/src that SETS
+// state:"blocked", making the dead enum reachable. Mirrors
+// proposeEnvOrNeedsReview's PARK shape: stash a machine-facing blockedReason + a
+// human-facing narrative blockedQuestion (the analog of proposedServers), flip
+// state to "blocked", append the escalation + state events, and save. Writes
+// NOTHING to `.telar` or the manifest — persistence happens ONLY post-human-accept
+// inside answerBlocked, strictly after its non-blank `by` guard. `blocked` is an
+// awaiting-human PARK (recover.ts → "leave"), in NEITHER TERMINAL_STATES nor
+// IN_FLIGHT_STATES — never an autonomous promotion, never a strand: dispatch
+// RETURNS to the caller with a paused, resumable loom.
+function parkBlockedIfLaneUnviable(loom: Loom, assertions: ContractAssertion[]): void {
+  const { agentJudged } = partitionAssertions(assertions);
+  loom.blockedReason =
+    `The verification lane is not viable: ${agentJudged.length} agent-judged assertion(s) ` +
+    `need a live target, but the project has no devCommand, no servers.yaml/.telar tier, ` +
+    `and the setup agent is off — nothing can bring the app up to drive verification.`;
+  loom.blockedQuestion =
+    "How do I run this app so verification can drive it? Give me a dev command " +
+    "(e.g. `bun run dev`) or a servers recipe, plus any steps to reach the feature.";
+  loom.state = "blocked";
+  appendEvent(loom.id, { type: "lane-escalation", by: "telar" });
+  appendEvent(loom.id, { type: "state", state: "blocked" });
+  saveLoom(loom);
 }
 
 // Fork C — a plain custom loom becomes a WEAVE OF ONE: a deterministic,
@@ -274,6 +300,29 @@ function runWeaveWiring(
   }
   const rootAssertions = contract.assertions;
   const rootSynthesized = contract.synthesized === true;
+
+  // M10.4 (laneEscalation ON) — PRE-FLIGHT lane-viability gate. Runs HERE, after
+  // the contract is resolved/synthesized+persisted and BEFORE any spend (the
+  // baseSha pin, the consolidation-branch create, and the runWeave child spawn
+  // all live below). If a live target is needed (the contract has agent-judged
+  // assertions) but the lane is unviable (no devCommand, no servers.yaml/.telar
+  // tier) AND cannot be auto-provisioned (setupAgent is off — the only auto-spin
+  // path), PARK the loom in `blocked` with a narrative question and RETURN before
+  // ANY child forks or branch is created — so an unviable lane never strands
+  // threads. laneEscalationEnabled is the FIRST && operand, so flag-off adds ZERO
+  // reads and ZERO branches beyond today and dispatch flows straight into the
+  // baseSha/branch/runWeave path exactly as it does now (byte-identical). Bounded:
+  // a single synchronous decision over already-resolved inputs (isLaneViable is a
+  // pure read of the contract + manifest + one filesystem tier) — it cannot loop
+  // and cannot spawn a thread that strands.
+  if (
+    laneEscalationEnabled(manifest) &&
+    !isLaneViable(manifest, rootAssertions) &&
+    !setupAgentEnabled(manifest)
+  ) {
+    parkBlockedIfLaneUnviable(loom, rootAssertions);
+    return Promise.resolve(loom);
+  }
 
   // M3: pin the base SHA + create the review branch at ROOT start, BEFORE any
   // child spawns — children read root.baseSha to fork their own worktrees
@@ -696,6 +745,101 @@ export async function approveEnv(
   dispatchExecution(loom, manifest, deps, abort) // re-dispatch VERIFY
     .catch(onFailure)
     .finally(() => active.delete(loom.id));
+
+  return true;
+}
+
+// M10.4 — ANSWER a loom parked in `blocked` by the pre-flight lane-viability
+// gate: the bounded ask-once-persist human escalation. A DEDICATED verb (not an
+// extension of steerLoom, whose directive folds into the BUILD prompt, and not
+// resumeLoom, which takes no `by` and so fails the human-gate moat). Mirrors
+// approveEnv's human gate + persist + dispatch tail. The moat:
+//   - a non-blank human `by` is REQUIRED (bound server-side, never from the
+//     request body) — `blocked` is a PARK waiting on the human, so it can only
+//     leave via a verb that carries a human touch;
+//   - persistence is POST-ACCEPT ONLY (after the `by` guard) and writes to TWO
+//     distinct tiers: the gitignored `.telar/` recipe/runbook (never committed)
+//     and the committable manifest promotion (telar.yaml) — so a future loom
+//     with the same unviable-shape contract NEVER re-asks;
+//   - it re-dispatches to `ready` AT MOST: dispatchExecution re-enters the
+//     verified loop; a green re-verify lands `ready`, never `done`. answerBlocked
+//     itself sets NO state other than clearing the blocked draft; the persistence
+//     writes set no state; only acceptLoom + a human `by` ever reaches `done`.
+// Returns false if the loom doesn't exist, isn't in `blocked`, or the answer
+// carries no VIABILITY-MAKING input (no non-blank devCommand and no servers
+// recipe). A runbook is OPTIONAL accompanying narrative — isLaneViable never
+// consults it, so a runbook alone can't clear the pre-flight gate; a runbook-only
+// answer is rejected like an empty one (loom stays `blocked`, draft intact).
+export async function answerBlocked(
+  id: string,
+  by: string,
+  answer: {
+    devCommand?: string;
+    servers?: ServersConfig;
+    runbook?: string;
+    gates?: ProjectManifest["gates"];
+    mcpServers?: ProjectManifest["mcpServers"];
+  },
+  deps: DispatcherDeps,
+): Promise<boolean> {
+  const loom = getLoom(id);
+  if (!loom || loom.state !== "blocked") return false;
+  if (!by?.trim()) throw new Error("answerBlocked requires a non-blank `by`");
+
+  const hasDevCommand = !!answer.devCommand?.trim();
+  const hasRunbook = !!answer.runbook?.trim();
+  const hasServers = !!answer.servers;
+  // The accept-guard MUST be consistent with isLaneViable (executor.ts): the lane
+  // becomes viable ONLY from a non-blank devCommand OR a servers recipe. A runbook
+  // is OPTIONAL narrative isLaneViable NEVER reads, so it is never SUFFICIENT
+  // alone — accepting a runbook-only answer would persist + clear the draft +
+  // re-dispatch, and the re-dispatched pre-flight would immediately RE-PARK with a
+  // freshly-recomputed question (the answer looks accepted but never resolves).
+  // Reject a runbook-only (or fully-empty) answer exactly like an empty one
+  // (mirrors approveEnv's `if (!accepted) return false`): no write, no draft
+  // clear, no re-dispatch — the loom stays `blocked` with its draft intact.
+  if (!hasDevCommand && !hasServers) return false;
+
+  const { manifest } = getProject(loom.project);
+
+  // POST-ACCEPT persistence (strictly after the non-blank `by` guard). Two
+  // distinct tiers, kept separate: the gitignored `.telar/` (never committed) +
+  // the committable manifest (telar.yaml). Neither write sets loom.state.
+  if (hasServers) writeAcceptedServersConfig(manifest.root, answer.servers!); // → .telar/servers.yaml
+  if (hasRunbook) writeAcceptedRunbook(manifest.root, answer.runbook!.trim()); // → .telar/runbook.md
+
+  // Promote a learned devCommand (and optionally gates/mcpServers) onto the
+  // committable manifest so the RE-DISPATCHED pre-flight — and every FUTURE loom
+  // in this project — sees the recipe and proceeds past the gate, never re-parks.
+  if (hasDevCommand || answer.gates || answer.mcpServers) {
+    const merged: ProjectManifest = {
+      ...manifest,
+      ...(hasDevCommand ? { devCommand: answer.devCommand!.trim() } : {}),
+      ...(answer.gates ? { gates: answer.gates } : {}),
+      ...(answer.mcpServers ? { mcpServers: answer.mcpServers } : {}),
+    };
+    writeManifest(manifest.root, merged);
+  }
+
+  loom.blockedReason = undefined; // the draft is now persisted
+  loom.blockedQuestion = undefined;
+  loom.error = null;
+  saveLoom(loom);
+  appendEvent(loom.id, { type: "lane-answered", by });
+
+  // Re-read the manifest AFTER the promotion write so the re-dispatched pre-flight
+  // sees the newly-learned devCommand/recipe and proceeds past the gate.
+  const { manifest: freshManifest } = getProject(loom.project);
+
+  const abort = new AbortController();
+  active.set(loom.id, abort);
+  const onFailure = makeOnFailure(loom);
+
+  dispatchExecution(loom, freshManifest, deps, abort) // re-dispatch (re-verifies; lands `ready` at most)
+    .catch(onFailure)
+    .finally(() => {
+      if (active.get(loom.id) === abort) active.delete(loom.id);
+    });
 
   return true;
 }

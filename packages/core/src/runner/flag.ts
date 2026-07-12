@@ -56,6 +56,18 @@ export function orchestratorVerifyEnabled(manifest: { orchestratorVerify?: boole
   return manifest.orchestratorVerify === true || process.env.TELAR_ORCHESTRATOR_VERIFY === "1";
 }
 
+// M10.4 — a PRE-FLIGHT lane-viability gate: before spending on the build (before
+// children spawn) check the verification lane is achievable; if it is NOT and
+// cannot be auto-provisioned, PARK the loom in `blocked` with a narrative
+// question (a bounded ask-once-persist human escalation) instead of spawning
+// threads that then strand. A TOP-LEVEL flag (no parent guard, like
+// orchestratorVerify) since the pre-flight runs in dispatchExecution before any
+// thread flag matters. Flag-off ⇒ the pre-flight park never fires and dispatch is
+// byte-identical to today. Honored via TELAR_LANE_ESCALATION=1.
+export function laneEscalationEnabled(manifest: { laneEscalation?: boolean }): boolean {
+  return manifest.laneEscalation === true || process.env.TELAR_LANE_ESCALATION === "1";
+}
+
 // M10.3 — PROACTIVELY stand a supervised verification LANE up for the top-gate
 // pass so the whole-verify panel gets a REAL target (a live server/db/multi-
 // service substrate) instead of M10.1's `if(!target)` fail-closed skip, and

@@ -137,6 +137,17 @@ export type Loom = {
   // re-dispatches verify. Absent unless the loom is (or was) in env-review;
   // absent flag-off.
   proposedServers?: ServersConfig;
+  // M10.4 (lane-escalation) — the PRE-FLIGHT park draft. Set when the loom is
+  // parked in `blocked` because its verification lane is unviable and cannot be
+  // auto-provisioned (analog of proposedServers). Two fields, cleared on answer:
+  //   blockedReason   — MACHINE-facing: what it tried / why the lane is unviable
+  //                     ("N agent-judged assertions need a live target; no
+  //                     devCommand, no servers tier, setup agent off").
+  //   blockedQuestion — HUMAN-facing narrative ask surfaced in the cockpit
+  //                     ("How do I run this app so verification can drive it?").
+  // Absent unless the loom is (or was) in `blocked`; absent flag-off.
+  blockedReason?: string;
+  blockedQuestion?: string;
   // M4 (auto-repair) — the ordered log of frozen-lane integration-verify rounds
   // (repair-guard.ts). Absent unless the autoRepair master flag fired: history[0]
   // is the initial verify, each later entry follows one dispatched repair. Read

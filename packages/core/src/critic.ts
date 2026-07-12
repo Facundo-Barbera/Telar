@@ -32,6 +32,16 @@ export type CriticContext = {
   url: string;
   objective: string;
   assertions: ContractAssertion[];
+  // M10.4 (laneEscalation) — the accepted `.telar/runbook.md` verification
+  // NARRATIVE (resolveRunbook), surfaced as READ-ONLY DRIVE/OBSERVE context: how
+  // to reach/seed/login/drive the live app + known-flaky notes. It is NOT a
+  // verdict directive and does NOT relax §M.5 isolation — it carries no builder
+  // verdict / sibling verdict (the fields §M.5 bans), only human-authored "how to
+  // drive it" prose. Absent (no runbook / flag off) ⇒ the field is unset and the
+  // prompt is byte-identical. The judge's tool wall (VERIFIER_TOOLS,
+  // restrictTools, the Write/Edit/Bash/Agent denylist) is UNCHANGED: this is
+  // prompt CONTEXT only, never a new capability.
+  driveContext?: string;
 };
 
 // Shared framing (§3/§4), verbatim across every lens.
@@ -116,6 +126,14 @@ export function criticPrompt(lens: LensSpec, ctx: CriticContext): string {
         .join("\n")
     : "(no assertions declared)";
 
+  // M10.4 — the accepted runbook, appended as READ-ONLY DRIVE context only. It
+  // tells the critic HOW TO DRIVE the app (route/seed/login/known-flaky), never
+  // WHETHER it passes: the verdict stays grounded in the Spec Bundle + assertions
+  // above. Absent ⇒ this whole block is "" and the prompt is byte-identical.
+  const driveBlock = ctx.driveContext
+    ? `\n\n--- Drive notes (how to reach & drive the app — NOT a verdict; judge only against the contract above) ---\n${ctx.driveContext}`
+    : "";
+
   return `${CRITIC_FRAMING}
 
 --- Your lens: ${lens.lens} (${lens.class}${lens.blocker ? ", BLOCKER — must clear" : ", advisory"}) ---
@@ -127,7 +145,7 @@ Objective: ${ctx.objective}
 URL: ${ctx.url}
 
 Verification Contract assertions (ground every judgment in these):
-${assertionsBlock}`;
+${assertionsBlock}${driveBlock}`;
 }
 
 export type CriticRunOpts = {

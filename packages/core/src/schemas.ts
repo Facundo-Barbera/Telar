@@ -310,6 +310,15 @@ export const ProjectManifest = z.object({
   // Default OFF: one-shot startLane, no supervisor, byte-identical. Honored via
   // TELAR_VERIFY_LANE=1.
   verifyLane: z.boolean().default(false),
+  // M10.4 — PRE-FLIGHT lane-viability gate + bounded ask-once-persist human
+  // escalation. When on, before any spend (baseSha pin, consolidation branch,
+  // child spawn) the dispatcher checks the verification lane is achievable; if a
+  // live target is needed but there is no devCommand, no servers recipe tier, and
+  // no auto-provision path, it PARKS the loom in `blocked` with a narrative
+  // question a human answers ONCE (answerBlocked). Default OFF: no pre-flight
+  // park, children spawn as today, byte-identical. Honored via
+  // TELAR_LANE_ESCALATION=1.
+  laneEscalation: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),

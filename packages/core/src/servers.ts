@@ -66,3 +66,41 @@ export function resolveServersConfig(root: string, acceptedRoot: string = root):
 export function writeAcceptedServersConfig(root: string, cfg: ServersConfig): void {
   atomicWrite(acceptedServersFile(root), YAML.stringify(cfg));
 }
+
+// M10.4 — the runbook tier, mirroring the servers.yaml tiers line-for-line but
+// carrying the free-text VERIFICATION NARRATIVE a structured servers recipe
+// CANNOT: the route to drive to reach the feature ("log in, go to /dashboard,
+// click New"), seed/login/reset steps and test credentials, known-flaky areas,
+// and which lenses/assertions map to which UI surface. servers.yaml answers "how
+// to bring the substrate UP"; runbook.md answers "how to DRIVE it to verify this
+// contract". Project-scoped, human-accepted, reused forever.
+const acceptedRunbookFile = (root: string) => path.join(root, ".telar", "runbook.md");
+const runbookFile = (root: string) => path.join(root, "runbook.md");
+
+// Read ONE runbook tier. Returns null on ENOENT (fall through to the next tier).
+// A runbook is free text — there is no schema to validate, so unlike a servers
+// tier there is no throw path; a present file's contents are returned verbatim.
+function readRunbookTier(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return null; // ENOENT — this tier is absent, fall through
+  }
+}
+
+// Precedence (D5, mirroring resolveServersConfig): acceptedRoot/.telar/runbook.md
+// (accepted) → root/runbook.md (repo) → null. The `acceptedRoot = root` param
+// lets a frozen worktree `wt` still see the gitignored `.telar/runbook.md`
+// anchored at manifest.root, exactly as resolveServersConfig does.
+export function resolveRunbook(root: string, acceptedRoot: string = root): string | null {
+  const accepted = readRunbookTier(acceptedRunbookFile(acceptedRoot));
+  if (accepted !== null) return accepted;
+  return readRunbookTier(runbookFile(root));
+}
+
+// M10.4 — persist a human-accepted verification narrative to `.telar/runbook.md`.
+// The moat mirror of writeAcceptedServersConfig: only ever called from
+// answerBlocked, AFTER a non-blank human `by` answered the escalation.
+export function writeAcceptedRunbook(root: string, text: string): void {
+  atomicWrite(acceptedRunbookFile(root), text);
+}
