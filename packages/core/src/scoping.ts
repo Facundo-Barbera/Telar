@@ -11,7 +11,7 @@ import {
   type ProofStrategy,
   type VerificationContract,
 } from "./schemas";
-import { PROOF_TEMPLATES, proofTemplate } from "./proof-templates";
+import { EXECUTABLE_PREFERENCE_GUIDANCE, PROOF_TEMPLATES, proofTemplate } from "./proof-templates";
 
 // PURE. The fast-path switch: scoping only runs when the caller gave us
 // neither ready-made acceptance criteria nor a ready charter. This is the
@@ -143,6 +143,9 @@ ${template.guidance}
 
 --- All proof strategies (choose the same or a better fit per subgoal) ---
 ${templatesBlock}
+
+--- Proof preference (executable-first) ---
+${EXECUTABLE_PREFERENCE_GUIDANCE}
 
 ${input.storyMarkdown ? `--- Story ---\n${input.storyMarkdown}\n` : ""}
 Rules:

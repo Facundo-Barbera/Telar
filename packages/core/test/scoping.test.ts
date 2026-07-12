@@ -175,6 +175,25 @@ describe("draftCharter (injected fake agent, no live model)", () => {
     expect(captured!.prompt).toContain(PROOF_TEMPLATES["bmad-story"].guidance);
   });
 
+  test("folds the executable-preference guidance into the proposer prompt (M10.0 Finding 3)", async () => {
+    const { EXECUTABLE_PREFERENCE_GUIDANCE } = await import("../src/proof-templates");
+    let captured: { prompt: string } | null = null;
+    const fakeAgent = (async (promptText: string) => {
+      captured = { prompt: promptText };
+      return charter();
+    }) as unknown as typeof import("../src/engine").agent;
+
+    await draftCharter({ prompt: "add a config flag", manifest: fakeManifest }, { agent: fakeAgent });
+
+    // The proposer must carry the whole executable-first instruction verbatim,
+    // steering the drafting agent to prove machine-checkable criteria with a
+    // command/gate and reserve the live Verifier for genuine live surfaces.
+    expect(captured).not.toBeNull();
+    expect(captured!.prompt).toContain(EXECUTABLE_PREFERENCE_GUIDANCE);
+    expect(EXECUTABLE_PREFERENCE_GUIDANCE).toContain("gate");
+    expect(EXECUTABLE_PREFERENCE_GUIDANCE).toContain("verifier");
+  });
+
   test("never mutates the repo — cwd is the manifest root, no write-capable tools requested", async () => {
     const canned = charter();
     let captured: any = null;

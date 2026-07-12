@@ -62,3 +62,28 @@ export const PROOF_TEMPLATES: Record<ProofStrategy, ProofTemplate> = {
 export function proofTemplate(s: ProofStrategy): ProofTemplate {
   return PROOF_TEMPLATES[s];
 }
+
+// M10.0 (Finding 3) — the executable-preference guidance folded into the
+// scoping prompt (scoping.draftCharter). The finding: a criterion a machine can
+// check on its own should be proven by a deterministic, exit-code check (a
+// runnable command or a named project gate — no LLM in the loop), and the
+// live/prose Verifier should be RESERVED for criteria that genuinely need a
+// running surface (observable UI/UX behavior an exit code can't capture).
+//
+// This is PROMPT GUIDANCE ONLY. It steers how the drafting agent PHRASES each
+// acceptanceCriterion and picks its verifyMechanism ("gate" vs "verifier"); it
+// changes NO deterministic assertion-type routing. The structural fix — the
+// deterministic proposer (weave-contracts.synthesizeContract) emitting
+// command/gate assertions for independently-verifiable criteria instead of a
+// blanket live-critic — is a separate routing change reserved for M10.5.
+export const EXECUTABLE_PREFERENCE_GUIDANCE =
+  "Proof preference — choose the cheapest SOUND proof per criterion. When a " +
+  "criterion is independently and deterministically checkable (a file/symbol " +
+  "exists, a test passes, a build/typecheck/lint gate is green, an exit code is " +
+  "0), PREFER proving it with a runnable command or a named project gate " +
+  "(verifyMechanism \"gate\") — an offline, exit-code check with no LLM " +
+  "judgment. RESERVE the live Verifier and prose judgment (verifyMechanism " +
+  "\"verifier\") for criteria that genuinely require observing a running " +
+  "surface: UI/UX behavior in the accessibility tree that an exit code cannot " +
+  "capture. Write each acceptance criterion so its cheapest sound proof is " +
+  "obvious — do not route a machine-checkable criterion through a live critic.";
