@@ -28,9 +28,9 @@ afterAll(() => {
 });
 
 const { orchestratorVerifyEnabled } = await import("../src/runner/flag");
-const { runWeave } = await import("../src/weave");
+const { runWeave, rollupWeave } = await import("../src/weave");
 const { frozenLaneVerify } = await import("../src/verify-thread");
-const { runIntegrationVerify } = await import("../src/executor");
+const { runIntegrationVerify, executeLoom } = await import("../src/executor");
 const { createLoom } = await import("../src/looms");
 const { writeBundleFile, writeContract } = await import("../src/bundle");
 const { createProject } = await import("../src/manifest");
@@ -418,6 +418,125 @@ describe("runIntegrationVerify — fail-closed over the composed whole (the M10.
         runIntegrationVerify(l, noTargetManifest, { fullContract: true, gateRunner, run: (async () => null) as any }),
     });
     expect(result.state).toBe("needs-review"); // demoted from the self-reported ready
+    expect(result.latestVerdict).toBe("fail");
+  });
+});
+
+// ── M10.2 — THREAD verification advisory (child-scoped, keyed to the SAME flag) ─
+// Drives the REAL executeLoom over a CHILD with an authored contract (a passing
+// deterministic command + a live-critic completeness assertion) against a
+// NO-TARGET manifest ⇒ the panel is REQUIRED but obtains no evidence
+// (verification "skip", panelRequired true). Under orchestratorVerify the child
+// resolves GREEN-WITH-NOTE (state "done", loom.error null, a thread-advisory
+// event) instead of per-thread needs-review; rollupWeave then rolls the root to
+// "ready", where M10.1's top gate re-proves the full contract fail-closed. Flag-
+// off is byte-identical (child skip still needs-review). A GENUINELY broken
+// child (builder verdict.ok===false, or a red deterministic gate) is untouched.
+// A ROOT (no parentLoomId) is NOT relaxed — its own fail-closed path stands.
+const childContract: VerificationContract = {
+  version: 1,
+  assertions: [
+    asrt({ id: "g", subGoalId: "ALL", description: "cmd", type: "command", expected: "echo ok", blocker: true }),
+    liveCritic({ id: "lc_child", subGoalId: "s1" }), // agentJudged ⇒ panelRequired true
+  ],
+};
+let cpn = 0;
+function makeChildProject(over: Record<string, unknown> = {}) {
+  cpn++;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-m102-${cpn}-`));
+  const m = createProject(root, { name: `m102-${cpn}` });
+  const manifest = ProjectManifest.parse({ name: m.name, root, ...over });
+  return { name: m.name, root, manifest };
+}
+// Build a CHILD (parentLoomId set) or ROOT loom, run the REAL executeLoom with a
+// fake builder verdict (ok unless badVerdict), maxAttempts 1 so flag-off lands
+// its terminal at n=1 (no retry loop). No isolation ⇒ no worktree/git.
+async function runChildLoom(o: { flagOn: boolean; asRoot?: boolean; badVerdict?: boolean; redGate?: boolean }) {
+  const { name, manifest, root } = makeChildProject({
+    ...(o.flagOn ? { orchestratorVerify: true } : {}),
+    ...(o.redGate ? { gates: [{ name: "boom", run: "false" }] } : {}),
+  });
+  const loom = createLoom({
+    project: name,
+    kind: "custom",
+    title: "t",
+    prompt: "x",
+    account: "personal",
+    ...(o.asRoot ? {} : { parentLoomId: "ROOT-M102", subGoalId: "s1" }),
+  });
+  writeContract(loom.id, childContract);
+  writeBundleFile(loom.id, "objective.md", "obj");
+  const events: Array<{ type: string } & Record<string, unknown>> = [];
+  await executeLoom(loom, manifest, {
+    run: (async () => ({ ok: !o.badVerdict, summary: "s", files_touched: [], blocker: o.badVerdict ? "boom" : null })) as any,
+    maxAttempts: 1,
+    onEvent: (e) => events.push(e),
+    onState: () => {},
+  });
+  fs.rmSync(root, { recursive: true, force: true });
+  return { loom, events };
+}
+
+describe("M10.2 — thread verification advisory (child-scoped)", () => {
+  test("(1) flag ON + CHILD + required-skip (no evidence) ⇒ GREEN 'done' + advisory note; loom.error null; root rolls to 'ready'", async () => {
+    const { loom, events } = await runChildLoom({ flagOn: true });
+    expect(loom.state).toBe("done"); // NOT per-thread needs-review
+    expect(loom.error).toBeNull(); // never reads as broken
+    const advisory = events.find((e) => e.type === "thread-advisory");
+    expect(advisory).toBeTruthy(); // the human-readable note is surfaced
+    expect(advisory!.subGoalId).toBe("s1");
+    // The done child rolls the root to the ready ceiling (M10.1's top gate then
+    // re-proves the full contract fail-closed over the composed whole).
+    expect(rollupWeave([loom], [subGoal({ id: "s1" })])).toEqual({ state: "ready" });
+  });
+
+  test("(2) flag OFF + identical CHILD ⇒ needs-review with the required-but-skipped error; NO advisory — byte-identical to today", async () => {
+    const { loom, events } = await runChildLoom({ flagOn: false });
+    expect(loom.state).toBe("needs-review");
+    expect(loom.error).toBe("panel verification required but did not run");
+    expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
+  });
+
+  test("(3) GENUINELY broken child is UNCHANGED under flag ON: (i) builder verdict.ok===false ⇒ needs-review, no advisory; (ii) red deterministic gate ⇒ failed", async () => {
+    const bad = await runChildLoom({ flagOn: true, badVerdict: true });
+    expect(bad.loom.state).toBe("needs-review"); // real breakage never relaxed
+    expect(bad.loom.error).toBe("boom");
+    expect(bad.events.some((e) => e.type === "thread-advisory")).toBe(false);
+
+    const red = await runChildLoom({ flagOn: true, redGate: true });
+    expect(red.loom.state).toBe("failed"); // a red gate short-circuits before verify
+    expect(red.events.some((e) => e.type === "thread-advisory")).toBe(false);
+  });
+
+  test("(4) ROOT-scoped (no parentLoomId) required-skip under flag ON is NOT relaxed — the root keeps its own fail-closed path (child-scoping)", async () => {
+    const { loom, events } = await runChildLoom({ flagOn: true, asRoot: true });
+    expect(loom.state).toBe("needs-review"); // childAdvisory false for a root
+    expect(loom.error).toBe("panel verification required but did not run");
+    expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
+  });
+
+  test("(5) after the advisory child rolls the root to 'ready', M10.1's top gate re-proves the full contract and CAN demote fail-closed", async () => {
+    // The safety net: a green-with-note child never drops coverage — the same
+    // required criterion is re-verified over the composed whole at the top, and
+    // an evidence-free required panel there demotes ready -> needs-review.
+    const holeContract2: VerificationContract = {
+      version: 1,
+      assertions: [
+        asrt({ id: "c_all", type: "command", expected: "echo all", subGoalId: "ALL" }),
+        liveCritic({ id: "lc_child", subGoalId: "s1" }),
+      ],
+    };
+    const root = rootLoom(holeContract2);
+    const { gateRunner } = fakeGates(() => true);
+    const result = await runWeave(root, [subGoal({ id: "s1" })], {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      // the child self-reports "done" (the advisory outcome); the top gate is the
+      // only thing that can now demote — and it does, fail-closed.
+      runChild: async (c) => ((c.state = "done"), c),
+      runIntegrationVerify: (l) =>
+        runIntegrationVerify(l, noTargetManifest, { fullContract: true, gateRunner, run: (async () => null) as any }),
+    });
+    expect(result.state).toBe("needs-review"); // top gate re-proved and demoted
     expect(result.latestVerdict).toBe("fail");
   });
 });

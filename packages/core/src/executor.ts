@@ -39,7 +39,13 @@ import type {
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import { envReviewEnabled, threadWorkflowEnabled, threadPlannerEnabled, stepChecksEnabled } from "./runner/flag";
+import {
+  envReviewEnabled,
+  threadWorkflowEnabled,
+  threadPlannerEnabled,
+  stepChecksEnabled,
+  orchestratorVerifyEnabled,
+} from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig } from "./servers";
@@ -250,8 +256,14 @@ export function decide(input: {
   flakyUsed: number;
   maxFlaky: number;
   panelRequired?: boolean;
+  // M10.2 — CHILD-scoped, gated on the SAME flag as M10.1's top gate. When true,
+  // a `panelRequired` skip (evidence structurally unobtainable at thread altitude)
+  // resolves to a GREEN `done` instead of retry/needs-review — the full contract is
+  // re-proven fail-closed at the orchestrator top gate over the composed whole.
+  // Default undefined/false ⇒ decide() is byte-identical to today (root or flag-off).
+  childAdvisory?: boolean;
 }): Decision {
-  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired } =
+  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired, childAdvisory } =
     input;
   const canRetry = n < maxAttempts;
   const flakyDecision = (): Decision =>
@@ -263,6 +275,11 @@ export function decide(input: {
       switch (verification) {
         case "skip":
           if (panelRequired) {
+            // M10.2: a CHILD under the orchestratorVerify flag SHORT-CIRCUITS to a
+            // green terminal — retrying cannot obtain evidence the thread altitude
+            // structurally cannot reach; the top gate re-proves the full contract
+            // over a reachable composed whole (fail-closed). Budget is not burned.
+            if (childAdvisory) return { action: "done" };
             return canRetry
               ? { action: "retry" }
               : { action: "needs-review", error: "panel verification required but did not run" };
@@ -293,6 +310,8 @@ export function decide(input: {
           // then lands needs-review WITH an error — never a silent bare
           // needs-review that drops the required-but-skipped signal.
           if (panelRequired) {
+            // M10.2: identical CHILD-advisory relaxation to the gated branch.
+            if (childAdvisory) return { action: "done" };
             return canRetry
               ? { action: "retry" }
               : { action: "needs-review", error: "panel verification required but did not run" };
@@ -1622,6 +1641,27 @@ export async function executeLoom(
         return loom;
       }
 
+      // M10.2 — CHILD-scoped thread-advisory, keyed to the SAME flag as M10.1's
+      // top gate (orchestratorVerifyEnabled). It can NEVER be on without the top
+      // gate, so coverage a thread stops gating is always re-proven at the top.
+      // A ROOT (no parentLoomId) yields false ⇒ decide() takes its unchanged
+      // fail-closed path. Flag-off ⇒ false ⇒ byte-identical to today.
+      //
+      // COVERAGE INVARIANT (fail-open hole closed): the relaxation may fire ONLY
+      // for a CONTRACT-BACKED child — one whose `panelRequired` skip came from the
+      // contract-partition path (readContract non-null ⇒ runVerification took the
+      // `if (contract)` branch, so panelRequired = agentJudged.length > 0 over the
+      // child's `contract.assertions`). Those assertions are a `wireChildBundle`
+      // filtered slice of the ROOT contract, which M10.1's top gate re-verifies in
+      // full (`runIntegrationVerify` with `fullContract:true` over the root's
+      // `contract.assertions`). A LEGACY / no-contract child instead reaches a
+      // `panelRequired` skip via the `verify()` null/throw fallback, where the
+      // relaxed criterion is the subGoal's PROSE `acceptanceCriteria` — NOT an
+      // assertion in any contract, so the top gate STRUCTURALLY cannot re-prove it.
+      // Relaxing that would silently drop coverage (fail-open). `!!routedContract`
+      // gates the relaxation to exactly the criteria the top gate re-proves.
+      const childAdvisory = orchestratorVerifyEnabled(manifest) && !!loom.parentLoomId && !!routedContract;
+
       const decision = decide({
         gatesConfigured,
         gatesOk,
@@ -1632,10 +1672,26 @@ export async function executeLoom(
         maxAttempts,
         flakyUsed,
         maxFlaky,
+        childAdvisory,
       });
 
       if (decision.action === "done") {
         setState(terminalStateForCompletedLoom(loom));
+        // M10.2 — surface the human-readable advisory ONLY when this green terminal
+        // is the relaxed evidence-unobtainable case (the exact triple decide()
+        // short-circuited). Purely additive: it gates nothing, never sets
+        // loom.error (which would read as broken), and mirrors emitVerifySummary's
+        // contract. The green child's state stays "done"; the note is the only
+        // distinguisher from a plain pass. The criterion is re-proven fail-closed
+        // at M10.1's top gate over the composed whole.
+        if (childAdvisory && panelRequired && verification === "skip") {
+          emit({
+            type: "thread-advisory",
+            n,
+            subGoalId: loom.subGoalId,
+            note: "couldn't independently verify at thread altitude (panel evidence unobtainable); re-proven at the orchestrator top gate over the composed whole",
+          });
+        }
         // M3 consolidation: on a CHILD's success, fold its isolated-worktree
         // diff onto the root's review branch BEFORE the finally removes the
         // worktree. Moat: this only ever commits onto telar/<rootId>, never

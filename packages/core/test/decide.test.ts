@@ -162,6 +162,102 @@ describe("decide — NO-GATES + panelRequired skip fix (§5)", () => {
   });
 });
 
+// M10.2 — CHILD-scoped thread-advisory. Under the orchestratorVerify flag a
+// child's `panelRequired` skip (evidence unobtainable at thread altitude)
+// SHORT-CIRCUITS to a green `done` at the FIRST attempt (no retry burn). Keyed
+// to the same flag as M10.1's top gate, which re-proves the full contract fail-
+// closed. Default (childAdvisory falsy) is byte-identical to the panelRequired
+// tests above. The relaxation matches ONLY the exact evidence-unobtainable
+// triple: verdict.ok && verification==="skip" && panelRequired===true.
+describe("decide — M10.2 childAdvisory (thread verification advisory)", () => {
+  test("gated + gatesOk + verdict.ok + skip + panelRequired + childAdvisory -> done at FIRST attempt (no retry burn)", () => {
+    expect(run({ verification: "skip", panelRequired: true, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
+      action: "done",
+    });
+  });
+
+  test("no-gates + verdict.ok + skip + panelRequired + childAdvisory -> done at FIRST attempt (symmetric relaxation)", () => {
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "skip",
+        panelRequired: true,
+        childAdvisory: true,
+        n: 1,
+        maxAttempts: 3,
+      }),
+    ).toEqual({ action: "done" });
+  });
+
+  test("childAdvisory even when attempts exhausted -> done (short-circuits before the exhausted needs-review)", () => {
+    expect(run({ verification: "skip", panelRequired: true, childAdvisory: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "done",
+    });
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "skip",
+        panelRequired: true,
+        childAdvisory: true,
+        n: 3,
+        maxAttempts: 3,
+      }),
+    ).toEqual({ action: "done" });
+  });
+
+  test("childAdvisory=true but panelRequired=false -> unchanged (gated skip carries gates to done)", () => {
+    expect(run({ verification: "skip", panelRequired: false, childAdvisory: true })).toEqual({ action: "done" });
+  });
+
+  test("childAdvisory=true but panelRequired=false (no-gates) -> unchanged bare needs-review (never relaxed)", () => {
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "skip",
+        panelRequired: false,
+        childAdvisory: true,
+      }),
+    ).toEqual({ action: "needs-review" });
+  });
+
+  test("childAdvisory=false (default) -> byte-identical to today: retry then needs-review on panelRequired skip", () => {
+    expect(run({ verification: "skip", panelRequired: true, n: 1, maxAttempts: 3 })).toEqual({ action: "retry" });
+    expect(run({ verification: "skip", panelRequired: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "needs-review",
+      error: "panel verification required but did not run",
+    });
+  });
+
+  test("childAdvisory NEVER relaxes real breakage: verdict.ok===false is untouched (needs-review with blocker)", () => {
+    expect(run({ verdict: badVerdict, childAdvisory: true })).toEqual({ action: "needs-review", error: "boom" });
+  });
+
+  test("childAdvisory NEVER relaxes a red deterministic gate -> retry/failed unchanged", () => {
+    expect(run({ gatesConfigured: true, gatesOk: false, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
+      action: "retry",
+    });
+    expect(run({ gatesConfigured: true, gatesOk: false, childAdvisory: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "failed",
+    });
+  });
+
+  test("childAdvisory NEVER relaxes verification==='fail' -> retry then needs-review unchanged", () => {
+    expect(run({ verification: "fail", panelRequired: true, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
+      action: "retry",
+    });
+    expect(run({ verification: "fail", panelRequired: true, childAdvisory: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "needs-review",
+      error: "verification failed",
+    });
+  });
+});
+
 describe("decide — unchanged branches (verdict not ok / null)", () => {
   test("gated + gatesOk + verdict not ok -> needs-review with blocker", () => {
     expect(run({ verdict: badVerdict })).toEqual({ action: "needs-review", error: "boom" });
