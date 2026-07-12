@@ -261,7 +261,21 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   template on any invalid/empty/cyclic graph. `threadWorkflow` off ⇒ byte-identical;
   `threadPlanner` off ⇒ templates only. Moat untouched (planner authors execution, not
   verification; `Step.check` schema-permitted but not yet consumed). 841 core tests pass.
-- ⏳ M9.4 — Per-step checks · ⏳ M9.5 — Prove & flip (interactive).
+- ✅ **M9.4 — Per-step checks** (`7e8cecb`). Optional read-only informational per-step
+  check (flag `stepChecks`, default off) consuming `Step.check`: pass/skip proceeds, fail
+  triggers a bounded (budget-gated) step-local repair then fails the thread closed. Moat
+  held under adversarial PoCs: never promotes (state-neutral — snapshots loom.state around
+  the check, fails closed on any mutation, so a check can't side-channel `done`); fail-closed
+  on a throwing check/repair (whole seam wrapped, no escaping rejection); additive-only (the
+  loom contract stays the floor); off ⇒ byte-identical. 853 core tests pass. *Tracked
+  follow-up:* if `threadPlanner`+`stepChecks` are ever both on, an LLM-authored `Step.check`
+  with a raw command/db runnable is a code-exec surface (same trust model as loom-level gates,
+  but planner-authored) — restrict the deterministic slice to named manifest gates if that
+  combination ships.
+- ⏳ M9.5 — Prove & flip (interactive / human-in-seat): live-validate a real multi-step,
+  multi-agent thread end-to-end (green → ready → human accept → done), then flip `threadWorkflow`
+  on as the default + retire M6's single-step framing. The flip is the human decision; the
+  overnight pass performs the e2e prove.
 
 ## M8 follow-up (deferred, tracked)
 
