@@ -19,16 +19,18 @@ adversarially verify → integrate), sized to land a coherent, shippable capabil
 not an incremental sliver. Execute them **top to bottom**; the order respects
 dependencies. The `▶` marks the current milestone.
 
-> **Status:** M1–M6 all shipped (`d7d8064` → `b2e1f2a`). M1/M2 are live.
-> M3/M4/M5/M6's substrate is flag-guarded **off** by default (byte-identical
-> to before) and unit-tested; each has a clearly-scoped **live-validation**
-> step remaining before its flag is flipped on. **M7 (env-review) is held**
-> on the wip branch `wip/m7-env-review` — a wide adversarial critique (66
-> findings) showed its env gate is unanswerable on a weave-of-one (E10) and,
-> more importantly, that the **moat itself fails *open*** by default. So the
-> current milestone is **M8 — make the moat fail closed and clean up after
-> itself**; M7 is revisited afterward on the hardened base. The dynamic
-> weaver (P4) stays deferred as research-grade.
+> **Status:** M1–M6 shipped (`d7d8064` → `b2e1f2a`); **M8 shipped** (`0f74ff7` →
+> `929e44d`) — the moat fails *closed* by default and worktrees
+> snapshot-then-remove (no leaks, no lost work); **M7 (env-review) shipped** —
+> rebuilt on the fail-closed base with the E10 child/root propagation fixed in
+> `rollupWeave` and the proposer hardened read-only. Path to completion, now:
+> **1. moat-edge hardening + housekeeping** (◀ current — the deferred edges +
+> the code housekeeping list) → **2. live-validation** (M4 Postgres / M5
+> durability / M6 fan-out / M7 & M8 flag-flips — these need a real run + a human
+> in the seat, so they're driven interactively, not by a build workflow). The
+> wide **conceptual investigation** of where Telar's *idea*, implementation,
+> and UIs should go next is done (see `scratchpad/telar-vision.md` → the
+> Contract Ledger is the flagship). The dynamic weaver (P4) stays deferred.
 
 **The moat is invariant across every milestone:** a green verify only lands a loom
 `ready` (never `done`); `ready → done` is a human click; the verifier is read-only;
@@ -186,7 +188,7 @@ self-report; a clean accept never sweeps a dirty tree; the cockpit and Verify ta
 and a completed (or cancelled, or failed) isolated loom leaves **zero** leftover worktree
 dirs behind, with the deliverable preserved as a branch. Green-gate: core tests + core/web tsc.
 
-## ⏸ M7 — Environment proposal: the env is accepted like the work is  ·  *held on `wip/m7-env-review`; revisit post-M8*
+## ✅ M7 — Environment proposal: the env is accepted like the work is  ·  *shipped (rebuilt on the fail-closed base; E10 fixed in `rollupWeave`; proposer hardened read-only)*
 
 *Emerged from live validation: a loom that builds fine can't be verified when
 there's no way to run the app, so it honestly lands `needs-review`. Extend the
