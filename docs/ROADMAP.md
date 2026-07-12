@@ -19,6 +19,13 @@ adversarially verify → integrate), sized to land a coherent, shippable capabil
 not an incremental sliver. Execute them **top to bottom**; the order respects
 dependencies. The `▶` marks the current milestone.
 
+> **Status:** M1–M6 all shipped (`d7d8064` → `b2e1f2a`). M1/M2 are live.
+> M3/M4/M5/M6's substrate is flag-guarded **off** by default (byte-identical
+> to before) and unit-tested; each has a clearly-scoped **live-validation**
+> step remaining (a real project run / real Postgres / spawning the runner)
+> before its flag is flipped on. The dynamic weaver (P4) is deferred as
+> research-grade. Next work: the live-validation runs + the Housekeeping list.
+
 **The moat is invariant across every milestone:** a green verify only lands a loom
 `ready` (never `done`); `ready → done` is a human click; the verifier is read-only;
 there is no `accept_loom`.
@@ -133,7 +140,7 @@ real Postgres and is runaway-prone, so validate the loop with a human in the sea
 **Done when:** a loom survives a web reload; a project with no `servers.yaml` is
 brought up by the setup agent.
 
-## ▶ M6 — Scale the weave  ·  *exploratory*
+## ✅ M6 — Scale the weave  ·  *shipped `b2e1f2a` (fan-out flag off; dynamic weaver deferred)*
 
 - **Sub-thread build fan-out** — wire `splitBuild`/`decideBuildFanout` so a Thread
   can use N parallel builders (built, never wired).
