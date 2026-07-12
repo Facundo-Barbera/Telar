@@ -292,12 +292,12 @@ const MOAT_NOTE =
 const ACTIVE_STATES: readonly WorkUnitState[] = ["preparing", "running", "verifying"];
 const isActive = (s: WorkUnitState) => ACTIVE_STATES.includes(s);
 
-// A panel FAILED verify when any must-clear (blocker) lens judged the work
-// unacceptable — the §M.3 floor guarantees ≥1 blocker lens exists.
-function panelFailed(pr: PanelReport | null | undefined): boolean {
-  if (!pr || pr.critics.length === 0) return false;
-  return pr.critics.some((c) => c.blocker && !c.ok);
-}
+// Single source of truth for client panel green/red: classifyPanelPure mirrors
+// core's fail-closed aggregatePanel (packages/core/src/panel.ts). A boolean view
+// for the pure pass/fail rendering sites (Verify Step state, repairs count) so the
+// cockpit can never render green where the Verify tab renders red.
+const panelIsFail = (pr: PanelReport | null | undefined): boolean =>
+  classifyPanelPure(pr) === "fail";
 
 const gatesFailed = (g?: GateResult[]) => !!g && g.some((r) => !r.ok);
 const gatesRan = (g?: GateResult[]) => !!g && g.length > 0;
@@ -364,7 +364,9 @@ function deriveSteps(op: Loom, latest: AttemptRecord | undefined): Step[] {
 
   // Verify — only when the critic panel ran (done/failed) or is running.
   if (pr) {
-    steps.push({ name: "Verify", state: panelFailed(pr) ? "failed" : "done" });
+    // Empty 'skip' stays 'done' (genuinely-empty behavior preserved); only a real
+    // fail from classifyPanelPure (blocker !ok / missing sized blocker) goes red.
+    steps.push({ name: "Verify", state: panelIsFail(pr) ? "failed" : "done" });
   } else if (s === "verifying") {
     steps.push({ name: "Verify", state: "active" });
   }
@@ -495,7 +497,7 @@ function evidenceLabel(ev: Evidence[]): string {
 
 function deriveOperator(op: Loom, opEvents: LoomEvent[], eventsAvailable: boolean): Operator {
   const latest = op.attempts.at(-1);
-  const repairs = op.attempts.filter((a) => panelFailed(a.panelReport)).length;
+  const repairs = op.attempts.filter((a) => classifyPanelPure(a.panelReport) === "fail").length;
   const steps = deriveSteps(op, latest);
   const critics = latest?.panelReport?.critics ?? [];
   const url = latest?.panelReport?.url ?? "";
@@ -664,7 +666,16 @@ function deriveTick(loom: Loom, events: LoomEvent[]): string {
     (e) => e.type === "panel" && !!(e as { report?: PanelReport | null }).report,
   ) as { report?: PanelReport | null } | undefined;
   if (lastPanel?.report) {
-    return panelFailed(lastPanel.report) ? "Verify failed — repair loop engaged" : "Verify passed";
+    switch (classifyPanelPure(lastPanel.report)) {
+      case "fail":
+        return "Verify failed — repair loop engaged";
+      case "pass":
+        return "Verify passed";
+      default:
+        // skip/no floor — a panel ran but produced no independent verdict. Never
+        // render this as "Verify passed" (that would fabricate a green).
+        return "Verify ran but produced no independent verdict";
+    }
   }
   const lastState = [...events].reverse().find((e) => e.type === "state") as
     | { state?: string }
@@ -766,11 +777,19 @@ function deriveDecisionLog(events: LoomEvent[]): DecisionLogEntry[] {
       case "panel": {
         const report = (ev as { report?: PanelReport | null }).report;
         if (!report) break; // report:null = panel skipped, not a verdict
-        log.push(
-          panelFailed(report)
-            ? { ts, kind: "fail", title: "Verify failed — handed a repro back to the builder" }
-            : { ts, kind: "ok", title: "Verify passed" },
-        );
+        switch (classifyPanelPure(report)) {
+          case "fail":
+            log.push({ ts, kind: "fail", title: "Verify failed — handed a repro back to the builder" });
+            break;
+          case "pass":
+            log.push({ ts, kind: "ok", title: "Verify passed" });
+            break;
+          default:
+            // skip/no floor: a panel ran but yielded no independent verdict — an
+            // honest non-ok row, NEVER green. Uses the fail|ok|info|observe vocab.
+            log.push({ ts, kind: "info", title: "Verify ran — no independent verdict" });
+            break;
+        }
         break;
       }
       case "weave-rollup": {
@@ -811,14 +830,20 @@ function missingBlockerLenses(pr: PanelReport | null | undefined): string[] {
 // floorless panel is not a pass; it's honestly "skip" (no floor) / "fail".
 function classifyPanelPure(pr: PanelReport | null | undefined): AssertionOutcome {
   const critics = pr?.critics ?? [];
-  if (critics.length === 0) return "skip";
+  // Source of truth: packages/core/src/panel.ts:aggregatePanel (now fail-closed).
+  // Compute the missing sized-blocker set up FRONT so it also decides the
+  // empty-critics case: a sized blocker lens that never reported fails the panel
+  // even with zero critics present — the vacuous-panel hole aggregatePanel closes.
+  // A genuinely empty panel (no critics AND no sized blocker) stays an honest skip.
+  const missing = missingBlockerLenses(pr);
+  if (critics.length === 0) return missing.length > 0 ? "fail" : "skip";
   const hasFloor = critics.some(
     (c) => (c.class === "adversarial" || c.class === "reproduction") && c.blocker,
   );
   if (!hasFloor) return "fail"; // floorless panel is illegal — never a silent pass
   if (critics.some((c) => c.blocker && !c.ok)) return "fail";
   // A sized blocker lens that never reported must fail the panel, same as core.
-  if (missingBlockerLenses(pr).length > 0) return "fail";
+  if (missing.length > 0) return "fail";
   const blockerFindings = critics.flatMap((c) => c.findings.filter((f) => f.severity === "blocker"));
   return blockerFindings.length > 0 ? "fail" : "pass";
 }
@@ -871,9 +896,13 @@ const ACTIVE_VERIFY_STATES: readonly WorkUnitState[] = ["queued", "preparing", "
 // A thread's INDEPENDENT verdict, re-derived from its latest attempt's artifacts
 // (panel → verifier → gates). Never reads the builder's own verdict.
 function threadVerdict(t: Loom, latest: AttemptRecord | undefined): AssertionOutcome {
-  if (latest?.panelReport && latest.panelReport.critics.length > 0) {
-    return classifyPanelPure(latest.panelReport);
-  }
+  // Route through the fail-closed classifier whenever a panel RAN — not only when
+  // critics reported. A vacuous panel (critics: [], sized: [<blockers>]) — every
+  // critic crashed/timed-out — must fail-close via classifyPanelPure (returns
+  // 'fail' on missing sized blockers), never fall through to gates and fabricate a
+  // green. A genuinely-empty panel (no critics, no sized blockers) returns 'skip',
+  // which renders muted — never green. Matches deriveSteps/repairs/core.
+  if (latest?.panelReport) return classifyPanelPure(latest.panelReport);
   if (latest?.verifierReport) return latest.verifierReport.ok ? "pass" : "fail";
   if (gatesRan(latest?.gates)) return gatesFailed(latest?.gates) ? "fail" : "pass";
   if (!latest) return "pending";
