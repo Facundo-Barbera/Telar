@@ -254,7 +254,14 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   loom/worktree context and derive the loom's terminal state from validated per-step results —
   enabling safe parallel writing steps and trusted custom step executors. Until then: built-in
   writing steps serialize within a wave, and injected-executor greens fail closed.
-- ⏳ M9.3 — Per-thread planner · ⏳ M9.4 — Per-step checks · ⏳ M9.5 — Prove & flip (interactive).
+- ✅ **M9.3 — Per-thread planner** (`d55b16d`). Deterministic template library
+  (`single-build` = today's default; a 3-step `understand → implement → check` chain),
+  a conservative heuristic (escalates only at ≥3 blocker assertions), and an optional
+  read-only LLM step-planner behind `threadPlanner` (default off) that degrades to the
+  template on any invalid/empty/cyclic graph. `threadWorkflow` off ⇒ byte-identical;
+  `threadPlanner` off ⇒ templates only. Moat untouched (planner authors execution, not
+  verification; `Step.check` schema-permitted but not yet consumed). 841 core tests pass.
+- ⏳ M9.4 — Per-step checks · ⏳ M9.5 — Prove & flip (interactive).
 
 ## M8 follow-up (deferred, tracked)
 
