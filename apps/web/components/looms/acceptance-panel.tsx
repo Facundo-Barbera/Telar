@@ -339,6 +339,15 @@ export function AcceptancePanel({
   // static heading/blurb; null falls back to the blurb alone.
   const verifiedSummary =
     loom.state === "ready" ? deriveVerifiedSummary(loom) : null;
+  // M10.5 (subjectiveRouting) — the criteria the loop DELIBERATELY carried to
+  // the human instead of an autonomous machine gate: explicitly-marked
+  // subjective assertions (`subjective:true`), pulled out of the panel into the
+  // attempt's `humanJudged` bucket and never rubber-stamped by a check. The
+  // machine cleared everything objective; THESE are the owner's holistic call
+  // at accept. Data-guarded: empty/absent (100% of looms flag-off, and any
+  // loom with no subjective criteria) ⇒ nothing renders. Read off the latest
+  // attempt — the one the acceptable state was reached on.
+  const subjectiveCriteria = latest?.humanJudged ?? [];
 
   return (
     <Card className={cn("border-l-2", v.card)}>
@@ -377,6 +386,30 @@ export function AcceptancePanel({
             <p className="text-xs leading-snug text-foreground/80">
               {verifiedSummary.text}
             </p>
+          </div>
+        )}
+
+        {/* M10.5: the subjective criteria carried to YOUR judgment. The loop
+            proved everything objective autonomously; these human-judgment
+            criteria ("premium feel", "cohesive UX") were never machine-gated
+            or rubber-stamped — you weigh them holistically on the composed
+            whole at accept. Renders only when such criteria were carried. */}
+        {subjectiveCriteria.length > 0 && (
+          <div className="flex flex-col gap-1.5 rounded-md bg-sky-500/[0.05] p-2.5 ring-1 ring-sky-500/20">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-sky-400/70">
+              Your judgment needed
+            </span>
+            <ul className="flex flex-col gap-1">
+              {subjectiveCriteria.map((a) => (
+                <li
+                  key={a.id}
+                  className="flex gap-1.5 text-xs leading-snug text-foreground/80"
+                >
+                  <span className="select-none text-sky-400/60">·</span>
+                  <span>{a.description}</span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
