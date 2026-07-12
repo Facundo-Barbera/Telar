@@ -23,11 +23,12 @@ dependencies. The `▶` marks the current milestone.
 > `929e44d`) — the moat fails *closed* by default and worktrees
 > snapshot-then-remove (no leaks, no lost work); **M7 (env-review) shipped** —
 > rebuilt on the fail-closed base with the E10 child/root propagation fixed in
-> `rollupWeave` and the proposer hardened read-only. Path to completion, now:
-> **1. moat-edge hardening + housekeeping** (◀ current — the deferred edges +
-> the code housekeeping list) → **2. live-validation** (M4 Postgres / M5
-> durability / M6 fan-out / M7 & M8 flag-flips — these need a real run + a human
-> in the seat, so they're driven interactively, not by a build workflow). The
+> `rollupWeave` and the proposer hardened read-only. **New direction — M9: threads
+> become workflows** (▶ aligning via design + diagram; see `thread-as-workflow.md`):
+> a thread should be a multi-agent workflow (N steps × M agents), not a single-agent
+> build loop. After M9: **moat-edge hardening + housekeeping**, then
+> **live-validation** (M4 Postgres / M5 durability / M6 fan-out / M7 & M8
+> flag-flips — driven interactively, not by a build workflow). The
 > wide **conceptual investigation** of where Telar's *idea*, implementation,
 > and UIs should go next is done (see `scratchpad/telar-vision.md` → the
 > Contract Ledger is the flagship). The dynamic weaver (P4) stays deferred.
@@ -209,6 +210,30 @@ accepts** it, then verification proceeds.*
 
 **Done when:** the `greenfield-demo` loom (which needs a dev server to verify) can be
 brought to a real, panel-verified `ready` via an accepted env proposal.
+
+## ▶ M9 — Threads become workflows (multi-agent: N steps × M agents)
+
+*See `thread-as-workflow.md`. Telar is inspired by Claude Code workflows: an agent
+authors a workflow of N steps, each fanning out M agents. A **thread should be that
+workflow**; a **loom orchestrates workflow-threads with robust verification**. The
+loom→threads orchestration already exists (the weaver); a thread's **build** is still
+single-agent (an attempt loop). M9 upgrades the thread, not the loom — and collapses
+the attempt-loop + repair leg + build-fanout + several flags into one abstraction.*
+
+- **Thread = step-graph**, not an attempt loop — reuse the loom's `dependsOn`/ready
+  predicate one altitude down; today's single builder becomes the degenerate 1-step case.
+- **Step fan-out** — generalize build-fanout (M6) from "the build step, disjoint-file
+  builders" to "any step, M agents," keeping the disjoint-writer / merge / stray safety.
+- **Per-thread planner** — a default template for simple threads; an LLM step-planner
+  (sub-flag) for complex ones. Read-only planning, same `fanoutClamp` + budget clamps.
+- **Moat unchanged, optionally deeper** — the loom still verifies the thread deliverable
+  fail-closed (green → `ready` → human accept → `done`); an optional informational
+  per-step check never earns `done`.
+- Flag-gated, default off, byte-identical until proven on a real multi-step thread.
+
+**Done when:** a thread runs a real N-step, M-agent workflow under the same clamps and
+the same moat; the single-agent thread stays the default until the flag flips. Subsumes
+M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
 
 ## M8 follow-up (deferred, tracked)
 
