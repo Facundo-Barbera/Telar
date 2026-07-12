@@ -272,10 +272,32 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   with a raw command/db runnable is a code-exec surface (same trust model as loom-level gates,
   but planner-authored) — restrict the deterministic slice to named manifest gates if that
   combination ships.
-- ⏳ M9.5 — Prove & flip (interactive / human-in-seat): live-validate a real multi-step,
-  multi-agent thread end-to-end (green → ready → human accept → done), then flip `threadWorkflow`
-  on as the default + retire M6's single-step framing. The flip is the human decision; the
-  overnight pass performs the e2e prove.
+- ◑ **M9.5 — Prove ✅ / flip ⏳.** **E2E prove complete** (real looms, real agents, all M9
+  flags on, `personal` account, isolated sandbox):
+  - *Single-agent path:* a complex build task ran through `runThreadWorkflow` → contract gates →
+    green → `ready` → human `acceptLoom` → `done` (clean accept, real commit). Moat never
+    auto-promoted.
+  - *Multi-step + multi-agent:* a 3-step DAG (`research → build → check`) with a 2-agent
+    disjoint-writer build step ran in dependency order, both pieces merged (446 insertions,
+    first attempt, all gates green) → child `done` → root `ready` → human accept → `done`.
+  - The e2e surfaced + fixed a real bug: `mergeDisjoint`'s stray check used default
+    `git status --porcelain`, which collapses a fully-untracked dir to `dir/` and false-flagged
+    every greenfield fan-out file as stray (fail-closed but wrongly rejecting valid work). Fixed
+    with `--untracked-files=all` (`a252432`); genuine strays still fail closed. 856 core tests.
+  - **Flip still pending (human decision):** flip `threadWorkflow` on as the default + retire
+    M6's single-step framing. Flags remain default-off, so the live `:3000` is unchanged.
+
+  *Fan-out robustness follow-ups (both surfaced by the e2e; both fail-**closed**, moat intact —
+  harden before making the multi-agent path a default):*
+  (1) **No per-agent timeout in fan-out** — a single stuck agent SDK query wedges the whole step
+  (`runBuildFanout`'s `Promise.all` waits forever); the system relies on a caller-supplied
+  `opts.abort` deadline. Not an M9 regression (the legacy single-agent path shares the property),
+  but fan-out multiplies the exposure. Add a per-piece wall-clock/liveness bound.
+  (2) **`addWorktree` not lock-guarded + per-process counter resets to 1** (`build-fanout.ts` /
+  `vcs.ts`) — a leftover `telar-wt-*` dir from a crashed prior run makes `git worktree add`
+  collide and throw → the piece's verdict comes back null → `mergeDisjoint` is skipped and a
+  successful agent's work is silently dropped. Uniquify/pre-prune the worktree path (and/or don't
+  discard a piece whose files were written).
 
 ## M8 follow-up (deferred, tracked)
 
