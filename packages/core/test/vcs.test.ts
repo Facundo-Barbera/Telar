@@ -8,10 +8,14 @@ import os from "node:os";
 import path from "node:path";
 import {
   addWorktree,
+  createConsolidationBranch,
   defaultGitRunner,
+  foldThreadIntoBranch,
   mergeDisjoint,
+  reapOrphanWorktrees,
   removeWorktree,
   resolveBaseSha,
+  snapshotWorktreeToBranch,
   withWorktreeLock,
 } from "../src/vcs";
 
@@ -176,5 +180,98 @@ describe("mergeDisjoint", () => {
       removeWorktree(defaultGitRunner, repo, wt);
       fs.rmSync(dest, { recursive: true, force: true });
     }
+  });
+});
+
+describe("foldThreadIntoBranch", () => {
+  test("folds a thread's allowed-path change onto the consolidation branch (transient self-removes)", async () => {
+    const sha = resolveBaseSha(defaultGitRunner, repo, "main")!;
+    createConsolidationBranch(defaultGitRunner, repo, "telar/root", sha);
+    const thread = addWorktree(defaultGitRunner, repo, sha, "thread");
+    try {
+      fs.writeFileSync(path.join(thread, "a.txt"), "thread work\n");
+      const res = await foldThreadIntoBranch(
+        defaultGitRunner,
+        repo,
+        "telar/root",
+        thread,
+        ["a.txt"],
+        "feat: fold thread",
+        sha,
+      );
+      expect(res.merged).toEqual(["a.txt"]);
+      // The branch now carries the folded commit...
+      const log = git(repo, ["log", "--format=%s", "telar/root"]).trim().split("\n");
+      expect(log[0]).toBe("feat: fold thread");
+      // ...and the transient `telar-wt-fold-*` worktree removed itself in its finally.
+      expect(worktreeCount()).toBe(2); // main + thread only
+      expect(
+        git(repo, ["worktree", "list"]).includes("telar-wt-fold-"),
+      ).toBe(false);
+    } finally {
+      removeWorktree(defaultGitRunner, repo, thread);
+    }
+  });
+});
+
+describe("snapshotWorktreeToBranch", () => {
+  test("commits a worktree's WIP onto a durable recovery branch that survives worktree removal", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "child1");
+    const branch = "telar/root-wip-child1";
+    try {
+      fs.writeFileSync(path.join(wt, "a.txt"), "child work\n");
+      fs.writeFileSync(path.join(wt, "new.txt"), "brand new\n");
+      const snapped = snapshotWorktreeToBranch(defaultGitRunner, wt, branch);
+      expect(snapped).toBe(true);
+      // The branch carries the WIP as a real commit — recoverable after removal.
+      removeWorktree(defaultGitRunner, repo, wt);
+      const files = git(repo, ["ls-tree", "-r", "--name-only", branch]).trim().split("\n");
+      expect(files).toContain("a.txt");
+      expect(files).toContain("new.txt");
+      // The branch tip's a.txt reflects the child's edit, not the base.
+      expect(git(repo, ["show", `${branch}:a.txt`])).toBe("child work\n");
+    } finally {
+      git(repo, ["branch", "-D", branch]);
+    }
+  });
+
+  test("returns false and creates NO branch when the worktree is clean", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "clean1");
+    try {
+      const snapped = snapshotWorktreeToBranch(defaultGitRunner, wt, "telar/should-not-exist");
+      expect(snapped).toBe(false);
+      // No branch was created (rev-parse --verify exits non-zero on a missing ref).
+      expect(defaultGitRunner(repo, ["rev-parse", "--verify", "--quiet", "telar/should-not-exist"]).status).not.toBe(0);
+    } finally {
+      removeWorktree(defaultGitRunner, repo, wt);
+    }
+  });
+});
+
+describe("reapOrphanWorktrees reclaims unrecorded frozen/fold orphans", () => {
+  // A killed process mid-verify (`telar-wt-frozen-*`) or mid-fold
+  // (`telar-wt-fold-*`) leaves a telar-wt-* dir recorded on NO loom. The
+  // reconcile reaper, now run per registered project root, force-removes those
+  // orphans while preserving a LIVE checkout and never deleting the branch.
+  test("force-removes telar-wt-frozen-* and telar-wt-fold-* orphans, keeps live + branch", () => {
+    const sha = resolveBaseSha(defaultGitRunner, repo, "main")!;
+    createConsolidationBranch(defaultGitRunner, repo, "telar/root", sha);
+
+    const frozen = addWorktree(defaultGitRunner, repo, sha, "frozen-verify123");
+    const fold = addWorktree(defaultGitRunner, repo, sha, "fold-telar/root");
+    const live = addWorktree(defaultGitRunner, repo, sha, "running");
+    expect(worktreeCount()).toBe(4); // main + frozen + fold + live
+
+    // Only the live checkout is in the live set -> both orphans are reaped.
+    reapOrphanWorktrees(defaultGitRunner, repo, [live]);
+
+    expect(fs.existsSync(frozen)).toBe(false);
+    expect(fs.existsSync(fold)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(worktreeCount()).toBe(2); // main + live only
+    // The consolidation branch survives — branch GC is the human's call.
+    expect(git(repo, ["rev-parse", "--verify", "telar/root"]).trim()).toBeTruthy();
   });
 });

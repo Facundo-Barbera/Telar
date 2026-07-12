@@ -6,8 +6,9 @@
 //   - validateContract accepts an all-live-critic contract IFF synthesized:true,
 //     but still enforces every OTHER falsifiability rule
 //   - EVERY loom ends up with a contract: startLoom persists a synthesized one
-//   - a synthesized no-target verify is a PROMOTABLE skip -> decide() promotes,
-//     byte-identical to the legacy contractless path (moat untouched)
+//   - a synthesized no-target verify FAILS CLOSED: a non-empty agent-judged
+//     slice with no live evidence is panelRequired:true -> decide() retries then
+//     lands needs-review (never promotes on self-report — the moat)
 //   - runIntegrationVerify now FIRES on a formerly-contractless (synthesized)
 //     root, and a red panel yields "fail" (which weave demotes ready ->
 //     needs-review); a green panel yields "pass" (weave keeps ready)
@@ -168,8 +169,8 @@ describe("every loom ends up with a contract (D0.3 choke point)", () => {
   });
 });
 
-describe("synthesized no-target verify is a PROMOTABLE skip (D0.4 moat preservation)", () => {
-  test("no live target -> skip with panelRequired:false, and decide() still promotes", async () => {
+describe("synthesized no-target verify FAILS CLOSED (M8: no evidence -> needs-review)", () => {
+  test("no live target -> skip with panelRequired:true, and decide() retries then needs-review", async () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
     // Persist a synthesized contract (live-critic -> agentJudged, no gates).
     writeContract(loom.id, synthesizeContract(loom));
@@ -180,27 +181,30 @@ describe("synthesized no-target verify is a PROMOTABLE skip (D0.4 moat preservat
     const events: { type: string }[] = [];
     const res = await runVerification(loom, manifestNoTarget, attempt, (e) => events.push(e));
 
-    // Promotable skip — byte-identical to the legacy contractless no-target skip.
+    // M8 fail-closed: a non-empty agent-judged slice that cannot be judged live
+    // is a FAILURE to obtain evidence, NOT a promotable "nothing to verify".
+    // Same skip verification, but panelRequired flips to true (authored-contract
+    // rule is now the general rule).
     expect(res.verification).toBe("skip");
-    expect(res.panelRequired).toBe(false);
+    expect(res.panelRequired).toBe(true);
 
-    // decide(): gates green + agent ok + a PROMOTABLE skip (panelRequired:false)
-    // -> done, exactly as a legacy contractless loom would promote. The same
-    // inputs with panelRequired:true (an AUTHORED contract) would instead
-    // retry/needs-review — that contrast IS the moat-preservation.
+    // decide(): gates green + agent ok + a REQUIRED-but-skipped panel -> retry
+    // while attempts remain, then needs-review once exhausted. Never `done` on
+    // self-report — that contrast with a real panel pass IS the moat.
     const okVerdict = { ok: true, summary: "done", files_touched: [], blocker: null };
     const base = {
       gatesConfigured: true,
       gatesOk: true,
       verdict: okVerdict,
       verification: "skip" as const,
-      n: 1,
       maxAttempts: 3,
       flakyUsed: 0,
       maxFlaky: 1,
     };
-    expect(decide({ ...base, panelRequired: res.panelRequired }).action).toBe("done"); // synthesized: promotes
-    expect(decide({ ...base, panelRequired: true }).action).toBe("retry"); // authored: no promotion
+    expect(decide({ ...base, n: 1, panelRequired: res.panelRequired }).action).toBe("retry"); // retries remain
+    const exhausted = decide({ ...base, n: 3, panelRequired: res.panelRequired });
+    expect(exhausted.action).toBe("needs-review"); // exhausted -> needs-review
+    expect(exhausted.error).toBe("panel verification required but did not run");
   });
 
   test("an AUTHORED contract's no-target skip is NOT promotable (panelRequired stays true)", async () => {
@@ -221,6 +225,51 @@ describe("synthesized no-target verify is a PROMOTABLE skip (D0.4 moat preservat
     const res = await runVerification(loom, manifestNoTarget, attempt, () => {});
     expect(res.verification).toBe("skip");
     expect(res.panelRequired).toBe(true); // moat: no evidence => no promotion
+  });
+});
+
+describe("panel exception FAILS CLOSED (M8: a thrown panel never promotes)", () => {
+  test("runPanel throws -> verification 'skip' + panelRequired:true, decide() retries then needs-review", async () => {
+    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+    // A synthesized (live-critic) contract -> a non-empty agent-judged slice, so
+    // the panel IS required and runs (agentJudged.length > 0, not the all-
+    // deterministic short-circuit).
+    writeContract(loom.id, synthesizeContract(loom));
+    writeBundleFile(loom.id, "objective.md", "obj");
+    const attempt = { n: 1, role: "dev", model: "sonnet", startedAt: Date.now() };
+    loom.attempts.push(attempt);
+
+    // A live target IS present (manifestWithUrl.urls.dev), so we reach runPanel;
+    // the injected agent throws, so the panel run rejects. A thrown panel is the
+    // strongest no-clean-evidence signal — it must classify skip/panelRequired:true
+    // (surfaced reason "required but did not run", NOT a false "verification failed").
+    const throwingRun = (() => {
+      throw new Error("panel boom");
+    }) as any;
+
+    const events: { type: string }[] = [];
+    const res = await runVerification(loom, manifestWithUrl, attempt, (e) => events.push(e), undefined, undefined, {
+      run: throwingRun,
+    });
+
+    expect(res.verification).toBe("skip");
+    expect(res.panelRequired).toBe(true);
+    expect(events.some((e) => e.type === "panel-error")).toBe(true);
+
+    // Feeds decide() to retry-then-needs-review, never done.
+    const base = {
+      gatesConfigured: true,
+      gatesOk: true,
+      verdict: { ok: true, summary: "d", files_touched: [], blocker: null },
+      verification: "skip" as const,
+      maxAttempts: 3,
+      flakyUsed: 0,
+      maxFlaky: 1,
+    };
+    expect(decide({ ...base, n: 1, panelRequired: res.panelRequired }).action).toBe("retry");
+    const exhausted = decide({ ...base, n: 3, panelRequired: res.panelRequired });
+    expect(exhausted.action).toBe("needs-review");
+    expect(exhausted.error).toBe("panel verification required but did not run");
   });
 });
 

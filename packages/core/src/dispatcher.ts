@@ -24,7 +24,7 @@ import {
   splitBuild as splitBuildDefault,
   type BuildPiece,
 } from "./build-fanout";
-import { getProject, telarDir } from "./manifest";
+import { getProject, listProjects, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { buildIntegrationRepairBrief, executeLoom, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
 import {
@@ -1029,8 +1029,26 @@ export function reconcileStuckLooms(liveness: Liveness = inProcessLiveness): { i
         g = { live: [], reclaim: [] };
         byRoot.set(root, g);
       }
-      if (isLive(l)) g.live.push(l.worktree);
+      // Preserve (never reap, never clear) a worktree that is either owned by a
+      // live/in-flight loom OR carries the durable `worktreeRetained` flag — the
+      // latter is set by executor cleanup when a WIP snapshot FAILED and the dir
+      // was retained as the only surviving copy of the work. Everything else with
+      // a recorded worktree is a TRUE orphan (crashed mid-build) and is reclaimed.
+      const retained = l.worktreeRetained === true;
+      if (isLive(l) || retained) g.live.push(l.worktree);
       else g.reclaim.push(l);
+    }
+    // Seed an empty live/reclaim group for EVERY registered project root, not
+    // only roots that currently own a worktree-bearing loom — so the reaper's
+    // `git worktree prune` + orphan sweep runs everywhere on every boot and
+    // reclaims unrecorded frozen-verify (telar-wt-frozen-*) / fold-transient
+    // (telar-wt-fold-*) dirs a killed process left behind. Each seed in its own
+    // try/catch so one bad / non-git project never aborts the sweep.
+    for (const p of listProjects()) {
+      try {
+        const root = p.entry.root;
+        if (!byRoot.has(root)) byRoot.set(root, { live: [], reclaim: [] });
+      } catch {}
     }
     for (const [root, g] of byRoot) {
       try {

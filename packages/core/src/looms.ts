@@ -126,6 +126,9 @@ export type Loom = {
   worktree?: string;
   baseSha?: string;
   consolidationBranch?: string;
+  // M8 worktree recovery: WIP snapshot branch + reaper-shield flag
+  recoveryBranch?: string;
+  worktreeRetained?: boolean;
   // M4 (auto-repair) — the ordered log of frozen-lane integration-verify rounds
   // (repair-guard.ts). Absent unless the autoRepair master flag fired: history[0]
   // is the initial verify, each later entry follows one dispatched repair. Read
@@ -271,18 +274,28 @@ type LandResult =
   | { committed: false; skipped: string }
   | { committed: false; error: string };
 
-// A loom PRODUCED BUILD OUTPUT iff it has a builder attempt — any attempt whose
-// role is not a pure-verification role. In today's shared-tree model only a
-// builder attempt writes the project tree; a verify-only or never-run loom
-// touched nothing, so committing on its behalf can only sweep unrelated files.
-// A woven ROOT has no builder attempt of its own, but once it owns a
-// consolidationBranch that branch IS its deliverable — so it "produced output"
-// and its accept must land (via the branch merge in landWorkingTree). A child
-// thread with a live worktree likewise produced output.
+// A loom PRODUCED BUILD OUTPUT iff it (or its subtree) has a builder attempt —
+// any attempt whose role is not a pure-verification role. In today's shared-tree
+// model only a builder attempt writes the project tree; a verify-only or
+// never-run loom touched nothing, so committing on its behalf can only sweep
+// unrelated files.
+//
+// A woven ROOT has no builder attempt of its OWN — its CHILD does the building
+// (in the shared tree flag-off, or on a branch/worktree flag-on). So we also
+// return true when it owns a consolidationBranch/worktree (its flag-on
+// deliverable, landed via the --no-ff merge in landWorkingTree) OR when ANY
+// child in its subtree produced build output (the flag-off shared-tree case —
+// accepting the root is the SOLE landing of the child's work). Recursion via
+// listChildLooms; children never point back at their parent, but a `seen`
+// guard keeps it terminating regardless. A genuinely verify-only loom with NO
+// building children still returns false — no `git add -A` sweep (the E1 fix).
 const VERIFY_ONLY_ROLES = new Set(["verifier", "integration"]);
-function producedBuildOutput(loom: Loom): boolean {
+function producedBuildOutput(loom: Loom, seen: Set<string> = new Set()): boolean {
+  if (seen.has(loom.id)) return false; // cycle guard — never revisit a loom
+  seen.add(loom.id);
   const built = loom.attempts.some((a) => !VERIFY_ONLY_ROLES.has(a.role));
-  return built || !!loom.commit || !!loom.worktree || !!loom.consolidationBranch;
+  if (built || loom.commit || loom.worktree || loom.consolidationBranch) return true;
+  return listChildLooms(loom.id).some((child) => producedBuildOutput(child, seen));
 }
 
 // docs/loom-model.md §A — "acceptance LANDS the work." Commit the loom's
@@ -426,10 +439,13 @@ export function acceptLoom(
   if (loom.state === "ready") {
     loom.state = "done";
     appendEvent(id, { type: "accepted", by });
-    // A clean accept always lands: a "ready" single loom built to get there, and
-    // a woven root — which has no builder attempt of its own — rolls up to
-    // "ready" from done children whose work its accept is the sole landing of.
-    recordLanding(loom, by, git, true); // §A: accept LANDS the work (never throws)
+    // A clean accept lands only when the loom produced build output — a "ready"
+    // single loom that built to get there, a woven root that owns a
+    // consolidationBranch (--no-ff merge), or a child thread with a worktree. A
+    // verify-only / never-built ready loom has nothing of its own in the shared
+    // tree, so landWorkingTree records commit-skipped and it still reaches
+    // "done" — the SAME producedBuildOutput predicate the override path uses below.
+    recordLanding(loom, by, git, producedBuildOutput(loom)); // §A: accept LANDS the work (never throws)
     saveLoom(loom);
     return loom;
   }
@@ -443,16 +459,15 @@ export function acceptLoom(
   const ev: { type: string } & Record<string, unknown> = { type: "accepted", by, override: true, fromState };
   if (opts?.cosignedBy?.trim()) ev.cosignedBy = opts.cosignedBy;
   appendEvent(id, ev);
-  // Land only when there's work to land: a real builder attempt, OR an override
-  // from a state whose accept lands a subtree's work (a woven root demoted to
-  // "needs-review", or a "blocked" loom that built). A stranded loom the owner
-  // is just closing (queued/scoping/preparing/running/verifying/failed-with-no-
-  // build/…) never cleanly built, so we do NOT git add -A the shared tree on its
-  // behalf — that would only sweep unrelated dirty files (the #55 footgun).
-  const land =
-    producedBuildOutput(loom) ||
-    fromState === "needs-review" ||
-    fromState === "blocked";
+  // Land only when there's work to land — the SAME producedBuildOutput
+  // predicate as the clean path. It now recurses into a woven root's subtree,
+  // so a root demoted to "needs-review"/"blocked" whose CHILD built is already
+  // covered (its subtree produced output -> true); a single loom that built and
+  // is now "blocked" has its own builder attempt -> true. A stranded loom the
+  // owner is just closing (queued/scoping/…/verify-only demoted to needs-review)
+  // produced nothing, so we do NOT git add -A the shared tree on its behalf —
+  // that would only sweep unrelated dirty files (the #55 / CA2 footgun).
+  const land = producedBuildOutput(loom);
   recordLanding(loom, by, git, land); // §A: accept LANDS the work (never throws)
   saveLoom(loom);
   return loom;

@@ -34,6 +34,7 @@ const runOpts = (extra: Partial<ExecuteOpts> = {}): ExecuteOpts => ({
 });
 
 import { executeLoom } from "../src/executor";
+import { reconcileStuckLooms } from "../src/dispatcher";
 import { createLoom, getLoom, saveLoom } from "../src/looms";
 import { createProject } from "../src/manifest";
 import { createConsolidationBranch, defaultGitRunner, resolveBaseSha } from "../src/vcs";
@@ -171,13 +172,19 @@ describe("flag ON", () => {
     expect(worktreeCount()).toBe(1);
   });
 
-  test("no leak on NEEDS-REVIEW: (no gates, nothing verified) worktree removed", async () => {
+  test("no leak on NEEDS-REVIEW: worktree removed AND its edits recoverable as a branch", async () => {
     const { child } = makeRootAndChild();
     // No gates -> gatesConfigured false; verify skip; child lands needs-review.
+    // The builder wrote out.txt into the worktree — that diff must survive.
     const res = await executeLoom(child, manifestFor(true, []), runOpts());
     expect(res.state).toBe("needs-review");
-    expect(res.worktree).toBeUndefined();
+    expect(res.worktree).toBeUndefined(); // dir reclaimed
     expect(worktreeCount()).toBe(1);
+    // The uncommitted edits were snapshotted onto a durable recovery branch.
+    const rec = res as typeof res & { recoveryBranch?: string };
+    expect(rec.recoveryBranch).toBe(`telar/${child.parentLoomId}-wip-${child.id}`);
+    const branchFiles = git(repo, ["ls-tree", "-r", "--name-only", rec.recoveryBranch!]).trim().split("\n");
+    expect(branchFiles).toContain("out.txt");
   });
 
   test("no leak on ABORT: builder aborts mid-build -> halted, worktree removed", async () => {
@@ -194,17 +201,30 @@ describe("flag ON", () => {
     expect(worktreeCount()).toBe(1);
   });
 
-  test("FOLD FAILURE: fold throws -> worktree RETAINED + consolidate-failed event (work not destroyed)", async () => {
+  test("FOLD FAILURE: snapshot-then-remove — dir reclaimed, work recoverable as a branch, survives reconcile", async () => {
     // Root has a consolidationBranch but the branch was never created, so the
-    // fold's transient-worktree checkout of that ref fails.
+    // fold's transient-worktree checkout of that ref fails. The un-consolidated
+    // work must NOT be destroyed: it is snapshotted onto a recovery branch and
+    // the dir is then removed (no leak, no lost work).
     const { child } = makeRootAndChild(false);
     const events: Array<{ type: string } & Record<string, unknown>> = [];
     const res = await executeLoom(child, manifestFor(true), runOpts({ onEvent: (e) => events.push(e) }));
 
     expect(res.state).toBe("done");
     expect(events.some((e) => e.type === "consolidate-failed")).toBe(true);
-    // The worktree is intentionally NOT removed — the work survives for the reaper/human.
-    expect(res.worktree).toBeTruthy();
-    expect(worktreeCount()).toBe(2); // main + the retained child worktree
+    // The worktree dir is ALWAYS reclaimed now (work preserved as a branch).
+    expect(res.worktree).toBeUndefined();
+    expect(worktreeCount()).toBe(1); // main only
+    // The child's un-folded work survives on a durable recovery branch.
+    const rec = res as typeof res & { recoveryBranch?: string };
+    const branch = `telar/${child.parentLoomId}-wip-${child.id}`;
+    expect(rec.recoveryBranch).toBe(branch);
+    expect(git(repo, ["ls-tree", "-r", "--name-only", branch]).trim().split("\n")).toContain("out.txt");
+
+    // A simulated reconcile pass (the boot reaper) must NOT destroy the branch:
+    // loom.worktree is cleared, so the reaper never touches it, and reapers
+    // never delete branches.
+    reconcileStuckLooms(() => false);
+    expect(git(repo, ["rev-parse", "--verify", branch]).trim()).toBeTruthy();
   });
 });

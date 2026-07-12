@@ -12,7 +12,7 @@ import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
-import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, withWorktreeLock } from "./vcs";
+import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
 import { foldChildOnDone } from "./consolidate";
 import { startProjectServer } from "./run-server";
 import { ModelPolicy, validateContract, Verdict } from "./schemas";
@@ -390,11 +390,11 @@ async function runPanelVerification(
   account?: AccountProfile,
   target?: string,
   opts?: { abort?: AbortController; run?: typeof agent },
-  // M1 (D0.4): whether this contract was auto-synthesized. A synthesized
-  // contract that cannot obtain live evidence (no target, panel threw) returns
-  // a PROMOTABLE skip (panelRequired:false) — byte-identical to the legacy
-  // `!target → skip` a plain acceptanceCriteria loom used to get. Authored
-  // contracts keep panelRequired:true (moat: no evidence ⇒ no promotion).
+  // M1 (D0.4) → M8 fail-closed: whether this contract was auto-synthesized.
+  // Retained for the call signature; classification no longer branches on it —
+  // a non-empty agent-judged slice that cannot obtain live evidence (no target,
+  // panel threw) is always a panelRequired:true skip, authored and synthesized
+  // alike (moat: no evidence ⇒ no promotion, decide() retries then needs-review).
   synthesized = false,
 ): Promise<{
   verification: Verification;
@@ -415,7 +415,7 @@ async function runPanelVerification(
   }
   if (!target) {
     emit({ type: "panel", n: attempt.n, report: null });
-    return { verification: "skip", report: null, panelReport: null, panelRequired: !synthesized };
+    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
@@ -488,7 +488,7 @@ async function runPanelVerification(
     return { verification: classifyPanel(panelReport), report: null, panelReport, panelRequired: true };
   } catch (err) {
     emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
-    return { verification: "skip", report: null, panelReport: null, panelRequired: !synthesized };
+    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
   }
 }
 
@@ -560,8 +560,10 @@ export async function runVerification(
   const target = url ?? manifest.urls?.dev;
   const { contract } = readContract(loom.id);
   if (contract) {
-    // M1 (D0.4): a synthesized contract's no-evidence skips stay promotable
-    // (byte-identical to legacy); authored contracts keep panelRequired:true.
+    // M1 (D0.4) → M8 fail-closed: isSynth still gates the dev-server spin-up
+    // below (a synth no-target loom does not start its own server), but a
+    // no-evidence skip is no longer promotable for either kind — runVerification
+    // returns panelRequired:true, so decide() retries then lands needs-review.
     const isSynth = contract.synthesized === true;
     // Unit 4: an all-deterministic contract has no agent-judged slice, so the
     // panel is skipped and no live target is needed — never spin up a dev
@@ -585,7 +587,7 @@ export async function runVerification(
         return res;
       } catch (err) {
         emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
-        const res = { verification: "skip" as Verification, report: null, panelReport: null, panelRequired: !isSynth };
+        const res = { verification: "skip" as Verification, report: null, panelReport: null, panelRequired: true };
         emitVerifySummary(emit, attempt.n, res);
         return res;
       } finally {
@@ -645,7 +647,7 @@ export async function runVerification(
     );
     if (!report) {
       emit({ type: "verifier", n: attempt.n, report: null });
-      const res = { verification: "skip" as Verification, report: null, panelRequired: false };
+      const res = { verification: "skip" as Verification, report: null, panelRequired: true };
       emitVerifySummary(emit, attempt.n, res);
       return res;
     }
@@ -667,7 +669,7 @@ export async function runVerification(
     return res;
   } catch (err) {
     emit({ type: "verifier-error", message: err instanceof Error ? err.message : String(err) });
-    return { verification: "skip", report: null, panelRequired: false };
+    return { verification: "skip", report: null, panelRequired: true };
   }
 }
 
@@ -1224,7 +1226,11 @@ export async function executeLoom(
   // on AND the root pinned a resolvable base SHA; otherwise ownWorktree stays
   // null and every path below is byte-identical to pre-M3.
   let ownWorktree: string | null = null;
-  let consolidateFailed = false;
+  // Set true ONLY when the done-path fold lands the child's diff on the review
+  // branch. Any other terminal (fold FAILED, fold never ran, needs-review/
+  // failed/halted) leaves it false, so the finally snapshots the worktree's WIP
+  // onto a durable recovery branch BEFORE removing the dir — work is never lost.
+  let foldSucceeded = false;
   if (isolationEnabled(manifest) && loom.parentLoomId) {
     const baseSha = getLoom(loom.parentLoomId)?.baseSha;
     if (baseSha) {
@@ -1349,6 +1355,7 @@ export async function executeLoom(
             try {
               const allowedPaths = root.charter?.scope.allowedPaths ?? [];
               const fold = await foldChildOnDone({ child: loom, root, repoRoot: manifest.root, allowedPaths, git: defaultGitRunner });
+              foldSucceeded = true; // diff landed on the review branch — finally may just remove the dir
               emit({ type: "consolidated-thread", branch: root.consolidationBranch });
               // Honest surfacing: two threads changed the same file — the later
               // fold overwrote the earlier on the review branch. Not silently
@@ -1362,7 +1369,9 @@ export async function executeLoom(
                 });
               }
             } catch (err) {
-              consolidateFailed = true;
+              // Fold threw — leave foldSucceeded false so the finally SNAPSHOTS
+              // the worktree's un-consolidated work onto a recovery branch (then
+              // removes the dir) instead of destroying it.
               emit({ type: "consolidate-failed", message: err instanceof Error ? err.message : String(err) });
             }
           }
@@ -1413,17 +1422,48 @@ export async function executeLoom(
     return loom;
   } finally {
     // The ONE leak-safe cleanup site: runs on every return (done/needs-review/
-    // failed/halted) AND on abort/cancel. A fold FAILURE deliberately RETAINS
-    // the worktree (leave the work for the reaper/human) — that is the one case
-    // this must respect. Serialized through the same mutex as create.
-    if (ownWorktree && !consolidateFailed) {
+    // failed/halted) AND on abort/cancel. Serialized through the same mutex as
+    // create. SNAPSHOT-THEN-REMOVE: unless the done-path fold already landed the
+    // work (foldSucceeded), first preserve the worktree's un-consolidated WIP on
+    // a durable recovery branch, THEN remove the dir — so work ALWAYS survives
+    // AND the dir is ALWAYS reclaimed. Flag-off (ownWorktree null) is a no-op.
+    // NOTE: no `return` in this finally — that would clobber the try/catch's
+    // resolved loom; retention is signalled via a local flag instead.
+    if (ownWorktree) {
       const wt = ownWorktree;
-      try {
-        await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
-        loom.worktree = undefined;
-        opts.onState?.(loom);
-      } catch {
-        // best-effort — a cleanup failure must never turn a resolved loom into a reject
+      let retained = false;
+      if (!foldSucceeded) {
+        try {
+          // telar/<rootId|loomId>-wip-<childId> — a durable, human-discoverable ref.
+          const branch = `telar/${loom.parentLoomId ?? loom.id}-wip-${loom.id}`;
+          const snapped = await withWorktreeLock(() => snapshotWorktreeToBranch(defaultGitRunner, wt, branch));
+          if (snapped) {
+            loom.recoveryBranch = branch;
+            try {
+              opts.onState?.(loom);
+            } catch {}
+          }
+        } catch {
+          // The SNAPSHOT itself failed — retaining the dir is the only way not to
+          // lose work. Persist a durable flag so the boot reaper SKIPS it (never
+          // an in-memory-only retention), and do NOT remove the dir.
+          loom.worktreeRetained = true;
+          try {
+            opts.onState?.(loom);
+          } catch {}
+          retained = true;
+        }
+      }
+      if (!retained) {
+        try {
+          await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
+          loom.worktree = undefined;
+          try {
+            opts.onState?.(loom);
+          } catch {}
+        } catch {
+          // best-effort — a cleanup failure must never turn a resolved loom into a reject
+        }
       }
     }
   }

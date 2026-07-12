@@ -139,6 +139,31 @@ export function removeWorktree(git: GitRunner, repoRoot: string, wt: string): vo
   } catch {}
 }
 
+// Commit a worktree's uncommitted WIP onto a DURABLE recovery branch so the
+// build output ALWAYS survives the worktree dir's removal (the W1/W2 fix: the
+// child is already state "done"/"needs-review" and its diff would otherwise be
+// destroyed by cleanup or the reaper). Runs the worktree's OWN git (the
+// worktree is checked out detached at the pinned base): `add -A` stages every
+// change, `commit` advances the detached HEAD, then `branch -f <branch> HEAD`
+// pins a shared ref at that commit (visible from the main repo, survives
+// `worktree remove`). Returns true if a commit was made, false if the worktree
+// had nothing to snapshot (caller then just removes the dir). THROWS on a real
+// git failure so the caller can fall back to RETAINING the dir rather than
+// silently lose work. Serialize through withWorktreeLock at the call site.
+export function snapshotWorktreeToBranch(git: GitRunner, worktree: string, branch: string): boolean {
+  const status = git(worktree, ["-c", "core.quotepath=false", "status", "--porcelain"]).stdout.trim();
+  if (!status) return false; // clean worktree — nothing to preserve
+  const add = git(worktree, ["add", "-A"]);
+  if (add.status !== 0) throw new Error(`git add failed during snapshot: ${add.stderr.trim() || add.stdout.trim()}`);
+  const commit = git(worktree, ["commit", "--no-verify", "-m", `telar: recovered WIP\n\nBranch: ${branch}`]);
+  if (commit.status !== 0) {
+    throw new Error(`git commit failed during snapshot: ${commit.stderr.trim() || commit.stdout.trim()}`);
+  }
+  const br = git(worktree, ["branch", "-f", branch, "HEAD"]);
+  if (br.status !== 0) throw new Error(`git branch failed during snapshot: ${br.stderr.trim() || br.stdout.trim()}`);
+  return true;
+}
+
 // Parses `git status --porcelain` for the SOURCE worktree's changed files,
 // copying only those under one of `allowedPaths` into `destRoot`. Anything else
 // the builder touched is recorded as "stray" and deliberately NOT copied —
