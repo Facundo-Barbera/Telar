@@ -108,6 +108,11 @@ N+1-shaped network chatter, unbounded payloads.`,
   "data-integrity": `Charge: DATA INTEGRITY. Verify state stays correct across
 the flow — no silent data loss, no double-writes, no drift between what the UI
 shows and what the network/console evidence proves actually happened.`,
+  aesthetic: `Charge: AESTHETIC / POLISH (ADVISORY, non-blocking). Judge the
+craft of the experience — visual hierarchy, spacing, typography, motion,
+consistency, the felt sense of "premium". Note where it feels rough, generic, or
+unfinished and suggest concrete refinements. Your verdict is a NUDGE only: it
+NEVER gates acceptance, so report freely without fear of blocking the ship.`,
 };
 
 // criticPrompt(): builds the ENTIRE task text a critic agent sees. Only ever
@@ -168,9 +173,10 @@ export type CriticRunOpts = {
 
 // runCritic(): one agent() call for one lens, in the verifier's read-only
 // Playwright-driven shape (VERIFIER_TOOLS, restrictTools:true, the same
-// disallow/settingSources/extraMcpServers pattern). `blocker`/`class` are
-// authoritative from the LensSpec the panel sized — never trusted from the
-// agent's own self-report, so a critic can't downgrade its own severity.
+// disallow/settingSources/extraMcpServers pattern). `lens`/`blocker`/`class` are
+// all authoritative from the LensSpec the panel sized — never trusted from the
+// agent's own self-report, so a critic can neither downgrade its own severity nor
+// spoof its lens LABEL (which aggregatePanel's missing-sized-blocker net keys on).
 export async function runCritic(
   lens: LensSpec,
   ctx: CriticContext,
@@ -210,7 +216,7 @@ export async function runCritic(
   });
 
   if (!result) return null;
-  return { ...result, class: lens.class, blocker: lens.blocker };
+  return { ...result, lens: lens.lens, class: lens.class, blocker: lens.blocker };
 }
 
 export type PanelEvent =
@@ -237,6 +243,7 @@ export type RunPanelOpts = Omit<CriticRunOpts, "onEvent"> & {
   signals: PanelSignals;
   maxCriticAgents?: number; // the reserved sub-pool (§M budget.maxCriticAgents), default 3
   retryBlockerOnly?: boolean; // retry-awareness: re-run only blocker lenses + a fresh reproduction lens
+  aesthetic?: boolean; // M10.5 (subjectiveRouting): size in the advisory aesthetic/polish lens (blocker:false)
   onEvent?: (e: PanelEvent) => void;
 };
 
@@ -269,7 +276,11 @@ function retryLenses(lenses: LensSpec[]): LensSpec[] {
 // control flow stays in the caller, per the loom model's design law).
 export async function runPanel(ctx: CriticContext, opts: RunPanelOpts): Promise<PanelReportType> {
   const maxCriticAgents = opts.maxCriticAgents ?? 3;
-  const sized = panelSize(opts.signals);
+  // M10.5 — thread the advisory aesthetic opt; undefined ⇒ panelSize sizes no
+  // aesthetic lens ⇒ byte-identical. retryLenses re-runs ONLY blocker lenses, so
+  // the blocker:false aesthetic lens is automatically excluded from hardened
+  // retries (no change needed there).
+  const sized = panelSize(opts.signals, { aesthetic: opts.aesthetic });
   const lenses = opts.retryBlockerOnly ? retryLenses(sized) : sized;
 
   const sizedFrom: Record<string, number> = {

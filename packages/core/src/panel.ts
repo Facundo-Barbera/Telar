@@ -26,7 +26,11 @@ const MANY_FILES_TOUCHED = 8;
 // signal-driven scale-up; the §M.3 floor (intent + >=1 adversarial/
 // reproduction blocker) is derived here unconditionally, never from a caller
 // flag or manifest/session policy — that is what makes it non-negotiable.
-export function panelSize(signals: PanelSignals): LensSpec[] {
+// `opts.aesthetic` (M10.5, subjectiveRouting) adds an ADVISORY UX/polish lens
+// (blocker:false) UNDER THE SAME UX-relevance signal that sizes live-experience
+// (risky). Default undefined ⇒ no aesthetic lens ⇒ byte-identical to every
+// existing panelSize(signals) caller/test.
+export function panelSize(signals: PanelSignals, opts?: { aesthetic?: boolean }): LensSpec[] {
   const lenses: LensSpec[] = [
     { class: "intent", lens: "intent/acceptance", blocker: true },
     { class: "adversarial", lens: "adversarial/edge", blocker: true },
@@ -39,6 +43,13 @@ export function panelSize(signals: PanelSignals): LensSpec[] {
   if (risky || hardened) {
     lenses.push({ class: "reproduction", lens: "reproduction/cold", blocker: true });
     if (risky) lenses.push({ class: "live-experience", lens: "live-experience/ux", blocker: false });
+  }
+
+  // M10.5 — the advisory aesthetic lens rides the SAME UX-relevance signal as
+  // live-experience (risky) and is ALWAYS blocker:false. It is provably
+  // non-gating (see aggregatePanel below); this only sizes it in.
+  if (opts?.aesthetic && risky) {
+    lenses.push({ class: "aesthetic", lens: "aesthetic/polish", blocker: false });
   }
 
   if (outOfScope) {
@@ -75,7 +86,15 @@ export function aggregatePanel(
   blockerFindings: CriticFinding[];
   reason: string;
 } {
-  const blockerFindings = critics.flatMap((c) => c.findings.filter((f) => f.severity === "blocker"));
+  // M10.5 — the ONLY relaxation, keyed NARROWLY on class==="aesthetic" (stamped
+  // from the LensSpec by runCritic, never the agent's self-report): an advisory
+  // aesthetic lens's blocker-severity findings are excluded from the sweep so it
+  // can never flip the verdict. Every OTHER class (incl. live-experience) keeps
+  // the existing blocker-severity safety net — a non-aesthetic advisory lens
+  // emitting a blocker finding STILL fails the panel.
+  const blockerFindings = critics.flatMap((c) =>
+    c.class === "aesthetic" ? [] : c.findings.filter((f) => f.severity === "blocker"),
+  );
 
   // The floor: >=1 present critic must be class adversarial/reproduction AND
   // blocker===true. An empty/floorless panel is illegal — hard-fail even if

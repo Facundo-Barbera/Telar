@@ -295,7 +295,7 @@ function runWeaveWiring(
   // co-sign only triggers when a PRIOR contract exists on a started loom).
   let { contract } = readContract(loom.id);
   if (!contract) {
-    contract = synthesizeContract(loom);
+    contract = synthesizeContract(loom, manifest);
     writeContract(loom.id, contract);
   }
   const rootAssertions = contract.assertions;

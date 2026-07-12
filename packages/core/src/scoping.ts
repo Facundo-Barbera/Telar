@@ -11,7 +11,8 @@ import {
   type ProofStrategy,
   type VerificationContract,
 } from "./schemas";
-import { EXECUTABLE_PREFERENCE_GUIDANCE, PROOF_TEMPLATES, proofTemplate } from "./proof-templates";
+import { EXECUTABLE_PREFERENCE_GUIDANCE, SUBJECTIVE_ROUTING_GUIDANCE, PROOF_TEMPLATES, proofTemplate } from "./proof-templates";
+import { subjectiveRoutingEnabled } from "./runner/flag";
 
 // PURE. The fast-path switch: scoping only runs when the caller gave us
 // neither ready-made acceptance criteria nor a ready charter. This is the
@@ -146,7 +147,13 @@ ${templatesBlock}
 
 --- Proof preference (executable-first) ---
 ${EXECUTABLE_PREFERENCE_GUIDANCE}
-
+${
+  // M10.5 — flag-gated. Flag-off ⇒ this block is the empty string ⇒ the drafting
+  // prompt is byte-identical to today. Flag-on ⇒ append the objective-vs-subjective
+  // classification guidance so the proposer authors the per-criterion `subjective`
+  // marker conservatively (default-to-objective).
+  subjectiveRoutingEnabled(input.manifest) ? `\n--- Objective vs. subjective classification ---\n${SUBJECTIVE_ROUTING_GUIDANCE}\n` : ""
+}
 ${input.storyMarkdown ? `--- Story ---\n${input.storyMarkdown}\n` : ""}
 Rules:
 - If this objective decomposes naturally, produce a decomposition[] of

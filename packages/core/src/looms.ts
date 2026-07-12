@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, PanelReport, ServersConfig, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, ContractAssertion, PanelReport, ServersConfig, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
@@ -53,6 +53,11 @@ export type AttemptRecord = {
   // contract exists) instead of the legacy single-Verifier path.
   panelReport?: PanelReport | null;
   gates?: GateResult[];
+  // M10.5 (subjectiveRouting) — the EXPLICITLY subjective-marked assertions this
+  // attempt pulled out of the autonomous panel. Informational only (alongside
+  // gates/panelReport): carried to the human accept, NEVER converted into a
+  // machine verdict. Absent flag-off (no assertion carries subjective:true).
+  humanJudged?: ContractAssertion[];
   costUsd?: number;
 };
 

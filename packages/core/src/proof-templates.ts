@@ -87,3 +87,27 @@ export const EXECUTABLE_PREFERENCE_GUIDANCE =
   "surface: UI/UX behavior in the accessibility tree that an exit code cannot " +
   "capture. Write each acceptance criterion so its cheapest sound proof is " +
   "obvious — do not route a machine-checkable criterion through a live critic.";
+
+// M10.5 (subjectiveRouting) — the STRUCTURAL extension M10.0 deferred. Appended to
+// the charter drafting prompt ONLY when the flag is on (scoping.draftCharter), so
+// flag-off the prompt is byte-identical to today. It instructs the proposer to
+// classify each criterion by objective-vs-human-judgment and set the per-criterion
+// `subjective` marker CONSERVATIVELY — the default is OBJECTIVE; mark subjective
+// only when a criterion is unmistakably a matter of human taste ("premium feel",
+// "cohesive UX") that no exit code or falsifiable observation can settle. This is
+// PROMPT GUIDANCE ONLY; the fail-closed routing keys on the resulting
+// subjective===true marker, never on this prose.
+export const SUBJECTIVE_ROUTING_GUIDANCE =
+  "Objective vs. subjective — classify EACH criterion. DEFAULT TO OBJECTIVE: if a " +
+  "criterion can be settled by a runnable command, a named gate, a test, an exit " +
+  "code, or a falsifiable observation of a running surface (\"the API returns 200\", " +
+  "\"the error path throws\", \"the list re-renders after delete\"), keep it objective — " +
+  "emit a command/gate assertion for the independently-checkable ones and a plain " +
+  "live-critic for the behavioral-but-observable ones. RESERVE the subjective marker " +
+  "(set `subjective: true` on a live-critic assertion) ONLY for genuine matters of " +
+  "human judgment that NO machine check can honestly settle — \"feels premium\", " +
+  "\"the visual design is cohesive\", \"the copy has the right tone\". A subjective " +
+  "criterion is carried to the HUMAN to judge holistically at accept; it is NEVER " +
+  "turned into a machine gate. When in doubt, leave it OBJECTIVE (unmarked) — a " +
+  "mis-marked objective criterion silently loses its fail-closed gate, so mark " +
+  "subjective only when it is unmistakable.";

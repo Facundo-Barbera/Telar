@@ -8,6 +8,7 @@
 // its own readContract in the executor — proving its SubGoal in isolation.
 import { CONTRACT_FILE, listBundleFiles, snapshotBundle, writeBundleFile } from "./bundle";
 import { validateContract, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
+import { subjectiveRoutingEnabled } from "./runner/flag";
 import type { Loom } from "./looms";
 
 // M1 (D0.2, D1.2). PURE. Forces a Verification Contract onto a loom that was
@@ -22,17 +23,35 @@ import type { Loom } from "./looms";
 // synthesized:true honestly labels the result so validateContract skips only
 // the hard-gate floor (D0.1). Never throws; always ≥1 assertion (prompt/title
 // always exist from createLoom, so this adds NO new mandatory user input).
-export function synthesizeContract(loom: Loom): VerificationContract {
+// M10.5 — `manifest` is OPTIONAL (default undefined ⇒ existing callers
+// byte-identical, e.g. m1-forced-contracts). It is the flag-gated structural hook
+// (proposerStructuralPlan B). Flag-off (or no manifest) EVERY criterion still maps
+// to type:"live-critic" / subGoalId:"ALL" / blocker:true / synthesized:true, so
+// the m1/weave-planner/contract tests stay byte-identical. Flag-on, this
+// DETERMINISTIC no-LLM fallback stays CONSERVATIVE by construction: it NEVER
+// invents a `subjective` classification from prose (a keyword scan risks
+// false-positives that would DROP an objective criterion — a moat violation). The
+// one structural tightening it makes is precise and deterministic: a criterion
+// whose text EXACTLY names a configured project gate becomes a `gate` assertion
+// (an offline exit-code check) instead of a live-critic — a live-critic→gate
+// TIGHTENING contractLoosenings never flags, and objective/fail-closed. Every
+// other criterion keeps live-critic. The rich per-criterion authoring (command/
+// gate + the subjective marker) lives in the LLM charter proposer.
+export function synthesizeContract(
+  loom: Loom,
+  manifest?: { subjectiveRouting?: boolean; gates?: { name: string }[] },
+): VerificationContract {
   const criteria = (loom.acceptanceCriteria ?? []).map((c) => c.trim()).filter(Boolean);
   const sources = criteria.length ? criteria : [loom.prompt?.trim() || loom.title];
-  const assertions: ContractAssertion[] = sources.map((text, i) => ({
-    id: `synth-${i}`,
-    subGoalId: "ALL",
-    description: text,
-    type: "live-critic",
-    observable: text,
-    blocker: true,
-  }));
+  const routing = manifest ? subjectiveRoutingEnabled(manifest) : false;
+  const gateNames = new Set((manifest?.gates ?? []).map((g) => g.name.trim()).filter(Boolean));
+  const assertions: ContractAssertion[] = sources.map((text, i) => {
+    if (routing && gateNames.has(text)) {
+      // Objective, machine-verifiable: route to the fail-closed exit-code gate.
+      return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "gate", expected: text, blocker: true };
+    }
+    return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "live-critic", observable: text, blocker: true };
+  });
   return { version: 1, assertions, synthesized: true };
 }
 

@@ -81,3 +81,18 @@ export function laneEscalationEnabled(manifest: { laneEscalation?: boolean }): b
 export function verifyLaneEnabled(manifest: { verifyLane?: boolean }): boolean {
   return manifest.verifyLane === true || process.env.TELAR_VERIFY_LANE === "1";
 }
+
+// M10.5 — route criteria by objective-vs-subjective. Objective/machine-verifiable
+// criteria keep flowing to the fail-closed autonomous gates + panel (unchanged);
+// an EXPLICITLY subjective-marked criterion (ContractAssertion.subjective===true)
+// is pulled OUT of the blocking panel into a `humanJudged` bucket carried to the
+// human accept (never faked into a machine check), and an OPTIONAL non-blocking
+// aesthetic critic (class:"aesthetic", blocker:false) can nudge but never gate.
+// A TOP-LEVEL flag (no parent guard, like orchestratorVerify/laneEscalation).
+// Flag-off ⇒ routeAssertions returns humanJudged:[] over the UNCHANGED
+// partitionAssertions, no aesthetic lens is sized, and synthesizeContract's
+// structural routing is skipped — every path is byte-identical to today.
+// Honored via TELAR_SUBJECTIVE_ROUTING=1 for live-validation.
+export function subjectiveRoutingEnabled(manifest: { subjectiveRouting?: boolean }): boolean {
+  return manifest.subjectiveRouting === true || process.env.TELAR_SUBJECTIVE_ROUTING === "1";
+}

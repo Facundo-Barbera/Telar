@@ -46,6 +46,7 @@ import {
   stepChecksEnabled,
   orchestratorVerifyEnabled,
   laneEscalationEnabled,
+  subjectiveRoutingEnabled,
 } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
@@ -403,6 +404,40 @@ export function partitionAssertions(assertions: ContractAssertion[]): {
   return { deterministic, agentJudged };
 }
 
+// M10.5 (subjectiveRouting). PURE. A THIRD bucket layered OVER partitionAssertions.
+// Ordering is load-bearing: it partitions by MODALITY FIRST via the UNCHANGED
+// partitionAssertions, then — when the flag is ON — pulls the EXPLICITLY subjective-
+// marked assertions (subjective===true) ONLY out of the agent-judged remainder into
+// `humanJudged` (carried to the human accept, NEVER a machine gate). The DETERMINISTIC
+// slice is NEVER touched by the subjective filter: a deterministic assertion (command/
+// gate/runnable-db) ALWAYS gates fail-closed regardless of the marker, so a stray
+// subjective:true can never pull an exit-code-checkable criterion out of the gate.
+// When OFF (or absent) it returns humanJudged:[] and the deterministic/agentJudged
+// split is EXACTLY partitionAssertions over the whole set — byte-identical to today.
+//
+// DEFAULT-TO-OBJECTIVE is free: every routing decision keys on the POSITIVE
+// subjective===true test, never on its absence. So an UNMARKED criterion (100% of
+// existing/unmarked assertions) flows through the exact current deterministic/
+// agent-judged split and stays fail-closed. A mis-classification can only take the
+// safe form of FAILING to mark something subjective (leaving it objective); a
+// missing marker can NEVER drop an objective criterion from the gate. Subjective
+// assertions are pulled out of agentJudged only, so they never remain a blocking
+// panel lens — they carry to the human, holistically, at accept.
+export function routeAssertions(
+  assertions: ContractAssertion[],
+  opts?: { subjectiveRouting?: boolean },
+): {
+  deterministic: ContractAssertion[];
+  agentJudged: ContractAssertion[];
+  humanJudged: ContractAssertion[];
+} {
+  const parts = partitionAssertions(assertions);
+  if (!opts?.subjectiveRouting) return { ...parts, humanJudged: [] };
+  const humanJudged = parts.agentJudged.filter((a) => a.subjective === true);
+  const agentJudged = parts.agentJudged.filter((a) => a.subjective !== true);
+  return { deterministic: parts.deterministic, agentJudged, humanJudged };
+}
+
 // M10.4 — PURE lane-viability check for the pre-flight escalation gate. A
 // contract's verification lane is VIABLE when EITHER nothing live is needed
 // (all-deterministic: no agent-judged assertions — the zero-browser backend
@@ -500,7 +535,13 @@ async function runPanelVerification(
   // Unit 4 (docs §4): the panel only ever sees the AGENT-JUDGED slice — the
   // deterministic assertions were already settled as gates (executeLoom) and
   // must not be re-judged by prose. panelRequired = agentJudged.length > 0.
-  const { agentJudged } = partitionAssertions(contract.assertions);
+  // M10.5 — subjective-marked assertions are pulled out into humanJudged BEFORE
+  // this split (flag-off ⇒ routeAssertions === partitionAssertions + humanJudged:[]),
+  // so a subjective criterion never enters agentJudged / the blocking panel; it is
+  // stamped onto the attempt (informational) and carried to the human accept.
+  const subjectiveRouting = subjectiveRoutingEnabled(manifest);
+  const { agentJudged, humanJudged } = routeAssertions(contract.assertions, { subjectiveRouting });
+  if (humanJudged.length) attempt.humanJudged = humanJudged;
   // All-deterministic contract -> nothing for the panel to judge. Skip it
   // entirely, panelRequired false, so the green merged gates alone promote via
   // decide()'s gatesConfigured && gatesOk + skip + !panelRequired -> {done}
@@ -577,6 +618,10 @@ async function runPanelVerification(
     const panelReport = await runPanel(ctx, {
       signals,
       maxCriticAgents,
+      // M10.5 — under subjectiveRouting, size in the ADVISORY aesthetic lens
+      // (blocker:false, provably non-gating). Flag-off ⇒ undefined ⇒ no lens ⇒
+      // byte-identical panel sizing.
+      aesthetic: subjectiveRouting,
       evidenceDir,
       account,
       project: manifest.name,
@@ -781,7 +826,13 @@ export async function runVerification(
     // Unit 4: an all-deterministic contract has no agent-judged slice, so the
     // panel is skipped and no live target is needed — never spin up a dev
     // server for a zero-browser backend verify.
-    const panelRequired = partitionAssertions(contract.assertions).agentJudged.length > 0;
+    // M10.5 — route out subjective-marked assertions before the count so an
+    // all-subjective contract yields agentJudged:[] ⇒ panelRequired false (no live
+    // target needed; the objective slice alone gates). Flag-off ⇒ routeAssertions
+    // === partitionAssertions, byte-identical.
+    const panelRequired =
+      routeAssertions(contract.assertions, { subjectiveRouting: subjectiveRoutingEnabled(manifest) }).agentJudged
+        .length > 0;
     // docs/loom-model.md D13 (run initializer, minimal): a bundle loom with
     // no usable target (no `url` override, no urls.dev) but a configured
     // `devCommand` gets its OWN dev server on a free port instead of the
@@ -1024,7 +1075,16 @@ export async function runIntegrationVerify(
   };
   loom.attempts.push(attempt);
 
-  const { deterministic, agentJudged } = partitionAssertions(allSlice);
+  // M10.5 — over the COMPOSED WHOLE, pull the subjective-marked assertions into
+  // humanJudged (carried to accept, never a machine gate) and route ONLY the
+  // remainder to gates/panel. Flag-off ⇒ routeAssertions === partitionAssertions +
+  // humanJudged:[], byte-identical. If the ONLY judged criteria were subjective,
+  // agentJudged is empty ⇒ the panel is skipped and the objective slice alone
+  // gates the machine verdict, letting the objective whole reach `ready`.
+  const { deterministic, agentJudged, humanJudged } = routeAssertions(allSlice, {
+    subjectiveRouting: subjectiveRoutingEnabled(manifest),
+  });
+  if (humanJudged.length) attempt.humanJudged = humanJudged;
 
   // Deterministic ALL slice -> exit-code gates (Unit 4, no browser). For a pure
   // backend ALL contract, agentJudged is empty so the panel never runs.

@@ -319,6 +319,15 @@ export const ProjectManifest = z.object({
   // park, children spawn as today, byte-identical. Honored via
   // TELAR_LANE_ESCALATION=1.
   laneEscalation: z.boolean().default(false),
+  // M10.5 — route criteria by objective-vs-subjective at two altitudes. When on,
+  // an EXPLICITLY subjective-marked criterion (ContractAssertion.subjective) is
+  // pulled out of the blocking panel into a human-judged bucket carried to accept
+  // (never a machine gate), the deterministic/agent-judged split for every
+  // unmarked criterion is UNCHANGED (default-to-objective, fail-closed), and an
+  // optional non-blocking aesthetic critic can nudge but never gate. A TOP-LEVEL
+  // flag. Default OFF: routing unchanged, no aesthetic lens, byte-identical.
+  // Honored via TELAR_SUBJECTIVE_ROUTING=1.
+  subjectiveRouting: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
@@ -491,6 +500,16 @@ export const ContractAssertion = z.object({
   expectedFile: z.string().optional(),
   observable: z.string().optional(), // required for "live-critic": what it checks
   blocker: z.boolean().default(true),
+  // M10.5 — objective-vs-human-judgment marker, ORTHOGONAL to `type` (modality)
+  // and `blocker` (must-clear-vs-advisory). Opt-in and ABSENT everywhere today.
+  // A subjective criterion is carried as a normal `type:"live-critic"` assertion
+  // (so validateContract's observable rule still applies) that ADDITIONALLY sets
+  // subjective:true — AUTHORED per-criterion by the LLM charter proposer, never a
+  // deterministic keyword scan. When subjectiveRouting is on, ONLY an assertion
+  // that explicitly carries subjective:true is pulled out of the autonomous panel
+  // into the human-judged accept bucket; its absence keeps a criterion
+  // objective/fail-closed (default-to-objective).
+  subjective: z.boolean().optional(),
 });
 export type ContractAssertion = z.infer<typeof ContractAssertion>;
 
@@ -588,6 +607,16 @@ export function validateContract(
       errors.push(`assertion ${a.id} must have a non-empty description`);
     }
 
+    // M10.5 defense-in-depth: a subjective criterion is carried ONLY as a
+    // type:"live-critic" assertion (docs §3.6). Reject subjective:true on any
+    // other type so an out-of-place marker is a CONTRACT ERROR — it must never
+    // ride on a command/gate/db assertion (which would be the only way a
+    // subjective marker could reach the deterministic slice; routeAssertions
+    // already refuses to pull it out of that slice, this closes the door earlier).
+    if (a.subjective === true && a.type !== "live-critic") {
+      errors.push(`assertion ${a.id} sets subjective:true but is type "${a.type}" — subjective criteria must be type "live-critic"`);
+    }
+
     if (a.type === "live-critic") {
       if (!a.observable || !a.observable.trim()) {
         errors.push(`live-critic assertion ${a.id} must name an observable`);
@@ -682,6 +711,13 @@ export const CriticClass = z.enum([
   "security",
   "performance",
   "data-integrity",
+  // M10.5 — an ADVISORY UX/design lens. Sized in ONLY under subjectiveRouting +
+  // the UX-relevance signal, ALWAYS blocker:false (stamped from the LensSpec, not
+  // the agent's self-report), and NOT a §M.3 floor class — provably non-gating on
+  // every aggregatePanel path (blocker:false defeats the failing-blocker path, it
+  // cannot satisfy the floor, and aggregatePanel excludes class:"aesthetic" from
+  // its blocker-severity finding sweep). It can nudge but never flip a verdict.
+  "aesthetic",
 ]);
 export type CriticClass = z.infer<typeof CriticClass>;
 
