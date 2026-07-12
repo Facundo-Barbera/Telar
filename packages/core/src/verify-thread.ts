@@ -81,6 +81,15 @@ export type FrozenLaneDeps = {
   // sets this to loom.consolidationBranch (telar/<rootId>) so the read-only
   // verify runs over the COMPOSED WHOLE the children built, not the pre-work base.
   forkRef?: string;
+  // M10.3 — when set (only under verifyLane, injected by dispatcher frozenDeps),
+  // convert a lane BRING-UP failure (startLane throws, resolveServersConfig
+  // throws on a malformed servers.yaml) into a FAIL-CLOSED return: leave
+  // lane=null, drive runIntegrationVerify with NO url (target=undefined), so the
+  // panel's `if(!target)` divert skips and M10.1 demotes ready→needs-review.
+  // CRITICAL: without this the bring-up throw propagates out of frozenLaneVerify
+  // into weave.ts's fail-OPEN catch (keep-ready) — laundering a lane-down into a
+  // false green. Absent/flag-off ⇒ the throw propagates as today (byte-identical).
+  failClosedLaneDown?: boolean;
   // verify passthroughs
   abort?: AbortController;
   emit?: (ev: { type: string } & Record<string, unknown>) => void;
@@ -129,13 +138,28 @@ export async function frozenLaneVerify(
     // servers.yaml, BUT anchor the human-accepted `.telar/servers.yaml` tier at
     // manifest.root — `.telar/` is gitignored, so it is absent inside a fresh
     // frozen worktree. This lets an accepted env config survive re-verification.
-    const cfg = resolveCfg(wt, manifest.root);
-    if (cfg.driver !== "none") {
-      const base = deps.baseEnv ?? process.env;
-      const env = ephemeralDb ? { ...base, DATABASE_URL: ephemeralDb } : deps.baseEnv;
-      lane = await startLaneFn(cfg, wt, { ...deps.laneOpts, ...(env ? { env } : {}) });
+    // M10.3 — the lane BRING-UP. Flag-off (failClosedLaneDown absent) the catch
+    // rethrows, so this is byte-identical to today (a throw propagates to weave's
+    // fail-open catch). Flag-on, a bring-up failure is caught, emits a lane-down
+    // event, leaves lane=null, and makes the target fail-closed (undefined) so
+    // the panel skips and M10.1 demotes — never a throw into weave's fail-open.
+    let laneDown = false;
+    try {
+      const cfg = resolveCfg(wt, manifest.root);
+      if (cfg.driver !== "none") {
+        const base = deps.baseEnv ?? process.env;
+        const env = ephemeralDb ? { ...base, DATABASE_URL: ephemeralDb } : deps.baseEnv;
+        lane = await startLaneFn(cfg, wt, { ...deps.laneOpts, ...(env ? { env } : {}) });
+      }
+    } catch (err) {
+      if (!deps.failClosedLaneDown) throw err; // flag-off: propagate (weave fail-open), byte-identical
+      laneDown = true;
+      lane = null;
+      deps.emit?.({ type: "verify-lane-down", message: err instanceof Error ? err.message : String(err) });
     }
-    const target = lane ? laneTarget(lane, deps.appService) : manifest.urls?.dev;
+    // Fail-closed: a downed lane yields NO target (undefined), never a fall-back
+    // to manifest.urls.dev — the panel must obtain zero evidence and demote.
+    const target = laneDown ? undefined : lane ? laneTarget(lane, deps.appService) : manifest.urls?.dev;
     return await deps.runIntegrationVerify(loom, manifest, {
       ...passthrough,
       verifyCwd: wt,

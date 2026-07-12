@@ -303,6 +303,13 @@ export const ProjectManifest = z.object({
   // Fail-closed; only KEEPS or DEMOTES a ready loom (never authors "done").
   // Default OFF: no top gate, byte-identical. Honored via TELAR_ORCHESTRATOR_VERIFY=1.
   orchestratorVerify: z.boolean().default(false),
+  // M10.3 — proactively stand a SUPERVISED verification lane up for the top-gate
+  // pass (a real server/db/multi-service target) and bounded-restart a service
+  // that dies mid-verify. A PEER of orchestratorVerify, meaningful only when it
+  // (or autoRepair) is on. Fail-closed when the lane can't come up (M10.1 demote).
+  // Default OFF: one-shot startLane, no supervisor, byte-identical. Honored via
+  // TELAR_VERIFY_LANE=1.
+  verifyLane: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),

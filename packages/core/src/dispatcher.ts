@@ -47,8 +47,10 @@ import { appendSteering, readBundleFile, readContract, snapshotBundle, writeCont
 import { synthesizeContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { envReviewEnabled, orchestratorVerifyEnabled, setupAgentEnabled } from "./runner/flag";
+import { envReviewEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
 import { runSetupAgent } from "./setup/setup-agent";
+import { superviseStartLane } from "./verify-lane";
+import type { Lane, StartLaneOpts } from "./run-server";
 import { writeAcceptedServersConfig } from "./servers";
 
 export type StartLoomInput = {
@@ -233,6 +235,24 @@ function runWeaveWiring(
     emit: (ev: { type: string } & Record<string, unknown>) => appendEvent(eventSink.id, ev),
     ...(extra?.forkRef ? { forkRef: extra.forkRef } : {}),
     ...(extra?.fullContract ? { verifyOpts: { fullContract: true } } : {}),
+    // M10.3 (verifyLane ON): inject the SUPERVISED startLane wrapper + fail-closed
+    // lane-down, so frozenLaneVerify PROACTIVELY stands a repairable lane up for
+    // the top-gate pass and a bring-up failure demotes (never launders into
+    // weave's fail-open keep-ready). A later-key-wins spread mirroring the
+    // orchestratorVerify override — flag-off the spread is `{}`, frozenLaneVerify
+    // falls back to the one-shot defaultStartLane, and every path (fork ref,
+    // verdict, teardown, byte layout) is identical to M10.1. The lane is stood up
+    // / restarted / torn down by startLane/superviseLane/lane.stopAll — the
+    // EXECUTOR/SETUP-wall capability; the read-only judge (verifier/critic) is
+    // never handed any of these functions, only the resolved target URL.
+    ...(verifyLaneEnabled(manifest)
+      ? {
+          startLane: (config: ServersConfig, root: string, o?: StartLaneOpts): Promise<Lane> =>
+            superviseStartLane(config, root, o),
+          laneOpts: { captureLogs: true } as StartLaneOpts,
+          failClosedLaneDown: true,
+        }
+      : {}),
   });
   // The root's full Verification Contract — wireChildBundle filters it down to
   // each Thread's own subGoalId slice.

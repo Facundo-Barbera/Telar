@@ -55,3 +55,17 @@ export function stepChecksEnabled(manifest: { stepChecks?: boolean }): boolean {
 export function orchestratorVerifyEnabled(manifest: { orchestratorVerify?: boolean }): boolean {
   return manifest.orchestratorVerify === true || process.env.TELAR_ORCHESTRATOR_VERIFY === "1";
 }
+
+// M10.3 — PROACTIVELY stand a supervised verification LANE up for the top-gate
+// pass so the whole-verify panel gets a REAL target (a live server/db/multi-
+// service substrate) instead of M10.1's `if(!target)` fail-closed skip, and
+// REPAIR (bounded restart) a service that dies mid-verify. A PEER of
+// orchestratorVerify but only MEANINGFUL when it (or autoRepair) is on — the
+// lane is stood up ONLY inside frozenLaneVerify, reached only via those
+// producer overrides. Modeled like threadPlanner/stepChecks (children of
+// threadWorkflow). Flag-off ⇒ frozenLaneVerify keeps today's one-shot startLane
+// (no supervisor, no captureLogs) and a bring-up throw propagates to weave's
+// fail-open catch verbatim — byte-identical. Honored via TELAR_VERIFY_LANE=1.
+export function verifyLaneEnabled(manifest: { verifyLane?: boolean }): boolean {
+  return manifest.verifyLane === true || process.env.TELAR_VERIFY_LANE === "1";
+}
