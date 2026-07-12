@@ -100,7 +100,7 @@ terminal state. Green-gate: core tests + core/web tsc.
 **Done when:** you can open a Chat tab that already knows the loom and steer it, and
 open any operator to read its actual session. Green-gate as above.
 
-## ✅ M3 — Isolated, consolidated deliverables  ·  *shipped `ec9f7fa` (flag off; live-gated)*
+## ✅ M3 — Isolated, consolidated deliverables  ·  *shipped `ec9f7fa`; **live-validated** ✓ (isolateWorktrees on, real loom: isolated worktree → consolidation branch → clean main → `ready`)*
 
 *The work product is clean and reviewable.*
 
@@ -149,6 +149,39 @@ brought up by the setup agent.
 - **Dynamic weaver (P4)** — methodology-neutral decomposition; the Verification
   Contract is the proof, not an enumerated strategy.
 - **Curated agent roster** — via the SDK `agents` option.
+
+## ▶ M7 — Environment proposal: the env is accepted like the work is
+
+*Emerged from live validation: a loom that builds fine can't be verified when
+there's no way to run the app, so it honestly lands `needs-review`. Extend the
+moat to the environment — Telar **proposes** how to run the app and a **human
+accepts** it, then verification proceeds.*
+
+- **`env-review` state** — at VERIFY time, when a loom needs a running app and the
+  project has no server config, it enters `env-review` instead of skipping.
+- **Setup agent as a proposer** (refit M5's setup agent) — inspects the project
+  (package.json scripts, framework, port) and **drafts a `servers.yaml`**; it does
+  not run or write anything until the human accepts.
+- **Human gate** (mirrors charter-review): the cockpit shows the proposed config →
+  Accept / Steer / Reject. Accept → persist to `.telar/` (reused by every future
+  loom) → the lane (M4/Phase-C `startLane`) spins the server → verify runs. Steer →
+  correct the proposal. Reject → honest `needs-review`.
+- Flag-guarded, default off; moat intact (env config is human-accepted; verify stays
+  read-only; nothing auto-promotes to `done`).
+
+**Done when:** the `greenfield-demo` loom (which needs a dev server to verify) can be
+brought to a real, panel-verified `ready` via an accepted env proposal.
+
+## Live-validation findings (open)
+
+- **Verify-coherence / dev-server-for-verify** — a live-critic panel needs the app
+  running; a greenfield/isolated worktree has no server, so verify skips. **M7 is the
+  fix.** (Also: an isolated worktree lacks `node_modules` for a dev server — the M4
+  frozen lane must handle deps.)
+- **Promotable-skip vs `needs-review`** — a contract-required loom whose panel skips
+  with `panelRequired:false` landed `needs-review`, not the "promotable skip → `ready`"
+  M1's design (D0.4) documents. Arguably `needs-review` is the *more* correct moat
+  behavior, but doc and code disagree — needs a diagnosis + reconciliation.
 
 ---
 
