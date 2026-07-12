@@ -299,6 +299,53 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   successful agent's work is silently dropped. Uniquify/pre-prune the worktree path (and/or don't
   discard a piece whose files were written).
 
+## ▶ M10 — Looms that deliver: orchestrator-owned verification
+
+*See `orchestrator-owned-verification.md` (design) + `analysis-loom-run-2026-07-12.md` (the run
+that motivated it) + the verification-model visual. Builds ON M9 (threads-as-workflows). The
+verification GATE moves up: **threads advise, the orchestrator decides once on the composed
+whole, the human signs once.** A loom drives to an actual, verified result — not a guided one.*
+
+- **Threads advise, they don't gate** — green-unless-broken; red only on a real defect.
+  "Couldn't independently verify X" becomes a green thread with a note (no per-thread needs-review).
+- **One authoritative gate, at the orchestrator** — after weave rollup, verify the composed whole
+  ONCE: (1) regression (didn't break anything) + (2) completeness (every criterion), fail-closed,
+  owning the verification lane.
+- **The verification lane** — a general infra abstraction (dev server / DB / service / MCP /
+  credentials) the orchestrator PROACTIVELY stands up (a duty) and repairs; a **pre-flight**
+  viability gate; a **bounded learn-once** human escalation ("Orchestrator requires help") that
+  persists the setup to the manifest + a project runbook so it never asks twice.
+- **Objective → the top gate (autonomous); subjective → the human final accept** (never a
+  per-thread gate, never faked into a machine check).
+- **The invariant (sacred):** fail-closed doesn't vanish — it MOVES up and tightens. A thread's
+  green means "I built it and didn't break anything," never "the whole is correct." `ready` stays
+  the autonomous ceiling; only a human `acceptLoom` writes `done`. Lane-repair only ADDS
+  verification capability, never relaxes an assertion.
+
+**Motivation:** the greenfield e2e (`telar-test-m9`) produced a clean, 54/54-tested deliverable and
+correctly refused to auto-`done` — because two threads carried a live-critic assertion with no
+runnable target (greenfield library, no dev server) → per-thread `needs-review` → human punt.
+Right, but unsatisfying: the gap was environment-provisioning + planner-contract quality, not a
+build defect. M10 makes the orchestrator own that.
+
+**Phases (flag-gated, default off, fail-closed; the TOP GATE ships before thread demotion so
+fail-closed is never lost):**
+- **M10.0** — adjacent fixes: cockpit copy (Finding 1) + planner prefers command/gate over
+  live-critic (Finding 3).
+- **M10.1** — orchestrator final-verification GATE (verify the composed whole after rollup; fork
+  the read-only verify worktree from the consolidation branch, not `baseSha`).
+- **M10.2** — thread verification → advisory (green-unless-broken; a panel skip = green note, not
+  needs-review) — safe only after M10.1.
+- **M10.3** — the verification lane (generalize infra provisioning + proactive setup + repair).
+- **M10.4** — pre-flight lane-viability + bounded ask-once-persist ("Orchestrator requires help";
+  persist to manifest + `.telar/runbook`).
+- **M10.5** — objective/subjective routing (subjective → human accept; optional advisory aesthetic critic).
+- **M10.6** — prove & flip (interactive; the greenfield lib now reaches autonomous `ready → human done`).
+
+**Done when:** a loom that today punts to `needs-review` for a missing verification lane instead
+drives to a real `ready` (orchestrator stood up the lane, verified the whole, fail-closed), the
+human accepts once, and the learned setup is persisted. Full spec in `orchestrator-owned-verification.md`.
+
 ## M8 follow-up (deferred, tracked)
 
 - **Authored live-critic degrade path (moat, medium).** In a *decomposed epic*, if the
