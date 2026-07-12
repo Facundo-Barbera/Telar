@@ -22,9 +22,13 @@ dependencies. The `▶` marks the current milestone.
 > **Status:** M1–M6 all shipped (`d7d8064` → `b2e1f2a`). M1/M2 are live.
 > M3/M4/M5/M6's substrate is flag-guarded **off** by default (byte-identical
 > to before) and unit-tested; each has a clearly-scoped **live-validation**
-> step remaining (a real project run / real Postgres / spawning the runner)
-> before its flag is flipped on. The dynamic weaver (P4) is deferred as
-> research-grade. Next work: the live-validation runs + the Housekeeping list.
+> step remaining before its flag is flipped on. **M7 (env-review) is held**
+> on the wip branch `wip/m7-env-review` — a wide adversarial critique (66
+> findings) showed its env gate is unanswerable on a weave-of-one (E10) and,
+> more importantly, that the **moat itself fails *open*** by default. So the
+> current milestone is **M8 — make the moat fail closed and clean up after
+> itself**; M7 is revisited afterward on the hardened base. The dynamic
+> weaver (P4) stays deferred as research-grade.
 
 **The moat is invariant across every milestone:** a green verify only lands a loom
 `ready` (never `done`); `ready → done` is a human click; the verifier is read-only;
@@ -150,7 +154,39 @@ brought up by the setup agent.
   Contract is the proof, not an enumerated strategy.
 - **Curated agent roster** — via the SDK `agents` option.
 
-## ▶ M7 — Environment proposal: the env is accepted like the work is
+## ▶ M8 — Trustworthy by default: the moat fails *closed* and cleans up
+
+*From the wide critique (66 findings; see `scratchpad/critique-report.md`). The moat's
+**gate** holds (a human always accepts the deliverable) but its **verification** is
+hollow for the common case — and the isolation substrate leaks worktrees. M8 makes the
+defaults honest and tidy. All changes preserve the invariant: green → `ready` (never
+`done`), `ready → done` is a human click, the verifier is read-only.*
+
+- **Verification fails *closed* (E2/E3/E4).** A loom that cannot be independently
+  verified — no target/critic panel, an empty verifier report, or a verifier exception —
+  lands `needs-review`, never promotes on the builder's self-report. Force
+  `panelRequired: true` on any verifier exception/empty report; unify the contradictory
+  skip policy (`executor.ts` promote-on-skip vs the stricter path) to the strict one.
+- **Guard the clean-accept sweep (E1).** `acceptLoom` on a verify-only `ready` loom must
+  not `git add -A` the dirty working tree (`looms.ts` `recordLanding`/`landWorkingTree`).
+  Gate the working-tree commit on `producedBuildOutput`; never sweep unrelated changes.
+- **Delete the client's false-green.** Remove the web `panelFailed` reimplementation in
+  favor of `classifyPanelPure` so the cockpit can never render green where the Verify tab
+  renders red; make `classifyPanelPure` mirror core's (now fail-closed) `aggregatePanel`.
+- **Worktrees clean themselves up.** Each loom/Thread worktree is removed once its work is
+  safely folded into the consolidation branch — on **every** loom exit path
+  (`ready`/`done`/`failed`/`needs-review`/`cancel`/`reject`/error) and on Thread-fold —
+  via `git worktree remove` (never `rm`; the deliverable *branch* is kept, only the temp
+  checkout dir is removed). Never remove a worktree holding un-consolidated work
+  (fold-then-remove; if the fold fails, keep it and log). Boot reconciliation
+  (`reconcileStuckLooms`) `git worktree prune`s orphans left by crashes.
+
+**Done when:** no verifier exception or missing panel can reach `ready`/`done` on
+self-report; a clean accept never sweeps a dirty tree; the cockpit and Verify tab agree;
+and a completed (or cancelled, or failed) isolated loom leaves **zero** leftover worktree
+dirs behind, with the deliverable preserved as a branch. Green-gate: core tests + core/web tsc.
+
+## ⏸ M7 — Environment proposal: the env is accepted like the work is  ·  *held on `wip/m7-env-review`; revisit post-M8*
 
 *Emerged from live validation: a loom that builds fine can't be verified when
 there's no way to run the app, so it honestly lands `needs-review`. Extend the
@@ -171,6 +207,29 @@ accepts** it, then verification proceeds.*
 
 **Done when:** the `greenfield-demo` loom (which needs a dev server to verify) can be
 brought to a real, panel-verified `ready` via an accepted env proposal.
+
+## M8 follow-up (deferred, tracked)
+
+- **Authored live-critic degrade path (moat, medium).** In a *decomposed epic*, if the
+  planner emits a subgoal whose filtered contract slice is all live-critic with no
+  falsifiable hard gate, `wireChildBundle` (weave-contracts.ts) drops it to
+  `acceptanceCriteria` with `contractRequired` unset; with no dev URL the child can take
+  the legacy `runVerification` skip and promote on gates + self-report — a fail-open
+  asymmetry M8 closed for the contract path. **Latent** until epics/fan-out are live
+  (weave-of-one single looms take the fail-closed panel path). Fix by stamping
+  `contractRequired` on the degrade, or forcing `panelRequired:true` when the loom had an
+  authored slice. Deferred to keep the M8 round focused; not on the default path.
+- **Worktree crash-window (low, flag-on).** The snapshot-then-remove guarantee lives in
+  the executor `finally`; a SIGKILL/power-loss between a non-fold-success terminal return
+  and the snapshot commit leaves a worktree with no `recoveryBranch`/`worktreeRetained`,
+  which the next boot reaper reclaims. Strictly better than pre-M8 (which destroyed this
+  work on the normal path too); close by persisting `worktreeRetained` at the terminal
+  transition *before* the return, or by snapshotting-before-remove inside the reaper.
+- **Cross-process reaper liveness (low, flag-on + out-of-proc runner).** `instrumentation.
+  register` calls `reconcileStuckLooms()` with the default in-process liveness oracle, so a
+  web boot could classify a *live* runner-owned worktree as an orphan and reap it. Needs
+  both `isolateWorktrees` and `outOfProcessRunner` on. Pass `crossProcessLiveness` from the
+  boot caller when a runner owns execution.
 
 ## Live-validation findings (open)
 
