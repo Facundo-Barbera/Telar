@@ -908,6 +908,11 @@ export async function runIntegrationVerify(
     // checkpoint). Absent ⇒ byte-identical to the pre-M4 ALL-against-root verify.
     verifyCwd?: string;
     subGoalId?: string;
+    // M10.1 (additive; default = today's ALL slice). Verify the FULL contract
+    // over the composed whole — every assertion, unfiltered — so the top gate
+    // answers both regression (per-child criteria) and completeness. Mutually
+    // exclusive with subGoalId (whole-verify vs checkpoint); fullContract wins.
+    fullContract?: boolean;
   } = {},
 ): Promise<{
   verification: Verification;
@@ -918,6 +923,11 @@ export async function runIntegrationVerify(
   // consumers ignore them; always populated, so the guards need no re-parse.
   failingIds?: string[];
   passingIds?: string[];
+  // M10.1 fail-closed — the reason a whole-verify verdict demoted. Set ONLY on
+  // the fullContract required-panel-no-evidence coercion below; undefined on
+  // every legacy path (flag-off byte-identical). Purely informational: the
+  // weave gate demotes on `verification` "fail"/"flaky", not on this field.
+  error?: string;
 } | null> {
   const { contract } = readContract(loom.id);
   if (!contract) return null; // no bundle contract on the root
@@ -926,9 +936,11 @@ export async function runIntegrationVerify(
   // integration slice: assertions the assembled whole owns, no single SubGoal
   // (subGoalId === "ALL" OR unlabelled). A checkpoint (opts.subGoalId set)
   // re-scopes to exactly that subgoal's assertions.
-  const allSlice = opts.subGoalId
-    ? contract.assertions.filter((a) => a.subGoalId === opts.subGoalId)
-    : contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
+  const allSlice = opts.fullContract
+    ? contract.assertions // M10.1: the FULL contract, unfiltered (regression + completeness)
+    : opts.subGoalId
+      ? contract.assertions.filter((a) => a.subGoalId === opts.subGoalId)
+      : contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
   // M1 (D3.1): PRESERVE the synthesized flag when rebuilding the ALL contract.
   // A synthesized root's ALL slice is all-live-critic; dropping the flag would
   // re-impose the hard-gate floor and validateContract would reject it → the
@@ -986,6 +998,10 @@ export async function runIntegrationVerify(
 
   let verification: Verification;
   let panelReport: PanelReport | null = null;
+  // M10.1 — the demote reason when a REQUIRED panel obtained no evidence over
+  // the composed whole. Set only in the fullContract coercion below; undefined
+  // everywhere else (flag-off byte-identical).
+  let ivError: string | undefined;
   if (!gatesOk) {
     // A red deterministic gate settles the ALL verdict "fail" — no need to run
     // the panel to prose-judge an already-falsified whole.
@@ -1006,6 +1022,30 @@ export async function runIntegrationVerify(
     );
     verification = pv.verification;
     panelReport = pv.panelReport ?? null;
+    // M10.1 top-gate fail-closed (sacred invariant 3: "no evidence ⇒ no
+    // promotion — at the top"). Over the COMPOSED WHOLE, a REQUIRED panel
+    // (agent-judged slice non-empty ⇒ pv.panelRequired) that obtained NO
+    // independent evidence — verification "skip" because the panel could not run
+    // (no reachable target / it threw / a vacuous critic set) — must NOT keep the
+    // loom `ready`. This mirrors the thread-level decide() rule one altitude up
+    // (executor.ts ~264-268/290-298: a panelRequired skip becomes needs-review
+    // "panel verification required but did not run"): map the evidence-free
+    // required skip to a DEMOTING "fail" the unchanged weave gate already acts on
+    // (weave.ts ~414-421 demotes ready → needs-review on "fail"/"flaky").
+    //
+    // Reachable ONLY when opts.fullContract is true — set EXCLUSIVELY by the
+    // orchestratorVerify producer (dispatcher.ts, flag on). With the flag off
+    // (fullContract unset/false) this branch is inert, so a panelRequired skip on
+    // the ALL/checkpoint slice keeps its exact current keep-ready behavior — this
+    // module is byte-identical flag-off. A panelRequired-FALSE contract (empty
+    // agent-judged slice) never enters this branch at all (it falls to the
+    // all-deterministic `pass` below), so a legitimate keep-ready skip is never
+    // demoted — the distinguishing condition is exactly `panelRequired && skip`,
+    // the same predicate decide() uses.
+    if (opts.fullContract && pv.panelRequired && verification === "skip") {
+      verification = "fail";
+      ivError = "panel verification required but did not run (composed whole)";
+    }
     // Attribute the agent-judged slice by the panel's aggregate verdict (set-
     // level; the panel yields no per-assertion ids). "skip" leaves them
     // unattributed — genuinely unknown, not passing.
@@ -1033,6 +1073,9 @@ export async function runIntegrationVerify(
     gates,
     failingIds: Array.from(new Set(failingIds)),
     passingIds: Array.from(new Set(passingIds)),
+    // Flag-off byte-identical: ivError is undefined ⇒ the field is absent from
+    // the returned object exactly as before.
+    ...(ivError ? { error: ivError } : {}),
   };
 }
 

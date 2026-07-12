@@ -42,6 +42,10 @@ export type IvResult = {
   gates?: GateResult[];
   failingIds?: string[];
   passingIds?: string[];
+  // M10.1 — the demote reason on a fail-closed whole-verify verdict (a required
+  // panel that obtained no evidence). Informational; the weave gate demotes on
+  // `verification`, never on this field.
+  error?: string;
 };
 
 // The verify producer, injectable so frozenLaneVerify stays free of any executor
@@ -72,6 +76,11 @@ export type FrozenLaneDeps = {
   resolveServersConfig?: (root: string, acceptedRoot?: string) => ServersConfig; // seam (default fs-backed); acceptedRoot = the .telar tier anchor (M7)
   startLane?: (config: ServersConfig, root: string, opts?: StartLaneOpts) => Promise<Lane>; // seam
   subGoalId?: string; // checkpoint scope (undefined ⇒ ALL slice)
+  // M10.1 — the git ref the frozen worktree forks from. Default undefined ⇒
+  // loom.baseSha (byte-identical to pre-M10.1). The orchestrator whole-verify
+  // sets this to loom.consolidationBranch (telar/<rootId>) so the read-only
+  // verify runs over the COMPOSED WHOLE the children built, not the pre-work base.
+  forkRef?: string;
   // verify passthroughs
   abort?: AbortController;
   emit?: (ev: { type: string } & Record<string, unknown>) => void;
@@ -100,12 +109,18 @@ export async function frozenLaneVerify(
     ...(deps.verifyOpts ?? {}),
   };
 
-  if (!loom.baseSha) {
+  // M10.1 — the fork ref: default loom.baseSha (byte-identical), or the ref the
+  // whole-verify passes (consolidationBranch, falling back to baseSha at the
+  // call site). A branch NAME is a valid ref — `git worktree add --detach <ref>`
+  // detaches at the branch tip.
+  const ref = deps.forkRef ?? loom.baseSha;
+
+  if (!ref) {
     // No pinned snapshot — verify against the shared root (still read-only).
     return deps.runIntegrationVerify(loom, manifest, { ...passthrough });
   }
 
-  const wt = await withWorktreeLock(() => addWorktree(git, manifest.root, loom.baseSha!, `frozen-${loom.id}`));
+  const wt = await withWorktreeLock(() => addWorktree(git, manifest.root, ref, `frozen-${loom.id}`));
   let ephemeralDb = "";
   let lane: Lane | null = null;
   try {

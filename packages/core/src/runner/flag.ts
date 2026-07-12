@@ -44,3 +44,14 @@ export function threadPlannerEnabled(manifest: { threadPlanner?: boolean }): boo
 export function stepChecksEnabled(manifest: { stepChecks?: boolean }): boolean {
   return manifest.stepChecks === true || process.env.TELAR_STEP_CHECKS === "1";
 }
+
+// M10.1 — add ONE authoritative whole-verification gate that runs once over the
+// COMPOSED WHOLE after weave rollup: (1) regression (did we break anything the
+// user already had?) and (2) completeness (did we fill EVERY criterion of the
+// FULL contract?). Fail-closed. It ADDS the top gate; it changes NO thread
+// behavior (thread demotion is M10.2). Flag-off, producer selection + fork ref
+// + verdict are byte-identical to today. A TOP-LEVEL flag (no parent guard,
+// unlike threadPlanner/stepChecks). Honored via TELAR_ORCHESTRATOR_VERIFY=1.
+export function orchestratorVerifyEnabled(manifest: { orchestratorVerify?: boolean }): boolean {
+  return manifest.orchestratorVerify === true || process.env.TELAR_ORCHESTRATOR_VERIFY === "1";
+}

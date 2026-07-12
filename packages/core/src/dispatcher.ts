@@ -47,7 +47,7 @@ import { appendSteering, readBundleFile, readContract, snapshotBundle, writeCont
 import { synthesizeContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { envReviewEnabled, setupAgentEnabled } from "./runner/flag";
+import { envReviewEnabled, orchestratorVerifyEnabled, setupAgentEnabled } from "./runner/flag";
 import { runSetupAgent } from "./setup/setup-agent";
 import { writeAcceptedServersConfig } from "./servers";
 
@@ -216,13 +216,23 @@ function runWeaveWiring(
     };
   };
   // Shared frozen-lane deps builder (a fresh pinned snapshot per verify).
-  const frozenDeps = (eventSink: Loom, subGoalId?: string) => ({
+  // M10.1: `extra` opts in the orchestrator whole-verify — forkRef re-points the
+  // fork to the consolidation branch (top-level), fullContract widens the slice
+  // (via verifyOpts, passed through to runIntegrationVerify). Both absent ⇒
+  // byte-identical to today (fork baseSha, ALL slice).
+  const frozenDeps = (
+    eventSink: Loom,
+    subGoalId?: string,
+    extra?: { forkRef?: string; fullContract?: boolean },
+  ) => ({
     runIntegrationVerify: (lm: Loom, mf: ProjectManifest, o: Record<string, unknown>) =>
       runIntegrationVerify(lm, mf, { policy, accounts: deps.accounts, ...o }),
     dbCloner: resolveDbCloner(),
     subGoalId,
     abort,
     emit: (ev: { type: string } & Record<string, unknown>) => appendEvent(eventSink.id, ev),
+    ...(extra?.forkRef ? { forkRef: extra.forkRef } : {}),
+    ...(extra?.fullContract ? { verifyOpts: { fullContract: true } } : {}),
   });
   // The root's full Verification Contract — wireChildBundle filters it down to
   // each Thread's own subGoalId slice.
@@ -358,6 +368,22 @@ function runWeaveWiring(
         abort,
         emit: (ev) => appendEvent(l.id, ev),
       }),
+    // M10.1 (orchestratorVerify ON, auto-repair OFF): OVERRIDE the plain
+    // producer with the whole-verification — frozenLaneVerify forking the
+    // CONSOLIDATION BRANCH (fall back to baseSha) and verifying the FULL
+    // contract over the composed whole. A later key wins over the default above
+    // (same later-key-wins mechanism envReview/autoRepair use). Flag-off the
+    // spread is `{}` and the default stands ⇒ byte-identical.
+    ...(orchestratorVerifyEnabled(manifest)
+      ? {
+          runIntegrationVerify: (l: Loom): Promise<IvResult | null> =>
+            frozenLaneVerify(
+              l,
+              manifest,
+              frozenDeps(l, undefined, { forkRef: l.consolidationBranch ?? l.baseSha, fullContract: true }),
+            ),
+        }
+      : {}),
     // M4 (auto-repair master flag ON): replace the plain producer with the
     // guarded frozen-lane loop, and fire best-effort per-subGoal checkpoints.
     // Absent flag-off ⇒ the runIntegrationVerify path above is byte-identical.
@@ -365,7 +391,22 @@ function runWeaveWiring(
       ? {
           runAutoRepair: (l: Loom): Promise<IvResult | null> =>
             runAutoRepair(l, {
-              verify: (target: Loom) => frozenLaneVerify(target, manifest, frozenDeps(target)),
+              // M10.1: when orchestratorVerify is also ON, the auto-repair
+              // root-verify leg forks the consolidation branch and verifies the
+              // full contract too (checkpoints below stay unset ⇒ baseSha/ALL).
+              // Flag-off the extra is `{}` ⇒ baseSha / ALL slice, as today.
+              verify: (target: Loom) =>
+                frozenLaneVerify(
+                  target,
+                  manifest,
+                  frozenDeps(
+                    target,
+                    undefined,
+                    orchestratorVerifyEnabled(manifest)
+                      ? { forkRef: target.consolidationBranch ?? target.baseSha, fullContract: true }
+                      : {},
+                  ),
+                ),
               repair: (target: Loom, brief: string) =>
                 runRepairThread(target, manifest, brief, {
                   policy,

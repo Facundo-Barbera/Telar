@@ -297,6 +297,12 @@ export const ProjectManifest = z.object({
   // never relax the loom's contract. Default OFF: Step.check ignored, byte-identical.
   // Honored via TELAR_STEP_CHECKS=1.
   stepChecks: z.boolean().default(false),
+  // M10.1 — run ONE authoritative whole-verification gate over the COMPOSED
+  // WHOLE after weave rollup (regression + completeness), forking the read-only
+  // verify from the consolidation branch and verifying the FULL contract.
+  // Fail-closed; only KEEPS or DEMOTES a ready loom (never authors "done").
+  // Default OFF: no top gate, byte-identical. Honored via TELAR_ORCHESTRATOR_VERIFY=1.
+  orchestratorVerify: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
