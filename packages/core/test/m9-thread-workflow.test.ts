@@ -20,7 +20,7 @@ import type { Loom } from "../src/looms";
 import type { ProjectManifest, Step, ThreadWorkflow } from "../src/schemas";
 
 const { executeLoom, runThreadWorkflow, planThreadWorkflow } = await import("../src/executor");
-const { threadWorkflowEnabled, threadPlannerEnabled } = await import("../src/runner/flag");
+const { threadWorkflowEnabled, threadPlannerEnabled, stepChecksEnabled } = await import("../src/runner/flag");
 const { readyItems, readySubGoals } = await import("../src/tick");
 const { createLoom } = await import("../src/looms");
 const { createProject, getProject } = await import("../src/manifest");
@@ -42,6 +42,7 @@ afterEach(() => {
   // isolation-off suites (mirrors build-fanout-wiring.test.ts:19-24).
   delete process.env.TELAR_THREAD_WORKFLOW;
   delete process.env.TELAR_THREAD_PLANNER;
+  delete process.env.TELAR_STEP_CHECKS;
   delete process.env.TELAR_BUILD_FANOUT;
   delete process.env.TELAR_ISOLATE_WORKTREES;
   fs.rmSync(home, { recursive: true, force: true });
@@ -1027,5 +1028,397 @@ describe("M9.3 (f') planning is read-only — no builder/writer spend during pla
     expect(events.some((e) => e.type === "fanout")).toBe(false);
     expect(events.some((e) => e.type === "verdict")).toBe(false);
     expect(events.some((e) => e.type === "workflow-step")).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M9.4 — consume Step.check as an OPTIONAL, INFORMATIONAL per-step verify-lens.
+// Gated by the new `stepChecks` sub-flag (default OFF) AND, structurally, by
+// threadWorkflow (the seam lives inside runThreadWorkflow's per-result loop).
+// Invariants proven here:
+//  (a) stepChecks OFF ⇒ Step.check is IGNORED / byte-identical (seam unreachable);
+//      flip TELAR_STEP_CHECKS=1 ⇒ the field flips from inert to consumed.
+//  (b) a PASSING check proceeds ⇒ the dependent step is scheduled.
+//  (c) a FAILING check ⇒ bounded step-local repair, then (still failing) HOLD the
+//      dependents + FAIL THE THREAD CLOSED — a failing check NEVER yields a green.
+//  (d) NEVER-PROMOTES — a passing check on a NON-writing step does not make the
+//      loom ready (sawTrustedWritingGreen stays false; the loom is not promoted).
+//  (e) ADDITIVE-ONLY — a permissive Step.check cannot relax the loom-level floor:
+//      a step whose loom-level verify fails is failed-closed BEFORE the seam, so
+//      the check is never even consulted (it can add a fail, never remove one).
+//  (f) BOUNDED — the repair re-run count is capped by the EXISTING opts.maxAttempts
+//      budget (no new counter, no infinite loop).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Flag helper (mirror the M9.3 threadPlannerEnabled helper test) ────────────
+describe("M9.4 stepChecksEnabled flag helper", () => {
+  test("false by default; honors the manifest flag + the TELAR_STEP_CHECKS env override", () => {
+    delete process.env.TELAR_STEP_CHECKS;
+    expect(stepChecksEnabled({})).toBe(false);
+    expect(stepChecksEnabled({ stepChecks: false })).toBe(false);
+    expect(stepChecksEnabled({ stepChecks: true })).toBe(true);
+    process.env.TELAR_STEP_CHECKS = "1";
+    expect(stepChecksEnabled({})).toBe(true);
+  });
+});
+
+// A trivial (empty) Step.check — with an INJECTED runStepCheck the assertion
+// content is irrelevant (the built-in runStepCheck is never invoked); the seam
+// only requires `st.check` to be present to consult the injected evaluator.
+const emptyCheck = { version: 1 as const, assertions: [] };
+
+// ── (a) stepChecks OFF ⇒ Step.check ignored, byte-identical ────────────────────
+describe("M9.4 (a) stepChecks OFF ⇒ Step.check is inert (byte-identical); the flag flips it on", () => {
+  test("flag OFF: injected runStepCheck is NEVER consulted and the terminal state matches a no-check run; flag ON consults it", async () => {
+    // A single non-writing step carrying a check; injected runStep so the run is
+    // fully hermetic (no live model). runThreadWorkflow is called directly, so the
+    // ONLY gate on the seam is stepChecksEnabled(manifest) (threadWorkflow is not
+    // consulted here — this isolates the sub-flag).
+    const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
+
+    // Flag OFF (default): the seam is skipped ⇒ the spy is never called.
+    delete process.env.TELAR_STEP_CHECKS;
+    let offCalls = 0;
+    const offSpy = (async () => {
+      offCalls++;
+      return "pass" as const;
+    });
+    const withCheck = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck })] } });
+    const offOut = await runThreadWorkflow(withCheck, noManifest, { runStep, runStepCheck: offSpy });
+    expect(offCalls).toBe(0); // Step.check ignored while the flag is off
+
+    // Control: the SAME workflow with NO check field — terminal state must match.
+    const noCheck = fakeLoom({ workflow: { version: 1, steps: [step("A")] } });
+    const ctrlOut = await runThreadWorkflow(noCheck, noManifest, { runStep });
+    expect(offOut.state).toBe(ctrlOut.state); // byte-identical terminal outcome
+
+    // Flip the env flag ⇒ the field flips from inert to CONSUMED.
+    process.env.TELAR_STEP_CHECKS = "1";
+    let onCalls = 0;
+    const onSpy = (async () => {
+      onCalls++;
+      return "pass" as const;
+    });
+    const onLoom = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck })] } });
+    await runThreadWorkflow(onLoom, noManifest, { runStep, runStepCheck: onSpy });
+    expect(onCalls).toBeGreaterThanOrEqual(1); // consumed only via the flag
+  });
+});
+
+// ── (b) a passing check proceeds ⇒ the dependent is scheduled ──────────────────
+describe("M9.4 (b) a PASSING per-step check lets the workflow proceed", () => {
+  test("A carries a check that PASSES ⇒ its dependent B is scheduled; both steps run; no fail-close", async () => {
+    process.env.TELAR_STEP_CHECKS = "1";
+    const ran: string[] = [];
+    const runStep = async (s: Step): Promise<StepResult> => {
+      ran.push(s.id);
+      return { id: s.id, ok: true, state: "ready" };
+    };
+    let checked = 0;
+    const runStepCheck = (async (s: Step) => {
+      checked++;
+      expect(s.id).toBe("A"); // only A carries a check
+      return "pass" as const;
+    });
+    const loom = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck }), step("B", ["A"])] } });
+    const out = await runThreadWorkflow(loom, noManifest, { runStep, runStepCheck });
+
+    expect(checked).toBe(1); // A's check ran once and passed
+    expect(ran).toContain("A");
+    expect(ran).toContain("B"); // A proceeded ⇒ dependent B was scheduled
+    expect(out.state).not.toBe("failed"); // a passing check never fails the thread
+  });
+});
+
+// ── (c) a failing check ⇒ bounded repair ⇒ HOLD dependents + FAIL CLOSED ────────
+describe("M9.4 (c) a FAILING per-step check fails the thread CLOSED (bounded repair, then hold dependents)", () => {
+  test("A (built-in writing green) whose check ALWAYS fails ⇒ repaired maxStepRepairs times, then loom 'failed'; B never runs", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    // A is a REAL trusted-green disjoint-writer build (reaches the seam past the
+    // loom-level floor); B is a free dependent that must be HELD.
+    loom.workflow = {
+      version: 1,
+      steps: [{ ...disjointGreenStep("A"), check: emptyCheck }, step("B", ["A"])],
+    };
+    const maxAttempts = 2;
+    const maxStepRepairs = Math.max(1, maxAttempts); // the SAME cap the seam reuses
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "fail" as const;
+    });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    // Built-in executor (NO opts.runStep) so A is a TRUSTED writing green.
+    const out = await executeLoom(loom, manifest, {
+      run: fakeBuilder,
+      maxAttempts,
+      runStepCheck,
+      onEvent: (ev) => events.push(ev),
+      onState: () => {},
+    });
+
+    // The thread fails CLOSED — a failing check never yields a green loom.
+    expect(out.state).toBe("failed");
+    expect(out.state).not.toBe("ready");
+    expect(out.state).not.toBe("done");
+    // A was re-run (repaired) up to the cap: 1 initial + maxStepRepairs re-runs.
+    const stepA = events.filter((e) => e.type === "workflow-step" && e.stepId === "A");
+    expect(stepA.length).toBe(1 + maxStepRepairs);
+    // The check itself was consulted 1 + maxStepRepairs times (initial + re-check per repair).
+    expect(checked).toBe(1 + maxStepRepairs);
+    // B is HELD — its dependency A never completed, so it was never scheduled.
+    expect(events.some((e) => e.type === "workflow-step" && e.stepId === "B")).toBe(false);
+    // The failure carries the check-failure message.
+    expect(out.error).toMatch(/check failed after 2 repair attempt/);
+    expect(events.some((e) => e.type === "error" && /check failed after 2 repair attempt/.test(String(e.message)))).toBe(true);
+  });
+});
+
+// ── (d) NEVER-PROMOTES — a passing check on a non-writing step does not promote ─
+describe("M9.4 (d) a passing per-step check NEVER promotes the loom", () => {
+  test("a free (research) step with a PASSING check leaves the loom un-promoted (not ready/done)", async () => {
+    process.env.TELAR_STEP_CHECKS = "1";
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "pass" as const;
+    });
+    // Built-in free-step executor (NO opts.runStep): runFreeStepFanout for a
+    // zero-agent research step returns {ok:true,state:"ready"} WITHOUT mutating
+    // loom.state — the "ready" is a scheduling signal only, never a promotion.
+    const loom = fakeLoom({ workflow: { version: 1, steps: [step("F", [], { kind: "research", agents: [], check: emptyCheck })] } });
+    const out = await runThreadWorkflow(loom, noManifest, { runStepCheck });
+
+    expect(checked).toBe(1); // the passing check DID run…
+    // …yet it did NOT promote the loom: sawTrustedWritingGreen stayed false, so a
+    // green would have TRIPPED the final provenance gate to "failed". The loom is
+    // simply left un-promoted at its queued state — never ready/done.
+    expect(out.state).not.toBe("ready");
+    expect(out.state).not.toBe("done");
+    expect(out.state).not.toBe("failed"); // and the clean pass did not fail it either
+  });
+});
+
+// ── (e) ADDITIVE-ONLY — a permissive Step.check cannot relax the loom floor ─────
+describe("M9.4 (e) a permissive Step.check cannot relax the loom-level floor (additive-only)", () => {
+  test("a built-in writing step whose loom-level verify FAILS is failed-closed BEFORE the seam ⇒ runStepCheck is NEVER consulted", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    // A disjoint-writer build with OVERLAPPING allowedPaths ⇒ defaultRunStep's
+    // piecesAreDisjoint gate returns {ok:false,state:"failed"} WITHOUT re-entering
+    // executeLoom — the loom-level floor fails this step. A PERMISSIVE (empty)
+    // check is attached; BLOCKER 1 must fail-close BEFORE the seam is reached.
+    loom.workflow = {
+      version: 1,
+      steps: [
+        {
+          id: "w",
+          goal: "g",
+          kind: "build",
+          partition: "disjoint-writer",
+          dependsOn: [],
+          check: emptyCheck,
+          agents: [
+            { id: "x", title: "X", prompt: "x", allowedPaths: ["a.txt"] },
+            { id: "y", title: "Y", prompt: "y", allowedPaths: ["a.txt"] }, // overlaps x
+          ],
+        },
+      ],
+    };
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "pass" as const; // permissive — would rescue the step IF it were consulted
+    });
+    const out = await executeLoom(loom, manifest, { run: fakeBuilder, runStepCheck, onState: () => {} });
+
+    // The floor fails the step closed; the permissive check cannot rescue it.
+    expect(out.state).toBe("failed");
+    expect(out.state).not.toBe("ready");
+    expect(out.state).not.toBe("done");
+    // Proof the check is DOWNSTREAM of the floor: it was never even consulted.
+    expect(checked).toBe(0);
+  });
+});
+
+// ── (f) BOUNDED — repair count is capped by the existing opts.maxAttempts ──────
+describe("M9.4 (f) step-local repair is BOUNDED by the existing opts.maxAttempts (no infinite loop)", () => {
+  test("an always-failing check re-runs the step at most 1 + max(1, opts.maxAttempts) times, then fails closed", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    loom.workflow = { version: 1, steps: [{ ...disjointGreenStep("A"), check: emptyCheck }] };
+    const maxAttempts = 3;
+    const maxStepRepairs = Math.max(1, maxAttempts);
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "fail" as const;
+    });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const out = await executeLoom(loom, manifest, {
+      run: fakeBuilder,
+      maxAttempts,
+      runStepCheck,
+      onEvent: (ev) => events.push(ev),
+      onState: () => {},
+    });
+
+    const stepA = events.filter((e) => e.type === "workflow-step" && e.stepId === "A");
+    // Bounded: never more than 1 initial + maxStepRepairs re-runs (here exactly).
+    expect(stepA.length).toBeLessThanOrEqual(1 + maxStepRepairs);
+    expect(stepA.length).toBe(1 + maxStepRepairs);
+    expect(checked).toBe(1 + maxStepRepairs); // the check loop terminated (no runaway)
+    expect(out.state).toBe("failed");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M9.4 HARDENING — adversarial-verification fixes. M9.4's hard invariant is
+// FAIL-CLOSED; these prove a throwing check, a state side-channel, and a pointless
+// non-writing repair are all closed.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── FIX 1 — a THROWING check/repair must FAIL CLOSED, never escape ─────────────
+describe("M9.4 FIX 1 — a throwing check FAILS CLOSED (never escapes runThreadWorkflow)", () => {
+  test("an injected runStepCheck that THROWS ⇒ loom ends terminal-FAILURE (never green); runThreadWorkflow RESOLVES (no unhandled rejection); dependents HELD", async () => {
+    process.env.TELAR_STEP_CHECKS = "1";
+    const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
+    const runStepCheck = (async () => {
+      throw new Error("critic engine blew up"); // a critic/engine/Playwright/abort throw
+    }) as (s: Step, ctx: WorkflowStepCtx) => Promise<"pass" | "fail" | "skip">;
+    const loom = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck }), step("B", ["A"])] } });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    // A throw that ESCAPED would reject this await (fail the test); it must resolve.
+    const out = await runThreadWorkflow(loom, noManifest, { runStep, runStepCheck, onEvent: (e) => events.push(e) });
+
+    // FAIL CLOSED — terminal-failure, never a green the provenance gate was bypassed on.
+    expect(out.state).toBe("failed");
+    expect(out.state).not.toBe("ready");
+    expect(out.state).not.toBe("done");
+    // A diagnostic was emitted and the loom carries the fail-closed reason.
+    expect(events.some((e) => e.type === "check-error")).toBe(true);
+    expect(out.error).toMatch(/errored/);
+    // The dependent B was HELD — A never completed, so it was never scheduled.
+    expect(events.some((e) => e.type === "workflow-step" && e.stepId === "B")).toBe(false);
+  });
+
+  test("a BUILT-IN check whose critic seam THROWS ⇒ the built-in returns a definite verdict (fail), the thread fails closed", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    manifest.urls = { dev: "http://127.0.0.1:59999" }; // a live target ⇒ the critic slice runs
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "p", account: manifest.account });
+    // Zero-agent research step (built-in free fan-out returns ok WITHOUT calling
+    // run) carrying an AGENT-JUDGED check ⇒ the BUILT-IN runStepCheck reaches the
+    // critic panel, where the injected run THROWS. With no opts.runStepCheck the
+    // built-in evaluator is exercised (not a test stub).
+    const agentJudgedCheck = {
+      version: 1 as const,
+      assertions: [{ id: "aj", description: "shows X", type: "live-critic" as const, observable: "X visible", blocker: true }],
+    };
+    loom.workflow = {
+      version: 1,
+      steps: [{ id: "F", goal: "g", kind: "research" as const, partition: "free" as const, agents: [], dependsOn: [], check: agentJudgedCheck }],
+    };
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const throwingRun = (async () => {
+      throw new Error("critic playwright crashed");
+    }) as any;
+    // Must RESOLVE (no unhandled rejection) and end fail-closed.
+    const out = await executeLoom(loom, manifest, { run: throwingRun, onEvent: (e) => events.push(e), onState: () => {} });
+    expect(out.state).toBe("failed");
+    expect(out.state).not.toBe("ready");
+    expect(out.state).not.toBe("done");
+    // Proof the throw was caught INSIDE the built-in runStepCheck (not an earlier
+    // step failure): the critic seam's injected error surfaced as a panel-error and
+    // the built-in returned a definite "fail" ⇒ the check-failed path fired.
+    expect(events.some((e) => e.type === "panel-error" && /playwright crashed/.test(String(e.message)))).toBe(true);
+    expect(out.error).toMatch(/check failed/);
+  });
+});
+
+// ── FIX 2 — the per-step check is STATE-NEUTRAL (no loom.state side-channel) ────
+describe("M9.4 FIX 2 — an injected check that side-channels loom.state fails CLOSED (state-neutral)", () => {
+  test("runStepCheck returns 'pass' but sets loom.state='done' under a genuine trusted green ⇒ loom does NOT end 'done' (fails closed)", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    // A REAL trusted-green disjoint-writer build earns sawTrustedWritingGreen — the
+    // exact state under which the side-channel would otherwise bypass the provenance
+    // gate + human acceptLoom by flipping the loom straight to 'done'.
+    loom.workflow = { version: 1, steps: [{ ...disjointGreenStep("A"), check: emptyCheck }] };
+    let checked = 0;
+    const runStepCheck = (async (_s: Step, ctx: WorkflowStepCtx) => {
+      checked++;
+      ctx.loom.state = "done"; // SIDE-CHANNEL: mutate loom.state via the shared reference
+      return "pass" as const;
+    }) as (s: Step, ctx: WorkflowStepCtx) => Promise<"pass" | "fail" | "skip">;
+    const out = await executeLoom(loom, manifest, { run: fakeBuilder, runStepCheck, onState: () => {} });
+
+    expect(checked).toBe(1); // the check ran…
+    expect(out.state).not.toBe("done"); // …but the mutated 'done' was REFUSED
+    expect(out.state).not.toBe("ready");
+    expect(out.state).toBe("failed"); // side-channel ⇒ fail closed
+    expect(out.error).toMatch(/side-channel/);
+  });
+
+  test("CONTROL: a normal 'pass' with NO mutation still PROCEEDS (the trusted green is honored, loom ends 'ready')", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_STEP_CHECKS = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    loom.workflow = { version: 1, steps: [{ ...disjointGreenStep("A"), check: emptyCheck }] };
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "pass" as const; // no mutation
+    }) as (s: Step, ctx: WorkflowStepCtx) => Promise<"pass" | "fail" | "skip">;
+    const out = await executeLoom(loom, manifest, { run: fakeBuilder, runStepCheck, onState: () => {} });
+
+    expect(checked).toBe(1);
+    expect(out.state).toBe("ready"); // a clean pass proceeds; the genuine green stands
+    expect(out.state).not.toBe("failed");
+  });
+});
+
+// ── FIX 3a — a failing check on a NON-WRITING step fails closed WITHOUT repair ──
+describe("M9.4 FIX 3a — a failing check on a NON-WRITING step fails closed immediately (no pointless repair)", () => {
+  test("non-writing (research) step whose check FAILS ⇒ fail closed WITHOUT re-running the step (repair count 0)", async () => {
+    process.env.TELAR_STEP_CHECKS = "1";
+    const runCounts: Record<string, number> = {};
+    const runStep = async (s: Step): Promise<StepResult> => {
+      runCounts[s.id] = (runCounts[s.id] ?? 0) + 1;
+      return { id: s.id, ok: true, state: "ready" };
+    };
+    let checked = 0;
+    const runStepCheck = (async () => {
+      checked++;
+      return "fail" as const; // always fails — a repair could never change the outcome
+    }) as (s: Step, ctx: WorkflowStepCtx) => Promise<"pass" | "fail" | "skip">;
+    const loom = fakeLoom({
+      workflow: { version: 1, steps: [step("A", [], { kind: "research", agents: [], check: emptyCheck }), step("B", ["A"])] },
+    });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const out = await runThreadWorkflow(loom, noManifest, { runStep, runStepCheck, onEvent: (e) => events.push(e) });
+
+    expect(out.state).toBe("failed"); // fails closed
+    expect(runCounts["A"]).toBe(1); // the step ran ONCE — the repair loop NEVER re-ran it
+    expect(checked).toBe(1); // the check was consulted ONCE — no re-check (no repair)
+    expect(out.error).toMatch(/non-writing/); // the reason names the skipped repair
+    expect(events.some((e) => e.type === "workflow-step" && e.stepId === "B")).toBe(false); // B HELD
   });
 });

@@ -39,7 +39,7 @@ import type {
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import { envReviewEnabled, threadWorkflowEnabled, threadPlannerEnabled } from "./runner/flag";
+import { envReviewEnabled, threadWorkflowEnabled, threadPlannerEnabled, stepChecksEnabled } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig } from "./servers";
@@ -104,6 +104,11 @@ export type ExecuteOpts = {
   // or assert the planner is/isn't invoked, without a live model. Flag-off never
   // consulted.
   planWorkflow?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<ThreadWorkflow>;
+  // M9.4 — injectable per-step CHECK evaluator (test seam, mirrors runStep?).
+  // Absent ⇒ the built-in runStepCheck (partition st.check → deterministic gates
+  // + read-only critic panel; no writer spend). Lets a test inject a canned
+  // pass/fail without a live model/browser. Flag-off never consulted.
+  runStepCheck?: (step: Step, ctx: WorkflowStepCtx) => Promise<"pass" | "fail" | "skip">;
 };
 
 const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
@@ -556,6 +561,85 @@ async function runPanelVerification(
     emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
     return { verification: "skip", report: null, panelReport: null, panelRequired: true };
   }
+}
+
+// ── M9.4: the built-in per-step CHECK evaluator (read-only verify-lens) ──────
+// Evaluates a Step's OPTIONAL `check` VerificationContract against that step's
+// FAIT-ACCOMPLI output — the shared loom's worktree/app AFTER the step ran
+// (buildCwd for the deterministic slice, the loom's live target for the agent-
+// judged slice; the check never re-runs the step to produce output) — using the
+// SAME Unit-4 primitives runVerification uses:
+//   - deterministic assertions -> runContractGates (exit-code gates, NO browser,
+//     NO writer-agent budget)
+//   - agent-judged assertions   -> the READ-ONLY critic panel (runPanel/runCritic,
+//     walled to VERIFIER_TOOLS: no Write/Edit/MultiEdit/Bash/NotebookEdit/Agent)
+// The contract is `step.check` passed EXPLICITLY (never readContract(loom.id)) —
+// exactly as runIntegrationVerify passes its freshly-built allContract — so this
+// NEVER reads/writes the loom's on-disk contract.json floor. Returns a PURE tri-
+// state ("pass"|"fail"|"skip") from classifyPanel / gate exit codes; it NEVER
+// writes loom.state, sawTrustedWritingGreen, or the contract. It can only ADD
+// scrutiny (return "fail"), never promote the loom or relax its contract.
+async function runStepCheck(step: Step, ctx: WorkflowStepCtx): Promise<"pass" | "fail" | "skip"> {
+  const contract = step.check!; // guarded by the seam (stepChecksEnabled && st.check)
+  const { deterministic, agentJudged } = partitionAssertions(contract.assertions);
+  if (deterministic.length === 0 && agentJudged.length === 0) return "skip"; // nothing to judge
+
+  const { loom, manifest, opts } = ctx;
+
+  // (a) DETERMINISTIC slice — exit-code gates over the worktree the step wrote.
+  // runContractGates spawns detached processes judged by exit code — zero writer
+  // agent budget. A single red gate fails the check.
+  if (deterministic.length) {
+    const gates = await runContractGates(deterministic, manifest, buildCwd(loom, manifest));
+    if (gates.some((g) => !g.ok)) return "fail";
+  }
+
+  // (b) AGENT-JUDGED slice — the read-only critic panel (walled inside runCritic).
+  if (agentJudged.length) {
+    const target = manifest.urls?.dev;
+    // No live target ⇒ no evidence to judge the agent-judged slice. A green
+    // deterministic slice stands (informational pass); an all-agent-judged check
+    // with no evidence is an informational skip (never a spurious fail).
+    if (!target) return deterministic.length ? "pass" : "skip";
+    const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
+    const critCtx: CriticContext = { featureName: loom.title, url: target, objective, assertions: agentJudged };
+    // Minimal post-step signals (git-derived touched-file count seeds the panel
+    // sizing floor); panelSize always seeds an intent+adversarial blocker floor,
+    // so a critic-backed check can only ADD adversarial scrutiny.
+    const signals: PanelSignals = {
+      diffLines: 0,
+      filesTouched: gitTouchedFiles(buildCwd(loom, manifest)).length,
+      filesOutsideAllowed: 0,
+      protectedPathsTouched: false,
+      priorFailingCritics: 0,
+    };
+    // FIX 1 (built-in robustness): mirror runPanelVerification's try/catch around
+    // the runPanel call so a critic RUNTIME error (engine/Playwright/abort throw)
+    // returns a DEFINITE verdict rather than escaping. For a fail-closed CHECK the
+    // definite verdict is "fail" (unlike runPanelVerification's "skip", because a
+    // check "skip" would PROCEED — a check that cannot be evaluated is NOT a pass).
+    // The seam-level try/catch (below) stays the ultimate fail-closed backstop;
+    // this keeps the built-in robust on its own.
+    let report: PanelReport;
+    try {
+      report = await runPanel(critCtx, {
+        signals,
+        maxCriticAgents: loom.charter?.budget.maxCriticAgents ?? 3,
+        evidenceDir: path.join(loomDir(loom.id), "evidence", `step-check-${step.id}`),
+        account: opts.accounts?.[manifest.account],
+        project: manifest.name,
+        abort: opts.abort,
+        run: opts.run,
+      });
+    } catch (err) {
+      opts.onEvent?.({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
+      return "fail"; // critic runtime error ⇒ definite fail-closed verdict
+    }
+    const v = classifyPanel(report); // PURE (panel.ts) — "pass"|"fail"|"skip"
+    if (v === "fail") return "fail";
+    if (v === "skip" && deterministic.length === 0) return "skip";
+  }
+  return "pass";
 }
 
 // Stringify a verifier engine tool `input` (already engine-capped) for a
@@ -1763,6 +1847,23 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
   const doneSteps = new Set<string>();
   const startedSteps = new Set<string>();
   const run = opts.runStep ?? defaultRunStep;
+  // M9.4 — the per-step CHECK evaluator (test seam, mirrors `run`) and the step-
+  // local repair cap. maxStepRepairs is the SAME cap as the builder loop's
+  // maxAttempts (Math.max(1, opts.maxAttempts ?? 3)) — no new counter. Both are
+  // consulted ONLY inside the M9.4 seam below, guarded by stepChecksEnabled.
+  const runCheck = opts.runStepCheck ?? runStepCheck;
+  const maxStepRepairs = Math.max(1, opts.maxAttempts ?? 3);
+  // Fail-closed helper mirroring BLOCKER 1 (:1849) verbatim: idempotent against a
+  // terminal failure a delegate already wrote. Used only by the M9.4 seam.
+  const failStepClosed = (message: string) => {
+    if (!isTerminalFailure(loom.state)) {
+      loom.error = message;
+      loom.state = "failed";
+      emit({ type: "error", message });
+      emit({ type: "state", state: "failed" });
+      opts.onState?.(loom);
+    }
+  };
   // CF2 provenance: the built-in defaultRunStep fills the verification-proof
   // fields ONLY from executeLoom's real read-only verifier (never fabricated);
   // an injected opts.runStep supplies them itself and can forge them. This flag
@@ -1890,6 +1991,122 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
       // predicate so the ledger is self-evidently correct on its own.
       if (usedBuiltinExecutor && isWritingKind(st.kind) && terminalGreen && hasProof) {
         sawTrustedWritingGreen = true;
+      }
+
+      // ── M9.4 seam: optional post-step informational CHECK (verify-lens) ──────
+      // Reached ONLY for a step that already survived BLOCKER 1 (res.ok) and CF2
+      // (writing-green-with-proof) and whose HOLE A ledger already recorded any
+      // trusted writing green — so this is structurally DOWNSTREAM of the loom-
+      // level floor. The check can ADD scrutiny (fail a step / trigger a bounded
+      // repair / fail the thread closed) but NEVER promotes the loom (it never
+      // writes sawTrustedWritingGreen or loom.state="ready"|"done"; the FINAL
+      // PROVENANCE GATE stays the only promotion path) and NEVER relaxes the
+      // loom's contract (runStepCheck evaluates st.check EXPLICITLY, never
+      // read/writeContract). Double-locked OFF: unreachable unless threadWorkflow
+      // is on, and skipped unless stepChecks is on AND st.check is set — so
+      // flag-off ⇒ Step.check ignored ⇒ byte-identical.
+      if (stepChecksEnabled(manifest) && st.check) {
+        const checkCtx: WorkflowStepCtx = { loom, manifest, opts, clamp: perStepClamp };
+        // FIX 1 — the ENTIRE seam body (check evaluation + repair loop) runs inside
+        // this try/catch. A throw from runCheck (critic/engine/Playwright/abort) or
+        // runStepFor would otherwise escape runThreadWorkflow as an uncaught
+        // rejection, leaving the shared loom at a prior green ('ready'/'done') and
+        // bypassing the FINAL PROVENANCE GATE. A throw is NOT a designed no-evidence
+        // 'skip' (which proceeds): the catch FAILS THE THREAD CLOSED.
+        try {
+          // FIX 2 — STATE-NEUTRAL check call. A check is READ-ONLY/informational and
+          // must NEVER mutate loom.state; an injected runStepCheck could otherwise
+          // side-channel loom.state="done" under a genuinely-earned trusted green,
+          // bypassing the provenance gate + human acceptLoom (the runStepCheck
+          // analogue of usedBuiltinExecutor for opts.runStep). Snapshot loom.state
+          // immediately BEFORE runCheck and, if it changed, fail closed WITHOUT
+          // honoring the mutated state. Applies to the CHECK call ONLY; the repair
+          // re-run (runStepFor) legitimately mutates loom.state via executeLoom and
+          // is validated by the normal step guards below.
+          let sideChanneled = false;
+          const evalCheck = async (): Promise<"pass" | "fail" | "skip"> => {
+            const stateBefore = loom.state;
+            const v = await runCheck(st, checkCtx);
+            if (loom.state !== stateBefore) {
+              sideChanneled = true;
+              failStepClosed(
+                `step "${res.id}" check side-channeled loom.state ("${stateBefore}" → "${loom.state}") — refused`,
+              );
+            }
+            return v;
+          };
+
+          let verdict = await evalCheck();
+          if (sideChanneled) return loom; // dependents HELD — the mutated state is NOT honored
+          if (verdict === "fail") {
+            // FIX 3a — a failing NON-WRITING (research/design/check) step would re-run
+            // read-only agents against an UNCHANGED worktree, so a repair can never
+            // change the verdict. Fail the thread closed immediately (no repair).
+            if (!isWritingKind(st.kind)) {
+              failStepClosed(`step "${res.id}" check failed (non-writing step — no repair can change the outcome)`);
+              return loom;
+            }
+            // BOUNDED step-local repair for a WRITING step: re-run the FAILING step at
+            // most maxStepRepairs times (the SAME cap as the builder loop's
+            // maxAttempts), then fail closed. NO infinite loop: this outer loop is
+            // <= maxStepRepairs (<=3) and each runStepFor re-enters executeLoom, itself
+            // internally clamped at maxAttempts. FIX 3b — the repair nests OUTSIDE
+            // executeLoom's own maxAttempts loop, so gate each iteration on REMAINING
+            // BUDGET: charge a conservative per-iteration estimate (one writer wave)
+            // against the step's budget SLICE and fail closed once the slice can no
+            // longer afford another writer. An uncapped slice is Infinity, so the gate
+            // never fires and cost-unbounded runs are byte-identical to before.
+            let repairSpentUsd = 0;
+            for (let r = 0; verdict === "fail" && r < maxStepRepairs; r++) {
+              const sliceLeftUsd = budgetLeftUsd({
+                maxAgents: perStepClamp.maxAgents,
+                inFlight: 0,
+                spentUsd: repairSpentUsd,
+                startedAtMs: 0,
+                maxCostUsd: isFinite(perStepClamp.budgetLeftUsd) ? perStepClamp.budgetLeftUsd : undefined,
+              });
+              if (fanoutSize(1, { ...perStepClamp, budgetLeftUsd: sliceLeftUsd }) < 1) {
+                failStepClosed(`step "${res.id}" check failed; repair budget slice exhausted after ${r} attempt(s)`);
+                return loom;
+              }
+              const repaired = await runStepFor(res.id);
+              // Conservative charge against the slice: one estimated writer wave/iter.
+              repairSpentUsd += perStepClamp.estCostPerAgent * Math.max(1, perStepClamp.maxAgents);
+              emit({ type: "workflow-step", stepId: repaired.id, state: repaired.state });
+              // Re-validate the re-run through the SAME guards the first run passed
+              // (BLOCKER 1 + CF2). A non-green or forged-green repair fails closed.
+              const rTerminalGreen = repaired.state === "ready" || repaired.state === "done";
+              const rHasProof = !!(repaired.verifierReport || repaired.panelReport || repaired.gatesGreen);
+              if (!repaired.ok || (isWritingKind(st.kind) && rTerminalGreen && !(usedBuiltinExecutor && rHasProof))) {
+                failStepClosed(
+                  !repaired.ok
+                    ? `step "${res.id}" repair re-run terminated non-green (state "${repaired.state}")`
+                    : `step "${res.id}" repair re-run reported green without verifier proof`,
+                );
+                return loom; // dependents HELD — never reaches doneSteps.add
+              }
+              verdict = await evalCheck(); // re-check this step's NEW output (state-neutral)
+              if (sideChanneled) return loom;
+            }
+            if (verdict === "fail") {
+              // Repair exhausted, check still failing ⇒ FAIL THE THREAD CLOSED. Does
+              // NOT reach doneSteps.add ⇒ every dependent is HELD (never scheduled);
+              // a failing per-step check therefore NEVER yields a green loom.
+              failStepClosed(`step "${res.id}" check failed after ${maxStepRepairs} repair attempt(s)`);
+              return loom;
+            }
+          }
+          // verdict is "pass" or "skip" ⇒ fall through to doneSteps.add (proceed).
+        } catch (err) {
+          // FIX 1 backstop — ANY thrown error from the check evaluation or the repair
+          // loop FAILS THE THREAD CLOSED (never treated as a proceed-'skip'). Emit a
+          // diagnostic, then fail-close via the existing idempotent path so the loom
+          // can never escape at a prior green with the provenance gate bypassed.
+          const message = err instanceof Error ? err.message : String(err);
+          emit({ type: "check-error", stepId: res.id, message });
+          failStepClosed(`step "${res.id}" check errored — failed closed: ${message}`);
+          return loom;
+        }
       }
       doneSteps.add(res.id);
     }

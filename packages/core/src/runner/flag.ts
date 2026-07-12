@@ -35,3 +35,12 @@ export function threadWorkflowEnabled(manifest: { threadWorkflow?: boolean }): b
 export function threadPlannerEnabled(manifest: { threadPlanner?: boolean }): boolean {
   return manifest.threadPlanner === true || process.env.TELAR_THREAD_PLANNER === "1";
 }
+
+// M9.4 — consume Step.check as an optional, informational per-step verify-lens
+// (read-only; bounded step-local repair; fail-closed). Only meaningful when
+// threadWorkflow is on (the check runs inside runThreadWorkflow's per-step path,
+// unreachable when threadWorkflow off). Flag-off, Step.check is ignored — no
+// read-only check, no repair, byte-identical.
+export function stepChecksEnabled(manifest: { stepChecks?: boolean }): boolean {
+  return manifest.stepChecks === true || process.env.TELAR_STEP_CHECKS === "1";
+}

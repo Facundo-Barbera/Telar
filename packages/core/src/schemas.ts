@@ -288,6 +288,15 @@ export const ProjectManifest = z.object({
   // deterministic template library on any failure/invalid/empty/cyclic graph.
   // Default OFF: templates only, no LLM spend. Honored via TELAR_THREAD_PLANNER=1.
   threadPlanner: z.boolean().default(false),
+  // M9.4 — consume Step.check as an OPTIONAL, INFORMATIONAL per-step verify-lens.
+  // When on (AND threadWorkflow on), after a step completes with a `check`, run a
+  // READ-ONLY informational check of that step's output; on FAIL trigger a BOUNDED
+  // step-local repair (existing attempt budget) and, if still failing, HOLD
+  // dependents and FAIL THE THREAD CLOSED. A per-step check NEVER promotes the loom
+  // (loom-level contract+panel+human stay the only proof) and can only ADD scrutiny,
+  // never relax the loom's contract. Default OFF: Step.check ignored, byte-identical.
+  // Honored via TELAR_STEP_CHECKS=1.
+  stepChecks: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
