@@ -275,6 +275,14 @@ export const ProjectManifest = z.object({
   // proposer writes/starts nothing before accept, verify stays read-only, and a
   // green re-verify still lands `ready`, never `done`.
   envReview: z.boolean().default(false),
+  // M9 — thread-as-workflow. Execute a thread's build as an N-step DAG
+  // (dependsOn) × M agents/step via runThreadWorkflow instead of the single
+  // executeLoom attempt loop. Default OFF: flag-off every path is byte-identical
+  // (executeLoom is the only reachable builder; the runner is unreferenced). The
+  // default template is one `build` step that RE-ENTERS executeLoom, so flag-on
+  // with the default template is behaviorally identical to today. Honored via
+  // TELAR_THREAD_WORKFLOW=1 for live-validation.
+  threadWorkflow: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
@@ -461,6 +469,53 @@ export const VerificationContract = z.object({
   synthesized: z.boolean().optional(),
 });
 export type VerificationContract = z.infer<typeof VerificationContract>;
+
+// M9 (thread-as-workflow) — a Step's kind. `build`/`migrate` are WRITING steps
+// (disjoint-writer partition applies in M9.2); research/design/check fan out
+// freely. Additive; only consulted under threadWorkflow (flag-off unreachable).
+export const StepKind = z.enum(["research", "design", "build", "migrate", "check"]);
+export type StepKind = z.infer<typeof StepKind>;
+
+// M9 — one agent within a Step. Structural SUPERSET of build-fanout.ts BuildPiece
+// ({id,title,prompt,allowedPaths,agent?}) so M9.2 can pass Step.agents straight
+// into runBuildFanout with zero parallel type. `allowedPaths` is the per-agent
+// disjoint-writer partition. Do NOT import BuildPiece here (would invert the
+// build-fanout.ts -> schemas.ts dependency); M9.2 re-aligns BuildPiece to this.
+export const AgentSpec = z.object({
+  id: z.string(),
+  title: z.string(),
+  prompt: z.string().default(""),
+  allowedPaths: z.array(z.string()).default([]),
+  agent: z.string().optional(), // Roster preset name (schemas.ts Roster)
+});
+export type AgentSpec = z.infer<typeof AgentSpec>;
+
+// M9 — a Step = M agents (parallel) with a place in the thread's DAG. `dependsOn`
+// mirrors SubGoal.dependsOn verbatim (:372) so the SAME readiness predicate reused
+// from tick applies one altitude down. `partition` governs the M9.2 disjoint-writer
+// check ("disjoint-writer") vs free fan-out ("free"); M9.1 default template is "free".
+// `check` is the OPTIONAL, informational per-step verify-lens (M9.4) — it can gate
+// the next step but NEVER earns `done` (moat: the loom-level contract+panel+human
+// remain the only proof). Additive; flag-off unreachable.
+export const Step = z.object({
+  id: z.string(),
+  goal: z.string(),
+  kind: StepKind,
+  agents: z.array(AgentSpec).default([]),
+  partition: z.enum(["disjoint-writer", "free"]).default("free"),
+  dependsOn: z.array(z.string()).default([]),
+  check: VerificationContract.optional(),
+});
+export type Step = z.infer<typeof Step>;
+
+// M9 — a thread's workflow: the step DAG runThreadWorkflow schedules. Container
+// shape copied from VerificationContract (version + array + infer). Attached to
+// the runtime Loom as an additive optional `workflow?` (looms.ts).
+export const ThreadWorkflow = z.object({
+  version: z.number().default(1),
+  steps: z.array(Step).default([]),
+});
+export type ThreadWorkflow = z.infer<typeof ThreadWorkflow>;
 
 // PURE. Validates a Verification Contract against §M.1's falsifiable-by-
 // construction invariant. Returns every violation found (analog of

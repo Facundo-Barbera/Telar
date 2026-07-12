@@ -29,7 +29,7 @@ export type {
   BudgetSnapshot,
   TickResult,
 } from "./tick";
-export { readySubGoals, validateDecision, tick, EST_COST_PER_AGENT } from "./tick";
+export { readySubGoals, readyItems, validateDecision, tick, EST_COST_PER_AGENT } from "./tick";
 export * from "./weave";
 export * from "./weave-contracts";
 export * from "./scoping";

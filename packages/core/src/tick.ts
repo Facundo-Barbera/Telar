@@ -73,15 +73,22 @@ export type Rationale = {
 
 const REPAIRABLE_STATES: WorkUnitState[] = ["needs-review", "failed"];
 
+// PURE kernel: ids not yet started, whose every dependsOn is completed. Both the
+// loom weaver (readySubGoals) and the thread-workflow runner call this ONE
+// predicate — the fractal "ready" walk is defined exactly once.
+export function readyItems<T extends { id: string; dependsOn: string[] }>(
+  items: T[],
+  started: (id: string) => boolean,
+  completed: (id: string) => boolean,
+): string[] {
+  return items.filter((it) => !started(it.id)).filter((it) => it.dependsOn.every(completed)).map((it) => it.id);
+}
+
 // Subgoals with no thread yet, whose every dependsOn id maps to a "done" thread.
 export function readySubGoals(view: LedgerView): string[] {
-  const threadBySubGoal = new Map<string, ThreadView>();
-  for (const t of view.threads) threadBySubGoal.set(t.subGoalId, t);
-
-  return view.charter.decomposition
-    .filter((sg) => !threadBySubGoal.has(sg.id))
-    .filter((sg) => sg.dependsOn.every((dep) => threadBySubGoal.get(dep)?.state === "done"))
-    .map((sg) => sg.id);
+  const m = new Map<string, ThreadView>();
+  for (const t of view.threads) m.set(t.subGoalId, t);
+  return readyItems(view.charter.decomposition, (id) => m.has(id), (id) => m.get(id)?.state === "done");
 }
 
 export function validateDecision(d: Decision, view: LedgerView): { ok: boolean; reason?: string } {

@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, PanelReport, ServersConfig, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, PanelReport, ServersConfig, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
@@ -144,6 +144,11 @@ export type Loom = {
   // promotion — the guards are a pure function of THIS array, never re-parsed
   // from gate output. Root-only, additive; absent flag-off.
   repairHistory?: RepairRound[];
+  // M9 (thread-as-workflow) — the step DAG runThreadWorkflow executes when the
+  // threadWorkflow flag is on. Absent (today) ⇒ the default 1-step `build`
+  // template is synthesized at run time; runThreadWorkflow delegates that step
+  // to executeLoom, byte-identical to today. Additive; absent flag-off.
+  workflow?: ThreadWorkflow;
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms

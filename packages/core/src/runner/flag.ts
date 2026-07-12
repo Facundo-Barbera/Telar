@@ -21,3 +21,9 @@ export function setupAgentEnabled(manifest: { setupAgent?: boolean }): boolean {
 export function envReviewEnabled(manifest: { envReview?: boolean }): boolean {
   return manifest.envReview === true || process.env.TELAR_ENV_REVIEW === "1";
 }
+
+// M9 — run a thread's build as an N-step DAG (runThreadWorkflow) instead of the
+// executeLoom attempt loop. Flag-off, executeLoom is unchanged and byte-identical.
+export function threadWorkflowEnabled(manifest: { threadWorkflow?: boolean }): boolean {
+  return manifest.threadWorkflow === true || process.env.TELAR_THREAD_WORKFLOW === "1";
+}

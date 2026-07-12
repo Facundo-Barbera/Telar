@@ -23,12 +23,16 @@ import type {
   ProjectManifest,
   Roster,
   ServersConfig,
+  Step,
+  ThreadWorkflow,
   VerificationContract,
   VerifierReport,
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import { envReviewEnabled } from "./runner/flag";
+import { envReviewEnabled, threadWorkflowEnabled } from "./runner/flag";
+import { readyItems, EST_COST_PER_AGENT } from "./tick";
+import { fanoutSize, prioritizeScored, budgetLeftUsd } from "./budget";
 import { resolveServersConfig } from "./servers";
 import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
 import type { SetupDeps } from "./setup/setup-agent";
@@ -75,6 +79,16 @@ export type ExecuteOpts = {
   // test drives it with a fake lane and no real server. Threaded into
   // runVerification; production leaves it unset (uses the real startLane).
   startLane?: (config: ServersConfig, root: string, o?: StartLaneOpts) => Promise<Lane>;
+  // M9 — recursion guard: set true when runThreadWorkflow re-enters executeLoom
+  // to run the default `build` step. Suppresses the top-of-executeLoom flag
+  // branch so the delegated call runs today's unchanged attempt loop instead of
+  // recursing. Absent everywhere except that one internal re-entry.
+  viaWorkflow?: boolean;
+  // M9 — injectable per-step executor for the workflow runner (test seam + the
+  // M9.2 fan-out hook). Absent, the built-in executor delegates a `build` step to
+  // executeLoom (byte-identical to today) and rejects other kinds. Flag-off this
+  // is never consulted.
+  runStep?: (step: Step, ctx: WorkflowStepCtx) => Promise<StepResult>;
 };
 
 const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
@@ -1176,6 +1190,7 @@ export async function executeLoom(
   opts: ExecuteOpts = {},
 ): Promise<Loom> {
   if (loom.kind === "verify") return executeVerifyLoom(loom, manifest, opts);
+  if (threadWorkflowEnabled(manifest) && !opts.viaWorkflow) return runThreadWorkflow(loom, manifest, opts);
   const policy = opts.policy ?? ModelPolicy.parse({});
   // Clamp: <= 0 would skip the loop and resolve a still-"queued" loom.
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
@@ -1602,4 +1617,107 @@ export async function executeLoom(
       }
     }
   }
+}
+
+// M9 (thread-as-workflow) — the runtime per-step outcome the workflow runner
+// records. NOT persisted (never lands in loom.json); lives here next to the
+// runner, not in schemas.ts.
+export type StepResult = { id: string; ok: boolean; state: WorkUnitState };
+export type WorkflowStepCtx = { loom: Loom; manifest: ProjectManifest; opts: ExecuteOpts };
+
+// M9 — the default 1-step template: wraps TODAY'S whole build+gates+verify+repair
+// leg by RE-ENTERING executeLoom, so it is behaviorally identical to today.
+function defaultWorkflow(loom: Loom): ThreadWorkflow {
+  return { version: 1, steps: [{ id: "build", goal: loom.prompt, kind: "build", agents: [], partition: "free", dependsOn: [] }] };
+}
+
+export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts): Promise<Loom> {
+  const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
+  const steps = loom.workflow?.steps?.length ? loom.workflow.steps : defaultWorkflow(loom).steps;
+
+  // Clamp inputs from the loom's (root) charter budget when present, else uncapped;
+  // EVERY wave/agent count is routed through fanoutSize so nothing fans out unclamped.
+  const budget = loom.charter?.budget;
+  // Explicit BudgetState: only maxCostUsd/spentUsd feed budgetLeftUsd's math,
+  // but the type requires the full shape, so the other fields are given their
+  // real neutral values (no spend/elapsed tracked yet at workflow start) —
+  // same values the old `as any` spread produced, just without the cast.
+  const clampArgs = {
+    maxAgents: budget?.maxAgents ?? steps.length,
+    inFlight: 0,
+    budgetLeftUsd: budget
+      ? budgetLeftUsd({
+          maxAgents: budget.maxAgents,
+          inFlight: 0,
+          spentUsd: 0,
+          startedAtMs: 0,
+          maxCostUsd: budget.maxCostUsd,
+          maxWallClockHours: budget.maxWallClockHours,
+        })
+      : Infinity,
+    estCostPerAgent: EST_COST_PER_AGENT,
+  };
+
+  const doneSteps = new Set<string>();
+  const startedSteps = new Set<string>();
+  const run = opts.runStep ?? defaultRunStep;
+
+  while (doneSteps.size < steps.length) {
+    // REUSE the loom's ready predicate one altitude down — steps as nodes, a
+    // recorded step-result standing in for a "done" thread.
+    const readyIds = readyItems(steps, (id) => startedSteps.has(id), (id) => doneSteps.has(id));
+    if (readyIds.length === 0) break; // no progress possible (cycle / blocked) — fail closed below
+    // Rank (critical-path first) then clamp concurrency with the SAME clamp tick uses.
+    const ranked = prioritizeScored(readyIds, steps).map((r) => r.id); // reads only {id,dependsOn}
+    const chosen = fanoutSize(ranked.length, clampArgs);
+    const wave = ranked.slice(0, Math.max(1, chosen));
+    for (const id of wave) startedSteps.add(id);
+    emit({ type: "workflow-wave", stepIds: wave });
+
+    // Independent steps in the wave run in PARALLEL (clamped above).
+    const results = await Promise.all(wave.map((id) => run(steps.find((s) => s.id === id)!, { loom, manifest, opts })));
+
+    for (const res of results) {
+      emit({ type: "workflow-step", stepId: res.id, state: res.state });
+      if (!res.ok) return loom; // step terminated non-green — return the loom in the state executeLoom set (moat owns it)
+      doneSteps.add(res.id);
+    }
+  }
+
+  // Fail closed: this point is reached two ways — (1) the `while` condition
+  // went false because every step finished (doneSteps.size === steps.length,
+  // the ONLY path for the default 1-step template — always taken here, so
+  // this guard is never entered for it), or (2) the loop `break`-ed above with
+  // steps still outstanding — an unschedulable DAG (a dependsOn cycle, or a
+  // step naming a nonexistent/unreachable dependency). Case (2) must not
+  // return the loom silently un-failed (a bare `return loom` here would hand
+  // back whatever state the LAST successfully-delegated step left behind —
+  // e.g. "ready" — which reads as success even though the workflow never
+  // finished). IDEMPOTENT: if a delegated executeLoom already wrote a terminal
+  // failure (failed/needs-review/halted) for the last step that ran, that
+  // write stands — this only fires when the loom is still non-terminal.
+  if (doneSteps.size < steps.length) {
+    if (loom.state !== "failed" && loom.state !== "needs-review" && loom.state !== "halted") {
+      const message = "unschedulable step DAG: dependsOn cycle or unreachable dependency";
+      loom.error = message;
+      loom.state = "failed";
+      emit({ type: "error", message });
+      emit({ type: "state", state: "failed" });
+      opts.onState?.(loom);
+    }
+  }
+  return loom; // terminal loom.state was set by the delegated executeLoom (or the fail-closed guard above)
+}
+
+// Built-in step executor. M9.1 handles only kind:"build" (delegates to executeLoom);
+// other kinds require an injected opts.runStep (M9.2/M9.3 add real executors).
+async function defaultRunStep(step: Step, ctx: WorkflowStepCtx): Promise<StepResult> {
+  if (step.kind !== "build") throw new Error(`runThreadWorkflow: no built-in executor for step kind "${step.kind}" (M9.1)`);
+  // RE-ENTER executeLoom with the recursion guard set: runs today's UNCHANGED
+  // attempt loop (build → gates → verify → decide → retry) + worktree lifecycle
+  // + green→ready terminal. Agents within the step are handled by executeLoom's
+  // own runAttemptBuild (single builder in M9.1; opts.buildFanout when supplied).
+  const out = await executeLoom(ctx.loom, ctx.manifest, { ...ctx.opts, viaWorkflow: true });
+  const ok = out.state === "ready" || out.state === "done"; // terminal-green (moat's promotable states)
+  return { id: step.id, ok, state: out.state };
 }

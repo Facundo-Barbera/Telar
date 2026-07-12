@@ -72,7 +72,10 @@ export type PriorityRank = { id: string; score: number };
 // determinism across ticks (decisionLogTail consistency depends on this).
 // Returns the {id, score} pairs — the raw material for the scheduler rationale
 // ("s3 first because it unblocks 4 downstream"). `prioritize` drops the scores.
-export function prioritizeScored(readyIds: string[], decomposition: SubGoal[]): PriorityRank[] {
+// Parameter is the structural minimum ({id, dependsOn}) — the same one
+// altitude-down shape readyItems (tick.ts) uses — so callers ranking non-
+// SubGoal nodes (e.g. executor.ts's Step DAG) pass real values with no cast.
+export function prioritizeScored(readyIds: string[], decomposition: Array<{ id: string; dependsOn: string[] }>): PriorityRank[] {
   // dependents[x] = ids that directly dependOn x
   const dependents = new Map<string, string[]>();
   for (const sg of decomposition) {
