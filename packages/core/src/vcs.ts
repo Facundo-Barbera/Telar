@@ -45,6 +45,25 @@ export function isolationEnabled(manifest: { isolateWorktrees?: boolean }): bool
   return manifest.isolateWorktrees === true || process.env.TELAR_ISOLATE_WORKTREES === "1";
 }
 
+// M4 — the master flag for the frozen-lane pipeline (frozen read-only verify +
+// per-subGoal checkpoints + guarded auto-repair). Default OFF: flag-off every
+// code path is byte-identical to pre-M4. Armed for a live-validation run via
+// the TELAR_AUTO_REPAIR=1 env override, mirroring isolationEnabled exactly.
+export function autoRepairEnabled(manifest: { autoRepair?: boolean }): boolean {
+  return manifest.autoRepair === true || process.env.TELAR_AUTO_REPAIR === "1";
+}
+
+// M4 — the nested, ENV-ONLY sub-arm for the single real-Postgres piece (the
+// LiveDbCloner's CREATE DATABASE … TEMPLATE clone). There is deliberately NO
+// manifest field: it can only be armed by TELAR_FROZEN_LANE_DB=1 in a
+// human-in-the-seat session, so it can never be committed on by accident and
+// is NEVER on in tests or CI even with the master flag set. Absent ⇒ the
+// NullDbCloner is used (no clone; the lane inherits the ambient DATABASE_URL,
+// exactly today's behavior).
+export function liveDbCloneArmed(): boolean {
+  return process.env.TELAR_FROZEN_LANE_DB === "1";
+}
+
 // --- path helpers (shared with build-fanout.ts's overlap check) ------------
 
 // The literal, non-glob portion of a path pattern — everything before the

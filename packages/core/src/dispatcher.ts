@@ -17,8 +17,19 @@ import {
 } from "./schemas";
 import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
-import { executeLoom, runIntegrationVerify, type ExecuteOpts } from "./executor";
-import { createConsolidationBranch, defaultGitRunner, isolationEnabled, reapOrphanWorktrees, resolveBaseSha } from "./vcs";
+import { buildIntegrationRepairBrief, executeLoom, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
+import {
+  autoRepairEnabled,
+  createConsolidationBranch,
+  defaultGitRunner,
+  isolationEnabled,
+  reapOrphanWorktrees,
+  resolveBaseSha,
+} from "./vcs";
+import { resolveDbCloner } from "./db-clone";
+import { EST_COST_PER_AGENT } from "./tick";
+import { type BudgetState } from "./budget";
+import { frozenLaneVerify, type IvResult, runAutoRepair } from "./verify-thread";
 import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
@@ -128,6 +139,32 @@ function runWeaveWiring(
   // before dispatch, so loom.charter is always present here.
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
+
+  // M4 — the budget the auto-repair guards read each round. spentUsd folds in
+  // the repair rounds' recorded cost (repairHistory) so the budget guard trips
+  // at real headroom; inFlight is 0 (the repair loop runs after the weave's
+  // pool has drained). Only constructed when the master flag is on.
+  const rootRepairBudget = (l: Loom): BudgetState => {
+    const b = l.charter?.budget;
+    const spentUsd = (l.repairHistory ?? []).reduce((s, r) => s + r.costUsd, 0);
+    return {
+      maxAgents: b?.maxAgents ?? 12,
+      inFlight: 0,
+      spentUsd,
+      startedAtMs: l.createdAt,
+      maxCostUsd: b?.maxCostUsd,
+      maxWallClockHours: b?.maxWallClockHours,
+    };
+  };
+  // Shared frozen-lane deps builder (a fresh pinned snapshot per verify).
+  const frozenDeps = (eventSink: Loom, subGoalId?: string) => ({
+    runIntegrationVerify: (lm: Loom, mf: ProjectManifest, o: Record<string, unknown>) =>
+      runIntegrationVerify(lm, mf, { policy, accounts: deps.accounts, ...o }),
+    dbCloner: resolveDbCloner(),
+    subGoalId,
+    abort,
+    emit: (ev: { type: string } & Record<string, unknown>) => appendEvent(eventSink.id, ev),
+  });
   // The root's full Verification Contract — wireChildBundle filters it down to
   // each Thread's own subGoalId slice.
   //
@@ -157,13 +194,19 @@ function runWeaveWiring(
   // telar/<id> branch untouched. (Base-SHA pinning + branch setup live here —
   // not in weave.ts — because this is the seam that has the manifest + git
   // runner, mirroring how runIntegrationVerify is wired in as a dep below.)
-  if (isolationEnabled(manifest)) {
+  // M4: auto-repair ALSO needs the pinned base SHA (its frozen snapshot forks
+  // from it), so pin when EITHER flag is on. The consolidation BRANCH is an
+  // isolation-only artifact (the fold target) — create it only under isolation;
+  // auto-repair-only needs just the SHA.
+  if (isolationEnabled(manifest) || autoRepairEnabled(manifest)) {
     try {
       const baseSha = resolveBaseSha(defaultGitRunner, manifest.root, manifest.baseBranch);
       if (baseSha) {
         loom.baseSha = baseSha;
-        loom.consolidationBranch = `telar/${loom.id}`;
-        createConsolidationBranch(defaultGitRunner, manifest.root, loom.consolidationBranch, baseSha);
+        if (isolationEnabled(manifest)) {
+          loom.consolidationBranch = `telar/${loom.id}`;
+          createConsolidationBranch(defaultGitRunner, manifest.root, loom.consolidationBranch, baseSha);
+        }
         saveLoom(loom);
       }
     } catch (err) {
@@ -233,6 +276,47 @@ function runWeaveWiring(
         abort,
         emit: (ev) => appendEvent(l.id, ev),
       }),
+    // M4 (auto-repair master flag ON): replace the plain producer with the
+    // guarded frozen-lane loop, and fire best-effort per-subGoal checkpoints.
+    // Absent flag-off ⇒ the runIntegrationVerify path above is byte-identical.
+    ...(autoRepairEnabled(manifest)
+      ? {
+          runAutoRepair: (l: Loom): Promise<IvResult | null> =>
+            runAutoRepair(l, {
+              verify: (target: Loom) => frozenLaneVerify(target, manifest, frozenDeps(target)),
+              repair: (target: Loom, brief: string) =>
+                runRepairThread(target, manifest, brief, {
+                  policy,
+                  accounts: deps.accounts,
+                  abort,
+                  emit: (ev) => appendEvent(target.id, ev),
+                }),
+              buildBrief: (_l: Loom, iv: IvResult) => buildIntegrationRepairBrief(iv),
+              budget: () => rootRepairBudget(l),
+              caps: { maxRepairIterations: 3, estCostPerRepair: EST_COST_PER_AGENT },
+              now: () => Date.now(),
+              onRound: () => saveLoom(l),
+              emit: (ev) => appendEvent(l.id, ev),
+            }),
+          runCheckpoint: async (child: Loom): Promise<void> => {
+            // Best-effort + pool/budget-gated: skip when there is no headroom for
+            // one more verify, or the settled child has no subGoalId slice.
+            if (!child.subGoalId) return;
+            const b = rootRepairBudget(loom);
+            if (b.maxCostUsd != null && b.maxCostUsd - b.spentUsd < EST_COST_PER_AGENT) return;
+            const iv = await frozenLaneVerify(loom, manifest, frozenDeps(loom, child.subGoalId));
+            if (iv) {
+              appendEvent(loom.id, {
+                type: "weave-verify",
+                verification: iv.verification,
+                gatesOk: iv.gatesOk,
+                subGoalId: child.subGoalId,
+                checkpoint: true,
+              });
+            }
+          },
+        }
+      : {}),
   });
 
   // M3: finalize the review branch once the weave settles. Every done child

@@ -703,20 +703,33 @@ export async function runIntegrationVerify(
     emit?: (ev: { type: string } & Record<string, unknown>) => void;
     gateRunner?: (gate: Gate, cwd: string) => Promise<GateResult>;
     run?: typeof agent;
+    // M4 (additive; default = today's behavior). verifyCwd re-points the
+    // deterministic gate cwd at a FROZEN worktree snapshot instead of
+    // manifest.root; subGoalId re-scopes the slice from ALL to one subgoal (a
+    // checkpoint). Absent ⇒ byte-identical to the pre-M4 ALL-against-root verify.
+    verifyCwd?: string;
+    subGoalId?: string;
   } = {},
 ): Promise<{
   verification: Verification;
   gatesOk: boolean;
   panelReport?: PanelReport | null;
   gates?: GateResult[];
+  // M4 — the STABLE assertion-id sets the auto-repair guards consume. Absent
+  // consumers ignore them; always populated, so the guards need no re-parse.
+  failingIds?: string[];
+  passingIds?: string[];
 } | null> {
   const { contract } = readContract(loom.id);
   if (!contract) return null; // no bundle contract on the root
 
-  // The cross-cutting integration slice: assertions the assembled whole owns,
-  // no single SubGoal (subGoalId === "ALL" OR unlabelled). Per-SubGoal
-  // assertions were each proven by that child's own executeLoom verify.
-  const allSlice = contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
+  // The verify slice. Default (M4 off / no subGoalId) = the cross-cutting
+  // integration slice: assertions the assembled whole owns, no single SubGoal
+  // (subGoalId === "ALL" OR unlabelled). A checkpoint (opts.subGoalId set)
+  // re-scopes to exactly that subgoal's assertions.
+  const allSlice = opts.subGoalId
+    ? contract.assertions.filter((a) => a.subGoalId === opts.subGoalId)
+    : contract.assertions.filter((a) => a.subGoalId === "ALL" || !a.subGoalId?.trim());
   // M1 (D3.1): PRESERVE the synthesized flag when rebuilding the ALL contract.
   // A synthesized root's ALL slice is all-live-critic; dropping the flag would
   // re-impose the hard-gate floor and validateContract would reject it → the
@@ -755,12 +768,22 @@ export async function runIntegrationVerify(
   const gates = await runContractGates(
     deterministic,
     manifest,
-    manifest.root,
+    opts.verifyCwd ?? manifest.root, // M4: frozen worktree snapshot when set
     (r, a) => emit({ type: "gate", result: r, assertionId: a.id, assertionType: a.type }),
     opts.gateRunner,
   );
   attempt.gates = gates;
   const gatesOk = gates.every((r) => r.ok);
+
+  // M4 — STABLE assertion-id sets for the auto-repair guards. Deterministic ids
+  // come straight off the gates (GateResult.name === assertion id). The panel is
+  // lens-based (no per-assertion verdicts), so the agent-judged slice is
+  // attributed as a SET by the panel's aggregate verdict, only in the branch
+  // where the panel actually ran.
+  const failingIds: string[] = [];
+  const passingIds: string[] = [];
+  for (const g of gates) (g.ok ? passingIds : failingIds).push(g.name);
+  const agentIds = agentJudged.map((a) => a.id);
 
   let verification: Verification;
   let panelReport: PanelReport | null = null;
@@ -784,6 +807,11 @@ export async function runIntegrationVerify(
     );
     verification = pv.verification;
     panelReport = pv.panelReport ?? null;
+    // Attribute the agent-judged slice by the panel's aggregate verdict (set-
+    // level; the panel yields no per-assertion ids). "skip" leaves them
+    // unattributed — genuinely unknown, not passing.
+    if (verification === "pass") passingIds.push(...agentIds);
+    else if (verification === "fail" || verification === "flaky") failingIds.push(...agentIds);
   } else {
     // All-deterministic ALL slice, gates green -> a real zero-browser pass.
     verification = "pass";
@@ -799,7 +827,108 @@ export async function runIntegrationVerify(
     panelReport,
     panelRequired: !isSynth,
   });
-  return { verification, gatesOk, panelReport, gates };
+  return {
+    verification,
+    gatesOk,
+    panelReport,
+    gates,
+    failingIds: Array.from(new Set(failingIds)),
+    passingIds: Array.from(new Set(passingIds)),
+  };
+}
+
+// M4 — a repair brief for the integration/auto-repair leg, built from an
+// integration-verify result (the ALL panel's aggregate reason + any failing
+// deterministic gate output). Mirrors buildVerifierRepair's shape for the
+// builder path. Pure.
+export function buildIntegrationRepairBrief(iv: {
+  panelReport?: PanelReport | null;
+  gates?: GateResult[];
+}): string {
+  const parts: string[] = [];
+  if (iv.panelReport) parts.push(panelReason(iv.panelReport));
+  for (const g of iv.gates ?? []) {
+    if (!g.ok) parts.push(`## gate ${g.name} (exit ${g.exitCode ?? (g.timedOut ? "timeout" : "?")})\n${tail(g.output, 1500)}`);
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
+// M4 — the LLM repair leg of the auto-repair loop. Dispatches ONE careful
+// repair agent against the woven root's working tree with the failing-criteria
+// brief, honoring guardrails/disallowedTools exactly like the builder, and
+// reports its spend so the guard's budget accounting stays honest. The agent
+// writes only in the shared root (or the loom's own worktree if it carries
+// one) — the frozen verify always forks a FRESH pinned snapshot the repair can
+// never touch, so verification stays read-only against an immutable base.
+// LIVE-VALIDATION DEFERRED (M4 §8 item 3): only reached with the autoRepair
+// master flag ON in a supervised run; unit tests drive runAutoRepair with a
+// fake repair spy and never construct this.
+export async function runRepairThread(
+  loom: Loom,
+  manifest: ProjectManifest,
+  brief: string,
+  opts: {
+    policy?: ModelPolicy;
+    accounts?: Record<string, AccountProfile>;
+    abort?: AbortController;
+    emit?: (ev: { type: string } & Record<string, unknown>) => void;
+    run?: typeof agent;
+  } = {},
+): Promise<{ costUsd: number }> {
+  const policy = opts.policy ?? ModelPolicy.parse({});
+  const emit = opts.emit ?? (() => {});
+  const tools = BASE_TOOLS.filter((t) => !manifest.guardrails.disallowedTools.includes(t));
+  const attempt: AttemptRecord = {
+    n: (loom.attempts?.length ?? 0) + 1,
+    role: "repair",
+    model: policy.careful,
+    startedAt: Date.now(),
+  };
+  loom.attempts.push(attempt);
+  emit({ type: "repair-attempt", n: attempt.n, model: policy.careful });
+
+  const protectedPaths = manifest.guardrails.protectedPaths;
+  const prompt = [
+    `# Repair: ${loom.title}`,
+    "The assembled whole failed its integration verification. Fix the underlying behavior so the failing acceptance criteria pass. Do not weaken or delete the checks.",
+    brief,
+    protectedPaths.length ? `Guardrails: the following paths are absolutely forbidden to modify: ${protectedPaths.join(", ")}.` : "",
+    "Make focused changes, verify your own work, and call emit_result with your Verdict.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  await refreshProjectMcpAuth(manifest.name);
+  const verdict = await (opts.run ?? agent)(prompt, {
+    schema: Verdict,
+    cwd: buildCwd(loom, manifest),
+    model: policy.careful,
+    maxTurns: policy.maxTurns ?? MAX_TURNS[loom.kind],
+    tools,
+    disallowedTools: manifest.guardrails.disallowedTools,
+    settingSources: ["project", "local"],
+    account: opts.accounts?.[manifest.account],
+    extraMcpServers: resolveProjectMcpServers(manifest.name),
+    abort: opts.abort,
+    onEvent: (e) => {
+      if (e.type === "session") {
+        attempt.sessionId = e.sessionId;
+        emit({ type: "session", sessionId: e.sessionId });
+      } else if (e.type === "text") {
+        emit({ type: "text", text: e.text });
+      } else if (e.type === "tool") {
+        emit({ type: "tool", name: e.name, input: e.input });
+      } else if (e.type === "tool-result") {
+        emit({ type: "tool-result", name: e.name, ok: e.ok, output: e.output });
+      } else if (e.type === "result") {
+        attempt.costUsd = e.costUsd;
+        emit({ type: "agent-result", subtype: e.subtype, costUsd: e.costUsd, turns: e.turns });
+      }
+    },
+  });
+  attempt.verdict = verdict;
+  attempt.endedAt = Date.now();
+  return { costUsd: attempt.costUsd ?? 0 };
 }
 
 // Pure outcome function for a verify loom: no builder loop, so the mapping

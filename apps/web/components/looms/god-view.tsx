@@ -33,6 +33,9 @@ import type {
   PlanNode,
   PlanNodeState,
   RationaleView,
+  RepairOutcome,
+  RepairRoundView,
+  RepairView,
   Step,
   VerifyReport,
   VerifyStep,
@@ -1504,6 +1507,143 @@ function VerifyReportBlock({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Auto-repair loop (M4) — read-only history of the bounded convergence loop.
+// Honest by construction: outcome is read off the loom's settled state (the
+// derivation never invents a verdict), and the two exits it can show are the
+// only two the loop has — converged→ready or escalated→needs-review. Never done.
+// ---------------------------------------------------------------------------
+
+const REPAIR_OUTCOME: Record<
+  RepairOutcome,
+  { label: string; className: string; Icon: LucideIcon; spin?: boolean }
+> = {
+  converged: {
+    label: "converged → ready",
+    className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+    Icon: CircleCheck,
+  },
+  escalated: {
+    label: "escalated → needs-review",
+    className: "bg-destructive/15 text-destructive",
+    Icon: CircleX,
+  },
+  "in-progress": {
+    label: "repairing…",
+    className: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    Icon: Loader2,
+    spin: true,
+  },
+};
+
+function IdChip({ id, tone }: { id: string; tone: "good" | "bad" }) {
+  return (
+    <span
+      className={cn(
+        "rounded px-1.5 py-0.5 font-mono text-[10px] ring-1 ring-inset",
+        tone === "good"
+          ? "bg-emerald-500/10 text-emerald-600 ring-emerald-500/20 dark:text-emerald-400"
+          : "bg-destructive/10 text-destructive ring-destructive/20",
+      )}
+    >
+      {id}
+    </span>
+  );
+}
+
+function RepairRoundRow({ round }: { round: RepairRoundView }) {
+  const v = (["pass", "fail", "flaky", "skip"].includes(round.verification)
+    ? round.verification
+    : "skip") as AssertionOutcome;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[11px] text-muted-foreground">round {round.n}</span>
+        <VerdictBadge verdict={v} />
+        <span className="text-[11px] text-muted-foreground/70">
+          {round.failing.length} failing
+        </span>
+        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground/70">
+          {fmtCost(round.costUsd)} · {fmtDuration(round.durationMs)}
+        </span>
+      </div>
+      {round.fixed.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 pl-1">
+          <Check className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <span className="mr-0.5 text-[10px] text-muted-foreground">cleared</span>
+          {round.fixed.map((id) => (
+            <IdChip key={id} id={id} tone="good" />
+          ))}
+        </div>
+      )}
+      {round.regressed.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 pl-1">
+          <CircleAlert className="size-3 shrink-0 text-destructive" />
+          <span className="mr-0.5 text-[10px] text-muted-foreground">regressed</span>
+          {round.regressed.map((id) => (
+            <IdChip key={id} id={id} tone="bad" />
+          ))}
+        </div>
+      )}
+      {round.failing.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 pl-1">
+          <span className="mr-0.5 text-[10px] text-muted-foreground">still failing</span>
+          {round.failing.map((id) => (
+            <IdChip key={id} id={id} tone="bad" />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RepairHistoryPanel({ repair }: { repair: RepairView }) {
+  const { rounds, outcome, reason, totalCostUsd } = repair;
+  const b = REPAIR_OUTCOME[outcome];
+  return (
+    <Card className="border-l-2 border-l-primary/40">
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <RotateCcw className="size-4 shrink-0 text-muted-foreground" />
+          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Auto-repair loop
+          </span>
+          <span className="text-xs text-muted-foreground/60">
+            {rounds.length} round{rounds.length === 1 ? "" : "s"}
+          </span>
+          <Badge className={cn("ml-auto gap-1 font-mono text-[10px]", b.className)}>
+            <b.Icon className={cn("size-3", b.spin && "animate-spin")} />
+            {b.label}
+          </Badge>
+        </div>
+
+        {reason && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-medium text-foreground/70">Why:</span> {reason}
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2">
+          {rounds.map((r) => (
+            <RepairRoundRow key={r.n} round={r} />
+          ))}
+        </div>
+
+        <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/20 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          <span className="flex-1">
+            Repair runs against a frozen snapshot the agent can&apos;t touch. The loop is bounded —
+            it converges to <span className="font-medium text-foreground/80">ready</span> (awaiting
+            your accept) or escalates to{" "}
+            <span className="font-medium text-foreground/80">needs-review</span>, never done.
+          </span>
+          <span className="shrink-0 tabular-nums">{fmtCost(totalCostUsd)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function VerifyPanel({ view, loom }: { view: VerifyView; loom: Loom }) {
   const { root, threads } = view;
   const nothingYet =
@@ -1513,6 +1653,7 @@ function VerifyPanel({ view, loom }: { view: VerifyView; loom: Loom }) {
     <div className="flex flex-col gap-4">
       <VerifyContract loomId={loom.id} />
       <ConsolidationBranch loom={loom} />
+      {view.repair && <RepairHistoryPanel repair={view.repair} />}
 
       {nothingYet ? (
         <ComingSoon

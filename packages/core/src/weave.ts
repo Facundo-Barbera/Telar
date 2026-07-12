@@ -71,6 +71,24 @@ export type RunWeaveDeps = {
     panelReport?: PanelReport | null;
     gates?: GateResult[];
   } | null>;
+  // M4 (auto-repair master flag ON) — REPLACES runIntegrationVerify at the
+  // terminal hook. Runs the frozen-lane read-only verify and, on a red ALL
+  // verdict, a bounded provably-terminating repair loop (repair-guard.ts).
+  // Returns the FINAL verify result: converged ⇒ pass/skip keeps "ready"
+  // (never "done"); escalate ⇒ fail/flaky demotes ready→needs-review carrying
+  // the guard reason on loom.error (which this dep sets). Absent flag-off, so
+  // the runIntegrationVerify path above is byte-identical to today.
+  runAutoRepair?: (loom: Loom) => Promise<{
+    verification: string;
+    gatesOk: boolean;
+    panelReport?: PanelReport | null;
+    gates?: GateResult[];
+  } | null>;
+  // M4 checkpoint — a BEST-EFFORT per-subGoal integration verify fired when a
+  // child folds. Informational + non-blocking: it never gates the weave, never
+  // mutates root state, and is pool-gated / slice-gated inside the dep itself
+  // (skipped when there is no room or no assertions). Absent flag-off.
+  runCheckpoint?: (child: Loom) => Promise<void>;
 };
 
 function childCostUsd(child: Loom): number {
@@ -125,6 +143,9 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     const finished = new Map<string, Loom>(); // subGoalId -> done/terminal child
     const runningThread = new Map<string, ThreadView>(); // subGoalId -> in-flight summary
     const running = new Map<string, Promise<void>>(); // subGoalId -> settlement tracker
+    // M4: in-flight best-effort checkpoint verifies (never awaited inline so
+    // they don't block the weave; drained before rollup so none detaches).
+    const checkpoints: Promise<void>[] = [];
     const decisionLog: Decision[] = [];
     let spentUsd = 0;
     let startedRunning = false;
@@ -189,6 +210,22 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         // subgoals THIS settle newly unblocked (ready now, not ready a moment ago).
         const unblocked = readyIdsNow().filter((id) => !readyBefore.has(id));
         emit({ type: "observe", subGoalId: sg.id, childId: result.id, state: result.state, unblocked });
+        // M4 checkpoint (flag-on only): a best-effort per-subGoal integration
+        // verify against the assembled-so-far whole, the moment this child
+        // folds "done". Non-blocking (not awaited here) + informational: the
+        // dep is pool-gated and never mutates root state. A "done" child is the
+        // only one with a coherent contribution to check.
+        if (deps.runCheckpoint && result.state === "done") {
+          checkpoints.push(
+            deps.runCheckpoint(result).catch((e) => {
+              try {
+                emit({ type: "weave-verify-error", message: e instanceof Error ? e.message : String(e) });
+              } catch {
+                /* best-effort */
+              }
+            }),
+          );
+        }
       });
       running.set(sg.id, settle);
     };
@@ -285,6 +322,11 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     if (running.size > 0) {
       await Promise.allSettled([...running.values()]);
     }
+    // M4: drain any best-effort checkpoint verifies so none detaches past the
+    // weave's lifetime. Each already carries its own catch — informational.
+    if (checkpoints.length > 0) {
+      await Promise.allSettled(checkpoints);
+    }
 
     const children = [...finished.values()];
     const r = rollupWeave(children, decomposition);
@@ -303,14 +345,20 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // and no ALL verify has ever run — the whole point of catching a broken
     // assembled whole. A failed/needs-review assembly has nothing coherent to
     // integration-verify. A woven root with no ALL contract -> null -> no-op.
-    if (r.state === "ready" && deps.runIntegrationVerify) {
+    // M4 (auto-repair master flag ON): runAutoRepair REPLACES the plain
+    // producer — it drives the frozen-lane verify and, on a red ALL verdict,
+    // the bounded guarded repair loop, then returns the FINAL verdict. Flag-off
+    // (runAutoRepair absent) this is byte-identical to the runIntegrationVerify
+    // path. Either way the demote/keep semantics below are unchanged.
+    const verifyProducer = deps.runAutoRepair ?? deps.runIntegrationVerify;
+    if (r.state === "ready" && verifyProducer) {
       // Best-effort: its OWN try/catch so a throw — a rejecting runner, or a
       // saveLoom/appendEvent disk error inside the block — can NEVER reach the
       // outer catch and demote a correctly-woven "ready" loom to "failed". An
       // informational verify must not change the outcome: record the error and
       // drop it; the authoritative rollup state stands.
       try {
-        const iv = await deps.runIntegrationVerify(loom); // null => no ALL contract
+        const iv = await verifyProducer(loom); // null => no ALL contract
         if (iv) {
           loom.latestVerdict = iv.verification;
           emit({ type: "weave-verify", verification: iv.verification, gatesOk: iv.gatesOk });
@@ -322,7 +370,12 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
           // (caught below) — fail-open: a broken checker is not a red verdict, so
           // it must not demote a correctly-woven loom.
           if (iv.verification === "fail" || iv.verification === "flaky") {
-            loom.error = `integration verification ${iv.verification}`;
+            // M4: runAutoRepair may already have set loom.error to the guard's
+            // escalate reason ("no progress" / "regression: …" / "max repair
+            // iterations" / budget). Preserve it; fall back to the generic
+            // string flag-off (where loom.error is null after a ready rollup, so
+            // this is byte-identical to the pre-M4 assignment).
+            loom.error = loom.error ?? `integration verification ${iv.verification}`;
             setState("needs-review"); // emits {type:"state"} + persists via deps.onState
           } else {
             deps.onState?.(loom); // "pass"/"skip": persist the recorded verdict; state unchanged

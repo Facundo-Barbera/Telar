@@ -16,6 +16,7 @@ import type {
   Loom,
   LoomEvent,
   PanelReport,
+  RepairRound,
   VerifierReport,
   WorkUnitState,
 } from "@telar/core";
@@ -238,9 +239,45 @@ export type VerifyReport = {
   builderVerdict: { ok: boolean; summary: string } | null; // self-report, walled off
 };
 
+// ---------------------------------------------------------------------------
+// Auto-repair history (M4) — the bounded convergence loop, read-only display.
+// Derived PURELY from the root loom's `repairHistory` (absent unless the
+// autoRepair flag fired) + `state`/`error`. Every field is honest: a round that
+// hasn't been reached is simply absent; the outcome is read off the loom's state
+// and the escalate reason is `loom.error` verbatim — never a fabricated verdict.
+// ---------------------------------------------------------------------------
+
+// One observed integration-verify round, plus the per-round DELTA that the
+// convergence guards act on: `fixed` = assertions that were failing last round
+// and cleared this round; `regressed` = assertions that were green in an earlier
+// round and went red this round (the Guard-4 oscillation signal).
+export type RepairRoundView = {
+  n: number;
+  verification: string; // "pass" | "fail" | "flaky" | "skip"
+  failing: string[];
+  passing: string[];
+  fixed: string[];
+  regressed: string[];
+  costUsd: number;
+  durationMs: number;
+};
+
+// converged  → the loom landed `ready` (a human accept is still the only path to done)
+// escalated  → a guard tripped; the loom is `needs-review` with `reason` from loom.error
+// in-progress→ the loop is still iterating (last round still red, loom not settled)
+export type RepairOutcome = "converged" | "escalated" | "in-progress";
+
+export type RepairView = {
+  rounds: RepairRoundView[];
+  outcome: RepairOutcome;
+  reason?: string; // escalate reason (loom.error), only when outcome === "escalated"
+  totalCostUsd: number;
+};
+
 export type VerifyView = {
   root: VerifyReport | null; // the end-of-orchestration integration verify (from feed)
   threads: VerifyReport[]; // per-thread verifies (from each thread's latest attempt)
+  repair: RepairView | null; // the auto-repair loop history, null unless it fired
   moatNote: string;
 };
 
@@ -952,6 +989,56 @@ function rootReport(loom: Loom, feed: LoomEvent[]): VerifyReport | null {
   };
 }
 
+// The auto-repair loop history, derived purely from the root loom. `repairHistory`
+// is absent unless the M4 autoRepair flag fired, so this returns null on every
+// flag-off loom (byte-identical to today's Verify tab). The outcome is read off
+// the loom's settled state — never inferred from a model verdict — and the
+// escalate reason is surfaced verbatim from `loom.error`.
+export function deriveRepair(loom: Loom): RepairView | null {
+  const history = loom.repairHistory ?? [];
+  if (history.length === 0) return null;
+
+  // Union of every id that was ever green in a strictly-earlier round — the set
+  // the convergence guard intersects with F_n to catch a regression.
+  const rounds: RepairRoundView[] = history.map((r: RepairRound, i) => {
+    const prev = i > 0 ? history[i - 1] : undefined;
+    const priorPassing = new Set(history.slice(0, i).flatMap((p) => p.passingIds));
+    const failing = uniqSorted(r.failingIds);
+    const passing = uniqSorted(r.passingIds);
+    const fixed = prev
+      ? uniqSorted(prev.failingIds.filter((id) => !r.failingIds.includes(id)))
+      : [];
+    const regressed = uniqSorted(r.failingIds.filter((id) => priorPassing.has(id)));
+    return {
+      n: r.n,
+      verification: r.verification,
+      failing,
+      passing,
+      fixed,
+      regressed,
+      costUsd: r.costUsd,
+      durationMs: Math.max(0, r.endedAt - r.startedAt),
+    };
+  });
+
+  const last = history[history.length - 1];
+  const cleared = last.failingIds.length === 0;
+  const outcome: RepairOutcome = cleared
+    ? "converged"
+    : loom.state === "needs-review"
+      ? "escalated"
+      : "in-progress";
+
+  return {
+    rounds,
+    outcome,
+    ...(outcome === "escalated" && loom.error ? { reason: loom.error } : {}),
+    totalCostUsd: history.reduce((sum, r) => sum + (r.costUsd || 0), 0),
+  };
+}
+
+const uniqSorted = (xs: string[]): string[] => [...new Set(xs)].sort();
+
 // The Verify tab's whole derivation. Mirrors deriveGodView's operator split: a
 // WOVEN root's threads are its child looms (their verifies ride each child's
 // attempt); a single loom is its own one thread (its verify + process steps ride
@@ -967,6 +1054,7 @@ export function deriveVerify(loom: Loom, threads: Loom[], feed: LoomEvent[]): Ve
   return {
     root: woven ? rootReport(loom, feed) : null,
     threads: threadReports,
+    repair: deriveRepair(loom),
     moatNote: MOAT_NOTE,
   };
 }

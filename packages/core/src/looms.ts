@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Charter, PanelReport, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
+import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
 // M3: the git runner (and the whole VCS/worktree substrate) now lives in
 // vcs.ts. Re-exported here for back-compat with existing `../src/looms`
@@ -125,6 +126,13 @@ export type Loom = {
   worktree?: string;
   baseSha?: string;
   consolidationBranch?: string;
+  // M4 (auto-repair) — the ordered log of frozen-lane integration-verify rounds
+  // (repair-guard.ts). Absent unless the autoRepair master flag fired: history[0]
+  // is the initial verify, each later entry follows one dispatched repair. Read
+  // by the Verify tab (round deltas, escalate reason) and by nothing that gates
+  // promotion — the guards are a pure function of THIS array, never re-parsed
+  // from gate output. Root-only, additive; absent flag-off.
+  repairHistory?: RepairRound[];
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms

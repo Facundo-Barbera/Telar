@@ -126,6 +126,12 @@ export type ReproStep = z.infer<typeof ReproStep>;
 
 export const CriterionResult = z.object({
   criterion: z.string(), // the acceptance-criterion text, verbatim
+  // M4 (optional, additive) — the stable ContractAssertion.id this criterion
+  // judged, when the panel was handed contract assertions carrying ids. Lets
+  // the auto-repair guards track failing/passing assertions by STABLE id
+  // rather than fuzzy-matching verbatim prose. Absent on legacy reports (they
+  // parse unchanged); never load-bearing for any flag-off path.
+  assertionId: z.string().optional(),
   verdict: CriterionVerdict,
   observed: z.string(), // what the agent saw ("asserted 'Saved' visible")
   evidence: z.array(Evidence).default([]),
@@ -227,6 +233,15 @@ export const ProjectManifest = z.object({
   // human-review deliverable — never auto-merged to baseBranch). Also honored
   // via the TELAR_ISOLATE_WORKTREES=1 env override for live-validation runs.
   isolateWorktrees: z.boolean().default(false),
+  // M4 — bounded auto-repair of the woven root's integration verify, run
+  // against a FROZEN snapshot (worktree @ pinned SHA + ephemeral DB clone).
+  // Default OFF: every code path is byte-identical to pre-M4 when false. On,
+  // a red ALL-slice integration verdict may trigger a guarded, provably-
+  // terminating repair loop (repair-guard.ts) instead of an immediate
+  // needs-review demotion. Also honored via TELAR_AUTO_REPAIR=1 for a
+  // live-validation run. The one master flag gates the whole frozen-lane
+  // pipeline (frozen verify + checkpoints + auto-repair).
+  autoRepair: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
