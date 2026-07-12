@@ -21,7 +21,7 @@
 import { z } from "zod";
 import { agent } from "./engine";
 import { fanoutSize } from "./budget";
-import { Verdict, type AccountProfile, type ProjectManifest } from "./schemas";
+import { Verdict, type AccountProfile, type AgentSpec, type ProjectManifest, type StepKind } from "./schemas";
 // M3: the worktree lifecycle + disjoint merge primitives now live in the one
 // shared vcs.ts module (promoted verbatim out of this file). runBuildFanout's
 // behavior is unchanged — it just calls them through the default git runner.
@@ -38,6 +38,30 @@ export type BuildPiece = {
   // Unset or unknown ⇒ byte-identical to today.
   agent?: string;
 };
+
+// M9.2 — the general per-step fan-out primitive maps a Step's `agents` onto the
+// existing BuildPiece machinery. These two exports are the ONLY glue the runner
+// (SLICE-B) needs; runBuildFanout/piecesAreDisjoint/decideBuildFanout/mergeDisjoint
+// are reused verbatim.
+
+// WRITING kinds — the disjoint-writer partition applies; a writing step must have
+// partition "disjoint-writer" + >=2 agents to fan out. Non-writing kinds
+// (research|design|check) fan out free (no partition/merge).
+export function isWritingKind(kind: StepKind): boolean {
+  return kind === "build" || kind === "migrate";
+}
+
+// The ONE place the AgentSpec≡BuildPiece structural-superset is committed to, so
+// a future AgentSpec field addition is caught here, not silently coerced.
+export function agentsToPieces(agents: AgentSpec[]): BuildPiece[] {
+  return agents.map((a) => ({
+    id: a.id,
+    title: a.title,
+    prompt: a.prompt,
+    allowedPaths: a.allowedPaths,
+    agent: a.agent,
+  }));
+}
 
 // M6 — the fan-out master flag (mirrors isolationEnabled/autoRepairEnabled
 // exactly). Default OFF; also honored via TELAR_BUILD_FANOUT=1 for a
@@ -99,7 +123,12 @@ export function decideBuildFanout(
 
 export type SplitBuildDeps = { agent?: typeof agent; account?: AccountProfile; model?: string };
 
-const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
+// The moat's read-only wall — the SINGLE source of truth for every read-only
+// fan-out (splitBuild here, the M9.2 free-step fan-out in executor.ts's
+// runFreeStepFanout). Pairs with restrictTools:true and settingSources:[] at
+// each call site. scoping.ts keeps its own copy for the charter-lockdown path.
+export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
+export const READ_ONLY_DISALLOWED_TOOLS = ["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit", "Agent"];
 
 const BuildPieceSchema = z.object({
   id: z.string(),
@@ -147,7 +176,7 @@ Rules:
     cwd: input.manifest.root,
     tools: READ_ONLY_TOOLS,
     restrictTools: true,
-    disallowedTools: ["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit", "Agent"],
+    disallowedTools: READ_ONLY_DISALLOWED_TOOLS,
     settingSources: [],
     account: deps.account,
     model: deps.model,

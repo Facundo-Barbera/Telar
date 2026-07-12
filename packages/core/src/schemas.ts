@@ -364,7 +364,7 @@ export const Budget = z.object({
   maxCostUsd: z.number().optional(),
   maxWallClockHours: z.number().optional(),
   maxParallelThreads: z.number().default(3),
-  maxAgents: z.number().default(12), // the concurrency pool
+  maxAgents: z.number().default(12), // the concurrency pool — see budget.ts DEFAULT_MAX_AGENTS
   // Reserved critic sub-pool (docs/loom-model.md §M / D11) — carved out of
   // maxAgents so the Critic Panel can't be starved by build fan-out.
   maxCriticAgents: z.number().default(3),

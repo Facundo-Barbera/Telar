@@ -16,6 +16,13 @@ export type BudgetState = {
   maxWallClockHours?: number;
 };
 
+// The shared concurrency pool default — mirrors schemas.ts Budget.maxAgents
+// (:367). Exported so callers that default an absent budget.maxAgents (the
+// M9.2 step-wave clamp / CF1 in executor.ts, dispatcher.ts's rootRepairBudget)
+// reference this instead of re-deriving the literal 12. Kept in sync with the
+// Zod default by the cross-reference comment at schemas.ts:367.
+export const DEFAULT_MAX_AGENTS = 12;
+
 export function budgetLeftUsd(b: BudgetState): number {
   return b.maxCostUsd == null ? Infinity : Math.max(0, b.maxCostUsd - b.spentUsd);
 }

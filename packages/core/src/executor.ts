@@ -6,7 +6,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
 import { refreshProjectMcpAuth, resolveProjectMcpServers } from "./mcp";
-import { type BuildPiece, runBuildFanout } from "./build-fanout";
+import {
+  type BuildPiece,
+  runBuildFanout,
+  isWritingKind,
+  agentsToPieces,
+  piecesAreDisjoint,
+  decideBuildFanout,
+  READ_ONLY_TOOLS,
+  READ_ONLY_DISALLOWED_TOOLS,
+} from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
@@ -32,7 +41,7 @@ import type {
 import { verify } from "./verifier";
 import { envReviewEnabled, threadWorkflowEnabled } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
-import { fanoutSize, prioritizeScored, budgetLeftUsd } from "./budget";
+import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig } from "./servers";
 import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
 import type { SetupDeps } from "./setup/setup-agent";
@@ -1622,13 +1631,35 @@ export async function executeLoom(
 // M9 (thread-as-workflow) — the runtime per-step outcome the workflow runner
 // records. NOT persisted (never lands in loom.json); lives here next to the
 // runner, not in schemas.ts.
-export type StepResult = { id: string; ok: boolean; state: WorkUnitState };
-export type WorkflowStepCtx = { loom: Loom; manifest: ProjectManifest; opts: ExecuteOpts };
+export type StepResult = {
+  id: string;
+  ok: boolean;
+  state: WorkUnitState;
+  // M9.2 CF2 — read-only verification proof from the step's winning attempt.
+  // A writing step (build|migrate) reporting terminal-green MUST carry one of
+  // these; the built-in delegate fills them ONLY from the real executeLoom
+  // output (never fabricated), so an injected runStep cannot forge a green.
+  verifierReport?: VerifierReport | null;
+  panelReport?: PanelReport | null;
+  gatesGreen?: boolean; // a legit gates-only pass (deterministic gates green, no browser verifier)
+};
+// M9.2 — the per-step pool slice the runner hands each step so total concurrency
+// (steps-in-wave × agents-per-step) stays bounded by the shared pool / budget.
+type StepClamp = { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number };
+export type WorkflowStepCtx = { loom: Loom; manifest: ProjectManifest; opts: ExecuteOpts; clamp: StepClamp };
 
 // M9 — the default 1-step template: wraps TODAY'S whole build+gates+verify+repair
 // leg by RE-ENTERING executeLoom, so it is behaviorally identical to today.
 function defaultWorkflow(loom: Loom): ThreadWorkflow {
   return { version: 1, steps: [{ id: "build", goal: loom.prompt, kind: "build", agents: [], partition: "free", dependsOn: [] }] };
+}
+
+// M9.2 — the terminal-FAILURE states a delegate (executeLoom) may already have
+// written. The runner's fail-closed guards are IDEMPOTENT against these: they
+// never clobber a terminal failure a delegate owns, and only fire when the loom
+// is still non-terminal.
+function isTerminalFailure(s: WorkUnitState): boolean {
+  return s === "failed" || s === "needs-review" || s === "halted";
 }
 
 export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts): Promise<Loom> {
@@ -1643,7 +1674,7 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
   // real neutral values (no spend/elapsed tracked yet at workflow start) —
   // same values the old `as any` spread produced, just without the cast.
   const clampArgs = {
-    maxAgents: budget?.maxAgents ?? steps.length,
+    maxAgents: budget?.maxAgents ?? DEFAULT_MAX_AGENTS,
     inFlight: 0,
     budgetLeftUsd: budget
       ? budgetLeftUsd({
@@ -1661,6 +1692,17 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
   const doneSteps = new Set<string>();
   const startedSteps = new Set<string>();
   const run = opts.runStep ?? defaultRunStep;
+  // CF2 provenance: the built-in defaultRunStep fills the verification-proof
+  // fields ONLY from executeLoom's real read-only verifier (never fabricated);
+  // an injected opts.runStep supplies them itself and can forge them. This flag
+  // is the sole basis on which CF2 trusts a writing-step green's proof.
+  const usedBuiltinExecutor = !opts.runStep;
+  // HOLE A provenance ledger: flips true ONLY when a WRITING step ran through the
+  // BUILT-IN executor (usedBuiltinExecutor), reported terminal-green (ready|done),
+  // AND carried real executeLoom-derived proof (verifierReport|panelReport|
+  // gatesGreen). This is the SOLE evidence that can leave the loom green — the
+  // FINAL PROVENANCE GATE below fails any terminal-green loom closed without it.
+  let sawTrustedWritingGreen = false;
 
   while (doneSteps.size < steps.length) {
     // REUSE the loom's ready predicate one altitude down — steps as nodes, a
@@ -1674,12 +1716,110 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
     for (const id of wave) startedSteps.add(id);
     emit({ type: "workflow-wave", stepIds: wave });
 
-    // Independent steps in the wave run in PARALLEL (clamped above).
-    const results = await Promise.all(wave.map((id) => run(steps.find((s) => s.id === id)!, { loom, manifest, opts })));
+    // Concurrency-doubling guard (goal #2): the wave clamp bounds STEPS only;
+    // each step then fans out its own agents, so total = wave × agents-per-step.
+    // Give each step in the wave an equal SLICE of the pool so the product stays
+    // <= the pool: Σ (<= floor(maxAgents/W)) <= W × floor(maxAgents/W) <= maxAgents,
+    // and est cost <= W × (budgetLeftUsd/W) = budgetLeftUsd. A writing step whose
+    // slice yields <2 degrades to the single-builder delegate (honest fallback).
+    const W = wave.length;
+    const perStepClamp: StepClamp = {
+      maxAgents: Math.max(1, Math.floor(clampArgs.maxAgents / W)),
+      inFlight: 0,
+      budgetLeftUsd: isFinite(clampArgs.budgetLeftUsd) ? clampArgs.budgetLeftUsd / W : Infinity,
+      estCostPerAgent: clampArgs.estCostPerAgent,
+    };
+
+    // HOLE B — concurrency race on the SHARED loom. A built-in WRITING step
+    // delegates to executeLoom(ctx.loom,…), which mutates loom.state/loom.attempts
+    // UNsynchronized (withWorktreeLock guards only the filesystem). Two such steps
+    // in one wave running concurrently let a failing step's delegateToExecuteLoom
+    // read out.attempts[last]/out.state pick up a SIBLING's successful result — a
+    // false green with someone else's verifierReport. SERIALIZE the built-in
+    // writing-delegate steps (usedBuiltinExecutor is constant for the run, so this
+    // is exactly the writing kinds) so each step's read reflects ONLY its own run.
+    // Free steps (never mutate loom.state) and injected-opts.runStep steps (their
+    // greens are failed-closed by the FINAL PROVENANCE GATE) stay parallel.
+    // M9.3 carry-forward: give each step an isolated loom/worktree context and
+    // derive the loom's terminal state from validated per-step results, enabling
+    // safe parallel writing steps + trusted custom executors; until then built-in
+    // writing steps are serialized and injected-executor greens fail closed.
+    const stepById = (id: string) => steps.find((s) => s.id === id)!;
+    const isSerialWriting = (id: string) => usedBuiltinExecutor && isWritingKind(stepById(id).kind);
+    const runStepFor = (id: string) => run(stepById(id), { loom, manifest, opts, clamp: perStepClamp });
+    // Non-serial steps run concurrently (unchanged); serial writing steps run one
+    // at a time, awaited in series, alongside the parallel batch.
+    const parallelResults = Promise.all(wave.filter((id) => !isSerialWriting(id)).map(runStepFor));
+    const serialResults = (async () => {
+      const out: StepResult[] = [];
+      for (const id of wave.filter(isSerialWriting)) out.push(await runStepFor(id));
+      return out;
+    })();
+    const [parallel, serial] = await Promise.all([parallelResults, serialResults]);
+    // Reassemble in wave order so result-handling (BLOCKER 1's first-failure
+    // fail-close) is deterministic.
+    const byId = new Map<string, StepResult>();
+    for (const r of [...parallel, ...serial]) byId.set(r.id, r);
+    const results = wave.map((id) => byId.get(id)!);
 
     for (const res of results) {
       emit({ type: "workflow-step", stepId: res.id, state: res.state });
-      if (!res.ok) return loom; // step terminated non-green — return the loom in the state executeLoom set (moat owns it)
+      const st = steps.find((s) => s.id === res.id)!;
+
+      // BLOCKER 1 — a non-green step must fail the LOOM closed. A step can fail
+      // via a branch that never re-enters executeLoom and thus never mutated
+      // loom.state (disjoint-writer partition-overlap fail-close; a failing
+      // runFreeStepFanout). A bare `return loom` would hand back whatever state
+      // an EARLIER green step left (e.g. "ready" from a delegated executeLoom),
+      // masking this failure as a green thread. Mirror the CF2 / unschedulable-
+      // DAG guards. IDEMPOTENT: never clobber a terminal failure a delegate
+      // already wrote — so for the default 1-step template, whose failing
+      // executeLoom already set loom.state, this guard is a no-op.
+      if (!res.ok) {
+        if (!isTerminalFailure(loom.state)) {
+          const message = `step "${res.id}" failed: terminated non-green (state "${res.state}")`;
+          loom.error = message;
+          loom.state = "failed";
+          emit({ type: "error", message });
+          emit({ type: "state", state: "failed" });
+          opts.onState?.(loom);
+        }
+        return loom;
+      }
+
+      // CF2 — verifier guard: a WRITING step (build|migrate) reporting terminal-
+      // green MUST be backed by the moat's read-only verifier. PROVENANCE, not
+      // presence: the proof fields (verifierReport | panelReport | genuine
+      // gates-only pass) are trustworthy ONLY when they came through the BUILT-IN
+      // default path, where delegateToExecuteLoom copies them verbatim from a
+      // real executeLoom run (out.attempts[last]). An INJECTED/CUSTOM step
+      // executor supplies those fields itself and can forge them (e.g.
+      // verifierReport:{}), so its writing-green is REFUSED regardless of any
+      // self-reported proof. Non-writing kinds are exempt (they never promote via
+      // the verifier). M9.3 carry-forward: to accept a custom executor's writing-
+      // step green, the runner must itself run the read-only verifier (verify())
+      // against the loom diff — until then, custom writing-greens fail closed.
+      const terminalGreen = res.state === "ready" || res.state === "done";
+      const hasProof = !!(res.verifierReport || res.panelReport || res.gatesGreen);
+      const trustedGreen = usedBuiltinExecutor && hasProof;
+      if (isWritingKind(st.kind) && terminalGreen && !trustedGreen) {
+        const message =
+          `writing step "${res.id}" reported green without verifier proof` +
+          (usedBuiltinExecutor ? "" : " — a custom step executor cannot self-certify a writing-step green");
+        loom.error = message;
+        loom.state = "failed";
+        emit({ type: "error", message });
+        emit({ type: "state", state: "failed" });
+        opts.onState?.(loom);
+        return loom; // fail closed
+      }
+      // HOLE A — record a TRUSTED writing-step green: built-in executor + terminal-
+      // green + real executeLoom proof. Reaching here past the CF2 guard already
+      // implies trustedGreen for a writing terminal-green, but we re-state the full
+      // predicate so the ledger is self-evidently correct on its own.
+      if (usedBuiltinExecutor && isWritingKind(st.kind) && terminalGreen && hasProof) {
+        sawTrustedWritingGreen = true;
+      }
       doneSteps.add(res.id);
     }
   }
@@ -1697,7 +1837,7 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
   // failure (failed/needs-review/halted) for the last step that ran, that
   // write stands — this only fires when the loom is still non-terminal.
   if (doneSteps.size < steps.length) {
-    if (loom.state !== "failed" && loom.state !== "needs-review" && loom.state !== "halted") {
+    if (!isTerminalFailure(loom.state)) {
       const message = "unschedulable step DAG: dependsOn cycle or unreachable dependency";
       loom.error = message;
       loom.state = "failed";
@@ -1706,18 +1846,135 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
       opts.onState?.(loom);
     }
   }
+
+  // ── FINAL PROVENANCE GATE (HOLE A) ─────────────────────────────────────────
+  // A step executor receives ctx.loom BY REFERENCE and can side-channel the loom
+  // green — `ctx.loom.state = "ready"` — while returning a StepResult that dodges
+  // every per-step guard (e.g. {ok:true, state:"skipped"}: !res.ok is false so
+  // BLOCKER 1 skips, terminalGreen is false so CF2 never evaluates). The per-step
+  // guards inspect only the RETURNED StepResult, so the mutation slips through and
+  // the loom is handed back GREEN with zero verifier proof. Close it by PROVENANCE:
+  // a terminal-green loom is trustworthy ONLY if a trusted writing-step green was
+  // produced this run (built-in executor + real executeLoom proof — the ledger
+  // above). The default template / disjoint-writer fan-out set it (genuine
+  // executeLoom green) and pass; a run using an injected/custom executor never sets
+  // it, so ANY green it leaves — via a StepResult OR a side-channel loom mutation —
+  // fails closed here. The condition already implies loom.state is not a terminal
+  // FAILURE, so this never clobbers a delegate-owned failed/needs-review/halted.
+  if ((loom.state === "ready" || loom.state === "done") && !sawTrustedWritingGreen) {
+    const message = "loom reported green without a verifier-backed writing step";
+    loom.error = message;
+    loom.state = "failed";
+    emit({ type: "error", message });
+    emit({ type: "state", state: "failed" });
+    opts.onState?.(loom);
+  }
+
   return loom; // terminal loom.state was set by the delegated executeLoom (or the fail-closed guard above)
 }
 
-// Built-in step executor. M9.1 handles only kind:"build" (delegates to executeLoom);
-// other kinds require an injected opts.runStep (M9.2/M9.3 add real executors).
+// Built-in step executor (M9.2). Three branches, chosen purely from the step's
+// kind/partition/agents and the pool SLICE (ctx.clamp):
+//   (1) FREE fan-out    — non-writing kinds (research|design|check): read-only
+//                          agent() calls, collect Verdicts. No worktree/merge/stray.
+//   (2) WRITING fan-out  — disjoint-writer + >=2 agents + pool grants >=2: re-enter
+//                          executeLoom with opts.buildFanout from step.agents (the
+//                          EXISTING M6 seam — runBuildFanout/mergeDisjoint/stray
+//                          fail-closed reused verbatim, zero duplication).
+//   (3) SINGLE-BUILDER   — everything else, incl. the DEFAULT 1-step template
+//        DELEGATE          (agents:[]): re-enter executeLoom with NO buildFanout —
+//                          BYTE-IDENTICAL to the M9.1 delegation.
 async function defaultRunStep(step: Step, ctx: WorkflowStepCtx): Promise<StepResult> {
-  if (step.kind !== "build") throw new Error(`runThreadWorkflow: no built-in executor for step kind "${step.kind}" (M9.1)`);
-  // RE-ENTER executeLoom with the recursion guard set: runs today's UNCHANGED
-  // attempt loop (build → gates → verify → decide → retry) + worktree lifecycle
-  // + green→ready terminal. Agents within the step are handled by executeLoom's
-  // own runAttemptBuild (single builder in M9.1; opts.buildFanout when supplied).
-  const out = await executeLoom(ctx.loom, ctx.manifest, { ...ctx.opts, viaWorkflow: true });
-  const ok = out.state === "ready" || out.state === "done"; // terminal-green (moat's promotable states)
-  return { id: step.id, ok, state: out.state };
+  // (1) FREE fan-out — non-writing kinds. No worktree, no mergeDisjoint, no stray.
+  if (!isWritingKind(step.kind)) return runFreeStepFanout(step, ctx);
+
+  // WRITING kinds (build|migrate) below. Only a disjoint-writer step with >=2
+  // agents can fan out, and only if the pool slice grants >=2 concurrency.
+  const n =
+    step.partition === "disjoint-writer" && step.agents.length >= 2 ? decideBuildFanout(step.agents.length, ctx.clamp) : 1;
+
+  // (2) WRITING fan-out.
+  if (n >= 2) {
+    const pieces = agentsToPieces(step.agents).slice(0, n);
+    // Fail closed on authored overlap (don't let runBuildFanout hard-throw).
+    if (!piecesAreDisjoint(pieces)) return { id: step.id, ok: false, state: "failed" };
+    return delegateToExecuteLoom(step, ctx, { pieces, baseRef: "HEAD" });
+  }
+
+  // (3) SINGLE-BUILDER DELEGATE — the byte-identical path (default template AND
+  // any writing step the pool clamped to <2).
+  return delegateToExecuteLoom(step, ctx, undefined);
+}
+
+// RE-ENTER executeLoom with the recursion guard set: runs today's UNCHANGED
+// attempt loop (build → gates → verify → decide → retry) + worktree lifecycle +
+// green→ready terminal. With buildFanout undefined this is byte-identical to the
+// M9.1 delegation; with buildFanout set, runAttemptBuild takes the M6 fan-out
+// path unchanged. The CF2 proof fields are ADDITIVE reads of out.attempts[last]
+// — never fabricated — so the moat's read-only verifier stays the only green.
+async function delegateToExecuteLoom(
+  step: Step,
+  ctx: WorkflowStepCtx,
+  buildFanout?: { pieces: BuildPiece[]; baseRef?: string },
+): Promise<StepResult> {
+  const out = await executeLoom(ctx.loom, ctx.manifest, {
+    ...ctx.opts,
+    viaWorkflow: true,
+    ...(buildFanout ? { buildFanout } : {}),
+  });
+  const last = out.attempts[out.attempts.length - 1];
+  const state = out.state;
+  const terminalGreen = state === "ready" || state === "done"; // moat's promotable states
+  const verifierReport = last?.verifierReport ?? null;
+  const panelReport = last?.panelReport ?? null;
+  // A genuine gates-only pass: terminal-green with NO browser verifier/panel, but
+  // the deterministic gates all ran green and the builder Verdict was ok.
+  const gatesGreen =
+    terminalGreen &&
+    !verifierReport &&
+    !panelReport &&
+    !!last?.gates?.length &&
+    last.gates.every((g) => g.ok) &&
+    last?.verdict?.ok === true;
+  return { id: step.id, ok: terminalGreen, state, verifierReport, panelReport, gatesGreen };
+}
+
+// FREE fan-out for non-writing kinds (research|design|check, partition "free").
+// Fans step.agents out as READ-ONLY agent() calls (the same read-only wall
+// splitBuild/verifier use) and collects Verdicts — no worktree, no partition, no
+// merge, no stray. The loom object is NEVER mutated here: state:"ready" is a
+// SCHEDULING signal only (CF2 does not apply to non-writing kinds).
+async function runFreeStepFanout(step: Step, ctx: WorkflowStepCtx): Promise<StepResult> {
+  const { loom, manifest, opts, clamp } = ctx;
+  if (step.agents.length === 0) return { id: step.id, ok: true, state: "ready" }; // vacuously complete; loom NOT promoted
+  const n = fanoutSize(step.agents.length, clamp); // same pool-slice clamp
+  const chosen = step.agents.slice(0, Math.max(1, n));
+  const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
+  const verdicts = await Promise.all(
+    chosen.map((a) =>
+      (opts.run ?? agent)(
+        [`# ${a.title}`, a.prompt, "When done, call emit_result with your Verdict (ok, summary, files_touched, blocker)."]
+          .filter(Boolean)
+          .join("\n\n"),
+        {
+          schema: Verdict,
+          cwd: buildCwd(loom, manifest),
+          model: opts.policy?.dev,
+          tools: READ_ONLY_TOOLS, // READ-ONLY wall — single source of truth in build-fanout.ts
+          restrictTools: true,
+          disallowedTools: READ_ONLY_DISALLOWED_TOOLS,
+          settingSources: [],
+          account: opts.accounts?.[manifest.account],
+          abort: opts.abort,
+          onEvent: (e) => {
+            if (e.type === "text") emit({ type: "text", pieceId: a.id, text: e.text });
+            else if (e.type === "tool") emit({ type: "tool", pieceId: a.id, name: e.name, input: e.input });
+            else if (e.type === "result") emit({ type: "agent-result", pieceId: a.id, subtype: e.subtype, costUsd: e.costUsd });
+          },
+        },
+      ).catch(() => null),
+    ),
+  );
+  const ok = verdicts.every((v) => v?.ok === true);
+  return { id: step.id, ok, state: ok ? "ready" : "failed" }; // free steps never call the verifier; loom state untouched
 }

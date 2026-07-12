@@ -38,7 +38,7 @@ import {
 } from "./vcs";
 import { resolveDbCloner } from "./db-clone";
 import { EST_COST_PER_AGENT } from "./tick";
-import { type BudgetState } from "./budget";
+import { type BudgetState, DEFAULT_MAX_AGENTS } from "./budget";
 import { frozenLaneVerify, type IvResult, runAutoRepair } from "./verify-thread";
 import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
@@ -207,7 +207,7 @@ function runWeaveWiring(
     const b = l.charter?.budget;
     const spentUsd = (l.repairHistory ?? []).reduce((s, r) => s + r.costUsd, 0);
     return {
-      maxAgents: b?.maxAgents ?? 12,
+      maxAgents: b?.maxAgents ?? DEFAULT_MAX_AGENTS,
       inFlight: 0,
       spentUsd,
       startedAtMs: l.createdAt,
