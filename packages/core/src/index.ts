@@ -38,6 +38,7 @@ export * from "./dispatcher";
 export * from "./distill";
 export * from "./spec-lint";
 export * from "./build-fanout";
+export * from "./thread-templates";
 export * from "./vcs";
 export * from "./db-clone";
 export * from "./repair-guard";

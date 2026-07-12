@@ -27,3 +27,11 @@ export function envReviewEnabled(manifest: { envReview?: boolean }): boolean {
 export function threadWorkflowEnabled(manifest: { threadWorkflow?: boolean }): boolean {
   return manifest.threadWorkflow === true || process.env.TELAR_THREAD_WORKFLOW === "1";
 }
+
+// M9.3 — author the thread's step-graph with an LLM planner instead of the
+// deterministic template library. Only meaningful when threadWorkflow is on
+// (planner runs inside runThreadWorkflow, unreachable when threadWorkflow off).
+// Flag-off, template selection stays deterministic — no LLM call, byte-identical.
+export function threadPlannerEnabled(manifest: { threadPlanner?: boolean }): boolean {
+  return manifest.threadPlanner === true || process.env.TELAR_THREAD_PLANNER === "1";
+}

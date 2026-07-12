@@ -17,6 +17,7 @@ import {
   READ_ONLY_DISALLOWED_TOOLS,
 } from "./build-fanout";
 import { readBundleFile, readContract } from "./bundle";
+import { selectTemplate, validateWorkflow } from "./thread-templates";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
@@ -24,7 +25,7 @@ import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "
 import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
 import { foldChildOnDone } from "./consolidate";
 import { startProjectServer, startLane, laneTarget, type Lane, type StartLaneOpts } from "./run-server";
-import { ModelPolicy, validateContract, Verdict } from "./schemas";
+import { ModelPolicy, ThreadWorkflow, validateContract, Verdict } from "./schemas";
 import type {
   AccountProfile,
   ContractAssertion,
@@ -33,13 +34,12 @@ import type {
   Roster,
   ServersConfig,
   Step,
-  ThreadWorkflow,
   VerificationContract,
   VerifierReport,
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import { envReviewEnabled, threadWorkflowEnabled } from "./runner/flag";
+import { envReviewEnabled, threadWorkflowEnabled, threadPlannerEnabled } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig } from "./servers";
@@ -98,6 +98,12 @@ export type ExecuteOpts = {
   // executeLoom (byte-identical to today) and rejects other kinds. Flag-off this
   // is never consulted.
   runStep?: (step: Step, ctx: WorkflowStepCtx) => Promise<StepResult>;
+  // M9.3 — injectable step-planner (test seam, mirrors runStep?). Absent ⇒ the
+  // built-in planThreadWorkflow (deterministic templates; LLM only when
+  // threadPlanner on — SLICE-B). Lets a test inject a canned/invalid/cyclic plan
+  // or assert the planner is/isn't invoked, without a live model. Flag-off never
+  // consulted.
+  planWorkflow?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<ThreadWorkflow>;
 };
 
 const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
@@ -1648,10 +1654,72 @@ export type StepResult = {
 type StepClamp = { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number };
 export type WorkflowStepCtx = { loom: Loom; manifest: ProjectManifest; opts: ExecuteOpts; clamp: StepClamp };
 
-// M9 — the default 1-step template: wraps TODAY'S whole build+gates+verify+repair
-// leg by RE-ENTERING executeLoom, so it is behaviorally identical to today.
-function defaultWorkflow(loom: Loom): ThreadWorkflow {
-  return { version: 1, steps: [{ id: "build", goal: loom.prompt, kind: "build", agents: [], partition: "free", dependsOn: [] }] };
+// M9.3 — the READ-ONLY LLM step-planner's fixed instruction. Same prose-contract
+// style as splitBuild's task (build-fanout.ts): states the read-only discipline,
+// gives the objective, and constrains the emitted ThreadWorkflow shape. Deliberately
+// tells the model to emit a single build step when unsure so a low-confidence plan
+// still yields a valid graph (belt-and-suspenders with validateWorkflow's degrade).
+function plannerPrompt(loom: Loom): string {
+  return `You are planning the step-graph (workflow) for a software thread. This is a
+READ-ONLY planning pass — you may read the repository to understand context,
+but you must NOT write, edit, or run anything.
+
+--- Objective ---
+${loom.prompt}
+
+Emit a ThreadWorkflow: { version, steps }. Rules:
+- Each step needs a UNIQUE id, a goal, and a kind ∈ {research, design, build,
+  migrate, check}.
+- Optional agents: each { id, title, prompt, allowedPaths }. For a writing step
+  (build/migrate) that you want fanned out, give it partition "disjoint-writer"
+  and agents whose allowedPaths are mutually DISJOINT; otherwise use partition
+  "free".
+- dependsOn lists earlier step ids this step waits on; it must reference EXISTING
+  ids only, and the overall graph must be ACYCLIC.
+- The graph must contain AT LEAST ONE build or migrate step (the step that does
+  the real work).
+- Leave each step's check (the per-step contract) ABSENT.
+- If you are unsure or the task is small/atomic, emit a single build step.`;
+}
+
+// M9.3 — author the thread's step-graph. Three-tier fallback, never throws:
+//   (1) deterministic template library (always; the degrade target);
+//   (2) read-only LLM planner (ONLY when threadPlannerEnabled) — mirrors splitBuild;
+//   (3) validate-or-degrade: any failure/null/invalid/empty/cyclic ⇒ tier 1.
+// Timeout/cancellation is NOT locally enforced here — same as splitBuild, the
+// planner call passes `abort: opts.abort` with no planner-local timer, so
+// cancellation/timeout coverage comes from the caller's AbortController and the
+// engine's own turn/time limits, not from this function.
+// READ-ONLY: no builder/writer spend — the single agent call is tool-walled
+// (READ_ONLY_TOOLS + restrictTools + READ_ONLY_DISALLOWED_TOOLS + settingSources:[]),
+// and builders are created only later when the wave loop schedules a writing step
+// (defaultRunStep/delegateToExecuteLoom). A planner mistake can only REPLACE the
+// EXECUTION graph with another validated graph — it never touches the verifier,
+// panel, or provenance gate, so it can never rubber-stamp a green.
+export async function planThreadWorkflow(
+  loom: Loom,
+  manifest: ProjectManifest,
+  opts: ExecuteOpts,
+): Promise<ThreadWorkflow> {
+  const template = selectTemplate(loom); // tier 1 — always valid, the sentinel
+  if (!threadPlannerEnabled(manifest)) return template; // flag OFF ⇒ templates only, NO llm call
+  try {
+    const result = await (opts.run ?? agent)(plannerPrompt(loom), {
+      schema: ThreadWorkflow, // engine parses → ThreadWorkflow | null
+      cwd: manifest.root,
+      tools: READ_ONLY_TOOLS, // ── the read-only wall (single source of truth)
+      restrictTools: true,
+      disallowedTools: READ_ONLY_DISALLOWED_TOOLS,
+      settingSources: [],
+      account: opts.accounts?.[manifest.account],
+      model: opts.policy?.dev,
+      abort: opts.abort,
+    });
+    if (!result || !validateWorkflow(result)) return template; // tier 3 — degrade
+    return result;
+  } catch {
+    return template; // throw/timeout ⇒ degrade
+  }
 }
 
 // M9.2 — the terminal-FAILURE states a delegate (executeLoom) may already have
@@ -1664,7 +1732,10 @@ function isTerminalFailure(s: WorkUnitState): boolean {
 
 export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts): Promise<Loom> {
   const emit = (ev: { type: string } & Record<string, unknown>) => opts.onEvent?.(ev);
-  const steps = loom.workflow?.steps?.length ? loom.workflow.steps : defaultWorkflow(loom).steps;
+  const plan = loom.workflow?.steps?.length
+    ? loom.workflow                                              // pre-persisted DAG wins, unchanged
+    : await (opts.planWorkflow ?? planThreadWorkflow)(loom, manifest, opts);
+  const steps = plan.steps;
 
   // Clamp inputs from the loom's (root) charter budget when present, else uncapped;
   // EVERY wave/agent count is routed through fanoutSize so nothing fans out unclamped.

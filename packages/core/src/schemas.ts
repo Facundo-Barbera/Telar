@@ -283,6 +283,11 @@ export const ProjectManifest = z.object({
   // with the default template is behaviorally identical to today. Honored via
   // TELAR_THREAD_WORKFLOW=1 for live-validation.
   threadWorkflow: z.boolean().default(false),
+  // M9.3 — per-thread LLM step-planner. When on (AND threadWorkflow on), a
+  // READ-ONLY LLM call authors the ThreadWorkflow step-graph; degrades to the
+  // deterministic template library on any failure/invalid/empty/cyclic graph.
+  // Default OFF: templates only, no LLM spend. Honored via TELAR_THREAD_PLANNER=1.
+  threadPlanner: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),

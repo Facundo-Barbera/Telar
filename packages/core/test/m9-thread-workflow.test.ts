@@ -9,7 +9,7 @@
 //  (d) independent steps in a wave run CONCURRENTLY (Promise.all, not a
 //      sequential for-await) — the runner's within-wave parallel primitive that
 //      M9.2 fans agents out over.
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,25 +19,31 @@ import type { ExecuteOpts, StepResult, WorkflowStepCtx } from "../src/executor";
 import type { Loom } from "../src/looms";
 import type { ProjectManifest, Step, ThreadWorkflow } from "../src/schemas";
 
-const { executeLoom, runThreadWorkflow } = await import("../src/executor");
-const { threadWorkflowEnabled } = await import("../src/runner/flag");
+const { executeLoom, runThreadWorkflow, planThreadWorkflow } = await import("../src/executor");
+const { threadWorkflowEnabled, threadPlannerEnabled } = await import("../src/runner/flag");
 const { readyItems, readySubGoals } = await import("../src/tick");
 const { createLoom } = await import("../src/looms");
 const { createProject, getProject } = await import("../src/manifest");
+const { writeContract } = await import("../src/bundle");
+const { selectTemplate } = await import("../src/thread-templates");
+const { READ_ONLY_TOOLS, READ_ONLY_DISALLOWED_TOOLS } = await import("../src/build-fanout");
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m9-home-"));
-process.env.TELAR_HOME = home;
+// M9.3 determinism fix: a FRESH TELAR_HOME per test (not one dir shared by
+// every test in the file) — so a project/bundle/contract written by one test
+// can never bleed into another's readContract()/getProject() and make a
+// terminal state depend on run order (the flake this guards against).
+let home = "";
 beforeEach(() => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m9-home-"));
   process.env.TELAR_HOME = home;
 });
 afterEach(() => {
   // Process-global flags — never let them leak into the byte-identity /
   // isolation-off suites (mirrors build-fanout-wiring.test.ts:19-24).
   delete process.env.TELAR_THREAD_WORKFLOW;
+  delete process.env.TELAR_THREAD_PLANNER;
   delete process.env.TELAR_BUILD_FANOUT;
   delete process.env.TELAR_ISOLATE_WORKTREES;
-});
-afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
@@ -798,5 +804,228 @@ describe("HOLE B — built-in writing-delegate steps in one wave are SERIALIZED 
     expect(result.state).not.toBe("ready");
     expect(result.state).not.toBe("done");
     expect(result.error).toMatch(/step "A" failed/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// M9.3 — the per-thread PLANNER: deterministic template library + selection
+// heuristic + the read-only LLM step-planner behind `threadPlanner` (default OFF).
+//  (a') the threadPlanner flag helper;
+//  (--) threadWorkflow OFF ⇒ the planner is unreachable even with the planner env on;
+//  (b') threadPlanner OFF ⇒ templates only, the LLM planner is NEVER invoked;
+//  (c') the heuristic escalates to the 3-step template only on the >=3-blocker signal;
+//  (d') an injected valid DAG runs in dependency order to 'ready';
+//  (e') invalid/empty/cyclic/no-writing planner output DEGRADES to the template;
+//  (f') planning is READ-ONLY — the single planner LLM call is tool-walled.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// A blocker contract assertion that passes verification OFFLINE (command → exit 0),
+// so a thread carrying it still reaches 'ready' with no live model.
+const cmdBlocker = (id: string) => ({ id, description: `check ${id}`, type: "command" as const, expected: "true", blocker: true });
+
+// Drive the REAL executeLoom over a fresh git fixture whose bundle carries the
+// given blocker assertions (the heuristic's signal), with the fan-out fake builder.
+async function driveWithContract(nBlockers: number, opts: Partial<ExecuteOpts> = {}) {
+  const { name } = makeGitProject();
+  const manifest = getProject(name).manifest;
+  const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+  if (nBlockers > 0) {
+    writeContract(loom.id, { version: 1, assertions: Array.from({ length: nBlockers }, (_, i) => cmdBlocker(`a${i}`)) });
+  }
+  const events: Array<{ type: string } & Record<string, unknown>> = [];
+  const result = await executeLoom(loom, manifest, {
+    buildFanout: { pieces: twoDisjoint, baseRef: "HEAD" },
+    run: fakeBuilder,
+    onEvent: (ev) => events.push(ev),
+    onState: () => {},
+    ...opts,
+  });
+  const waves = events.filter((e) => e.type === "workflow-wave").map((e) => e.stepIds as string[]);
+  return { loom, result, events, waves };
+}
+
+// ── (a') threadPlanner flag helper ────────────────────────────────────────────
+describe("M9.3 (a') threadPlannerEnabled flag helper", () => {
+  test("false by default; honors the manifest flag + the TELAR_THREAD_PLANNER env override", () => {
+    delete process.env.TELAR_THREAD_PLANNER;
+    expect(threadPlannerEnabled({})).toBe(false);
+    expect(threadPlannerEnabled({ threadPlanner: false })).toBe(false);
+    expect(threadPlannerEnabled({ threadPlanner: true })).toBe(true);
+    process.env.TELAR_THREAD_PLANNER = "1";
+    expect(threadPlannerEnabled({})).toBe(true);
+  });
+});
+
+// ── threadWorkflow OFF ⇒ planner unreachable (byte-identical) ─────────────────
+describe("M9.3 threadWorkflow OFF makes the planner structurally unreachable", () => {
+  test("TELAR_THREAD_PLANNER=1 with TELAR_THREAD_WORKFLOW unset: reaches 'ready', NO workflow-* events", async () => {
+    process.env.TELAR_THREAD_PLANNER = "1";
+    delete process.env.TELAR_THREAD_WORKFLOW;
+    const { name } = makeGitProject();
+    const { result, events } = await driveToReady(name);
+    expect(result.state).toBe("ready");
+    // The runner (and therefore the whole planner) is never entered.
+    expect(events.some((e) => e.type === "workflow-wave")).toBe(false);
+    expect(events.some((e) => e.type === "workflow-step")).toBe(false);
+  });
+});
+
+// ── (b') threadPlanner OFF ⇒ templates only, LLM planner NEVER invoked ─────────
+describe("M9.3 (b') threadPlanner OFF ⇒ templates only — the LLM planner is never called", () => {
+  test("planThreadWorkflow returns selectTemplate and calls opts.run ZERO times", async () => {
+    delete process.env.TELAR_THREAD_PLANNER;
+    let called = 0;
+    // A planner-LLM spy that would emit garbage if it were ever reached.
+    const llmSpy = (async () => {
+      called++;
+      return { version: 1, steps: [] };
+    }) as any;
+    const loom = fakeLoom();
+    const plan = await planThreadWorkflow(loom, noManifest, { run: llmSpy });
+    expect(called).toBe(0); // flag OFF ⇒ NO LLM spend
+    expect(plan).toEqual(selectTemplate(loom)); // deterministic template, unchanged
+  });
+});
+
+// ── (c') the heuristic escalates only on the >=3-blocker signal, through the runner ──
+describe("M9.3 (c') heuristic: >=3 blocker assertions escalates to the 3-step template", () => {
+  test("a 3-blocker thread runs waves understand → implement → check and lands 'ready' (never 'done')", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    const { result, waves } = await driveWithContract(3);
+    expect(waves).toEqual([["understand"], ["implement"], ["check"]]);
+    expect(result.state).toBe("ready");
+    expect(result.state).not.toBe("done");
+  });
+
+  test("CONTROL: a 1-blocker thread stays conservative — a single 'build' wave", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    const { result, waves } = await driveWithContract(1);
+    expect(waves).toEqual([["build"]]);
+    expect(result.state).toBe("ready");
+  });
+});
+
+// ── (d') an injected valid DAG runs in dependency order to 'ready' ─────────────
+describe("M9.3 (d') a valid planner-authored DAG runs in dependency order", () => {
+  test("planWorkflow returns research(understand) → disjoint-writer build; both scheduled in order; terminal 'ready'", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_THREAD_PLANNER = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    const plan: ThreadWorkflow = {
+      version: 1,
+      steps: [
+        { id: "understand", goal: "u", kind: "research", partition: "free", agents: [], dependsOn: [] },
+        { id: "build", goal: "b", kind: "build", partition: "disjoint-writer", agents: twoDisjointAgents, dependsOn: ["understand"] },
+      ],
+    };
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const result = await executeLoom(loom, manifest, {
+      planWorkflow: async () => plan, // the OUTER seam swaps the whole planner
+      run: fakeBuilder,
+      onEvent: (ev) => events.push(ev),
+      onState: () => {},
+    });
+    const waves = events.filter((e) => e.type === "workflow-wave").map((e) => e.stepIds as string[]);
+    expect(waves).toEqual([["understand"], ["build"]]);
+    expect(result.state).toBe("ready");
+    expect(result.state).not.toBe("done");
+  });
+});
+
+// ── (e') invalid/empty/cyclic/no-writing planner output DEGRADES to the template ──
+describe("M9.3 (e') malformed planner output degrades to the deterministic template", () => {
+  const badGraphs: Record<string, ThreadWorkflow> = {
+    empty: { version: 1, steps: [] },
+    cyclic: {
+      version: 1,
+      steps: [
+        { id: "A", goal: "a", kind: "build", partition: "free", agents: [], dependsOn: ["B"] },
+        { id: "B", goal: "b", kind: "build", partition: "free", agents: [], dependsOn: ["A"] },
+      ],
+    },
+    noWriting: {
+      version: 1,
+      steps: [
+        { id: "r", goal: "r", kind: "research", partition: "free", agents: [], dependsOn: [] },
+        { id: "c", goal: "c", kind: "check", partition: "free", agents: [], dependsOn: ["r"] },
+      ],
+    },
+  };
+
+  test("empty / cyclic / no-writing LLM output ⇒ planThreadWorkflow returns selectTemplate each time", async () => {
+    process.env.TELAR_THREAD_PLANNER = "1";
+    const loom = fakeLoom();
+    const expected = selectTemplate(loom);
+    for (const [label, bad] of Object.entries(badGraphs)) {
+      const badRun = (async () => bad) as any;
+      const plan = await planThreadWorkflow(loom, noManifest, { run: badRun });
+      expect(plan, `degrade case: ${label}`).toEqual(expected);
+    }
+  });
+
+  test("runner-level: the REAL planner degrades an empty LLM plan to single-build ⇒ the loom still runs to 'ready'", async () => {
+    process.env.TELAR_THREAD_WORKFLOW = "1";
+    process.env.TELAR_THREAD_PLANNER = "1";
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
+    // ONE injected agent for EVERY role this run could possibly reach: the
+    // planner call (detected by the read-only planner prompt) gets a GARBAGE
+    // workflow so validateWorkflow degrades planThreadWorkflow to single-build;
+    // a Critic/Verifier prompt (detected by their stable framing text — see
+    // critic.ts's CRITIC_FRAMING / verifier.ts's VERIFIER_SYSTEM_PROMPT) gets a
+    // deterministic PASSING verdict, never the builder's Verdict shape, so a
+    // legit build's terminal state can never hinge on which object this fake
+    // happens to return for a role it wasn't meant to play; everything else is
+    // the real fan-out builder for the delegated build step.
+    const smartRun = (async (prompt: string, o: any) => {
+      if (/planning pass|step-graph/.test(prompt)) return { version: 1, steps: [] };
+      if (/You are (a Telar Critic|the Telar Verifier)/.test(prompt)) {
+        return { lens: "test", class: "functional", blocker: false, ok: true, summary: "ok", findings: [], evidence: [] };
+      }
+      const f = fileFromPrompt(prompt);
+      fs.writeFileSync(path.join(o.cwd, f), `built ${f}\n`);
+      return { ok: true, summary: `wrote ${f}`, files_touched: [f], blocker: null };
+    }) as any;
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const result = await executeLoom(loom, manifest, {
+      buildFanout: { pieces: twoDisjoint, baseRef: "HEAD" },
+      run: smartRun,
+      onEvent: (ev) => events.push(ev),
+      onState: () => {},
+    });
+    const waves = events.filter((e) => e.type === "workflow-wave").map((e) => e.stepIds as string[]);
+    expect(waves).toEqual([["build"]]); // degraded to single-build
+    expect(result.state).toBe("ready"); // never broke / failed closed
+    expect(result.error).toBeNull();
+  });
+});
+
+// ── (f') planning is READ-ONLY — the single planner LLM call is tool-walled ────
+describe("M9.3 (f') planning is read-only — no builder/writer spend during planning", () => {
+  test("the one planner invocation carries the READ_ONLY wall; no fanout/verdict/workflow-step is emitted while planning", async () => {
+    process.env.TELAR_THREAD_PLANNER = "1";
+    const calls: any[] = [];
+    const spy = (async (_p: string, o: any) => {
+      calls.push(o);
+      return { version: 1, steps: [] }; // degrades — irrelevant to the read-only assertion
+    }) as any;
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const loom = fakeLoom();
+    await planThreadWorkflow(loom, noManifest, { run: spy, onEvent: (ev) => events.push(ev) });
+
+    // Exactly one LLM call — the planner — and it is walled to the read-only tools.
+    expect(calls.length).toBe(1);
+    const o = calls[0];
+    expect(o.tools).toBe(READ_ONLY_TOOLS);
+    expect(o.restrictTools).toBe(true);
+    expect(o.disallowedTools).toBe(READ_ONLY_DISALLOWED_TOOLS);
+    expect(o.settingSources).toEqual([]);
+    // No builder/writer machinery ran during planning (contrast the build step, which fans out).
+    expect(events.some((e) => e.type === "fanout")).toBe(false);
+    expect(events.some((e) => e.type === "verdict")).toBe(false);
+    expect(events.some((e) => e.type === "workflow-step")).toBe(false);
   });
 });

@@ -63,7 +63,9 @@ export function validateCharter(c: Charter): { ok: boolean; errors: string[] } {
 // Standard 3-color DFS cycle detection over an adjacency list. Returns the
 // cyclic path (for a useful error message) or null if acyclic. Missing
 // dependsOn targets are ignored here — validateCharter reports those separately.
-function findCycle(edges: ReadonlyArray<readonly [string, string[]]>): string[] | null {
+// Exported: thread-templates.ts's validateWorkflow reuses this verbatim (same
+// [id, dependsOn][] shape) instead of keeping its own copy.
+export function findCycle(edges: ReadonlyArray<readonly [string, string[]]>): string[] | null {
   const adj = new Map(edges.map(([id, deps]) => [id, deps]));
   const WHITE = 0,
     GRAY = 1,
