@@ -329,18 +329,29 @@ Right, but unsatisfying: the gap was environment-provisioning + planner-contract
 build defect. M10 makes the orchestrator own that.
 
 **Phases (flag-gated, default off, fail-closed; the TOP GATE ships before thread demotion so
-fail-closed is never lost):**
-- **M10.0** — adjacent fixes: cockpit copy (Finding 1) + planner prefers command/gate over
-  live-critic (Finding 3).
-- **M10.1** — orchestrator final-verification GATE (verify the composed whole after rollup; fork
-  the read-only verify worktree from the consolidation branch, not `baseSha`).
-- **M10.2** — thread verification → advisory (green-unless-broken; a panel skip = green note, not
-  needs-review) — safe only after M10.1.
-- **M10.3** — the verification lane (generalize infra provisioning + proactive setup + repair).
-- **M10.4** — pre-flight lane-viability + bounded ask-once-persist ("Orchestrator requires help";
-  persist to manifest + `.telar/runbook`).
-- **M10.5** — objective/subjective routing (subjective → human accept; optional advisory aesthetic critic).
-- **M10.6** — prove & flip (interactive; the greenfield lib now reaches autonomous `ready → human done`).
+fail-closed is never lost). M10.0–M10.5 SHIPPED on branch `m10` (each: workflow → adversarial
+moat-lens verify + PoCs → independent green-gate → commit; every phase found & closed a real
+fail-open/coverage hole before commit). Base green: 947 pass / core+web tsc 0.**
+- **✅ M10.0** — adjacent fixes: cockpit copy (Finding 1, `257c3e2`) + proposer prefers
+  command/gate over live-critic (Finding 3, prompt-guidance, `40f2223`). *(unflagged corrections)*
+- **✅ M10.1** — orchestrator final-verification GATE (`1e30fa7`): verify the composed whole after
+  rollup; fork the read-only verify worktree from the consolidation branch, not `baseSha`; a
+  required panel with no evidence demotes ready→needs-review (fail-closed). *Flag `orchestratorVerify`.*
+- **✅ M10.2** — thread verification → advisory (`55b41c4`): green-unless-broken; a contract-backed
+  panel skip = green-with-note (re-proven at the top gate), not needs-review. *Same flag
+  `orchestratorVerify` (can't arm without M10.1).*
+- **✅ M10.3** — the verification lane (`bbd979b`): generalize infra provisioning + proactive
+  setup inside the top-gate producer + bounded repair; judge stays read-only. *Flag `verifyLane`.*
+- **✅ M10.4** — pre-flight lane-viability + bounded ask-once-persist ("Orchestrator requires help",
+  `a0cfb15` core + `204a09d` web): `blocked` finally reachable-as-output; human `by` required;
+  persist to manifest + `.telar/runbook.md`, reused-never-reasked. *Flag `laneEscalation`.*
+- **✅ M10.5** — objective/subjective routing (`99d8e86` core + `18807b9` web): default-to-objective;
+  subjective → human accept (never a machine gate); optional advisory aesthetic critic, provably
+  non-gating. *Flag `subjectiveRouting`.*
+- **▶ M10.6** — prove & flip (INTERACTIVE, human-in-seat): live-validate on the greenfield lib +
+  a web app (lane stood up) + a pure refactor; confirm fail-closed still demotes a genuinely-broken
+  whole; then flip `orchestratorVerify`/`verifyLane`/`laneEscalation`/`subjectiveRouting` on as
+  defaults. *(the greenfield lib now reaches autonomous `ready → human done`).*
 
 **Done when:** a loom that today punts to `needs-review` for a missing verification lane instead
 drives to a real `ready` (orchestrator stood up the lane, verified the whole, fail-closed), the
