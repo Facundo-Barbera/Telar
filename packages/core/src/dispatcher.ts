@@ -35,6 +35,10 @@ import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
 import { appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
 import { synthesizeContract, wireChildBundle } from "./weave-contracts";
+import { reconcileState, type RecoverAction } from "./runner/recover";
+import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
+import { setupAgentEnabled } from "./runner/flag";
+import { runSetupAgent } from "./setup/setup-agent";
 
 export type StartLoomInput = {
   project: string;
@@ -315,6 +319,23 @@ function runWeaveWiring(
               });
             }
           },
+        }
+      : {}),
+    // M5 (setup agent flag ON): run the scoped setup agent in the `preparing`
+    // window — bring the env lane up / author a missing servers.yaml before any
+    // build child spawns. Absent flag-off (dep undefined), so preparing→running
+    // is byte-identical to today (weave.ts skips the whole block). On
+    // { ready:false } the weave lands needs-review/failed WITHOUT spawning
+    // children — never `done` (moat).
+    ...(setupAgentEnabled(manifest)
+      ? {
+          runSetup: (l: Loom) =>
+            runSetupAgent(l, manifest, {
+              account: deps.accounts?.[manifest.account],
+              model: policy.dev,
+              onEvent: (ev) => appendEvent(l.id, ev),
+              cwd: l.worktree ?? manifest.root,
+            }),
         }
       : {}),
   });
@@ -867,12 +888,28 @@ const RESTART_ERROR =
 // stampede the budget — leave them resumable. Each loom's writes are wrapped so
 // one failure never aborts the whole sweep. Returns the reconciled list (for
 // logging).
-export function reconcileStuckLooms(): { id: string; from: string }[] {
-  const live = new Set(activeLoomIds());
+// The in-process ownership oracle — a loom is LIVE iff it's in THIS process's
+// `active` map. Byte-identical to the old `activeLoomIds().includes(id)` check;
+// factored out so reconcileStuckLooms can share the pure recovery table with
+// the runner while flag-off collapsing to today's exact behavior.
+const inProcessLiveness: Liveness = makeInProcessLiveness(activeLoomIds);
+
+export function reconcileStuckLooms(liveness: Liveness = inProcessLiveness): { id: string; from: string }[] {
   const reconciled: { id: string; from: string }[] = [];
   for (const loom of listLooms()) {
     if (loom.parentLoomId) continue; // children recover via their root's re-weave (spawnChild reuse), never independently
-    if (!IN_FLIGHT_STATES.has(loom.state) || live.has(loom.id)) continue;
+    if (liveness(loom.id)) continue; // a live loom (this process's runner) is never touched
+    // Delegate the per-state judgement to the ONE pure recovery table
+    // (runner/recover.ts). The web's boot policy is deliberately CONSERVATIVE:
+    // it does NOT auto-resume (a restart is usually a code change that would
+    // re-kill the loom, and a mass re-dispatch would stampede the budget), so
+    // ANY stranded in-flight loom — whatever finer action the runner would take
+    // (resume/queued/halt) — is marked `failed` (resumable) here. `leave` /
+    // `skip` (awaiting-human / terminal) are left untouched, exactly as before.
+    // MOAT: `reconcileState` can only ever yield resume/queued/halt/leave/skip —
+    // never `done` — so this sweep can never auto-complete a loom.
+    const action: RecoverAction = reconcileState(loom.state);
+    if (action === "leave" || action === "skip") continue;
     const from = loom.state;
     try {
       loom.state = "failed";
@@ -891,13 +928,17 @@ export function reconcileStuckLooms(): { id: string; from: string }[] {
   // couldn't remove in its finally. Iterates ALL looms (roots AND children,
   // unlike the stuck sweep above which skips children), groups by project root,
   // and force-removes any telar-wt-* worktree not owned by an in-flight loom.
-  // A worktree is LIVE if its own loom is active OR its parent root is active.
-  // Consolidation BRANCHES are intentionally NOT reaped (a telar/<id> branch
-  // from a crashed run is harmless — branch GC is the human's call). Guarded so
-  // a non-git project / missing root is a no-op, never a boot crash.
+  // A worktree is LIVE if its own loom is deemed live by the SAME injected
+  // `liveness` oracle the stuck sweep above uses, OR its parent root is — so a
+  // loom a runner still owns (flag-on: /active or a fresh lease) is never reaped
+  // even though this WEB process's `activeLoomIds()` is empty. Flag-off the
+  // oracle is `inProcessLiveness` (activeLoomIds), so the result is byte-identical
+  // to the old in-process set membership. Consolidation BRANCHES are intentionally
+  // NOT reaped (a telar/<id> branch from a crashed run is harmless — branch GC is
+  // the human's call). Guarded so a non-git project / missing root is a no-op,
+  // never a boot crash.
   try {
-    const liveIds = new Set(activeLoomIds());
-    const isLive = (l: Loom): boolean => liveIds.has(l.id) || (l.parentLoomId ? liveIds.has(l.parentLoomId) : false);
+    const isLive = (l: Loom): boolean => liveness(l.id) || (l.parentLoomId ? liveness(l.parentLoomId) : false);
     const byRoot = new Map<string, { live: string[]; reclaim: Loom[] }>();
     for (const l of listLooms()) {
       if (!l.worktree) continue;

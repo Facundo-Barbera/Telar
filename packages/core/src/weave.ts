@@ -89,6 +89,12 @@ export type RunWeaveDeps = {
   // mutates root state, and is pool-gated / slice-gated inside the dep itself
   // (skipped when there is no room or no assertions). Absent flag-off.
   runCheckpoint?: (child: Loom) => Promise<void>;
+  // M5 — pre-build environment bring-up (the setup agent). Runs in the
+  // `preparing` window, immediately after setState("preparing") and BEFORE the
+  // first build child spawns. Absent flag-off, so the preparing→running
+  // transition is byte-identical to today. On { ready:false } the weave does
+  // NOT proceed to spawn children: the root lands needs-review (never done).
+  runSetup?: (loom: Loom) => Promise<{ ready: boolean; wroteServersYaml?: boolean; error?: string }>;
 };
 
 function childCostUsd(child: Loom): number {
@@ -118,6 +124,24 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     if (isAborted()) return halt();
 
     setState("preparing");
+
+    // M5 setup agent (flag-on only): bring the env lane up / author a missing
+    // servers.yaml before ANY build child spawns. Absent flag-off (dep
+    // undefined) this whole block is skipped, so preparing→running is
+    // byte-identical to today. On { ready:false } the weave STOPS here without
+    // spawning children — the root lands needs-review carrying the setup error.
+    // MOAT: never `done`; awaiting-human by design. An aborted setup halts.
+    if (deps.runSetup) {
+      const setup = await deps.runSetup(loom);
+      if (isAborted()) return halt();
+      if (!setup.ready) {
+        loom.error = setup.error ?? "setup: environment not ready";
+        emit({ type: "setup-failed", message: loom.error });
+        setState("needs-review");
+        return loom;
+      }
+      emit({ type: "setup-ready", wroteServersYaml: setup.wroteServersYaml === true });
+    }
 
     // A LedgerView-shaped charter: decomposition is always the param passed
     // in (mirrors rollupWeave's own signature), other fields come from

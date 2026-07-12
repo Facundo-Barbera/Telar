@@ -242,6 +242,15 @@ export const ProjectManifest = z.object({
   // live-validation run. The one master flag gates the whole frozen-lane
   // pipeline (frozen verify + checkpoints + auto-repair).
   autoRepair: z.boolean().default(false),
+  // M5 — own loom execution in a standalone telar-runner process so a web
+  // reload/edit doesn't kill in-flight work. Default OFF: flag-off every path
+  // is byte-identical (dispatch stays in-process). Honored via TELAR_RUNNER=1.
+  outOfProcessRunner: z.boolean().default(false),
+  // M5 — a scoped setup agent runs in the `preparing` window (before build
+  // children spawn): brings the lane up, authors a missing servers.yaml,
+  // verifies the readyCheck. Default OFF (no lane at build time — byte-identical).
+  // Honored via TELAR_SETUP_AGENT=1.
+  setupAgent: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
