@@ -17,10 +17,11 @@ const STATE_LABEL: Record<string, string> = {
   blocked: "blocked",
   ready: "ready",
   "needs-review": "needs review",
+  "env-review": "env review",
   failed: "failed",
   halted: "halted",
 };
-const STATE_ORDER = ["done", "running", "blocked", "ready", "needs-review", "failed", "halted"];
+const STATE_ORDER = ["done", "running", "blocked", "ready", "needs-review", "env-review", "failed", "halted"];
 
 // Counts every thread that will actually get a row in ThreadTree — the
 // current decomposition PLUS any child whose subGoalId has fallen out of it

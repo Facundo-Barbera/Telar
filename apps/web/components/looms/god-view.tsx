@@ -328,6 +328,7 @@ const PLAN_DOT: Record<PlanNodeState, string> = {
   queued: "bg-muted-foreground/30",
   scoping: "bg-muted-foreground/30",
   "charter-review": "bg-muted-foreground/30",
+  "env-review": "bg-amber-500",
 };
 
 function planStateLabel(s: PlanNodeState): string {
@@ -345,6 +346,8 @@ function planStateLabel(s: PlanNodeState): string {
       return "done";
     case "needs-review":
       return "needs review";
+    case "env-review":
+      return "env review";
     case "blocked":
       return "blocked";
     case "failed":

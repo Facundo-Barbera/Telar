@@ -127,6 +127,7 @@ function renderEvent(ev: LoomEvent, i: number): React.ReactNode {
 function shimmerLabel(events: LoomEvent[], state: WorkUnitState): string {
   if (state === "verifying") return "Verifying…";
   if (state === "preparing") return "Preparing…";
+  if (state === "env-review") return "Waiting on environment…";
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.type === "text") break;

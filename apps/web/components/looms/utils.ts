@@ -40,7 +40,7 @@ export const isActive = (s: WorkUnitState): boolean =>
 // Waiting on the human — not doing autonomous work, but not closed either
 // (ready keeps its event stream open for steering; blocked needs a decision).
 export const isAwaitingOwner = (s: WorkUnitState): boolean =>
-  s === "ready" || s === "blocked";
+  s === "ready" || s === "blocked" || s === "env-review";
 
 export function sumCost(attempts: AttemptRecord[]): number {
   return attempts.reduce((total, a) => total + (a.costUsd ?? 0), 0);
@@ -82,6 +82,7 @@ export function stateRailClass(state: WorkUnitState): string {
     case "done":
       return "bg-primary";
     case "needs-review":
+    case "env-review":
       return "bg-amber-400";
     case "blocked":
       return "bg-orange-400";

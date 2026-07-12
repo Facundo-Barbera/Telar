@@ -323,6 +323,8 @@ export function godStatus(op: Loom, repairs: number): GodStatus {
       return { kind: "block", label: "needs you" };
     case "needs-review":
       return { kind: "block", label: "needs review" };
+    case "env-review":
+      return { kind: "block", label: "env review" };
     case "failed":
     case "halted":
       return { kind: "repair", label: op.state };
@@ -627,7 +629,7 @@ function deriveLoopStage(loom: Loom, operators: Operator[]): LoopStage {
   const s = loom.state;
   if (s === "queued" || s === "scoping" || s === "charter-review" || s === "preparing") return "plan";
   if (s === "verifying") return "decide";
-  if (s === "blocked" || s === "needs-review" || s === "ready" || isTerminal(s)) return "decide";
+  if (s === "blocked" || s === "needs-review" || s === "env-review" || s === "ready" || isTerminal(s)) return "decide";
   // running: scheduling until something is actually in flight, then observing.
   return operators.some((o) => o.active) ? "observe" : "schedule";
 }
