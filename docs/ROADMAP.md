@@ -244,8 +244,17 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   `steps.length` when the thread has no charter budget — replace with a real concurrency
   cap once steps actually fan out; (2) the `opts.runStep` seam must funnel every *writing*
   step through the verifier so an injected executor can never promote a loom without it.
-- ⏳ M9.2 — Step fan-out · ⏳ M9.3 — Per-thread planner · ⏳ M9.4 — Per-step checks ·
-  ⏳ M9.5 — Prove & flip (interactive).
+- ✅ **M9.2 — Step fan-out** (`f44f55c`). Generalized M6's build-fanout to "any step,
+  M agents" (writing steps: disjoint-writer partition + merge + stray fail-closed, reused;
+  non-writing: free read-only fan-out). CF1 (real pool clamp) + CF2 (writing greens trusted
+  by provenance, not presence) landed. Adversarial verification found + closed two fail-open
+  holes (a failing step now fails the loom closed; a final provenance gate + built-in
+  writing-step serialization kill a side-channel green and a shared-loom race — both re-proven
+  by PoC). 820 core tests pass. *Carry into M9.3 (architectural):* give each step an isolated
+  loom/worktree context and derive the loom's terminal state from validated per-step results —
+  enabling safe parallel writing steps and trusted custom step executors. Until then: built-in
+  writing steps serialize within a wave, and injected-executor greens fail closed.
+- ⏳ M9.3 — Per-thread planner · ⏳ M9.4 — Per-step checks · ⏳ M9.5 — Prove & flip (interactive).
 
 ## M8 follow-up (deferred, tracked)
 
