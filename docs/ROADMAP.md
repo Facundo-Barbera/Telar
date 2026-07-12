@@ -105,7 +105,7 @@ open any operator to read its actual session. Green-gate as above.
 **Done when:** a woven loom builds in isolation and lands as one consolidated branch;
 no cross-loom file collisions. (Foundation for the frozen-lane verify in M4.)
 
-## ▶ M4 — Close the verification loop  ·  *live-validation-gated*
+## ✅ M4 — Close the verification loop  ·  *shipped `0bb00f8` (flag off; live-DB deferred)*
 
 *Build the deterministic scaffolding + guards autonomously; the live proof needs a
 real Postgres and is runaway-prone, so validate the loop with a human in the seat.*
@@ -121,7 +121,7 @@ real Postgres and is runaway-prone, so validate the loop with a human in the sea
 **Done when:** the loop converges on a real project under guards, and the moat holds
 (a green loop lands `ready`, never `done`).
 
-## M5 — Durable, out-of-process execution
+## ▶ M5 — Durable, out-of-process execution
 
 *A reload or a code edit must not kill in-flight work.*
 
