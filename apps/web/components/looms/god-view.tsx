@@ -317,7 +317,7 @@ const PLAN_DOT: Record<PlanNodeState, string> = {
   done: "bg-emerald-500",
   ready: "bg-amber-500",
   "needs-review": "bg-amber-500",
-  blocked: "bg-amber-500",
+  blocked: "bg-orange-500",
   preparing: "bg-foreground",
   running: "bg-foreground",
   verifying: "bg-foreground",

@@ -14,6 +14,7 @@ import { createSdkMcpServer, tool, type McpServerConfig } from "@anthropic-ai/cl
 import { z } from "zod";
 import {
   addWatch,
+  answerBlocked,
   cancelLoom,
   ContractAssertion,
   createDraftLoom,
@@ -50,6 +51,7 @@ export const LOOM_AUTO_TOOLS = [
   "mcp__loom__get_loom",
   "mcp__loom__steer_loom",
   "mcp__loom__reject_loom",
+  "mcp__loom__answer_loom",
   "mcp__loom__resume_loom",
   "mcp__loom__cancel_loom",
   // Registering a background watch is inert (it spends nothing and returns
@@ -257,6 +259,31 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           try {
             const loom = await rejectLoom(id, feedback, opts.account, buildDeps());
             return okResult(JSON.stringify({ loomId: loom.id, state: loom.state }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      tool(
+        "answer_loom",
+        "Answer a loom parked in 'blocked' (the orchestrator asked how to verify this work) and re-dispatch it. Provide a devCommand (e.g. 'bun run dev') and/or a runbook narrative (how to drive the app to reach the feature). Persists the recipe so it never asks again, then re-verifies (lands 'ready' at most, never 'done'). Defaults to this session's linked loom when loomId is omitted.",
+        {
+          loomId: z.string().optional(),
+          devCommand: z.string().optional(),
+          runbook: z.string().optional(),
+        },
+        async ({ loomId, devCommand, runbook }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to answer a specific loom.");
+          try {
+            // `by` is ALWAYS opts.account — the human-by moat; never read from
+            // tool input.
+            const ok = await answerBlocked(id, opts.account, { devCommand, runbook }, buildDeps());
+            if (!ok) {
+              return errResult("Loom is not blocked, or the answer was empty (provide a devCommand or runbook).");
+            }
+            const loom = getLoom(id);
+            return okResult(JSON.stringify({ loomId: id, state: loom?.state }, null, 2));
           } catch (e) {
             return errResult(e instanceof Error ? e.message : String(e));
           }

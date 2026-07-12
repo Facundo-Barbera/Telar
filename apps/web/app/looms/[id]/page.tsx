@@ -18,6 +18,7 @@ import { PageHeader } from "@/components/common/page-header";
 import { StateBadge } from "@/components/common/state-badge";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
 import { EnvReview } from "@/components/looms/env-review";
+import { BlockedEscalation } from "@/components/looms/blocked-escalation";
 import { LoomGodView } from "@/components/looms/god-view";
 import { AgentViewDrawer } from "@/components/looms/agent-view";
 import { SpecDrawer } from "@/components/looms/spec-bundle";
@@ -415,6 +416,8 @@ export default function LoomDetailPage() {
           <CharterReview loom={loom} />
         ) : loom.state === "env-review" ? (
           <EnvReview loom={loom} />
+        ) : loom.state === "blocked" ? (
+          <BlockedEscalation loom={loom} />
         ) : (
           <>
             {/* The unified god-view frame. The owner's intervention panel

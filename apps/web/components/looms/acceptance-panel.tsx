@@ -112,18 +112,18 @@ const VARIANTS: Record<
     icon: HandIcon,
     iconClass: "text-orange-400",
     headingClass: "text-orange-300",
-    heading: "Paused for a decision — answer to resume",
+    heading: "Orchestrator requires help",
     badgeClass: "bg-orange-500/15 text-orange-400",
     badge: "blocked",
-    body: "The loop paused on a decision it won't guess. Answer it and the thread resumes — the rest of the weave kept running around it.",
+    body: "The orchestrator can't stand up a way to verify this and won't guess. Give it a dev command and it persists the recipe (never asks again) and resumes.",
     showAccept: false,
     acceptLabel: "",
     showSteer: true,
     showResume: false,
     steerLabel: "Answer & resume",
     steerIcon: SendIcon,
-    noteLabel: "Your answer becomes the directive — the thread resumes with it.",
-    notePlaceholder: "e.g. 'Use Stripe test mode; the sandbox keys are in .env.'",
+    noteLabel: "A dev command makes the lane viable — it's saved to telar.yaml and the thread resumes.",
+    notePlaceholder: "e.g. bun run dev",
     sendLabel: "Answer & resume",
   },
   failed: {
@@ -254,12 +254,27 @@ export function AcceptancePanel({
 
   // Steer POSTs { directive }, Reject POSTs { feedback }; both return
   // { ok, loom } and re-dispatch the loom (it leaves "ready" for "queued").
+  // For `blocked` the "steer" move ANSWERS the escalation instead: it posts a
+  // devCommand to the dedicated /block/answer route (steerLoom REFUSES blocked
+  // — the /steer path is retired here). That route binds a HUMAN `by` server-
+  // side and returns { ok } only, so the SSE loop (not onAccepted) drives the
+  // unmount. The full answer surface — devCommand + runbook — is the page-level
+  // BlockedEscalation panel; this rail is the compact devCommand fast-path.
   const submitNote = useCallback(async () => {
     if (!mode) return;
     const text = note.trim();
     if (!text) return;
-    const path = mode === "steer" ? "steer" : "reject";
-    const body = mode === "steer" ? { directive: text } : { feedback: text };
+    const isBlockedAnswer = mode === "steer" && loom.state === "blocked";
+    const path = isBlockedAnswer
+      ? "block/answer"
+      : mode === "steer"
+        ? "steer"
+        : "reject";
+    const body = isBlockedAnswer
+      ? { devCommand: text }
+      : mode === "steer"
+        ? { directive: text }
+        : { feedback: text };
     setSending(true);
     setError(null);
     try {
@@ -273,20 +288,21 @@ export function AcceptancePanel({
         throw new Error(
           data.error ??
             (mode === "steer"
-              ? "Couldn't send the directive."
+              ? "Couldn't send the answer."
               : "Couldn't send the feedback."),
         );
       }
       setMode(null);
       setNote("");
-      onAccepted?.((data as { loom: Loom }).loom);
+      // /block/answer returns no loom — the SSE refresh flips the state.
+      if (!isBlockedAnswer) onAccepted?.((data as { loom: Loom }).loom);
       window.dispatchEvent(new Event("telar:refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
-  }, [loom.id, mode, note, onAccepted]);
+  }, [loom.id, loom.state, mode, note, onAccepted]);
 
   // Self-gated like SpecBundle: safe to mount unconditionally. Renders only for
   // the states where the loop hands back to the owner — `ready` (clean sign-off),
@@ -311,8 +327,11 @@ export function AcceptancePanel({
   const latest = loom.attempts.at(-1);
   const verdict = latest?.verdict ?? null;
   const files = verdict?.files_touched ?? [];
-  // For `blocked`, the surfaced question is stored on loom.error.
-  const question = loom.state === "blocked" ? loom.error : null;
+  // For `blocked`, the surfaced question is the dedicated narrative ask
+  // (loom.blockedQuestion) — NOT the overloaded loom.error, so the two never
+  // diverge (M10.4). The full answer surface is the page-level BlockedEscalation
+  // panel; this right-rail copy is the at-a-glance version for a woven child.
+  const question = loom.state === "blocked" ? loom.blockedQuestion : null;
   // For `failed`, surface the terminal reason (loom.error) so the owner sees WHY
   // before deciding to resume or send back.
   const failureReason = loom.state === "failed" ? loom.error : null;

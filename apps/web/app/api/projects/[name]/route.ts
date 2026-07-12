@@ -79,6 +79,10 @@ export async function PATCH(
     ...(body.account != null ? { account: body.account } : {}),
     ...(body.baseBranch != null ? { baseBranch: body.baseBranch } : {}),
     ...(body.adapter != null ? { adapter: body.adapter } : {}),
+    // A learned devCommand (from settings or answerBlocked's promotion) must be
+    // savable through the cockpit. Conditional spread — a PATCH omitting it can
+    // never wipe an existing value. name/root stay immutable (guarded above).
+    ...(body.devCommand != null ? { devCommand: body.devCommand } : {}),
     ...(body.gates != null ? { gates: body.gates } : {}),
     ...(body.mcpServers != null ? { mcpServers: body.mcpServers } : {}),
     ...(body.guardrails != null
