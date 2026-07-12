@@ -235,6 +235,18 @@ the attempt-loop + repair leg + build-fanout + several flags into one abstractio
 the same moat; the single-agent thread stays the default until the flag flips. Subsumes
 M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
 
+**Progress (overnight build, behind `threadWorkflow`, default off):**
+- ✅ **M9.1 — Step types + thread workflow-runner** (`19aafce`). `Step`/`ThreadWorkflow`/
+  `AgentSpec` types; `runThreadWorkflow` step-DAG runner reusing the weaver's readiness
+  kernel one altitude down; default 1-step `build` template re-enters `executeLoom`
+  (flag-on-default == today); flag-off byte-identical; fail-closed on an unschedulable
+  DAG. 806 core tests pass. *Carry into M9.2:* (1) the step-wave pool clamp defaults to
+  `steps.length` when the thread has no charter budget — replace with a real concurrency
+  cap once steps actually fan out; (2) the `opts.runStep` seam must funnel every *writing*
+  step through the verifier so an injected executor can never promote a loom without it.
+- ⏳ M9.2 — Step fan-out · ⏳ M9.3 — Per-thread planner · ⏳ M9.4 — Per-step checks ·
+  ⏳ M9.5 — Prove & flip (interactive).
+
 ## M8 follow-up (deferred, tracked)
 
 - **Authored live-critic degrade path (moat, medium).** In a *decomposed epic*, if the
