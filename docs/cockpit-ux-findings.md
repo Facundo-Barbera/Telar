@@ -53,3 +53,50 @@ watch the planning happen (proof strategy, budget, decomposition) instead of a s
 
 **Where to look (apps/web).** The scoping / charter-review view and the planner agent's
 event stream (the planner runs read-only during `scoping`).
+
+---
+
+# Engine / planner findings (same e2e)
+
+## Finding 3 — planner picks `live-critic` where an executable check would verify (HIGH)
+
+**Symptom.** The `errors` thread produced a clean, tested deliverable (tsc clean, 54/54
+`bun test`, the `error-paths` **command** gate ran and passed independently) yet landed
+`needs-review` with `error: "panel verification required but did not run."`
+
+**Root cause.** Its contract had two blocker assertions: `error-paths` (`type: command`,
+independently verified ✓) and `comprehensive-tests` (`type: live-critic`). A `live-critic`
+requires the adversarial critic panel, which needs a running-app target/evidence. This is
+a greenfield **library** (no dev server), so the panel had no target → did not run → a
+required assertion could not be independently verified → fail-closed → `needs-review`.
+
+**Assessment.** This is **correct moat behavior**, not an engine bug — it refused to
+rubber-stamp the builder's self-reported "54/54" on the one criterion it couldn't
+machine-check, and offered a human `Accept (override)`. The *defect* is planner/contract
+quality: "comprehensive test coverage" should be a `command`/`gate` assertion (`bun test`
+green; optionally a coverage-threshold command), which is independently verifiable and
+would auto-promote to `ready`.
+
+**Fix.** Teach the contract proposer / per-thread planner to prefer executable
+(`command`/`gate`) assertions and reserve `live-critic` for criteria that genuinely need a
+live surface (UI/UX). When no dev URL exists, a `live-critic` blocker is unverifiable by
+construction — steer the planner away from it, or degrade coherently. Ties into the tracked
+"verify-coherence / dev-server-for-verify" and "promotable-skip vs needs-review" findings.
+
+## Finding 4 — threads ran single-agent; per-thread fan-out not autonomously chosen (MEDIUM)
+
+**Observation.** Every thread (scaffold / semantics / errors) executed a single-step,
+single-agent build (the `dev → dev → careful` attempt loop) — no intra-thread multi-agent
+fan-out.
+
+**Assessment.** Not a capability gap: multi-agent disjoint-writer fan-out is proven to work
+end to end (earlier CLI e2e reached `ready` with a 2-agent build step after the
+stray-detection fix `a252432`). And the run *did* parallelize — at the **weave** level: the
+root split into 3 threads and ran semantics ∥ errors concurrently. What did **not** happen:
+the LLM per-thread planner autonomously authoring a fan-out for a subgoal (in the proof, the
+fan-out DAG was hand-authored to validate execution).
+
+**Follow-up.** Confirm/tune the per-thread planner to fan out when a subgoal decomposes into
+disjoint files. Also **minor:** the executed per-thread workflow is not persisted to the
+loom (`workflow` absent in loom.json even when `runThreadWorkflow` ran), so the cockpit
+can't display a thread's step-DAG — consider persisting it for observability.
