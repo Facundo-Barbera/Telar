@@ -121,7 +121,7 @@ real Postgres and is runaway-prone, so validate the loop with a human in the sea
 **Done when:** the loop converges on a real project under guards, and the moat holds
 (a green loop lands `ready`, never `done`).
 
-## ▶ M5 — Durable, out-of-process execution
+## ✅ M5 — Durable, out-of-process execution  ·  *shipped `c54ae19` (flag off; live-durability deferred)*
 
 *A reload or a code edit must not kill in-flight work.*
 
@@ -133,7 +133,7 @@ real Postgres and is runaway-prone, so validate the loop with a human in the sea
 **Done when:** a loom survives a web reload; a project with no `servers.yaml` is
 brought up by the setup agent.
 
-## M6 — Scale the weave  ·  *exploratory*
+## ▶ M6 — Scale the weave  ·  *exploratory*
 
 - **Sub-thread build fan-out** — wire `splitBuild`/`decideBuildFanout` so a Thread
   can use N parallel builders (built, never wired).
