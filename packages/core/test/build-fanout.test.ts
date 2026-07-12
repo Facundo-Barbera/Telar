@@ -209,7 +209,7 @@ describe("runBuildFanout (real temp git repo, fake runPieceBuilder — no live a
     expect(worktreeLines().length).toBe(1);
   });
 
-  test("a stray file outside allowedPaths is NOT merged and is reported", async () => {
+  test("a stray file outside allowedPaths is NOT merged, is reported, and FAILS CLOSED (ok:false)", async () => {
     const pieces = [
       { id: "p3", title: "A", prompt: "do A", allowedPaths: ["a.txt"] },
       { id: "p4", title: "B", prompt: "do B", allowedPaths: ["b.txt"] },
@@ -226,7 +226,9 @@ describe("runBuildFanout (real temp git repo, fake runPieceBuilder — no live a
       },
     });
 
-    expect(result.ok).toBe(true);
+    // M6 fail-closed: a dropped out-of-lane write means the merged tree may be
+    // provably incomplete — the fan-out layer must NOT report green.
+    expect(result.ok).toBe(false);
     expect(result.merged.sort()).toEqual(["a.txt", "b.txt"]);
     expect(result.stray).toEqual(["c.txt"]);
     expect(fs.existsSync(path.join(repoRoot, "c.txt"))).toBe(false);

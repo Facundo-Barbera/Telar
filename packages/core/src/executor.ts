@@ -21,6 +21,7 @@ import type {
   ContractAssertion,
   PanelReport,
   ProjectManifest,
+  Roster,
   VerificationContract,
   VerifierReport,
   WorkUnitState,
@@ -44,6 +45,12 @@ export type ExecuteOpts = {
   // Reserved for the caller's scheduler (M7.5) to report agent-pool headroom
   // alongside buildFanout; not read by executeLoom itself in this phase.
   poolRoom?: number;
+  // M6 — the curated agent roster (schemas.ts Roster). A build-fanout piece
+  // MAY name a preset (BuildPiece.agent); makePieceBuilder merges its
+  // model/tools/disallowedTools/promptPrelude over the piece defaults. Absent
+  // or {} (the default) ⇒ no preset applied ⇒ byte-identical to today. NEVER
+  // consulted by the Verifier/Critic (their AgentOpts are hard-coded constants).
+  roster?: Roster;
   // Injectable builder agent (defaults to the real engine `agent`). Mirrors the
   // `run?: typeof agent` seam runVerification/runPanelVerification already
   // expose — lets tests drive the build loop with a fake builder (no live
@@ -1123,8 +1130,17 @@ export async function executeLoom(
       // Refresh near-expiry MCP OAuth tokens before resolving the servers, same
       // as runBuildStep (docs/mcp-oauth-design.md §5).
       await refreshProjectMcpAuth(manifest.name);
+      // M6 roster: when the piece names a loaded preset, its narrow surface
+      // (model/tools/disallowedTools/promptPrelude) overrides the piece
+      // defaults. Unnamed piece or empty/unknown roster ⇒ preset is undefined
+      // ⇒ every value below is byte-identical to the pre-M6 single-builder path.
+      // The preset can only touch these four fields — it can never set
+      // restrictTools/settingSources/extraMcpServers (omitted from the Roster
+      // schema) and is never consulted for the Verifier/Critic.
+      const preset = piece.agent ? opts.roster?.[piece.agent] : undefined;
       return (opts.run ?? agent)(
         [
+          preset?.promptPrelude ?? "",
           `# ${piece.title}`,
           piece.prompt,
           piece.allowedPaths.length
@@ -1137,10 +1153,10 @@ export async function executeLoom(
         {
           schema: Verdict,
           cwd,
-          model: ctx.model,
+          model: preset?.model ?? ctx.model,
           maxTurns,
-          tools,
-          disallowedTools: manifest.guardrails.disallowedTools,
+          tools: preset?.tools ?? tools,
+          disallowedTools: preset?.disallowedTools ?? manifest.guardrails.disallowedTools,
           settingSources: ["project", "local"],
           account: opts.accounts?.[manifest.account],
           extraMcpServers: resolveProjectMcpServers(manifest.name),

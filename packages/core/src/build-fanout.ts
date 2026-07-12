@@ -32,7 +32,20 @@ export type BuildPiece = {
   title: string;
   prompt: string;
   allowedPaths: string[];
+  // M6 — optional curated roster preset name (schemas.ts Roster). When set and
+  // it names a loaded roster entry, makePieceBuilder (executor.ts) merges the
+  // preset's model/tools/disallowedTools/promptPrelude over the piece defaults.
+  // Unset or unknown ⇒ byte-identical to today.
+  agent?: string;
 };
+
+// M6 — the fan-out master flag (mirrors isolationEnabled/autoRepairEnabled
+// exactly). Default OFF; also honored via TELAR_BUILD_FANOUT=1 for a
+// live-validation run. The dispatcher additionally requires isolationEnabled
+// (each piece needs its own worktree) before it will plan a fan-out.
+export function buildFanoutEnabled(manifest: { buildFanout?: boolean }): boolean {
+  return manifest.buildFanout === true || process.env.TELAR_BUILD_FANOUT === "1";
+}
 
 // --- path-overlap helpers (conservative: unsure => overlapping) -----------
 
@@ -93,6 +106,7 @@ const BuildPieceSchema = z.object({
   title: z.string(),
   prompt: z.string(),
   allowedPaths: z.array(z.string()).default([]),
+  agent: z.string().optional(),
 });
 
 const SplitBuildResult = z.object({
@@ -214,7 +228,15 @@ export async function runBuildFanout(input: {
     }
 
     const verdicts = runs.map((r) => r.verdict);
-    const ok = !mergeFailed && verdicts.length > 0 && verdicts.every((v) => v?.ok === true);
+    // FAIL CLOSED (M6): a stray — an out-of-lane write dropped by mergeDisjoint,
+    // or a per-piece merge failure recorded as a stray-like entry — forces
+    // ok:false. For a WIRED, mutating fan-out a dropped out-of-lane file can
+    // leave the merged tree provably incomplete (an in-lane file references a
+    // dropped file) yet green. The fan-out layer must not report success on a
+    // lossy merge; the executor surfaces the strays in `blocker` when !ok, so
+    // normal retry / single-builder fallback / repair takes over.
+    const ok =
+      !mergeFailed && verdicts.length > 0 && verdicts.every((v) => v?.ok === true) && stray.length === 0;
     return { ok, verdicts, merged, stray };
   } finally {
     // NO WORKTREE LEAKS: every worktree we created gets removed, even if the

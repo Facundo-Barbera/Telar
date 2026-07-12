@@ -251,6 +251,14 @@ export const ProjectManifest = z.object({
   // verifies the readyCheck. Default OFF (no lane at build time — byte-identical).
   // Honored via TELAR_SETUP_AGENT=1.
   setupAgent: z.boolean().default(false),
+  // M6 — wire the (already-built) intra-thread Build fan-out: a thread's build
+  // MAY split into N git-worktree-isolated builders over disjoint file pieces.
+  // Default OFF: flag-off every path is byte-identical (single builder). Rides
+  // on worktree isolation (each piece needs its own tree) — the dispatcher gates
+  // fan-out on isolateWorktrees too. Honored via TELAR_BUILD_FANOUT=1. The
+  // merged result still passes the SAME gates + one independent Verifier — more
+  // builders never changes WHO accepts (moat).
+  buildFanout: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
@@ -292,6 +300,25 @@ export const ModelPolicy = z.object({
   maxTurns: z.number().int().positive().optional(),
 });
 export type ModelPolicy = z.infer<typeof ModelPolicy>;
+
+// M6 — a curated, named preset table a build-fanout piece MAY select by name
+// (build-fanout.ts BuildPiece.agent). Telar-side config only — deliberately a
+// NARROW capability surface: model / prompt flavor / a tool allow+deny list.
+// It OMITS restrictTools, settingSources, and extraMcpServers by construction,
+// so a roster entry can never widen a capability wall, turn a wall off, or add
+// an MCP server — and it NEVER touches the read-only Verifier/Critic (whose
+// AgentOpts are hard-coded constants). Default {} ⇒ no preset ⇒ byte-identical.
+export const Roster = z.record(
+  z.string(),
+  z.object({
+    description: z.string(),
+    model: z.string().optional(),
+    promptPrelude: z.string().optional(),
+    tools: z.array(z.string()).optional(),
+    disallowedTools: z.array(z.string()).optional(),
+  }),
+);
+export type Roster = z.infer<typeof Roster>;
 
 // --- The Charter (docs/loom-orchestrator.md §5) — the goal + proof spec for a
 // Loom, drafted in Phase 0 scoping. Additive: absent on today's quickfix/

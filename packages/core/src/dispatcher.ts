@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   ModelPolicy,
+  Roster,
   assertProvenance,
   isWoven,
   isSingleThreadWeave,
@@ -15,6 +16,14 @@ import {
   type Provenance,
   type SubGoal,
 } from "./schemas";
+import { agent } from "./engine";
+import {
+  buildFanoutEnabled,
+  decideBuildFanout,
+  piecesAreDisjoint,
+  splitBuild as splitBuildDefault,
+  type BuildPiece,
+} from "./build-fanout";
 import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { buildIntegrationRepairBrief, executeLoom, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
@@ -54,10 +63,15 @@ export type StartLoomInput = {
 export type DispatcherDeps = {
   accounts: Record<string, AccountProfile>;
   policy?: ModelPolicy;
+  roster?: Roster;
   // Injectors — tests swap these for fakes so no live agent/model runs.
   draftCharterFn?: typeof draftCharterDefault;
   planWeaveFn?: typeof planWeaveFromBundle;
   runLoomFn?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<Loom>;
+  // M6 — the read-only build-splitter planner (build-fanout.ts). Injected so a
+  // fan-out wiring test drives the dispatch→executor seam with canned pieces
+  // and no live model.
+  splitBuildFn?: typeof splitBuildDefault;
 };
 
 const active = new Map<string, AbortController>();
@@ -143,6 +157,45 @@ function runWeaveWiring(
   // before dispatch, so loom.charter is always present here.
   const decomposition = loom.charter!.decomposition;
   const policy = deps.policy ?? loadPolicy();
+  const roster = deps.roster ?? loadRoster();
+
+  // M6 — the single place a child thread's build MAY fan out into N
+  // worktree-isolated builders. Gated on BOTH flags (fan-out rides on worktree
+  // isolation — each piece needs its own tree). Returns the populated
+  // buildFanout opt, or null to run the single builder. Every failure mode
+  // (planner throw, <2 pieces, budget/pool clamp to <2, a defense-in-depth
+  // disjointness miss) degrades to the single builder — a fan-out NEVER turns a
+  // runnable thread into a crashed one, and NEVER changes WHO accepts (moat).
+  const planBuildFanout = async (child: Loom): Promise<{ pieces: BuildPiece[]; baseRef: string } | null> => {
+    // 1. READ-ONLY planner proposes disjoint pieces (already collapses to [] on
+    //    <2 pieces or any overlap). deps.splitBuildFn is the test seam.
+    const pieces = await (deps.splitBuildFn ?? splitBuildDefault)(
+      { prompt: child.prompt, manifest },
+      { agent, account: deps.accounts?.[manifest.account], model: policy.dev },
+    );
+    if (pieces.length < 2) return null; // no disjoint partition — honest single-builder fallback
+
+    // 2. Size against the SAME shared pool + budget the weaver clamps against.
+    //    inFlight is conservative: maxParallelThreads (the max threads that may
+    //    be live) so we never over-commit the pool from inside a runChild that
+    //    has no direct view of the scheduler's live count.
+    const budget = loom.charter!.budget;
+    const n = decideBuildFanout(pieces.length, {
+      maxAgents: budget.maxAgents,
+      inFlight: Math.max(1, budget.maxParallelThreads ?? 1),
+      budgetLeftUsd: budget.maxCostUsd ?? Infinity,
+      estCostPerAgent: EST_COST_PER_AGENT,
+    });
+    if (n < 2) return null; // pool/budget left room for at most one builder
+
+    const chosen = pieces.slice(0, n);
+    // 3. Defense-in-depth: re-assert disjointness before handing overlap toward
+    //    runBuildFanout's hard throw. Should be impossible after splitBuild.
+    if (!piecesAreDisjoint(chosen)) return null;
+    // baseRef "HEAD": runBuildFanout's repoRoot is the child's own isolated
+    // worktree (executor buildCwd) — pieces branch off THAT tree's HEAD.
+    return { pieces: chosen, baseRef: "HEAD" };
+  };
 
   // M4 — the budget the auto-repair guards read each round. spentUsd folds in
   // the repair rounds' recorded cost (repairHistory) so the budget guard trips
@@ -256,15 +309,38 @@ function runWeaveWiring(
       saveLoom(child);
       return child;
     },
-    runChild: (child) =>
-      (deps.runLoomFn ?? executeLoom)(child, manifest, {
+    runChild: async (child) => {
+      const runFn = deps.runLoomFn ?? executeLoom;
+      const base: ExecuteOpts = {
         policy,
         accounts: deps.accounts,
+        roster,
         abort,
         onState: saveLoom,
         onEvent: (ev) => appendEvent(child.id, ev),
         ...(opts.maxAttempts != null ? { maxAttempts: opts.maxAttempts } : {}),
-      }),
+      };
+      // M6 build fan-out (flag-guarded, DEFAULT OFF). Rides on worktree
+      // isolation. Flag-off on EITHER flag ⇒ block skipped ⇒ opts.buildFanout
+      // undefined ⇒ executeLoom's single-builder branch ⇒ byte-identical.
+      // Whole block try/caught: any planner throw falls through to the single
+      // builder rather than crashing a runnable thread.
+      if (buildFanoutEnabled(manifest) && isolationEnabled(manifest)) {
+        try {
+          const fanout = await planBuildFanout(child);
+          if (fanout) {
+            appendEvent(child.id, { type: "fanout-planned", pieces: fanout.pieces.length });
+            return runFn(child, manifest, { ...base, buildFanout: fanout });
+          }
+        } catch (err) {
+          appendEvent(child.id, {
+            type: "fanout-skipped",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return runFn(child, manifest, base);
+    },
     onState: saveLoom,
     onEvent: (ev) => appendEvent(loom.id, ev),
     abort,
@@ -980,5 +1056,18 @@ export function loadPolicy(): ModelPolicy {
     return ModelPolicy.parse(JSON.parse(raw));
   } catch {
     return ModelPolicy.parse({});
+  }
+}
+
+// M6 — the curated agent roster (~/.telar/roster.json). Mirrors loadPolicy():
+// any read/parse error (missing file, malformed JSON, a schema-rejected field
+// like a smuggled restrictTools) degrades to the empty roster {} — never a
+// throw, never a widened capability wall.
+export function loadRoster(): Roster {
+  try {
+    const raw = fs.readFileSync(path.join(telarDir(), "roster.json"), "utf8");
+    return Roster.parse(JSON.parse(raw));
+  } catch {
+    return Roster.parse({});
   }
 }
