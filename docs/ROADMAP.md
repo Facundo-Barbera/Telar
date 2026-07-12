@@ -93,7 +93,7 @@ terminal state. Green-gate: core tests + core/web tsc.
 **Done when:** you can open a Chat tab that already knows the loom and steer it, and
 open any operator to read its actual session. Green-gate as above.
 
-## ▶ M3 — Isolated, consolidated deliverables
+## ✅ M3 — Isolated, consolidated deliverables  ·  *shipped `ec9f7fa` (flag off; live-gated)*
 
 *The work product is clean and reviewable.*
 
@@ -105,7 +105,7 @@ open any operator to read its actual session. Green-gate as above.
 **Done when:** a woven loom builds in isolation and lands as one consolidated branch;
 no cross-loom file collisions. (Foundation for the frozen-lane verify in M4.)
 
-## M4 — Close the verification loop  ·  *live-validation-gated*
+## ▶ M4 — Close the verification loop  ·  *live-validation-gated*
 
 *Build the deterministic scaffolding + guards autonomously; the live proof needs a
 real Postgres and is runaway-prone, so validate the loop with a human in the seat.*
