@@ -1,12 +1,17 @@
 // Loom persistence in ~/.telar/looms/<id>/ — loom.json (current state, atomic
 // rewrite) + events.ndjson (append-only log, tailed by the UI via line offset).
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Charter, PanelReport, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import { getProject } from "./manifest";
+// M3: the git runner (and the whole VCS/worktree substrate) now lives in
+// vcs.ts. Re-exported here for back-compat with existing `../src/looms`
+// imports (e.g. accept-commit.test.ts).
+import { defaultGitRunner, type GitRunner } from "./vcs";
+export { defaultGitRunner } from "./vcs";
+export type { GitRunner, GitRunResult } from "./vcs";
 
 const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
 const loomsDir = () => path.join(telarDir(), "looms");
@@ -105,6 +110,21 @@ export type Loom = {
   // will read it to gate finish-loom. Absent on plain looms and on woven roots
   // with no ALL contract (no integration verify ran).
   latestVerdict?: string;
+  // M3 (per-loom worktree isolation) — all three absent unless
+  // manifest.isolateWorktrees (or TELAR_ISOLATE_WORKTREES) is on, so flag-off
+  // every loom is byte-identical to pre-M3.
+  //   worktree            — a CHILD thread's live worktree path, persisted at
+  //                         build start and cleared on removal (a reclamation
+  //                         record for the reaper if the process is killed).
+  //   baseSha             — set on the ROOT: the pinned base SHA (resolved once
+  //                         from manifest.baseBranch) all its threads fork from.
+  //   consolidationBranch — set on the ROOT: the review-branch deliverable
+  //                         (`telar/<rootId>`) every done child's work folds
+  //                         onto. NEVER merged to baseBranch except under a
+  //                         human acceptLoom click (landWorkingTree).
+  worktree?: string;
+  baseSha?: string;
+  consolidationBranch?: string;
 };
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
@@ -238,30 +258,6 @@ export function appendEvent(id: string, ev: { type: string } & Record<string, un
   fs.appendFileSync(path.join(dir, "events.ndjson"), JSON.stringify({ ...ev, ts: Date.now() }) + "\n");
 }
 
-// An injectable git runner (docs/loom-model.md §A — landing the work): given
-// the project root and argv, run git and report its exit status + output. The
-// default shells out; tests swap in a fake so no real git process runs and no
-// working tree is touched. The runner owns pointing git at `root` (`git -C`).
-export type GitRunResult = { status: number; stdout: string; stderr: string };
-export type GitRunner = (root: string, args: string[]) => GitRunResult;
-
-const defaultGitRunner: GitRunner = (root, args) => {
-  try {
-    const stdout = execFileSync("git", ["-C", root, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { status: 0, stdout, stderr: "" };
-  } catch (err) {
-    const e = err as { status?: number; stdout?: unknown; stderr?: unknown };
-    return {
-      status: typeof e.status === "number" ? e.status : 1,
-      stdout: e.stdout ? String(e.stdout) : "",
-      stderr: e.stderr ? String(e.stderr) : String(err),
-    };
-  }
-};
-
 type LandResult =
   | { committed: true; sha: string }
   | { committed: false; skipped: string }
@@ -271,13 +267,14 @@ type LandResult =
 // role is not a pure-verification role. In today's shared-tree model only a
 // builder attempt writes the project tree; a verify-only or never-run loom
 // touched nothing, so committing on its behalf can only sweep unrelated files.
-// The `commit`/`worktree` clauses are forward-compat: `commit` is set only at
-// accept (recordLanding) and no `worktree` field exists yet, so both are inert
-// today and become correct once per-loom worktrees land.
+// A woven ROOT has no builder attempt of its own, but once it owns a
+// consolidationBranch that branch IS its deliverable — so it "produced output"
+// and its accept must land (via the branch merge in landWorkingTree). A child
+// thread with a live worktree likewise produced output.
 const VERIFY_ONLY_ROLES = new Set(["verifier", "integration"]);
 function producedBuildOutput(loom: Loom): boolean {
   const built = loom.attempts.some((a) => !VERIFY_ONLY_ROLES.has(a.role));
-  return built || !!loom.commit || !!(loom as { worktree?: string }).worktree;
+  return built || !!loom.commit || !!loom.worktree || !!loom.consolidationBranch;
 }
 
 // docs/loom-model.md §A — "acceptance LANDS the work." Commit the loom's
@@ -306,6 +303,27 @@ function landWorkingTree(loom: Loom, by: string, git: GitRunner, land: boolean):
   const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
     return { committed: false, skipped: "not a git repository" };
+  }
+
+  // M3 branch-aware landing: when the loom carries a consolidationBranch (a
+  // woven root's review-branch deliverable, produced under isolation), land
+  // that BRANCH into the currently-checked-out branch (expected baseBranch)
+  // via a --no-ff merge, instead of `git add -A` of the shared tree. This is
+  // the ONE moat-adjacent landing change and only ever runs under a human
+  // acceptLoom click. Still total — every failure returned as a LandResult.
+  // (Conflicts against a moved baseBranch / a dirty shared tree are the §10
+  // live-validation gap; until then it rides the same default-OFF flag.)
+  if (loom.consolidationBranch) {
+    const message = `feat(loom): ${loom.title}\n\nLoom: ${loom.id}\nReview-branch: ${loom.consolidationBranch}\nAccepted-by: ${by}`;
+    const merge = git(root, ["merge", "--no-ff", "-m", message, loom.consolidationBranch]);
+    if (merge.status !== 0) {
+      return { committed: false, error: `git merge failed: ${merge.stderr.trim() || merge.stdout.trim()}` };
+    }
+    const mergedHead = git(root, ["rev-parse", "HEAD"]);
+    if (mergedHead.status !== 0 || !mergedHead.stdout.trim()) {
+      return { committed: false, error: `git rev-parse HEAD failed: ${mergedHead.stderr.trim()}` };
+    }
+    return { committed: true, sha: mergedHead.stdout.trim() };
   }
 
   const status = git(root, ["status", "--porcelain"]);

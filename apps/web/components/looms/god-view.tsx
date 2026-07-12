@@ -60,6 +60,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChatTab } from "@/components/looms/chat-tab";
+import { ConsolidationBranch } from "@/components/looms/consolidation-branch";
 import { cn } from "@/lib/utils";
 import { fmtAgo, fmtCost, shortId } from "@/lib/format";
 
@@ -1511,6 +1512,7 @@ function VerifyPanel({ view, loom }: { view: VerifyView; loom: Loom }) {
   return (
     <div className="flex flex-col gap-4">
       <VerifyContract loomId={loom.id} />
+      <ConsolidationBranch loom={loom} />
 
       {nothingYet ? (
         <ComingSoon

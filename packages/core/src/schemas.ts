@@ -220,6 +220,13 @@ export const ProjectManifest = z.object({
     .enum(["auto", "human-required-for-epics", "human-required"])
     .default("human-required-for-epics"),
   baseBranch: z.string().default("main"),
+  // M3 — per-loom worktree isolation + consolidation. Default OFF: every code
+  // path is byte-identical to pre-M3 when false. On, each child thread builds
+  // in its own git worktree forked from baseBranch's pinned SHA, and every
+  // done thread's diff folds onto a `telar/<rootId>` review branch (the
+  // human-review deliverable — never auto-merged to baseBranch). Also honored
+  // via the TELAR_ISOLATE_WORKTREES=1 env override for live-validation runs.
+  isolateWorktrees: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),

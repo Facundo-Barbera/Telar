@@ -18,6 +18,8 @@ import {
 import { getProject, telarDir } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { executeLoom, runIntegrationVerify, type ExecuteOpts } from "./executor";
+import { createConsolidationBranch, defaultGitRunner, isolationEnabled, reapOrphanWorktrees, resolveBaseSha } from "./vcs";
+import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
 import { appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
@@ -146,7 +148,35 @@ function runWeaveWiring(
   }
   const rootAssertions = contract.assertions;
   const rootSynthesized = contract.synthesized === true;
-  return runWeave(loom, decomposition, {
+
+  // M3: pin the base SHA + create the review branch at ROOT start, BEFORE any
+  // child spawns — children read root.baseSha to fork their own worktrees
+  // (executor.ts). A non-git root / branch-create failure degrades isolation to
+  // the shared-root path (no worktree, no branch) rather than breaking dispatch.
+  // Idempotent on re-dispatch: createConsolidationBranch leaves an existing
+  // telar/<id> branch untouched. (Base-SHA pinning + branch setup live here —
+  // not in weave.ts — because this is the seam that has the manifest + git
+  // runner, mirroring how runIntegrationVerify is wired in as a dep below.)
+  if (isolationEnabled(manifest)) {
+    try {
+      const baseSha = resolveBaseSha(defaultGitRunner, manifest.root, manifest.baseBranch);
+      if (baseSha) {
+        loom.baseSha = baseSha;
+        loom.consolidationBranch = `telar/${loom.id}`;
+        createConsolidationBranch(defaultGitRunner, manifest.root, loom.consolidationBranch, baseSha);
+        saveLoom(loom);
+      }
+    } catch (err) {
+      appendEvent(loom.id, {
+        type: "consolidate-setup-failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      loom.baseSha = undefined;
+      loom.consolidationBranch = undefined;
+    }
+  }
+
+  const woven = runWeave(loom, decomposition, {
     spawnChild: (sg) => {
       const existing = listChildLooms(loom.id).find((c) => c.subGoalId === sg.id);
       if (existing) {
@@ -204,6 +234,36 @@ function runWeaveWiring(
         emit: (ev) => appendEvent(l.id, ev),
       }),
   });
+
+  // M3: finalize the review branch once the weave settles. Every done child
+  // already folded its work onto the branch (on its own success path); this
+  // only RECORDS the deliverable and drops it if it stayed empty (zero folds).
+  // MOAT: no merge, no checkout of baseBranch, no state change — the branch is
+  // a review artifact the human lands via acceptLoom. Guarded so a finalize
+  // failure never rejects the dispatch chain.
+  if (isolationEnabled(manifest) && loom.consolidationBranch) {
+    return woven.then((result) => {
+      try {
+        const fin = finalizeConsolidation(result, manifest.root, defaultGitRunner);
+        appendEvent(result.id, {
+          type: "consolidated",
+          branch: fin.dropped ? null : result.consolidationBranch,
+          commits: fin.commits,
+          dropped: fin.dropped,
+        });
+        saveLoom(result);
+      } catch (err) {
+        try {
+          appendEvent(result.id, {
+            type: "consolidate-finalize-failed",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        } catch {}
+      }
+      return result;
+    });
+  }
+  return woven;
 }
 
 // Post-charter dispatch: UNIVERSAL ROUTING — every loom runs through runWeave.
@@ -742,6 +802,50 @@ export function reconcileStuckLooms(): { id: string; from: string }[] {
       // One loom's failed write must never abort the sweep.
     }
   }
+
+  // M3 worktree reaper — reclaim crash-orphaned worktrees a killed process
+  // couldn't remove in its finally. Iterates ALL looms (roots AND children,
+  // unlike the stuck sweep above which skips children), groups by project root,
+  // and force-removes any telar-wt-* worktree not owned by an in-flight loom.
+  // A worktree is LIVE if its own loom is active OR its parent root is active.
+  // Consolidation BRANCHES are intentionally NOT reaped (a telar/<id> branch
+  // from a crashed run is harmless — branch GC is the human's call). Guarded so
+  // a non-git project / missing root is a no-op, never a boot crash.
+  try {
+    const liveIds = new Set(activeLoomIds());
+    const isLive = (l: Loom): boolean => liveIds.has(l.id) || (l.parentLoomId ? liveIds.has(l.parentLoomId) : false);
+    const byRoot = new Map<string, { live: string[]; reclaim: Loom[] }>();
+    for (const l of listLooms()) {
+      if (!l.worktree) continue;
+      let root: string;
+      try {
+        root = getProject(l.project).manifest.root;
+      } catch {
+        continue; // project left the registry / unreadable — skip
+      }
+      let g = byRoot.get(root);
+      if (!g) {
+        g = { live: [], reclaim: [] };
+        byRoot.set(root, g);
+      }
+      if (isLive(l)) g.live.push(l.worktree);
+      else g.reclaim.push(l);
+    }
+    for (const [root, g] of byRoot) {
+      try {
+        reapOrphanWorktrees(defaultGitRunner, root, g.live);
+      } catch {}
+      for (const l of g.reclaim) {
+        try {
+          l.worktree = undefined;
+          saveLoom(l);
+        } catch {}
+      }
+    }
+  } catch {
+    // the reaper is belt-and-suspenders — never let it abort boot reconciliation
+  }
+
   return reconciled;
 }
 

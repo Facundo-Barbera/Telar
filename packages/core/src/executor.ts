@@ -11,7 +11,9 @@ import { readBundleFile, readContract } from "./bundle";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
-import { loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
+import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
+import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, withWorktreeLock } from "./vcs";
+import { foldChildOnDone } from "./consolidate";
 import { startProjectServer } from "./run-server";
 import { ModelPolicy, validateContract, Verdict } from "./schemas";
 import type {
@@ -42,6 +44,11 @@ export type ExecuteOpts = {
   // Reserved for the caller's scheduler (M7.5) to report agent-pool headroom
   // alongside buildFanout; not read by executeLoom itself in this phase.
   poolRoom?: number;
+  // Injectable builder agent (defaults to the real engine `agent`). Mirrors the
+  // `run?: typeof agent` seam runVerification/runPanelVerification already
+  // expose — lets tests drive the build loop with a fake builder (no live
+  // model) without mocking the engine module. Production never sets it.
+  run?: typeof agent;
 };
 
 const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 80, verify: 40 };
@@ -61,6 +68,15 @@ function pathUnderAny(file: string, patterns: string[]): boolean {
     if (!base) return true;
     return norm === base || norm.startsWith(base + "/") || norm.startsWith(base);
   });
+}
+
+// M3 — the SINGLE cwd flip point. Flag-off (no worktree) this is
+// manifest.root, so every builder/gate/verify/touched-files site that routes
+// through it is byte-identical to pre-M3. Flag-on a child thread's build,
+// gates, and touched-file measurement all read the SAME isolated worktree the
+// builder wrote (coherence — see isolation-risks risk #4).
+function buildCwd(loom: Loom, manifest: ProjectManifest): string {
+  return loom.worktree ?? manifest.root;
 }
 
 // §M.4: an independent (non-self-reported) measurement of which files
@@ -405,7 +421,7 @@ async function runPanelVerification(
     // can no longer shrink its own panel or hide a protected-path edit —
     // the git-derived set always carries the true touched files through.
     const selfReported = attempt.verdict?.files_touched ?? [];
-    const gitTouched = gitTouchedFiles(manifest.root);
+    const gitTouched = gitTouchedFiles(buildCwd(loom, manifest));
     const filesTouched = Array.from(new Set([...selfReported, ...gitTouched]));
     const allowedPaths = loom.charter?.scope.allowedPaths ?? [];
     const protectedPaths = manifest.guardrails.protectedPaths;
@@ -825,6 +841,20 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
     return loom;
   };
 
+  // M3: symmetric worktree cleanup. A verify-kind child would get its own
+  // worktree too (verify-only children never FOLD — they produce no build
+  // output), but in practice every verify loom is a root (no parentLoomId), so
+  // this guard is inert. Kept for the same leak-safe try/finally shape.
+  let ownWorktree: string | null = null;
+  if (isolationEnabled(manifest) && loom.parentLoomId) {
+    const baseSha = getLoom(loom.parentLoomId)?.baseSha;
+    if (baseSha) {
+      ownWorktree = await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id));
+      loom.worktree = ownWorktree;
+      opts.onState?.(loom);
+    }
+  }
+
   try {
     if (isAborted()) return halt();
 
@@ -867,6 +897,17 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
       if (loom.state === "failed") loom.error ??= message;
     }
     return loom;
+  } finally {
+    if (ownWorktree) {
+      const wt = ownWorktree;
+      try {
+        await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
+        loom.worktree = undefined;
+        opts.onState?.(loom);
+      } catch {
+        // best-effort cleanup
+      }
+    }
   }
 }
 
@@ -905,9 +946,9 @@ export async function executeLoom(
     // Refresh any near-expiry Telar-owned MCP OAuth tokens before resolving the
     // servers so the injected Bearer is live (docs/mcp-oauth-design.md §5).
     await refreshProjectMcpAuth(manifest.name);
-    return agent(prompt, {
+    return (opts.run ?? agent)(prompt, {
       schema: Verdict,
-      cwd: manifest.root,
+      cwd: buildCwd(loom, manifest),
       model: ctx.model,
       maxTurns,
       tools,
@@ -953,7 +994,7 @@ export async function executeLoom(
       // Refresh near-expiry MCP OAuth tokens before resolving the servers, same
       // as runBuildStep (docs/mcp-oauth-design.md §5).
       await refreshProjectMcpAuth(manifest.name);
-      return agent(
+      return (opts.run ?? agent)(
         [
           `# ${piece.title}`,
           piece.prompt,
@@ -1012,7 +1053,7 @@ export async function executeLoom(
 
     emit({ type: "fanout", pieces: fanout.pieces.length });
     const result = await runBuildFanout({
-      repoRoot: manifest.root,
+      repoRoot: buildCwd(loom, manifest),
       baseRef: fanout.baseRef ?? "HEAD",
       pieces: fanout.pieces,
       runPieceBuilder: makePieceBuilder(ctx),
@@ -1031,6 +1072,22 @@ export async function executeLoom(
     };
     return combined;
   };
+
+  // M3 worktree isolation lifecycle. Declared out here so the finally (the ONE
+  // leak-safe cleanup site, running on every return AND on abort/cancel) sees
+  // them. Only a CHILD thread gets its own worktree, and only when isolation is
+  // on AND the root pinned a resolvable base SHA; otherwise ownWorktree stays
+  // null and every path below is byte-identical to pre-M3.
+  let ownWorktree: string | null = null;
+  let consolidateFailed = false;
+  if (isolationEnabled(manifest) && loom.parentLoomId) {
+    const baseSha = getLoom(loom.parentLoomId)?.baseSha;
+    if (baseSha) {
+      ownWorktree = await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id));
+      loom.worktree = ownWorktree;
+      opts.onState?.(loom); // persist BEFORE the build so a crash leaves a reclaimable record
+    }
+  }
 
   try {
     // Retry context from the previous attempt.
@@ -1066,7 +1123,7 @@ export async function executeLoom(
       }
 
       setState("verifying");
-      const gateRun = await runGates(manifest.gates, manifest.root, (r) => emit({ type: "gate", result: r }));
+      const gateRun = await runGates(manifest.gates, buildCwd(loom, manifest), (r) => emit({ type: "gate", result: r }));
       // Unit 4 (docs §3): route the contract's DETERMINISTIC assertions
       // (command / gate / db-with-a-runnable-command) into the SAME gate/command
       // layer as extra gates, BEFORE the panel. For a no-UI backend contract
@@ -1078,7 +1135,7 @@ export async function executeLoom(
         ? partitionAssertions(routedContract.assertions).deterministic
         : [];
       const contractGateResults = deterministic.length
-        ? await runContractGates(deterministic, manifest, manifest.root, (r, a) =>
+        ? await runContractGates(deterministic, manifest, buildCwd(loom, manifest), (r, a) =>
             emit({ type: "gate", result: r, assertionId: a.id, assertionType: a.type }),
           )
         : [];
@@ -1136,6 +1193,35 @@ export async function executeLoom(
 
       if (decision.action === "done") {
         setState(terminalStateForCompletedLoom(loom));
+        // M3 consolidation: on a CHILD's success, fold its isolated-worktree
+        // diff onto the root's review branch BEFORE the finally removes the
+        // worktree. Moat: this only ever commits onto telar/<rootId>, never
+        // baseBranch, never advances state past "done". A fold FAILURE retains
+        // the worktree (guarded in finally) so the work isn't destroyed.
+        if (ownWorktree && loom.parentLoomId) {
+          const root = getLoom(loom.parentLoomId);
+          if (root?.consolidationBranch) {
+            try {
+              const allowedPaths = root.charter?.scope.allowedPaths ?? [];
+              const fold = await foldChildOnDone({ child: loom, root, repoRoot: manifest.root, allowedPaths, git: defaultGitRunner });
+              emit({ type: "consolidated-thread", branch: root.consolidationBranch });
+              // Honest surfacing: two threads changed the same file — the later
+              // fold overwrote the earlier on the review branch. Not silently
+              // dropped; the human sees exactly which files to reconcile.
+              if (fold.collisions.length > 0) {
+                emit({
+                  type: "consolidate-collision",
+                  branch: root.consolidationBranch,
+                  thread: loom.id,
+                  files: fold.collisions,
+                });
+              }
+            } catch (err) {
+              consolidateFailed = true;
+              emit({ type: "consolidate-failed", message: err instanceof Error ? err.message : String(err) });
+            }
+          }
+        }
         return loom;
       }
       if (decision.action === "needs-review") {
@@ -1180,5 +1266,20 @@ export async function executeLoom(
       if (loom.state === "failed") loom.error ??= message;
     }
     return loom;
+  } finally {
+    // The ONE leak-safe cleanup site: runs on every return (done/needs-review/
+    // failed/halted) AND on abort/cancel. A fold FAILURE deliberately RETAINS
+    // the worktree (leave the work for the reaper/human) — that is the one case
+    // this must respect. Serialized through the same mutex as create.
+    if (ownWorktree && !consolidateFailed) {
+      const wt = ownWorktree;
+      try {
+        await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
+        loom.worktree = undefined;
+        opts.onState?.(loom);
+      } catch {
+        // best-effort — a cleanup failure must never turn a resolved loom into a reject
+      }
+    }
   }
 }

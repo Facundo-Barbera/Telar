@@ -18,14 +18,14 @@
 // a piece builder throws. Worktrees live under os.tmpdir() and are only ever
 // added/removed via `git worktree` — never an rm -rf of anything git doesn't
 // manage.
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { z } from "zod";
 import { agent } from "./engine";
 import { fanoutSize } from "./budget";
 import { Verdict, type AccountProfile, type ProjectManifest } from "./schemas";
+// M3: the worktree lifecycle + disjoint merge primitives now live in the one
+// shared vcs.ts module (promoted verbatim out of this file). runBuildFanout's
+// behavior is unchanged — it just calls them through the default git runner.
+import { addWorktree, defaultGitRunner, globBase, mergeDisjoint, normalizePath, removeWorktree } from "./vcs";
 
 export type BuildPiece = {
   id: string;
@@ -36,20 +36,9 @@ export type BuildPiece = {
 
 // --- path-overlap helpers (conservative: unsure => overlapping) -----------
 
-// The literal, non-glob portion of a path pattern — everything before the
-// first glob metacharacter. Comparing these prefixes/exact-matches is a
-// deliberately simple, conservative approximation of "do these path sets
-// intersect": it can flag disjoint globs as overlapping (safe: collapses to
-// a single piece) but never misses a real overlap.
-function globBase(p: string): string {
-  const idx = p.search(/[*?[]/);
-  return idx === -1 ? p : p.slice(0, idx);
-}
-
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
+// globBase/normalizePath (the literal-prefix approximation of "do these path
+// sets intersect") now live in vcs.ts, shared with mergeDisjoint.
+//
 // Disjointness is checked case-insensitively (conservative direction only):
 // on the default case-insensitive filesystems this project ships to (macOS
 // APFS/HFS+, Windows NTFS) two paths differing only by case resolve to the
@@ -155,79 +144,10 @@ Rules:
   return pieces;
 }
 
-// --- git worktree lifecycle -------------------------------------------------
-
-// Per-call incrementing counter for worktree-directory uniqueness — no
-// Date.now/Math.random, so tests stay deterministic.
-let worktreeCounter = 0;
-
-function addWorktree(repoRoot: string, baseRef: string, id: string): string {
-  worktreeCounter++;
-  const wt = path.join(os.tmpdir(), "telar-fanout-" + id + "-" + worktreeCounter);
-  execFileSync("git", ["worktree", "add", "--detach", wt, baseRef], { cwd: repoRoot });
-  return wt;
-}
-
-function removeWorktree(repoRoot: string, wt: string): void {
-  try {
-    execFileSync("git", ["worktree", "remove", "--force", wt], { cwd: repoRoot });
-  } catch {
-    // best-effort cleanup — a failed remove must never break the caller.
-    // (git tracks the worktree registration; a leaked *directory* here is
-    // still bounded under os.tmpdir(), never inside the user's repo.)
-  }
-}
-
-// Parses `git status --porcelain` for the worktree's changed files, copying
-// only those under one of `allowedPaths` back into repoRoot. Anything else
-// the builder touched is recorded as "stray" and deliberately NOT copied —
-// this is what keeps the merge conflict-free by construction.
-function mergeDisjoint(
-  repoRoot: string,
-  wt: string,
-  allowedPaths: string[],
-): { merged: string[]; stray: string[] } {
-  // core.quotepath=false: stop git from octal-escaping non-ASCII filenames in
-  // --porcelain output. Without this, a filename like "café.txt" comes back
-  // as "caf\303\251.txt" and the path.join below points at a path that
-  // doesn't exist, throwing ENOENT out of fs.copyFileSync.
-  const raw = execFileSync("git", ["-c", "core.quotepath=false", "status", "--porcelain"], { cwd: wt }).toString();
-  const merged: string[] = [];
-  const stray: string[] = [];
-
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    const status = line.slice(0, 2);
-    let filePath = line.slice(3);
-    if (status.includes("R")) {
-      // rename: "old -> new" — merge the destination.
-      const parts = filePath.split(" -> ");
-      filePath = parts[parts.length - 1];
-    }
-    // Strip possible git quoting around paths with special characters.
-    filePath = filePath.replace(/^"|"$/g, "");
-
-    const fp = normalizePath(filePath);
-    const isAllowed = allowedPaths.some((p) => {
-      const base = normalizePath(globBase(p));
-      return base === "" || fp === base || fp.startsWith(base + "/");
-    });
-
-    if (isAllowed) {
-      const src = path.join(wt, filePath);
-      const dest = path.join(repoRoot, filePath);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(src, dest);
-      merged.push(filePath);
-    } else {
-      stray.push(filePath);
-    }
-  }
-
-  return { merged, stray };
-}
-
 // --- runBuildFanout: the moat-preserving fan-out entry point ---------------
+// addWorktree/removeWorktree/mergeDisjoint are imported from vcs.ts (promoted
+// verbatim). They now take an injectable GitRunner; the fan-out passes the
+// default runner so its behavior is unchanged.
 
 export async function runBuildFanout(input: {
   repoRoot: string;
@@ -256,7 +176,7 @@ export async function runBuildFanout(input: {
     // is guaranteed to make it into `created` before we move to cleanup.
     const settled = await Promise.allSettled(
       pieces.map(async (piece) => {
-        const wt = addWorktree(repoRoot, baseRef, piece.id);
+        const wt = addWorktree(defaultGitRunner, repoRoot, baseRef, piece.id);
         created.push(wt);
         const verdict = await runPieceBuilder(piece, wt).catch(() => null);
         return { piece, wt, verdict };
@@ -282,7 +202,7 @@ export async function runBuildFanout(input: {
     for (const r of runs) {
       if (r.verdict?.ok && r.wt) {
         try {
-          const m = mergeDisjoint(repoRoot, r.wt, r.piece.allowedPaths);
+          const m = mergeDisjoint(defaultGitRunner, r.wt, repoRoot, r.piece.allowedPaths);
           merged.push(...m.merged);
           stray.push(...m.stray);
         } catch (err) {
@@ -299,6 +219,6 @@ export async function runBuildFanout(input: {
   } finally {
     // NO WORKTREE LEAKS: every worktree we created gets removed, even if the
     // merge step above threw.
-    for (const wt of created) removeWorktree(repoRoot, wt);
+    for (const wt of created) removeWorktree(defaultGitRunner, repoRoot, wt);
   }
 }
