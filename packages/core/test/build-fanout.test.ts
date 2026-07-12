@@ -209,6 +209,91 @@ describe("runBuildFanout (real temp git repo, fake runPieceBuilder — no live a
     expect(worktreeLines().length).toBe(1);
   });
 
+  test("GREENFIELD: pieces writing allowed files into PREVIOUSLY-UNTRACKED directories are NOT false-flagged stray and merge correctly", async () => {
+    // Reproduces the exact live-run regression: two pieces each write ONLY
+    // their allowed files, but into brand-new src/ and test/ directories that
+    // don't exist in HEAD. Default `git status --porcelain` collapses each
+    // fully-untracked dir to a single "?? src/" / "?? test/" entry, which never
+    // matches a FILE-level allowedPath like "src/token-bucket.ts" — so the merge
+    // produced ok:false with blocker "stray files ... src/, test/, src/, test/".
+    const pieces = [
+      {
+        id: "a1",
+        title: "token bucket",
+        prompt: "build the token bucket",
+        allowedPaths: ["src/token-bucket.ts", "test/token-bucket.test.ts"],
+      },
+      {
+        id: "a2",
+        title: "sliding window",
+        prompt: "build the sliding window",
+        allowedPaths: ["src/sliding-window.ts", "test/sliding-window.test.ts"],
+      },
+    ];
+
+    const result = await runBuildFanout({
+      repoRoot,
+      baseRef: "HEAD",
+      pieces,
+      runPieceBuilder: async (piece, cwd) => {
+        // Each piece writes EXACTLY its allowed files into new src/ + test/ dirs.
+        for (const rel of piece.allowedPaths) {
+          const abs = path.join(cwd, rel);
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, `// ${piece.id}: ${rel}\n`);
+        }
+        return verdict({ summary: `${piece.id} done` });
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stray).toEqual([]);
+    expect(result.merged.sort()).toEqual([
+      "src/sliding-window.ts",
+      "src/token-bucket.ts",
+      "test/sliding-window.test.ts",
+      "test/token-bucket.test.ts",
+    ]);
+    // All four files actually landed in the shared root.
+    expect(fs.readFileSync(path.join(repoRoot, "src", "token-bucket.ts"), "utf8")).toBe("// a1: src/token-bucket.ts\n");
+    expect(fs.readFileSync(path.join(repoRoot, "test", "sliding-window.test.ts"), "utf8")).toBe(
+      "// a2: test/sliding-window.test.ts\n",
+    );
+    expect(worktreeLines().length).toBe(1);
+  });
+
+  test("GREENFIELD STRAY: within one new untracked dir, an in-lane file merges but an out-of-lane SIBLING still FAILS CLOSED", async () => {
+    // The fix must NOT weaken genuine stray detection. a3 drops a rogue sibling
+    // into the SAME brand-new src/ dir as its allowed file — under the old
+    // collapsed "?? src/" the two were indistinguishable; --untracked-files=all
+    // lists both, so the allowed one merges and the rogue one is still stray.
+    const pieces = [
+      { id: "a3", title: "A", prompt: "p", allowedPaths: ["src/token-bucket.ts"] },
+      { id: "a4", title: "B", prompt: "p", allowedPaths: ["src/sliding-window.ts"] },
+    ];
+
+    const result = await runBuildFanout({
+      repoRoot,
+      baseRef: "HEAD",
+      pieces,
+      runPieceBuilder: async (piece, cwd) => {
+        const abs = path.join(cwd, piece.allowedPaths[0]);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, `// ${piece.id}\n`);
+        if (piece.id === "a3") {
+          fs.writeFileSync(path.join(cwd, "src", "rogue.ts"), "out of lane\n");
+        }
+        return verdict({ summary: `${piece.id} done` });
+      },
+    });
+
+    expect(result.ok).toBe(false); // real stray -> fail closed
+    expect(result.stray).toEqual(["src/rogue.ts"]); // rogue sibling caught individually
+    expect(result.merged.sort()).toEqual(["src/sliding-window.ts", "src/token-bucket.ts"]); // in-lane files still merged
+    expect(fs.existsSync(path.join(repoRoot, "src", "rogue.ts"))).toBe(false); // rogue never landed
+    expect(worktreeLines().length).toBe(1);
+  });
+
   test("a stray file outside allowedPaths is NOT merged, is reported, and FAILS CLOSED (ok:false)", async () => {
     const pieces = [
       { id: "p3", title: "A", prompt: "do A", allowedPaths: ["a.txt"] },

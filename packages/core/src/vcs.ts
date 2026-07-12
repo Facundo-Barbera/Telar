@@ -180,7 +180,18 @@ export function mergeDisjoint(
   // core.quotepath=false: stop git from octal-escaping non-ASCII filenames in
   // --porcelain output (without it "café.txt" comes back as "caf\303\251.txt"
   // and the path.join below points at a nonexistent path, throwing ENOENT).
-  const raw = git(srcWt, ["-c", "core.quotepath=false", "status", "--porcelain"]).stdout;
+  //
+  // --untracked-files=all: force git to list every untracked file INDIVIDUALLY.
+  // The default (--untracked-files=normal) COLLAPSES a fully-untracked directory
+  // to a single "dir/" entry (e.g. "?? src/") instead of "?? src/token-bucket.ts".
+  // That collapsed "src/" entry never matches a FILE-level allowedPath like
+  // "src/token-bucket.ts", so a greenfield fan-out (each piece writing its
+  // allowed files into a brand-new directory) had those files both (a) dropped
+  // from the merge and (b) false-flagged as stray — wrongly rejecting a fully
+  // correct multi-agent build. Enumerating untracked files individually
+  // attributes each to its allowedPath; a real out-of-lane write is still a
+  // distinct file entry and is still caught as stray (fail-closed preserved).
+  const raw = git(srcWt, ["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"]).stdout;
   const merged: string[] = [];
   const stray: string[] = [];
 

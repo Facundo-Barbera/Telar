@@ -163,6 +163,41 @@ describe("mergeDisjoint", () => {
     }
   });
 
+  test("merges files created in a PREVIOUSLY-UNTRACKED directory, not a false stray from a collapsed dir entry", () => {
+    // Regression for the live-run bug: default `git status --porcelain`
+    // COLLAPSES a fully-untracked directory to a single "?? src/" entry instead
+    // of listing "?? src/token-bucket.ts". That "src/" never matched a
+    // file-level allowedPath, so a greenfield write was both dropped from the
+    // merge and false-flagged stray. --untracked-files=all lists each file so it
+    // is attributed to its allowedPath — while a real out-of-lane sibling in the
+    // SAME new dir is still, distinctly, caught as stray (fail-closed intact).
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "m3");
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vcs-dest3-"));
+    try {
+      fs.mkdirSync(path.join(wt, "src"));
+      fs.mkdirSync(path.join(wt, "test"));
+      fs.writeFileSync(path.join(wt, "src", "token-bucket.ts"), "tb\n");
+      fs.writeFileSync(path.join(wt, "test", "token-bucket.test.ts"), "tb test\n");
+      // A genuine out-of-lane SIBLING inside the same brand-new src/ directory.
+      fs.writeFileSync(path.join(wt, "src", "rogue.ts"), "rogue\n");
+
+      const res = mergeDisjoint(defaultGitRunner, wt, dest, [
+        "src/token-bucket.ts",
+        "test/token-bucket.test.ts",
+      ]);
+
+      expect(res.merged.sort()).toEqual(["src/token-bucket.ts", "test/token-bucket.test.ts"]);
+      expect(res.stray).toEqual(["src/rogue.ts"]); // real stray still detected
+      expect(fs.readFileSync(path.join(dest, "src", "token-bucket.ts"), "utf8")).toBe("tb\n");
+      expect(fs.readFileSync(path.join(dest, "test", "token-bucket.test.ts"), "utf8")).toBe("tb test\n");
+      expect(fs.existsSync(path.join(dest, "src", "rogue.ts"))).toBe(false); // stray never copied
+    } finally {
+      removeWorktree(defaultGitRunner, repo, wt);
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
   test("handles renames and non-ASCII filenames (quotepath off)", () => {
     const sha = git(repo, ["rev-parse", "HEAD"]).trim();
     const wt = addWorktree(defaultGitRunner, repo, sha, "m2");
