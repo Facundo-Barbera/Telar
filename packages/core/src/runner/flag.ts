@@ -13,3 +13,11 @@ export function runnerEnabled(manifest: { outOfProcessRunner?: boolean }): boole
 export function setupAgentEnabled(manifest: { setupAgent?: boolean }): boolean {
   return manifest.setupAgent === true || process.env.TELAR_SETUP_AGENT === "1";
 }
+
+// M7 — divert a live-critic loom with no target + no server recipe to the
+// `env-review` gate (a PROPOSED servers.yaml the human accepts) instead of
+// skipping to needs-review. Flag-off, the divert never fires and every path is
+// byte-identical to today. Honored via TELAR_ENV_REVIEW=1 for live-validation.
+export function envReviewEnabled(manifest: { envReview?: boolean }): boolean {
+  return manifest.envReview === true || process.env.TELAR_ENV_REVIEW === "1";
+}

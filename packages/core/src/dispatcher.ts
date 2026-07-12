@@ -14,6 +14,7 @@ import {
   type ProjectManifest,
   type ProofStrategy,
   type Provenance,
+  type ServersConfig,
   type SubGoal,
 } from "./schemas";
 import { agent } from "./engine";
@@ -46,8 +47,9 @@ import { appendSteering, readBundleFile, readContract, snapshotBundle, writeCont
 import { synthesizeContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { setupAgentEnabled } from "./runner/flag";
+import { envReviewEnabled, setupAgentEnabled } from "./runner/flag";
 import { runSetupAgent } from "./setup/setup-agent";
+import { writeAcceptedServersConfig } from "./servers";
 
 export type StartLoomInput = {
   project: string;
@@ -594,6 +596,49 @@ export async function approveCharter(id: string, by: string, deps: DispatcherDep
   return true;
 }
 
+// M7 — Accept/Steer a servers.yaml proposal paused in "env-review" and
+// re-dispatch VERIFY. Mirrors approveCharter's human gate + dispatch tail. On a
+// weave-of-one the gate lives on the ROOT (rollupWeave lifted the child's
+// env-review + proposedServers up — E10), so the human answers here and the
+// re-dispatched root weave RESETS + re-verifies the child. The moat: a non-blank
+// human `by` is REQUIRED (Telar never autonomously decides how to run the user's
+// app); the accepted config is persisted to `.telar/servers.yaml`
+// (writeAcceptedServersConfig) BEFORE re-dispatch, so the re-verify sees the
+// recipe and reaches the live path — but a green re-verify still lands `ready`,
+// never `done` (only acceptLoom + a human `by` promotes).
+//   `config` present  = STEER (the human edited the proposal) → persist that.
+//   `config` absent   = ACCEPT the proposal as-is → persist loom.proposedServers.
+// Returns false if the loom doesn't exist, isn't in env-review, or has nothing
+// to accept (no config + no proposal on the loom).
+export async function approveEnv(
+  id: string,
+  by: string,
+  config: ServersConfig | undefined,
+  deps: DispatcherDeps,
+): Promise<boolean> {
+  const loom = getLoom(id);
+  if (!loom || loom.state !== "env-review") return false;
+  if (!by?.trim()) throw new Error("approveEnv requires a non-blank `by`");
+  const accepted = config ?? loom.proposedServers;
+  if (!accepted) return false;
+
+  const { manifest } = getProject(loom.project);
+  writeAcceptedServersConfig(manifest.root, accepted); // → .telar/servers.yaml
+  loom.proposedServers = undefined; // clear the draft — it's now persisted
+  saveLoom(loom);
+  appendEvent(loom.id, { type: "env-approved", by });
+
+  const abort = new AbortController();
+  active.set(loom.id, abort);
+  const onFailure = makeOnFailure(loom);
+
+  dispatchExecution(loom, manifest, deps, abort) // re-dispatch VERIFY
+    .catch(onFailure)
+    .finally(() => active.delete(loom.id));
+
+  return true;
+}
+
 // docs/loom-model.md §5/§2 — a planning session calls this to get a loom id
 // to write Spec Bundle files into, BEFORE the loom is "started". The loom
 // exists on disk (draft:true, state "queued") so the god-view can render the
@@ -789,8 +834,9 @@ const TERMINAL_STATES: ReadonlySet<Loom["state"]> = new Set(["done", "halted", "
 
 // "Cancel" always means "stop this loom" — a live loom is aborted (the
 // running executor handles its own transition to "halted"); a paused loom
-// (charter-review/queued/ready/blocked/needs-review) has no live process to
-// abort, so it's halted directly here instead.
+// (charter-review/env-review/queued/ready/blocked/needs-review) has no live
+// process to abort, so it's halted directly here instead (env-review is a
+// paused, non-in-flight, non-terminal state, so cancel halts it just fine).
 export function cancelLoom(id: string): boolean {
   const ctl = active.get(id);
   if (ctl) {
@@ -886,19 +932,55 @@ export async function steerLoom(id: string, directive: string, by: string, deps:
 // un-sticks with guidance), `needs-review` (P5 — the owner rejects an
 // unverified loom's work outright rather than answering it), or `failed` (a
 // dead-ended attempt the owner sends back with corrective feedback rather than
-// abandoning). `by` is server-derived.
+// abandoning), or `env-review` (M7 — the owner rejects the env proposal; the
+// loom lands the honest needs-review terminal, the same as flag-off — no
+// fabricated pass). `by` is server-derived.
 export async function rejectLoom(id: string, feedback: string, by: string, deps: DispatcherDeps): Promise<Loom> {
   if (!by?.trim()) throw new Error("rejectLoom requires a non-blank `by`");
   if (!feedback?.trim()) throw new Error("rejectLoom requires non-empty feedback");
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
-  if (loom.state !== "ready" && loom.state !== "blocked" && loom.state !== "needs-review" && loom.state !== "failed") {
-    throw new Error(`reject is only valid from 'ready', 'blocked', 'needs-review', or 'failed' (loom is '${loom.state}')`);
+  if (
+    loom.state !== "ready" &&
+    loom.state !== "blocked" &&
+    loom.state !== "needs-review" &&
+    loom.state !== "failed" &&
+    loom.state !== "env-review"
+  ) {
+    throw new Error(
+      `reject is only valid from 'ready', 'blocked', 'needs-review', 'failed', or 'env-review' (loom is '${loom.state}')`,
+    );
   }
 
   appendSteering(id, { kind: "reject", text: feedback, by });
   appendEvent(id, { type: "rejected", feedback, by });
   loom.prompt = `${loom.prompt}\n\n## Rejection feedback (${by})\n${feedback.trim()}`;
+
+  // M7 — rejecting the ENV proposal lands the HONEST needs-review terminal (the
+  // same state a flag-off / no-server loom reaches), TERMINALLY. It does NOT
+  // re-dispatch: with no accepted `.telar/servers.yaml`, a re-verify would
+  // re-trigger the env-review gate — an infinite block the moat forbids. On a
+  // weave-of-one the gate lives on the ROOT (E10 lift), so ALSO reset the
+  // orphaned CHILD still parked in env-review (clear its draft + land it in
+  // needs-review) so a later resume re-runs a clean child and a stale child
+  // state can't be re-lifted. The owner steers/resumes from needs-review to retry.
+  if (loom.state === "env-review") {
+    loom.proposedServers = undefined; // the rejected draft is dead
+    loom.state = "needs-review";
+    loom.error = `Env proposal rejected: ${feedback.trim()}`;
+    appendEvent(id, { type: "state", state: "needs-review" });
+    saveLoom(loom);
+    for (const child of listChildLooms(loom.id)) {
+      if (child.state === "env-review") {
+        child.proposedServers = undefined;
+        child.state = "needs-review";
+        child.error = `Env proposal rejected: ${feedback.trim()}`;
+        appendEvent(child.id, { type: "state", state: "needs-review" });
+        saveLoom(child);
+      }
+    }
+    return loom;
+  }
 
   // Back to work, re-entering the verified loop. Never `done`.
   loom.state = "queued";

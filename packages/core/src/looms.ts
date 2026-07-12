@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, PanelReport, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, PanelReport, ServersConfig, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
@@ -129,6 +129,14 @@ export type Loom = {
   // M8 worktree recovery: WIP snapshot branch + reaper-shield flag
   recoveryBranch?: string;
   worktreeRetained?: boolean;
+  // M7 (env-review) — the setup agent's PROPOSED servers.yaml, stashed here when
+  // the loom diverts to `env-review` at verify time (no target + no recipe, flag
+  // on). On a weave-of-one the CHILD diverts and rollupWeave LIFTS this onto the
+  // ROOT (the same slot as loom.charter), so the human answers approveEnv on the
+  // root; approveEnv persists it to `.telar/servers.yaml`, CLEARS this, and
+  // re-dispatches verify. Absent unless the loom is (or was) in env-review;
+  // absent flag-off.
+  proposedServers?: ServersConfig;
   // M4 (auto-repair) — the ordered log of frozen-lane integration-verify rounds
   // (repair-guard.ts). Absent unless the autoRepair master flag fired: history[0]
   // is the initial verify, each later entry follows one dispatched repair. Read
@@ -408,8 +416,11 @@ function recordLanding(loom: Loom, by: string, git: GitRunner, land: boolean): v
 //  1. CLEAN — from `ready` (independently verified green). override:false, no
 //     flag.
 //  2. AUDITED OWNER OVERRIDE (P5) — from ANY other non-`done` state (`queued`,
-//     `scoping`, `charter-review`, `preparing`, `running`, `verifying`,
-//     `needs-review`, `blocked`, `halted`, `failed`, `skipped`). The loom was
+//     `scoping`, `charter-review`, `env-review`, `preparing`, `running`,
+//     `verifying`, `needs-review`, `blocked`, `halted`, `failed`, `skipped`).
+//     The catch-all below already covers env-review (an owner may close a loom
+//     paused on the env gate; producedBuildOutput recurses into the child
+//     subtree so accepting a root whose child built lands correctly). The loom was
 //     NOT independently verified, so the owner closing it is a distinct,
 //     AUDITED override: recorded as `accepted {override:true, fromState}` + the
 //     `acceptedOverride` flag, never a silent clean accept. The owner's

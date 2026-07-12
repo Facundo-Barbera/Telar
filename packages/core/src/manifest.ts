@@ -20,7 +20,10 @@ export function telarDir(): string {
 const registryFile = () => path.join(telarDir(), "projects.json");
 const manifestFile = (root: string) => path.join(root, "telar.yaml");
 
-function atomicWrite(file: string, data: string) {
+// Exported for servers.ts's writeAcceptedServersConfig (M7) — the same
+// mkdir+tmp+rename idiom, so an accepted `.telar/servers.yaml` is written
+// atomically and its parent dir is created on demand.
+export function atomicWrite(file: string, data: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + ".tmp";
   fs.writeFileSync(tmp, data);

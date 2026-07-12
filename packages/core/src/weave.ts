@@ -41,6 +41,15 @@ export function rollupWeave(
   const failedRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state === "failed");
   if (failedRequired) return { state: "failed", error: `${failedRequired.id}: failed` };
 
+  // M7 / E10 — a required child paused on the env gate LIFTS to the root, so the
+  // human answers approveEnv on the ROOT (the thing they interact with), the
+  // same position the root natively holds charter-review. Ordered after
+  // allRequiredDone -> ready and failedRequired -> failed, BEFORE the generic
+  // needs-review fallthrough that would otherwise bury the (answerable) gate.
+  // Flag-off no child ever diverts to env-review, so this branch is dead.
+  const envChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "env-review");
+  if (envChild) return { state: "env-review" };
+
   const notDoneRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state !== "done");
   if (notDoneRequired) return { state: "needs-review", error: `${notDoneRequired.id}: not done` };
 
@@ -358,6 +367,15 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // required child done) always wins, clearing any stray escalate/
     // iteration-bound error string.
     loom.error = r.state === "ready" ? null : (r.error ?? loom.error ?? null);
+    // M7 / E10 — when a required child diverted to env-review, LIFT its proposed
+    // servers.yaml onto the ROOT before setState so approveEnv on the root finds
+    // it (root.proposedServers is the same slot root.charter occupies for the
+    // charter gate). Flag-off there is never an env-review child, so this is a
+    // pure no-op (byte-identical).
+    if (r.state === "env-review") {
+      const envChild = children.find((c) => c.state === "env-review");
+      if (envChild) loom.proposedServers = envChild.proposedServers;
+    }
     setState(r.state);
     emit({ type: "weave-rollup", state: r.state });
 

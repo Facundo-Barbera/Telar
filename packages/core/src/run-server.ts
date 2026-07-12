@@ -221,6 +221,16 @@ export type Lane = {
   stopAll: () => Promise<void>; // reverse order, idempotent, error-aggregating
 };
 
+// Pick the lane URL a read-only verify drives: the named app service if given,
+// else the first service exposing a URL. Shared by frozenLaneVerify (the M4
+// auto-repair leg) and runVerification (the M7 normal verify leg) so both
+// resolve a lane target identically instead of duplicating the rule.
+export function laneTarget(lane: Lane, appService?: string): string | undefined {
+  if (appService && lane.services[appService]?.url) return lane.services[appService]!.url ?? undefined;
+  for (const svc of Object.values(lane.services)) if (svc.url) return svc.url;
+  return undefined;
+}
+
 export type CommandResult = { exitCode: number };
 
 export type RunCommand = (

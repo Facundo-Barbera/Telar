@@ -184,6 +184,12 @@ export const WorkUnitState = z.enum([
   "queued",
   "scoping",
   "charter-review",
+  // M7 — a live-critic loom whose verify needs a running app but the project
+  // has NO server recipe: paused awaiting a human Accept/Steer/Reject of the
+  // setup agent's proposed servers.yaml (approveEnv). Awaiting-human, like
+  // charter-review; NEITHER terminal NOR in-flight. Only reachable when the
+  // envReview flag is on — flag-off it is unreachable (byte-identical).
+  "env-review",
   "preparing",
   "running",
   "verifying",
@@ -259,6 +265,16 @@ export const ProjectManifest = z.object({
   // merged result still passes the SAME gates + one independent Verifier — more
   // builders never changes WHO accepts (moat).
   buildFanout: z.boolean().default(false),
+  // M7 — the env-review gate. When a live-critic loom reaches verify with no
+  // usable target AND the project has no server recipe, divert it to the
+  // `env-review` state (a setup-agent-PROPOSED servers.yaml the human must
+  // Accept/Steer/Reject) instead of skipping straight to needs-review. Default
+  // OFF: flag-off every path is byte-identical (the divert never fires; the
+  // added enum member + state maps are unreachable). Honored via
+  // TELAR_ENV_REVIEW=1. The moat holds: approveEnv needs a human `by`, the
+  // proposer writes/starts nothing before accept, verify stays read-only, and a
+  // green re-verify still lands `ready`, never `done`.
+  envReview: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),

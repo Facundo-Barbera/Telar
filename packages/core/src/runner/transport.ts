@@ -9,6 +9,7 @@
 // is exactly one `active` map (whichever process owns the transport).
 import type { Loom } from "../looms";
 import type { DispatcherDeps, StartLoomInput } from "../dispatcher";
+import type { ServersConfig } from "../schemas";
 
 export type HealthInfo = { pid: number; version: string; ok: boolean };
 
@@ -23,6 +24,10 @@ export interface RunnerTransport {
   start(input: StartLoomInput): Promise<Loom>;
   startFromBundle(loomId: string, by: string, opts?: StartFromBundleOpts): Promise<Loom>;
   approveCharter(id: string, by: string): Promise<boolean>;
+  // M7 — Accept/Steer an env proposal (config present = Steer). OPTIONAL: only
+  // the runner-flag-on path needs it; flag-off web calls the in-process
+  // delegation directly. Not on the M7 critical path.
+  approveEnv?(id: string, by: string, config?: ServersConfig): Promise<boolean>;
   steer(id: string, directive: string, by: string): Promise<Loom>;
   reject(id: string, feedback: string, by: string): Promise<Loom>;
   resume(id: string): Promise<Loom>;
@@ -41,6 +46,9 @@ export type DispatcherFacade = {
     opts?: StartFromBundleOpts,
   ) => Promise<Loom>;
   approveCharter: (id: string, by: string, deps: DispatcherDeps) => Promise<boolean>;
+  // M7 — optional so existing facades (and tests) that don't wire it still
+  // satisfy the type; makeInProcessTransport guards on its presence.
+  approveEnv?: (id: string, by: string, config: ServersConfig | undefined, deps: DispatcherDeps) => Promise<boolean>;
   steerLoom: (id: string, directive: string, by: string, deps: DispatcherDeps) => Promise<Loom>;
   rejectLoom: (id: string, feedback: string, by: string, deps: DispatcherDeps) => Promise<Loom>;
   resumeLoom: (id: string, deps: DispatcherDeps) => Loom;
@@ -72,6 +80,12 @@ export function makeInProcessTransport(
     },
     async approveCharter(id, by) {
       return facade.approveCharter(id, by, deps);
+    },
+    async approveEnv(id, by, config) {
+      // M7 — direct delegation (flag-off). Guarded so a facade without the verb
+      // wired surfaces a clear error rather than a silent undefined call.
+      if (!facade.approveEnv) throw new Error("approveEnv not wired on this dispatcher facade");
+      return facade.approveEnv(id, by, config, deps);
     },
     async steer(id, directive, by) {
       return facade.steerLoom(id, directive, by, deps);

@@ -27,7 +27,7 @@ import {
 import { type DbCloner, NullDbCloner } from "./db-clone";
 import { type RepairCaps, type RepairRound, decideRepairContinuation } from "./repair-guard";
 import { resolveServersConfig as defaultResolveServersConfig } from "./servers";
-import { type Lane, type StartLaneOpts, startLane as defaultStartLane } from "./run-server";
+import { type Lane, type StartLaneOpts, laneTarget, startLane as defaultStartLane } from "./run-server";
 
 const uniqSorted = (xs: string[]): string[] => [...new Set(xs)].sort();
 
@@ -69,7 +69,7 @@ export type FrozenLaneDeps = {
   baseEnv?: NodeJS.ProcessEnv; // lane base env
   laneOpts?: StartLaneOpts; // lane injectable seams (spawn/fetch/runCommand/findPort)
   appService?: string; // which lane service's URL is the verify target
-  resolveServersConfig?: (root: string) => ServersConfig; // seam (default fs-backed)
+  resolveServersConfig?: (root: string, acceptedRoot?: string) => ServersConfig; // seam (default fs-backed); acceptedRoot = the .telar tier anchor (M7)
   startLane?: (config: ServersConfig, root: string, opts?: StartLaneOpts) => Promise<Lane>; // seam
   subGoalId?: string; // checkpoint scope (undefined ⇒ ALL slice)
   // verify passthroughs
@@ -77,14 +77,6 @@ export type FrozenLaneDeps = {
   emit?: (ev: { type: string } & Record<string, unknown>) => void;
   verifyOpts?: Record<string, unknown>; // policy/accounts/gateRunner/run for the producer
 };
-
-// Pick the lane URL the frozen verify drives: the named app service if given,
-// else the first service exposing a URL.
-function laneTarget(lane: Lane, appService?: string): string | undefined {
-  if (appService && lane.services[appService]?.url) return lane.services[appService]!.url ?? undefined;
-  for (const svc of Object.values(lane.services)) if (svc.url) return svc.url;
-  return undefined;
-}
 
 // Run the integration verify against a FROZEN snapshot. Read-only by
 // construction: the worktree is detached at a pinned SHA the repair agent can
@@ -118,7 +110,11 @@ export async function frozenLaneVerify(
   let lane: Lane | null = null;
   try {
     ephemeralDb = await cloner.clone(deps.templateDb ?? "", loom.id); // "" from NullDbCloner
-    const cfg = resolveCfg(wt);
+    // M7 (D4): resolve against the frozen worktree `wt` for a repo-tracked
+    // servers.yaml, BUT anchor the human-accepted `.telar/servers.yaml` tier at
+    // manifest.root — `.telar/` is gitignored, so it is absent inside a fresh
+    // frozen worktree. This lets an accepted env config survive re-verification.
+    const cfg = resolveCfg(wt, manifest.root);
     if (cfg.driver !== "none") {
       const base = deps.baseEnv ?? process.env;
       const env = ephemeralDb ? { ...base, DATABASE_URL: ephemeralDb } : deps.baseEnv;

@@ -36,6 +36,7 @@ export function reconcileState(state: WorkUnitState): RecoverAction {
     case "verifying":
       return "halt"; // verifier is read-only; safe to re-run
     case "charter-review":
+    case "env-review": // M7 — awaiting a human Accept/Steer/Reject of the env proposal
     case "ready":
     case "blocked":
     case "needs-review":
