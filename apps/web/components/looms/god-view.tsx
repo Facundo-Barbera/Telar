@@ -830,35 +830,127 @@ function WovenAcceptanceGate({
   unresolved: Loom[];
   onGoToThreads?: () => void;
 }) {
-  // "awaiting you" is ONLY the states the owner can actually resolve from a
-  // Thread's drawer panel (AcceptancePanel gates on exactly these). `halted` is
-  // deliberately excluded: it's a stopped/dead-ended Thread with no panel action
-  // and core resumeLoom/rejectLoom reject it — so it must not be sold as
-  // actionable. It's reported separately as "stopped" so the count stays honest
-  // (it's still why the root can't be accepted) without overpromising a move.
-  const needsYou = unresolved.filter(
-    (t) => t.state === "needs-review" || t.state === "blocked" || t.state === "failed",
-  ).length;
-  const halted = unresolved.filter((t) => t.state === "halted").length;
-  const weaving = unresolved.length - needsYou - halted;
+  // Partition the outstanding children by what they actually need from the
+  // owner, so the panel's tone matches reality instead of flagging a weave that
+  // is merely still building.
+  //   awaitingYou  needs-review / blocked / env-review / charter-review /
+  //                failed — every outstanding state that genuinely awaits the
+  //                owner. A Thread's AcceptancePanel renders for ready /
+  //                needs-review / blocked / failed; env-review and
+  //                charter-review are answered from their own approve/steer
+  //                surfaces. `failed` is included because it awaits the owner
+  //                (Resume / Send back) and will never self-complete; `ready`
+  //                is excluded because it's already resolved (and so never
+  //                reaches `unresolved`). This is the ONLY set that earns the
+  //                amber, action-required treatment ("awaiting you", "resolve",
+  //                "can't be accepted yet").
+  //   building     queued / scoping / preparing / running / verifying —
+  //                genuinely in-flight, zero human action; these land on their
+  //                own.
+  //   stopped      halted (and any residual state): truly dead — neither
+  //                awaiting the owner from this panel nor self-completing. Named
+  //                as a muted, factual note so the count stays honest — no calm
+  //                "lands on its own" promise it won't keep.
+  const awaitingYou = unresolved.filter(
+    (t) =>
+      t.state === "needs-review" ||
+      t.state === "blocked" ||
+      t.state === "env-review" ||
+      t.state === "charter-review" ||
+      t.state === "failed",
+  );
+  const building = unresolved.filter(
+    (t) =>
+      t.state === "queued" ||
+      t.state === "scoping" ||
+      t.state === "preparing" ||
+      t.state === "running" ||
+      t.state === "verifying",
+  );
+  const stopped = unresolved.filter(
+    (t) => !awaitingYou.includes(t) && !building.includes(t),
+  );
 
-  const parts: ReactNode[] = [];
-  if (needsYou > 0)
+  // Calm / informational branch: nothing here needs the owner. Reserved for when
+  // NO child is owner-awaiting (needs-review/blocked/env-review/charter-review/
+  // failed). Neutral styling — the amber "resolve it" language would
+  // misrepresent a weave that's just working (or a lone halted thread).
+  if (awaitingYou.length === 0) {
+    const onlyBuilding = stopped.length === 0;
+    const Icon = onlyBuilding ? Loader2 : Clock;
+    return (
+      <Card className="border-l-2 border-l-border bg-muted/20">
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <Icon
+              className={cn(
+                "size-4 shrink-0 text-muted-foreground",
+                onlyBuilding && "animate-spin",
+              )}
+            />
+            <span className="text-sm font-medium text-foreground">
+              {onlyBuilding
+                ? `${building.length} thread${building.length === 1 ? "" : "s"} still building — nothing to do`
+                : `${unresolved.length} thread${unresolved.length === 1 ? "" : "s"} still outstanding`}
+            </span>
+          </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {onlyBuilding ? (
+              <>
+                They&apos;re weaving in isolated worktrees and will land on their
+                own. The root becomes acceptable the moment the last one finishes
+                — there&apos;s nothing to approve here.
+              </>
+            ) : (
+              <>
+                {building.length > 0 && (
+                  <>
+                    {building.length} still building
+                    {stopped.length > 0 ? ", " : ". "}
+                  </>
+                )}
+                {stopped.length > 0 && <>{stopped.length} stopped. </>}
+                The root becomes acceptable only once every Thread lands —
+                there&apos;s nothing to approve here.
+              </>
+            )}
+          </p>
+          {onGoToThreads && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onGoToThreads}
+              className="h-auto self-start px-2 py-1 text-xs"
+            >
+              Go to Threads
+              <ChevronRight />
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Action-required branch: at least one child awaits the owner (needs-review /
+  // blocked / env-review / charter-review / failed) and the owner has a real
+  // move. Amber treatment applies to THAT set; any still-building or stopped
+  // siblings are named neutrally so "awaiting/resolve" language attaches only to
+  // the threads that actually await the owner.
+  const parts: ReactNode[] = [
+    <span key="awaiting" className="font-medium text-foreground/80">
+      {awaitingYou.length} Thread{awaitingYou.length === 1 ? "" : "s"} awaiting you
+    </span>,
+  ];
+  if (building.length > 0)
     parts.push(
-      <span key="needs" className="font-medium text-foreground/80">
-        {needsYou} Thread{needsYou === 1 ? "" : "s"} awaiting you
+      <span key="building">
+        {building.length} Thread{building.length === 1 ? "" : "s"} still building
       </span>,
     );
-  if (weaving > 0)
+  if (stopped.length > 0)
     parts.push(
-      <span key="weaving">
-        {weaving} Thread{weaving === 1 ? "" : "s"} still weaving
-      </span>,
-    );
-  if (halted > 0)
-    parts.push(
-      <span key="halted">
-        {halted} Thread{halted === 1 ? "" : "s"} stopped
+      <span key="stopped">
+        {stopped.length} Thread{stopped.length === 1 ? "" : "s"} stopped
       </span>,
     );
 
@@ -878,10 +970,10 @@ function WovenAcceptanceGate({
               {node}
             </span>
           ))}
-          {parts.length > 0 ? ". " : ""}
+          {". "}
           Open each flagged Thread in the Threads tab to resolve it — the root
-          becomes acceptable only once every Thread lands. Accepting here can
-          never blanket-override an unresolved Thread.
+          becomes acceptable once every Thread lands. Accepting here can never
+          blanket-override an unresolved Thread.
         </p>
         {onGoToThreads && (
           <Button

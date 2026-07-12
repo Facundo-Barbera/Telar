@@ -649,7 +649,7 @@ function summarizeDecision(d: DecisionEvt): string {
     case "finish-loom":
       return "All required threads verified — closing the weave";
     case "hold":
-      return "Holding — waiting on in-flight threads before the next move";
+      return "Holding — its own in-flight threads haven't reported back yet; nothing to schedule until they do";
     default:
       return d.action ? `Decision: ${d.action}` : "Deciding…";
   }

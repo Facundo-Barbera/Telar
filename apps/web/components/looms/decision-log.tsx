@@ -36,7 +36,7 @@ function decisionEntry(ev: LoomEvent, key: string): Entry | null {
         key,
         ts: ev.ts,
         dot: DOT.muted,
-        content: "Holding — waiting on in-flight threads",
+        content: "Holding for its own in-flight threads to report back before scheduling more",
       };
     case "finish-loom":
       return {
