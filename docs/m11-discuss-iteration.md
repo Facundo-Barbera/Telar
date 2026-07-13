@@ -89,3 +89,40 @@ substantially is not builder-fixable — the repair loop must detect this
 park instead of spending. Related: proof-intent capture is creation-time only;
 looms created before the plumbing fix (or whose planner emitted no hints) have
 no repair route at re-dispatch — the breaker is their safety net.
+
+## 6. Planner field inversion on authored command assertions (run #3)
+
+Observed on `loom_mriuu8la_lrtwxx`: the planner authored command assertions
+with the RUNNABLE in `observable` (`bun test`; a `node -e` dependency check; a
+`grep -Eq` test-script check) and the EXPECTED OUTCOME as prose in `expected`
+("exit code 0"). The gate layer executes `expected` and ignores `observable`
+for command types — the real commands are unused. Fix: pin the field semantics
+(reject `observable` on command/gate assertions at validation with a clear
+message naming the right field, plus propose_contract prompt guidance), or
+consciously adopt observable-as-runnable — pick ONE and enforce it everywhere.
+
+## 7. isRunnableShape is too lenient — and a false-runnable becomes UN-repairable
+
+"exit code 0" and "process exit code 0; summary output reports 0 fail" both
+passed isRunnableShape (syntactically valid shell), so (a) validateContract let
+them through and (b) the sanctioned prose-repair REFUSED to fix them — the
+no-overwrite moat rule protects anything the predicate certifies as runnable.
+The predicate's false-positives are therefore self-sealing. Tighten it (e.g.
+first token must resolve via `command -v` allow-listing builtins that make
+sense as gate entrypoints; reject bare `exit`/semicolon-chained prose), and
+consider requiring the runnable to match a hint for planner-authored contracts.
+
+## 8. A child's `blocked` park must propagate as a PAUSE, not a step failure
+
+Run #3 (`loom_mriuu8la_lrtwxx` / child `loom_mrjgch8b_g9r7g4`): the new
+circuit breaker correctly parked the CHILD `blocked` ("Unfixable gate after 2
+attempts ... the red is contract/environment state") — but runThreadWorkflow
+treated the non-green terminal as a step failure ("step \"implement\" failed:
+terminated non-green (state \"blocked\")"), so child -> failed, rollup ->
+root failed. The awaiting-human escalation was swallowed; the human never saw
+the question. Fix: `blocked` must propagate through the step runner and weave
+rollup as an awaiting-human PARK on the root (surface the child's
+blockedQuestion; keep everything resumable), never coerce into `failed`.
+Wins proven by the same run: the breaker fired as designed, and the child's
+committed work was preserved on a recovery branch
+(telar/loom_mriuu8la_lrtwxx-wip-loom_mrjgch8b_g9r7g4) — findings 4 and 5 work.

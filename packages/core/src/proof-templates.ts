@@ -96,7 +96,15 @@ export const EXECUTABLE_PREFERENCE_GUIDANCE =
   "\"verifier\") for criteria that genuinely require observing a running " +
   "surface: UI/UX behavior in the accessibility tree that an exit code cannot " +
   "capture. Write each acceptance criterion so its cheapest sound proof is " +
-  "obvious — do not route a machine-checkable criterion through a live critic.";
+  "obvious — do not route a machine-checkable criterion through a live critic. " +
+  // M11 (finding 6) — FIELD SEMANTICS. Pin where the runnable goes so the
+  // proposer never inverts the fields the way run #3 did (runnable in
+  // `observable`, prose in `expected`). The gate layer runs ONLY `expected`.
+  "Field semantics for command/gate assertions: put the runnable shell command " +
+  "(or the named gate) in `expected` — a REAL command whose exit code is the " +
+  "proof, never a prose sentence describing the outcome (\"exit code 0\", " +
+  "\"tests pass\"). `observable` is live-critic-ONLY (it names what a live critic " +
+  "watches); do NOT put a command in `observable`.";
 
 // M10.5 (subjectiveRouting) — the STRUCTURAL extension M10.0 deferred. Appended to
 // the charter drafting prompt ONLY when the flag is on (scoping.draftCharter), so

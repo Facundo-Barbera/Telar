@@ -688,6 +688,24 @@ export function validateContract(
         errors.push(`live-critic assertion ${a.id} must name an observable`);
       }
     } else {
+      // M11 (finding 6) — FIELD SEMANTICS. `observable` is the live-critic's
+      // "what it checks" field (see ContractAssertion above); the gate layer
+      // (executor.runContractGates) reads ONLY `expected` for a command/gate and
+      // ignores `observable` entirely. In run #3 the planner inverted the fields
+      // — it authored the RUNNABLE in `observable` ("bun test") and PROSE in
+      // `expected` ("exit code 0") — so the real command went unused and the prose
+      // was executed. Rather than silently guess which field the runnable is in
+      // (which would give `observable` a dual meaning and require the gate layer
+      // to read it), REJECT a non-blank `observable` on a command/gate at author
+      // time with a message naming the right field, so the planner fixes it
+      // in-session (this flows through writeContract → propose_contract). SCOPE
+      // EXCLUDES `db`: a deferred db legitimately pairs expected SQL + observable
+      // (schemas.ts db comment). Only a NON-BLANK observable is rejected — every
+      // existing command/gate fixture leaves it undefined, so flag-off/byte-
+      // identical (this is a schema guard, always-on like the :697 command rule).
+      if ((a.type === "command" || a.type === "gate") && a.observable && a.observable.trim()) {
+        errors.push(`command/gate assertion ${a.id} carries an observable ("${a.observable}") — observable is only valid on live-critic; put the runnable/gate-name in \`expected\``);
+      }
       const hasExpected = !!a.expected && !!a.expected.trim();
       const hasExpectedFile = !!a.expectedFile && !!a.expectedFile.trim();
       if (!hasExpected && !hasExpectedFile) {

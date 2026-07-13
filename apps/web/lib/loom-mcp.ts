@@ -226,7 +226,7 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
       ),
       tool(
         "propose_contract",
-        "Write this draft loom's Verification Contract (spec/contract.json) — the required, falsifiable proof spec. Each assertion must be falsifiable by construction (a concrete `expected`/`expectedFile`, or an `observable` for live-critic entries); a prose-only/non-falsifiable contract is REJECTED — the tool result will report exactly why so you can fix it.",
+        "Write this draft loom's Verification Contract (spec/contract.json) — the required, falsifiable proof spec. Each assertion must be falsifiable by construction (a concrete `expected`/`expectedFile`, or an `observable` for live-critic entries); a prose-only/non-falsifiable contract is REJECTED — the tool result will report exactly why so you can fix it. For command/gate assertions the runnable command / gate-name goes in `expected` (its exit code is the proof) — it must be a REAL shell command, not a prose description of the outcome; `observable` is live-critic-only and is REJECTED on command/gate.",
         { assertions: z.array(ContractAssertion) },
         async ({ assertions }) => {
           const loomId = requireLoomId();

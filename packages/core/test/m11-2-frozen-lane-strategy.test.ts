@@ -283,7 +283,11 @@ describe("(4) a non-server strategy never calls startLane, even when a config re
     const git = fakeGit();
     let startCalls = 0;
     let captured: Record<string, unknown> = {};
-    const loom = rootLoom({ version: 1, assertions: [asrt({ id: "c1", expected: "run cli" })] });
+    // M11 finding 7 (lane A): the tightened isRunnableShape now rejects the old
+    // placeholder "run cli" ("run" is not a program head) at contract-write time.
+    // This test asserts startLane skipping, NOT runnable-shape — so use a genuinely
+    // runnable command-shaped expected. Behavior under test is unchanged.
+    const loom = rootLoom({ version: 1, assertions: [asrt({ id: "c1", expected: "node cli.js" })] });
     const scripted: VerificationStrategy = { kind: "cli-harness", reason: "scripted" };
 
     const iv = await frozenLaneVerify(loom, manifest, {

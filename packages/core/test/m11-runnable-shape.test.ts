@@ -68,13 +68,21 @@ describe("isRunnableShape — MUST REJECT the live-bug non-command shapes", () =
 });
 
 describe("isRunnableShape — boundary honesty (documented conservatism)", () => {
-  test("a SHORT prose fragment (< 5 plain words) is accepted — it still fails closed at execution", () => {
-    // "all tests green" is 3 plain words: below the prose floor, so accepted.
-    // Honest boundary: worst case is fail-closed at run, never a fake green.
-    expect(isRunnableShape("all tests green")).toBe(true);
+  // M11 finding 7 CHANGE (called out loudly per lane-A spec): the OLD >=5-plain-
+  // words + English-stopword heuristic accepted a SHORT prose fragment like
+  // "all tests green" (3 words, below the old floor). Finding 7 REPLACES that with
+  // a first-token ENTRYPOINT discipline, so an all-plain multi-word fragment whose
+  // head is not a known runner is now REJECTED as prose — "all" is not a program.
+  // This is the intended tightening (a stronger fail-closed floor), not a
+  // regression: the old accept merely deferred to a fail-closed run; the new reject
+  // routes the author-time validateContract to reject / the escalation repair to
+  // fire. The exhaustive new accept/reject boundary lives in
+  // m11-runnable-shape-tightening.test.ts.
+  test("a SHORT all-plain prose fragment (non-runner head) is now REJECTED (finding 7)", () => {
+    expect(isRunnableShape("all tests green")).toBe(false);
   });
 
-  test("a capitalized sentence is still caught (case-insensitive plain-word count)", () => {
+  test("a capitalized sentence is still caught (case-insensitive head lookup)", () => {
     expect(isRunnableShape("Process exits cleanly and reports zero failures")).toBe(false);
   });
 });

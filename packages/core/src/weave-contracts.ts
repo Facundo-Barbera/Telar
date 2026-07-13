@@ -14,6 +14,30 @@ import { partitionAssertions } from "./executor";
 import { isRunnableShape } from "./runnable-shape";
 import type { Loom } from "./looms";
 
+// M11 (finding 6). PURE. Classifies a set of validateContract errors as
+// AUTHOR-REPAIRABLE — every error is one the sanctioned tightening machinery can
+// fix from the author's own material, so a readContract-null AUTHORED contract is
+// worth REVIVING+repairing instead of throwing away and re-synthesizing. Two
+// repairable classes, matched by their exact validateContract substrings:
+//   1. "non-runnable expected" — a command whose `expected` failed isRunnableShape
+//      (finding 2a/7): repaired to a matching hint / adopted observable /
+//      manifest.verifyCommand by tightenAuthoredContract.
+//   2. "observable is only valid on live-critic" — a command/gate carrying a
+//      mis-placed runnable in `observable` (finding 6): the field-inverted run #3
+//      shape, whose observable is adopted as the repair source.
+// A finding-6-shaped legacy contract yields BOTH errors at once (prose expected +
+// stray observable), so a naive `.every(e => e.includes("non-runnable expected"))`
+// would REFUSE to revive it. This helper accepts a contract iff EVERY error is one
+// of these two classes — deliberately NARROW: malformed JSON, a dangling
+// expectedFile, a prose-only assertion, an all-live-critic floor breach etc. are
+// NOT author-repairable and must still fall through to synthesizeContract.
+export function contractErrorsRepairable(errors: string[]): boolean {
+  if (errors.length === 0) return false; // nothing to repair ⇒ nothing to revive
+  return errors.every(
+    (e) => e.includes("non-runnable expected") || e.includes("observable is only valid on live-critic"),
+  );
+}
+
 // PURE. A runnable that ALWAYS exits 0 without checking anything — `true`, `:`,
 // `exit 0`, `echo …` — is an always-green "check": honoring it as a proofHint
 // would mint a `command` assertion that can never fail, silently REPLACING a real
@@ -261,9 +285,22 @@ export function tightenAuthoredContract(
   const hints = collectProofHints(loom.charter);
   const verifyCommand = manifest.verifyCommand?.trim();
   const sanctionedVerify = verifyCommand && isRunnableShape(verifyCommand) ? verifyCommand : undefined;
-  // Nothing to derive from: no authored hints AND no human-answered runnable ⇒ the
-  // strict no-op (byte-identical to the pre-M11 short-circuit for the hint-only case).
-  if (hints.size === 0 && !sanctionedVerify) return { contract, tightenings: [] };
+  // M11 finding 6 — a THIRD sanctioned repair source lives INSIDE the contract: a
+  // command whose runnable is field-inverted into `observable` (run #3). It repairs
+  // even with no hint and no verifyCommand, so the cheap no-op guard must also let
+  // that case through. This term keeps the guard exact: if no assertion carries an
+  // adoptable inverted observable AND there are no hints/verifyCommand, the loop
+  // would record nothing, so we still short-circuit (returning the original
+  // contract reference — byte-identical).
+  const hasInvertibleObservable = contract.assertions.some(
+    (a) =>
+      a.type === "command" &&
+      !!a.observable?.trim() &&
+      isRunnableShape(a.observable!) &&
+      !isTrivialPass(a.observable!) && // finding-6 repair: an always-green observable ("true"/":"/"echo ok"/"exit 0") is NOT an adoptable check — it would repair a fail-closed prose gate into a fake green
+      (a.expected == null || !isRunnableShape(a.expected)),
+  );
+  if (hints.size === 0 && !sanctionedVerify && !hasInvertibleObservable) return { contract, tightenings: [] };
 
   const working = contract.assertions.slice();
   const tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[] = [];
@@ -294,9 +331,31 @@ export function tightenAuthoredContract(
       // repaired expected is runnable, so a re-dispatch skips it.
       if (a.type !== "command") continue;
       if (a.expected == null || isRunnableShape(a.expected)) continue; // runnable/absent stays as-authored
-      const repair = run ?? sanctionedVerify;
+      // M11 finding 6 — the field-inverted case (run #3): the planner put PROSE in
+      // `expected` and the actual RUNNABLE in `observable` ("bun test"). validateContract
+      // now rejects that observable at author time, but a LEGACY/started contract may
+      // already carry it. Adopt a runnable `observable` as a sanctioned repair SOURCE —
+      // it is exactly the command the author meant, just mis-placed — ahead of the
+      // human-answered verifyCommand. Repair SOURCE only: `observable` is never read as
+      // a live gate field (the gate layer still runs `expected`); this moves the
+      // mis-placed runnable INTO `expected` where the gate layer will run it, event-
+      // trailed like every other tightening.
+      // isTrivialPass guard (finding-6 repair): mirror collectProofHints (:87) and
+      // hasInvertibleObservable — an always-green observable ("true", ":", "echo ok",
+      // "exit 0") is runnable-SHAPED but not a genuine check; adopting it as `expected`
+      // would rewrite a fail-closed prose gate into an unconditional pass (the exact
+      // verdict-floor breach isTrivialPass exists to prevent), then persist it under
+      // the auto:tighten-authored self-cosign whose safety justification assumes only
+      // non-trivial runnables reach here. Never adopt a trivial-pass observable.
+      const inverted =
+        a.observable && isRunnableShape(a.observable) && !isTrivialPass(a.observable) ? a.observable : undefined;
+      const repair = run ?? inverted ?? sanctionedVerify;
       if (!repair) continue; // no sanctioned runnable — leave to human escalation, fails closed
-      tightened = { ...a, expected: repair };
+      // Clear any stray `observable`: validateContract (finding 6) now rejects a
+      // non-blank observable on a command, so the re-validation below would DISCARD
+      // this repair if we left the inverted observable in place. Clearing it is
+      // always correct — a command never legitimately carries observable.
+      tightened = { ...a, expected: repair, observable: undefined };
     }
 
     // Fail-safe: validate the WHOLE candidate (prior tightenings applied, this one
