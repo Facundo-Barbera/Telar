@@ -96,3 +96,24 @@ export function verifyLaneEnabled(manifest: { verifyLane?: boolean }): boolean {
 export function subjectiveRoutingEnabled(manifest: { subjectiveRouting?: boolean }): boolean {
   return manifest.subjectiveRouting === true || process.env.TELAR_SUBJECTIVE_ROUTING === "1";
 }
+
+// M11.1 — modality derivation (docs/adaptive-verification.md §3.1, §7). When on,
+// synthesizeContract DERIVES each synthesized criterion's assertion type from the
+// deliverable (the pure deliverable signal + the charter's proof intent) instead
+// of the blanket live-critic: under an explicit SANCTION (prompt-fallback
+// criteria — the greenfield synth-0 shape — or a gate-mechanism charter) a
+// test-gate deliverable's criteria become fail-closed `command` assertions
+// (expected = the lockfile-aware test runnable), and a charter-authored
+// per-criterion proofHint becomes command+expected — the derivation only
+// TIGHTENS (live-critic → gate/command, the one direction contractLoosenings
+// never flags); a criterion with no runnable — or authored prose nobody
+// declared provable-by-suite — STAYS live-critic, and draftCharter's prompt
+// gains the proof-hint authoring guidance.
+// A TOP-LEVEL flag (no parent guard, like subjectiveRouting/laneEscalation).
+// Flag-off ⇒ synthesizeContract maps every criterion live-critic/ALL exactly as
+// today (weave-contracts.ts) and the drafting prompt is byte-identical — no
+// filesystem signal is even derived. Honored via TELAR_ADAPTIVE_VERIFY=1 for
+// live-validation.
+export function adaptiveVerificationEnabled(manifest: { adaptiveVerification?: boolean }): boolean {
+  return manifest.adaptiveVerification === true || process.env.TELAR_ADAPTIVE_VERIFY === "1";
+}

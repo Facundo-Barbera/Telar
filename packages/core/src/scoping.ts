@@ -11,8 +11,14 @@ import {
   type ProofStrategy,
   type VerificationContract,
 } from "./schemas";
-import { EXECUTABLE_PREFERENCE_GUIDANCE, SUBJECTIVE_ROUTING_GUIDANCE, PROOF_TEMPLATES, proofTemplate } from "./proof-templates";
-import { subjectiveRoutingEnabled } from "./runner/flag";
+import {
+  ADAPTIVE_VERIFICATION_GUIDANCE,
+  EXECUTABLE_PREFERENCE_GUIDANCE,
+  SUBJECTIVE_ROUTING_GUIDANCE,
+  PROOF_TEMPLATES,
+  proofTemplate,
+} from "./proof-templates";
+import { adaptiveVerificationEnabled, subjectiveRoutingEnabled } from "./runner/flag";
 
 // PURE. The fast-path switch: scoping only runs when the caller gave us
 // neither ready-made acceptance criteria nor a ready charter. This is the
@@ -153,6 +159,14 @@ ${
   // classification guidance so the proposer authors the per-criterion `subjective`
   // marker conservatively (default-to-objective).
   subjectiveRoutingEnabled(input.manifest) ? `\n--- Objective vs. subjective classification ---\n${SUBJECTIVE_ROUTING_GUIDANCE}\n` : ""
+}
+${
+  // M11.1 — flag-gated. Flag-off ⇒ this block is the empty string ⇒ the drafting
+  // prompt is byte-identical to today. Flag-on ⇒ instruct the proposer to author
+  // per-criterion proofHints (the concrete runnable whose exit code settles a
+  // criterion) so synthesizeContract can tighten live-critic → command
+  // structurally instead of guessing from prose.
+  adaptiveVerificationEnabled(input.manifest) ? `\n--- Per-criterion proof hints ---\n${ADAPTIVE_VERIFICATION_GUIDANCE}\n` : ""
 }
 ${input.storyMarkdown ? `--- Story ---\n${input.storyMarkdown}\n` : ""}
 Rules:

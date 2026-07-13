@@ -8,6 +8,12 @@ export type ProofTemplate = {
   strategy: ProofStrategy;
   label: string;
   guidance: string;
+  // M11.1 — STRUCTURAL, no longer prompt-only: "gate" is the machine-readable
+  // declaration that this strategy's proof is a deterministic exit-code check.
+  // Consumed by deliverable-signal.charterGateIntent (the greenfield
+  // "deferred-gate" plan — a gate-intent charter over zero files is still
+  // plannable) which feeds BOTH the M11.0 pre-flight (isLaneViable) and the
+  // M11.1 synthesizeContract derivation. Prompt guidance still folds it in too.
   verifyMechanism: "gate" | "verifier" | "human-signoff";
 };
 
@@ -75,7 +81,11 @@ export function proofTemplate(s: ProofStrategy): ProofTemplate {
 // changes NO deterministic assertion-type routing. The structural fix — the
 // deterministic proposer (weave-contracts.synthesizeContract) emitting
 // command/gate assertions for independently-verifiable criteria instead of a
-// blanket live-critic — is a separate routing change reserved for M10.5.
+// blanket live-critic — was reserved for M10.5, which delivered only the
+// narrow exact-gate-name tightening; M11.1 (adaptiveVerification) completes it:
+// verifyMechanism now feeds the derivation structurally (via the deliverable
+// signal's charter gate intent) and per-criterion proofHints carry a concrete
+// runnable into a fail-closed `command` assertion.
 export const EXECUTABLE_PREFERENCE_GUIDANCE =
   "Proof preference — choose the cheapest SOUND proof per criterion. When a " +
   "criterion is independently and deterministically checkable (a file/symbol " +
@@ -111,3 +121,24 @@ export const SUBJECTIVE_ROUTING_GUIDANCE =
   "turned into a machine gate. When in doubt, leave it OBJECTIVE (unmarked) — a " +
   "mis-marked objective criterion silently loses its fail-closed gate, so mark " +
   "subjective only when it is unmistakable.";
+
+// M11.1 (adaptiveVerification) — the PROOF-HINT authoring guidance. Appended to
+// the charter drafting prompt ONLY when the flag is on (scoping.draftCharter),
+// so flag-off the prompt is byte-identical to today. It instructs the proposer
+// to author per-criterion `proofHints` ({criterion, run}) — the structural
+// channel through which a criterion provable by a runnable (a CLI invocation,
+// an eval with a threshold) reaches synthesizeContract as a fail-closed
+// `command` assertion instead of a live-critic. Hints only ever TIGHTEN; a
+// wrong/missing hint degrades to today's live-critic routing, never looser.
+export const ADAPTIVE_VERIFICATION_GUIDANCE =
+  "Proof hints — for EVERY acceptance criterion that a runnable command can " +
+  "settle WITHOUT a running app (a test suite proves it, a CLI invocation's " +
+  "exit code/output asserts it, an eval script encodes a threshold in its exit " +
+  "code), author a proofHints entry: { criterion: <the EXACT criterion text>, " +
+  "run: <the command> }. The command's exit code (0 = pass) becomes a " +
+  "fail-closed verification gate, so the command must GENUINELY prove that " +
+  "criterion — never a vacuous `true`, never a command that passes regardless. " +
+  "The criterion field must match the acceptanceCriteria line verbatim or the " +
+  "hint is ignored. Do NOT author a hint for criteria that need a running " +
+  "surface (observable UI/UX behavior) or human judgment — leave those to the " +
+  "live Verifier / the subjective marker.";

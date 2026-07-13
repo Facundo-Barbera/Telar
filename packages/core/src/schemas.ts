@@ -328,6 +328,15 @@ export const ProjectManifest = z.object({
   // flag. Default OFF: routing unchanged, no aesthetic lens, byte-identical.
   // Honored via TELAR_SUBJECTIVE_ROUTING=1.
   subjectiveRouting: z.boolean().default(false),
+  // M11.1 — modality derivation. When on, synthesizeContract derives each
+  // synthesized criterion's assertion TYPE from the deliverable (the pure
+  // deliverable-signal module + the charter's proof intent / per-criterion
+  // proofHints) instead of the blanket live-critic — live-critic → gate/command
+  // TIGHTENING only, never the reverse; an unmappable criterion stays
+  // live-critic. A TOP-LEVEL flag. Default OFF: every synthesized criterion
+  // maps live-critic/ALL exactly as today and the charter-drafting prompt is
+  // byte-identical. Honored via TELAR_ADAPTIVE_VERIFY=1.
+  adaptiveVerification: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
@@ -427,6 +436,23 @@ export const Budget = z.object({
 });
 export type Budget = z.infer<typeof Budget>;
 
+// M11.1 (additive, optional everywhere) — a charter-authored PER-CRITERION
+// proof hint: the concrete runnable whose exit code settles ONE
+// acceptanceCriteria line ("prints usage on --help" → `node cli.js --help`;
+// "accuracy ≥ 0.9 on the holdout" → `python eval.py --min-acc 0.9`). Authored
+// by the LLM charter proposer (draftCharter, flag-gated guidance) or a human —
+// NEVER derived from prose by a keyword scan. synthesizeContract HONORS a hint
+// structurally by emitting {type:"command", expected: run} for the exactly-
+// matching criterion — a live-critic → command TIGHTENING (the direction
+// contractLoosenings never flags); a criterion without a hint keeps today's
+// routing. `criterion` must equal the acceptanceCriteria text verbatim
+// (trimmed) — a dangling hint simply never matches, fail-safe.
+export const ProofHint = z.object({
+  criterion: z.string(), // the exact acceptanceCriteria line this hint proves
+  run: z.string(), // runnable whose exit code (0 = pass) settles the criterion
+});
+export type ProofHint = z.infer<typeof ProofHint>;
+
 export const SubGoal = z.object({
   id: z.string(), // "s1"
   title: z.string(),
@@ -436,6 +462,9 @@ export const SubGoal = z.object({
   dependsOn: z.array(z.string()).default([]),
   required: z.boolean().default(true),
   status: z.enum(["pending", "ready", "active", "done", "blocked", "failed"]).default("pending"),
+  // M11.1 — optional per-criterion proof hints for THIS SubGoal's criteria.
+  // Absent everywhere today (additive); consumed only under adaptiveVerification.
+  proofHints: z.array(ProofHint).optional(),
 });
 export type SubGoal = z.infer<typeof SubGoal>;
 
@@ -452,6 +481,10 @@ export const Charter = z.object({
   scopingSessionId: z.string().optional(), // the drafting session — resumable for takeover
   rationale: z.string().optional(), // structured decomposition reasoning
   singleThread: z.boolean().optional(), // true iff a synthesized weave-of-one (§W); excluded from the epic policy/label sites
+  // M11.1 — optional charter-level per-criterion proof hints (for the root's
+  // own acceptanceCriteria / a non-decomposing charter). Additive; consumed
+  // only under adaptiveVerification. Per-SubGoal hints live on SubGoal.
+  proofHints: z.array(ProofHint).optional(),
 });
 export type Charter = z.infer<typeof Charter>;
 

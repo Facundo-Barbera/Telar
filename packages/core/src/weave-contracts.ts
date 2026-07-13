@@ -7,9 +7,30 @@
 // cross-cutting ALL/unlabelled ones). The child then reads its own bundle via
 // its own readContract in the executor — proving its SubGoal in isolation.
 import { CONTRACT_FILE, listBundleFiles, snapshotBundle, writeBundleFile } from "./bundle";
-import { validateContract, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
-import { subjectiveRoutingEnabled } from "./runner/flag";
+import { validateContract, type Charter, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
+import { adaptiveVerificationEnabled, subjectiveRoutingEnabled } from "./runner/flag";
+import { charterHasGateIntent, deriveDeliverableSignal } from "./deliverable-signal";
 import type { Loom } from "./looms";
+
+// M11.1. PURE. Flattens the charter's per-criterion proof hints (charter-level
+// plus every SubGoal's) into ONE criterion-text → runnable map, trimmed on both
+// sides. First hint wins on a duplicate criterion (charter-level outranks
+// subgoal, document order after that) — deterministic, never a merge surprise.
+// Blank criterion/run entries are dropped: a degenerate hint must never mint a
+// command assertion with an empty runnable (validateContract would reject it,
+// but we never get there). A hint whose criterion matches nothing is simply
+// inert — fail-safe, the unmatched criteria keep today's routing.
+function collectProofHints(charter: Charter | undefined): Map<string, string> {
+  const hints = new Map<string, string>();
+  if (!charter) return hints;
+  const all = [...(charter.proofHints ?? []), ...(charter.decomposition ?? []).flatMap((sg) => sg.proofHints ?? [])];
+  for (const h of all) {
+    const criterion = h.criterion.trim();
+    const run = h.run.trim();
+    if (criterion && run && !hints.has(criterion)) hints.set(criterion, run);
+  }
+  return hints;
+}
 
 // M1 (D0.2, D1.2). PURE. Forces a Verification Contract onto a loom that was
 // created WITHOUT one (a plain custom loom with only acceptanceCriteria, or
@@ -37,18 +58,89 @@ import type { Loom } from "./looms";
 // TIGHTENING contractLoosenings never flags, and objective/fail-closed. Every
 // other criterion keeps live-critic. The rich per-criterion authoring (command/
 // gate + the subjective marker) lives in the LLM charter proposer.
+//
+// M11.1 (adaptiveVerification, docs/adaptive-verification.md §3.1) — the
+// modality DERIVATION the M10.5 header above reserved. Flag-on (and only then),
+// two additional PRECISE tightenings run, in order, after the exact-gate-name
+// rule; everything they cannot map STAYS live-critic (worst case = today):
+//   1. HONOR a charter-authored per-criterion proofHint (schemas.ProofHint):
+//      a criterion whose exact text carries a hint becomes
+//      {type:"command", expected: hint.run} — how a CLI/DS criterion gets its
+//      concrete runnable (authored where the criteria live — by the proposer or
+//      a human, never invented here from prose; the module's own conservatism
+//      rule above).
+//   2. DERIVE from the deliverable (deriveDeliverableSignal — the same PURE,
+//      never-throwing, bounded-filesystem signal the M11.0 pre-flight reads;
+//      flag-on this function trades strict purity for that bounded read):
+//      when the signal says "test-gate" (a real test script exists TODAY) the
+//      remaining criteria become {type:"command", expected: signal.run} (the
+//      lockfile-aware `bun|pnpm|yarn|npm run test`) — but ONLY under an
+//      explicit SANCTION, because "the suite proves it" must be a claim
+//      somebody actually made, never an inference from the repo alone:
+//        (a) the criteria are the PROMPT FALLBACK (zero authored
+//            acceptanceCriteria — the loom_mrigs3zo_vxgrsr greenfield shape,
+//            where the one synth-0 assertion IS "the deliverable works" and
+//            the suite is exactly its proof), OR
+//        (b) the charter carries gate-shaped proof intent
+//            (charterHasGateIntent — PROOF_TEMPLATES.verifyMechanism==="gate"),
+//            the same authored trust channel as a proofHint.
+//      WITHOUT a sanction, authored multi-criteria prose keeps live-critic:
+//      a pre-existing green suite must never rubber-stamp a criterion it says
+//      nothing about (credentials-bound work, taste — doc §4 "a mis-derived
+//      method can never rubber-stamp; the worst it can do is produce NO
+//      evidence", §3.2 park semantics). Those criteria tighten only via an
+//      exactly-matching proofHint, or land the fail-closed no-evidence demote.
+//      The web shape short-circuits to plannable:false inside the signal, so a
+//      dev-server app can never be blanket-tightened either way.
+//      deferred-gate/cli-harness/sandbox-eval carry NO runnable today, so they
+//      tighten ONLY via hints — never a fabricated command.
+// Both directions are live-critic → gate/command TIGHTENINGS (the direction
+// contractLoosenings never flags); the reverse (gate → live-critic) has no code
+// path here — the exact-gate-name rule stays FIRST, so a criterion that is a
+// named gate today is a named gate flag-on too. A derived gate/command never
+// carries `subjective` (this deterministic path never authors the marker;
+// validateContract additionally rejects it on any non-live-critic type).
+// `synthesized: true` stays carried verbatim. The `manifest ? … : false` guard
+// mirrors the M10.5 routing line: a bare 1-arg caller is byte-identical even
+// under the TELAR_ADAPTIVE_VERIFY env override.
 export function synthesizeContract(
   loom: Loom,
-  manifest?: { subjectiveRouting?: boolean; gates?: { name: string }[] },
+  manifest?: {
+    subjectiveRouting?: boolean;
+    adaptiveVerification?: boolean;
+    gates?: { name: string }[];
+    root?: string;
+  },
 ): VerificationContract {
   const criteria = (loom.acceptanceCriteria ?? []).map((c) => c.trim()).filter(Boolean);
   const sources = criteria.length ? criteria : [loom.prompt?.trim() || loom.title];
   const routing = manifest ? subjectiveRoutingEnabled(manifest) : false;
   const gateNames = new Set((manifest?.gates ?? []).map((g) => g.name.trim()).filter(Boolean));
+  // M11.1 — derivation inputs, resolved ONCE per synthesis. Flag-off (or no
+  // manifest) both stay empty/null: zero filesystem reads, zero new branches
+  // per criterion beyond a Map miss — byte-identical output.
+  const adaptive = manifest ? adaptiveVerificationEnabled(manifest) : false;
+  const hints = adaptive ? collectProofHints(loom.charter) : new Map<string, string>();
+  // The blanket test-gate SANCTION (header rule 2): prompt-fallback criteria or
+  // an explicit gate-mechanism charter. Unsanctioned ⇒ the signal is not even
+  // derived (zero filesystem reads) and authored prose keeps live-critic.
+  const blanketSanctioned = criteria.length === 0 || charterHasGateIntent(loom.charter);
+  const signal =
+    adaptive && blanketSanctioned && manifest?.root ? deriveDeliverableSignal(manifest.root, loom.charter) : null;
+  const testRun = signal?.plannable && signal.strategy === "test-gate" ? signal.run : undefined;
   const assertions: ContractAssertion[] = sources.map((text, i) => {
     if (routing && gateNames.has(text)) {
       // Objective, machine-verifiable: route to the fail-closed exit-code gate.
       return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "gate", expected: text, blocker: true };
+    }
+    const hint = hints.get(text);
+    if (hint) {
+      // M11.1 tightening 1 — the charter authored THIS criterion's runnable.
+      return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "command", expected: hint, blocker: true };
+    }
+    if (testRun) {
+      // M11.1 tightening 2 — a test gate exists today; the suite is the proof.
+      return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "command", expected: testRun, blocker: true };
     }
     return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "live-critic", observable: text, blocker: true };
   });
