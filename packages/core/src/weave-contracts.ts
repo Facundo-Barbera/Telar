@@ -10,16 +10,44 @@ import { CONTRACT_FILE, listBundleFiles, snapshotBundle, writeBundleFile } from 
 import { validateContract, type Charter, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
 import { adaptiveVerificationEnabled, subjectiveRoutingEnabled } from "./runner/flag";
 import { charterHasGateIntent, deriveDeliverableSignal } from "./deliverable-signal";
+import { partitionAssertions } from "./executor";
 import type { Loom } from "./looms";
+
+// PURE. A runnable that ALWAYS exits 0 without checking anything — `true`, `:`,
+// `exit 0`, `echo …` — is an always-green "check": honoring it as a proofHint
+// would mint a `command` assertion that can never fail, silently REPLACING a real
+// judge (a live-critic) or a real runnable with an unconditional pass. That is a
+// verdict-floor breach (adaptive-verification review, finding 2: a hallucinated
+// `run:"true"` neuters the floor with only a mislabeled "tightening" event). A
+// proofHint is agent-supplied (planWeaveFromBundle emit); its criterion→runnable
+// is trusted for ROUTING, but its content must still be a genuine check. A command
+// is trivial-pass IFF EVERY sequenced segment is such a no-op — a single real
+// segment (e.g. `node cli.js --nope; test $? -eq 2`) makes the whole thing a
+// genuine check and is honored. Rejecting a trivial-pass hint makes it INERT (as
+// if unauthored) so the criterion keeps today's routing — fail-safe, worst case
+// unchanged, never always-green.
+function isTrivialPass(run: string): boolean {
+  const segments = run.split(/&&|\|\||;|\||\n/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return true; // nothing actually runs
+  return segments.every((seg) => {
+    const [tok, ...rest] = seg.split(/\s+/);
+    if (tok === "true" || tok === ":" || tok === "echo") return true;
+    if (tok === "exit") return rest.length === 0 || rest[0] === "0";
+    return false;
+  });
+}
 
 // M11.1. PURE. Flattens the charter's per-criterion proof hints (charter-level
 // plus every SubGoal's) into ONE criterion-text → runnable map, trimmed on both
 // sides. First hint wins on a duplicate criterion (charter-level outranks
 // subgoal, document order after that) — deterministic, never a merge surprise.
-// Blank criterion/run entries are dropped: a degenerate hint must never mint a
-// command assertion with an empty runnable (validateContract would reject it,
-// but we never get there). A hint whose criterion matches nothing is simply
-// inert — fail-safe, the unmatched criteria keep today's routing.
+// Blank OR trivially-passing (isTrivialPass) run entries are dropped: a degenerate
+// hint must never mint a command assertion with an empty runnable (validateContract
+// would reject it) NOR an always-green one (validateContract would NOT catch it —
+// see isTrivialPass). A hint whose criterion matches nothing is simply inert —
+// fail-safe, the unmatched criteria keep today's routing. Both consumers
+// (synthesizeContract tightening 1, tightenAuthoredContract) read through here, so
+// the content check protects every hint-driven command mint in one place.
 function collectProofHints(charter: Charter | undefined): Map<string, string> {
   const hints = new Map<string, string>();
   if (!charter) return hints;
@@ -27,7 +55,7 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
   for (const h of all) {
     const criterion = h.criterion.trim();
     const run = h.run.trim();
-    if (criterion && run && !hints.has(criterion)) hints.set(criterion, run);
+    if (criterion && run && !isTrivialPass(run) && !hints.has(criterion)) hints.set(criterion, run);
   }
   return hints;
 }
@@ -145,6 +173,114 @@ export function synthesizeContract(
     return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "live-critic", observable: text, blocker: true };
   });
   return { version: 1, assertions, synthesized: true };
+}
+
+// M11.1 (adaptiveVerification, docs/adaptive-verification.md §3.1). PURE. The
+// TIGHTENING-ONLY derivation over an AUTHORED contract — the choke-point sibling
+// of synthesizeContract for the case synthesizeContract never reaches. Today
+// synthesizeContract runs ONLY when readContract is null; a human/agent-AUTHORED
+// bundle contract (readContract non-null) bypasses ALL derivation, so its golden-
+// diff / live-critic assertions stay agent-judged and a malformed command
+// assertion (expected = a PROSE description, not a runnable — the loom_mrinlb18
+// "bun-test-suite-passes" case) stays unrunnable. This closes that gap WITHOUT
+// touching authored intent it cannot improve: it only ever TIGHTENS toward a
+// charter-authored proofHint (the same authored trust channel synthesizeContract
+// honors), and only when the tightening still validates.
+//
+// Conservatism (mirrors synthesizeContract's header): the ONLY signal consulted
+// is collectProofHints(loom.charter) — a hint is a claim SOMEBODY authored, never
+// inferred from the repo or from prose, AND (collectProofHints) never a trivially-
+// passing runnable. An assertion is matched to a hint by EXACT criterion text
+// against its `id` (primary — the live evidence had id "bun-test-suite-passes" ==
+// hint.criterion) OR `description` (fallback), both trimmed.
+//
+// ONE direction only — CONVERT, never EDIT (adaptive-verification review, finding 1):
+//   An AGENT-JUDGED assertion (isDeterministic=false — a live-critic or golden-diff,
+//   which carries NO runnable `expected` of its own) that matches a hint becomes
+//   {type:"command", expected: hint.run}. observable/expectedFile are cleared and
+//   any stray subjective marker stripped (validateContract rejects subjective on a
+//   non-live-critic type). This is the live-critic → command TIGHTENING the design
+//   doc blesses (§3.1) and contractLoosenings never flags — it ADDS a real,
+//   validated (non-trivial) runnable check where there was only agent judgment.
+//
+// A DETERMINISTIC assertion (command/gate/db) is NEVER touched here. It already
+// carries a human/proposer-authored runnable `expected`, and editing that expected
+// is "editing the yardstick" — exactly what §M.2 exists to catch: text CANNOT tell
+// a stricter runnable from a looser one, so replacing e.g. `bun test --coverage
+// --min 90` with a charter hint's `bun test` would silently WEAKEN a human-approved
+// gate under a "tightening" label (the original finding-1 breach). A broken/prose-
+// `expected` authored command therefore stays as-authored (it fails closed and the
+// loom blocks); its correct repair is a HUMAN one via the escalation surface, not a
+// self-cosigned auto-rewrite. So: never a deterministic→live-critic downgrade,
+// never any edit of a deterministic assertion, never touch a hint-LESS assertion —
+// worst case is always unchanged.
+//
+// Every candidate is re-validated (validateContract over the whole contract with the
+// one assertion replaced); if it would produce an INVALID contract the tightening
+// for THAT assertion is DISCARDED and the original kept — fail-safe, an invalid
+// contract is never emitted. Flag-off (or no manifest) is a strict no-op: the input
+// contract is returned unchanged with an empty tightenings list.
+//
+// IDEMPOTENT: a re-dispatch reads the already-tightened contract from disk; a
+// converted assertion is now a DETERMINISTIC `command`, which this function never
+// touches → zero events, no rewrite. A tightening is recorded ONLY when an assertion
+// actually converts.
+export function tightenAuthoredContract(
+  contract: VerificationContract,
+  loom: Loom,
+  manifest?: { adaptiveVerification?: boolean },
+): {
+  contract: VerificationContract;
+  tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[];
+} {
+  if (!(manifest && adaptiveVerificationEnabled(manifest))) return { contract, tightenings: [] };
+  const hints = collectProofHints(loom.charter);
+  if (hints.size === 0) return { contract, tightenings: [] };
+
+  const working = contract.assertions.slice();
+  const tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[] = [];
+
+  for (let i = 0; i < working.length; i++) {
+    const a = working[i];
+    const run = hints.get(a.id.trim()) ?? hints.get(a.description.trim());
+    if (!run) continue; // hint-less assertion — keep today's routing untouched
+
+    // A DETERMINISTIC assertion (command/gate/db) already carries an authored
+    // runnable `expected`; editing it is "editing the yardstick" (§M.2), which text
+    // can't tell stricter from looser — NEVER touched here (see header). This also
+    // makes the function idempotent: a Direction-1 conversion produces a `command`,
+    // which is deterministic, so a re-dispatch skips it → zero events, no rewrite.
+    const deterministic = partitionAssertions([a]).deterministic.length === 1;
+    if (deterministic) continue;
+
+    // CONVERT — agent-judged (live-critic / golden-diff, no runnable of its own) →
+    // command. Clear observable/expectedFile + strip any stray subjective marker so
+    // the result passes validateContract's non-live-critic rules; the id/
+    // description/subGoalId/blocker are preserved verbatim.
+    const tightened: ContractAssertion = {
+      ...a,
+      type: "command",
+      expected: run,
+      observable: undefined,
+      expectedFile: undefined,
+      subjective: undefined,
+    };
+
+    // Fail-safe: validate the WHOLE candidate (prior tightenings applied, this one
+    // replaced). If it would be invalid, DISCARD this tightening and keep the
+    // original — never emit an invalid contract.
+    const candidate: VerificationContract = {
+      ...contract,
+      assertions: working.map((x, j) => (j === i ? tightened : x)),
+    };
+    if (validateContract(candidate).length > 0) continue;
+
+    working[i] = tightened;
+    tightenings.push({ id: a.id, fromType: a.type, fromExpected: a.expected, toType: "command", toExpected: run });
+  }
+
+  if (tightenings.length === 0) return { contract, tightenings: [] };
+  return { contract: { ...contract, assertions: working }, tightenings };
 }
 
 // PURE w.r.t. the child object except for the two fields it stamps

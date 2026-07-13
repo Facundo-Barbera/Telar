@@ -44,10 +44,10 @@ import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
 import { appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
-import { synthesizeContract, wireChildBundle } from "./weave-contracts";
+import { synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { envReviewEnabled, laneEscalationEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
+import { adaptiveVerificationEnabled, envReviewEnabled, laneEscalationEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
 import { runSetupAgent } from "./setup/setup-agent";
 import { superviseStartLane } from "./verify-lane";
 import type { Lane, StartLaneOpts } from "./run-server";
@@ -178,6 +178,16 @@ function ensureWoven(loom: Loom): void {
       version: base?.version ?? 1,
       approvedBy: base?.approvedBy ?? "auto:single-thread",
       singleThread: true,
+      // M11.1 (adaptiveVerification) — FORWARD the base charter's per-criterion
+      // proof hints through the weave-of-one rebuild so collectProofHints
+      // (weave-contracts.ts) still reaches them at synthesis. Without this the
+      // rebuild silently dropped charter-level proofHints — the loom_mrinlb18
+      // greenfield evidence, where a valid non-woven planner charter's hints
+      // vanished at ensureWoven and the derivation saw nothing. Inherently no-op
+      // off-flag: nothing authors proofHints when adaptiveVerification is off, so
+      // `base.proofHints` is absent everywhere off-flag and the spread is `{}` —
+      // byte-identical, no need to thread a manifest into this signature.
+      ...(base?.proofHints ? { proofHints: base.proofHints } : {}),
     };
     return;
   }
@@ -314,6 +324,51 @@ function runWeaveWiring(
   if (!contract) {
     contract = synthesizeContract(loom, manifest);
     writeContract(loom.id, contract);
+  } else {
+    // M11.1 (adaptiveVerification) — an AUTHORED contract (readContract non-null)
+    // never passes through synthesizeContract, so its live-critic/golden-diff
+    // assertions stayed agent-judged and a prose-`expected` command stayed
+    // unrunnable (the loom_mrinlb18 authored-bundle gap). Run the tightening-only
+    // derivation over it: it only ever TIGHTENS toward a charter-authored proofHint
+    // and only when the result still validates. Flag-off it is a strict no-op
+    // (empty tightenings) ⇒ byte-identical. PERSIST the result so
+    // runIntegrationVerify's independent readContract sees the tightened form; the
+    // per-tightening event carries the ORIGINAL type/expected so authored semantics
+    // stay recoverable. IDEMPOTENT: a re-dispatch reads the already-tightened
+    // contract and produces zero tightenings ⇒ no rewrite, no duplicate events (so
+    // the co-sign path a prior-contract rewrite would trip is never entered).
+    const { contract: tightened, tightenings } = tightenAuthoredContract(contract, loom, manifest);
+    if (tightenings.length > 0) {
+      // writeContract's §M.2 loosening guard fires on a STARTED loom (draft:false
+      // here) whenever a still-blocking assertion's content changes — and it cannot
+      // tell "stricter" from "looser," so a live-critic→command conversion (expected
+      // went undefined→runnable) reads as loosening-shaped and would throw for a
+      // human co-sign. This "auto:" self-cosign is safe ONLY because
+      // tightenAuthoredContract is provably a TIGHTENING by construction, on two
+      // independently-checkable structural guards (adaptive-verification review
+      // findings 1 & 2): (i) it ONLY ever CONVERTS an agent-judged assertion that
+      // carries NO runnable of its own (live-critic / golden-diff) — it NEVER edits
+      // an already-runnable `expected`, so it can't silently swap a stricter human
+      // command for a looser one; (ii) the runnable comes from collectProofHints,
+      // which drops trivially-passing (always-green) runs, so a converted command is
+      // a genuine check, never an unconditional pass. The result is the live-critic→
+      // command tightening the design doc blesses (§3.1) — the same trust class as
+      // the auto:weave-planner / auto:single-thread charter stamps. A human loosening
+      // still travels the human-co-sign path; a broken authored command is repaired
+      // by the HUMAN escalation surface, not here.
+      writeContract(loom.id, tightened, { cosignedBy: "auto:tighten-authored" });
+      for (const t of tightenings) {
+        appendEvent(loom.id, {
+          type: "contract-tightened",
+          assertionId: t.id,
+          fromType: t.fromType,
+          fromExpected: t.fromExpected,
+          toType: t.toType,
+          toExpected: t.toExpected,
+        });
+      }
+      contract = tightened;
+    }
   }
   const rootAssertions = contract.assertions;
   const rootSynthesized = contract.synthesized === true;
@@ -1082,6 +1137,24 @@ export async function startLoomFromBundle(
         loom.charter = charter;
         saveLoom(loom);
         appendEvent(loomId, { type: "charter-approved", by: "auto:weave-planner" });
+      } else if (adaptiveVerificationEnabled(manifest) && v.ok) {
+        // M11.1 (adaptiveVerification) — CAPTURE the proof intent of a VALID but
+        // NON-WOVEN planner charter. A greenfield/library bundle is one atomic
+        // workstream ⇒ empty decomposition ⇒ isWoven=false, so the weave branch
+        // above never fired and TODAY the emitted charter (with its proofStrategy
+        // + proofHints) was dropped entirely — the loom_mrinlb18 seam. Assign it
+        // to loom.charter so ensureWoven inherits `base` = this planner charter
+        // and its proofStrategy/proofHints/objective/scope/budget carry into the
+        // weave-of-one rebuild (ensureWoven forwards proofHints; synthesizeContract
+        // then honors them). isWoven(loom) STAYS false (no decomposition), so
+        // ensureWoven still builds the deterministic single subgoal and STAMPS
+        // approvedBy "auto:single-thread" — we deliberately do NOT set approvedBy
+        // here (this is not a woven approval). Gated behind adaptiveVerification so
+        // flag-off a non-woven planner charter is still dropped exactly as before
+        // (byte-identical bundle path).
+        loom.charter = charter;
+        saveLoom(loom);
+        appendEvent(loomId, { type: "charter-proof-intent-captured" });
       }
     }
 
