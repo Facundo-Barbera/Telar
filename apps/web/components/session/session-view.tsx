@@ -97,6 +97,14 @@ const LOOM_START_TOOL = "mcp__loom__start_loom";
 const PLANNER_GREETING =
   "I'll help you plan a loom. Tell me what you'd like to build, and I'll shape it into a spec — the objective, any context, and a contract we can verify — then we start it together. What are we making?";
 
+// The escalation session's agent-first greeting (M11.3, the blocked-loom
+// "Discuss with the orchestrator" chat). Same render-only seed contract as
+// PLANNER_GREETING — see the `escalation && !sessionId && messages.length === 0`
+// guard where it's used: never sent to the model, never persisted, never billed.
+// The instant the user sends anything it stops rendering, permanently.
+const ESCALATION_GREETING =
+  "This loom paused before building — it couldn't work out how to verify the result, and won't guess. Tell me about the deliverable and I'll help you land the right check: a test/eval command, a way to run the app, or a runbook. Once we've settled on it, I'll ask you to approve and the loom resumes. How is this meant to be verified?";
+
 // AgentInfo / ToolPart now live in components/session/tool-step.tsx (shared
 // with the loom agent-view transcript); imported above.
 
@@ -750,6 +758,12 @@ export function SessionView(props: {
   // address-bar rewrite (the Chat tab keeps the /looms/[id] URL). Undefined
   // everywhere else — a plain/planner session is unaffected.
   steerer?: boolean;
+  // Embedded escalation session (M11.3, the blocked-loom "Discuss with the
+  // orchestrator" chat). Sends role:"escalation"+loomId on the wire so route.ts
+  // binds a READ-ONLY toolset whose only write is the human-gated answer_blocked;
+  // like steerer it suppresses the address-bar rewrite (the surface stays on the
+  // /looms/[id] page). Undefined everywhere else.
+  escalation?: boolean;
   loomId?: string;
 }) {
   // The slash-command menu and account lock both need to read/drive the
@@ -772,6 +786,7 @@ function SessionViewInner({
   initialRole,
   planner,
   steerer,
+  escalation,
   loomId,
 }: {
   project: string;
@@ -783,6 +798,7 @@ function SessionViewInner({
   initialRole?: "planner";
   planner?: boolean;
   steerer?: boolean;
+  escalation?: boolean;
   loomId?: string;
 }) {
   const textInput = usePromptInputController().textInput;
@@ -1269,11 +1285,12 @@ function SessionViewInner({
                 // persisted transcript from the new URL.
                 if (payload.sessionId !== sessionId) {
                   setSessionId(payload.sessionId);
-                  // An embedded steerer session (loom Chat tab) keeps the
-                  // /looms/[id] URL — never rewrite the address bar out from
-                  // under the cockpit. Its GET /api/looms/[id]/chat seed gives
-                  // cross-reload continuity instead.
-                  if (!steerer) {
+                  // An embedded steerer session (loom Chat tab) OR escalation
+                  // session (blocked-loom discuss surface) keeps the /looms/[id]
+                  // URL — never rewrite the address bar out from under the
+                  // cockpit. (An escalation session is ephemeral and reattaches
+                  // only via an explicit re-click, so it has no seed to restore.)
+                  if (!steerer && !escalation) {
                     window.history.replaceState(
                       null,
                       "",
@@ -1682,7 +1699,16 @@ function SessionViewInner({
             // normal (non-planner) session. A steerer session (loom Chat tab)
             // additionally carries loomId so route.ts's turn-1 seed can bind the
             // session to this loom (validated server-side against the project).
-            ...(planner ? { role: "planner" } : steerer ? { role: "steerer", loomId } : {}),
+            // An escalation session (blocked-loom discuss surface) carries
+            // role:"escalation"+loomId the same way — route.ts binds a read-only
+            // toolset whose only write is the human-gated answer_blocked.
+            ...(planner
+              ? { role: "planner" }
+              : steerer
+                ? { role: "steerer", loomId }
+                : escalation
+                  ? { role: "escalation", loomId }
+                  : {}),
           }),
           signal: abort.signal,
         });
@@ -1751,7 +1777,7 @@ function SessionViewInner({
         runIdRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, applyServerEvent],
+    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
   );
 
   // ── Loom watchers (docs/watchers-design.md §6) ──────────────────────────
@@ -2337,6 +2363,16 @@ function SessionViewInner({
             <Message from="assistant">
               <MessageContent>
                 <MessageResponse>{PLANNER_GREETING}</MessageResponse>
+              </MessageContent>
+            </Message>
+          ) : messages.length === 0 && escalation && !sessionId ? (
+            // M11.3 escalation agent-first greeting — identical render-only
+            // seed contract as the planner greeting (no model call, never
+            // persisted/billed). The agent visibly speaks first the instant the
+            // human opens the discuss surface; gone once a real turn starts.
+            <Message from="assistant">
+              <MessageContent>
+                <MessageResponse>{ESCALATION_GREETING}</MessageResponse>
               </MessageContent>
             </Message>
           ) : messages.length === 0 ? (

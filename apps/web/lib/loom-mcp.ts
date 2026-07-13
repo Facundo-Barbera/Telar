@@ -65,6 +65,88 @@ export const LOOM_AUTO_TOOLS = [
 // provenance stamp). See route.ts's preToolUseGuardrail and canUseTool.
 export const LOOM_START_TOOL = "mcp__loom__start_loom";
 
+// M11.3 — the conversational-escalation WRITE tool. Like start_loom (§M.6) it
+// commits a real, viability-making decision (the persisted verification recipe
+// that resumes a `blocked` loop), so it is human-gated by the EXACT same moat:
+// NEVER in LOOM_AUTO_TOOLS, and hard-routed to an interactive approval card by
+// route.ts's PreToolUse guardrail in every permission mode — the human's Approve
+// click IS the provenance stamp answerBlocked's `by` records (which is always
+// the chat's server-resolved account, never tool input). Distinct from the
+// auto-run `answer_loom`: that one resumes with an AGENT-picked devCommand
+// un-gated and can't carry a verifyCommand; this one carries the strategy answer
+// and only lands after the human approves. See route.ts's three mirror sites.
+export const LOOM_ANSWER_BLOCKED_TOOL = "mcp__loom__answer_blocked";
+
+// M11.3 — the escalation session's AUTO-RUN toolset (route.ts's `allowedTools`
+// when isEscalationSession). READ-ONLY only: the loom-inspection reads plus the
+// project-root snapshot tools, so the discussing agent can explain the parked
+// verification method and inspect the repo, but has NO state-changing tool that
+// auto-runs. answer_blocked is deliberately ABSENT here (it is the one write and
+// stays human-gated, exactly like start_loom is absent from LOOM_AUTO_TOOLS).
+// The state-changing loom tools are additionally HARD-BLOCKED via
+// LOOM_ESCALATION_DISALLOWED_TOOLS below (SDK disallow always wins), so they can
+// never run in an escalation session even interactively — the read-only judge/
+// discuss wall is enforced by the toolset, not by isolation.
+export const LOOM_ESCALATION_READONLY_TOOLS = [
+  "Read",
+  "Grep",
+  "Glob",
+  "mcp__loom__read_bundle",
+  "mcp__loom__get_loom",
+  "mcp__loom__list_looms",
+] as const;
+
+// M11.3 — the state-changing loom tools an escalation session must NEVER run.
+// Passed into route.ts's `disallowedTools` for isEscalationSession: the SDK
+// guarantees a disallow beats any allow (repo-settings or otherwise), so even
+// though the loom MCP server registers these for planner/steerer sessions, they
+// are truly uncallable here. Deliberately EXCLUDES answer_blocked (which must
+// remain callable-but-gated — the ONLY escalation write path) and the read
+// tools in LOOM_ESCALATION_READONLY_TOOLS above.
+export const LOOM_ESCALATION_DISALLOWED_TOOLS = [
+  "mcp__loom__draft_bundle_file",
+  "mcp__loom__propose_contract",
+  "mcp__loom__start_loom",
+  "mcp__loom__steer_loom",
+  "mcp__loom__reject_loom",
+  "mcp__loom__answer_loom",
+  "mcp__loom__resume_loom",
+  "mcp__loom__cancel_loom",
+  "mcp__loom__watch_loom",
+] as const;
+
+// M11.3 — the escalation session's per-turn seed context (parallel to route.ts's
+// buildSteererContext). PURE string assembly over already-fetched values so it's
+// hermetically testable and carries no @telar/core coupling: route.ts gathers the
+// loom/contract/deliverable-signal and hands the primitives here. Seeds the
+// agent with WHY the loop parked (blockedReason/blockedQuestion), WHAT the
+// contract asks (assertion type+description summary), and the machine evidence of
+// what verification substrates were checked (the deliverable signal's reason).
+export function formatEscalationContext(args: {
+  loomId: string;
+  state?: string;
+  blockedReason?: string;
+  blockedQuestion?: string;
+  assertions?: { type: string; description: string }[];
+  signalReason?: string;
+}): string {
+  const assertionLines =
+    args.assertions && args.assertions.length
+      ? args.assertions.map((a) => `  • [${a.type}] ${a.description}`).join("\n")
+      : null;
+  return [
+    `\n\n--- BLOCKED LOOM CONTEXT (id ${args.loomId}, state: ${args.state ?? "unknown"}) ---`,
+    args.blockedQuestion && `# The question the loop parked on\n${args.blockedQuestion}`,
+    args.blockedReason && `# What it already tried (why the lane is unviable)\n${args.blockedReason}`,
+    assertionLines && `# Verification Contract (what must be proven)\n${assertionLines}`,
+    args.signalReason &&
+      `# Deliverable-signal evidence (verification substrates checked)\n${args.signalReason}`,
+    `# Project snapshot\nYour working directory IS this loom's project root — use Read/Grep/Glob to inspect it (package.json, test setup, entry points) so your guidance is grounded in the real repo.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 // Mutated in place by draft_bundle_file (first-use lazy create) and read back
 // by route.ts after the turn ends to persist onto the chat record via the
 // same appendTurn(loomId, role) path used for every other captured session
@@ -281,6 +363,49 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
             const ok = await answerBlocked(id, opts.account, { devCommand, runbook }, buildDeps());
             if (!ok) {
               return errResult("Loom is not blocked, or the answer was empty (provide a devCommand or runbook).");
+            }
+            const loom = getLoom(id);
+            return okResult(JSON.stringify({ loomId: id, state: loom?.state }, null, 2));
+          } catch (e) {
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      // M11.3 — the conversational-escalation WRITE. Human-gated exactly like
+      // start_loom: NEVER in LOOM_AUTO_TOOLS, hard-routed to an interactive
+      // approval card by route.ts's PreToolUse guardrail in every permission
+      // mode (see LOOM_ANSWER_BLOCKED_TOOL). Distinct from answer_loom above:
+      // this carries the M11 strategy answer (verifyCommand) and only lands
+      // after the human's Approve click. `by` is ALWAYS opts.account — the
+      // chat's server-resolved human identity, NEVER read from tool input
+      // (§M.6), consistent with the /block/answer route's server-bound `by`.
+      tool(
+        "answer_blocked",
+        "Answer a loom parked in 'blocked' with the human-approved verification recipe and resume it. Provide a verifyCommand (a test/eval command whose exit code proves a library/CLI/eval deliverable — persisted as telar.yaml verifyCommand, NEVER auto-spun as a dev server), and/or a devCommand (how to bring a runnable app up), and/or a runbook (optional free-text narrative for how to drive the app to reach the feature; a runbook alone can NOT resume the loom). This tool ALWAYS requires the human's explicit interactive approval in Telar's UI, in every permission mode; it can never auto-run — only call it once the human has converged on the answer. Persists the recipe (so it never asks again) then re-verifies (lands 'ready' at most, never 'done'). Defaults to this session's linked loom when loomId is omitted.",
+        {
+          loomId: z.string().optional(),
+          devCommand: z.string().optional(),
+          verifyCommand: z.string().optional(),
+          runbook: z.string().optional(),
+        },
+        async ({ loomId, devCommand, verifyCommand, runbook }) => {
+          const id = resolveLoomId(loomId);
+          if (!id) return errResult("No loom is linked to this session — pass a loomId to answer a specific loom.");
+          try {
+            // `by` is ALWAYS opts.account — the human-by moat; never read from
+            // tool input. The accept-guard inside answerBlocked (viability-
+            // making devCommand/verifyCommand/servers only; runbook alone
+            // never resumes) stays in lock-step with executor's isLaneViable.
+            const ok = await answerBlocked(
+              id,
+              opts.account,
+              { devCommand, verifyCommand, runbook },
+              buildDeps(),
+            );
+            if (!ok) {
+              return errResult(
+                "Loom is not blocked, or the answer wasn't viability-making (provide a verifyCommand or devCommand — a runbook alone can't resume the loom).",
+              );
             }
             const loom = getLoom(id);
             return okResult(JSON.stringify({ loomId: id, state: loom?.state }, null, 2));

@@ -8,6 +8,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   accountEnv,
+  deriveDeliverableSignal,
   getAccount,
   getDefaultAccountName,
   getLoom,
@@ -34,7 +35,11 @@ import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs"
 import { appendSessionEvent, startSessionLog } from "@/lib/session-log";
 import {
   createLoomMcpServer,
+  formatEscalationContext,
+  LOOM_ANSWER_BLOCKED_TOOL,
   LOOM_AUTO_TOOLS,
+  LOOM_ESCALATION_DISALLOWED_TOOLS,
+  LOOM_ESCALATION_READONLY_TOOLS,
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
@@ -183,6 +188,63 @@ function buildSteererContext(loomId: string): string {
     .join("\n\n");
 }
 
+// Appended (never replacing) the "claude_code" preset for an ESCALATION session
+// (docs/adaptive-verification.md §8's conversational-escalation surface) — the
+// "Discuss with the orchestrator" chat on a `blocked` loom. Guidance only: the
+// actual moat is the toolset (LOOM_ESCALATION_READONLY_TOOLS auto-run +
+// LOOM_ESCALATION_DISALLOWED_TOOLS hard-blocked + answer_blocked human-gated via
+// the PreToolUse guardrail). Reuses the steerer moat language: the agent can
+// NEVER accept/promote/mark-done. Its ONE write is answer_blocked, which only
+// lands after the human's explicit Approve click.
+const ESCALATION_SYSTEM_PROMPT = `You are embedded in a PARKED loom's escalation chat. The loop stopped BEFORE spending on the build because it could not stand up a way to VERIFY this work, and it refuses to guess. Your job is to talk it through with the human and distill the verification recipe.
+
+You can OBSERVE this loom and inspect its project with read-only tools:
+  • get_loom / read_bundle / list_looms — inspect state, objective, contract.
+  • Read / Grep / Glob — inspect the project root (your working directory) to ground your advice in the real repo (package.json, test setup, entry points).
+
+DISCUSS the verification method with the human. Explain the options plainly and help them choose the one that fits the deliverable:
+  • a TEST/EVAL command — a command whose exit code proves the work (e.g. \`bun test\`), for a library/CLI/eval deliverable. Saved as the telar.yaml verifyCommand; a test suite is NEVER auto-spun as a dev server.
+  • a DEV command — how to bring a runnable app up (e.g. \`bun run dev\`), for a web/app deliverable.
+  • a RUNBOOK — optional free-text narrative for how to drive the app to reach the feature (accompanies a command; it can NOT resume the loom on its own).
+  • a SERVERS recipe — a background-process setup, when the app needs services up first.
+
+ONLY when the human has converged on a concrete answer, DISTILL it and call answer_blocked with the fields they settled on. That tool ASKS THE HUMAN TO APPROVE — you cannot resume a loom yourself; that human approval is required by design and IS the provenance stamp. After it resumes, tell them the loop is re-verifying and they can watch it in the cockpit.
+
+HARD RULE (the product's core invariant): you can DISCUSS and, with the human's approval, answer the block — but you can NEVER accept, promote, approve, or mark this loom "done". There is no tool for that and there never will be — acceptance is a human click made outside this chat. Do not claim you accepted it; do not imply the work is done.
+When you need to clarify something, ask it as a plain chat message and wait for the human's reply — never use a structured question/interactive tool; the chat has no UI to answer those.`;
+
+// Dynamic per-turn context for an escalation session (parallel to
+// buildSteererContext): recomputed every turn so blockedReason/blockedQuestion,
+// the contract, and the deliverable-signal evidence are always fresh. Delegates
+// the string assembly to loom-mcp's PURE formatEscalationContext (hermetically
+// tested there) — this function only gathers the core-backed values. Guarded:
+// each read fails safe to omission, never an error.
+function buildEscalationContext(loomId: string, root: string): string {
+  const loom = getLoom(loomId);
+  const assertions = safeRead(() => {
+    const c = readContract(loomId).contract;
+    return c ? JSON.stringify(c.assertions.map((a) => ({ type: a.type, description: a.description }))) : null;
+  });
+  // deriveDeliverableSignal is a bounded synchronous fs read (no LLM, no spawn)
+  // — the same signal the pre-flight parked on, so the agent sees exactly which
+  // verification substrates were checked and why none applied.
+  const signalReason = (() => {
+    try {
+      return deriveDeliverableSignal(root, loom?.charter).reason;
+    } catch {
+      return undefined;
+    }
+  })();
+  return formatEscalationContext({
+    loomId,
+    state: loom?.state,
+    blockedReason: loom?.blockedReason,
+    blockedQuestion: loom?.blockedQuestion,
+    assertions: assertions ? (JSON.parse(assertions) as { type: string; description: string }[]) : undefined,
+    signalReason,
+  });
+}
+
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
 // via includePartialMessages; client abort propagates to the subprocess.
@@ -217,8 +279,14 @@ export async function POST(req: Request) {
     // just won't be reachable for them, which matches the old behavior).
     runId: rawRunId,
   } = await req.json();
-  const role: "planner" | "steerer" | undefined =
-    rawRole === "planner" ? "planner" : rawRole === "steerer" ? "steerer" : undefined;
+  const role: "planner" | "steerer" | "escalation" | undefined =
+    rawRole === "planner"
+      ? "planner"
+      : rawRole === "steerer"
+        ? "steerer"
+        : rawRole === "escalation"
+          ? "escalation"
+          : undefined;
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
 
@@ -403,14 +471,27 @@ export async function POST(req: Request) {
       // AND belong to the anchoring project — a bad/foreign id fails safe to a
       // normal session, never binds to someone else's loom. Only ever consulted
       // for a brand-new chat (existingChat's own persisted link wins otherwise).
+      // Both a STEERER (loom Chat tab) and an ESCALATION (blocked-loom "Discuss
+      // with the orchestrator") turn-1 seed bind a loomId the same way, validated
+      // identically — the loom must exist AND belong to the anchoring project.
       let wireLoomId: string | undefined;
-      if (!existingChat && role === "steerer" && typeof rawLoomId === "string" && rawLoomId) {
+      if (
+        !existingChat &&
+        (role === "steerer" || role === "escalation") &&
+        typeof rawLoomId === "string" &&
+        rawLoomId
+      ) {
         const l = getLoom(rawLoomId);
         if (l && l.project === project) wireLoomId = rawLoomId;
       }
       const loomLink: LoomSessionLink = {
         loomId: existingChat?.loomId ?? wireLoomId,
-        role: existingChat?.role ?? (wireLoomId ? "steerer" : undefined),
+        // Only steerer is PERSISTED as a link role (store.ts's Chat.role union is
+        // planner|steerer). An escalation session is deliberately EPHEMERAL — it
+        // must never auto-reattach (the surface is behind an explicit click), so
+        // it persists no role: isEscalationSession is derived from the wire `role`
+        // (sent every turn) below, not from a stored link.
+        role: existingChat?.role ?? (wireLoomId && role === "steerer" ? "steerer" : undefined),
       };
       // Whether this turn is part of a Loom Session (docs/loom-model.md §5's
       // "planner" role) — the body's own `role` (authoritative for turn 1,
@@ -424,6 +505,15 @@ export async function POST(req: Request) {
       // ONLY the appended system-prompt guidance + live-context block below,
       // never loom tool access/gating (which stays exactly as wired).
       const isSteererSession = loomLink.role === "steerer";
+      // M11.3 escalation session (the blocked-loom "Discuss with the
+      // orchestrator" chat). Derived from the WIRE `role` (sent every turn — the
+      // link is never persisted as escalation, above) AND a resolved loomId; a
+      // bad/foreign loomId fails safe to a plain session (loomLink.loomId stayed
+      // undefined), exactly like the steerer seed does. Drives the read-only
+      // escalation toolset + the answer_blocked-only write path + its system
+      // prompt/context below — mutually exclusive with planner/steerer (role is
+      // "escalation", and loomLink.role is never "steerer" for it).
+      const isEscalationSession = role === "escalation" && !!loomLink.loomId;
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
@@ -507,6 +597,7 @@ export async function POST(req: Request) {
         // guard further down, which refuses to ever persist a rule for it).
         if (
           toolName !== LOOM_START_TOOL &&
+          toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
           readRules(project).some((r) => ruleMatches(r, toolName, input))
         ) {
           return { behavior: "allow", updatedInput: input };
@@ -540,9 +631,12 @@ export async function POST(req: Request) {
           // card (validated against `ruleOptions` by the permission route,
           // see isOfferedRule) — falls back to the prefix rule ruleFor
           // computed above when the user just clicked the default button.
-          // Never persisted for start_loom (see the readRules skip above) —
-          // every commit gets its own interactive approval, no exceptions.
-          if (decision.always && toolName !== LOOM_START_TOOL) addRule(project, decision.rule ?? rule);
+          // Never persisted for start_loom OR answer_blocked (see the readRules
+          // skip above) — every commit/answer gets its own interactive approval,
+          // no exceptions (§M.6 — the human's click is the provenance stamp).
+          if (decision.always && toolName !== LOOM_START_TOOL && toolName !== LOOM_ANSWER_BLOCKED_TOOL) {
+            addRule(project, decision.rule ?? rule);
+          }
           // Never forward the SDK's own `suggestions` back as
           // `updatedPermissions`, even session-scoped ones. The SDK's
           // PermissionUpdate union includes `{type:'setMode', mode}` where
@@ -610,14 +704,23 @@ export async function POST(req: Request) {
         // interactive canUseTool permission card every single time; the
         // human clicking Approve on that card IS the §M.6 human-approved
         // provenance stamp startLoomFromBundle's `by` records.
-        if (input.tool_name === LOOM_START_TOOL) {
+        // The SAME §M.6 hard-route covers answer_blocked (M11.3): the
+        // conversational-escalation write commits a viability-making
+        // verification recipe that resumes a parked loop, so — like start_loom
+        // — it must force the interactive canUseTool card in EVERY permission
+        // mode; the human's Approve click IS the provenance stamp answerBlocked's
+        // `by` records. It is never in the escalation session's allowedTools, but
+        // that alone only stops the SDK's pre-approval fast path.
+        if (input.tool_name === LOOM_START_TOOL || input.tool_name === LOOM_ANSWER_BLOCKED_TOOL) {
           return {
             continue: true,
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "ask",
               permissionDecisionReason:
-                "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
+                input.tool_name === LOOM_START_TOOL
+                  ? "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6)."
+                  : "Answering a blocked loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
             },
           };
         }
@@ -909,7 +1012,17 @@ export async function POST(req: Request) {
             // preset's own `append` — a normal session's systemPrompt is
             // byte-for-byte unchanged; only isPlannerSession turns get the
             // extra paragraph tacked on after Claude Code's default prompt.
-            systemPrompt: isSteererSession
+            systemPrompt: isEscalationSession
+              ? {
+                  type: "preset",
+                  preset: "claude_code",
+                  // Static moat text + a per-turn seed (blockedReason/question +
+                  // contract + deliverable-signal evidence). loomLink.loomId is
+                  // non-null whenever isEscalationSession (guarded above).
+                  append:
+                    ESCALATION_SYSTEM_PROMPT + buildEscalationContext(loomLink.loomId!, workspace),
+                }
+              : isSteererSession
               ? {
                   type: "preset",
                   preset: "claude_code",
@@ -952,30 +1065,46 @@ export async function POST(req: Request) {
             // "Stream closed"), so anything a research subagent needs (web
             // search/fetch, the MCP tool-search) must be pre-allowed, not
             // gated. The PreToolUse guardrail hook still runs for these.
-            allowedTools: [
-              "Read",
-              "Grep",
-              "Glob",
-              "WebSearch",
-              "WebFetch",
-              "ToolSearch",
-              // The loom moat's read/draft tools ONLY (docs/loom-model.md
-              // §5/§M.6) — auto-run so a planning session isn't spamming
-              // permission cards to write bundle files or propose a
-              // contract. mcp__loom__start_loom is deliberately excluded:
-              // it is the one tool in this server that dispatches a real
-              // loom, and must always go through the interactive
-              // canUseTool prompt (see preToolUseGuardrail's `ask`
-              // hard-route above and canUseTool's own always-allow-rule
-              // exclusion for it).
-              ...LOOM_AUTO_TOOLS,
-            ],
+            allowedTools: isEscalationSession
+              ? // M11.3 escalation session: READ-ONLY auto-run tools only (loom
+                // inspection + project-root snapshot). NO state-changing loom
+                // tool auto-runs; answer_blocked is NOT here (it is human-gated
+                // via the PreToolUse guardrail below, exactly like start_loom).
+                [...LOOM_ESCALATION_READONLY_TOOLS]
+              : [
+                  "Read",
+                  "Grep",
+                  "Glob",
+                  "WebSearch",
+                  "WebFetch",
+                  "ToolSearch",
+                  // The loom moat's read/draft tools ONLY (docs/loom-model.md
+                  // §5/§M.6) — auto-run so a planning session isn't spamming
+                  // permission cards to write bundle files or propose a
+                  // contract. mcp__loom__start_loom is deliberately excluded:
+                  // it is the one tool in this server that dispatches a real
+                  // loom, and must always go through the interactive
+                  // canUseTool prompt (see preToolUseGuardrail's `ask`
+                  // hard-route above and canUseTool's own always-allow-rule
+                  // exclusion for it).
+                  ...LOOM_AUTO_TOOLS,
+                ],
             // AskUserQuestion (and any sibling structured-question tool the
             // SDK exposes) is hard-disallowed here: the chat UI has no
             // widget to answer a structured question, so the model must ask
             // clarifying questions as plain chat messages instead (see
-            // PLANNER_SYSTEM_PROMPT above).
-            disallowedTools: [...manifest.guardrails.disallowedTools, "AskUserQuestion"],
+            // PLANNER_SYSTEM_PROMPT above). For an escalation session, ADD the
+            // state-changing loom tools (steer/reject/answer_loom/resume/cancel/
+            // watch/draft/propose/start) to the disallow set: the SDK guarantees
+            // a disallow beats any allow, so those tools — registered on the loom
+            // MCP server for other sessions — are truly uncallable here, even
+            // interactively. answer_blocked is deliberately NOT disallowed (it
+            // stays callable-but-human-gated — the ONLY escalation write path).
+            disallowedTools: [
+              ...manifest.guardrails.disallowedTools,
+              "AskUserQuestion",
+              ...(isEscalationSession ? LOOM_ESCALATION_DISALLOWED_TOOLS : []),
+            ],
             // The loom MCP server (see loomMcpServer above) — its tools
             // surface as mcp__loom__*, gated the same way every other tool
             // is: allowedTools for the safe read/draft ones, canUseTool +
