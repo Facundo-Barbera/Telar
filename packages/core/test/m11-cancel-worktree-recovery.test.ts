@@ -62,10 +62,11 @@ afterAll(() => {
 
 const worktreeCount = () => git(repo, ["worktree", "list"]).trim().split("\n").filter(Boolean).length;
 
-function manifestFor(isolate: boolean) {
+function manifestFor() {
   const base = ProjectManifest.parse({ name: projectName, root: repo });
   // No gates -> the abort short-circuits before gates anyway; kept minimal.
-  return { ...base, isolateWorktrees: isolate, gates: [] };
+  // Isolation is unconditional, so no manifest field toggles it.
+  return { ...base, gates: [] };
 }
 
 function makeRootAndChild() {
@@ -153,7 +154,11 @@ describe("executeLoom cancel path preserves committed work (finding 5)", () => {
     const abort = new AbortController();
     // The builder commits its work inside the detached worktree, THEN cancel
     // arrives — leaving a clean tree with an advanced HEAD (the finding's bug).
-    const run = (async (_p: unknown, o: { cwd: string }) => {
+    const run = (async (p: unknown, o: { cwd: string }) => {
+      // The unconditional per-thread planner call must DEGRADE to the template
+      // (invalid workflow) — never run the commit-then-abort builder body, which
+      // would abort during planning and commit into manifest.root.
+      if (/planning pass|step-graph/.test(String(p))) return { version: 1, steps: [] } as never;
       fs.writeFileSync(path.join(o.cwd, "built.txt"), "committed attempt work\n");
       git(o.cwd, ["add", "-A"]);
       git(o.cwd, ["commit", "--no-verify", "-m", "attempt work"]);
@@ -161,7 +166,7 @@ describe("executeLoom cancel path preserves committed work (finding 5)", () => {
       return { ok: true, summary: "done", files_touched: ["built.txt"], blocker: null };
     }) as unknown as ExecuteOpts["run"];
 
-    const res = await executeLoom(child, manifestFor(true), { run, onState: saveLoom, onEvent: () => {}, abort });
+    const res = await executeLoom(child, manifestFor(), { run, onState: saveLoom, onEvent: () => {}, abort });
 
     expect(res.state).toBe("halted");
     // No leaked worktree dir (M8's promise on the cancel path).

@@ -11,11 +11,8 @@
 //       and does NOT run integration verify;
 //   (D) tick — a settled blocked required thread yields an honest parking escalate;
 //   (F) recovery sweep — a blocked root and a blocked child are both left untouched.
-// Flag discipline: a `blocked` terminal exists only under laneEscalation/
-// adaptiveVerification (the breaker/park), so every branch here is unreachable
-// flag-off ⇒ flag-off byte-identical. These tests exercise the pure/seam functions
-// directly (no flag needed), the same way m9-thread-workflow.test.ts drives
-// runThreadWorkflow with an injected runStep.
+// These tests exercise the pure/seam functions directly (no flag needed), the same
+// way m9-thread-workflow.test.ts drives runThreadWorkflow with an injected runStep.
 import { describe, expect, test } from "bun:test";
 import type { Loom } from "../src/looms";
 import type { StepResult } from "../src/executor";

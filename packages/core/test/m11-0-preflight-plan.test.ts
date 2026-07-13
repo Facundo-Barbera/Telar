@@ -15,10 +15,8 @@
 //      level (a nested package.json cannot widen viability — no recursion).
 //   D. no double-fire — a plannable deliverable + setupAgent ON dispatches
 //      exactly once (the proceed short-circuit and the setup-agent operand
-//      cannot both park/provision); unplannable + setupAgent ON still defers to
-//      the setup agent exactly as M10.4 (zero lane-escalation events).
-//   E. flag-off byte-identical — laneEscalation OFF never parks and never
-//      surfaces signal-derived copy, plannable or not.
+//      cannot both park/provision); unplannable + setupAgent ON parks fail-closed
+//      (the auto-provision escape is re-homed to the B2 mediation rung).
 //   F. isLaneViable (pure) — the widened third true-path: filesystem signal
 //      fires even on the 2-arg legacy call; charter gate intent needs the new
 //      optional 3rd param; the widening only ADDS viability (empty root + no
@@ -36,13 +34,9 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m110-home-"));
 process.env.TELAR_HOME = home;
 beforeEach(() => {
   process.env.TELAR_HOME = home;
-  delete process.env.TELAR_LANE_ESCALATION;
-  delete process.env.TELAR_SETUP_AGENT;
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
-  delete process.env.TELAR_LANE_ESCALATION;
-  delete process.env.TELAR_SETUP_AGENT;
 });
 
 const { answerBlocked, startLoom } = await import("../src/dispatcher");
@@ -121,7 +115,7 @@ async function settle() {
 describe("pre-flight proceeds when a non-server plan is formable", () => {
   test("brownfield: package.json test script → PROCEEDS (no park, children spawn)", async () => {
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js", scripts: { test: "bun test" } }), "bun.lock": "" },
     );
     const f = fakeDeps();
@@ -138,7 +132,7 @@ describe("pre-flight proceeds when a non-server plan is formable", () => {
   test("greenfield: EMPTY root + gate-mechanism charter intent → PROCEEDS (the prove-run case)", async () => {
     // "Greenfield" = no deliverable evidence: createProject scaffolds only the
     // telar.yaml manifest, which the pure signal never reads as evidence.
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     expect(fs.existsSync(path.join(root, "package.json"))).toBe(false);
     const f = fakeDeps();
     const loom = startLoom(
@@ -155,7 +149,7 @@ describe("pre-flight proceeds when a non-server plan is formable", () => {
   test("proceeding is NOT unconditional: greenfield with NO gate intent still parks (last resort intact)", async () => {
     // ensureWoven's default charter is proofStrategy "custom" → verifyMechanism
     // "verifier" → no deferred-gate plan → the park stays reachable.
-    const { name } = makeProject({ laneEscalation: true });
+    const { name } = makeProject();
     const f = fakeDeps();
     const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
     await settle();
@@ -170,7 +164,7 @@ describe("last-resort park asks for what the derived strategy needs", () => {
     // A package entry point but only the npm scaffold placeholder test script:
     // library shape, no formable plan.
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js", scripts: { test: 'echo "Error: no test specified" && exit 1' } }) },
     );
     const f = fakeDeps();
@@ -187,7 +181,7 @@ describe("last-resort park asks for what the derived strategy needs", () => {
 
   test("web-shaped deliverable keeps today's dev-command ask verbatim", async () => {
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "app", scripts: { dev: "next dev" } }) },
     );
     const f = fakeDeps();
@@ -201,7 +195,7 @@ describe("last-resort park asks for what the derived strategy needs", () => {
   });
 
   test("unknown greenfield asks openly for a verification command first", async () => {
-    const { name } = makeProject({ laneEscalation: true });
+    const { name } = makeProject();
     const f = fakeDeps();
     const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
     await settle();
@@ -214,7 +208,7 @@ describe("last-resort park asks for what the derived strategy needs", () => {
 // ── C. no spend before the decision ──────────────────────────────────────────
 describe("the pre-flight decision itself spends nothing", () => {
   test("a park fires ZERO builders, ZERO children, and never consults the scoping LLM", async () => {
-    const { name } = makeProject({ laneEscalation: true });
+    const { name } = makeProject();
     const f = fakeDeps();
     const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
     await settle();
@@ -231,7 +225,7 @@ describe("the pre-flight decision itself spends nothing", () => {
     // A perfectly plannable package.json one directory down: the pure signal
     // must NOT recurse into it (purity/no-spend — one top-level readdir), so
     // the pre-flight still parks.
-    const { name, root } = makeProject({ laneEscalation: true }, {}, ["packages/lib"]);
+    const { name, root } = makeProject({}, {}, ["packages/lib"]);
     fs.writeFileSync(
       path.join(root, "packages/lib/package.json"),
       pkg({ name: "lib", scripts: { test: "bun test" } }),
@@ -250,7 +244,7 @@ describe("proceed path and setupAgent never double-fire", () => {
     // The proceed path alone must be a SINGLE dispatch: one weave-of-one child,
     // one builder run, zero parks.
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js", scripts: { test: "bun test" } }) },
     );
     const f = fakeDeps();
@@ -270,7 +264,7 @@ describe("proceed path and setupAgent never double-fire", () => {
     // operand ever decides — exactly zero lane-escalation events, no blocked
     // state, regardless of what the M5 preparing-window setup then does.
     const { name } = makeProject(
-      { laneEscalation: true, setupAgent: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js", scripts: { test: "bun test" } }) },
     );
     const f = fakeDeps();
@@ -282,44 +276,17 @@ describe("proceed path and setupAgent never double-fire", () => {
     expect(readEvents(loom.id).events.filter((e) => e.type === "lane-escalation").length).toBe(0);
   });
 
-  test("UNplannable + setupAgent ON → still defers to the setup agent (M10.4 behavior preserved)", async () => {
-    const { name } = makeProject({ laneEscalation: true, setupAgent: true });
+  test("UNplannable + setupAgent ON → parks fail-closed (the auto-provision escape is re-homed to the B2 mediation rung)", async () => {
+    // The preparing-window auto-provision that once let an unviable lane escape
+    // this park is re-homed to the orchestrator-mediation rung (B2); until then an
+    // unviable lane parks fail-closed, regardless of setupAgent (dispatcher.ts).
+    const { name } = makeProject();
     const f = fakeDeps();
     const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
     await settle();
     const after = getLoom(loom.id)!;
-    expect(after.state).not.toBe("blocked"); // the auto-provision path exists — never park over it
-    expect(readEvents(loom.id).events.filter((e) => e.type === "lane-escalation").length).toBe(0);
-  });
-});
-
-// ── E. flag-off byte-identical ───────────────────────────────────────────────
-describe("laneEscalation OFF: the signal changes nothing", () => {
-  test("flag OFF + plannable root → proceeds exactly as today (no park, no signal copy)", async () => {
-    const { name } = makeProject(
-      { laneEscalation: false },
-      { "package.json": pkg({ name: "lib", main: "index.js", scripts: { test: "bun test" } }) },
-    );
-    const f = fakeDeps();
-    const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
-    await settle();
-    const after = getLoom(loom.id)!;
-    expect(after.state).not.toBe("blocked");
-    expect(after.blockedQuestion).toBeUndefined();
-    expect(after.blockedReason).toBeUndefined();
-    expect(f.calls).toBeGreaterThanOrEqual(1);
-  });
-
-  test("flag OFF + UNplannable root → still never parks (byte-identical to today)", async () => {
-    const { name } = makeProject({ laneEscalation: false });
-    const f = fakeDeps();
-    const loom = startLoom({ project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: LIVE_AC }, f.deps);
-    await settle();
-    const after = getLoom(loom.id)!;
-    expect(after.state).not.toBe("blocked");
-    expect(after.blockedQuestion).toBeUndefined();
-    expect(readEvents(loom.id).events.filter((e) => e.type === "lane-escalation").length).toBe(0);
-    expect(f.calls).toBeGreaterThanOrEqual(1);
+    expect(after.state).toBe("blocked"); // no formable plan ⇒ last-resort park
+    expect(readEvents(loom.id).events.filter((e) => e.type === "lane-escalation").length).toBe(1);
   });
 });
 
@@ -373,7 +340,7 @@ describe("answerBlocked stays consistent with the WIDENED isLaneViable", () => {
     // answer the guard accepts still satisfies isLaneViable path 2 verbatim —
     // the accepted-but-never-resolves loop the guard prevents cannot return.
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js" }) },
     );
     const f = fakeDeps();
@@ -399,7 +366,7 @@ describe("answerBlocked stays consistent with the WIDENED isLaneViable", () => {
     // auto-spin can never run a test suite as a dev server — and isLaneViable's
     // verifyCommand path makes the re-dispatch proceed (consistency invariant).
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js" }) },
     );
     const f = fakeDeps();
@@ -434,7 +401,7 @@ describe("answerBlocked stays consistent with the WIDENED isLaneViable", () => {
 
   test("a viability-free answer is still refused (fail-closed, no accept-then-re-park)", async () => {
     const { name } = makeProject(
-      { laneEscalation: true },
+      {},
       { "package.json": pkg({ name: "lib", main: "index.js" }) },
     );
     const f = fakeDeps();

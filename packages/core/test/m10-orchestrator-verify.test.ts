@@ -1,12 +1,11 @@
-// M10.1 — the orchestrator whole-verification GATE (the TOP gate). Hermetic:
-// a fake git runner, an injected verify producer, injected fake gates. No real
-// agent, git, DB, browser, or telar repo. Asserts:
-//   (helper) orchestratorVerifyEnabled: default OFF, manifest + env override
-//   (1) a red whole-verdict demotes ready -> needs-review (flag on)
-//   (2) a pass/LEGITIMATE-skip whole-verdict keeps ready (flag on)
+// M10.1 — the orchestrator whole-verification GATE (the TOP gate, UNCONDITIONAL).
+// Hermetic: a fake git runner, an injected verify producer, injected fake gates.
+// No real agent, git, DB, browser, or telar repo. Asserts:
+//   (1) a red whole-verdict demotes ready -> needs-review
+//   (2) a pass/LEGITIMATE-skip whole-verdict keeps ready
 //   (3) a THROWING whole-verify is fail-OPEN (caught, keeps ready)
 //   (4) the fork targets consolidationBranch when present, baseSha when absent
-//   (5) flag-OFF byte-identical: no forkRef => baseSha, no fullContract => ALL slice
+//   (5) checkpoint mode: no forkRef => baseSha, no fullContract => ALL slice
 //   (6) the gate only KEEPS or DEMOTES ready — it NEVER writes "done"
 //   (fail-closed hole, HIGH) fullContract + a REQUIRED panel that obtained NO
 //     evidence (no reachable target) DEMOTES to "fail" — it must NOT collapse to
@@ -21,13 +20,11 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m10verify-"));
 process.env.TELAR_HOME = home;
 beforeEach(() => {
   process.env.TELAR_HOME = home;
-  delete process.env.TELAR_ORCHESTRATOR_VERIFY;
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const { orchestratorVerifyEnabled } = await import("../src/runner/flag");
 const { runWeave, rollupWeave } = await import("../src/weave");
 const { frozenLaneVerify } = await import("../src/verify-thread");
 const { runIntegrationVerify, executeLoom } = await import("../src/executor");
@@ -82,22 +79,10 @@ function fakeGit(): { runner: GitRunner; args: string[][] } {
 }
 const fakeManifest = { root: "/telar/fake-root", urls: { dev: "http://root-dev" } } as any;
 
-// ── (helper) orchestratorVerifyEnabled — TOP-LEVEL flag, default OFF ─────────
-describe("(helper) orchestratorVerifyEnabled: default OFF; manifest + env override", () => {
-  test("false by default; honors manifest flag + TELAR_ORCHESTRATOR_VERIFY", () => {
-    delete process.env.TELAR_ORCHESTRATOR_VERIFY;
-    expect(orchestratorVerifyEnabled({})).toBe(false);
-    expect(orchestratorVerifyEnabled({ orchestratorVerify: false })).toBe(false);
-    expect(orchestratorVerifyEnabled({ orchestratorVerify: true })).toBe(true);
-    process.env.TELAR_ORCHESTRATOR_VERIFY = "1";
-    expect(orchestratorVerifyEnabled({})).toBe(true);
-  });
-});
-
 // ── the reused weave gate consumes the whole-verification IvResult ───────────
 // weave.ts:395-433 is REUSED UNCHANGED — the whole-verification returns the same
 // IvResult shape, so the demote/keep/throw semantics are identical.
-describe("weave gate — whole-verification producer (flag ON): demote / keep / fail-open / never-done", () => {
+describe("weave gate — whole-verification producer: demote / keep / fail-open / never-done", () => {
   test("(1) a red whole-verdict demotes ready -> needs-review", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const root = fakeLoom();
@@ -219,20 +204,24 @@ describe("(4) frozenLaneVerify fork ref — whole-verify forks the consolidation
   });
 });
 
-// ── (5) flag-OFF byte-identical: no forkRef => baseSha, no fullContract => ALL
-describe("(5) flag-OFF byte-identical", () => {
-  test("no forkRef and no verifyOpts => forks baseSha and passes NO fullContract (today's path)", async () => {
+// ── (5) checkpoint mode: no forkRef => baseSha, no fullContract => ALL slice ──
+// The per-subGoal checkpoint producer (dispatcher runCheckpoint) calls
+// frozenDeps WITHOUT forkRef/fullContract — it forks baseSha and verifies only
+// the ALL slice, distinct from the top gate's consolidation-branch/full-contract
+// pass. This proves that default mode is intact.
+describe("(5) checkpoint mode — no forkRef / no fullContract", () => {
+  test("no forkRef and no verifyOpts => forks baseSha and passes NO fullContract (checkpoint path)", async () => {
     const git = fakeGit();
     let captured: any = null;
     const loom = fakeLoom({ baseSha: "basesha01", consolidationBranch: "telar/M-root" });
-    // Flag OFF ⇒ the dispatcher passes neither forkRef nor fullContract.
+    // Checkpoint mode ⇒ neither forkRef nor fullContract is passed.
     await frozenLaneVerify(loom, fakeManifest, {
       runIntegrationVerify: async (_l, _m, o) => ((captured = o), { verification: "pass", gatesOk: true }),
       git: git.runner,
       resolveServersConfig: () => ({ version: 1, driver: "none", services: {} }) as any,
     } as any);
     const add = git.args.find((a) => a[0] === "worktree" && a[1] === "add");
-    // Forks baseSha (NOT the consolidation branch) — byte-identical to pre-M10.1.
+    // Forks baseSha (NOT the consolidation branch) — the ALL-slice checkpoint pass.
     expect(add![add!.length - 1]).toBe("basesha01");
     expect(captured.fullContract).toBeUndefined();
   });
@@ -378,7 +367,7 @@ describe("runIntegrationVerify — fail-closed over the composed whole (the M10.
     expect(out?.error).toBeUndefined();
   });
 
-  test("(flag-OFF byte-identical) the SAME required-panel/no-target ALL slice keeps 'skip' without fullContract; fullContract flips it to fail-closed 'fail'", async () => {
+  test("(checkpoint vs top gate) the SAME required-panel/no-target ALL slice keeps 'skip' without fullContract; fullContract flips it to fail-closed 'fail'", async () => {
     // Both assertions on subGoalId ALL so the required panel is in the ALL slice
     // itself — the ONE input isolates exactly the fullContract toggle.
     const allSliceContract: VerificationContract = {
@@ -389,15 +378,15 @@ describe("runIntegrationVerify — fail-closed over the composed whole (the M10.
       ],
     };
     const { gateRunner } = fakeGates(() => true);
-    // flag OFF (no fullContract): today's behavior — the required-panel skip is
-    // preserved as a keep-ready "skip". Byte-identical to pre-M10.1.
+    // checkpoint mode (no fullContract): the required-panel skip is preserved as
+    // a keep-ready "skip" — a best-effort per-subGoal checkpoint never demotes.
     const off = await runIntegrationVerify(rootLoom(allSliceContract), noTargetManifest, {
       gateRunner,
       run: (async () => null) as any,
     });
     expect(off?.verification).toBe("skip");
     expect(off?.error).toBeUndefined();
-    // flag ON (fullContract): the SAME evidence-free required panel demotes.
+    // top gate (fullContract): the SAME evidence-free required panel demotes.
     const on = await runIntegrationVerify(rootLoom(allSliceContract), noTargetManifest, {
       fullContract: true,
       gateRunner,
@@ -422,17 +411,17 @@ describe("runIntegrationVerify — fail-closed over the composed whole (the M10.
   });
 });
 
-// ── M10.2 — THREAD verification advisory (child-scoped, keyed to the SAME flag) ─
+// ── M10.2 — THREAD verification advisory (child-scoped) ──────────────────────
 // Drives the REAL executeLoom over a CHILD with an authored contract (a passing
 // deterministic command + a live-critic completeness assertion) against a
 // NO-TARGET manifest ⇒ the panel is REQUIRED but obtains no evidence
-// (verification "skip", panelRequired true). Under orchestratorVerify the child
-// resolves GREEN-WITH-NOTE (state "done", loom.error null, a thread-advisory
-// event) instead of per-thread needs-review; rollupWeave then rolls the root to
-// "ready", where M10.1's top gate re-proves the full contract fail-closed. Flag-
-// off is byte-identical (child skip still needs-review). A GENUINELY broken
-// child (builder verdict.ok===false, or a red deterministic gate) is untouched.
-// A ROOT (no parentLoomId) is NOT relaxed — its own fail-closed path stands.
+// (verification "skip", panelRequired true). A contract-backed child resolves
+// GREEN-WITH-NOTE (state "done", loom.error null, a thread-advisory event)
+// instead of per-thread needs-review; rollupWeave then rolls the root to
+// "ready", where M10.1's UNCONDITIONAL top gate re-proves the full contract
+// fail-closed. A GENUINELY broken child (builder verdict.ok===false, or a red
+// deterministic gate) is untouched. A ROOT (no parentLoomId) is NOT relaxed —
+// its own fail-closed path stands.
 const childContract: VerificationContract = {
   version: 1,
   assertions: [
@@ -449,11 +438,10 @@ function makeChildProject(over: Record<string, unknown> = {}) {
   return { name: m.name, root, manifest };
 }
 // Build a CHILD (parentLoomId set) or ROOT loom, run the REAL executeLoom with a
-// fake builder verdict (ok unless badVerdict), maxAttempts 1 so flag-off lands
-// its terminal at n=1 (no retry loop). No isolation ⇒ no worktree/git.
-async function runChildLoom(o: { flagOn: boolean; asRoot?: boolean; badVerdict?: boolean; redGate?: boolean }) {
+// fake builder verdict (ok unless badVerdict), maxAttempts 1 so a fail-closed
+// terminal lands at n=1 (no retry loop). No isolation ⇒ no worktree/git.
+async function runChildLoom(o: { asRoot?: boolean; badVerdict?: boolean; redGate?: boolean }) {
   const { name, manifest, root } = makeChildProject({
-    ...(o.flagOn ? { orchestratorVerify: true } : {}),
     ...(o.redGate ? { gates: [{ name: "boom", run: "false" }] } : {}),
   });
   const loom = createLoom({
@@ -478,8 +466,8 @@ async function runChildLoom(o: { flagOn: boolean; asRoot?: boolean; badVerdict?:
 }
 
 describe("M10.2 — thread verification advisory (child-scoped)", () => {
-  test("(1) flag ON + CHILD + required-skip (no evidence) ⇒ GREEN 'done' + advisory note; loom.error null; root rolls to 'ready'", async () => {
-    const { loom, events } = await runChildLoom({ flagOn: true });
+  test("(1) CHILD + required-skip (no evidence) ⇒ GREEN 'done' + advisory note; loom.error null; root rolls to 'ready'", async () => {
+    const { loom, events } = await runChildLoom({});
     expect(loom.state).toBe("done"); // NOT per-thread needs-review
     expect(loom.error).toBeNull(); // never reads as broken
     const advisory = events.find((e) => e.type === "thread-advisory");
@@ -490,26 +478,19 @@ describe("M10.2 — thread verification advisory (child-scoped)", () => {
     expect(rollupWeave([loom], [subGoal({ id: "s1" })])).toEqual({ state: "ready" });
   });
 
-  test("(2) flag OFF + identical CHILD ⇒ needs-review with the required-but-skipped error; NO advisory — byte-identical to today", async () => {
-    const { loom, events } = await runChildLoom({ flagOn: false });
-    expect(loom.state).toBe("needs-review");
-    expect(loom.error).toBe("panel verification required but did not run");
-    expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
-  });
-
-  test("(3) GENUINELY broken child is UNCHANGED under flag ON: (i) builder verdict.ok===false ⇒ needs-review, no advisory; (ii) red deterministic gate ⇒ failed", async () => {
-    const bad = await runChildLoom({ flagOn: true, badVerdict: true });
+  test("(3) GENUINELY broken child is UNCHANGED: (i) builder verdict.ok===false ⇒ needs-review, no advisory; (ii) red deterministic gate ⇒ failed", async () => {
+    const bad = await runChildLoom({ badVerdict: true });
     expect(bad.loom.state).toBe("needs-review"); // real breakage never relaxed
     expect(bad.loom.error).toBe("boom");
     expect(bad.events.some((e) => e.type === "thread-advisory")).toBe(false);
 
-    const red = await runChildLoom({ flagOn: true, redGate: true });
+    const red = await runChildLoom({ redGate: true });
     expect(red.loom.state).toBe("failed"); // a red gate short-circuits before verify
     expect(red.events.some((e) => e.type === "thread-advisory")).toBe(false);
   });
 
-  test("(4) ROOT-scoped (no parentLoomId) required-skip under flag ON is NOT relaxed — the root keeps its own fail-closed path (child-scoping)", async () => {
-    const { loom, events } = await runChildLoom({ flagOn: true, asRoot: true });
+  test("(4) ROOT-scoped (no parentLoomId) required-skip is NOT relaxed — the root keeps its own fail-closed path (child-scoping)", async () => {
+    const { loom, events } = await runChildLoom({ asRoot: true });
     expect(loom.state).toBe("needs-review"); // childAdvisory false for a root
     expect(loom.error).toBe("panel verification required but did not run");
     expect(events.some((e) => e.type === "thread-advisory")).toBe(false);

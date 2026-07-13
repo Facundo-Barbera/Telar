@@ -162,13 +162,13 @@ describe("decide — NO-GATES + panelRequired skip fix (§5)", () => {
   });
 });
 
-// M10.2 — CHILD-scoped thread-advisory. Under the orchestratorVerify flag a
-// child's `panelRequired` skip (evidence unobtainable at thread altitude)
-// SHORT-CIRCUITS to a green `done` at the FIRST attempt (no retry burn). Keyed
-// to the same flag as M10.1's top gate, which re-proves the full contract fail-
-// closed. Default (childAdvisory falsy) is byte-identical to the panelRequired
-// tests above. The relaxation matches ONLY the exact evidence-unobtainable
-// triple: verdict.ok && verification==="skip" && panelRequired===true.
+// M10.2 — CHILD-scoped thread-advisory. A contract-backed child's `panelRequired`
+// skip (evidence unobtainable at thread altitude) SHORT-CIRCUITS to a green `done`
+// at the FIRST attempt (no retry burn); the UNCONDITIONAL M10.1 top gate re-proves
+// the full contract fail-closed. When childAdvisory is falsy (a root, or a
+// no-contract child) the decision is identical to the panelRequired tests above.
+// The relaxation matches ONLY the exact evidence-unobtainable triple:
+// verdict.ok && verification==="skip" && panelRequired===true.
 describe("decide — M10.2 childAdvisory (thread verification advisory)", () => {
   test("gated + gatesOk + verdict.ok + skip + panelRequired + childAdvisory -> done at FIRST attempt (no retry burn)", () => {
     expect(run({ verification: "skip", panelRequired: true, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
@@ -226,7 +226,7 @@ describe("decide — M10.2 childAdvisory (thread verification advisory)", () => 
     ).toEqual({ action: "needs-review" });
   });
 
-  test("childAdvisory=false (default) -> byte-identical to today: retry then needs-review on panelRequired skip", () => {
+  test("childAdvisory=false (a root or no-contract child) -> retry then needs-review on panelRequired skip", () => {
     expect(run({ verification: "skip", panelRequired: true, n: 1, maxAttempts: 3 })).toEqual({ action: "retry" });
     expect(run({ verification: "skip", panelRequired: true, n: 3, maxAttempts: 3 })).toEqual({
       action: "needs-review",

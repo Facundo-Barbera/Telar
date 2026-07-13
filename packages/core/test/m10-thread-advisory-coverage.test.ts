@@ -1,11 +1,11 @@
 // M10.2 coverage-invariant guard — the silent-coverage-drop (fail-open) hole.
 //
-// M10.2 makes a CHILD's `panelRequired` skip resolve to GREEN-with-note under the
-// orchestratorVerify flag, on the promise that the relaxed criterion is re-proven
-// at M10.1's top gate (`runIntegrationVerify` with `fullContract:true` over the
-// ROOT's `contract.assertions`). That promise ONLY holds for a CONTRACT-BACKED
-// child — one whose skip came from the contract-partition path, whose assertions
-// are a `wireChildBundle` filtered slice of the root contract the top gate walks.
+// M10.2 makes a CHILD's `panelRequired` skip resolve to GREEN-with-note, on the
+// promise that the relaxed criterion is re-proven at M10.1's UNCONDITIONAL top
+// gate (`runIntegrationVerify` with `fullContract:true` over the ROOT's
+// `contract.assertions`). That promise ONLY holds for a CONTRACT-BACKED child —
+// one whose skip came from the contract-partition path, whose assertions are a
+// `wireChildBundle` filtered slice of the root contract the top gate walks.
 //
 // A LEGACY / no-contract child reaches the SAME `{skip, panelRequired:true}` triple
 // via the `verify()` null/throw fallback (executor.ts ~857/~881), where the relaxed
@@ -37,7 +37,6 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m102-cov-"));
 process.env.TELAR_HOME = home;
 beforeEach(() => {
   process.env.TELAR_HOME = home;
-  delete process.env.TELAR_ORCHESTRATOR_VERIFY;
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
@@ -82,9 +81,8 @@ function makeProject(over: Record<string, unknown> = {}) {
 //   - withContract=false ⇒ target + prose acceptanceCriteria; legacy verify()→null
 //                           ⇒ the IDENTICAL {skip,panelRequired:true} triple
 // Both reach decide() with verdict.ok && verification==="skip" && panelRequired.
-async function runChild(o: { flagOn: boolean; withContract: boolean; asRoot?: boolean }) {
+async function runChild(o: { withContract: boolean; asRoot?: boolean }) {
   const { name, manifest, root } = makeProject({
-    ...(o.flagOn ? { orchestratorVerify: true } : {}),
     // The legacy path needs a reachable target so verify() actually runs (else the
     // no-target early-return yields panelRequired:false, not the hole). The mocked
     // SDK makes verify() return null regardless of the URL — no real browser.
@@ -115,8 +113,8 @@ async function runChild(o: { flagOn: boolean; withContract: boolean; asRoot?: bo
 }
 
 describe("M10.2 coverage invariant — advisory relaxation is CONTRACT-BACKED only (fail-open hole closed)", () => {
-  test("(HOLE CLOSED) flag ON + LEGACY no-contract CHILD reaching the SAME {skip,panelRequired:true} triple stays fail-closed needs-review — its PROSE criterion is not in the root contract the top gate re-proves", async () => {
-    const { loom, events, verifySummary } = await runChild({ flagOn: true, withContract: false });
+  test("(HOLE CLOSED) a LEGACY no-contract CHILD reaching the {skip,panelRequired:true} triple stays fail-closed needs-review — its PROSE criterion is not in the root contract the top gate re-proves", async () => {
+    const { loom, events, verifySummary } = await runChild({ withContract: false });
     // Same decide() triple as the relaxed mainline: skip + panelRequired, verdict ok.
     expect(verifySummary?.verification).toBe("skip");
     expect(verifySummary?.panelRequired).toBe(true);
@@ -127,8 +125,8 @@ describe("M10.2 coverage invariant — advisory relaxation is CONTRACT-BACKED on
     expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
   });
 
-  test("(mainline preserved) flag ON + CONTRACT-BACKED CHILD with the SAME triple STILL relaxes to green-with-note — its assertion is a wireChildBundle slice the top gate re-verifies", async () => {
-    const { loom, events, verifySummary } = await runChild({ flagOn: true, withContract: true });
+  test("(mainline) a CONTRACT-BACKED CHILD with the SAME triple relaxes to green-with-note — its assertion is a wireChildBundle slice the top gate re-verifies", async () => {
+    const { loom, events, verifySummary } = await runChild({ withContract: true });
     expect(verifySummary?.verification).toBe("skip");
     expect(verifySummary?.panelRequired).toBe(true);
     expect(loom.state).toBe("done"); // relaxed
@@ -138,15 +136,8 @@ describe("M10.2 coverage invariant — advisory relaxation is CONTRACT-BACKED on
     expect(advisory!.subGoalId).toBe("s1");
   });
 
-  test("(flag OFF byte-identical) the LEGACY child lands needs-review with the flag OFF too — the flag still gates everything", async () => {
-    const { loom, events } = await runChild({ flagOn: false, withContract: false });
-    expect(loom.state).toBe("needs-review");
-    expect(loom.error).toBe("panel verification required but did not run");
-    expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
-  });
-
   test("(root-scoped unchanged) a LEGACY ROOT (no parentLoomId) is never relaxed regardless — its own fail-closed path stands", async () => {
-    const { loom } = await runChild({ flagOn: true, withContract: false, asRoot: true });
+    const { loom } = await runChild({ withContract: false, asRoot: true });
     expect(loom.state).toBe("needs-review");
     expect(loom.error).toBe("panel verification required but did not run");
   });

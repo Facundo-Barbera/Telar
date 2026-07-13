@@ -1,27 +1,19 @@
-// M10.5 — objective/subjective routing (docs/orchestrator-owned-verification.md
-// §3.6/§6 M10.5). PURE, hermetic: no live agent calls, no filesystem looms. Proves
-// the moat invariants directly on the routing/panel/critic seams:
+// Objective/subjective routing (docs/orchestrator-owned-verification.md §3.6/§6).
+// PURE, hermetic: no live agent calls, no filesystem looms. Proves the moat
+// invariants directly on the routing/panel/critic seams:
 //   (1) an objective machine-checkable criterion (command/gate) routes to the
-//       fail-closed GATE, never the blocking panel — flag ON and OFF;
+//       fail-closed GATE, never the blocking panel;
 //   (2) an EXPLICITLY subjective-marked criterion is pulled into humanJudged,
 //       never agentJudged, so it can never become a blocking panel lens;
 //   (3) the advisory aesthetic lens can NEVER flip a panel verdict;
 //   (4) an UNMARKED criterion DEFAULTS to objective (stays agent-judged, fail-
-//       closed) — a mis-classification/absence never drops an objective criterion;
-//   (5) flag-OFF is byte-identical (routeAssertions === partitionAssertions +
-//       humanJudged:[]; panelSize sizes no aesthetic lens).
-import { afterEach, describe, expect, test } from "bun:test";
+//       closed) — a mis-classification/absence never drops an objective criterion.
+import { describe, expect, test } from "bun:test";
 import type { AgentOpts } from "../src/engine";
-import { partitionAssertions, routeAssertions } from "../src/executor";
+import { routeAssertions } from "../src/executor";
 import { aggregatePanel, panelSize, type LensSpec, type PanelSignals } from "../src/panel";
 import { runCritic, type CriticContext } from "../src/critic";
 import { validateContract, type ContractAssertion, type CriticVerdict } from "../src/schemas";
-
-const ORIG_ENV = process.env.TELAR_SUBJECTIVE_ROUTING;
-afterEach(() => {
-  if (ORIG_ENV === undefined) delete process.env.TELAR_SUBJECTIVE_ROUTING;
-  else process.env.TELAR_SUBJECTIVE_ROUTING = ORIG_ENV;
-});
 
 function A(over: Partial<ContractAssertion>): ContractAssertion {
   return { id: "x", description: "d", type: "live-critic", observable: "o", blocker: true, ...over };
@@ -37,17 +29,15 @@ const subjective = A({ id: "s", type: "live-critic", observable: "feels premium"
 const ALL = [gate, cmd, liveObjective, valueObjective, subjective];
 
 describe("routeAssertions — third-bucket subjective routing", () => {
-  test("(1) objective machine-checkable criteria route to the deterministic GATE, not the panel (flag OFF and ON)", () => {
-    for (const subjectiveRouting of [false, true]) {
-      const { deterministic, agentJudged } = routeAssertions(ALL, { subjectiveRouting });
-      // command + gate always settle in the exit-code gate layer, never the panel.
-      expect(deterministic.map((a) => a.id).sort()).toEqual(["c", "g"]);
-      expect(agentJudged.map((a) => a.id)).not.toContain("g");
-      expect(agentJudged.map((a) => a.id)).not.toContain("c");
-    }
+  test("(1) objective machine-checkable criteria route to the deterministic GATE, not the panel", () => {
+    const { deterministic, agentJudged } = routeAssertions(ALL);
+    // command + gate always settle in the exit-code gate layer, never the panel.
+    expect(deterministic.map((a) => a.id).sort()).toEqual(["c", "g"]);
+    expect(agentJudged.map((a) => a.id)).not.toContain("g");
+    expect(agentJudged.map((a) => a.id)).not.toContain("c");
   });
 
-  test("(1-fix DEFECT-1) a DETERMINISTIC assertion carrying subjective:true STILL gates fail-closed (flag ON) — never pulled into humanJudged", () => {
+  test("(1-fix DEFECT-1) a DETERMINISTIC assertion carrying subjective:true STILL gates fail-closed — never pulled into humanJudged", () => {
     // The moat hole: filtering subjective over the WHOLE set before partitioning
     // would drop an exit-code-checkable criterion out of the fail-closed gate.
     // routeAssertions partitions by MODALITY first, so the deterministic slice is
@@ -55,10 +45,7 @@ describe("routeAssertions — third-bucket subjective routing", () => {
     // command to cover both deterministic forms. (Red without the reorder fix.)
     const gateSubjective = A({ id: "gs", type: "gate", expected: "typecheck", observable: undefined, subjective: true });
     const cmdSubjective = A({ id: "cs", type: "command", expected: "bun test", observable: undefined, subjective: true });
-    const { deterministic, agentJudged, humanJudged } = routeAssertions(
-      [gateSubjective, cmdSubjective, liveObjective],
-      { subjectiveRouting: true },
-    );
+    const { deterministic, agentJudged, humanJudged } = routeAssertions([gateSubjective, cmdSubjective, liveObjective]);
     // Both deterministic assertions STAY in the fail-closed gate slice.
     expect(deterministic.map((a) => a.id).sort()).toEqual(["cs", "gs"]);
     // and are NEVER carried to the human accept nor left as a blocking panel lens.
@@ -70,8 +57,8 @@ describe("routeAssertions — third-bucket subjective routing", () => {
     expect(humanJudged).toEqual([]);
   });
 
-  test("(2) an explicitly subjective-marked criterion lands in humanJudged, NEVER agentJudged (flag ON)", () => {
-    const { agentJudged, humanJudged, deterministic } = routeAssertions(ALL, { subjectiveRouting: true });
+  test("(2) an explicitly subjective-marked criterion lands in humanJudged, NEVER agentJudged", () => {
+    const { agentJudged, humanJudged, deterministic } = routeAssertions(ALL);
     expect(humanJudged.map((a) => a.id)).toEqual(["s"]);
     // Never a blocking panel lens, never a deterministic gate — pulled out entirely.
     expect(agentJudged.map((a) => a.id)).not.toContain("s");
@@ -79,7 +66,7 @@ describe("routeAssertions — third-bucket subjective routing", () => {
   });
 
   test("(2b) objective agent-judged criteria REMAIN in agentJudged ⇒ panelRequired stays true", () => {
-    const { agentJudged } = routeAssertions(ALL, { subjectiveRouting: true });
+    const { agentJudged } = routeAssertions(ALL);
     // the unmarked live-critic + the value kind keep the fail-closed panel alive.
     expect(agentJudged.map((a) => a.id).sort()).toEqual(["lo", "ve"]);
     expect(agentJudged.length > 0).toBe(true); // panelRequired
@@ -87,48 +74,21 @@ describe("routeAssertions — third-bucket subjective routing", () => {
 
   test("(2c) a loom whose ONLY judged criteria are subjective ⇒ agentJudged empty ⇒ panel skipped (objective slice alone gates)", () => {
     const onlySubjective = [gate, subjective]; // one objective gate + one subjective
-    const { deterministic, agentJudged, humanJudged } = routeAssertions(onlySubjective, { subjectiveRouting: true });
+    const { deterministic, agentJudged, humanJudged } = routeAssertions(onlySubjective);
     expect(deterministic.map((a) => a.id)).toEqual(["g"]); // the objective slice
     expect(agentJudged.length).toBe(0); // no blocking panel required
     expect(humanJudged.map((a) => a.id)).toEqual(["s"]); // carried to the human
   });
 
-  test("(3-safe-direction) the env override honors the flag (live-validation path)", () => {
-    process.env.TELAR_SUBJECTIVE_ROUTING = "1";
-    // routeAssertions takes an explicit opt; but synthesize/scoping honor the env
-    // via subjectiveRoutingEnabled — assert the accessor here to pin the env wire.
-    const { subjectiveRoutingEnabled } = require("../src/runner/flag");
-    expect(subjectiveRoutingEnabled({})).toBe(true);
-    delete process.env.TELAR_SUBJECTIVE_ROUTING;
-    expect(subjectiveRoutingEnabled({})).toBe(false);
-    expect(subjectiveRoutingEnabled({ subjectiveRouting: true })).toBe(true);
-  });
-
   test("(4) an UNMARKED live-critic DEFAULTS to objective (stays agent-judged, fail-closed) — absence never drops it from the gate", () => {
     const unmarked = [A({ id: "u", type: "live-critic", observable: "does a thing" })];
-    for (const subjectiveRouting of [false, true]) {
-      const { agentJudged, humanJudged } = routeAssertions(unmarked, { subjectiveRouting });
-      expect(agentJudged.map((a) => a.id)).toEqual(["u"]); // fail-closed panel
-      expect(humanJudged).toEqual([]); // never silently reclassified
-    }
+    const { agentJudged, humanJudged } = routeAssertions(unmarked);
+    expect(agentJudged.map((a) => a.id)).toEqual(["u"]); // fail-closed panel
+    expect(humanJudged).toEqual([]); // never silently reclassified
     // subjective:false is treated identically to absent (positive-test only).
     const explicitFalse = [A({ id: "f", subjective: false })];
-    expect(routeAssertions(explicitFalse, { subjectiveRouting: true }).humanJudged).toEqual([]);
-    expect(routeAssertions(explicitFalse, { subjectiveRouting: true }).agentJudged.map((a) => a.id)).toEqual(["f"]);
-  });
-
-  test("(5) flag-OFF byte-identical: routeAssertions === partitionAssertions over the WHOLE set + humanJudged:[]", () => {
-    const off = routeAssertions(ALL, { subjectiveRouting: false });
-    const noOpts = routeAssertions(ALL); // absent opts ⇒ also off
-    const base = partitionAssertions(ALL);
-    for (const routed of [off, noOpts]) {
-      expect(routed.humanJudged).toEqual([]);
-      expect(routed.deterministic).toEqual(base.deterministic);
-      expect(routed.agentJudged).toEqual(base.agentJudged); // subjective NOT pulled out flag-off
-    }
-    // Flag-off, the subjective-marked assertion is NOT pulled out — it stays
-    // agent-judged (fail-closed), proving the extraction is entirely flag-gated.
-    expect(off.agentJudged.map((a) => a.id)).toContain("s");
+    expect(routeAssertions(explicitFalse).humanJudged).toEqual([]);
+    expect(routeAssertions(explicitFalse).agentJudged.map((a) => a.id)).toEqual(["f"]);
   });
 });
 
@@ -148,7 +108,7 @@ const RISKY: PanelSignals = {
 };
 
 describe("panelSize — advisory aesthetic lens", () => {
-  test("(5) no aesthetic opt ⇒ byte-identical to panelSize(signals) — no aesthetic lens ever sized", () => {
+  test("no aesthetic opt ⇒ no aesthetic lens ever sized (the lens is opt-in at the panel layer)", () => {
     expect(panelSize(RISKY, { aesthetic: false })).toEqual(panelSize(RISKY));
     expect(panelSize(RISKY)).toEqual(panelSize(RISKY, undefined));
     expect(panelSize(RISKY).some((l) => l.class === "aesthetic")).toBe(false);

@@ -6,15 +6,11 @@
 // assembly seams — startLoomFromBundle's isWoven-guarded charter assign, and
 // ensureWoven's weave-of-one rebuild. This proves the two fixes end-to-end through
 // the real dispatcher (a faked planWeaveFn + runLoomFn — no LLM, no builder):
-//   - flag-ON: the emitted non-woven charter's proofHints survive onto the
-//     persisted weave-of-one charter (ensureWoven forwards them), a
+//   - the emitted non-woven charter's proofHints survive onto the persisted
+//     weave-of-one charter (ensureWoven forwards them), a
 //     `charter-proof-intent-captured` event is recorded, and the authored contract
 //     is then TIGHTENED at the choke point (the live-critic whose id matches a hint
 //     becomes a runnable command + a `contract-tightened` event fires)
-//   - flag-OFF: byte-identical to today — the non-woven charter is DROPPED, the
-//     rebuilt weave-of-one carries NO proofHints (proofStrategy "custom",
-//     approvedBy "auto:single-thread"), no capture event, and the authored
-//     contract's live-critic stays agent-judged (no tightening)
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -37,10 +33,10 @@ afterAll(() => {
   for (const r of projRoots) fs.rmSync(r, { recursive: true, force: true });
 });
 
-function makeProject(name: string, adaptiveVerification: boolean) {
+function makeProject(name: string) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-m11-emit-${name}-`));
   projRoots.push(root);
-  return createProject(root, { name, adaptiveVerification });
+  return createProject(root, { name });
 }
 
 // The weave-planner emits a VALID but NON-WOVEN charter (empty decomposition)
@@ -74,8 +70,8 @@ function authoredContract() {
   ] as any;
 }
 
-async function dispatchBundle(name: string, adaptiveVerification: boolean) {
-  const manifest = makeProject(name, adaptiveVerification);
+async function dispatchBundle(name: string) {
+  const manifest = makeProject(name);
   const loom = createDraftLoom({ project: manifest.name, title: "lib", objective: "Ship the arithmetic library end-to-end" });
   quickBundle(loom.id, {
     objective: "Ship the arithmetic library end-to-end",
@@ -101,9 +97,9 @@ async function dispatchBundle(name: string, adaptiveVerification: boolean) {
   return loom.id;
 }
 
-describe("flag-ON — proof intent survives the emit->charter assembly and drives tightening", () => {
+describe("proof intent survives the emit->charter assembly and drives tightening", () => {
   test("the persisted weave-of-one charter carries the emitted proofHints and the contract is tightened", async () => {
-    const id = await dispatchBundle("on", true);
+    const id = await dispatchBundle("on");
 
     const persisted = getLoom(id)!;
     // The non-woven planner charter was captured (A1) and its hints forwarded
@@ -123,27 +119,5 @@ describe("flag-ON — proof intent survives the emit->charter assembly and drive
     expect(tightened.type).toBe("command");
     expect(tightened.expected).toBe("bun test");
     expect(events.some((e) => e.type === "contract-tightened" && (e as any).assertionId === "bun-test-suite-passes")).toBe(true);
-  });
-});
-
-describe("flag-OFF — byte-identical drop (today's behavior)", () => {
-  test("the non-woven charter is dropped: no proofHints, no capture event, contract untightened", async () => {
-    const id = await dispatchBundle("off", false);
-
-    const persisted = getLoom(id)!;
-    // The non-woven planner charter was NOT captured — ensureWoven rebuilt a bare
-    // weave-of-one (base undefined) with proofStrategy "custom" and no hints.
-    expect(persisted.charter?.proofHints).toBeUndefined();
-    expect(persisted.charter?.proofStrategy).toBe("custom");
-    expect(persisted.charter?.approvedBy).toBe("auto:single-thread");
-
-    const { events } = readEvents(id);
-    expect(events.some((e) => e.type === "charter-proof-intent-captured")).toBe(false);
-    expect(events.some((e) => e.type === "contract-tightened")).toBe(false);
-
-    // The authored contract's live-critic stayed agent-judged (no tightening).
-    const { contract } = readContract(id);
-    const untouched = contract!.assertions.find((a) => a.id === "bun-test-suite-passes")!;
-    expect(untouched.type).toBe("live-critic");
   });
 });

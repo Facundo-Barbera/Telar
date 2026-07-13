@@ -2,10 +2,10 @@
 // runs the integration verify against an IMMUTABLE snapshot: a worktree pinned
 // at the root's baseSha (M3 machinery) + an ephemeral DB clone of a template
 // database. The clone is an INJECTABLE SEAM so every unit test mocks it and no
-// test ever touches a real Postgres/network. The single real-DB implementation
-// (LiveDbCloner) is flagged behind TELAR_FROZEN_LANE_DB=1 (liveDbCloneArmed,
-// vcs.ts) and is written with a real Postgres in front of a human — NOT blind.
-import { liveDbCloneArmed } from "./vcs";
+// test ever touches a real Postgres/network. Cloner selection is a project FACT,
+// not a behavior switch: the engine uses the real LiveDbCloner ONLY when the
+// project DECLARES a template DB in its telar.yaml (manifest.templateDb);
+// absent, the no-op NullDbCloner. Tests inject a FakeDbCloner via the seam.
 
 // Clone a template DB into a throwaway one and hand back an ephemeral
 // DATABASE_URL the frozen lane injects into its services' env; drop it in the
@@ -16,8 +16,9 @@ export interface DbCloner {
   drop(ephemeralDb: string): Promise<void>; // best-effort teardown
 }
 
-// Flag-off / live-DB-not-armed: no clone at all. The frozen lane inherits the
-// ambient DATABASE_URL (or none). This is the default in every non-live run.
+// No template DB declared: no clone at all. The frozen lane inherits the
+// ambient DATABASE_URL (or none). This is the default when a project declares
+// no template DB.
 export class NullDbCloner implements DbCloner {
   async clone(): Promise<string> {
     return ""; // "" ⇒ no DATABASE_URL override; lane keeps ambient env
@@ -42,23 +43,14 @@ export class FakeDbCloner implements DbCloner {
   }
 }
 
-// The ONE real-Postgres implementation — DEFERRED to a human-in-the-seat
-// session (M4 spec §8). It is intentionally NOT written blind: constructing it
-// requires TELAR_FROZEN_LANE_DB=1 (liveDbCloneArmed) so it can never run in
-// tests/CI. When that live piece is built, this class gains a real
-// `CREATE DATABASE telar_frozen_<id> TEMPLATE <templateDb>` clone and a
-// best-effort `DROP DATABASE` teardown (terminating connections first). Until
-// then, constructing it without the arm throws loudly rather than silently
-// pretending to clone.
+// The ONE real-Postgres implementation — selected by resolveDbCloner ONLY when
+// the project declares a template DB (a FACT). Its clone/drop bodies are DEFERRED
+// to a human-in-the-seat session (M4 spec §8): when that live piece is built,
+// this class gains a real `CREATE DATABASE telar_frozen_<id> TEMPLATE <templateDb>`
+// clone and a best-effort `DROP DATABASE` teardown (terminating connections
+// first). Until then, clone/drop throw loudly rather than silently pretend to
+// clone. Tests never select it (they declare no templateDb and inject FakeDbCloner).
 export class LiveDbCloner implements DbCloner {
-  constructor() {
-    if (!liveDbCloneArmed()) {
-      throw new Error(
-        "LiveDbCloner requires TELAR_FROZEN_LANE_DB=1 (human-in-the-seat, real Postgres). " +
-          "Use NullDbCloner (default) or FakeDbCloner (tests).",
-      );
-    }
-  }
   async clone(): Promise<string> {
     // Deferred (M4 spec §8, item 1): implement WITH a real Postgres in front of
     // you — CREATE DATABASE … TEMPLATE, handling template-in-use locks,
@@ -70,9 +62,10 @@ export class LiveDbCloner implements DbCloner {
   }
 }
 
-// Pick the cloner for a run: the live one only when explicitly armed (and only
-// then does it even get constructed), else the no-op NullDbCloner. Tests inject
-// FakeDbCloner directly and never call this.
-export function resolveDbCloner(): DbCloner {
-  return liveDbCloneArmed() ? new LiveDbCloner() : new NullDbCloner();
+// Pick the cloner for a run from a project FACT: the real LiveDbCloner when the
+// project declares a template DB in its telar.yaml (manifest.templateDb), else
+// the no-op NullDbCloner — never implicit, never an env switch. Tests declare no
+// templateDb and inject FakeDbCloner directly.
+export function resolveDbCloner(templateDb?: string): DbCloner {
+  return templateDb ? new LiveDbCloner() : new NullDbCloner();
 }

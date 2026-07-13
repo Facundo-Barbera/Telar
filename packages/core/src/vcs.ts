@@ -38,31 +38,11 @@ export const defaultGitRunner: GitRunner = (root, args) => {
   }
 };
 
-// The flag: per-loom worktree isolation is opt-in (manifest.isolateWorktrees,
-// default false) OR forced on for a live-validation run via the env override,
-// so flag-off every code path is byte-identical to pre-M3.
-export function isolationEnabled(manifest: { isolateWorktrees?: boolean }): boolean {
-  return manifest.isolateWorktrees === true || process.env.TELAR_ISOLATE_WORKTREES === "1";
-}
-
-// M4 — the master flag for the frozen-lane pipeline (frozen read-only verify +
-// per-subGoal checkpoints + guarded auto-repair). Default OFF: flag-off every
-// code path is byte-identical to pre-M4. Armed for a live-validation run via
-// the TELAR_AUTO_REPAIR=1 env override, mirroring isolationEnabled exactly.
-export function autoRepairEnabled(manifest: { autoRepair?: boolean }): boolean {
-  return manifest.autoRepair === true || process.env.TELAR_AUTO_REPAIR === "1";
-}
-
-// M4 — the nested, ENV-ONLY sub-arm for the single real-Postgres piece (the
-// LiveDbCloner's CREATE DATABASE … TEMPLATE clone). There is deliberately NO
-// manifest field: it can only be armed by TELAR_FROZEN_LANE_DB=1 in a
-// human-in-the-seat session, so it can never be committed on by accident and
-// is NEVER on in tests or CI even with the master flag set. Absent ⇒ the
-// NullDbCloner is used (no clone; the lane inherits the ambient DATABASE_URL,
-// exactly today's behavior).
-export function liveDbCloneArmed(): boolean {
-  return process.env.TELAR_FROZEN_LANE_DB === "1";
-}
+// Per-loom worktree isolation and the frozen-lane pipeline (frozen read-only
+// verify + per-subGoal checkpoints + guarded auto-repair) are UNCONDITIONAL —
+// the sole engine path. There is no flag: isolation always applies, degrading
+// gracefully on a non-git root (resolveBaseSha returns null → the shared-root
+// fallback). Auto-repair always runs its bounded, convergence-guarded loop.
 
 // --- path helpers (shared with build-fanout.ts's overlap check) ------------
 

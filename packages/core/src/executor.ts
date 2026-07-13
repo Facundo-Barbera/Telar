@@ -22,7 +22,7 @@ import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
-import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
+import { addWorktree, defaultGitRunner, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
 import { normalizeGateOutput } from "./repair-guard";
 import { isRunnableShape } from "./runnable-shape";
 // FINDING 6/7 integration — the shared author-repairable-error predicate. Safe
@@ -45,16 +45,7 @@ import type {
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import {
-  envReviewEnabled,
-  threadWorkflowEnabled,
-  threadPlannerEnabled,
-  stepChecksEnabled,
-  orchestratorVerifyEnabled,
-  laneEscalationEnabled,
-  subjectiveRoutingEnabled,
-  adaptiveVerificationEnabled,
-} from "./runner/flag";
+import { envReviewEnabled } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig, resolveRunbook } from "./servers";
@@ -285,8 +276,8 @@ export function decide(input: {
       switch (verification) {
         case "skip":
           if (panelRequired) {
-            // M10.2: a CHILD under the orchestratorVerify flag SHORT-CIRCUITS to a
-            // green terminal — retrying cannot obtain evidence the thread altitude
+            // M10.2: a CHILD (childAdvisory) SHORT-CIRCUITS to a green terminal —
+            // retrying cannot obtain evidence the thread altitude
             // structurally cannot reach; the top gate re-proves the full contract
             // over a reachable composed whole (fail-closed). Budget is not burned.
             if (childAdvisory) return { action: "done" };
@@ -412,35 +403,29 @@ export function partitionAssertions(assertions: ContractAssertion[]): {
   return { deterministic, agentJudged };
 }
 
-// M10.5 (subjectiveRouting). PURE. A THIRD bucket layered OVER partitionAssertions.
+// Subjective routing. PURE. A THIRD bucket layered OVER partitionAssertions.
 // Ordering is load-bearing: it partitions by MODALITY FIRST via the UNCHANGED
-// partitionAssertions, then — when the flag is ON — pulls the EXPLICITLY subjective-
-// marked assertions (subjective===true) ONLY out of the agent-judged remainder into
-// `humanJudged` (carried to the human accept, NEVER a machine gate). The DETERMINISTIC
-// slice is NEVER touched by the subjective filter: a deterministic assertion (command/
-// gate/runnable-db) ALWAYS gates fail-closed regardless of the marker, so a stray
+// partitionAssertions, then pulls the EXPLICITLY subjective-marked assertions
+// (subjective===true) ONLY out of the agent-judged remainder into `humanJudged`
+// (carried to the human accept, NEVER a machine gate). The DETERMINISTIC slice is
+// NEVER touched by the subjective filter: a deterministic assertion (command/gate/
+// runnable-db) ALWAYS gates fail-closed regardless of the marker, so a stray
 // subjective:true can never pull an exit-code-checkable criterion out of the gate.
-// When OFF (or absent) it returns humanJudged:[] and the deterministic/agentJudged
-// split is EXACTLY partitionAssertions over the whole set — byte-identical to today.
 //
 // DEFAULT-TO-OBJECTIVE is free: every routing decision keys on the POSITIVE
 // subjective===true test, never on its absence. So an UNMARKED criterion (100% of
-// existing/unmarked assertions) flows through the exact current deterministic/
-// agent-judged split and stays fail-closed. A mis-classification can only take the
-// safe form of FAILING to mark something subjective (leaving it objective); a
-// missing marker can NEVER drop an objective criterion from the gate. Subjective
-// assertions are pulled out of agentJudged only, so they never remain a blocking
-// panel lens — they carry to the human, holistically, at accept.
-export function routeAssertions(
-  assertions: ContractAssertion[],
-  opts?: { subjectiveRouting?: boolean },
-): {
+// existing/unmarked assertions) flows through the exact deterministic/agent-judged
+// split and stays fail-closed. A mis-classification can only take the safe form of
+// FAILING to mark something subjective (leaving it objective); a missing marker can
+// NEVER drop an objective criterion from the gate. Subjective assertions are pulled
+// out of agentJudged only, so they never remain a blocking panel lens — they carry
+// to the human, holistically, at accept.
+export function routeAssertions(assertions: ContractAssertion[]): {
   deterministic: ContractAssertion[];
   agentJudged: ContractAssertion[];
   humanJudged: ContractAssertion[];
 } {
   const parts = partitionAssertions(assertions);
-  if (!opts?.subjectiveRouting) return { ...parts, humanJudged: [] };
   const humanJudged = parts.agentJudged.filter((a) => a.subjective === true);
   const agentJudged = parts.agentJudged.filter((a) => a.subjective !== true);
   return { deterministic: parts.deterministic, agentJudged, humanJudged };
@@ -468,8 +453,7 @@ export function routeAssertions(
 // The widening only ever ADDS viability (park less, never more), stays PURE
 // (deriveDeliverableSignal is a bounded synchronous fs read — same class as
 // the resolveServersConfig tier read; no LLM, no spawn — the M11.0 no-spend
-// guarantee), and is only reachable under laneEscalationEnabled (the flag
-// stays the FIRST && operand at the dispatcher pre-flight). The `charter`
+// guarantee), and drives the UNCONDITIONAL dispatcher pre-flight gate. The `charter`
 // param is OPTIONAL so every existing 2-arg caller compiles and behaves
 // identically; without it the greenfield charter-intent signal simply can't
 // fire (the filesystem signals still can).
@@ -574,12 +558,10 @@ async function runPanelVerification(
   // Unit 4 (docs §4): the panel only ever sees the AGENT-JUDGED slice — the
   // deterministic assertions were already settled as gates (executeLoom) and
   // must not be re-judged by prose. panelRequired = agentJudged.length > 0.
-  // M10.5 — subjective-marked assertions are pulled out into humanJudged BEFORE
-  // this split (flag-off ⇒ routeAssertions === partitionAssertions + humanJudged:[]),
+  // Subjective-marked assertions are pulled out into humanJudged BEFORE this split,
   // so a subjective criterion never enters agentJudged / the blocking panel; it is
   // stamped onto the attempt (informational) and carried to the human accept.
-  const subjectiveRouting = subjectiveRoutingEnabled(manifest);
-  const { agentJudged, humanJudged } = routeAssertions(contract.assertions, { subjectiveRouting });
+  const { agentJudged, humanJudged } = routeAssertions(contract.assertions);
   if (humanJudged.length) attempt.humanJudged = humanJudged;
   // All-deterministic contract -> nothing for the panel to judge. Skip it
   // entirely, panelRequired false, so the green merged gates alone promote via
@@ -606,16 +588,16 @@ async function runPanelVerification(
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
-    // M10.4 (laneEscalation) — the SINGLE production consumer of resolveRunbook:
-    // feed the accepted `.telar/runbook.md` narrative into the live-critic panel
-    // as READ-ONLY DRIVE context (how to reach/seed/login/drive the app), so the
-    // learned "reused-forever" narrative is actually used on reuse. Gated behind
-    // the flag AND null-guarded — off / no accepted runbook ⇒ driveContext unset ⇒
-    // the ctx + critic prompt are byte-identical. This is prompt CONTEXT only: the
-    // judge's read-only tool wall (VERIFIER_TOOLS/restrictTools/denylist) and the
-    // LensSpec-stamped class/blocker are untouched, and it never reaches the
-    // deterministic gates (those settled in executeLoom, prose-independent).
-    const driveContext = laneEscalationEnabled(manifest) ? resolveRunbook(manifest.root) : null;
+    // M10.4 — the SINGLE production consumer of resolveRunbook: feed the accepted
+    // `.telar/runbook.md` narrative into the live-critic panel as READ-ONLY DRIVE
+    // context (how to reach/seed/login/drive the app), so the learned
+    // "reused-forever" narrative is actually used on reuse. Null-guarded — no
+    // accepted runbook ⇒ driveContext unset ⇒ the ctx + critic prompt are
+    // unchanged. This is prompt CONTEXT only: the judge's read-only tool wall
+    // (VERIFIER_TOOLS/restrictTools/denylist) and the LensSpec-stamped
+    // class/blocker are untouched, and it never reaches the deterministic gates
+    // (those settled in executeLoom, prose-independent).
+    const driveContext = resolveRunbook(manifest.root);
     const ctx: CriticContext = {
       featureName: loom.title,
       url: target,
@@ -657,10 +639,8 @@ async function runPanelVerification(
     const panelReport = await runPanel(ctx, {
       signals,
       maxCriticAgents,
-      // M10.5 — under subjectiveRouting, size in the ADVISORY aesthetic lens
-      // (blocker:false, provably non-gating). Flag-off ⇒ undefined ⇒ no lens ⇒
-      // byte-identical panel sizing.
-      aesthetic: subjectiveRouting,
+      // Size in the ADVISORY aesthetic lens (blocker:false, provably non-gating).
+      aesthetic: true,
       evidenceDir,
       account,
       project: manifest.name,
@@ -716,7 +696,7 @@ async function runPanelVerification(
 // writes loom.state, sawTrustedWritingGreen, or the contract. It can only ADD
 // scrutiny (return "fail"), never promote the loom or relax its contract.
 async function runStepCheck(step: Step, ctx: WorkflowStepCtx): Promise<"pass" | "fail" | "skip"> {
-  const contract = step.check!; // guarded by the seam (stepChecksEnabled && st.check)
+  const contract = step.check!; // guarded by the seam (st.check present)
   const { deterministic, agentJudged } = partitionAssertions(contract.assertions);
   if (deterministic.length === 0 && agentJudged.length === 0) return "skip"; // nothing to judge
 
@@ -865,13 +845,10 @@ export async function runVerification(
     // Unit 4: an all-deterministic contract has no agent-judged slice, so the
     // panel is skipped and no live target is needed — never spin up a dev
     // server for a zero-browser backend verify.
-    // M10.5 — route out subjective-marked assertions before the count so an
-    // all-subjective contract yields agentJudged:[] ⇒ panelRequired false (no live
-    // target needed; the objective slice alone gates). Flag-off ⇒ routeAssertions
-    // === partitionAssertions, byte-identical.
-    const panelRequired =
-      routeAssertions(contract.assertions, { subjectiveRouting: subjectiveRoutingEnabled(manifest) }).agentJudged
-        .length > 0;
+    // Route out subjective-marked assertions before the count so an all-subjective
+    // contract yields agentJudged:[] ⇒ panelRequired false (no live target needed;
+    // the objective slice alone gates).
+    const panelRequired = routeAssertions(contract.assertions).agentJudged.length > 0;
     // docs/loom-model.md D13 (run initializer, minimal): a bundle loom with
     // no usable target (no `url` override, no urls.dev) but a configured
     // `devCommand` gets its OWN dev server on a free port instead of the
@@ -1183,18 +1160,15 @@ export async function runIntegrationVerify(
   };
   loom.attempts.push(attempt);
 
-  // M10.5 — over the COMPOSED WHOLE, pull the subjective-marked assertions into
-  // humanJudged (carried to accept, never a machine gate) and route ONLY the
-  // remainder to gates/panel. Flag-off ⇒ routeAssertions === partitionAssertions +
-  // humanJudged:[], byte-identical. If the ONLY judged criteria were subjective,
-  // agentJudged is empty ⇒ the panel is skipped and the objective slice alone
-  // gates the machine verdict, letting the objective whole reach `ready`.
+  // Over the COMPOSED WHOLE, pull the subjective-marked assertions into humanJudged
+  // (carried to accept, never a machine gate) and route ONLY the remainder to
+  // gates/panel. If the ONLY judged criteria were subjective, agentJudged is empty
+  // ⇒ the panel is skipped and the objective slice alone gates the machine verdict,
+  // letting the objective whole reach `ready`.
   // M11.2 — routes the ESTABLISHED slice (verifySlice === allSlice except under
   // the sanctioned establishment above, where the live-critic assertions became
   // command gates and this routing lands them all in `deterministic`).
-  const { deterministic, agentJudged, humanJudged } = routeAssertions(verifySlice, {
-    subjectiveRouting: subjectiveRoutingEnabled(manifest),
-  });
+  const { deterministic, agentJudged, humanJudged } = routeAssertions(verifySlice);
   if (humanJudged.length) attempt.humanJudged = humanJudged;
 
   // Deterministic ALL slice -> exit-code gates (Unit 4, no browser). For a pure
@@ -1257,10 +1231,9 @@ export async function runIntegrationVerify(
     // (weave.ts ~414-421 demotes ready → needs-review on "fail"/"flaky").
     //
     // Reachable ONLY when opts.fullContract is true — set EXCLUSIVELY by the
-    // orchestratorVerify producer (dispatcher.ts, flag on). With the flag off
-    // (fullContract unset/false) this branch is inert, so a panelRequired skip on
-    // the ALL/checkpoint slice keeps its exact current keep-ready behavior — this
-    // module is byte-identical flag-off. A panelRequired-FALSE contract (empty
+    // top-gate producer (dispatcher.ts). Without fullContract (checkpoint slices)
+    // this branch is inert, so a panelRequired skip on the checkpoint slice keeps
+    // its keep-ready behavior. A panelRequired-FALSE contract (empty
     // agent-judged slice) never enters this branch at all (it falls to the
     // all-deterministic `pass` below), so a legitimate keep-ready skip is never
     // demoted — the distinguishing condition is exactly `panelRequired && skip`,
@@ -1475,7 +1448,7 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
   // output), but in practice every verify loom is a root (no parentLoomId), so
   // this guard is inert. Kept for the same leak-safe try/finally shape.
   let ownWorktree: string | null = null;
-  if (isolationEnabled(manifest) && loom.parentLoomId) {
+  if (loom.parentLoomId) {
     const baseSha = getLoom(loom.parentLoomId)?.baseSha;
     if (baseSha) {
       ownWorktree = await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id));
@@ -1555,7 +1528,10 @@ export async function executeLoom(
   opts: ExecuteOpts = {},
 ): Promise<Loom> {
   if (loom.kind === "verify") return executeVerifyLoom(loom, manifest, opts);
-  if (threadWorkflowEnabled(manifest) && !opts.viaWorkflow) return runThreadWorkflow(loom, manifest, opts);
+  // A thread is its own inner workflow (§26): runThreadWorkflow is the sole build
+  // body. opts.viaWorkflow is the recursion guard — a step delegating back into
+  // executeLoom runs the legacy single-builder path below, never re-enters here.
+  if (!opts.viaWorkflow) return runThreadWorkflow(loom, manifest, opts);
   const policy = opts.policy ?? ModelPolicy.parse({});
   // Clamp: <= 0 would skip the loop and resolve a still-"queued" loom.
   const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
@@ -1739,7 +1715,7 @@ export async function executeLoom(
   // failed/halted) leaves it false, so the finally snapshots the worktree's WIP
   // onto a durable recovery branch BEFORE removing the dir — work is never lost.
   let foldSucceeded = false;
-  if (isolationEnabled(manifest) && loom.parentLoomId) {
+  if (loom.parentLoomId) {
     const baseSha = getLoom(loom.parentLoomId)?.baseSha;
     if (baseSha) {
       ownWorktreeBaseSha = baseSha;
@@ -1758,10 +1734,8 @@ export async function executeLoom(
     let flakyUsed = 0;
     const maxFlaky = 2;
     // M11.4 (finding 4) — the previous attempt's per-failing-id output signatures,
-    // for the attempt-loop unfixable-gate breaker below. Null until the flag is
-    // on AND at least one attempt has failing gates. Flag-off it stays null and
-    // the breaker never engages (byte-identical).
-    const adaptiveVerify = adaptiveVerificationEnabled(manifest);
+    // for the attempt-loop unfixable-gate breaker below. Null until at least one
+    // attempt has failing gates.
     let prevFailSig: Record<string, string> | null = null;
 
     // M11 item-2(iv) (finding 2) — fail-CLOSED backstop for a NON-runnable
@@ -1784,9 +1758,8 @@ export async function executeLoom(
     // validator would hide, and PARK the loom (blocked, a strategy-derived
     // answerable question) instead of letting it run yardstick-less. SCOPED to
     // `command` (matching validateContract): a `gate` expected is a manifest-gate
-    // NAME, a `db` expected is legitimately SQL. Flag-gated under
-    // adaptiveVerification → flag-off byte-identical (no raw read, no park).
-    if (adaptiveVerify) {
+    // NAME, a `db` expected is legitimately SQL.
+    {
       const rawContract = readBundleFile(loom.id, CONTRACT_FILE);
       if (rawContract !== null) {
         let parsedRaw: VerificationContract | null = null;
@@ -1922,10 +1895,9 @@ export async function executeLoom(
       // environment state, not code: PARK the loom (blocked, a strategy-derived
       // answerable question) instead of wasting the remaining attempts. Reuses
       // repair-guard's normalizeGateOutput so both breaker legs (this + the
-      // frozen-lane repair loop) derive the signature identically. Flag-gated
-      // under adaptiveVerification → flag-off byte-identical.
+      // frozen-lane repair loop) derive the signature identically.
       let failSig: Record<string, string> | null = null;
-      if (adaptiveVerify && failing.length > 0) {
+      if (failing.length > 0) {
         failSig = {};
         for (const r of failing) failSig[r.name] = normalizeGateOutput(r.output);
         const treeChanged = (verdict?.files_touched?.length ?? 0) > 0;
@@ -2010,11 +1982,10 @@ export async function executeLoom(
         return loom;
       }
 
-      // M10.2 — CHILD-scoped thread-advisory, keyed to the SAME flag as M10.1's
-      // top gate (orchestratorVerifyEnabled). It can NEVER be on without the top
-      // gate, so coverage a thread stops gating is always re-proven at the top.
-      // A ROOT (no parentLoomId) yields false ⇒ decide() takes its unchanged
-      // fail-closed path. Flag-off ⇒ false ⇒ byte-identical to today.
+      // M10.2 — CHILD-scoped thread-advisory. The M10.1 top gate is UNCONDITIONAL,
+      // so coverage a thread stops gating is always re-proven at the top. A ROOT
+      // (no parentLoomId) yields false ⇒ decide() takes its unchanged fail-closed
+      // path.
       //
       // COVERAGE INVARIANT (fail-open hole closed): the relaxation may fire ONLY
       // for a CONTRACT-BACKED child — one whose `panelRequired` skip came from the
@@ -2029,7 +2000,7 @@ export async function executeLoom(
       // assertion in any contract, so the top gate STRUCTURALLY cannot re-prove it.
       // Relaxing that would silently drop coverage (fail-open). `!!routedContract`
       // gates the relaxation to exactly the criteria the top gate re-proves.
-      const childAdvisory = orchestratorVerifyEnabled(manifest) && !!loom.parentLoomId && !!routedContract;
+      const childAdvisory = !!loom.parentLoomId && !!routedContract;
 
       const decision = decide({
         gatesConfigured,
@@ -2239,8 +2210,8 @@ Emit a ThreadWorkflow: { version, steps }. Rules:
 }
 
 // M9.3 — author the thread's step-graph. Three-tier fallback, never throws:
-//   (1) deterministic template library (always; the degrade target);
-//   (2) read-only LLM planner (ONLY when threadPlannerEnabled) — mirrors splitBuild;
+//   (1) deterministic template library (the degrade floor, always valid);
+//   (2) read-only LLM planner (the norm) — mirrors splitBuild;
 //   (3) validate-or-degrade: any failure/null/invalid/empty/cyclic ⇒ tier 1.
 // Timeout/cancellation is NOT locally enforced here — same as splitBuild, the
 // planner call passes `abort: opts.abort` with no planner-local timer, so
@@ -2257,8 +2228,7 @@ export async function planThreadWorkflow(
   manifest: ProjectManifest,
   opts: ExecuteOpts,
 ): Promise<ThreadWorkflow> {
-  const template = selectTemplate(loom); // tier 1 — always valid, the sentinel
-  if (!threadPlannerEnabled(manifest)) return template; // flag OFF ⇒ templates only, NO llm call
+  const template = selectTemplate(loom); // tier 1 — always valid, the degrade floor
   try {
     const result = await (opts.run ?? agent)(plannerPrompt(loom), {
       schema: ThreadWorkflow, // engine parses → ThreadWorkflow | null
@@ -2322,7 +2292,7 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
   // M9.4 — the per-step CHECK evaluator (test seam, mirrors `run`) and the step-
   // local repair cap. maxStepRepairs is the SAME cap as the builder loop's
   // maxAttempts (Math.max(1, opts.maxAttempts ?? 3)) — no new counter. Both are
-  // consulted ONLY inside the M9.4 seam below, guarded by stepChecksEnabled.
+  // consulted ONLY inside the M9.4 seam below, guarded by st.check present.
   const runCheck = opts.runStepCheck ?? runStepCheck;
   const maxStepRepairs = Math.max(1, opts.maxAttempts ?? 3);
   // Fail-closed helper mirroring BLOCKER 1 (:1849) verbatim: idempotent against a
@@ -2434,11 +2404,15 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
         // "blocked" conjunct and falls through to fail-closed (mirrors the file's
         // usedBuiltinExecutor trust discipline). Keyed STRICTLY to "blocked" so every
         // OTHER non-green (failed/skipped) still coerces to failed — the
-        // m9-thread-workflow fail-close pins stay byte-identical. Flag-off a child
-        // never returns blocked (the breaker/park exist only under laneEscalation/
-        // adaptiveVerification), so this branch is unreachable ⇒ flag-off byte-identical.
-        if (res.state === "blocked" && loom.state === "blocked") {
-          emit({ type: "workflow-step-blocked", stepId: res.id });
+        // m9-thread-workflow fail-close pins stay unchanged. The SAME provenance
+        // logic extends to the M7 `env-review` pause: a live-critic step that
+        // reached verify with no target + no recipe diverts to the env-review gate
+        // (awaiting a servers.yaml accept) — also a resumable PAUSE the built-in
+        // delegate sets on the shared loom, never a step failure. (env-review is
+        // slated for removal in the A2 de-flag round; until then it must survive
+        // the now-unconditional thread-workflow wrapper.)
+        if ((res.state === "blocked" || res.state === "env-review") && loom.state === res.state) {
+          emit({ type: res.state === "blocked" ? "workflow-step-blocked" : "workflow-step-paused", stepId: res.id, state: res.state });
           return loom;
         }
         if (!isTerminalFailure(loom.state)) {
@@ -2495,10 +2469,9 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
       // writes sawTrustedWritingGreen or loom.state="ready"|"done"; the FINAL
       // PROVENANCE GATE stays the only promotion path) and NEVER relaxes the
       // loom's contract (runStepCheck evaluates st.check EXPLICITLY, never
-      // read/writeContract). Double-locked OFF: unreachable unless threadWorkflow
-      // is on, and skipped unless stepChecks is on AND st.check is set — so
-      // flag-off ⇒ Step.check ignored ⇒ byte-identical.
-      if (stepChecksEnabled(manifest) && st.check) {
+      // read/writeContract). Runs only for a step that declares a `check`; a
+      // step with no check is a proceed (the check is optional, per-step).
+      if (st.check) {
         const checkCtx: WorkflowStepCtx = { loom, manifest, opts, clamp: perStepClamp };
         // FIX 1 — the ENTIRE seam body (check evaluation + repair loop) runs inside
         // this try/catch. A throw from runCheck (critic/engine/Playwright/abort) or

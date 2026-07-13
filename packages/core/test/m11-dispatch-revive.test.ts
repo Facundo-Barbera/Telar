@@ -65,7 +65,7 @@ function manifest(over: Partial<ProjectManifest> = {}): ProjectManifest {
 }
 
 describe("reviveRepairableAuthored — the dispatcher divert that makes the 2c/3 repair reachable", () => {
-  test("flag ON + a human verifyCommand REVIVES the prose contract (so it flows into the repair branch, not synthesize)", () => {
+  test("a human verifyCommand REVIVES the prose contract (so it flows into the repair branch, not synthesize)", () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     saveLoom(loom);
     seedProseCommandContract(loom.id);
@@ -76,7 +76,7 @@ describe("reviveRepairableAuthored — the dispatcher divert that makes the 2c/3
 
     const revived = reviveRepairableAuthored(
       loom,
-      manifest({ adaptiveVerification: true, verifyCommand: "bun test" } as Partial<ProjectManifest>),
+      manifest({ verifyCommand: "bun test" }),
       errors,
     );
     // The RAW authored contract is returned (the else-branch tightens+persists it);
@@ -85,7 +85,7 @@ describe("reviveRepairableAuthored — the dispatcher divert that makes the 2c/3
     expect(revived!.assertions[0]!.id).toBe("bun-test-suite-passes");
   });
 
-  test("flag ON + a matching charter HINT revives too (no verifyCommand needed)", () => {
+  test("a matching charter HINT revives too (no verifyCommand needed)", () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     loom.charter = {
       objective: "o",
@@ -99,24 +99,15 @@ describe("reviveRepairableAuthored — the dispatcher divert that makes the 2c/3
     saveLoom(loom);
     seedProseCommandContract(loom.id);
     const { errors } = readContract(loom.id);
-    expect(reviveRepairableAuthored(loom, manifest({ adaptiveVerification: true } as Partial<ProjectManifest>), errors)).not.toBeNull();
+    expect(reviveRepairableAuthored(loom, manifest({}), errors)).not.toBeNull();
   });
 
-  test("flag ON but NO sanctioned runnable -> null (synthesize as before; never preserve an unrepairable prose contract)", () => {
+  test("NO sanctioned runnable -> null (synthesize as before; never preserve an unrepairable prose contract)", () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     saveLoom(loom);
     seedProseCommandContract(loom.id);
     const { errors } = readContract(loom.id);
-    expect(reviveRepairableAuthored(loom, manifest({ adaptiveVerification: true } as Partial<ProjectManifest>), errors)).toBeNull();
-  });
-
-  test("flag OFF -> null (byte-identical: today's synthesize path)", () => {
-    const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
-    saveLoom(loom);
-    seedProseCommandContract(loom.id);
-    const { errors } = readContract(loom.id);
-    const m = manifest({ adaptiveVerification: false, verifyCommand: "bun test" } as Partial<ProjectManifest>);
-    expect(reviveRepairableAuthored(loom, m, errors)).toBeNull();
+    expect(reviveRepairableAuthored(loom, manifest({}), errors)).toBeNull();
   });
 
   test("a DIFFERENT defect (not the non-runnable rule) -> null (only the non-runnable-command case is revived)", () => {

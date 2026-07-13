@@ -372,6 +372,13 @@ export const ProjectManifest = z.object({
   // (runIntegrationVerify runs it as a deterministic gate over the frozen
   // worktree). NEVER fed to the M5 devCommand auto-spin — it is not a server.
   verifyCommand: z.string().optional(),
+  // M4 — the template database the frozen-lane verify clones from (a project
+  // FACT, not a behavior switch). When declared, the engine uses the real
+  // LiveDbCloner to CREATE DATABASE … TEMPLATE <templateDb> an ephemeral clone
+  // for the read-only integration verify; absent, the NullDbCloner runs (no
+  // clone; the lane inherits the ambient DATABASE_URL). Never implicit — the
+  // human declares it, exactly like baseBranch/devCommand.
+  templateDb: z.string().optional(),
   // Per-project MCP servers (docs/runtime-architecture.md §B), keyed by server
   // name. Secret-free references only; tokens are resolved+injected per server
   // by mcp.ts:resolveProjectMcpServers, decoupled from the Claude account.

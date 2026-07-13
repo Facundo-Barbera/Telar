@@ -32,7 +32,10 @@ let n = 0;
 function makeProject() {
   n++;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-single-thread-proj-${n}-`));
-  return createProject(root, { name: `single-thread-${n}` });
+  // devCommand makes the lane viable so the now-unconditional pre-flight lane
+  // gate proceeds (isLaneViable short-circuits on a dev command); these tests
+  // exercise weave-of-one routing + contract synthesis, not the no-target floor.
+  return createProject(root, { name: `single-thread-${n}`, devCommand: "bun run dev" });
 }
 
 afterAll(() => {

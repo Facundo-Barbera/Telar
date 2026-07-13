@@ -3,6 +3,7 @@
 // function, carrying `deps` verbatim. A real-dispatcher round-trip proves state
 // flows through the transport verb; no HTTP is ever touched.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -79,7 +80,19 @@ describe("in-process transport — delegation + deps carried (byte-identity)", (
 describe("in-process transport — real dispatcher round-trip", () => {
   test("transport.start drives the real dispatcher to a persisted, verified loom", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-transport-proj-"));
-    const manifest = createProject(root, { name: "transport-proj" });
+    // A real git repo + a deterministic verifyCommand so the now-unconditional
+    // top gate settles hermetically: the frozen-lane verify forks the pinned base,
+    // the test-gate strategy establishes the synthesized live-critic slice as a
+    // `true` gate (no dev-server lane spun, no auto-repair triggered), and the
+    // dispatch chain resolves — so the loom rolls up to ready AND drops out of the
+    // active set (both the round-trip assertions below).
+    execFileSync("git", ["init", "-b", "main"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "t@t.com"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: root });
+    fs.writeFileSync(path.join(root, "seed.txt"), "seed\n");
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: root });
+    const manifest = createProject(root, { name: "transport-proj", verifyCommand: "true" });
 
     // Fake runLoomFn so no real agent runs — the child just reports done.
     const deps: DispatcherDeps = {
@@ -111,8 +124,15 @@ describe("in-process transport — real dispatcher round-trip", () => {
     expect(loom.id).toBeTruthy();
 
     // The weave-of-one rolls up to "ready" (never "done" — the moat).
+    // Wait for the loom to reach ready AND drop out of the active set — the
+    // dispatch chain clears activeLoomIds in a finally that resolves just after
+    // the ready state persists (the unconditional top-gate adds async work
+    // between the two), so poll on both rather than racing the removal.
     const start = Date.now();
-    while (getLoom(loom.id)?.state !== "ready" && Date.now() - start < 3000) {
+    while (
+      (getLoom(loom.id)?.state !== "ready" || (await t.getActive()).includes(loom.id)) &&
+      Date.now() - start < 3000
+    ) {
       await new Promise((r) => setTimeout(r, 5));
     }
     const final = getLoom(loom.id)!;

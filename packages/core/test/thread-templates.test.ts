@@ -1,6 +1,6 @@
 // M9.3 — pure unit tests for the deterministic template library + selection
 // heuristic + graph validator (thread-templates.ts). No live model, no runner:
-//   - single-build byte-identity to today's default template (guards M9.2);
+//   - the single-build template is the canonical default-builder shape (guards M9.2);
 //   - the 3-step understand→implement→check shape;
 //   - the pickTemplate threshold (pure, no disk);
 //   - validateWorkflow accept/reject (empty, dup ids, dangling dep, cycle, no-writing);
@@ -55,8 +55,8 @@ function fakeLoom(over: Partial<Loom> = {}): Loom {
 const blocker = (id: string) => ({ id, description: `check ${id}`, type: "command" as const, expected: "true", blocker: true });
 const nonBlocker = (id: string) => ({ id, description: `check ${id}`, type: "command" as const, expected: "true", blocker: false });
 
-describe("M9.3 template library — single-build byte-identity", () => {
-  test("singleBuildTemplate is character-for-character today's default template", () => {
+describe("M9.3 template library — single-build canonical shape", () => {
+  test("singleBuildTemplate is character-for-character the canonical default-builder template", () => {
     expect(singleBuildTemplate(fakeLoom({ prompt: "P" }))).toEqual({
       version: 1,
       steps: [{ id: "build", goal: "P", kind: "build", agents: [], partition: "free", dependsOn: [] }],

@@ -72,8 +72,8 @@ describe("repair-guard signature guard (finding 4A)", () => {
     });
   });
 
-  test("flag-off byte-identical: rounds WITHOUT failingSig never trigger the signature guard", () => {
-    // Shrinking set, no signatures attached (legacy / panel-only / flag-off) ->
+  test("rounds WITHOUT failingSig never trigger the signature guard", () => {
+    // Shrinking set, no signatures attached (legacy / panel-only rounds) ->
     // the signature guard is inert; Guard 3 permits the repair.
     const history = [round(1, ["a", "b", "c"]), round(2, ["a", "b"]), round(3, ["a"])];
     expect(decideRepairContinuation(history, budget(), NOW, CAPS)).toEqual({ action: "repair" });
@@ -140,9 +140,9 @@ afterAll(() => {
 
 // A manifest whose one gate ALWAYS fails with a stable non-empty output — the
 // "prose command running as sh -c" live bug, distilled: no attempt can move it.
-function manifestFor(adaptive: boolean) {
+function manifestFor() {
   const base = ProjectManifest.parse({ name: projectName, root: repo });
-  return { ...base, adaptiveVerification: adaptive, gates: [{ name: "g", run: "echo nope; exit 1" }] };
+  return { ...base, gates: [{ name: "g", run: "echo nope; exit 1" }] };
 }
 
 // A builder that reports success AND touches a fresh file every attempt (the
@@ -158,12 +158,12 @@ function runOptsCounting(): { opts: ExecuteOpts; calls: () => number } {
 }
 
 describe("executor attempt-loop breaker (finding 4B)", () => {
-  test("flag ON: an unfixable gate PARKS to blocked after 2 attempts (does not burn the 3rd)", async () => {
+  test("an unfixable gate PARKS to blocked after 2 attempts (does not burn the 3rd)", async () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     saveLoom(loom);
     const { opts, calls } = runOptsCounting();
     const events: Array<{ type: string } & Record<string, unknown>> = [];
-    const res = await executeLoom(loom, manifestFor(true), { ...opts, onEvent: (e) => events.push(e), maxAttempts: 3 });
+    const res = await executeLoom(loom, manifestFor(), { ...opts, onEvent: (e) => events.push(e), maxAttempts: 3, viaWorkflow: true });
 
     expect(res.state).toBe("blocked");
     expect(calls()).toBe(2); // parked after attempt 2 — the 3rd never ran
@@ -173,18 +173,7 @@ describe("executor attempt-loop breaker (finding 4B)", () => {
     expect(events.some((e) => e.type === "lane-escalation" && e.reason === "unfixable-gate")).toBe(true);
   });
 
-  test("flag OFF: byte-identical — the loom burns all attempts and lands failed (no park)", async () => {
-    const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
-    saveLoom(loom);
-    const { opts, calls } = runOptsCounting();
-    const res = await executeLoom(loom, manifestFor(false), { ...opts, maxAttempts: 3 });
-
-    expect(res.state).toBe("failed");
-    expect(calls()).toBe(3); // all three attempts spent — unchanged pre-M11 behavior
-    expect(res.blockedReason).toBeUndefined();
-  });
-
-  test("flag ON: a CONVERGING loom is NOT parked — a momentarily-identical id does not park while the failing SET strictly shrinks (finding 3)", async () => {
+  test("a CONVERGING loom is NOT parked — a momentarily-identical id does not park while the failing SET strictly shrinks (finding 3)", async () => {
     // Two independent failing gates. g1 prints a STABLE non-empty output while
     // broken (so its signature is byte-identical across attempts) but is fixable by
     // touching f1; g2 is fixable by touching f2. The builder fixes ONE per attempt:
@@ -197,7 +186,6 @@ describe("executor attempt-loop breaker (finding 4B)", () => {
     const base = ProjectManifest.parse({ name: projectName, root: repo });
     const manifest = {
       ...base,
-      adaptiveVerification: true,
       gates: [
         { name: "g1", run: "test -f f1 || { echo g1missing; exit 1; }" },
         { name: "g2", run: "test -f f2 || { echo g2missing; exit 1; }" },
@@ -214,14 +202,14 @@ describe("executor attempt-loop breaker (finding 4B)", () => {
       return { ok: true, summary: "did work", files_touched: [`touch-${n}.txt`], blocker: null };
     }) as unknown as ExecuteOpts["run"];
     const events: Array<{ type: string } & Record<string, unknown>> = [];
-    const res = await executeLoom(loom, manifest, { run, onState: saveLoom, onEvent: (e) => events.push(e), maxAttempts: 3 });
+    const res = await executeLoom(loom, manifest, { run, onState: saveLoom, onEvent: (e) => events.push(e), maxAttempts: 3, viaWorkflow: true });
 
     expect(n).toBe(3); // all three attempts ran — NOT parked at attempt 2
     expect(res.state).not.toBe("blocked");
     expect(events.some((e) => e.type === "lane-escalation" && e.reason === "unfixable-gate")).toBe(false);
   });
 
-  test("flag ON but the builder touches NOTHING -> no park (the breaker needs a tree change to fire)", async () => {
+  test("the builder touches NOTHING -> no park (the breaker needs a tree change to fire)", async () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     saveLoom(loom);
     let n = 0;
@@ -229,7 +217,7 @@ describe("executor attempt-loop breaker (finding 4B)", () => {
       n++;
       return { ok: true, summary: "noop", files_touched: [], blocker: null };
     }) as unknown as ExecuteOpts["run"];
-    const res = await executeLoom(loom, manifestFor(true), { run, onState: saveLoom, onEvent: () => {}, maxAttempts: 3 });
+    const res = await executeLoom(loom, manifestFor(), { run, onState: saveLoom, onEvent: () => {}, maxAttempts: 3, viaWorkflow: true });
     // No files_touched -> treeChanged false -> breaker never engages -> the
     // ordinary decide() path lands it failed after all attempts.
     expect(res.state).toBe("failed");
@@ -246,9 +234,9 @@ describe("executor attempt-loop breaker (finding 4B)", () => {
 // pre-guard artifact this backstop exists for. A gate-less manifest isolates the
 // pre-flight from the finding-4 attempt-loop breaker above.
 describe("executor item-2(iv) non-runnable-expected pre-flight park", () => {
-  function manifestPlain(adaptive: boolean) {
+  function manifestPlain() {
     const base = ProjectManifest.parse({ name: projectName, root: repo });
-    return { ...base, adaptiveVerification: adaptive };
+    return { ...base };
   }
 
   function seedProseCommandContract(loomId: string) {
@@ -270,7 +258,7 @@ describe("executor item-2(iv) non-runnable-expected pre-flight park", () => {
     );
   }
 
-  test("flag ON: a legacy prose command contract PARKS before any attempt runs", async () => {
+  test("a legacy prose command contract PARKS before any attempt runs", async () => {
     const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
     saveLoom(loom);
     seedProseCommandContract(loom.id);
@@ -280,11 +268,12 @@ describe("executor item-2(iv) non-runnable-expected pre-flight park", () => {
       return { ok: true, summary: "built", files_touched: ["f.txt"], blocker: null };
     }) as unknown as ExecuteOpts["run"];
     const events: Array<{ type: string } & Record<string, unknown>> = [];
-    const res = await executeLoom(loom, manifestPlain(true), {
+    const res = await executeLoom(loom, manifestPlain(), {
       run,
       onState: saveLoom,
       onEvent: (e) => events.push(e),
       maxAttempts: 3,
+      viaWorkflow: true,
     });
 
     expect(res.state).toBe("blocked");
@@ -293,36 +282,5 @@ describe("executor item-2(iv) non-runnable-expected pre-flight park", () => {
     expect(res.blockedReason).toContain("bun-test-suite-passes");
     expect(res.blockedQuestion && res.blockedQuestion.length).toBeGreaterThan(0);
     expect(events.some((e) => e.type === "lane-escalation" && e.reason === "nonrunnable-expected")).toBe(true);
-  });
-
-  test("flag OFF: byte-identical fail-CLOSED — no item-2(iv) park, but the null-contract floor still runs the yardstick (loom fails, never fail-opens)", async () => {
-    const loom = createLoom({ project: projectName, kind: "custom", title: "t", prompt: "x", account: "personal" });
-    saveLoom(loom);
-    seedProseCommandContract(loom.id);
-    let builderCalls = 0;
-    const run = (async () => {
-      builderCalls++;
-      return { ok: true, summary: "built", files_touched: ["f.txt"], blocker: null };
-    }) as unknown as ExecuteOpts["run"];
-    const events: Array<{ type: string } & Record<string, unknown>> = [];
-    const res = await executeLoom(loom, manifestPlain(false), {
-      run,
-      onState: saveLoom,
-      onEvent: (e) => events.push(e),
-      maxAttempts: 3,
-    });
-
-    // Flag off -> the item-2(iv) PARK is skipped (no nonrunnable-expected escalation,
-    // no "Non-runnable" blockedReason). But the executor's null-contract fail-closed
-    // FLOOR (adaptive-verification review, the critical fail-OPEN fix) still routes
-    // the RAW deterministic slice when readContract nulled SOLELY on the non-runnable
-    // rule: the prose `expected` runs verbatim through the gate runner, reddens, and
-    // the loom lands FAILED (fail-CLOSED) — byte-identical to the pre-guard behavior
-    // where the command ran and failed. The yardstick must NEVER silently vanish and
-    // let the loom pass on the builder's self-report.
-    expect(builderCalls).toBe(3); // the failing yardstick forces every retry
-    expect(events.some((e) => e.type === "lane-escalation" && e.reason === "nonrunnable-expected")).toBe(false);
-    expect(res.blockedReason?.startsWith("Non-runnable") ?? false).toBe(false);
-    expect(res.state).toBe("failed"); // fail-CLOSED, not a laundered done/needs-review
   });
 });

@@ -29,10 +29,8 @@ import { getProject, listProjects, telarDir, writeManifest } from "./manifest";
 import { createLoom, saveLoom, appendEvent, getLoom, listLooms, listChildLooms, loomDir, type Loom, type LoomKind } from "./looms";
 import { buildIntegrationRepairBrief, executeLoom, isLaneViable, partitionAssertions, runIntegrationVerify, runRepairThread, type ExecuteOpts } from "./executor";
 import {
-  autoRepairEnabled,
   createConsolidationBranch,
   defaultGitRunner,
-  isolationEnabled,
   reapOrphanWorktrees,
   resolveBaseSha,
 } from "./vcs";
@@ -47,8 +45,7 @@ import { CONTRACT_FILE, appendSteering, readBundleFile, readContract, snapshotBu
 import { contractErrorsRepairable, synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
-import { adaptiveVerificationEnabled, envReviewEnabled, laneEscalationEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
-import { runSetupAgent } from "./setup/setup-agent";
+import { envReviewEnabled } from "./runner/flag";
 import { superviseStartLane } from "./verify-lane";
 import type { Lane, StartLaneOpts } from "./run-server";
 import { writeAcceptedServersConfig, writeAcceptedRunbook } from "./servers";
@@ -179,15 +176,12 @@ function ensureWoven(loom: Loom): void {
       version: base?.version ?? 1,
       approvedBy: base?.approvedBy ?? "auto:single-thread",
       singleThread: true,
-      // M11.1 (adaptiveVerification) — FORWARD the base charter's per-criterion
-      // proof hints through the weave-of-one rebuild so collectProofHints
-      // (weave-contracts.ts) still reaches them at synthesis. Without this the
-      // rebuild silently dropped charter-level proofHints — the loom_mrinlb18
-      // greenfield evidence, where a valid non-woven planner charter's hints
-      // vanished at ensureWoven and the derivation saw nothing. Inherently no-op
-      // off-flag: nothing authors proofHints when adaptiveVerification is off, so
-      // `base.proofHints` is absent everywhere off-flag and the spread is `{}` —
-      // byte-identical, no need to thread a manifest into this signature.
+      // FORWARD the base charter's per-criterion proof hints through the weave-of-
+      // one rebuild so collectProofHints (weave-contracts.ts) still reaches them at
+      // synthesis. Without this the rebuild silently dropped charter-level
+      // proofHints — the loom_mrinlb18 greenfield evidence, where a valid non-woven
+      // planner charter's hints vanished at ensureWoven and the derivation saw
+      // nothing.
       ...(base?.proofHints ? { proofHints: base.proofHints } : {}),
     };
     return;
@@ -207,19 +201,17 @@ function ensureWoven(loom: Loom): void {
 // the contract the 2c/3 sanctioned repair (tightenAuthoredContract) exists to fix,
 // and exactly what a human answers via answerBlocked's verifyCommand — reads back
 // as null and would be DISCARDED for a fresh synthesize BEFORE the repair branch
-// is ever reached, silently throwing the human's answer away. When (flag on) the
-// SOLE null-cause is that rule AND a sanctioned runnable is actually available now
-// (a matching charter hint or the answered verifyCommand ⇒ tightenAuthoredContract
-// would produce a tightening), return the RAW structural contract so it flows into
-// the tighten/repair branch (repair → persist → event-trail) instead of
-// synthesize. Any OTHER defect, no available runnable, or flag-off ⇒ null ⇒
-// synthesize exactly as before (byte-identical). PURE except the one bundle read.
+// is ever reached, silently throwing the human's answer away. When the SOLE null-
+// cause is that rule AND a sanctioned runnable is actually available now (a matching
+// charter hint or the answered verifyCommand ⇒ tightenAuthoredContract would produce
+// a tightening), return the RAW structural contract so it flows into the tighten/
+// repair branch (repair → persist → event-trail) instead of synthesize. Any OTHER
+// defect or no available runnable ⇒ null ⇒ synthesize. PURE except the one bundle read.
 export function reviveRepairableAuthored(
   loom: Loom,
   manifest: ProjectManifest,
   contractErrors: string[],
 ): VerificationContract | null {
-  if (!adaptiveVerificationEnabled(manifest)) return null;
   // FINDING 6/7 integration — accept BOTH author-repairable error classes ("non-
   // runnable expected" AND "observable is only valid on live-critic"), so a finding-
   // 6-shaped legacy contract (prose expected + a mis-placed runnable in `observable`)
@@ -328,30 +320,24 @@ function runWeaveWiring(
   ) => ({
     runIntegrationVerify: (lm: Loom, mf: ProjectManifest, o: Record<string, unknown>) =>
       runIntegrationVerify(lm, mf, { policy, accounts: deps.accounts, ...o }),
-    dbCloner: resolveDbCloner(),
+    dbCloner: resolveDbCloner(manifest.templateDb),
+    templateDb: manifest.templateDb,
     subGoalId,
     abort,
     emit: (ev: { type: string } & Record<string, unknown>) => appendEvent(eventSink.id, ev),
     ...(extra?.forkRef ? { forkRef: extra.forkRef } : {}),
     ...(extra?.fullContract ? { verifyOpts: { fullContract: true } } : {}),
-    // M10.3 (verifyLane ON): inject the SUPERVISED startLane wrapper + fail-closed
-    // lane-down, so frozenLaneVerify PROACTIVELY stands a repairable lane up for
-    // the top-gate pass and a bring-up failure demotes (never launders into
-    // weave's fail-open keep-ready). A later-key-wins spread mirroring the
-    // orchestratorVerify override — flag-off the spread is `{}`, frozenLaneVerify
-    // falls back to the one-shot defaultStartLane, and every path (fork ref,
-    // verdict, teardown, byte layout) is identical to M10.1. The lane is stood up
-    // / restarted / torn down by startLane/superviseLane/lane.stopAll — the
-    // EXECUTOR/SETUP-wall capability; the read-only judge (verifier/critic) is
-    // never handed any of these functions, only the resolved target URL.
-    ...(verifyLaneEnabled(manifest)
-      ? {
-          startLane: (config: ServersConfig, root: string, o?: StartLaneOpts): Promise<Lane> =>
-            superviseStartLane(config, root, o),
-          laneOpts: { captureLogs: true } as StartLaneOpts,
-          failClosedLaneDown: true,
-        }
-      : {}),
+    // M10.3 — inject the SUPERVISED startLane wrapper + fail-closed lane-down
+    // UNCONDITIONALLY, so frozenLaneVerify PROACTIVELY stands a repairable lane up
+    // for the top-gate pass and a bring-up failure demotes (never launders into
+    // weave's fail-open keep-ready). The lane is stood up / restarted / torn down
+    // by startLane/superviseLane/lane.stopAll — the EXECUTOR/SETUP-wall capability;
+    // the read-only judge (verifier/critic) is never handed any of these
+    // functions, only the resolved target URL.
+    startLane: (config: ServersConfig, root: string, o?: StartLaneOpts): Promise<Lane> =>
+      superviseStartLane(config, root, o),
+    laneOpts: { captureLogs: true } as StartLaneOpts,
+    failClosedLaneDown: true,
   });
   // The root's full Verification Contract — wireChildBundle filters it down to
   // each Thread's own subGoalId slice.
@@ -379,13 +365,12 @@ function runWeaveWiring(
     contract = synthesizeContract(loom, manifest);
     writeContract(loom.id, contract);
   } else {
-    // M11.1 (adaptiveVerification) — an AUTHORED contract (readContract non-null)
-    // never passes through synthesizeContract, so its live-critic/golden-diff
-    // assertions stayed agent-judged and a prose-`expected` command stayed
-    // unrunnable (the loom_mrinlb18 authored-bundle gap). Run the tightening-only
-    // derivation over it: it only ever TIGHTENS toward a charter-authored proofHint
-    // and only when the result still validates. Flag-off it is a strict no-op
-    // (empty tightenings) ⇒ byte-identical. PERSIST the result so
+    // An AUTHORED contract (readContract non-null) never passes through
+    // synthesizeContract, so its live-critic/golden-diff assertions stayed agent-
+    // judged and a prose-`expected` command stayed unrunnable (the loom_mrinlb18
+    // authored-bundle gap). Run the tightening-only derivation over it: it only ever
+    // TIGHTENS toward a charter-authored proofHint and only when the result still
+    // validates. PERSIST the result so
     // runIntegrationVerify's independent readContract sees the tightened form; the
     // per-tightening event carries the ORIGINAL type/expected so authored semantics
     // stay recoverable. IDEMPOTENT: a re-dispatch reads the already-tightened
@@ -427,19 +412,16 @@ function runWeaveWiring(
   const rootAssertions = contract.assertions;
   const rootSynthesized = contract.synthesized === true;
 
-  // M10.4 (laneEscalation ON) — PRE-FLIGHT lane-viability gate. Runs HERE, after
+  // M10.4 — PRE-FLIGHT lane-viability gate (UNCONDITIONAL). Runs HERE, after
   // the contract is resolved/synthesized+persisted and BEFORE any spend (the
   // baseSha pin, the consolidation-branch create, and the runWeave child spawn
   // all live below). If a live target is needed (the contract has agent-judged
   // assertions) but the lane is unviable (no devCommand, no servers.yaml/.telar
-  // tier) AND cannot be auto-provisioned (setupAgent is off — the only auto-spin
-  // path), PARK the loom in `blocked` with a narrative question and RETURN before
+  // tier), PARK the loom in `blocked` with a narrative question and RETURN before
   // ANY child forks or branch is created — so an unviable lane never strands
-  // threads. laneEscalationEnabled is the FIRST && operand, so flag-off adds ZERO
-  // reads and ZERO branches beyond today and dispatch flows straight into the
-  // baseSha/branch/runWeave path exactly as it does now (byte-identical). Bounded:
-  // a single synchronous decision over already-resolved inputs (isLaneViable is a
-  // pure read of the contract + manifest + one filesystem tier) — it cannot loop
+  // threads. Bounded: a single synchronous decision over already-resolved inputs
+  // (isLaneViable is a pure read of the contract + manifest + one filesystem
+  // tier) — it cannot loop
   // and cannot spawn a thread that strands.
   //
   // M11.0 — the gate now asks "can a PLAN to verify this be formed at all?"
@@ -450,16 +432,12 @@ function runWeaveWiring(
   // library, CLI and DS deliverables PROCEED and establish verification when
   // the artifact appears; the park below is the LAST RESORT, reached only when
   // NO plan of any kind can be formed. The decision stays a pure synchronous
-  // read (deriveDeliverableSignal — no LLM, no spawn: still zero spend), the
-  // flag stays the FIRST && operand (flag-off byte-identical), and the
-  // setupAgent operand is unchanged — a plannable deliverable short-circuits at
-  // !isLaneViable, so the proceed path and setupAgent's preparing-window
-  // provisioning can never double-fire a park.
-  if (
-    laneEscalationEnabled(manifest) &&
-    !isLaneViable(manifest, rootAssertions, loom.charter) &&
-    !setupAgentEnabled(manifest)
-  ) {
+  // read (deriveDeliverableSignal — no LLM, no spawn: still zero spend) — a
+  // plannable deliverable short-circuits at !isLaneViable. The preparing-window
+  // auto-provision that once let an unviable lane escape this park is re-homed to
+  // the orchestrator-mediation rung (B2); until then an unviable lane parks
+  // fail-closed.
+  if (!isLaneViable(manifest, rootAssertions, loom.charter)) {
     parkBlockedIfLaneUnviable(loom, manifest, rootAssertions);
     return Promise.resolve(loom);
   }
@@ -472,29 +450,26 @@ function runWeaveWiring(
   // telar/<id> branch untouched. (Base-SHA pinning + branch setup live here —
   // not in weave.ts — because this is the seam that has the manifest + git
   // runner, mirroring how runIntegrationVerify is wired in as a dep below.)
-  // M4: auto-repair ALSO needs the pinned base SHA (its frozen snapshot forks
-  // from it), so pin when EITHER flag is on. The consolidation BRANCH is an
-  // isolation-only artifact (the fold target) — create it only under isolation;
-  // auto-repair-only needs just the SHA.
-  if (isolationEnabled(manifest) || autoRepairEnabled(manifest)) {
-    try {
-      const baseSha = resolveBaseSha(defaultGitRunner, manifest.root, manifest.baseBranch);
-      if (baseSha) {
-        loom.baseSha = baseSha;
-        if (isolationEnabled(manifest)) {
-          loom.consolidationBranch = `telar/${loom.id}`;
-          createConsolidationBranch(defaultGitRunner, manifest.root, loom.consolidationBranch, baseSha);
-        }
-        saveLoom(loom);
-      }
-    } catch (err) {
-      appendEvent(loom.id, {
-        type: "consolidate-setup-failed",
-        message: err instanceof Error ? err.message : String(err),
-      });
-      loom.baseSha = undefined;
-      loom.consolidationBranch = undefined;
+  // Isolation + auto-repair are unconditional: both need the pinned base SHA
+  // (children fork their worktrees from it; the frozen snapshot forks from it),
+  // and isolation's consolidation BRANCH is the fold target. A non-git root /
+  // branch-create failure degrades gracefully — baseSha stays undefined and the
+  // engine falls back to the shared root (no worktree, no branch).
+  try {
+    const baseSha = resolveBaseSha(defaultGitRunner, manifest.root, manifest.baseBranch);
+    if (baseSha) {
+      loom.baseSha = baseSha;
+      loom.consolidationBranch = `telar/${loom.id}`;
+      createConsolidationBranch(defaultGitRunner, manifest.root, loom.consolidationBranch, baseSha);
+      saveLoom(loom);
     }
+  } catch (err) {
+    appendEvent(loom.id, {
+      type: "consolidate-setup-failed",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    loom.baseSha = undefined;
+    loom.consolidationBranch = undefined;
   }
 
   const woven = runWeave(loom, decomposition, {
@@ -558,12 +533,12 @@ function runWeaveWiring(
         onEvent: (ev) => appendEvent(child.id, ev),
         ...(opts.maxAttempts != null ? { maxAttempts: opts.maxAttempts } : {}),
       };
-      // M6 build fan-out (flag-guarded, DEFAULT OFF). Rides on worktree
-      // isolation. Flag-off on EITHER flag ⇒ block skipped ⇒ opts.buildFanout
-      // undefined ⇒ executeLoom's single-builder branch ⇒ byte-identical.
+      // M6 build fan-out (flag-guarded, DEFAULT OFF). Rides on the now-
+      // unconditional worktree isolation. Flag-off ⇒ block skipped ⇒
+      // opts.buildFanout undefined ⇒ executeLoom's single-builder branch.
       // Whole block try/caught: any planner throw falls through to the single
       // builder rather than crashing a runnable thread.
-      if (buildFanoutEnabled(manifest) && isolationEnabled(manifest)) {
+      if (buildFanoutEnabled(manifest)) {
         try {
           const fanout = await planBuildFanout(child);
           if (fanout) {
@@ -582,107 +557,75 @@ function runWeaveWiring(
     onState: saveLoom,
     onEvent: (ev) => appendEvent(loom.id, ev),
     abort,
-    // Unit 6 (docs §8 MVP): the end-of-orchestration ALL-scope integration
-    // verify producer. runWeave calls this once after the children fold up to
-    // "ready"; the result (latestVerdict + an integration attempt) is recorded
-    // additively on the root. Its own panel/gate events append to the root's
-    // event stream via appendEvent.
-    runIntegrationVerify: (l) =>
-      runIntegrationVerify(l, manifest, {
-        policy,
-        accounts: deps.accounts,
-        abort,
+    // Unit 6 (docs §8 MVP) + M10.1 top gate (UNCONDITIONAL): the end-of-
+    // orchestration ALL-scope integration verify producer. runWeave calls this
+    // once after the children fold up to "ready"; the whole-verification runs
+    // frozenLaneVerify forking the CONSOLIDATION BRANCH (fall back to baseSha) and
+    // verifying the FULL contract over the composed whole. The result
+    // (latestVerdict + an integration attempt) is recorded additively on the root;
+    // its own panel/gate events append to the root's event stream via appendEvent.
+    // A root with no ALL contract yields a null verdict, which weave.ts's `if (iv)`
+    // guard drops gracefully.
+    runIntegrationVerify: (l: Loom): Promise<IvResult | null> =>
+      frozenLaneVerify(
+        l,
+        manifest,
+        frozenDeps(l, undefined, { forkRef: l.consolidationBranch ?? l.baseSha, fullContract: true }),
+      ),
+    // Auto-repair (unconditional): the plain producer is replaced by the
+    // guarded frozen-lane loop, with best-effort per-subGoal checkpoints.
+    runAutoRepair: (l: Loom): Promise<IvResult | null> =>
+      runAutoRepair(l, {
+        // M10.1 (UNCONDITIONAL): the auto-repair root-verify leg forks the
+        // consolidation branch and verifies the full contract too (checkpoints
+        // below stay unset ⇒ baseSha/ALL).
+        verify: (target: Loom) =>
+          frozenLaneVerify(
+            target,
+            manifest,
+            frozenDeps(
+              target,
+              undefined,
+              { forkRef: target.consolidationBranch ?? target.baseSha, fullContract: true },
+            ),
+          ),
+        repair: (target: Loom, brief: string) =>
+          runRepairThread(target, manifest, brief, {
+            policy,
+            accounts: deps.accounts,
+            abort,
+            emit: (ev) => appendEvent(target.id, ev),
+          }),
+        buildBrief: (_l: Loom, iv: IvResult) => buildIntegrationRepairBrief(iv),
+        budget: () => rootRepairBudget(l),
+        caps: { maxRepairIterations: 3, estCostPerRepair: EST_COST_PER_AGENT },
+        now: () => Date.now(),
+        onRound: () => saveLoom(l),
         emit: (ev) => appendEvent(l.id, ev),
       }),
-    // M10.1 (orchestratorVerify ON, auto-repair OFF): OVERRIDE the plain
-    // producer with the whole-verification — frozenLaneVerify forking the
-    // CONSOLIDATION BRANCH (fall back to baseSha) and verifying the FULL
-    // contract over the composed whole. A later key wins over the default above
-    // (same later-key-wins mechanism envReview/autoRepair use). Flag-off the
-    // spread is `{}` and the default stands ⇒ byte-identical.
-    ...(orchestratorVerifyEnabled(manifest)
-      ? {
-          runIntegrationVerify: (l: Loom): Promise<IvResult | null> =>
-            frozenLaneVerify(
-              l,
-              manifest,
-              frozenDeps(l, undefined, { forkRef: l.consolidationBranch ?? l.baseSha, fullContract: true }),
-            ),
-        }
-      : {}),
-    // M4 (auto-repair master flag ON): replace the plain producer with the
-    // guarded frozen-lane loop, and fire best-effort per-subGoal checkpoints.
-    // Absent flag-off ⇒ the runIntegrationVerify path above is byte-identical.
-    ...(autoRepairEnabled(manifest)
-      ? {
-          runAutoRepair: (l: Loom): Promise<IvResult | null> =>
-            runAutoRepair(l, {
-              // M10.1: when orchestratorVerify is also ON, the auto-repair
-              // root-verify leg forks the consolidation branch and verifies the
-              // full contract too (checkpoints below stay unset ⇒ baseSha/ALL).
-              // Flag-off the extra is `{}` ⇒ baseSha / ALL slice, as today.
-              verify: (target: Loom) =>
-                frozenLaneVerify(
-                  target,
-                  manifest,
-                  frozenDeps(
-                    target,
-                    undefined,
-                    orchestratorVerifyEnabled(manifest)
-                      ? { forkRef: target.consolidationBranch ?? target.baseSha, fullContract: true }
-                      : {},
-                  ),
-                ),
-              repair: (target: Loom, brief: string) =>
-                runRepairThread(target, manifest, brief, {
-                  policy,
-                  accounts: deps.accounts,
-                  abort,
-                  emit: (ev) => appendEvent(target.id, ev),
-                }),
-              buildBrief: (_l: Loom, iv: IvResult) => buildIntegrationRepairBrief(iv),
-              budget: () => rootRepairBudget(l),
-              caps: { maxRepairIterations: 3, estCostPerRepair: EST_COST_PER_AGENT },
-              now: () => Date.now(),
-              onRound: () => saveLoom(l),
-              emit: (ev) => appendEvent(l.id, ev),
-            }),
-          runCheckpoint: async (child: Loom): Promise<void> => {
-            // Best-effort + pool/budget-gated: skip when there is no headroom for
-            // one more verify, or the settled child has no subGoalId slice.
-            if (!child.subGoalId) return;
-            const b = rootRepairBudget(loom);
-            if (b.maxCostUsd != null && b.maxCostUsd - b.spentUsd < EST_COST_PER_AGENT) return;
-            const iv = await frozenLaneVerify(loom, manifest, frozenDeps(loom, child.subGoalId));
-            if (iv) {
-              appendEvent(loom.id, {
-                type: "weave-verify",
-                verification: iv.verification,
-                gatesOk: iv.gatesOk,
-                subGoalId: child.subGoalId,
-                checkpoint: true,
-              });
-            }
-          },
-        }
-      : {}),
-    // M5 (setup agent flag ON): run the scoped setup agent in the `preparing`
-    // window — bring the env lane up / author a missing servers.yaml before any
-    // build child spawns. Absent flag-off (dep undefined), so preparing→running
-    // is byte-identical to today (weave.ts skips the whole block). On
-    // { ready:false } the weave lands needs-review/failed WITHOUT spawning
-    // children — never `done` (moat).
-    ...(setupAgentEnabled(manifest)
-      ? {
-          runSetup: (l: Loom) =>
-            runSetupAgent(l, manifest, {
-              account: deps.accounts?.[manifest.account],
-              model: policy.dev,
-              onEvent: (ev) => appendEvent(l.id, ev),
-              cwd: l.worktree ?? manifest.root,
-            }),
-        }
-      : {}),
+    runCheckpoint: async (child: Loom): Promise<void> => {
+      // Best-effort + pool/budget-gated: skip when there is no headroom for
+      // one more verify, or the settled child has no subGoalId slice.
+      if (!child.subGoalId) return;
+      const b = rootRepairBudget(loom);
+      if (b.maxCostUsd != null && b.maxCostUsd - b.spentUsd < EST_COST_PER_AGENT) return;
+      const iv = await frozenLaneVerify(loom, manifest, frozenDeps(loom, child.subGoalId));
+      if (iv) {
+        appendEvent(loom.id, {
+          type: "weave-verify",
+          verification: iv.verification,
+          gatesOk: iv.gatesOk,
+          subGoalId: child.subGoalId,
+          checkpoint: true,
+        });
+      }
+    },
+    // The scoped setup agent (bring the env lane up / author a missing
+    // servers.yaml in the `preparing` window) is NOT wired here: per the doctrine
+    // the orchestrator mediates an unviable lane at need, not up-front. runSetup
+    // stays undefined (weave.ts skips the preparing block) until the environment-
+    // comprehension duty is re-homed to the orchestrator-mediation rung (B2).
+    // runSetupAgent (setup/setup-agent) remains defined and callable for B2.
   });
 
   // M3: finalize the review branch once the weave settles. Every done child
@@ -691,7 +634,7 @@ function runWeaveWiring(
   // MOAT: no merge, no checkout of baseBranch, no state change — the branch is
   // a review artifact the human lands via acceptLoom. Guarded so a finalize
   // failure never rejects the dispatch chain.
-  if (isolationEnabled(manifest) && loom.consolidationBranch) {
+  if (loom.consolidationBranch) {
     return woven.then((result) => {
       try {
         const fin = finalizeConsolidation(result, manifest.root, defaultGitRunner);
@@ -1208,21 +1151,18 @@ export async function startLoomFromBundle(
         loom.charter = charter;
         saveLoom(loom);
         appendEvent(loomId, { type: "charter-approved", by: "auto:weave-planner" });
-      } else if (adaptiveVerificationEnabled(manifest) && v.ok) {
-        // M11.1 (adaptiveVerification) — CAPTURE the proof intent of a VALID but
-        // NON-WOVEN planner charter. A greenfield/library bundle is one atomic
-        // workstream ⇒ empty decomposition ⇒ isWoven=false, so the weave branch
-        // above never fired and TODAY the emitted charter (with its proofStrategy
-        // + proofHints) was dropped entirely — the loom_mrinlb18 seam. Assign it
-        // to loom.charter so ensureWoven inherits `base` = this planner charter
-        // and its proofStrategy/proofHints/objective/scope/budget carry into the
-        // weave-of-one rebuild (ensureWoven forwards proofHints; synthesizeContract
-        // then honors them). isWoven(loom) STAYS false (no decomposition), so
-        // ensureWoven still builds the deterministic single subgoal and STAMPS
-        // approvedBy "auto:single-thread" — we deliberately do NOT set approvedBy
-        // here (this is not a woven approval). Gated behind adaptiveVerification so
-        // flag-off a non-woven planner charter is still dropped exactly as before
-        // (byte-identical bundle path).
+      } else if (v.ok) {
+        // CAPTURE the proof intent of a VALID but NON-WOVEN planner charter. A
+        // greenfield/library bundle is one atomic workstream ⇒ empty decomposition
+        // ⇒ isWoven=false, so the weave branch above never fired and the emitted
+        // charter (with its proofStrategy + proofHints) would otherwise be dropped
+        // entirely — the loom_mrinlb18 seam. Assign it to loom.charter so ensureWoven
+        // inherits `base` = this planner charter and its proofStrategy/proofHints/
+        // objective/scope/budget carry into the weave-of-one rebuild (ensureWoven
+        // forwards proofHints; synthesizeContract then honors them). isWoven(loom)
+        // STAYS false (no decomposition), so ensureWoven still builds the
+        // deterministic single subgoal and STAMPS approvedBy "auto:single-thread" —
+        // we deliberately do NOT set approvedBy here (this is not a woven approval).
         loom.charter = charter;
         saveLoom(loom);
         appendEvent(loomId, { type: "charter-proof-intent-captured" });

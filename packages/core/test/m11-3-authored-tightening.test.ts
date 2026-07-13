@@ -1,13 +1,13 @@
-// M11.1 deliverable (b) — TIGHTENING-ONLY derivation over an AUTHORED contract
+// TIGHTENING-ONLY derivation over an AUTHORED contract
 // (docs/adaptive-verification.md §3.1). Proves, hermetically (pure function, no
 // LLM, no dispatch, no filesystem beyond a pinned TELAR_HOME sandbox):
-//   - flag-off (or no manifest) is a STRICT no-op: the input contract is returned
-//     unchanged with an empty tightenings list (byte-identical bundle path)
-//   - flag-on, an AGENT-JUDGED assertion (live-critic / golden-diff) whose id or
+//   - a charter with no signal (no hints) is a STRICT no-op: the input contract is
+//     returned unchanged with an empty tightenings list
+//   - an AGENT-JUDGED assertion (live-critic / golden-diff) whose id or
 //     description exactly carries a charter proofHint is CONVERTED to a runnable
 //     {type:"command", expected: hint.run} — the tightening synthesizeContract's
 //     authored-contract choke point never reached before
-//   - flag-on, a DETERMINISTIC assertion (command/gate/db) is NEVER edited — it
+//   - a DETERMINISTIC assertion (command/gate/db) is NEVER edited — it
 //     already carries an authored runnable and editing that expected is "editing
 //     the yardstick" (§M.2); a matching hint is a no-op (adaptive-verification
 //     review finding 1: a stricter human `bun test --coverage --min 90` must NOT be
@@ -79,30 +79,15 @@ const command = (id: string, description: string, expected: string): ContractAss
   blocker: true,
 });
 
-const ON = { adaptiveVerification: true };
+const ON = {};
 
-describe("flag-off / no manifest — strict no-op", () => {
+describe("no signal — strict no-op", () => {
   const c: VerificationContract = {
     version: 1,
     assertions: [liveCritic("parse-contract-file-placed", "the parse contract file is placed"), command("gate", "a gate", "bun build")],
   };
-  const loom = fakeLoom({
-    charter: charter({ proofHints: [{ criterion: "parse-contract-file-placed", run: "diff a b" }] }),
-  });
 
-  test("no manifest returns the input contract unchanged + empty tightenings", () => {
-    const r = tightenAuthoredContract(c, loom);
-    expect(r.contract).toBe(c);
-    expect(r.tightenings).toEqual([]);
-  });
-
-  test("manifest WITHOUT the flag returns the input contract unchanged + empty tightenings", () => {
-    const r = tightenAuthoredContract(c, loom, { adaptiveVerification: false });
-    expect(r.contract).toBe(c);
-    expect(r.tightenings).toEqual([]);
-  });
-
-  test("flag-on but a charter with NO hints is a no-op (empty hint map short-circuit)", () => {
+  test("a charter with NO hints is a no-op (empty hint map short-circuit)", () => {
     const r = tightenAuthoredContract(c, fakeLoom({ charter: charter() }), ON);
     expect(r.contract).toBe(c);
     expect(r.tightenings).toEqual([]);

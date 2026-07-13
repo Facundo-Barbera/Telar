@@ -1,9 +1,8 @@
-// M3 — executeLoom-level worktree lifecycle. Drives executeLoom with a FAKE
-// agent (mocked engine) that writes a file into its cwd, over a REAL tmp git
-// repo, and asserts: flag-off is byte-identical (no worktree, builder cwd ===
-// manifest.root); flag-on creates a worktree before the build, writes land in
-// it (not the shared root), and NO worktree leaks on success / failure /
-// needs-review / abort; a fold failure RETAINS the worktree.
+// M3 — executeLoom-level worktree lifecycle. Isolation is UNCONDITIONAL: over a
+// REAL tmp git repo with a FAKE agent (mocked engine) that writes a file into
+// its cwd, executeLoom creates a worktree before the build, writes land in it
+// (not the shared root), and NO worktree leaks on success / failure /
+// needs-review / abort; a fold failure RETAINS the worktree's work as a branch.
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -22,7 +21,12 @@ let builderImpl: (cwd: string) => Promise<unknown> = async (cwd) => {
   fs.writeFileSync(path.join(cwd, "out.txt"), "built\n");
   return { ok: true, summary: "done", files_touched: ["out.txt"], blocker: null };
 };
-const fakeRun = (async (_p: unknown, o: { cwd: string }) => {
+const fakeRun = (async (p: unknown, o: { cwd: string }) => {
+  // The per-thread planner runs unconditionally; when this builder-shaped fake
+  // is handed the read-only planner call, DEGRADE it to the template (return an
+  // invalid workflow) rather than run the builder into manifest.root — so the
+  // build under test runs only in the isolated worktree.
+  if (/planning pass|step-graph/.test(String(p))) return { version: 1, steps: [] } as never;
   capturedCwd = o.cwd;
   return builderImpl(o.cwd);
 }) as unknown as ExecuteOpts["run"];
@@ -86,11 +90,12 @@ afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-// Build a manifest for executeLoom. `isolate` flips the M3 flag; one passing
-// gate ("true") lets a child reach "done" (verify is "skip" for a plain loom).
-function manifestFor(isolate: boolean, gates = [{ name: "g", run: "true" }]) {
+// Build a manifest for executeLoom. One passing gate ("true") lets a child
+// reach "done" (verify is "skip" for a plain loom). Isolation is unconditional,
+// so no manifest field toggles it.
+function manifestFor(gates = [{ name: "g", run: "true" }]) {
   const base = ProjectManifest.parse({ name: projectName, root: repo });
-  return { ...base, isolateWorktrees: isolate, gates };
+  return { ...base, gates };
 }
 
 const worktreeCount = () =>
@@ -118,19 +123,7 @@ function makeRootAndChild(withBranch = true) {
   return { root, child, baseSha };
 }
 
-describe("flag OFF (behavior-preserving)", () => {
-  test("no worktree created; builder cwd === manifest.root; loom.worktree unset", async () => {
-    const { child } = makeRootAndChild();
-    const res = await executeLoom(child, manifestFor(false), runOpts());
-    expect(res.state).toBe("done");
-    expect(capturedCwd).toBe(repo); // built in the shared root
-    expect(res.worktree).toBeUndefined();
-    expect(worktreeCount()).toBe(1); // only the main worktree
-    expect(fs.existsSync(path.join(repo, "out.txt"))).toBe(true); // wrote into the shared tree
-  });
-});
-
-describe("flag ON", () => {
+describe("worktree isolation (unconditional)", () => {
   test("worktree created before build; writes land in the worktree, not manifest.root; persisted before build", async () => {
     const { child } = makeRootAndChild();
     let worktreeAtBuildTime: string | undefined;
@@ -140,7 +133,7 @@ describe("flag ON", () => {
       fs.writeFileSync(path.join(cwd, "out.txt"), "built\n");
       return { ok: true, summary: "done", files_touched: ["out.txt"], blocker: null };
     };
-    const res = await executeLoom(child, manifestFor(true), runOpts());
+    const res = await executeLoom(child, manifestFor(), runOpts());
 
     expect(res.state).toBe("done");
     expect(capturedCwd).not.toBe(repo);
@@ -152,7 +145,7 @@ describe("flag ON", () => {
 
   test("no leak on SUCCESS: worktree removed, dir gone, loom.worktree cleared; work folded onto the branch", async () => {
     const { root, child } = makeRootAndChild();
-    const res = await executeLoom(child, manifestFor(true), runOpts());
+    const res = await executeLoom(child, manifestFor(), runOpts());
     expect(res.state).toBe("done");
     expect(res.worktree).toBeUndefined();
     expect(worktreeCount()).toBe(1);
@@ -166,7 +159,7 @@ describe("flag ON", () => {
     builderImpl = async () => {
       throw new Error("builder boom");
     };
-    const res = await executeLoom(child, manifestFor(true), runOpts());
+    const res = await executeLoom(child, manifestFor(), runOpts());
     expect(res.state).toBe("failed");
     expect(res.worktree).toBeUndefined();
     expect(worktreeCount()).toBe(1);
@@ -176,7 +169,7 @@ describe("flag ON", () => {
     const { child } = makeRootAndChild();
     // No gates -> gatesConfigured false; verify skip; child lands needs-review.
     // The builder wrote out.txt into the worktree — that diff must survive.
-    const res = await executeLoom(child, manifestFor(true, []), runOpts());
+    const res = await executeLoom(child, manifestFor([]), runOpts());
     expect(res.state).toBe("needs-review");
     expect(res.worktree).toBeUndefined(); // dir reclaimed
     expect(worktreeCount()).toBe(1);
@@ -195,7 +188,7 @@ describe("flag ON", () => {
       fs.writeFileSync(path.join(cwd, "out.txt"), "partial\n");
       return { ok: true, summary: "done", files_touched: ["out.txt"], blocker: null };
     };
-    const res = await executeLoom(child, manifestFor(true), runOpts({ abort }));
+    const res = await executeLoom(child, manifestFor(), runOpts({ abort }));
     expect(res.state).toBe("halted");
     expect(res.worktree).toBeUndefined();
     expect(worktreeCount()).toBe(1);
@@ -208,7 +201,7 @@ describe("flag ON", () => {
     // the dir is then removed (no leak, no lost work).
     const { child } = makeRootAndChild(false);
     const events: Array<{ type: string } & Record<string, unknown>> = [];
-    const res = await executeLoom(child, manifestFor(true), runOpts({ onEvent: (e) => events.push(e) }));
+    const res = await executeLoom(child, manifestFor(), runOpts({ onEvent: (e) => events.push(e) }));
 
     expect(res.state).toBe("done");
     expect(events.some((e) => e.type === "consolidate-failed")).toBe(true);

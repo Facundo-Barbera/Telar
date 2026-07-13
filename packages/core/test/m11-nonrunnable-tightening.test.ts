@@ -66,7 +66,7 @@ const command = (id: string, description: string, expected: string): ContractAss
   blocker: true,
 });
 
-const ON = { adaptiveVerification: true };
+const ON = {};
 
 describe("2a EMIT — Charter.parse rejects a non-runnable proofHint run", () => {
   test("a PROSE run is rejected at the schema boundary", () => {
@@ -152,7 +152,7 @@ describe("2b INSTALL — synthesizeContract never installs a non-runnable hint",
       acceptanceCriteria: ["the suite passes"],
       charter: rawCharter([{ criterion: "the suite passes", run: "process exits with code 0; all tests green" }]),
     });
-    const c = synthesizeContract(loom, { adaptiveVerification: true });
+    const c = synthesizeContract(loom, {});
     expect(c.assertions[0]!.type).toBe("live-critic");
     expect(c.assertions[0]!.expected).toBeUndefined();
   });
@@ -162,7 +162,7 @@ describe("2b INSTALL — synthesizeContract never installs a non-runnable hint",
       acceptanceCriteria: ["the suite passes"],
       charter: rawCharter([{ criterion: "the suite passes", run: "bun test" }]),
     });
-    const c = synthesizeContract(loom, { adaptiveVerification: true });
+    const c = synthesizeContract(loom, {});
     expect(c.assertions[0]!.type).toBe("command");
     expect(c.assertions[0]!.expected).toBe("bun test");
   });
@@ -198,7 +198,7 @@ describe("2c/3 REPAIR — a broken command's prose expected is repaired to a san
       assertions: [command("suite", "the suite passes", "process exits with code 0; all tests green")],
     };
     const loom = fakeLoom({ charter: rawCharter([]) });
-    const { contract, tightenings } = tightenAuthoredContract(c, loom, { adaptiveVerification: true, verifyCommand: "bun test" });
+    const { contract, tightenings } = tightenAuthoredContract(c, loom, { verifyCommand: "bun test" });
     expect(contract.assertions[0]!.expected).toBe("bun test");
     expect(tightenings.map((t) => t.id)).toEqual(["suite"]);
   });
@@ -209,7 +209,7 @@ describe("2c/3 REPAIR — a broken command's prose expected is repaired to a san
       assertions: [command("suite", "the suite passes", "bun test --coverage --min 90")],
     };
     const loom = fakeLoom({ charter: rawCharter([{ criterion: "suite", run: "bun test" }]) });
-    const r = tightenAuthoredContract(c, loom, { adaptiveVerification: true, verifyCommand: "bun test" });
+    const r = tightenAuthoredContract(c, loom, { verifyCommand: "bun test" });
     expect(r.tightenings).toEqual([]);
     expect(r.contract).toBe(c);
     expect(r.contract.assertions[0]!.expected).toBe("bun test --coverage --min 90");
@@ -224,17 +224,6 @@ describe("2c/3 REPAIR — a broken command's prose expected is repaired to a san
     const r = tightenAuthoredContract(c, loom, ON); // no hint, no verifyCommand
     expect(r.tightenings).toEqual([]);
     expect(r.contract).toBe(c);
-  });
-
-  test("flag-off is a strict no-op even with a verifyCommand present", () => {
-    const c: VerificationContract = {
-      version: 1,
-      assertions: [command("suite", "the suite passes", "process exits with code 0; all tests green")],
-    };
-    const loom = fakeLoom({ charter: rawCharter([]) });
-    const r = tightenAuthoredContract(c, loom, { adaptiveVerification: false, verifyCommand: "bun test" });
-    expect(r.contract).toBe(c);
-    expect(r.tightenings).toEqual([]);
   });
 
   test("idempotent — re-running over the repaired output produces zero tightenings", () => {

@@ -24,7 +24,10 @@ afterAll(() => {
 
 function makeProject(name: string) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-start-from-bundle-${name}-`));
-  return createProject(root, { name });
+  // devCommand keeps the lane viable past the now-unconditional pre-flight gate
+  // so dispatch proceeds; these tests exercise the bundle/weave path, not the
+  // no-target floor.
+  return createProject(root, { name, devCommand: "bun run dev" });
 }
 
 // startLoomFromBundle now runs the AI weave-planner before dispatch, so the

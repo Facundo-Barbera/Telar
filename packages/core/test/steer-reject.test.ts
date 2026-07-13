@@ -26,7 +26,10 @@ let n = 0;
 function makeProject() {
   n++;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-steer-reject-proj-${n}-`));
-  return createProject(root, { name: `steer-reject-${n}` });
+  // devCommand makes the lane viable so the now-unconditional pre-flight lane
+  // gate proceeds (isLaneViable short-circuits on a dev command) — these tests
+  // exercise the steer/reject re-dispatch, not the no-target floor.
+  return createProject(root, { name: `steer-reject-${n}`, devCommand: "bun run dev" });
 }
 
 function loomInState(project: string, state: Loom["state"]) {
@@ -293,7 +296,7 @@ describe("reDispatch — a wiped-but-cached telar.yaml self-heals, not strands",
   function loomWithWipedButCachedManifest(state: Loom["state"]) {
     n++;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-steer-reject-heal-${n}-`));
-    const m = createProject(root, { name: `steer-reject-heal-${n}` }); // seeds the registry cache
+    const m = createProject(root, { name: `steer-reject-heal-${n}`, devCommand: "bun run dev" }); // seeds the registry cache; devCommand keeps the lane viable past the pre-flight gate
     const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "base prompt", account: "personal" });
     loom.state = state;
     loom.error = "boom";

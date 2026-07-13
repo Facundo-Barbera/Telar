@@ -24,7 +24,10 @@ afterAll(() => {
 
 function makeProject(name: string) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-weave-planner-${name}-`));
-  return createProject(root, { name });
+  // devCommand keeps the lane viable past the now-unconditional pre-flight gate
+  // so the woven roots dispatch + roll up; these tests exercise the planner
+  // decomposition/degradation, not the no-target floor.
+  return createProject(root, { name, devCommand: "bun run dev" });
 }
 
 async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
@@ -51,12 +54,21 @@ function subGoal(overrides: Partial<SubGoal> = {}): SubGoal {
 // A bundle whose contract carries four distinct workstream subGoalIds plus one
 // cross-cutting ("ALL") assertion — the exact grounding planWeaveFromBundle
 // partitions by (values like W1-109, mirroring real contract.json).
+// Deterministic (command) assertions with a satisfiable runnable (`true`): the
+// now-UNCONDITIONAL orchestrator top gate verifies this ALL contract over the
+// composed whole, so an agent-judged (contains/value-equality) slice with no
+// live target would demote the woven root fail-closed (the honest no-evidence
+// floor) — masking the fan-out/rollup behavior these tests exercise. Routing
+// them through the deterministic exit-code gate keeps the top gate GREEN so the
+// root reaches a STABLE `ready`. Slice-narrowing coverage is by id/subGoalId
+// (unchanged); the agent-judged degrade path is covered separately by
+// MIXED_ASSERTIONS below.
 const WORKSTREAM_ASSERTIONS: ContractAssertion[] = [
-  { id: "a1", subGoalId: "W1-109", description: "w1 done", type: "contains", expected: "x1", blocker: true },
-  { id: "a2", subGoalId: "W2-112", description: "w2 done", type: "contains", expected: "x2", blocker: true },
-  { id: "a3", subGoalId: "W3-201", description: "w3 done", type: "value-equality", expected: "x3", blocker: true },
-  { id: "a4", subGoalId: "W4-305", description: "w4 done", type: "value-equality", expected: "x4", blocker: true },
-  { id: "a5", subGoalId: "ALL", description: "cross-cutting", type: "contains", expected: "xall", blocker: true },
+  { id: "a1", subGoalId: "W1-109", description: "w1 done", type: "command", expected: "true", blocker: true },
+  { id: "a2", subGoalId: "W2-112", description: "w2 done", type: "command", expected: "true", blocker: true },
+  { id: "a3", subGoalId: "W3-201", description: "w3 done", type: "command", expected: "true", blocker: true },
+  { id: "a4", subGoalId: "W4-305", description: "w4 done", type: "command", expected: "true", blocker: true },
+  { id: "a5", subGoalId: "ALL", description: "cross-cutting", type: "command", expected: "true", blocker: true },
 ];
 
 const WORKSTREAM_IDS = ["W1-109", "W2-112", "W3-201", "W4-305"];

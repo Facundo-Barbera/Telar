@@ -8,7 +8,6 @@
 // its own readContract in the executor — proving its SubGoal in isolation.
 import { CONTRACT_FILE, listBundleFiles, snapshotBundle, writeBundleFile } from "./bundle";
 import { validateContract, type Charter, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
-import { adaptiveVerificationEnabled, subjectiveRoutingEnabled } from "./runner/flag";
 import { charterHasGateIntent, deriveDeliverableSignal } from "./deliverable-signal";
 import { partitionAssertions } from "./executor";
 import { isRunnableShape } from "./runnable-shape";
@@ -163,30 +162,24 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
 export function synthesizeContract(
   loom: Loom,
   manifest?: {
-    subjectiveRouting?: boolean;
-    adaptiveVerification?: boolean;
     gates?: { name: string }[];
     root?: string;
   },
 ): VerificationContract {
   const criteria = (loom.acceptanceCriteria ?? []).map((c) => c.trim()).filter(Boolean);
   const sources = criteria.length ? criteria : [loom.prompt?.trim() || loom.title];
-  const routing = manifest ? subjectiveRoutingEnabled(manifest) : false;
   const gateNames = new Set((manifest?.gates ?? []).map((g) => g.name.trim()).filter(Boolean));
-  // M11.1 — derivation inputs, resolved ONCE per synthesis. Flag-off (or no
-  // manifest) both stay empty/null: zero filesystem reads, zero new branches
-  // per criterion beyond a Map miss — byte-identical output.
-  const adaptive = manifest ? adaptiveVerificationEnabled(manifest) : false;
-  const hints = adaptive ? collectProofHints(loom.charter) : new Map<string, string>();
+  // Derivation inputs, resolved ONCE per synthesis.
+  const hints = collectProofHints(loom.charter);
   // The blanket test-gate SANCTION (header rule 2): prompt-fallback criteria or
   // an explicit gate-mechanism charter. Unsanctioned ⇒ the signal is not even
   // derived (zero filesystem reads) and authored prose keeps live-critic.
   const blanketSanctioned = criteria.length === 0 || charterHasGateIntent(loom.charter);
   const signal =
-    adaptive && blanketSanctioned && manifest?.root ? deriveDeliverableSignal(manifest.root, loom.charter) : null;
+    blanketSanctioned && manifest?.root ? deriveDeliverableSignal(manifest.root, loom.charter) : null;
   const testRun = signal?.plannable && signal.strategy === "test-gate" ? signal.run : undefined;
   const assertions: ContractAssertion[] = sources.map((text, i) => {
-    if (routing && gateNames.has(text)) {
+    if (gateNames.has(text)) {
       // Objective, machine-verifiable: route to the fail-closed exit-code gate.
       return { id: `synth-${i}`, subGoalId: "ALL", description: text, type: "gate", expected: text, blocker: true };
     }
@@ -276,14 +269,13 @@ export function tightenAuthoredContract(
   // broken (non-runnable) command assertion can be repaired to it even without a
   // matching charter hint. The dispatcher already passes the full ProjectManifest
   // (which carries verifyCommand), so this widening needs NO call-site change.
-  manifest?: { adaptiveVerification?: boolean; verifyCommand?: string },
+  manifest?: { verifyCommand?: string },
 ): {
   contract: VerificationContract;
   tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[];
 } {
-  if (!(manifest && adaptiveVerificationEnabled(manifest))) return { contract, tightenings: [] };
   const hints = collectProofHints(loom.charter);
-  const verifyCommand = manifest.verifyCommand?.trim();
+  const verifyCommand = manifest?.verifyCommand?.trim();
   const sanctionedVerify = verifyCommand && isRunnableShape(verifyCommand) ? verifyCommand : undefined;
   // M11 finding 6 — a THIRD sanctioned repair source lives INSIDE the contract: a
   // command whose runnable is field-inverted into `observable` (run #3). It repairs

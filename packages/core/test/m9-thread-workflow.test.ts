@@ -1,9 +1,9 @@
-// M9.1 — thread-as-workflow (flag-gated, default OFF). Proves:
-//  (a) flag helper + refactor kernel + flag-OFF path is unchanged (runner
-//      unreachable, no workflow-* events, real executeLoom still reaches ready);
-//  (b) flag-ON with the DEFAULT template reproduces today's outcome on the same
-//      fixture (same terminal state / attempts / verdict), going THROUGH the
-//      runner (one workflow-wave stepIds:["build"]) and never writing "done";
+// M9.1 — thread-as-workflow. A thread is its own inner orchestration loop
+// (§26): runThreadWorkflow is the SOLE build body for a non-verify loom. Proves:
+//  (a) the readyItems scheduler kernel + the refactor exports;
+//  (b) the DEFAULT template reproduces today's outcome on the git fixture (same
+//      terminal state / attempts / verdict), going THROUGH the runner (one
+//      workflow-wave stepIds:["build"]) and never writing "done";
 //  (c) a hand-built 2(+1)-step DAG runs in dependency order (a dep completes
 //      before its dependent starts; independent steps overlap);
 //  (d) independent steps in a wave run CONCURRENTLY (Promise.all, not a
@@ -20,7 +20,6 @@ import type { Loom } from "../src/looms";
 import type { ProjectManifest, Step, ThreadWorkflow } from "../src/schemas";
 
 const { executeLoom, runThreadWorkflow, planThreadWorkflow } = await import("../src/executor");
-const { threadWorkflowEnabled, threadPlannerEnabled, stepChecksEnabled } = await import("../src/runner/flag");
 const { readyItems, readySubGoals } = await import("../src/tick");
 const { createLoom } = await import("../src/looms");
 const { createProject, getProject } = await import("../src/manifest");
@@ -38,11 +37,8 @@ beforeEach(() => {
   process.env.TELAR_HOME = home;
 });
 afterEach(() => {
-  // Process-global flags — never let them leak into the byte-identity /
-  // isolation-off suites (mirrors build-fanout-wiring.test.ts:19-24).
-  delete process.env.TELAR_THREAD_WORKFLOW;
-  delete process.env.TELAR_THREAD_PLANNER;
-  delete process.env.TELAR_STEP_CHECKS;
+  // Defensive: keep any process-global flag another suite might have set from
+  // leaking across files (mirrors build-fanout-wiring.test.ts:19-24).
   delete process.env.TELAR_BUILD_FANOUT;
   delete process.env.TELAR_ISOLATE_WORKTREES;
   fs.rmSync(home, { recursive: true, force: true });
@@ -79,6 +75,11 @@ const fileFromPrompt = (prompt: string): string => {
   return m ? m[1]!.split(",")[0]!.trim() : "unknown.txt";
 };
 const fakeBuilder = (async (prompt: string, o: any) => {
+  // The per-thread planner now runs unconditionally; when this builder-shaped
+  // fake is handed the read-only planner call it must DEGRADE the planner to the
+  // template (return an invalid workflow) rather than write a stray file — so the
+  // workflow execution under test is exactly the deterministic-template path.
+  if (/planning pass|step-graph/.test(prompt)) return { version: 1, steps: [] } as any;
   const f = fileFromPrompt(prompt);
   fs.writeFileSync(path.join(o.cwd, f), `built ${f}\n`);
   return { ok: true, summary: `wrote ${f}`, files_touched: [f], blocker: null };
@@ -130,17 +131,8 @@ const step = (id: string, dependsOn: string[] = [], over: Partial<Step> = {}): S
 });
 const noManifest = {} as unknown as ProjectManifest;
 
-// ── (a) flag helper + refactor kernel + flag-OFF byte-identity ───────────────
-describe("(a) flag helper + readyItems kernel + flag-OFF path unchanged", () => {
-  test("threadWorkflowEnabled: false by default; honors manifest flag + env override", () => {
-    delete process.env.TELAR_THREAD_WORKFLOW;
-    expect(threadWorkflowEnabled({})).toBe(false);
-    expect(threadWorkflowEnabled({ threadWorkflow: false })).toBe(false);
-    expect(threadWorkflowEnabled({ threadWorkflow: true })).toBe(true);
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    expect(threadWorkflowEnabled({})).toBe(true);
-  });
-
+// ── (a) the readyItems scheduler kernel + refactor exports ───────────────────
+describe("(a) readyItems kernel + refactor exports", () => {
   test("readyItems kernel: ids not-started whose every dependsOn is completed, in order", () => {
     const items = [
       { id: "a", dependsOn: [] as string[] },
@@ -159,32 +151,15 @@ describe("(a) flag helper + readyItems kernel + flag-OFF path unchanged", () => 
     // pinned by orchestrator.test.ts:643-659 (still green in the suite run).
     expect(typeof readySubGoals).toBe("function");
   });
-
-  test("flag OFF: the real executeLoom reaches 'ready' and emits NO workflow-* events (runner unreachable)", async () => {
-    const { name } = makeGitProject();
-    const { result, events } = await driveToReady(name); // env unset ⇒ flag off
-    expect(result.state).toBe("ready");
-    expect(events.some((e) => e.type === "workflow-wave")).toBe(false);
-    expect(events.some((e) => e.type === "workflow-step")).toBe(false);
-  });
 });
 
-// ── (b) flag-ON default template reproduces today ────────────────────────────
-describe("(b) flag-ON + default template === today (via the runner)", () => {
-  test("same terminal 'ready' / one attempt / one green verdict as the flag-off control, THROUGH the runner, never 'done'", async () => {
-    // Control (flag off).
-    const ctrl = await driveToReady(makeGitProject().name);
-
-    // Flag on (env), same fixture + same opts.
-    process.env.TELAR_THREAD_WORKFLOW = "1";
+// ── (b) default template reproduces today's outcome via the runner ───────────
+describe("(b) default template === today (via the runner)", () => {
+  test("terminal 'ready' / one attempt / one green verdict, THROUGH the runner, never 'done'", async () => {
     const on = await driveToReady(makeGitProject().name);
 
-    // Behaviorally identical outcome.
-    expect(on.result.state).toBe(ctrl.result.state);
     expect(on.result.state).toBe("ready");
-    expect(on.loom.attempts.length).toBe(ctrl.loom.attempts.length);
     expect(on.loom.attempts.length).toBe(1);
-    expect(on.events.filter((e) => e.type === "verdict").length).toBe(ctrl.events.filter((e) => e.type === "verdict").length);
     expect(on.events.filter((e) => e.type === "verdict").length).toBe(1);
 
     // Went through the runner: exactly one wave delegating the single "build" step.
@@ -196,8 +171,6 @@ describe("(b) flag-ON + default template === today (via the runner)", () => {
     expect(stepEvents[0]!.stepId).toBe("build");
     // Moat: the runner never self-accepts to 'done'; the delegated executeLoom set 'ready'.
     expect(on.result.state).not.toBe("done");
-    // Control took the OLD path (no workflow events) — proving the seam is what diverged.
-    expect(ctrl.events.some((e) => e.type === "workflow-wave")).toBe(false);
   });
 });
 
@@ -321,8 +294,8 @@ describe("(d) within-wave steps run in PARALLEL (Promise.all, not sequential)", 
 // (c) two independent built-in free steps overlap in parallel; (d) the pool-slice
 // clamp bounds total concurrency (wave × agents-per-step); (e) CF2 refuses a green
 // writing step with no verifier proof; (f) a free step fans out with NO partition/
-// merge. Tests (a)/(b)/(f... actually f is direct) that need the REAL executeLoom
-// go through the flag-routed executeLoom; the rest drive runThreadWorkflow directly.
+// merge. Tests that need the REAL executeLoom go through it (executeLoom always
+// routes a non-verify loom to runThreadWorkflow); the rest drive runThreadWorkflow directly.
 // ═════════════════════════════════════════════════════════════════════════════
 
 // A builder that WRITES OUTSIDE its allowedPaths for the a.txt piece (a stray the
@@ -347,7 +320,6 @@ const twoDisjointAgents = [
 // ── (a) writing fan-out: 2 disjoint-writer agents merge non-overlapping edits ──
 describe("(a) disjoint-writer step fans out, merges disjointly, verifies ONCE, lands 'ready'", () => {
   test("both agents' non-overlapping files land on the root; one fanout(pieces:2); workflow-step ready; never 'done'", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name, root } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -384,7 +356,6 @@ describe("(a) disjoint-writer step fans out, merges disjointly, verifies ONCE, l
 // ── (b) stray write outside allowedPaths FAILS the step closed ────────────────
 describe("(b) a stray write outside a disjoint-writer agent's allowedPaths fails the step closed", () => {
   test("mergeDisjoint drops the stray ⇒ runBuildFanout.ok=false ⇒ no promotion; blocker names the stray; c.txt never lands on root", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name, root } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -416,7 +387,6 @@ describe("(b) a stray write outside a disjoint-writer agent's allowedPaths fails
 // ── (c) two independent built-in FREE steps run concurrently ──────────────────
 describe("(c) two independent free steps run in PARALLEL through the built-in step executor", () => {
   test("both agents enter before either returns (a barrier that deadlocks under a sequential wave)", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     let entered = 0;
     let release!: () => void;
     const barrier = new Promise<void>((r) => (release = r));
@@ -446,7 +416,6 @@ describe("(c) two independent free steps run in PARALLEL through the built-in st
 // ── (d) the pool-slice clamp bounds total concurrency (wave × agents-per-step) ─
 describe("(d) per-step clamp keeps total concurrency <= the shared pool", () => {
   test("maxAgents:6, 3 free steps × 4 agents each — observed max concurrent agents <= 6 (never 3×4=12)", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     let inFlight = 0;
     let maxObserved = 0;
     const run = (async () => {
@@ -479,7 +448,6 @@ describe("(d) per-step clamp keeps total concurrency <= the shared pool", () => 
 // ── (e) CF2 — a green WRITING step with no verifier proof is refused ──────────
 describe("(e) CF2 verifier guard: an injected runStep cannot promote a WRITING loom to green without proof", () => {
   test("build step reporting {ok:true,state:'ready'} with no verifier/panel/gates proof ⇒ fail closed", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
     const loom = fakeLoom({
       workflow: { version: 1, steps: [{ id: "w", goal: "g", kind: "build", partition: "disjoint-writer", agents: [], dependsOn: [] }] },
@@ -491,7 +459,6 @@ describe("(e) CF2 verifier guard: an injected runStep cannot promote a WRITING l
   });
 
   test("CONTROL: the SAME proofless green result for a NON-WRITING (research) step is exempt and passes", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
     const loom = fakeLoom({
       workflow: { version: 1, steps: [{ id: "r", goal: "g", kind: "research", partition: "free", agents: [], dependsOn: [] }] },
@@ -505,7 +472,6 @@ describe("(e) CF2 verifier guard: an injected runStep cannot promote a WRITING l
 // ── (f) a non-writing FREE step fans out with NO partition/merge ──────────────
 describe("(f) free fan-out skips the disjoint-writer machinery entirely", () => {
   test("a 'design' step with OVERLAPPING allowedPaths fans both agents out ok — no piecesAreDisjoint gate, no fanout/merge", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     let calls = 0;
     const run = (async () => {
       calls++;
@@ -569,7 +535,6 @@ const disjointGreenStep = (id: string, dependsOn: string[] = []): Step => ({
 
 describe("BLOCKER 1 — a later failing step fails the loom CLOSED (no false-green from an earlier green step)", () => {
   test("writing partition-overlap failure AFTER an earlier disjoint-writer green ⇒ loom ends 'failed', not 'ready'", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -607,7 +572,6 @@ describe("BLOCKER 1 — a later failing step fails the loom CLOSED (no false-gre
   });
 
   test("failing free `check` step AFTER an earlier disjoint-writer green ⇒ loom ends 'failed', not 'ready'", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -650,7 +614,6 @@ describe("BLOCKER 1 — a later failing step fails the loom CLOSED (no false-gre
 
 describe("BLOCKER 2 — CF2 trusts a writing green by PROVENANCE (built-in), never a custom executor's self-report", () => {
   test("injected runStep's WRITING green with a FABRICATED verifierReport is REFUSED (fail closed, not promoted)", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     // A custom executor forges a truthy proof field — presence alone would have
     // promoted the loom under the old check. Provenance must refuse it.
     const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready", verifierReport: {} as any });
@@ -665,7 +628,6 @@ describe("BLOCKER 2 — CF2 trusts a writing green by PROVENANCE (built-in), nev
   });
 
   test("CONTROL: the built-in default path's GENUINE writing green (real executeLoom verifier) is still ACCEPTED", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -693,7 +655,6 @@ describe("BLOCKER 2 — CF2 trusts a writing green by PROVENANCE (built-in), nev
 
 describe("HOLE A — FINAL PROVENANCE GATE: a side-channel loom green with no trusted writing step fails closed", () => {
   test("injected runStep MUTATES ctx.loom.state='ready' and returns {ok:true,state:'skipped'} (dodges CF2) ⇒ loom ends FAILED", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const loom = fakeLoom({
       workflow: { version: 1, steps: [{ id: "w", goal: "g", kind: "build", partition: "disjoint-writer", agents: [], dependsOn: [] }] },
     });
@@ -713,7 +674,6 @@ describe("HOLE A — FINAL PROVENANCE GATE: a side-channel loom green with no tr
   });
 
   test("injected runStep returns {ok:true,state:'ready',verifierReport:{}} (forged proof) even with a side-channel ⇒ FAILED", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const loom = fakeLoom({
       workflow: { version: 1, steps: [{ id: "w", goal: "g", kind: "build", partition: "disjoint-writer", agents: [], dependsOn: [] }] },
     });
@@ -735,7 +695,6 @@ describe("HOLE A — FINAL PROVENANCE GATE: a side-channel loom green with no tr
 
 describe("HOLE B — built-in writing-delegate steps in one wave are SERIALIZED (no shared-loom race)", () => {
   test("two independent kind:'build' steps (A fails, B succeeds): loom ends FAILED and the two executeLoom delegates never overlap", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -810,10 +769,8 @@ describe("HOLE B — built-in writing-delegate steps in one wave are SERIALIZED 
 
 // ═════════════════════════════════════════════════════════════════════════════
 // M9.3 — the per-thread PLANNER: deterministic template library + selection
-// heuristic + the read-only LLM step-planner behind `threadPlanner` (default OFF).
-//  (a') the threadPlanner flag helper;
-//  (--) threadWorkflow OFF ⇒ the planner is unreachable even with the planner env on;
-//  (b') threadPlanner OFF ⇒ templates only, the LLM planner is NEVER invoked;
+// heuristic + the read-only LLM step-planner (the planner is the norm; the
+// template library is the degrade floor).
 //  (c') the heuristic escalates to the 3-step template only on the >=3-blocker signal;
 //  (d') an injected valid DAG runs in dependency order to 'ready';
 //  (e') invalid/empty/cyclic/no-writing planner output DEGRADES to the template;
@@ -845,53 +802,9 @@ async function driveWithContract(nBlockers: number, opts: Partial<ExecuteOpts> =
   return { loom, result, events, waves };
 }
 
-// ── (a') threadPlanner flag helper ────────────────────────────────────────────
-describe("M9.3 (a') threadPlannerEnabled flag helper", () => {
-  test("false by default; honors the manifest flag + the TELAR_THREAD_PLANNER env override", () => {
-    delete process.env.TELAR_THREAD_PLANNER;
-    expect(threadPlannerEnabled({})).toBe(false);
-    expect(threadPlannerEnabled({ threadPlanner: false })).toBe(false);
-    expect(threadPlannerEnabled({ threadPlanner: true })).toBe(true);
-    process.env.TELAR_THREAD_PLANNER = "1";
-    expect(threadPlannerEnabled({})).toBe(true);
-  });
-});
-
-// ── threadWorkflow OFF ⇒ planner unreachable (byte-identical) ─────────────────
-describe("M9.3 threadWorkflow OFF makes the planner structurally unreachable", () => {
-  test("TELAR_THREAD_PLANNER=1 with TELAR_THREAD_WORKFLOW unset: reaches 'ready', NO workflow-* events", async () => {
-    process.env.TELAR_THREAD_PLANNER = "1";
-    delete process.env.TELAR_THREAD_WORKFLOW;
-    const { name } = makeGitProject();
-    const { result, events } = await driveToReady(name);
-    expect(result.state).toBe("ready");
-    // The runner (and therefore the whole planner) is never entered.
-    expect(events.some((e) => e.type === "workflow-wave")).toBe(false);
-    expect(events.some((e) => e.type === "workflow-step")).toBe(false);
-  });
-});
-
-// ── (b') threadPlanner OFF ⇒ templates only, LLM planner NEVER invoked ─────────
-describe("M9.3 (b') threadPlanner OFF ⇒ templates only — the LLM planner is never called", () => {
-  test("planThreadWorkflow returns selectTemplate and calls opts.run ZERO times", async () => {
-    delete process.env.TELAR_THREAD_PLANNER;
-    let called = 0;
-    // A planner-LLM spy that would emit garbage if it were ever reached.
-    const llmSpy = (async () => {
-      called++;
-      return { version: 1, steps: [] };
-    }) as any;
-    const loom = fakeLoom();
-    const plan = await planThreadWorkflow(loom, noManifest, { run: llmSpy });
-    expect(called).toBe(0); // flag OFF ⇒ NO LLM spend
-    expect(plan).toEqual(selectTemplate(loom)); // deterministic template, unchanged
-  });
-});
-
 // ── (c') the heuristic escalates only on the >=3-blocker signal, through the runner ──
 describe("M9.3 (c') heuristic: >=3 blocker assertions escalates to the 3-step template", () => {
   test("a 3-blocker thread runs waves understand → implement → check and lands 'ready' (never 'done')", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { result, waves } = await driveWithContract(3);
     expect(waves).toEqual([["understand"], ["implement"], ["check"]]);
     expect(result.state).toBe("ready");
@@ -899,7 +812,6 @@ describe("M9.3 (c') heuristic: >=3 blocker assertions escalates to the 3-step te
   });
 
   test("CONTROL: a 1-blocker thread stays conservative — a single 'build' wave", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
     const { result, waves } = await driveWithContract(1);
     expect(waves).toEqual([["build"]]);
     expect(result.state).toBe("ready");
@@ -909,8 +821,6 @@ describe("M9.3 (c') heuristic: >=3 blocker assertions escalates to the 3-step te
 // ── (d') an injected valid DAG runs in dependency order to 'ready' ─────────────
 describe("M9.3 (d') a valid planner-authored DAG runs in dependency order", () => {
   test("planWorkflow returns research(understand) → disjoint-writer build; both scheduled in order; terminal 'ready'", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_THREAD_PLANNER = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -956,7 +866,6 @@ describe("M9.3 (e') malformed planner output degrades to the deterministic templ
   };
 
   test("empty / cyclic / no-writing LLM output ⇒ planThreadWorkflow returns selectTemplate each time", async () => {
-    process.env.TELAR_THREAD_PLANNER = "1";
     const loom = fakeLoom();
     const expected = selectTemplate(loom);
     for (const [label, bad] of Object.entries(badGraphs)) {
@@ -967,8 +876,6 @@ describe("M9.3 (e') malformed planner output degrades to the deterministic templ
   });
 
   test("runner-level: the REAL planner degrades an empty LLM plan to single-build ⇒ the loom still runs to 'ready'", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_THREAD_PLANNER = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1007,7 +914,6 @@ describe("M9.3 (e') malformed planner output degrades to the deterministic templ
 // ── (f') planning is READ-ONLY — the single planner LLM call is tool-walled ────
 describe("M9.3 (f') planning is read-only — no builder/writer spend during planning", () => {
   test("the one planner invocation carries the READ_ONLY wall; no fanout/verdict/workflow-step is emitted while planning", async () => {
-    process.env.TELAR_THREAD_PLANNER = "1";
     const calls: any[] = [];
     const spy = (async (_p: string, o: any) => {
       calls.push(o);
@@ -1033,11 +939,10 @@ describe("M9.3 (f') planning is read-only — no builder/writer spend during pla
 
 // ═════════════════════════════════════════════════════════════════════════════
 // M9.4 — consume Step.check as an OPTIONAL, INFORMATIONAL per-step verify-lens.
-// Gated by the new `stepChecks` sub-flag (default OFF) AND, structurally, by
-// threadWorkflow (the seam lives inside runThreadWorkflow's per-result loop).
-// Invariants proven here:
-//  (a) stepChecks OFF ⇒ Step.check is IGNORED / byte-identical (seam unreachable);
-//      flip TELAR_STEP_CHECKS=1 ⇒ the field flips from inert to consumed.
+// The check runs for any step that declares one (the seam guards on `st.check`
+// present), inside runThreadWorkflow's per-result loop. Invariants proven here:
+//  (a) a step with NO check is untouched; a step WITH a check consults the
+//      evaluator (the field is consumed).
 //  (b) a PASSING check proceeds ⇒ the dependent step is scheduled.
 //  (c) a FAILING check ⇒ bounded step-local repair, then (still failing) HOLD the
 //      dependents + FAIL THE THREAD CLOSED — a failing check NEVER yields a green.
@@ -1050,50 +955,28 @@ describe("M9.3 (f') planning is read-only — no builder/writer spend during pla
 //      budget (no new counter, no infinite loop).
 // ═════════════════════════════════════════════════════════════════════════════
 
-// ── Flag helper (mirror the M9.3 threadPlannerEnabled helper test) ────────────
-describe("M9.4 stepChecksEnabled flag helper", () => {
-  test("false by default; honors the manifest flag + the TELAR_STEP_CHECKS env override", () => {
-    delete process.env.TELAR_STEP_CHECKS;
-    expect(stepChecksEnabled({})).toBe(false);
-    expect(stepChecksEnabled({ stepChecks: false })).toBe(false);
-    expect(stepChecksEnabled({ stepChecks: true })).toBe(true);
-    process.env.TELAR_STEP_CHECKS = "1";
-    expect(stepChecksEnabled({})).toBe(true);
-  });
-});
-
 // A trivial (empty) Step.check — with an INJECTED runStepCheck the assertion
 // content is irrelevant (the built-in runStepCheck is never invoked); the seam
 // only requires `st.check` to be present to consult the injected evaluator.
 const emptyCheck = { version: 1 as const, assertions: [] };
 
-// ── (a) stepChecks OFF ⇒ Step.check ignored, byte-identical ────────────────────
-describe("M9.4 (a) stepChecks OFF ⇒ Step.check is inert (byte-identical); the flag flips it on", () => {
-  test("flag OFF: injected runStepCheck is NEVER consulted and the terminal state matches a no-check run; flag ON consults it", async () => {
-    // A single non-writing step carrying a check; injected runStep so the run is
-    // fully hermetic (no live model). runThreadWorkflow is called directly, so the
-    // ONLY gate on the seam is stepChecksEnabled(manifest) (threadWorkflow is not
-    // consulted here — this isolates the sub-flag).
+// ── (a) Step.check is consumed when present; a no-check step is untouched ──────
+describe("M9.4 (a) Step.check is consumed when present; a no-check step is untouched", () => {
+  test("a step carrying st.check consults the injected runStepCheck; a step with NO check never does", async () => {
+    // Injected runStep so the run is fully hermetic (no live model).
     const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
 
-    // Flag OFF (default): the seam is skipped ⇒ the spy is never called.
-    delete process.env.TELAR_STEP_CHECKS;
-    let offCalls = 0;
-    const offSpy = (async () => {
-      offCalls++;
+    // A step with NO check field: the seam is skipped ⇒ the spy is never called.
+    let noCheckCalls = 0;
+    const noCheckSpy = (async () => {
+      noCheckCalls++;
       return "pass" as const;
     });
-    const withCheck = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck })] } });
-    const offOut = await runThreadWorkflow(withCheck, noManifest, { runStep, runStepCheck: offSpy });
-    expect(offCalls).toBe(0); // Step.check ignored while the flag is off
-
-    // Control: the SAME workflow with NO check field — terminal state must match.
     const noCheck = fakeLoom({ workflow: { version: 1, steps: [step("A")] } });
-    const ctrlOut = await runThreadWorkflow(noCheck, noManifest, { runStep });
-    expect(offOut.state).toBe(ctrlOut.state); // byte-identical terminal outcome
+    await runThreadWorkflow(noCheck, noManifest, { runStep, runStepCheck: noCheckSpy });
+    expect(noCheckCalls).toBe(0); // no check field ⇒ the evaluator is never consulted
 
-    // Flip the env flag ⇒ the field flips from inert to CONSUMED.
-    process.env.TELAR_STEP_CHECKS = "1";
+    // A step carrying st.check: the field is CONSUMED — the evaluator runs.
     let onCalls = 0;
     const onSpy = (async () => {
       onCalls++;
@@ -1101,14 +984,13 @@ describe("M9.4 (a) stepChecks OFF ⇒ Step.check is inert (byte-identical); the 
     });
     const onLoom = fakeLoom({ workflow: { version: 1, steps: [step("A", [], { check: emptyCheck })] } });
     await runThreadWorkflow(onLoom, noManifest, { runStep, runStepCheck: onSpy });
-    expect(onCalls).toBeGreaterThanOrEqual(1); // consumed only via the flag
+    expect(onCalls).toBeGreaterThanOrEqual(1); // consumed whenever st.check is present
   });
 });
 
 // ── (b) a passing check proceeds ⇒ the dependent is scheduled ──────────────────
 describe("M9.4 (b) a PASSING per-step check lets the workflow proceed", () => {
   test("A carries a check that PASSES ⇒ its dependent B is scheduled; both steps run; no fail-close", async () => {
-    process.env.TELAR_STEP_CHECKS = "1";
     const ran: string[] = [];
     const runStep = async (s: Step): Promise<StepResult> => {
       ran.push(s.id);
@@ -1133,8 +1015,6 @@ describe("M9.4 (b) a PASSING per-step check lets the workflow proceed", () => {
 // ── (c) a failing check ⇒ bounded repair ⇒ HOLD dependents + FAIL CLOSED ────────
 describe("M9.4 (c) a FAILING per-step check fails the thread CLOSED (bounded repair, then hold dependents)", () => {
   test("A (built-in writing green) whose check ALWAYS fails ⇒ repaired maxStepRepairs times, then loom 'failed'; B never runs", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1181,7 +1061,6 @@ describe("M9.4 (c) a FAILING per-step check fails the thread CLOSED (bounded rep
 // ── (d) NEVER-PROMOTES — a passing check on a non-writing step does not promote ─
 describe("M9.4 (d) a passing per-step check NEVER promotes the loom", () => {
   test("a free (research) step with a PASSING check leaves the loom un-promoted (not ready/done)", async () => {
-    process.env.TELAR_STEP_CHECKS = "1";
     let checked = 0;
     const runStepCheck = (async () => {
       checked++;
@@ -1206,8 +1085,6 @@ describe("M9.4 (d) a passing per-step check NEVER promotes the loom", () => {
 // ── (e) ADDITIVE-ONLY — a permissive Step.check cannot relax the loom floor ─────
 describe("M9.4 (e) a permissive Step.check cannot relax the loom-level floor (additive-only)", () => {
   test("a built-in writing step whose loom-level verify FAILS is failed-closed BEFORE the seam ⇒ runStepCheck is NEVER consulted", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1251,8 +1128,6 @@ describe("M9.4 (e) a permissive Step.check cannot relax the loom-level floor (ad
 // ── (f) BOUNDED — repair count is capped by the existing opts.maxAttempts ──────
 describe("M9.4 (f) step-local repair is BOUNDED by the existing opts.maxAttempts (no infinite loop)", () => {
   test("an always-failing check re-runs the step at most 1 + max(1, opts.maxAttempts) times, then fails closed", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1291,7 +1166,6 @@ describe("M9.4 (f) step-local repair is BOUNDED by the existing opts.maxAttempts
 // ── FIX 1 — a THROWING check/repair must FAIL CLOSED, never escape ─────────────
 describe("M9.4 FIX 1 — a throwing check FAILS CLOSED (never escapes runThreadWorkflow)", () => {
   test("an injected runStepCheck that THROWS ⇒ loom ends terminal-FAILURE (never green); runThreadWorkflow RESOLVES (no unhandled rejection); dependents HELD", async () => {
-    process.env.TELAR_STEP_CHECKS = "1";
     const runStep = async (s: Step): Promise<StepResult> => ({ id: s.id, ok: true, state: "ready" });
     const runStepCheck = (async () => {
       throw new Error("critic engine blew up"); // a critic/engine/Playwright/abort throw
@@ -1313,8 +1187,6 @@ describe("M9.4 FIX 1 — a throwing check FAILS CLOSED (never escapes runThreadW
   });
 
   test("a BUILT-IN check whose critic seam THROWS ⇒ the built-in returns a definite verdict (fail), the thread fails closed", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     manifest.urls = { dev: "http://127.0.0.1:59999" }; // a live target ⇒ the critic slice runs
@@ -1351,8 +1223,6 @@ describe("M9.4 FIX 1 — a throwing check FAILS CLOSED (never escapes runThreadW
 // ── FIX 2 — the per-step check is STATE-NEUTRAL (no loom.state side-channel) ────
 describe("M9.4 FIX 2 — an injected check that side-channels loom.state fails CLOSED (state-neutral)", () => {
   test("runStepCheck returns 'pass' but sets loom.state='done' under a genuine trusted green ⇒ loom does NOT end 'done' (fails closed)", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1376,8 +1246,6 @@ describe("M9.4 FIX 2 — an injected check that side-channels loom.state fails C
   });
 
   test("CONTROL: a normal 'pass' with NO mutation still PROCEEDS (the trusted green is honored, loom ends 'ready')", async () => {
-    process.env.TELAR_THREAD_WORKFLOW = "1";
-    process.env.TELAR_STEP_CHECKS = "1";
     const { name } = makeGitProject();
     const manifest = getProject(name).manifest;
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "build a and b", account: manifest.account });
@@ -1398,7 +1266,6 @@ describe("M9.4 FIX 2 — an injected check that side-channels loom.state fails C
 // ── FIX 3a — a failing check on a NON-WRITING step fails closed WITHOUT repair ──
 describe("M9.4 FIX 3a — a failing check on a NON-WRITING step fails closed immediately (no pointless repair)", () => {
   test("non-writing (research) step whose check FAILS ⇒ fail closed WITHOUT re-running the step (repair count 0)", async () => {
-    process.env.TELAR_STEP_CHECKS = "1";
     const runCounts: Record<string, number> = {};
     const runStep = async (s: Step): Promise<StepResult> => {
       runCounts[s.id] = (runCounts[s.id] ?? 0) + 1;

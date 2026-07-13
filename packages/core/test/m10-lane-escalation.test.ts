@@ -1,8 +1,7 @@
-// M10.4 — the PRE-FLIGHT lane-viability gate + bounded ask-once-persist human
-// escalation (CORE slice). Fakes only: no live agent, no live server, tmp dirs
-// fs-removed. Proves, end to end:
-//   A. flag-OFF byte-identity (no pre-flight park; children spawn as today)
-//   B. unviable lane, flag ON → PARKS `blocked` with a concrete question, spawns
+// M10.4 — the PRE-FLIGHT lane-viability gate (UNCONDITIONAL) + bounded
+// ask-once-persist human escalation (CORE slice). Fakes only: no live agent, no
+// live server, tmp dirs fs-removed. Proves, end to end:
+//   B. an unviable lane → PARKS `blocked` with a concrete question, spawns
 //      ZERO children (the moat: park before any spend)
 //   C. achievable lanes proceed (all-deterministic / devCommand / servers tier)
 //   D. answer-and-resume: a non-blank `by` persists the recipe/runbook + promotes
@@ -19,11 +18,9 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m104-home-"));
 process.env.TELAR_HOME = home;
 beforeEach(() => {
   process.env.TELAR_HOME = home;
-  delete process.env.TELAR_LANE_ESCALATION;
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
-  delete process.env.TELAR_LANE_ESCALATION;
 });
 
 const { answerBlocked } = await import("../src/dispatcher");
@@ -44,8 +41,7 @@ import type { ServersConfig, VerificationContract } from "../src/schemas";
 const { startLoom } = await import("../src/dispatcher");
 
 let n = 0;
-// A real on-disk project root. laneEscalation defaults OFF; pass
-// { laneEscalation: true } to arm the pre-flight gate.
+// A real on-disk project root. The pre-flight gate is unconditional.
 function makeProject(partial: Record<string, unknown> = {}) {
   n++;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `telar-m104-proj-${n}-`));
@@ -144,24 +140,8 @@ describe("pre-flight lane-viability gate", () => {
   // With no devCommand/recipe, the pre-flight gate parks it. Poll the loom on
   // disk after the synchronous dispatch prefix + a short tick.
 
-  test("flag OFF: unviable lane still spawns children (byte-identical — no park)", async () => {
-    const { name } = makeProject({ laneEscalation: false });
-    const f = fakeDeps();
-    const loom = startLoom(
-      { project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: ["the login flow works end to end"] },
-      f.deps,
-    );
-    // Let the fire-and-forget weave run its synchronous prefix.
-    await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 20));
-    const after = getLoom(loom.id)!;
-    expect(after.state).not.toBe("blocked"); // flag-off never parks
-    expect(f.calls).toBeGreaterThanOrEqual(1); // the child builder ran
-    expect(after.blockedQuestion).toBeUndefined();
-  });
-
-  test("flag ON: unviable lane PARKS `blocked` with a concrete question and spawns ZERO children", async () => {
-    const { name } = makeProject({ laneEscalation: true });
+  test("unviable lane PARKS `blocked` with a concrete question and spawns ZERO children", async () => {
+    const { name } = makeProject();
     const f = fakeDeps();
     const loom = startLoom(
       { project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: ["the login flow works end to end"] },
@@ -183,13 +163,13 @@ describe("pre-flight lane-viability gate", () => {
     expect(events.find((e) => e.type === "lane-escalation")!.by).toBe("telar");
   });
 
-  test("flag ON but all-deterministic contract → never parks (spawns children)", async () => {
+  test("all-deterministic contract → never parks (spawns children)", async () => {
     // No acceptanceCriteria that reads live-critic-ish; a deterministic-only
     // synthesized contract has agentJudged empty. We assert via the loom NOT
     // reaching blocked. (synthesizeContract yields a live-critic for prose ACs,
     // so drive isLaneViable directly for the deterministic path — covered above —
     // and here assert devCommand short-circuits the same start.)
-    const { name } = makeProject({ laneEscalation: true, devCommand: "bun run dev" });
+    const { name } = makeProject({ devCommand: "bun run dev" });
     const f = fakeDeps();
     const loom = startLoom(
       { project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: ["the login flow works end to end"] },
@@ -202,8 +182,8 @@ describe("pre-flight lane-viability gate", () => {
     expect(f.calls).toBeGreaterThanOrEqual(1);
   });
 
-  test("flag ON + accepted .telar servers tier → never parks (recipe reused)", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+  test("accepted .telar servers tier → never parks (recipe reused)", async () => {
+    const { name, root } = makeProject();
     const { writeAcceptedServersConfig } = require("../src/servers");
     writeAcceptedServersConfig(root, laneCfg);
     const f = fakeDeps();
@@ -216,19 +196,6 @@ describe("pre-flight lane-viability gate", () => {
     const after = getLoom(loom.id)!;
     expect(after.state).not.toBe("blocked");
     expect(f.calls).toBeGreaterThanOrEqual(1);
-  });
-
-  test("flag ON + setupAgent ON → never parks (auto-provision path exists)", async () => {
-    const { name } = makeProject({ laneEscalation: true, setupAgent: true });
-    const f = fakeDeps();
-    const loom = startLoom(
-      { project: name, kind: "custom", title: "t", prompt: "x", acceptanceCriteria: ["the login flow works end to end"] },
-      f.deps,
-    );
-    await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 20));
-    const after = getLoom(loom.id)!;
-    expect(after.state).not.toBe("blocked"); // setup agent can provision the lane
   });
 });
 
@@ -247,7 +214,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   }
 
   test("blank `by` throws (moat — never autonomous), no persist, no re-dispatch", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
     await expect(answerBlocked(loom.id, "  ", { devCommand: "bun run dev" }, f.deps)).rejects.toThrow(/non-blank/);
@@ -256,7 +223,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   });
 
   test("empty answer payload → false, no write, no dispatch", async () => {
-    const { name } = makeProject({ laneEscalation: true });
+    const { name } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
     const ok = await answerBlocked(loom.id, "you", {}, f.deps);
@@ -269,7 +236,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   // answer must be rejected exactly like an empty one. Otherwise it would persist
   // the runbook, clear the draft, re-dispatch, and the pre-flight would RE-PARK.
   test("FIX 1: runbook-ONLY answer → false; loom stays `blocked` with its draft intact, nothing persisted, no re-dispatch", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
 
@@ -296,7 +263,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   // FIX 1 — a devCommand carries viability; a runbook alongside it is the OPTIONAL
   // narrative. Both must persist (devCommand promoted + runbook written).
   test("FIX 1: devCommand + runbook answer STILL succeeds and persists BOTH", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
 
@@ -312,7 +279,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   });
 
   test("from a non-blocked state → false, no write, no dispatch", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "x", account: "personal" });
     loom.state = "ready";
     saveLoom(loom);
@@ -324,7 +291,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   });
 
   test("answer-and-resume: persists servers + runbook, promotes devCommand, clears draft, re-dispatches; a green re-verify lands `ready` NEVER `done`", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
 
@@ -364,7 +331,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   });
 
   test("the persisted lane is reused by the NEXT loom without re-asking (pre-flight sees the promoted devCommand)", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const first = blockedLoom(name);
     const f = fakeDeps();
     await answerBlocked(first.id, "you", { devCommand: "bun run dev", runbook: "drive it" }, f.deps);
@@ -386,7 +353,7 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
   });
 
   test("servers-only answer persists the .telar tier and makes the next loom viable (no devCommand promotion)", async () => {
-    const { name, root } = makeProject({ laneEscalation: true });
+    const { name, root } = makeProject();
     const loom = blockedLoom(name);
     const f = fakeDeps();
     const ok = await answerBlocked(loom.id, "you", { servers: laneCfg }, f.deps);
@@ -460,8 +427,8 @@ describe("FIX 2: accepted runbook feeds the live-critic drive context", () => {
     return { run, calls };
   }
 
-  test("flag ON + accepted runbook → its narrative reaches EVERY critic prompt; tool wall unchanged", async () => {
-    const { name, root, manifest } = makeProject({ laneEscalation: true });
+  test("accepted runbook → its narrative reaches EVERY critic prompt; tool wall unchanged", async () => {
+    const { name, root, manifest } = makeProject();
     writeAcceptedRunbook(root, RUNBOOK);
     const loom = authoredLoom(name);
     const cap = capturingRun();
@@ -486,27 +453,8 @@ describe("FIX 2: accepted runbook feeds the live-critic drive context", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("flag OFF (runbook on disk) → driveContext never read; prompt byte-identical (no runbook text)", async () => {
-    const { name, root, manifest } = makeProject({ laneEscalation: false });
-    writeAcceptedRunbook(root, RUNBOOK); // present on disk, but the flag is off
-    const loom = authoredLoom(name);
-    const cap = capturingRun();
-
-    await runVerification(loom, manifest, loom.attempts[0]!, () => {}, undefined, "http://localhost:9999", {
-      run: cap.run,
-    });
-
-    expect(cap.calls.length).toBeGreaterThanOrEqual(1);
-    for (const c of cap.calls) {
-      expect(c.task).not.toContain(RUNBOOK); // gated: flag off ⇒ resolveRunbook never consulted
-      expect(c.task).not.toContain("Drive notes");
-      expect(c.opts.tools).toEqual(VERIFIER_TOOLS); // wall still identical
-    }
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  test("flag ON but NO accepted runbook → driveContext unset; prompt byte-identical", async () => {
-    const { name, root, manifest } = makeProject({ laneEscalation: true });
+  test("NO accepted runbook → driveContext unset; prompt has no drive block", async () => {
+    const { name, root, manifest } = makeProject();
     const loom = authoredLoom(name);
     const cap = capturingRun();
 

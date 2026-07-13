@@ -60,7 +60,7 @@ function rawCharter(proofHints: { criterion: string; run: string }[]): Loom["cha
   } as unknown as Loom["charter"];
 }
 
-const ON = { adaptiveVerification: true };
+const ON = {};
 const OBS_ERR = "observable is only valid on live-critic";
 
 describe("finding 6 — validateContract rejects observable on command/gate", () => {
@@ -182,7 +182,7 @@ describe("finding 6 REPAIR SYNERGY — a runnable observable is adopted as the r
       assertions: [{ id: "suite", subGoalId: "ALL", description: "the suite passes", type: "command", expected: "exit code 0", observable: "the suite is all green", blocker: true }],
     };
     const loom = fakeLoom({ charter: rawCharter([]) });
-    const { contract, tightenings } = tightenAuthoredContract(c, loom, { adaptiveVerification: true, verifyCommand: "bun test" });
+    const { contract, tightenings } = tightenAuthoredContract(c, loom, { verifyCommand: "bun test" });
     expect(contract.assertions[0]!.expected).toBe("bun test");
     expect(tightenings.map((t) => t.id)).toEqual(["suite"]);
   });
@@ -222,7 +222,7 @@ describe("finding 6 REPAIR SYNERGY — a runnable observable is adopted as the r
         assertions: [{ id: "suite", subGoalId: "ALL", description: "the suite passes", type: "command", expected: "exit code 0", observable: trivial, blocker: true }],
       };
       const loom = fakeLoom({ charter: rawCharter([]) });
-      const { contract, tightenings } = tightenAuthoredContract(c, loom, { adaptiveVerification: true, verifyCommand: "bun test" });
+      const { contract, tightenings } = tightenAuthoredContract(c, loom, { verifyCommand: "bun test" });
       expect(contract.assertions[0]!.expected).toBe("bun test"); // never "true"/"exit 0"
       expect(contract.assertions[0]!.observable).toBeUndefined();
       expect(tightenings.map((t) => t.id)).toEqual(["suite"]);

@@ -3,10 +3,11 @@
 // ServiceHandles, and the supervisor's manual clock (mirroring
 // supervisor.test.ts fakeClock/fakeHandle + m10-orchestrator-verify.test.ts
 // fakeGit/injected producer). Nothing spawns a real process, hits git, a DB, a
-// browser, or the network. Asserts:
-//   (helper) verifyLaneEnabled: default OFF; manifest + env override
-//   (1) verifyLane ON stands a lane up for a live-critic whole ⇒ the producer
-//       receives url:laneTarget(lane) (a real target, no if(!target) skip)
+// browser, or the network. The lane is UNCONDITIONAL — the dispatcher always
+// injects the supervised startLane + captureLogs + failClosedLaneDown into
+// frozenLaneVerify. Asserts:
+//   (1) the lane stands up for a live-critic whole ⇒ the producer receives
+//       url:laneTarget(lane) (a real target, no if(!target) skip)
 //   (2) a killed service is restarted (bounded, count==1, SAME port) and the
 //       verify target is re-driven with no change (port-stable)
 //   (3) the lane is torn down in finally (supervisor.stop THEN lane.stopAll,
@@ -18,8 +19,6 @@
 //   (5) BOUNDED: a service that never recovers stops at maxRestarts → crash-loop
 //       escalation with a logTail, no further restart; an un-standable lane
 //       fails closed (target=undefined, single call, no retry) → panel skip
-//   (6) flag-OFF byte-identical: no captureLogs, no supervisor, a bring-up throw
-//       still PROPAGATES (weave fail-open preserved)
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -29,13 +28,11 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m10lane-"));
 process.env.TELAR_HOME = home;
 beforeEach(() => {
   process.env.TELAR_HOME = home;
-  delete process.env.TELAR_VERIFY_LANE;
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const { verifyLaneEnabled } = await import("../src/runner/flag");
 const { superviseStartLane } = await import("../src/verify-lane");
 const { frozenLaneVerify } = await import("../src/verify-thread");
 const { laneTarget } = await import("../src/run-server");
@@ -167,21 +164,8 @@ function fakeLoom(over: Partial<Loom> = {}): Loom {
   };
 }
 
-// ── (helper) verifyLaneEnabled ───────────────────────────────────────────────
-describe("(helper) verifyLaneEnabled: default OFF; manifest + env override", () => {
-  test("false by default; honors manifest flag + TELAR_VERIFY_LANE", () => {
-    delete process.env.TELAR_VERIFY_LANE;
-    expect(verifyLaneEnabled({})).toBe(false);
-    expect(verifyLaneEnabled({ verifyLane: false })).toBe(false);
-    expect(verifyLaneEnabled({ verifyLane: true })).toBe(true);
-    process.env.TELAR_VERIFY_LANE = "1";
-    expect(verifyLaneEnabled({})).toBe(true);
-    delete process.env.TELAR_VERIFY_LANE;
-  });
-});
-
 // ── (1) proactive stand-up: the producer gets a REAL target ──────────────────
-describe("(1) verifyLane stands a lane up for the top-gate pass → producer receives url:laneTarget", () => {
+describe("(1) the lane stands up for the top-gate pass → producer receives url:laneTarget", () => {
   test("frozenLaneVerify calls the supervised startLane and passes url:laneTarget(lane) to the producer", async () => {
     const git = fakeGit();
     const handle = fakeHandle({ url: "http://localhost:5000" });
@@ -500,42 +484,5 @@ describe("(5) BOUNDED — crash-loop circuit-breaks; an un-standable lane fails 
     } as any);
     expect(opts.url).toBeUndefined();
     expect(iv).not.toBeNull();
-  });
-});
-
-// ── (6) flag-OFF byte-identical ──────────────────────────────────────────────
-describe("(6) flag-OFF byte-identical — no captureLogs, no supervisor, throw propagates", () => {
-  test("without failClosedLaneDown a bring-up throw PROPAGATES (weave fail-open preserved)", async () => {
-    const git = fakeGit();
-    // Flag off ⇒ dispatcher injects NO startLane wrapper, NO laneOpts, NO
-    // failClosedLaneDown. A one-shot startLane throw must propagate out of
-    // frozenLaneVerify (into weave's fail-open catch) — exactly as pre-M10.3.
-    await expect(
-      frozenLaneVerify(fakeLoom({ baseSha: "deadbeef" }), fakeManifest, {
-        runIntegrationVerify: async () => ({ verification: "pass", gatesOk: true }),
-        git: git.runner,
-        resolveServersConfig: () => laneCfg(),
-        startLane: (() => Promise.reject(new Error("bring-up failed"))) as any,
-        // NO failClosedLaneDown, NO laneOpts.
-      } as any),
-    ).rejects.toThrow(/bring-up failed/);
-  });
-
-  test("flag-off shape: the injected startLane receives opts WITHOUT captureLogs (no supervisor forced)", async () => {
-    const git = fakeGit();
-    const captured: StartLaneOpts[] = [];
-    // Flag-off: frozenDeps omits laneOpts, so the seam is called with only the
-    // env passthrough — captureLogs is undefined (one-shot, unsupervised).
-    await frozenLaneVerify(fakeLoom({ baseSha: "deadbeef" }), fakeManifest, {
-      runIntegrationVerify: async () => ({ verification: "pass", gatesOk: true }),
-      git: git.runner,
-      resolveServersConfig: () => laneCfg(),
-      startLane: (async (_c: ServersConfig, _r: string, o?: StartLaneOpts) => {
-        captured.push(o ?? {});
-        return { services: {}, stopAll: async () => {} } as Lane;
-      }) as any,
-    } as any);
-    expect(captured).toHaveLength(1);
-    expect(captured[0].captureLogs).toBeUndefined(); // no captureLogs ⇒ no piped stdio ⇒ no tail
   });
 });

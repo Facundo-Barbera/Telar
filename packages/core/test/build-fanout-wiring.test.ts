@@ -13,14 +13,22 @@ import type { BuildPiece } from "../src/build-fanout";
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-fanout-wiring-home-"));
 process.env.TELAR_HOME = home;
-beforeEach(() => {
-  process.env.TELAR_HOME = home;
-});
-afterEach(() => {
-  // The fan-out flags are process-global env — never let them leak into the
-  // other test files (byte-identity/isolation-off tests depend on them absent).
+// The fan-out flags are process-global env — never let them leak in (from the
+// ambient shell OR a prior test file), and never let them leak out (byte-identity/
+// isolation-off tests in other files depend on them absent). Each flag-ON test
+// opts IN explicitly inside captureChildOpts; every other test — starting with the
+// very first "flag OFF" case — must see a clean slate, so reset on BOTH sides of
+// each test rather than only cleaning up afterwards.
+const resetFanoutFlags = () => {
   delete process.env.TELAR_BUILD_FANOUT;
   delete process.env.TELAR_ISOLATE_WORKTREES;
+};
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+  resetFanoutFlags();
+});
+afterEach(() => {
+  resetFanoutFlags();
 });
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
@@ -38,7 +46,10 @@ let projectSeq = 0;
 function makeProject(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-fanout-wiring-proj-"));
   const name = `fanout-wiring-${projectSeq++}`;
-  createProject(root, { name });
+  // devCommand keeps the lane viable past the now-unconditional pre-flight gate
+  // so the child runner is reached — this seam test captures the ExecuteOpts the
+  // child receives (buildFanout wiring), not the no-target floor.
+  createProject(root, { name, devCommand: "bun run dev" });
   return name;
 }
 
@@ -215,7 +226,10 @@ describe("build fan-out end-to-end — real executeLoom + temp git repo (fake bu
     // that bypasses the dispatcher's disjoint pre-check.
     const result = await executeLoom(loom, manifest, {
       buildFanout: { pieces: overlapping, baseRef: "HEAD" },
-      run: (async () => {
+      run: (async (p: any) => {
+        // Degrade the now-unconditional read-only planner call to the template
+        // (invalid workflow) — it must not count as a builder run.
+        if (/planning pass|step-graph/.test(String(p))) return { version: 1, steps: [] };
         builderRan = true;
         return { ok: true, summary: "", files_touched: [], blocker: null };
       }) as any,
