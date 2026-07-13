@@ -351,6 +351,17 @@ export const ProjectManifest = z.object({
   // executor spins this up on a free port and tears it down after — never a
   // replacement for urls.dev when one is already configured.
   devCommand: z.string().optional(),
+  // M11.0/M11.2 (adaptive-verification.md §8 "conversational-escalation" bullets)
+  // — the human-answered STRATEGY answer: a verification command (`bun test`,
+  // an eval script encoding its threshold in the exit code) whose exit status
+  // proves the deliverable WITHOUT standing a server up. Persisted by
+  // answerBlocked when the strategy-derived park asks a library/CLI/DS
+  // deliverable for one (never by any autonomous path), then consumed in two
+  // places, both fail-closed: isLaneViable (the pre-flight proceeds — a future
+  // loom never re-asks) and the M11.2 artifact-time establishment
+  // (runIntegrationVerify runs it as a deterministic gate over the frozen
+  // worktree). NEVER fed to the M5 devCommand auto-spin — it is not a server.
+  verifyCommand: z.string().optional(),
   // Per-project MCP servers (docs/runtime-architecture.md §B), keyed by server
   // name. Secret-free references only; tokens are resolved+injected per server
   // by mcp.ts:resolveProjectMcpServers, decoupled from the Claude account.

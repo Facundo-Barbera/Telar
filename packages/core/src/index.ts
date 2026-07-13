@@ -32,6 +32,9 @@ export type {
 export { readySubGoals, readyItems, validateDecision, tick, EST_COST_PER_AGENT } from "./tick";
 export * from "./weave";
 export * from "./weave-contracts";
+// M11.0 — the PURE deliverable signal (pre-flight proceed-and-defer; reused by
+// the M11.1 synthesizeContract derivation).
+export * from "./deliverable-signal";
 export * from "./scoping";
 export * from "./proof-templates";
 export * from "./dispatcher";

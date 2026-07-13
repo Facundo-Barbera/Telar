@@ -51,6 +51,7 @@ import {
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig, resolveRunbook } from "./servers";
+import { charterHasGateIntent, deriveDeliverableSignal, type CharterProofIntent } from "./deliverable-signal";
 import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
 import type { SetupDeps } from "./setup/setup-agent";
 
@@ -447,11 +448,42 @@ export function routeAssertions(
 // EXACT needsEnv predicate from runPanelVerification, so a previously-persisted
 // recipe means the lane is viable and the pre-flight NEVER re-asks. PURE over
 // already-resolved inputs (one filesystem tier read) — it cannot loop or spawn.
-export function isLaneViable(manifest: ProjectManifest, assertions: ContractAssertion[]): boolean {
+//
+// M11.0 (adaptive-verification.md §3.2) — the predicate REFRAMES from "is a
+// lane viable RIGHT NOW?" to "can a PLAN to verify this be formed at all — now
+// or after the build?": a THIRD true-path fires when a NON-SERVER verification
+// strategy is derivable from the deliverable (a package.json test script / CLI
+// bin, notebook/dataset markers, or the charter's gate-shaped proof intent —
+// the greenfield case where NO files exist yet). Proceed-and-defer: the
+// strategy is ESTABLISHED when the artifact appears, and a deferred plan that
+// then can't produce evidence lands the existing fail-closed floor
+// (panelRequired skip → demoting coercion, :1157-1160) — never a false green.
+// The widening only ever ADDS viability (park less, never more), stays PURE
+// (deriveDeliverableSignal is a bounded synchronous fs read — same class as
+// the resolveServersConfig tier read; no LLM, no spawn — the M11.0 no-spend
+// guarantee), and is only reachable under laneEscalationEnabled (the flag
+// stays the FIRST && operand at the dispatcher pre-flight). The `charter`
+// param is OPTIONAL so every existing 2-arg caller compiles and behaves
+// identically; without it the greenfield charter-intent signal simply can't
+// fire (the filesystem signals still can).
+export function isLaneViable(
+  manifest: ProjectManifest,
+  assertions: ContractAssertion[],
+  charter?: CharterProofIntent,
+): boolean {
   const { agentJudged } = partitionAssertions(assertions);
   if (agentJudged.length === 0) return true; // all-deterministic — no live lane needed
   if (manifest.devCommand) return true; // M5 auto-spin brings the dev server up
-  return resolveServersConfig(manifest.root).driver !== "none"; // repo or accepted .telar tier
+  // M11.0/M11.2 — a HUMAN-answered verification command (answerBlocked's
+  // strategy answer, persisted to telar.yaml). Accept-guard consistency (doc
+  // §8 last bullet): every answer answerBlocked accepts must make this
+  // predicate true, or the accepted-but-never-resolves re-park loop returns.
+  // Consumed downstream by the M11.2 establishment (runIntegrationVerify runs
+  // it as a deterministic gate over the frozen worktree), so the proceed is
+  // never a dead end.
+  if (manifest.verifyCommand?.trim()) return true;
+  if (resolveServersConfig(manifest.root).driver !== "none") return true; // repo or accepted .telar tier
+  return deriveDeliverableSignal(manifest.root, charter).plannable; // M11.0 — a non-server plan is formable
 }
 
 // Unit 4 (docs §3). Runs the deterministic assertions in the SAME gate/command
@@ -1016,6 +1048,30 @@ export async function runIntegrationVerify(
     // answers both regression (per-child criteria) and completeness. Mutually
     // exclusive with subGoalId (whole-verify vs checkpoint); fullContract wins.
     fullContract?: boolean;
+    // M11.2 (additive; absent ⇒ byte-identical). The EXPLICIT no-target marker:
+    // the caller (frozenLaneVerify, only under verifyLane's failClosedLaneDown
+    // injection) determined there is NO honest live target — a downed lane or a
+    // non-server strategy — and the panel must hit the no-target fail-closed
+    // floor (runPanelVerification :576-590 → panelRequired skip → the M10.1
+    // fullContract coercion demotes). Without this marker, merely OMITTING
+    // opts.url silently reinstates the manifest.urls.dev fallback below and the
+    // panel would be judged against a stale URL — a false green through the
+    // method layer. The marker can only WITHHOLD a target (tighten); it can
+    // never conjure one.
+    noTarget?: boolean;
+    // M11.2 (additive; absent ⇒ byte-identical) — ARTIFACT-TIME GATE
+    // ESTABLISHMENT (adaptive-verification.md §2 point 2, §3.3, §7 M11.2): the
+    // runnable the frozen-worktree strategy re-derivation answered (a test-gate
+    // `bun|pnpm|yarn|npm run test`, or the human-answered manifest
+    // verifyCommand). Consumed ONLY under the sanction gate below — a
+    // SYNTHESIZED all-live-critic contract whose criteria somebody actually
+    // declared provable-by-gate — where each live-critic assertion is
+    // tightened IN MEMORY (never persisted) to {type:"command", expected:run}
+    // so runContractGates produces real exit-code evidence instead of the
+    // guaranteed no-target demote. live-critic → command is the ONE permitted
+    // tightening direction (doc §4); an unsanctioned or non-synthesized
+    // contract ignores this entirely and keeps today's fail-closed path.
+    establishRun?: string;
   } = {},
 ): Promise<{
   verification: Verification;
@@ -1064,7 +1120,52 @@ export async function runIntegrationVerify(
   const emit = opts.emit ?? (() => {});
   const policy = opts.policy ?? ModelPolicy.parse({});
   const account = opts.accounts?.[manifest.account];
-  const target = opts.url ?? manifest.urls?.dev;
+  // M11.2 — opts.noTarget WITHHOLDS the manifest.urls.dev fallback: the caller
+  // proved no honest live target exists, so the agent-judged slice must land
+  // the no-target floor (skip → coercion → demote), never be judged against a
+  // stale URL. Absent (every pre-M11.2 caller) ⇒ today's line verbatim.
+  const target = opts.noTarget ? undefined : opts.url ?? manifest.urls?.dev;
+
+  // M11.2 — ARTIFACT-TIME GATE ESTABLISHMENT (see the opts.establishRun doc
+  // above). The deferred-gate hand-off the frozen deliverable-signal API
+  // promised ("establish as test-gate when the artifact exists"): the wt
+  // re-derivation answered a concrete runnable, and THIS is where it becomes a
+  // gate. Sanction (all three prongs deliberately narrow, and checked HERE
+  // where the contract is in hand):
+  //   - the contract is SYNTHESIZED (an authored contract is never rewritten),
+  //   - the slice is ALL live-critic with no subjective markers (a mixed or
+  //     subjective-marked slice keeps its exact current routing), and
+  //   - somebody DECLARED the gate proves it: the human answered a
+  //     verifyCommand (answerBlocked, telar.yaml), OR the criteria are the
+  //     prompt fallback (zero authored acceptanceCriteria — the greenfield
+  //     loom_mrigs3zo_vxgrsr shape where synth-0 IS "the deliverable works"),
+  //     OR the charter carries gate-shaped proof intent — the SAME sanction
+  //     weave-contracts' blanket tightening uses, re-checked at verify time.
+  // Unsanctioned (authored prose criteria: credentials, taste), the slice is
+  // untouched and the no-target floor demotes honestly — a pre-existing green
+  // suite can never rubber-stamp criteria it says nothing about (doc §4).
+  // The tightening is IN MEMORY only: contract.json is never rewritten, so
+  // every verify pass re-derives (and a repaired repo re-answers) freshly.
+  let verifySlice = allSlice;
+  const establishRun = opts.establishRun?.trim();
+  if (establishRun && isSynth) {
+    const sanctioned =
+      !!manifest.verifyCommand?.trim() ||
+      !(loom.acceptanceCriteria ?? []).some((c) => c.trim()) ||
+      charterHasGateIntent(loom.charter);
+    const allLiveCritic = allSlice.every((a) => a.type === "live-critic" && a.subjective !== true);
+    if (sanctioned && allLiveCritic) {
+      verifySlice = allSlice.map((a) => ({
+        id: a.id,
+        subGoalId: a.subGoalId,
+        description: a.description,
+        type: "command" as const,
+        expected: establishRun,
+        blocker: a.blocker,
+      }));
+      emit({ type: "verify-establish", run: establishRun, assertions: verifySlice.length });
+    }
+  }
 
   // Evidence trail on the ROOT loom — additive, never touches child verdicts.
   const attempt: AttemptRecord = {
@@ -1081,7 +1182,10 @@ export async function runIntegrationVerify(
   // humanJudged:[], byte-identical. If the ONLY judged criteria were subjective,
   // agentJudged is empty ⇒ the panel is skipped and the objective slice alone
   // gates the machine verdict, letting the objective whole reach `ready`.
-  const { deterministic, agentJudged, humanJudged } = routeAssertions(allSlice, {
+  // M11.2 — routes the ESTABLISHED slice (verifySlice === allSlice except under
+  // the sanctioned establishment above, where the live-critic assertions became
+  // command gates and this routing lands them all in `deterministic`).
+  const { deterministic, agentJudged, humanJudged } = routeAssertions(verifySlice, {
     subjectiveRouting: subjectiveRoutingEnabled(manifest),
   });
   if (humanJudged.length) attempt.humanJudged = humanJudged;

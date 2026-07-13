@@ -52,6 +52,7 @@ import { runSetupAgent } from "./setup/setup-agent";
 import { superviseStartLane } from "./verify-lane";
 import type { Lane, StartLaneOpts } from "./run-server";
 import { writeAcceptedServersConfig, writeAcceptedRunbook } from "./servers";
+import { blockedStrategyQuestion, deriveDeliverableSignal } from "./deliverable-signal";
 import type { ContractAssertion } from "./schemas";
 
 export type StartLoomInput = {
@@ -108,15 +109,31 @@ function makeOnFailure(loom: Loom): (err: unknown) => void {
 // awaiting-human PARK (recover.ts → "leave"), in NEITHER TERMINAL_STATES nor
 // IN_FLIGHT_STATES — never an autonomous promotion, never a strand: dispatch
 // RETURNS to the caller with a paused, resumable loom.
-function parkBlockedIfLaneUnviable(loom: Loom, assertions: ContractAssertion[]): void {
+//
+// M11.0 (adaptive-verification.md §3.2) — the park is now the LAST RESORT: it
+// is reached ONLY when the widened isLaneViable found NO plan of any kind (no
+// devCommand, no servers tier, no filesystem signal, no charter gate intent),
+// so the hardcoded web-shaped ask ("how do I run this app / give me a dev
+// command") is replaced by STRATEGY-DERIVED copy: the SAME pure deliverable
+// signal that failed to find a plan classifies the deliverable's SHAPE, the
+// reason reports what was tried (signal.reason enumerates the checked signal
+// set — "after trying + reporting what it tried"), and the question asks for
+// what the derived strategy actually NEEDS (a test command for a library, run+
+// assert for a CLI, an eval command + threshold for DS; the dev-command ask
+// survives only for a genuinely-web deliverable). The park shape and events are
+// byte-identical to M10.4; the strategy ask is ANSWERABLE — answerBlocked
+// accepts a `verifyCommand` (persisted to telar.yaml, consumed by isLaneViable
+// + the M11.2 establishment), so the question never asks for a field the
+// accept surface cannot take.
+function parkBlockedIfLaneUnviable(loom: Loom, manifest: ProjectManifest, assertions: ContractAssertion[]): void {
   const { agentJudged } = partitionAssertions(assertions);
+  const signal = deriveDeliverableSignal(manifest.root, loom.charter);
   loom.blockedReason =
-    `The verification lane is not viable: ${agentJudged.length} agent-judged assertion(s) ` +
-    `need a live target, but the project has no devCommand, no servers.yaml/.telar tier, ` +
-    `and the setup agent is off — nothing can bring the app up to drive verification.`;
-  loom.blockedQuestion =
-    "How do I run this app so verification can drive it? Give me a dev command " +
-    "(e.g. `bun run dev`) or a servers recipe, plus any steps to reach the feature.";
+    `No verification plan can be formed: ${agentJudged.length} agent-judged assertion(s) ` +
+    `need a verifiable target, but ${signal.reason}; the project has no devCommand and no ` +
+    `servers.yaml/.telar tier, and the setup agent is off — nothing to establish now and ` +
+    `nothing to defer to.`;
+  loom.blockedQuestion = blockedStrategyQuestion(signal);
   loom.state = "blocked";
   appendEvent(loom.id, { type: "lane-escalation", by: "telar" });
   appendEvent(loom.id, { type: "state", state: "blocked" });
@@ -315,12 +332,26 @@ function runWeaveWiring(
   // a single synchronous decision over already-resolved inputs (isLaneViable is a
   // pure read of the contract + manifest + one filesystem tier) — it cannot loop
   // and cannot spawn a thread that strands.
+  //
+  // M11.0 — the gate now asks "can a PLAN to verify this be formed at all?"
+  // (proceed-and-defer): isLaneViable gained a third true-path — a derivable
+  // NON-SERVER strategy (test script / CLI bin / notebook markers / the
+  // charter's gate-shaped proof intent, threaded here as loom.charter — set by
+  // ensureWoven/the planner before every runWeaveWiring entry). Greenfield,
+  // library, CLI and DS deliverables PROCEED and establish verification when
+  // the artifact appears; the park below is the LAST RESORT, reached only when
+  // NO plan of any kind can be formed. The decision stays a pure synchronous
+  // read (deriveDeliverableSignal — no LLM, no spawn: still zero spend), the
+  // flag stays the FIRST && operand (flag-off byte-identical), and the
+  // setupAgent operand is unchanged — a plannable deliverable short-circuits at
+  // !isLaneViable, so the proceed path and setupAgent's preparing-window
+  // provisioning can never double-fire a park.
   if (
     laneEscalationEnabled(manifest) &&
-    !isLaneViable(manifest, rootAssertions) &&
+    !isLaneViable(manifest, rootAssertions, loom.charter) &&
     !setupAgentEnabled(manifest)
   ) {
-    parkBlockedIfLaneUnviable(loom, rootAssertions);
+    parkBlockedIfLaneUnviable(loom, manifest, rootAssertions);
     return Promise.resolve(loom);
   }
 
@@ -766,15 +797,22 @@ export async function approveEnv(
 //     itself sets NO state other than clearing the blocked draft; the persistence
 //     writes set no state; only acceptLoom + a human `by` ever reaches `done`.
 // Returns false if the loom doesn't exist, isn't in `blocked`, or the answer
-// carries no VIABILITY-MAKING input (no non-blank devCommand and no servers
-// recipe). A runbook is OPTIONAL accompanying narrative — isLaneViable never
-// consults it, so a runbook alone can't clear the pre-flight gate; a runbook-only
-// answer is rejected like an empty one (loom stays `blocked`, draft intact).
+// carries no VIABILITY-MAKING input (no non-blank devCommand, no verifyCommand,
+// and no servers recipe). A runbook is OPTIONAL accompanying narrative —
+// isLaneViable never consults it, so a runbook alone can't clear the pre-flight
+// gate; a runbook-only answer is rejected like an empty one (loom stays
+// `blocked`, draft intact).
 export async function answerBlocked(
   id: string,
   by: string,
   answer: {
     devCommand?: string;
+    // M11.0/M11.2 — the STRATEGY answer the strategy-derived park asks for
+    // (blockedStrategyQuestion: "what command proves this package?"): a
+    // test/eval command whose exit code is the fail-closed gate. Persisted to
+    // telar.yaml as manifest.verifyCommand — NEVER as devCommand, so the M5
+    // auto-spin can never mistake a test suite for a dev server.
+    verifyCommand?: string;
     servers?: ServersConfig;
     runbook?: string;
     gates?: ProjectManifest["gates"];
@@ -787,18 +825,35 @@ export async function answerBlocked(
   if (!by?.trim()) throw new Error("answerBlocked requires a non-blank `by`");
 
   const hasDevCommand = !!answer.devCommand?.trim();
+  const hasVerifyCommand = !!answer.verifyCommand?.trim();
   const hasRunbook = !!answer.runbook?.trim();
   const hasServers = !!answer.servers;
   // The accept-guard MUST be consistent with isLaneViable (executor.ts): the lane
-  // becomes viable ONLY from a non-blank devCommand OR a servers recipe. A runbook
-  // is OPTIONAL narrative isLaneViable NEVER reads, so it is never SUFFICIENT
-  // alone — accepting a runbook-only answer would persist + clear the draft +
-  // re-dispatch, and the re-dispatched pre-flight would immediately RE-PARK with a
-  // freshly-recomputed question (the answer looks accepted but never resolves).
-  // Reject a runbook-only (or fully-empty) answer exactly like an empty one
-  // (mirrors approveEnv's `if (!accepted) return false`): no write, no draft
-  // clear, no re-dispatch — the loom stays `blocked` with its draft intact.
-  if (!hasDevCommand && !hasServers) return false;
+  // becomes viable ONLY from a non-blank devCommand, a verifyCommand, OR a
+  // servers recipe. A runbook is OPTIONAL narrative isLaneViable NEVER reads, so
+  // it is never SUFFICIENT alone — accepting a runbook-only answer would persist
+  // + clear the draft + re-dispatch, and the re-dispatched pre-flight would
+  // immediately RE-PARK with a freshly-recomputed question (the answer looks
+  // accepted but never resolves). Reject a runbook-only (or fully-empty) answer
+  // exactly like an empty one (mirrors approveEnv's `if (!accepted) return
+  // false`): no write, no draft clear, no re-dispatch — the loom stays `blocked`
+  // with its draft intact.
+  //
+  // M11.0/M11.2 — the guard is widened in LOCK-STEP with isLaneViable so the
+  // strategy-derived ask can actually be answered: blockedStrategyQuestion asks
+  // a library/CLI/DS deliverable for a test/eval command, and `verifyCommand`
+  // is the field that answer lands in. Accepted ⇒ promoted to telar.yaml
+  // (below) ⇒ isLaneViable's verifyCommand path is true forever (the loom never
+  // re-parks, a future loom never re-asks) ⇒ CONSUMED at verify time by the
+  // M11.2 establishment (chooseVerificationStrategy rule 3 → establishRun →
+  // runIntegrationVerify runs it as a deterministic gate over the frozen
+  // worktree) — so the ask's "its exit code becomes the fail-closed
+  // verification gate" promise is real end to end, and the consistency
+  // invariant ("every answer this guard ACCEPTS must make the re-dispatched
+  // pre-flight proceed") holds for all three accepted fields. Deliberately NOT
+  // persisted as devCommand: the M5 auto-spin would run a test suite as a dev
+  // SERVER and hang waiting for a URL.
+  if (!hasDevCommand && !hasServers && !hasVerifyCommand) return false;
 
   const { manifest } = getProject(loom.project);
 
@@ -808,13 +863,16 @@ export async function answerBlocked(
   if (hasServers) writeAcceptedServersConfig(manifest.root, answer.servers!); // → .telar/servers.yaml
   if (hasRunbook) writeAcceptedRunbook(manifest.root, answer.runbook!.trim()); // → .telar/runbook.md
 
-  // Promote a learned devCommand (and optionally gates/mcpServers) onto the
-  // committable manifest so the RE-DISPATCHED pre-flight — and every FUTURE loom
-  // in this project — sees the recipe and proceeds past the gate, never re-parks.
-  if (hasDevCommand || answer.gates || answer.mcpServers) {
+  // Promote a learned devCommand/verifyCommand (and optionally gates/mcpServers)
+  // onto the committable manifest so the RE-DISPATCHED pre-flight — and every
+  // FUTURE loom in this project — sees the recipe and proceeds past the gate,
+  // never re-parks. verifyCommand and devCommand are DISTINCT fields on purpose:
+  // one is the fail-closed verification gate, the other the M5 auto-spin server.
+  if (hasDevCommand || hasVerifyCommand || answer.gates || answer.mcpServers) {
     const merged: ProjectManifest = {
       ...manifest,
       ...(hasDevCommand ? { devCommand: answer.devCommand!.trim() } : {}),
+      ...(hasVerifyCommand ? { verifyCommand: answer.verifyCommand!.trim() } : {}),
       ...(answer.gates ? { gates: answer.gates } : {}),
       ...(answer.mcpServers ? { mcpServers: answer.mcpServers } : {}),
     };
