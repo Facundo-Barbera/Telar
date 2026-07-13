@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { GalleryFixtureBundle } from "@/lib/gallery-fixtures";
+import { setActiveScene } from "@/lib/gallery-fixtures";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
 import { EnvReview } from "@/components/looms/env-review";
 import { DiscussEscalation } from "@/components/looms/discuss-escalation";
@@ -22,6 +23,12 @@ import { isWoven } from "@/components/looms/utils";
 // lines keeps every rendered pixel a real production component.
 
 export function GalleryStage({ bundle }: { bundle: GalleryFixtureBundle }) {
+  // Loom entries are served by the loom-keyed resolveGalleryFetch (checked first),
+  // so they need no scene — but clear any scene an app/component entry left active
+  // (set at render, before child fetch effects) so a stale scene can't answer a
+  // stray collection fetch. See app-view-stage.tsx for the ordering rationale.
+  setActiveScene(null);
+
   const { loom, threads, feed, surface } = bundle;
 
   // Drawer state owned here exactly like page.tsx (:64-65), seeded from the bundle

@@ -393,7 +393,9 @@ function PlanNodeRow({ node }: { node: PlanNode }) {
   );
 }
 
-function PlanGraph({ plan }: { plan: Plan }) {
+// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review
+// in the dev view gallery (fed a real deriveGodView-derived Plan). Zero change; revert = drop `export`.
+export function PlanGraph({ plan }: { plan: Plan }) {
   if (plan.nodes.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
@@ -542,7 +544,9 @@ function OperatorNote({ op, dep }: { op: Operator; dep: DepInfo | undefined }) {
   return null;
 }
 
-function OperatorCard({
+// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review
+// in the dev view gallery (fed a real deriveThreadOperator-derived Operator). Zero change; revert = drop `export`.
+export function OperatorCard({
   op,
   dep,
   onOpen,
@@ -1136,7 +1140,8 @@ const FINDING_SEVERITY: Record<CriticFinding["severity"], string> = {
 
 // A single critic finding — same fields as a DesignFinding minus `category`, so
 // rendered with its own compact row (reusing EvidenceImage for screenshots).
-function CriticFindingRow({ loomId, finding }: { loomId: string; finding: CriticFinding }) {
+// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+export function CriticFindingRow({ loomId, finding }: { loomId: string; finding: CriticFinding }) {
   const shots = screenshots(finding.evidence);
   return (
     <div className="flex flex-col gap-1.5 rounded-lg bg-muted/30 p-2.5 ring-1 ring-border">
@@ -1165,7 +1170,8 @@ function CriticFindingRow({ loomId, finding }: { loomId: string; finding: Critic
 
 // One critic lens's verdict: pass/fail + must-clear/advisory + summary, its
 // findings and evidence expandable. A blocker lens that DIDN'T clear reads red.
-function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: CriticVerdict }) {
+// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+export function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: CriticVerdict }) {
   const [open, setOpen] = useState(false);
   const shots = screenshots(critic.evidence);
   const texts = textEvidence(critic.evidence);
@@ -1239,7 +1245,8 @@ function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: CriticVe
   );
 }
 
-function GateRunRow({ gate }: { gate: GateResult }) {
+// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+export function GateRunRow({ gate }: { gate: GateResult }) {
   const [open, setOpen] = useState(false);
   const hasOutput = gate.output.trim().length > 0;
   return (

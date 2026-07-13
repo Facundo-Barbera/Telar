@@ -173,6 +173,12 @@ type Part =
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
 type Status = "ready" | "submitted" | "streaming" | "error";
 
+// GALLERY-SEAM (delete with /gallery): the permission Part shape, exported so the
+// dev view gallery can render PermissionCard in isolation. Permission parts are
+// live-stream-only (seedMessages maps only text/tool), so pending/allowed/denied
+// states are otherwise unreachable via props. Type-only export, zero logic change.
+export type PermissionPart = Extract<Part, { type: "permission" }>;
+
 // A part's parentId, normalized to `undefined` for the main thread (permission
 // parts don't have the field at all — they're always main). Centralizing this
 // lookup means every routing decision (grouping, streaming merge, bucketing)
@@ -382,7 +388,9 @@ function permissionPreview(input: Record<string, unknown>): string {
   return json.length > 200 ? `${json.slice(0, 200)}…` : json;
 }
 
-function PermissionCard({
+// GALLERY-SEAM (delete with /gallery): `export` added so the dev view gallery can
+// render the permission card in isolation. Zero logic/JSX change; revert = drop `export`.
+export function PermissionCard({
   part,
   onRespond,
 }: {

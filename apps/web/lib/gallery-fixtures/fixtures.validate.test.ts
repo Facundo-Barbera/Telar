@@ -12,10 +12,15 @@
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
 import {
+  AccountProfile,
   assertProvenance,
   Charter,
   ContractAssertion,
+  CriticFinding,
+  CriticVerdict,
+  McpServerConfig,
   PanelReport,
+  ProjectManifest,
   Provenance,
   ServersConfig,
   validateContract,
@@ -25,10 +30,16 @@ import {
   WorkUnitState,
 } from "@telar/core";
 import {
+  GALLERY_APP_VIEWS,
+  GALLERY_COMPONENTS,
   GALLERY_FIXTURES,
   GALLERY_ID_PREFIX,
+  getGalleryAppView,
+  getGalleryComponent,
   getGalleryFixture,
+  resolveGalleryAppFetch,
   resolveGalleryFetch,
+  SHOWCASE,
   type GalleryGroup,
 } from "./index";
 
@@ -172,5 +183,213 @@ describe("(9) resolveGalleryFetch round-trips per bundle", () => {
       kind: "json",
       body: { ok: false, gallery: true },
     });
+  });
+});
+
+// ===========================================================================
+// GALLERY v2 — the anti-drift proof for the App views + Component showcase.
+// Same discipline as above: every zod-backed shape parses against the REAL
+// @telar/core schemas; the pure resolver round-trips; ids stay disjoint.
+// ===========================================================================
+
+describe("(v2) App-view + Component registry integrity", () => {
+  test("every app + component id is unique and disjoint from the 35 loom ids", () => {
+    const loomIds = new Set(GALLERY_FIXTURES.map((b) => b.id));
+    const v2Ids = [
+      ...GALLERY_APP_VIEWS.map((e) => e.id),
+      ...GALLERY_COMPONENTS.map((e) => e.id),
+    ];
+    // unique among themselves
+    expect(new Set(v2Ids).size).toBe(v2Ids.length);
+    // disjoint from the frozen loom catalog
+    for (const id of v2Ids) expect(loomIds.has(id)).toBe(false);
+  });
+
+  test("id prefixes + O(1) lookups", () => {
+    for (const e of GALLERY_APP_VIEWS) {
+      expect(e.id.startsWith("app-")).toBe(true);
+      expect(getGalleryAppView(e.id)).toBe(e);
+    }
+    for (const e of GALLERY_COMPONENTS) {
+      expect(e.id.startsWith("cmp-")).toBe(true);
+      expect(getGalleryComponent(e.id)).toBe(e);
+      expect(e.variants.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the 35-loom catalog is untouched by the v2 additions", () => {
+    expect(GALLERY_FIXTURES.length).toBe(35);
+  });
+});
+
+describe("(v2) every app-view scene shape parses through the REAL schemas", () => {
+  for (const entry of GALLERY_APP_VIEWS) {
+    test(`${entry.id}`, () => {
+      const scene = entry.scene;
+
+      // Every /api/projects row's manifest parses via ProjectManifest (a null
+      // manifest is the manifest-error case — skipped). mcpServers ride inside
+      // the manifest parse; assert each server also parses on its own.
+      for (const row of scene.projects?.body.projects ?? []) {
+        if (row.manifest) {
+          expect(() => ProjectManifest.parse(row.manifest)).not.toThrow();
+          for (const cfg of Object.values(row.manifest.mcpServers)) {
+            expect(() => McpServerConfig.parse(cfg)).not.toThrow();
+          }
+        } else {
+          expect(typeof row.error).toBe("string");
+        }
+      }
+
+      // Every account parses via AccountProfile, name matches the id charset.
+      for (const acc of scene.accounts?.body.accounts ?? []) {
+        expect(() => AccountProfile.parse(acc)).not.toThrow();
+        expect(acc.name).toMatch(/^[A-Za-z0-9._-]+$/);
+      }
+
+      // Session seeds only exist on the three session views.
+      if (entry.view.startsWith("session-")) {
+        expect(entry.session).toBeDefined();
+      }
+    });
+  }
+});
+
+describe("(v2) resolveGalleryAppFetch round-trips each scene endpoint", () => {
+  const req = (url: string, method = "GET") => resolveGalleryAppFetch({ url, method }, null);
+
+  test("null scene → passthrough for everything", () => {
+    expect(req("/api/looms")).toEqual({ kind: "passthrough" });
+    expect(req("/api/projects", "POST")).toEqual({ kind: "passthrough" });
+  });
+
+  test("each declared GET endpoint returns its body + status verbatim", () => {
+    for (const entry of GALLERY_APP_VIEWS) {
+      const s = entry.scene;
+      const get = (url: string) => resolveGalleryAppFetch({ url, method: "GET" }, s);
+
+      if (s.looms) {
+        expect(get("/api/looms")).toMatchObject({ kind: "json", body: s.looms.body });
+        if (s.looms.status) expect(get("/api/looms")).toMatchObject({ status: s.looms.status });
+      }
+      if (s.projects) expect(get("/api/projects")).toMatchObject({ kind: "json", body: s.projects.body });
+      if (s.chats) {
+        // query strings must not defeat the match.
+        expect(get("/api/chats?project=finch&archived=0")).toMatchObject({ kind: "json", body: s.chats.body });
+      }
+      if (s.usage) expect(get("/api/usage")).toMatchObject({ kind: "json", body: s.usage.body });
+      if (s.accounts) expect(get("/api/accounts")).toMatchObject({ kind: "json", body: s.accounts.body });
+      if (s.mcpStatus) expect(get("/api/mcp/oauth/status?project=aurora")).toMatchObject({ kind: "json", body: s.mcpStatus.body });
+      if (s.mcpTokens) expect(get("/api/projects/aurora/mcp")).toMatchObject({ kind: "json", body: s.mcpTokens.body });
+      if (s.permissions) expect(get("/api/permissions/aurora")).toMatchObject({ kind: "json", body: s.permissions.body });
+    }
+  });
+
+  test("status overrides drive empty (200) vs error (500) variants", () => {
+    const err = getGalleryAppView("app-dashboard-error")!.scene;
+    expect(resolveGalleryAppFetch({ url: "/api/looms", method: "GET" }, err)).toEqual({
+      kind: "json",
+      status: 500,
+      body: err.looms!.body,
+    });
+    const empty = getGalleryAppView("app-projects-empty")!.scene;
+    expect(resolveGalleryAppFetch({ url: "/api/projects", method: "GET" }, empty)).toEqual({
+      kind: "json",
+      body: { projects: [] },
+    });
+  });
+
+  test("writes are benign { ok: true } by default; browse serves its scene body", () => {
+    const s = getGalleryAppView("app-dashboard")!.scene;
+    expect(resolveGalleryAppFetch({ url: "/api/looms", method: "POST" }, s)).toEqual({
+      kind: "json",
+      body: { ok: true },
+    });
+    expect(resolveGalleryAppFetch({ url: "/api/accounts", method: "PATCH" }, s)).toEqual({
+      kind: "json",
+      body: { ok: true },
+    });
+    // register-dialog's browse scene answers POST /api/browse.
+    const reg = getGalleryComponent("cmp-register-dialog")!.scene!;
+    expect(resolveGalleryAppFetch({ url: "/api/browse", method: "POST" }, reg)).toMatchObject({
+      kind: "json",
+      body: { path: expect.any(String) },
+    });
+  });
+
+  test("an unhandled URL under a live scene passes through", () => {
+    const s = getGalleryAppView("app-dashboard")!.scene;
+    expect(resolveGalleryAppFetch({ url: "/api/models", method: "GET" }, s)).toEqual({ kind: "passthrough" });
+  });
+});
+
+describe("(v2) SHOWCASE nested shapes parse through the REAL schemas", () => {
+  test("gate rows carry the GateResult shape", () => {
+    for (const g of Object.values(SHOWCASE.gate)) {
+      expect(typeof g.name).toBe("string");
+      expect(typeof g.ok).toBe("boolean");
+      expect("exitCode" in g).toBe(true);
+      expect(typeof g.output).toBe("string");
+    }
+  });
+
+  test("critic verdicts + findings parse", () => {
+    for (const key of ["pass", "blocking", "advisory"] as const) {
+      expect(() => CriticVerdict.parse(SHOWCASE.critics[key])).not.toThrow();
+    }
+    expect(() => CriticFinding.parse(SHOWCASE.critics.finding)).not.toThrow();
+    // the advisory lens is provably non-gating (blocker:false).
+    expect(SHOWCASE.critics.advisory.blocker).toBe(false);
+  });
+
+  test("verifier reports parse (pass + fail)", () => {
+    expect(() => VerifierReport.parse(SHOWCASE.verifierReport.pass)).not.toThrow();
+    expect(() => VerifierReport.parse(SHOWCASE.verifierReport.fail)).not.toThrow();
+  });
+
+  test("the charter parses and carries a decomposition", () => {
+    expect(() => Charter.parse(SHOWCASE.charter)).not.toThrow();
+    expect(SHOWCASE.charter.decomposition.length).toBeGreaterThan(0);
+  });
+
+  test("the spec contract parses AND satisfies the falsifiability invariant", () => {
+    expect(() => VerificationContract.parse(SHOWCASE.specContract)).not.toThrow();
+    expect(validateContract(SHOWCASE.specContract)).toEqual([]);
+  });
+
+  test("attempts' zod-backed artifacts parse", () => {
+    for (const a of Object.values(SHOWCASE.attempts)) {
+      if (a.verdict) expect(() => Verdict.parse(a.verdict)).not.toThrow();
+      if (a.panelReport) expect(() => PanelReport.parse(a.panelReport)).not.toThrow();
+    }
+  });
+
+  test("the derived Plan + Operators reflect the real god-view derivation", () => {
+    // s1 done, s2 running (from the mixed-state threads), s3 pending (no thread).
+    const byId = Object.fromEntries(SHOWCASE.plan.nodes.map((n) => [n.id, n.state]));
+    expect(byId.s1).toBe("done");
+    expect(byId.s2).toBe("running");
+    expect(byId.s3).toBe("pending");
+    // the fan-out operator reconstructed its sub-agents from pieceId events.
+    expect(SHOWCASE.operators.fanOut.subAgents.length).toBeGreaterThan(0);
+    expect(SHOWCASE.operators.done.state).toBe("done");
+    expect(SHOWCASE.operators.failed.error).toBeTruthy();
+  });
+
+  test("the project rows expose a healthy manifest + a manifest-error row", () => {
+    expect(SHOWCASE.projectEntry.manifest).not.toBeNull();
+    expect(() => ProjectManifest.parse(SHOWCASE.projectEntry.manifest)).not.toThrow();
+    expect(SHOWCASE.manifestErrorEntry.manifest).toBeNull();
+    expect(typeof SHOWCASE.manifestErrorEntry.error).toBe("string");
+    for (const acc of SHOWCASE.accounts) {
+      expect(() => AccountProfile.parse(acc)).not.toThrow();
+    }
+  });
+
+  test("permission cards carry each status + narrow/broad rule options", () => {
+    expect(SHOWCASE.permission.pending.status).toBe("pending");
+    expect(SHOWCASE.permission.allowed.status).toBe("allowed");
+    expect(SHOWCASE.permission.denied.status).toBe("denied");
+    expect(SHOWCASE.permission.pending.ruleOptions.length).toBeGreaterThan(1);
   });
 });

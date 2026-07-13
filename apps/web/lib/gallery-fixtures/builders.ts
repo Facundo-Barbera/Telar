@@ -10,6 +10,7 @@
 // from either — it only constructs plain objects. The validation test proves the
 // zod-backed nested structures parse against the REAL schemas.
 import type {
+  AccountProfile,
   AttemptRecord,
   Charter,
   ContractAssertion,
@@ -20,7 +21,9 @@ import type {
   Loom,
   LoomEvent,
   PanelReport,
+  ProjectManifest,
   Provenance,
+  RegistryEntry,
   RepairRound,
   ServersConfig,
   ServiceConfig,
@@ -31,6 +34,8 @@ import type {
 } from "@telar/core";
 import type { SpecBundleData } from "@/components/looms/spec-bundle";
 import type { InitialChat } from "@/components/session/session-view";
+import type { ChatSummary, PlanSnapshot, PlanWindow } from "@/lib/store";
+import type { HttpStatus } from "@/components/settings/mcp-health";
 
 // Every fixture loom.id starts with this. Real ids `loom_<base36>_<rand>` can
 // never carry the `gallery__` prefix, so there is no collision and no leak. The
@@ -378,4 +383,150 @@ export function makeChat(p: Partial<InitialChat> & { id: string }): InitialChat 
     contextTokens: 0,
     ...p,
   };
+}
+
+// ---------------------------------------------------------------------------
+// APP-VIEW builders (gallery v2). Registry/manifest/account/plan/chat/mcp/
+// message shapes the full-page scenes feed to the REAL default-export pages.
+// ProjectManifest + AccountProfile ARE zod schemas (schemas.ts) — the validate
+// test proves makeManifest/makeAccount round-trip .parse(). RegistryEntry /
+// ChatSummary / PlanSnapshot / HttpStatus are plain TS types (compile-time only,
+// same honest gap the loom envelope documents). Every helper stays runtime-free
+// (typed literals, never `.parse`) so this module drags zero server code into the
+// client bundle, exactly like the v1 builders above.
+// ---------------------------------------------------------------------------
+
+// A full ProjectManifest literal — every zod-defaulted field spelled out so the
+// object is assignable to the OUTPUT type without a runtime .parse(). Overrides
+// merge last. Mirrors ProjectManifest defaults (schemas.ts:221).
+export function makeManifest(
+  p: Partial<ProjectManifest> & { name?: string } = {},
+): ProjectManifest {
+  return {
+    name: "finch",
+    root: "/Users/you/code/finch",
+    adapter: "plain",
+    account: "personal",
+    charterPolicy: "human-required-for-epics",
+    baseBranch: "main",
+    isolateWorktrees: false,
+    autoRepair: false,
+    outOfProcessRunner: false,
+    setupAgent: false,
+    buildFanout: false,
+    envReview: false,
+    threadWorkflow: false,
+    threadPlanner: false,
+    stepChecks: false,
+    orchestratorVerify: false,
+    verifyLane: false,
+    laneEscalation: false,
+    subjectiveRouting: false,
+    adaptiveVerification: false,
+    gates: [],
+    guardrails: { disallowedTools: [], protectedPaths: [] },
+    mcpServers: {},
+    ...p,
+  };
+}
+
+export function makeRegistryEntry(
+  p: Partial<RegistryEntry> & { name: string },
+): RegistryEntry {
+  return {
+    root: `/Users/you/code/${p.name}`,
+    addedAt: at(0),
+    ...p,
+  };
+}
+
+// One /api/projects row: { entry, manifest, error }. A healthy row carries a
+// parsed manifest + null error; a manifest-error row carries manifest:null + a
+// message (exactly what listProjects returns on a bad telar.yaml).
+export function makeProjectEntry(
+  p: {
+    name?: string;
+    root?: string;
+    entry?: Partial<RegistryEntry>;
+    manifest?: ProjectManifest | null;
+    error?: string | null;
+  } = {},
+): { entry: RegistryEntry; manifest: ProjectManifest | null; error: string | null } {
+  const name = p.name ?? "finch";
+  const root = p.root ?? `/Users/you/code/${name}`;
+  const entry = makeRegistryEntry({ name, root, ...p.entry });
+  const manifest =
+    p.manifest === undefined ? makeManifest({ name, root }) : p.manifest;
+  return { entry, manifest, error: p.error ?? null };
+}
+
+// AccountProfile literal (schemas.ts:23). name must match /^[A-Za-z0-9._-]+$/ —
+// the validate test asserts .parse() round-trips.
+export function makeAccount(
+  p: Partial<AccountProfile> & { name: string },
+): AccountProfile {
+  return {
+    provider: "claude",
+    authMode: "subscription",
+    ...p,
+  };
+}
+
+export function makePlanWindow(p: Partial<PlanWindow> = {}): PlanWindow {
+  return {
+    utilization: 42,
+    resets_at: new Date(at(18_000)).toISOString(),
+    ...p,
+  };
+}
+
+export function makePlanSnapshot(p: Partial<PlanSnapshot> = {}): PlanSnapshot {
+  return {
+    capturedAt: at(0),
+    subscriptionType: "max",
+    fiveHour: makePlanWindow({ utilization: 42 }),
+    sevenDay: makePlanWindow({ utilization: 61, resets_at: new Date(at(500_000)).toISOString() }),
+    ...p,
+  };
+}
+
+// ChatSummary = Omit<Chat,'messages'> & { preview } — the shape every list
+// surface (dashboard, project detail, sessions rail) consumes.
+export function makeChatSummary(
+  p: Partial<ChatSummary> & { id: string },
+): ChatSummary {
+  return {
+    title: "Untitled session",
+    model: "claude-sonnet-4",
+    account: "personal",
+    project: "finch",
+    createdAt: at(0),
+    updatedAt: at(600),
+    costUsd: 0,
+    turns: 0,
+    preview: "",
+    ...p,
+  };
+}
+
+// components/settings/mcp-health HttpStatus — the per-server OAuth/liveness row
+// the /api/mcp/oauth/status route emits (keyed under { servers }).
+export function makeMcpHttpStatus(p: Partial<HttpStatus> = {}): HttpStatus {
+  return {
+    requiresOAuth: true,
+    connected: true,
+    health: "connected",
+    ...p,
+  };
+}
+
+// A persisted session message (InitialChat.messages / StoreMessage) — text/tool
+// parts ONLY. Permission/thinking parts are live-stream-only and never
+// round-trip through the store, so they are intentionally unrepresentable here
+// (the permission-card showcase uses the seam-exported PermissionPart instead).
+export function makeStoreMessage(
+  role: "user" | "assistant",
+  parts: InitialChat["messages"][number]["parts"],
+): InitialChat["messages"][number] {
+  return { role, parts };
 }
