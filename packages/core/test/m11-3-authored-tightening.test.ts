@@ -171,13 +171,19 @@ describe("Direction 1 — CONVERT an agent-judged assertion that carries a hint"
   });
 });
 
-// Review finding 1 (CRITICAL): a DETERMINISTIC assertion already carries an
-// authored runnable; editing its `expected` toward a charter hint is "editing the
+// Review finding 1 (CRITICAL): a DETERMINISTIC assertion with a RUNNABLE authored
+// `expected` is the yardstick — editing it toward a charter hint is "editing the
 // yardstick" (§M.2) and text can't tell stricter from looser. So there is NO edit
-// path for a deterministic assertion — a matching hint is a strict no-op, whether
-// the authored expected is a stricter runnable OR unrunnable prose (the latter is
-// left to fail closed and be repaired by the HUMAN escalation surface).
-describe("Direction 2 REMOVED — a deterministic assertion is never edited (finding 1)", () => {
+// path for a RUNNABLE deterministic assertion — a matching hint is a strict no-op.
+//
+// M11 finding 2c (UPDATED, docs/m11-discuss-iteration.md): the ONE sanctioned
+// exception the invariant now blesses. A DETERMINISTIC `command` whose authored
+// `expected` is NON-runnable prose (the loom_mrinlb18 bug — unrunnable-by-
+// construction, only ever fails closed) is a BUG, not a yardstick; with a matching
+// runnable hint it is REPAIRED (event-trailed). This flips the pre-2c assertion
+// below (prose command was "left as-authored"), the single test that pinned the
+// exact behavior finding 2c changes.
+describe("Direction 2 — a RUNNABLE deterministic assertion is never edited (finding 1); a BROKEN one is repaired (finding 2c)", () => {
   test("a stricter human command is NOT swapped for a weaker charter hint", () => {
     const c: VerificationContract = {
       version: 1,
@@ -194,7 +200,7 @@ describe("Direction 2 REMOVED — a deterministic assertion is never edited (fin
     expect(r.contract.assertions[0]!.expected).toBe("bun test --coverage --min 90");
   });
 
-  test("a command with a PROSE expected + matching hint is left as-authored (repair is human's job)", () => {
+  test("a command with a NON-runnable PROSE expected + matching hint is REPAIRED (finding 2c, event-trailed)", () => {
     const c: VerificationContract = {
       version: 1,
       assertions: [command("bun-test-suite-passes", "the bun test suite passes", "process exits with code 0; all tests green")],
@@ -203,9 +209,17 @@ describe("Direction 2 REMOVED — a deterministic assertion is never edited (fin
       charter: charter({ proofHints: [{ criterion: "bun-test-suite-passes", run: "bun test" }] }),
     });
     const r = tightenAuthoredContract(c, loom, ON);
-    expect(r.tightenings).toEqual([]);
-    expect(r.contract).toBe(c);
-    expect(r.contract.assertions[0]!.expected).toBe("process exits with code 0; all tests green");
+    expect(r.contract.assertions[0]!.type).toBe("command");
+    expect(r.contract.assertions[0]!.expected).toBe("bun test"); // the broken prose is repaired to the runnable
+    expect(r.tightenings).toEqual([
+      {
+        id: "bun-test-suite-passes",
+        fromType: "command",
+        fromExpected: "process exits with code 0; all tests green",
+        toType: "command",
+        toExpected: "bun test",
+      },
+    ]);
   });
 });
 

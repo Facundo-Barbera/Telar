@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isRunnableShape } from "./runnable-shape";
 
 // A provider = which agent CLI/backend an account drives. Claude today, Codex
 // alongside it; the string keys into PROVIDERS (providers.ts).
@@ -447,10 +448,31 @@ export type Budget = z.infer<typeof Budget>;
 // contractLoosenings never flags); a criterion without a hint keeps today's
 // routing. `criterion` must equal the acceptanceCriteria text verbatim
 // (trimmed) — a dangling hint simply never matches, fail-safe.
-export const ProofHint = z.object({
-  criterion: z.string(), // the exact acceptanceCriteria line this hint proves
-  run: z.string(), // runnable whose exit code (0 = pass) settles the criterion
-});
+export const ProofHint = z
+  .object({
+    criterion: z.string(), // the exact acceptanceCriteria line this hint proves
+    run: z.string(), // runnable whose exit code (0 = pass) settles the criterion
+  })
+  // M11 (docs/m11-discuss-iteration.md, finding 2a). EMIT-TIME shape guard: a
+  // PRESENT `run` that is not an executable shell command — a JS expression
+  // (`parse('1.2.3') === {...}`) or prose — is rejected here, at the schema
+  // boundary the proposer's charter parses through, so garbage never reaches
+  // synthesizeContract's hint→command tightening. Additive and flag-off byte-
+  // identical: an absent proofHints array is untouched, and a BLANK run
+  // (whitespace) stays valid because collectProofHints already drops it (a blank
+  // hint is inert, not an error — no existing charter/test regresses). Only a
+  // present, NON-blank, non-runnable-shaped run is flagged. Defense-in-depth with
+  // collectProofHints' runtime drop (weave-contracts.ts) — one at author time,
+  // one at consumption.
+  .superRefine((h, ctx) => {
+    if (h.run.trim() && !isRunnableShape(h.run)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["run"],
+        message: `proofHint run must be an executable shell command, not prose or a JS expression: ${JSON.stringify(h.run)}`,
+      });
+    }
+  });
 export type ProofHint = z.infer<typeof ProofHint>;
 
 export const SubGoal = z.object({
@@ -672,6 +694,19 @@ export function validateContract(
         errors.push(`assertion ${a.id} is prose-only: needs expected or expectedFile`);
       } else if (hasExpectedFile && opts?.existingFiles && !opts.existingFiles.has(a.expectedFile!.trim())) {
         errors.push(`assertion ${a.id} points at a bundle file that doesn't exist: ${a.expectedFile}`);
+      } else if (a.type === "command" && hasExpected && !isRunnableShape(a.expected!)) {
+        // M11 (finding 2a) — a `command` runs its `expected` verbatim through
+        // sh -c (executor.runContractGates), so a PROSE / JS-expression expected
+        // is unrunnable-by-construction and burns repair attempts on a gate no
+        // builder can fix. Reject it at author time (propose_contract flows here
+        // via bundle.writeContract → validateContract, so this covers the tool
+        // transitively). SCOPED TO `command` ONLY: a `gate` expected is a manifest-
+        // gate NAME (validated by lookup at runtime, not a runnable), and a `db`
+        // expected is legitimately SQL-shaped (prose-like by nature) — neither is
+        // sh -c'd raw the way a command is, so neither is shape-checked here. The
+        // predicate is conservative (accepts anything ambiguous), so no existing
+        // runnable command expected regresses — flag-off byte-identical.
+        errors.push(`command assertion ${a.id} has a non-runnable expected (prose or a JS expression, not an executable shell command): ${a.expected}`);
       }
     }
   }

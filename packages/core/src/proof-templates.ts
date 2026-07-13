@@ -138,6 +138,13 @@ export const ADAPTIVE_VERIFICATION_GUIDANCE =
   "run: <the command> }. The command's exit code (0 = pass) becomes a " +
   "fail-closed verification gate, so the command must GENUINELY prove that " +
   "criterion — never a vacuous `true`, never a command that passes regardless. " +
+  "The run MUST be a REAL executable shell command (its first token an actual " +
+  "program: `bun`, `node`, `python`, `./script.sh`) — NEVER a bare JS expression " +
+  "(`parse('1.2.3') === {...}`) and NEVER a prose sentence describing the outcome " +
+  "(\"process exits with code 0; tests pass\"). To prove an API/behavioral " +
+  "assertion, WRAP it in a test the run executes — e.g. write the assertion into " +
+  "`test/contract-parse.test.ts` and set `run: bun test test/contract-parse.test.ts` " +
+  "— so the exit code, not a description, is the proof. " +
   "The criterion field must match the acceptanceCriteria line verbatim or the " +
   "hint is ignored. Do NOT author a hint for criteria that need a running " +
   "surface (observable UI/UX behavior) or human judgment — leave those to the " +

@@ -11,6 +11,7 @@ import { validateContract, type Charter, type ContractAssertion, type SubGoal, t
 import { adaptiveVerificationEnabled, subjectiveRoutingEnabled } from "./runner/flag";
 import { charterHasGateIntent, deriveDeliverableSignal } from "./deliverable-signal";
 import { partitionAssertions } from "./executor";
+import { isRunnableShape } from "./runnable-shape";
 import type { Loom } from "./looms";
 
 // PURE. A runnable that ALWAYS exits 0 without checking anything — `true`, `:`,
@@ -41,13 +42,17 @@ function isTrivialPass(run: string): boolean {
 // plus every SubGoal's) into ONE criterion-text → runnable map, trimmed on both
 // sides. First hint wins on a duplicate criterion (charter-level outranks
 // subgoal, document order after that) — deterministic, never a merge surprise.
-// Blank OR trivially-passing (isTrivialPass) run entries are dropped: a degenerate
+// Blank OR trivially-passing (isTrivialPass) OR non-runnable-shaped
+// (isRunnableShape false — M11 finding 2b) run entries are dropped: a degenerate
 // hint must never mint a command assertion with an empty runnable (validateContract
-// would reject it) NOR an always-green one (validateContract would NOT catch it —
-// see isTrivialPass). A hint whose criterion matches nothing is simply inert —
+// would reject it), NOR an always-green one (validateContract would NOT catch it —
+// see isTrivialPass), NOR one carrying PROSE / a JS expression that would reach
+// sh -c verbatim ("process exits with code 0…", `parse(…) === {…}` — the live
+// loom_mrirhfm4 bug). A hint whose criterion matches nothing is simply inert —
 // fail-safe, the unmatched criteria keep today's routing. Both consumers
 // (synthesizeContract tightening 1, tightenAuthoredContract) read through here, so
-// the content check protects every hint-driven command mint in one place.
+// the content check protects every hint-driven command mint in one place — a
+// non-runnable hint is inert everywhere, never installed into an `expected`.
 function collectProofHints(charter: Charter | undefined): Map<string, string> {
   const hints = new Map<string, string>();
   if (!charter) return hints;
@@ -55,7 +60,7 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
   for (const h of all) {
     const criterion = h.criterion.trim();
     const run = h.run.trim();
-    if (criterion && run && !isTrivialPass(run) && !hints.has(criterion)) hints.set(criterion, run);
+    if (criterion && run && !isTrivialPass(run) && isRunnableShape(run) && !hints.has(criterion)) hints.set(criterion, run);
   }
   return hints;
 }
@@ -203,17 +208,31 @@ export function synthesizeContract(
 //   doc blesses (§3.1) and contractLoosenings never flags — it ADDS a real,
 //   validated (non-trivial) runnable check where there was only agent judgment.
 //
-// A DETERMINISTIC assertion (command/gate/db) is NEVER touched here. It already
-// carries a human/proposer-authored runnable `expected`, and editing that expected
-// is "editing the yardstick" — exactly what §M.2 exists to catch: text CANNOT tell
-// a stricter runnable from a looser one, so replacing e.g. `bun test --coverage
+// A DETERMINISTIC assertion with a RUNNABLE `expected` is NEVER touched here. It
+// already carries a human/proposer-authored runnable, and editing that runnable is
+// "editing the yardstick" — exactly what §M.2 exists to catch: text CANNOT tell a
+// stricter runnable from a looser one, so replacing e.g. `bun test --coverage
 // --min 90` with a charter hint's `bun test` would silently WEAKEN a human-approved
-// gate under a "tightening" label (the original finding-1 breach). A broken/prose-
-// `expected` authored command therefore stays as-authored (it fails closed and the
-// loom blocks); its correct repair is a HUMAN one via the escalation surface, not a
-// self-cosigned auto-rewrite. So: never a deterministic→live-critic downgrade,
-// never any edit of a deterministic assertion, never touch a hint-LESS assertion —
-// worst case is always unchanged.
+// gate under a "tightening" label (the original finding-1 breach). So: never a
+// deterministic→live-critic downgrade, never any edit of a RUNNABLE deterministic
+// assertion, never touch a hint-LESS agent-judged assertion — worst case unchanged.
+//
+// M11 finding 2c/3 — the ONE sanctioned exception (the item-2c nuance the invariant
+// blesses): a DETERMINISTIC `command` whose `expected` is NON-runnable-shaped
+// (isRunnableShape false — the loom_mrinlb18 "process exits with code 0…" prose that
+// reaches sh -c verbatim and can only ever fail closed) is a BUG, not a yardstick.
+// When such a broken command has a SANCTIONED runnable — a matching charter proofHint
+// OR the HUMAN-answered manifest.verifyCommand (finding 3: the authoritative runnable
+// the human supplied at escalation, persisted to telar.yaml) — its `expected` is
+// REPAIRED to that runnable, recorded as a tightening (event-trailed, co-signed
+// auto:tighten-authored by the dispatcher). This is not a weakening: the original was
+// unrunnable garbage that always fails closed; replacing it with a real check can only
+// raise the floor from "never verifiable" to "verifiable." A RUNNABLE authored
+// expected stays forbidden to replace (above); the repair is SCOPED to `command`
+// (a `gate` expected is a name, a `db` expected is legitimately SQL-shaped) and to
+// the NON-runnable case only. contractLoosenings sees the content change on a still-
+// blocking assertion — that is WHY the tightening is emitted and routed through the
+// dispatcher's sanctioned auto: co-sign, never a silent edit.
 //
 // Every candidate is re-validated (validateContract over the whole contract with the
 // one assertion replaced); if it would produce an INVALID contract the tightening
@@ -228,14 +247,23 @@ export function synthesizeContract(
 export function tightenAuthoredContract(
   contract: VerificationContract,
   loom: Loom,
-  manifest?: { adaptiveVerification?: boolean },
+  // M11 finding 3 — `verifyCommand` is the HUMAN-answered verification runnable
+  // (answerBlocked's strategy answer, persisted to telar.yaml). Threaded here so a
+  // broken (non-runnable) command assertion can be repaired to it even without a
+  // matching charter hint. The dispatcher already passes the full ProjectManifest
+  // (which carries verifyCommand), so this widening needs NO call-site change.
+  manifest?: { adaptiveVerification?: boolean; verifyCommand?: string },
 ): {
   contract: VerificationContract;
   tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[];
 } {
   if (!(manifest && adaptiveVerificationEnabled(manifest))) return { contract, tightenings: [] };
   const hints = collectProofHints(loom.charter);
-  if (hints.size === 0) return { contract, tightenings: [] };
+  const verifyCommand = manifest.verifyCommand?.trim();
+  const sanctionedVerify = verifyCommand && isRunnableShape(verifyCommand) ? verifyCommand : undefined;
+  // Nothing to derive from: no authored hints AND no human-answered runnable ⇒ the
+  // strict no-op (byte-identical to the pre-M11 short-circuit for the hint-only case).
+  if (hints.size === 0 && !sanctionedVerify) return { contract, tightenings: [] };
 
   const working = contract.assertions.slice();
   const tightenings: { id: string; fromType: string; fromExpected?: string; toType: string; toExpected: string }[] = [];
@@ -243,40 +271,45 @@ export function tightenAuthoredContract(
   for (let i = 0; i < working.length; i++) {
     const a = working[i];
     const run = hints.get(a.id.trim()) ?? hints.get(a.description.trim());
-    if (!run) continue; // hint-less assertion — keep today's routing untouched
-
-    // A DETERMINISTIC assertion (command/gate/db) already carries an authored
-    // runnable `expected`; editing it is "editing the yardstick" (§M.2), which text
-    // can't tell stricter from looser — NEVER touched here (see header). This also
-    // makes the function idempotent: a Direction-1 conversion produces a `command`,
-    // which is deterministic, so a re-dispatch skips it → zero events, no rewrite.
     const deterministic = partitionAssertions([a]).deterministic.length === 1;
-    if (deterministic) continue;
 
-    // CONVERT — agent-judged (live-critic / golden-diff, no runnable of its own) →
-    // command. Clear observable/expectedFile + strip any stray subjective marker so
-    // the result passes validateContract's non-live-critic rules; the id/
-    // description/subGoalId/blocker are preserved verbatim.
-    const tightened: ContractAssertion = {
-      ...a,
-      type: "command",
-      expected: run,
-      observable: undefined,
-      expectedFile: undefined,
-      subjective: undefined,
-    };
+    let tightened: ContractAssertion | null = null;
+
+    if (!deterministic) {
+      // CONVERT (Direction 1) — an agent-judged assertion (live-critic / golden-diff,
+      // no runnable of its own) that matches a hint → command. Clear observable/
+      // expectedFile + strip any stray subjective marker so the result passes
+      // validateContract's non-live-critic rules; id/description/subGoalId/blocker
+      // preserved verbatim. A hint-less agent-judged assertion keeps today's routing.
+      if (!run) continue;
+      tightened = { ...a, type: "command", expected: run, observable: undefined, expectedFile: undefined, subjective: undefined };
+    } else {
+      // REPAIR (finding 2c/3) — a DETERMINISTIC assertion. A RUNNABLE `expected` is
+      // the yardstick and is NEVER edited (§M.2). The ONE exception: a `command`
+      // whose `expected` is NON-runnable prose/JS — a bug that only ever fails closed.
+      // Repair it to a SANCTIONED runnable: the matching hint, else the human-answered
+      // verifyCommand. Scoped to `command` (a gate expected is a name; a db expected is
+      // legitimately SQL-shaped); the runnable is guaranteed shaped (collectProofHints
+      // drops non-runnable hints; sanctionedVerify is pre-checked). Idempotent: the
+      // repaired expected is runnable, so a re-dispatch skips it.
+      if (a.type !== "command") continue;
+      if (a.expected == null || isRunnableShape(a.expected)) continue; // runnable/absent stays as-authored
+      const repair = run ?? sanctionedVerify;
+      if (!repair) continue; // no sanctioned runnable — leave to human escalation, fails closed
+      tightened = { ...a, expected: repair };
+    }
 
     // Fail-safe: validate the WHOLE candidate (prior tightenings applied, this one
     // replaced). If it would be invalid, DISCARD this tightening and keep the
     // original — never emit an invalid contract.
     const candidate: VerificationContract = {
       ...contract,
-      assertions: working.map((x, j) => (j === i ? tightened : x)),
+      assertions: working.map((x, j) => (j === i ? tightened! : x)),
     };
     if (validateContract(candidate).length > 0) continue;
 
     working[i] = tightened;
-    tightenings.push({ id: a.id, fromType: a.type, fromExpected: a.expected, toType: "command", toExpected: run });
+    tightenings.push({ id: a.id, fromType: a.type, fromExpected: a.expected, toType: tightened.type, toExpected: tightened.expected! });
   }
 
   if (tightenings.length === 0) return { contract, tightenings: [] };

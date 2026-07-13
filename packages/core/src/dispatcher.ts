@@ -43,7 +43,7 @@ import { frozenLaneVerify, type IvResult, runAutoRepair } from "./verify-thread"
 import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
-import { appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
+import { CONTRACT_FILE, appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
 import { synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
@@ -54,6 +54,7 @@ import type { Lane, StartLaneOpts } from "./run-server";
 import { writeAcceptedServersConfig, writeAcceptedRunbook } from "./servers";
 import { blockedStrategyQuestion, deriveDeliverableSignal } from "./deliverable-signal";
 import type { ContractAssertion } from "./schemas";
+import { VerificationContract } from "./schemas";
 
 export type StartLoomInput = {
   project: string;
@@ -199,6 +200,44 @@ function ensureWoven(loom: Loom): void {
   }
 }
 
+// M11 (adaptive-verification review, finding: unreachable repair). readContract
+// returns contract:null on ANY validateContract error, and the always-on non-
+// runnable-`command` rule (schemas.validateContract) is such an error. So an
+// AUTHORED contract whose ONLY defect is a prose/JS command `expected` — exactly
+// the contract the 2c/3 sanctioned repair (tightenAuthoredContract) exists to fix,
+// and exactly what a human answers via answerBlocked's verifyCommand — reads back
+// as null and would be DISCARDED for a fresh synthesize BEFORE the repair branch
+// is ever reached, silently throwing the human's answer away. When (flag on) the
+// SOLE null-cause is that rule AND a sanctioned runnable is actually available now
+// (a matching charter hint or the answered verifyCommand ⇒ tightenAuthoredContract
+// would produce a tightening), return the RAW structural contract so it flows into
+// the tighten/repair branch (repair → persist → event-trail) instead of
+// synthesize. Any OTHER defect, no available runnable, or flag-off ⇒ null ⇒
+// synthesize exactly as before (byte-identical). PURE except the one bundle read.
+export function reviveRepairableAuthored(
+  loom: Loom,
+  manifest: ProjectManifest,
+  contractErrors: string[],
+): VerificationContract | null {
+  if (!adaptiveVerificationEnabled(manifest)) return null;
+  if (contractErrors.length === 0 || !contractErrors.every((e) => e.includes("non-runnable expected"))) return null;
+  const raw = readBundleFile(loom.id, CONTRACT_FILE);
+  if (raw === null) return null;
+  let parsed: VerificationContract;
+  try {
+    const p = VerificationContract.safeParse(JSON.parse(raw));
+    if (!p.success) return null;
+    parsed = p.data;
+  } catch {
+    return null;
+  }
+  // Only revive when a sanctioned runnable exists NOW — otherwise leave it null so
+  // today's synthesize runs. We never PRESERVE an unrepairable prose contract here
+  // (its child-executor item-2(iv) park is the fail-closed backstop for that case).
+  const { tightenings } = tightenAuthoredContract(parsed, loom, manifest);
+  return tightenings.length > 0 ? parsed : null;
+}
+
 // The weave branch: spawn+run child Looms (threads) for the charter's
 // decomposition and fold up via runWeave. Reused by both the fast path
 // (charter supplied up front) and the post-scoping dispatch (charter drafted
@@ -320,7 +359,15 @@ function runWeaveWiring(
   // overwritten, and a re-dispatch reads the persisted synthesized contract
   // back → never re-synthesized. The first-ever write is unrestricted (its
   // co-sign only triggers when a PRIOR contract exists on a started loom).
-  let { contract } = readContract(loom.id);
+  let { contract, errors: contractErrors } = readContract(loom.id);
+  if (!contract) {
+    // M11 — before discarding a readContract-null contract for a fresh synthesize,
+    // try to revive an AUTHORED contract whose sole defect is a non-runnable command
+    // that a now-available runnable (charter hint / answered verifyCommand) repairs.
+    // On success the RAW contract flows into the tighten/repair else-branch below.
+    const revived = reviveRepairableAuthored(loom, manifest, contractErrors);
+    if (revived) contract = revived;
+  }
   if (!contract) {
     contract = synthesizeContract(loom, manifest);
     writeContract(loom.id, contract);
