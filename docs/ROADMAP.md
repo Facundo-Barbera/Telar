@@ -386,16 +386,26 @@ then demanded a dev command a *library* has no answer for. The moat held (nothin
 — it exposed that verification is wired for web apps, not derived from the deliverable. (Also: the
 "Orchestrator requires help" surface should be a conversation, not a form — tracked follow-up.)
 
-**Phases (flag-gated, default off, fail-closed, byte-identical when off — same discipline as M10):**
-- **M11.0** — pre-flight reframe: proceed-and-defer + escalate-last-resort (widen `isLaneViable`; park
-  only when no plan can be formed). *Size S; fixes today's block. Flag `laneEscalation` (widened).*
-- **M11.1** — modality derivation: `synthesizeContract` derives the assertion type from the deliverable
-  and honors the charter `proofStrategy` (bun test → gate; UI → live-critic; DS/CLI → command);
-  completes the M10.5-deferred routing. *Size M. Flag `adaptiveVerification` (new).*
-- **M11.2** — generalize the lane to non-server VerificationStrategies (test-gate / CLI-harness /
-  sandbox-eval / artifact-assert) established when the artifact exists, inside the frozen worktree.
-  *Size M. Flag `verifyLane` (widened).*
-- **M11.3** — prove & flip (INTERACTIVE): the redemption library reaches autonomous `ready`; a CLI + a
+**Phases (flag-gated, default off, fail-closed, byte-identical when off — same discipline as M10).
+M11.0–M11.2 SHIPPED on branch `m11` (same per-phase discipline: implement → green-gate → atomic
+commit). Base green: 1033 pass / 0 fail, core+web tsc 0; 86 new tests across 5 files. New shared
+seam: `deliverable-signal.ts` — a PURE, bounded signal (one top-level package.json parse + one
+readdir + the charter's proof intent) feeding both the M11.0 pre-flight and the M11.1 derivation.**
+- **✅ M11.0** — pre-flight reframe (`68b39fd`): proceed-and-defer + escalate-last-resort; `isLaneViable`
+  widened additively (signal + human `verifyCommand` paths); park copy strategy-derived (a library is
+  asked for a test command, never a dev command); `answerBlocked` accepts a `verifyCommand` strategy
+  answer, persisted-never-reasked. *Flag `laneEscalation` (widened).*
+- **✅ M11.1** — modality derivation (`aa0122d`): `synthesizeContract` derives the assertion type from
+  the deliverable — charter-authored per-criterion `proofHints` → `command`, test-gate signal → the
+  lockfile-aware test runnable for every remaining criterion (the redemption library no longer yields a
+  synth-0 live-critic); tightening only, web never blanket-tightened, no runnable ever fabricated from
+  prose; flag-gated proofHints guidance in `draftCharter`. *Flag `adaptiveVerification` (NEW).*
+- **✅ M11.2** — non-server VerificationStrategies (`734f556`): `verification-strategy.ts` union
+  (server-lane | test-gate | cli-harness | sandbox-eval | artifact-assert) + pure chooser; established
+  at artifact time inside the frozen worktree; web / any resolvable servers recipe stay server-lane
+  verbatim; a non-server strategy stands nothing up and hands the panel no stale URL target —
+  fail-closed coercion and teardown carry over for every strategy. *Flag `verifyLane` (widened).*
+- **▶ M11.3** — prove & flip (INTERACTIVE): the redemption library reaches autonomous `ready`; a CLI + a
   DS eval verify; confirm a mis-derived/weak strategy still demotes; flip defaults.
 
 **Done when:** a non-web deliverable (library, CLI, data-science eval) drives to a real `ready` via a
