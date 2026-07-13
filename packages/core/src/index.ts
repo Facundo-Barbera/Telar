@@ -46,6 +46,9 @@ export * from "./vcs";
 export * from "./db-clone";
 export * from "./repair-guard";
 export * from "./verify-thread";
+// M11.2 — the VerificationStrategy union + pure chooser (frozen-lane strategy
+// selection; lives here, NOT in schemas.ts, per the M11 contract).
+export * from "./verification-strategy";
 export * from "./consolidate";
 export * from "./bundle";
 export * from "./panel";

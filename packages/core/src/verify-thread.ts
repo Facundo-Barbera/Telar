@@ -7,6 +7,23 @@
 // hard read-only tool wall) against that snapshot. It is READ-ONLY by
 // construction and cannot mutate the deliverable.
 //
+// M11.2 (docs/adaptive-verification.md §3.3) — the lane is a STRATEGY SET, not
+// only a URL: under verifyLane, frozenLaneVerify chooses a VerificationStrategy
+// (verification-strategy.ts) from the deliverable signal re-derived against the
+// frozen worktree (artifact-time) + the contract shape. "server-lane" keeps
+// today's resolveServersConfig → startLane → laneTarget path verbatim; a
+// non-server strategy (test-gate / cli-harness / sandbox-eval / artifact-assert)
+// stands NOTHING up — the frozen wt is the substrate, the producer's
+// runContractGates settle the deterministic assertions there, and the panel
+// gets NO target: the explicit `noTarget` marker withholds the producer's
+// manifest.urls.dev fallback so any agent-judged leftover fail-closes via the
+// M10.1 floor (never judged against a stale URL). A test-gate strategy also
+// hands the producer its runnable as `establishRun` — the artifact-time
+// ESTABLISHMENT: a sanctioned synthesized all-live-critic contract (greenfield
+// prompt-fallback / charter gate intent / human verifyCommand) is tightened in
+// memory to command gates that execute it, so the deferred-gate journey ends in
+// real exit-code evidence instead of a guaranteed demote.
+//
 // runAutoRepair wraps the verify in a bounded loop whose continuation is
 // decided SOLELY by the pure guards in repair-guard.ts (never by an LLM
 // verdict). Its only two exits are `converged` (the loom stays "ready" — the
@@ -14,7 +31,7 @@
 // the weave demotes ready→needs-review, carrying `reason` on loom.error). This
 // is the moat: a converged loop lands READY, never DONE.
 import type { Loom } from "./looms";
-import type { PanelReport, ProjectManifest, ServersConfig } from "./schemas";
+import type { ContractAssertion, PanelReport, ProjectManifest, ServersConfig } from "./schemas";
 import type { GateResult } from "./gates";
 import type { BudgetState } from "./budget";
 import {
@@ -28,6 +45,13 @@ import { type DbCloner, NullDbCloner } from "./db-clone";
 import { type RepairCaps, type RepairRound, decideRepairContinuation } from "./repair-guard";
 import { resolveServersConfig as defaultResolveServersConfig } from "./servers";
 import { type Lane, type StartLaneOpts, laneTarget, startLane as defaultStartLane } from "./run-server";
+import { readContract as defaultReadContract } from "./bundle";
+import {
+  type CharterProofIntent,
+  type DeliverableSignal,
+  deriveDeliverableSignal,
+} from "./deliverable-signal";
+import { type VerificationStrategy, chooseVerificationStrategy } from "./verification-strategy";
 
 const uniqSorted = (xs: string[]): string[] => [...new Set(xs)].sort();
 
@@ -90,6 +114,24 @@ export type FrozenLaneDeps = {
   // into weave.ts's fail-OPEN catch (keep-ready) — laundering a lane-down into a
   // false green. Absent/flag-off ⇒ the throw propagates as today (byte-identical).
   failClosedLaneDown?: boolean;
+  // M11.2 (adaptive-verification.md §3.3) — strategy-layer seams. The layer is
+  // consulted ONLY when failClosedLaneDown is set (the dispatcher's verifyLane-ON
+  // injection): flag-off, neither seam is ever read and the whole path is
+  // byte-identical. Deliberately gated on the SAME condition that fail-closes
+  // bring-up, so a strategy-selection throw can never escape into weave's
+  // fail-open catch — it becomes laneDown → target=undefined → panel skip →
+  // M10.1 demote.
+  //   deriveSignal    — default deriveDeliverableSignal (pure fs read); called
+  //                     against the frozen worktree `wt` — the ARTIFACT-TIME
+  //                     re-derivation a deferred-gate plan promised.
+  //   readContractFn  — default bundle readContract; the chooser needs the
+  //                     contract SHAPE (deterministic vs agent-judged) to pick
+  //                     artifact-assert / keep a live slice on today's path.
+  //   chooseStrategy  — default chooseVerificationStrategy (pure); injectable
+  //                     so tests can script a strategy directly.
+  deriveSignal?: (root: string, charter?: CharterProofIntent) => DeliverableSignal;
+  readContractFn?: (id: string) => { contract: { assertions: ContractAssertion[] } | null };
+  chooseStrategy?: typeof chooseVerificationStrategy;
   // verify passthroughs
   abort?: AbortController;
   emit?: (ev: { type: string } & Record<string, unknown>) => void;
@@ -143,10 +185,47 @@ export async function frozenLaneVerify(
     // fail-open catch). Flag-on, a bring-up failure is caught, emits a lane-down
     // event, leaves lane=null, and makes the target fail-closed (undefined) so
     // the panel skips and M10.1 demotes — never a throw into weave's fail-open.
+    //
+    // M11.2 (adaptive-verification.md §3.3) — the bring-up generalizes to a
+    // VERIFICATION STRATEGY, established HERE, when the artifact exists, inside
+    // the frozen worktree. Default "server-lane" = today's path verbatim; the
+    // chooser runs ONLY under failClosedLaneDown (verifyLane ON), inside the
+    // same guarded try, so a selection failure fail-closes exactly like a
+    // bring-up failure. A NON-server strategy calls NO startLane: the frozen
+    // `wt` is already the substrate — the producer below (runIntegrationVerify,
+    // verifyCwd: wt) settles the deterministic assertions via runContractGates
+    // against it, yielding GateResult[] evidence with no URL.
     let laneDown = false;
+    let strategy: VerificationStrategy = {
+      kind: "server-lane",
+      reason: "strategy layer inactive (verifyLane off) — today's path",
+    };
     try {
       const cfg = resolveCfg(wt, manifest.root);
-      if (cfg.driver !== "none") {
+      if (deps.failClosedLaneDown) {
+        const signal = (deps.deriveSignal ?? deriveDeliverableSignal)(wt, loom.charter);
+        const { contract } = (deps.readContractFn ?? defaultReadContract)(loom.id);
+        strategy = (deps.chooseStrategy ?? chooseVerificationStrategy)(signal, contract?.assertions ?? [], {
+          serverConfigured: cfg.driver !== "none",
+          // The human-answered strategy answer (answerBlocked → telar.yaml):
+          // chooser rule 3 — outranks the derived signal, supplies the
+          // establishment runnable even for a signal-less repo.
+          verifyCommand: manifest.verifyCommand,
+        });
+        // Observability only (a loom event, never a verdict input). Emitted only
+        // for a NON-server pick so the server path's event stream stays exactly
+        // today's.
+        if (strategy.kind !== "server-lane") {
+          deps.emit?.({ type: "verify-strategy", strategy: strategy.kind, reason: strategy.reason });
+        }
+      }
+      // Only the server lane stands processes up. The chooser routes every
+      // process-standing case (web, API/DB boot+hit, a DS kernel declared as a
+      // service) to "server-lane" — under the dispatcher's verifyLane injection
+      // startLaneFn IS superviseStartLane, so those processes live behind the
+      // executor/setup wall (verify-lane.ts). Defense-in-depth: a non-server
+      // strategy skips bring-up even if a config resolves.
+      if (strategy.kind === "server-lane" && cfg.driver !== "none") {
         const base = deps.baseEnv ?? process.env;
         const env = ephemeralDb ? { ...base, DATABASE_URL: ephemeralDb } : deps.baseEnv;
         lane = await startLaneFn(cfg, wt, { ...deps.laneOpts, ...(env ? { env } : {}) });
@@ -157,13 +236,33 @@ export async function frozenLaneVerify(
       lane = null;
       deps.emit?.({ type: "verify-lane-down", message: err instanceof Error ? err.message : String(err) });
     }
-    // Fail-closed: a downed lane yields NO target (undefined), never a fall-back
-    // to manifest.urls.dev — the panel must obtain zero evidence and demote.
-    const target = laneDown ? undefined : lane ? laneTarget(lane, deps.appService) : manifest.urls?.dev;
+    // Fail-closed: a downed lane or a NON-server strategy yields NO target —
+    // never a fall-back to manifest.urls.dev. Merely omitting `url` is NOT
+    // enough: the producer's own `opts.url ?? manifest.urls?.dev` fallback
+    // would silently reinstate the stale URL and the live-critic panel would
+    // be judged against it (a false green through the method layer). So the
+    // decision is threaded EXPLICITLY as `noTarget`, which the producer honors
+    // by withholding its fallback → the panel hits the no-target floor
+    // (executor.ts runPanelVerification, panelRequired:true) and the M10.1
+    // coercion demotes. A library is never "judged" against a stale
+    // manifest.urls.dev. Both conditions are reachable ONLY under
+    // failClosedLaneDown (flag-off: laneDown stays false, strategy stays
+    // "server-lane", no marker is sent — byte-identical).
+    const noTarget = laneDown || strategy.kind !== "server-lane";
+    const target = noTarget ? undefined : lane ? laneTarget(lane, deps.appService) : manifest.urls?.dev;
+    // M11.2 — the ESTABLISHMENT hand-off (the deferred-gate promise): a
+    // test-gate strategy carries the runnable the wt re-derivation (or the
+    // human's verifyCommand) answered; the producer executes it as a gate —
+    // but only under its own sanction check (synthesized all-live-critic +
+    // declared gate intent / prompt fallback / human answer), so this can only
+    // TIGHTEN live-critic → command, never rubber-stamp authored prose.
+    const establishRun = !laneDown && strategy.kind === "test-gate" && strategy.run?.trim() ? strategy.run.trim() : undefined;
     return await deps.runIntegrationVerify(loom, manifest, {
       ...passthrough,
       verifyCwd: wt,
       ...(target ? { url: target } : {}),
+      ...(noTarget ? { noTarget: true } : {}),
+      ...(establishRun ? { establishRun } : {}),
     });
   } finally {
     if (lane) await lane.stopAll().catch(() => {});
