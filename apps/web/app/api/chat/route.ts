@@ -30,6 +30,7 @@ import {
   type CodexSandbox,
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
+import { resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import { appendSessionEvent, startSessionLog } from "@/lib/session-log";
@@ -250,7 +251,7 @@ function buildEscalationContext(loomId: string, root: string): string {
 // via includePartialMessages; client abort propagates to the subprocess.
 export async function POST(req: Request) {
   const {
-    message,
+    message: rawMessage,
     sessionId,
     model: rawModel,
     project,
@@ -289,6 +290,15 @@ export async function POST(req: Request) {
           : undefined;
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
+
+  // M11 finding-1: the escalation surface auto-fires a HIDDEN first turn whose
+  // wire message is the kickoff sentinel (see @/lib/escalation-kickoff). On a
+  // fresh escalation session we swap it for the server-authored kickoff prompt
+  // so the model opens from ESCALATION_SYSTEM_PROMPT + buildEscalationContext
+  // with a genuine verification proposal. Byte-identical passthrough for every
+  // other turn (planner/steerer/plain/real escalation replies), so nothing else
+  // changes. Substituted HERE, before generateTitle/query/log all read it.
+  const message: string = resolveEscalationMessage(role, sessionId, rawMessage);
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.

@@ -38,8 +38,9 @@ export function DiscussEscalation({ loom }: { loom: Loom }) {
         // Bounded height so SessionView's flex column fits; mirrors the loom
         // Chat tab's embedding (chat-tab.tsx). No initialChat/routeSessionId —
         // the escalation session always starts FRESH (never reattaches a prior
-        // conversation), so the agent-first greeting shows and turn 1 sends
-        // role:"escalation"+loomId.
+        // conversation). On mount (i.e. AFTER this click) SessionView auto-fires
+        // a single hidden kickoff turn (M11 finding-1) so the agent OPENS with a
+        // real verification proposal; turn 1 sends role:"escalation"+loomId.
         <div className="flex h-[calc(100dvh-24rem)] min-h-[28rem] flex-col overflow-hidden rounded-lg border">
           <SessionView
             project={loom.project}
