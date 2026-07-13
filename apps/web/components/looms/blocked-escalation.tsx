@@ -21,14 +21,17 @@ import { Textarea } from "@/components/ui/textarea";
 // loom.state off "blocked" and unmounts this panel.
 export function BlockedEscalation({ loom }: { loom: Loom }) {
   const [devCommand, setDevCommand] = useState("");
+  const [verifyCommand, setVerifyCommand] = useState("");
   const [runbook, setRunbook] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // At least one non-blank field — mirrors answerBlocked's empty-payload guard.
+  // At least one VIABILITY-MAKING field — mirrors answerBlocked's guard, which
+  // rejects a runbook-only answer exactly like an empty one (isLaneViable never
+  // reads the runbook, so it can't resume the loom alone).
   const canSubmit = useMemo(
-    () => Boolean(devCommand.trim() || runbook.trim()),
-    [devCommand, runbook],
+    () => Boolean(devCommand.trim() || verifyCommand.trim()),
+    [devCommand, verifyCommand],
   );
 
   const submit = useCallback(async () => {
@@ -37,8 +40,9 @@ export function BlockedEscalation({ loom }: { loom: Loom }) {
     setError(null);
     // Only send non-blank fields — the server binds `by="you"` itself; the
     // answer identity is NEVER read from the body (the human-by moat).
-    const body: { devCommand?: string; runbook?: string } = {};
+    const body: { devCommand?: string; verifyCommand?: string; runbook?: string } = {};
     if (devCommand.trim()) body.devCommand = devCommand.trim();
+    if (verifyCommand.trim()) body.verifyCommand = verifyCommand.trim();
     if (runbook.trim()) body.runbook = runbook.trim();
     try {
       const res = await fetch(`/api/looms/${loom.id}/block/answer`, {
@@ -56,7 +60,7 @@ export function BlockedEscalation({ loom }: { loom: Loom }) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
     }
-  }, [loom.id, devCommand, runbook, canSubmit]);
+  }, [loom.id, devCommand, verifyCommand, runbook, canSubmit]);
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-4">
@@ -116,6 +120,29 @@ export function BlockedEscalation({ loom }: { loom: Loom }) {
             <span className="text-sm font-medium">Answer &amp; resume</span>
           </div>
 
+          {/* M11 — the STRATEGY answer field: the strategy-derived ask requests a
+              test/eval command for a library/CLI/DS deliverable, and this is the
+              field that answer lands in (persisted as telar.yaml verifyCommand,
+              never as devCommand — a test suite must never be auto-spun as a
+              dev server). */}
+          <label className="flex flex-col gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              verification command
+            </span>
+            <Input
+              value={verifyCommand}
+              onChange={(e) => setVerifyCommand(e.target.value)}
+              placeholder="e.g. bun test"
+              className="font-mono text-xs"
+              disabled={busy}
+            />
+            <span className="text-[11px] text-muted-foreground">
+              For a library/CLI/eval deliverable: a command whose exit code proves
+              the work. Saved to <code className="font-mono">telar.yaml</code> —
+              its exit code becomes the fail-closed verification gate.
+            </span>
+          </label>
+
           <label className="flex flex-col gap-1.5">
             <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/70">
               dev command
@@ -128,8 +155,8 @@ export function BlockedEscalation({ loom }: { loom: Loom }) {
               disabled={busy}
             />
             <span className="text-[11px] text-muted-foreground">
-              Saved to <code className="font-mono">telar.yaml</code> so verification
-              can bring the app up — this alone makes the lane viable.
+              For a runnable app: saved to <code className="font-mono">telar.yaml</code>{" "}
+              so verification can bring the app up — this alone makes the lane viable.
             </span>
           </label>
 
@@ -148,7 +175,8 @@ export function BlockedEscalation({ loom }: { loom: Loom }) {
             <span className="text-[11px] text-muted-foreground">
               Saved to <code className="font-mono">.telar/runbook.md</code>{" "}
               (never committed) — the narrative for how to reach and verify the
-              feature.
+              feature. Accompanies a command above; a runbook alone can&apos;t
+              resume the loom.
             </span>
           </label>
 
