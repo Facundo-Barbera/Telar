@@ -16,16 +16,18 @@ import {
   READ_ONLY_TOOLS,
   READ_ONLY_DISALLOWED_TOOLS,
 } from "./build-fanout";
-import { readBundleFile, readContract } from "./bundle";
+import { CONTRACT_FILE, readBundleFile, readContract } from "./bundle";
 import { selectTemplate, validateWorkflow } from "./thread-templates";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
 import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
+import { normalizeGateOutput } from "./repair-guard";
+import { isRunnableShape } from "./runnable-shape";
 import { foldChildOnDone } from "./consolidate";
 import { startProjectServer, startLane, laneTarget, type Lane, type StartLaneOpts } from "./run-server";
-import { ModelPolicy, ThreadWorkflow, validateContract, Verdict } from "./schemas";
+import { ModelPolicy, ThreadWorkflow, validateContract, Verdict, VerificationContract } from "./schemas";
 import type {
   AccountProfile,
   ContractAssertion,
@@ -34,7 +36,6 @@ import type {
   Roster,
   ServersConfig,
   Step,
-  VerificationContract,
   VerifierReport,
   WorkUnitState,
 } from "./schemas";
@@ -47,11 +48,12 @@ import {
   orchestratorVerifyEnabled,
   laneEscalationEnabled,
   subjectiveRoutingEnabled,
+  adaptiveVerificationEnabled,
 } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig, resolveRunbook } from "./servers";
-import { charterHasGateIntent, deriveDeliverableSignal, type CharterProofIntent } from "./deliverable-signal";
+import { blockedStrategyQuestion, charterHasGateIntent, deriveDeliverableSignal, type CharterProofIntent } from "./deliverable-signal";
 import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
 import type { SetupDeps } from "./setup/setup-agent";
 
@@ -1720,6 +1722,13 @@ export async function executeLoom(
   // on AND the root pinned a resolvable base SHA; otherwise ownWorktree stays
   // null and every path below is byte-identical to pre-M3.
   let ownWorktree: string | null = null;
+  // M11.5 (finding 5) — the pinned base SHA the worktree is detached at, HOISTED
+  // out of the isolation `if` so the finally's snapshot can compare it against
+  // the (possibly advanced) worktree HEAD. Without this the finally could not
+  // tell a truly-clean-at-base worktree (nothing to preserve) from one whose
+  // builder COMMITTED its attempt work (clean tree, HEAD past base) — the
+  // committed-but-unreferenced case the cancel path was destroying.
+  let ownWorktreeBaseSha: string | undefined;
   // Set true ONLY when the done-path fold lands the child's diff on the review
   // branch. Any other terminal (fold FAILED, fold never ran, needs-review/
   // failed/halted) leaves it false, so the finally snapshots the worktree's WIP
@@ -1728,6 +1737,7 @@ export async function executeLoom(
   if (isolationEnabled(manifest) && loom.parentLoomId) {
     const baseSha = getLoom(loom.parentLoomId)?.baseSha;
     if (baseSha) {
+      ownWorktreeBaseSha = baseSha;
       ownWorktree = await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id));
       loom.worktree = ownWorktree;
       opts.onState?.(loom); // persist BEFORE the build so a crash leaves a reclaimable record
@@ -1742,6 +1752,66 @@ export async function executeLoom(
     let verifierRepair = ""; // set when the previous attempt was Verifier-driven
     let flakyUsed = 0;
     const maxFlaky = 2;
+    // M11.4 (finding 4) — the previous attempt's per-failing-id output signatures,
+    // for the attempt-loop unfixable-gate breaker below. Null until the flag is
+    // on AND at least one attempt has failing gates. Flag-off it stays null and
+    // the breaker never engages (byte-identical).
+    const adaptiveVerify = adaptiveVerificationEnabled(manifest);
+    let prevFailSig: Record<string, string> | null = null;
+
+    // M11 item-2(iv) (finding 2) — fail-CLOSED backstop for a NON-runnable
+    // command `expected` reaching EXECUTION. A `command` runs its `expected`
+    // verbatim through sh -c (runContractGates), so a prose / bare-JS expected is
+    // unrunnable-by-construction and fails identically forever — the live bug
+    // (loom_mriqnl72) burned three attempts on "process: command not found".
+    // Author-time validateContract now REJECTS this shape, so a NEW contract can
+    // never carry it; the case that still reaches here is a LEGACY on-disk
+    // contract authored before the guard (the live-bug loom already persisted),
+    // or a write path that bypassed validation.
+    //
+    // Why raw-parse and not readContract(): readContract re-runs validateContract
+    // and, on ANY error, returns contract:null. Post-guard, a non-runnable command
+    // expected IS such an error — so both readContract here AND the loop's own
+    // readContract below would see null, silently DROP the whole contract, and let
+    // the loom proceed judged on manifest.gates alone. That is a fail-OPEN (the
+    // falsifiable yardstick vanishes). So we read the RAW bundle contract
+    // (structural safeParse, no validateContract) to SEE the broken assertion the
+    // validator would hide, and PARK the loom (blocked, a strategy-derived
+    // answerable question) instead of letting it run yardstick-less. SCOPED to
+    // `command` (matching validateContract): a `gate` expected is a manifest-gate
+    // NAME, a `db` expected is legitimately SQL. Flag-gated under
+    // adaptiveVerification → flag-off byte-identical (no raw read, no park).
+    if (adaptiveVerify) {
+      const rawContract = readBundleFile(loom.id, CONTRACT_FILE);
+      if (rawContract !== null) {
+        let parsedRaw: VerificationContract | null = null;
+        try {
+          const p = VerificationContract.safeParse(JSON.parse(rawContract));
+          if (p.success) parsedRaw = p.data;
+        } catch {
+          // Malformed JSON / structurally-invalid contract — not our concern;
+          // the existing null-contract path handles it. Only a well-formed
+          // contract carrying a non-runnable command is the item-2(iv) case.
+        }
+        if (parsedRaw) {
+          const nonRunnable = parsedRaw.assertions.filter(
+            (a) => a.type === "command" && !!(a.expected ?? "").trim() && !isRunnableShape(a.expected ?? ""),
+          );
+          if (nonRunnable.length > 0) {
+            const ids = [...new Set(nonRunnable.map((a) => a.id))].sort();
+            const signal = deriveDeliverableSignal(manifest.root, loom.charter);
+            loom.blockedReason =
+              `Non-runnable verification command(s) ${ids.join(", ")}: the authored \`expected\` is prose or a ` +
+              `bare expression, not an executable shell command, so it can never pass through the gate runner ` +
+              `(it would run verbatim as \`sh -c\` and fail identically forever). ${signal.reason}.`;
+            loom.blockedQuestion = blockedStrategyQuestion(signal);
+            emit({ type: "lane-escalation", by: "telar", reason: "nonrunnable-expected", ids });
+            setState("blocked");
+            return loom;
+          }
+        }
+      }
+    }
 
     for (let n = 1; n <= maxAttempts; n++) {
       if (isAborted()) return halt();
@@ -1775,10 +1845,41 @@ export async function executeLoom(
       // (empty manifest.gates but N routed checks) this flips gatesConfigured
       // true and judges the loom on real exit-code evidence — never a browser.
       // Every existing contract partitions to deterministic:[] -> adds nothing.
-      const { contract: routedContract } = readContract(loom.id);
-      const deterministic = routedContract
+      const { contract: routedContract, errors: contractErrors } = readContract(loom.id);
+      let deterministic = routedContract
         ? partitionAssertions(routedContract.assertions).deterministic
         : [];
+      // M11 (finding: fail-OPEN floor) — readContract returns contract:null on ANY
+      // validateContract error, and the ALWAYS-ON non-runnable-command rule (schemas
+      // validateContract) is a NEW such error. Left alone, null ⇒ deterministic:[]
+      // would SILENTLY DROP the whole deterministic slice of a LEGACY on-disk
+      // contract whose ONLY defect is a prose/JS `command` expected — the falsifiable
+      // yardstick vanishes and the loom is judged on manifest.gates alone (fail-OPEN,
+      // the sacred posture INVERTED; for a gate-less library loom that means passing
+      // on the builder's self-report). Instead, when the SOLE reason readContract
+      // nulled is that non-runnable-command rule, route the RAW structural slice
+      // anyway: the prose `expected` runs verbatim through the gate runner and FAILS
+      // CLOSED — exactly the pre-guard behavior, so flag-off stays byte-identical
+      // (the command ran and reddened before this diff too). Flag-ON the item-2(iv)
+      // pre-flight above already PARKED such a loom before this loop; this floor is
+      // the flag-OFF (and any-non-park) safety net. Scoped tightly to the non-
+      // runnable-command error so every OTHER null-cause (malformed JSON, dangling
+      // expectedFile, prose-only assertion) keeps its exact prior deterministic:[].
+      if (
+        !routedContract &&
+        contractErrors.length > 0 &&
+        contractErrors.every((e) => e.includes("non-runnable expected"))
+      ) {
+        const raw = readBundleFile(loom.id, CONTRACT_FILE);
+        if (raw !== null) {
+          try {
+            const p = VerificationContract.safeParse(JSON.parse(raw));
+            if (p.success) deterministic = partitionAssertions(p.data.assertions).deterministic;
+          } catch {
+            // Structurally broken JSON — keep the empty slice (baseline behavior).
+          }
+        }
+      }
       const contractGateResults = deterministic.length
         ? await runContractGates(deterministic, manifest, buildCwd(loom, manifest), (r, a) =>
             emit({ type: "gate", result: r, assertionId: a.id, assertionType: a.type }),
@@ -1800,6 +1901,68 @@ export async function executeLoom(
       failing = mergedGates.filter((r) => !r.ok);
       lastVerdict = verdict;
       verdictWasNull = verdict === null;
+
+      // M11.4 (finding 4) — the attempt-loop unfixable-gate safety net. A loom
+      // with no working repair route (created before the proof-hint plumbing, or
+      // whose planner emitted no hints) would otherwise burn EVERY attempt on a
+      // gate the builder can never move (finding 2's live bug: a prose `expected`
+      // running as `sh -c` fails identically forever). When a failing assertion
+      // carries a BYTE-IDENTICAL output signature across consecutive attempts
+      // WHILE this attempt's builder actually changed the tree (files_touched
+      // non-empty — it TRIED and the gate didn't budge), the red is contract/
+      // environment state, not code: PARK the loom (blocked, a strategy-derived
+      // answerable question) instead of wasting the remaining attempts. Reuses
+      // repair-guard's normalizeGateOutput so both breaker legs (this + the
+      // frozen-lane repair loop) derive the signature identically. Flag-gated
+      // under adaptiveVerification → flag-off byte-identical.
+      let failSig: Record<string, string> | null = null;
+      if (adaptiveVerify && failing.length > 0) {
+        failSig = {};
+        for (const r of failing) failSig[r.name] = normalizeGateOutput(r.output);
+        const treeChanged = (verdict?.files_touched?.length ?? 0) > 0;
+        // NO-PROGRESS precondition (adaptive-verification review finding 3) — the
+        // breaker may fire ONLY when the failing SET is NOT strictly shrinking
+        // between the two attempts, mirroring repair-guard Guard 3's strict-shrink
+        // progress test. Without this, a loom with SEVERAL independent failing
+        // assertions that the builder legitimately fixes one-per-attempt (attempt
+        // n-1 works on Y leaving X's output untouched, attempt n fixes Y) would see
+        // X flagged "stuck" and PARK the whole loom before a later attempt could fix
+        // X. When F strictly shrank (F_n ⊂ F_{n-1}, |F_n| < |F_{n-1}|) the builder
+        // IS converging — never park on a momentarily-identical id; let the
+        // remaining attempt run. Only a genuine plateau (same/growing set) with a
+        // byte-identical stuck id is unfixable.
+        const prevIds = prevFailSig ? new Set(Object.keys(prevFailSig)) : null;
+        const curIds = new Set(failing.map((r) => r.name));
+        const madeProgress =
+          prevIds !== null &&
+          [...curIds].every((id) => prevIds.has(id)) &&
+          curIds.size < prevIds.size;
+        if (prevFailSig && treeChanged && !madeProgress) {
+          const prev = prevFailSig;
+          const stuck = failing
+            .map((r) => r.name)
+            .filter((id) => {
+              // Non-empty + byte-identical to the previous attempt (an empty
+              // output carries no signal — decline to judge, same rule as the
+              // repair-guard signature guard).
+              const s = failSig![id];
+              return s !== undefined && s !== "" && prev[id] === s;
+            });
+          if (stuck.length > 0) {
+            const ids = [...new Set(stuck)].sort();
+            const signal = deriveDeliverableSignal(manifest.root, loom.charter);
+            loom.blockedReason =
+              `Unfixable gate after ${n} attempts: ${ids.join(", ")} failed with byte-identical output ` +
+              `while the builder kept changing the tree — the red is contract/environment state, not ` +
+              `project code, so no further attempt can move it. ${signal.reason}.`;
+            loom.blockedQuestion = blockedStrategyQuestion(signal);
+            emit({ type: "lane-escalation", by: "telar", reason: "unfixable-gate", ids });
+            setState("blocked");
+            return loom;
+          }
+        }
+      }
+      prevFailSig = failSig;
 
       // Drive the Verifier only when the builder succeeded — otherwise there is
       // nothing to verify and verification stays "skip" (no verify call).
@@ -1981,7 +2144,11 @@ export async function executeLoom(
         try {
           // telar/<rootId|loomId>-wip-<childId> — a durable, human-discoverable ref.
           const branch = `telar/${loom.parentLoomId ?? loom.id}-wip-${loom.id}`;
-          const snapped = await withWorktreeLock(() => snapshotWorktreeToBranch(defaultGitRunner, wt, branch));
+          // M11.5 (finding 5) — pass the pinned base so a CLEAN worktree whose
+          // builder COMMITTED its work (HEAD advanced past base) still pins a
+          // recovery branch, instead of the committed commits being destroyed by
+          // the removeWorktree below.
+          const snapped = await withWorktreeLock(() => snapshotWorktreeToBranch(defaultGitRunner, wt, branch, ownWorktreeBaseSha));
           if (snapped) {
             loom.recoveryBranch = branch;
             try {

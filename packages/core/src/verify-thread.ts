@@ -42,7 +42,7 @@ import {
   withWorktreeLock,
 } from "./vcs";
 import { type DbCloner, NullDbCloner } from "./db-clone";
-import { type RepairCaps, type RepairRound, decideRepairContinuation } from "./repair-guard";
+import { type RepairCaps, type RepairRound, decideRepairContinuation, normalizeGateOutput } from "./repair-guard";
 import { resolveServersConfig as defaultResolveServersConfig } from "./servers";
 import { type Lane, type StartLaneOpts, laneTarget, startLane as defaultStartLane } from "./run-server";
 import { readContract as defaultReadContract } from "./bundle";
@@ -287,6 +287,17 @@ export function roundFromVerify(iv: IvResult, n: number, costUsd: number, ts: nu
     failing = failing ?? f;
     passing = passing ?? p;
   }
+  // M11.4 (finding 4) — attach a per-failing-id output signature from the
+  // DETERMINISTIC gates so the pure signature guard can detect a gate that fails
+  // byte-identically across rounds. Only the failing gates contribute
+  // (GateResult.name === assertion id); a panel-attributed failing id with no
+  // gate simply has no signature (the guard treats it as non-stuck — safe). Left
+  // undefined when no gate signatures exist so a panel-only/legacy round stays
+  // byte-identical to pre-M11.
+  const failingSig: Record<string, string> = {};
+  for (const g of iv.gates ?? []) {
+    if (!g.ok) failingSig[g.name] = normalizeGateOutput(g.output);
+  }
   return {
     n,
     failingIds: uniqSorted(failing),
@@ -295,6 +306,7 @@ export function roundFromVerify(iv: IvResult, n: number, costUsd: number, ts: nu
     costUsd,
     startedAt: ts,
     endedAt: ts,
+    ...(Object.keys(failingSig).length > 0 ? { failingSig } : {}),
   };
 }
 

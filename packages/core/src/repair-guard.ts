@@ -19,7 +19,33 @@ export type RepairRound = {
   costUsd: number; // spend attributed to this round's repair (0 for the initial verify)
   startedAt: number;
   endedAt: number;
+  // M11.4 (finding 4) — per-failing-id output SIGNATURE: a normalized, bounded
+  // tail of each failing gate's output this round (assertion id → sig). It is a
+  // stable STRING derived from DETERMINISTIC gate output — never a model verdict
+  // — so the signature guard below stays a pure function of strings. OPTIONAL:
+  // the producer (verify-thread roundFromVerify) attaches it ONLY when the verify
+  // returned deterministic GateResult[]; a panel-only / legacy / flag-off round
+  // omits it, so the signature guard is inert and byte-identical to pre-M11.
+  failingSig?: Record<string, string>;
 };
+
+// M11.4 (finding 4) — normalize a gate's output into a stable, bounded signature
+// for the unfixable-gate guard. CONSERVATIVE by design: it only collapses
+// whitespace and clips to a bounded tail — it does NOT strip digits/timestamps,
+// so any genuinely volatile output simply fails to match (a false NEGATIVE that
+// merely declines to break early, never a false positive that escalates a moving
+// gate). Shared with the executor attempt-loop breaker so both legs derive the
+// signature identically. Pure.
+export function normalizeGateOutput(output: string): string {
+  return output.replace(/\s+/g, " ").trim().slice(-500);
+}
+
+// The signature-plateau threshold: an assertion RED with a byte-identical
+// signature across this many consecutive rounds is deemed unfixable. Chosen so
+// it fires (history length 3 = initial verify + 2 repairs) BEFORE Guard 1's
+// max-iteration backstop (history length 4), giving an earlier, better-reasoned
+// escalation than "max repair iterations".
+const UNFIXABLE_ROUNDS = 3;
 
 export type RepairCaps = {
   // Max repair DISPATCHES allowed (mirrors executor maxAttempts=3). Clamped to
@@ -74,6 +100,34 @@ export function decideRepairContinuation(
   const regressed = [...Fn].filter((id) => everGreen.has(id));
   if (regressed.length > 0) {
     return { action: "escalate", reason: `regression: ${uniqSorted(regressed).join(", ")}` };
+  }
+
+  // Guard (M11.4, finding 4) — Unfixable-gate signature plateau. An assertion
+  // that stays RED with a BYTE-IDENTICAL output signature across the last
+  // UNFIXABLE_ROUNDS rounds is not builder-fixable: the loop dispatched a real
+  // repair between every round (each round after the initial verify is, by the
+  // loop's own structure, preceded by a builder diff), yet the gate is
+  // byte-for-byte the same red — the red is contract/environment state, not
+  // project code the repair agent can move. Escalate NAMING the stuck ids;
+  // never spend another round. This catches the case Guard 3 (strict-shrink)
+  // MISSES: an id can persist identically while the failing SET shrinks around
+  // it (other assertions fixed), so the set-based progress test would keep
+  // saying "repair" forever on a gate that will never move. Evaluated AFTER
+  // regression (an oscillation is a distinct, higher-priority failure) and
+  // BEFORE strict-shrink so it can override the "repair"/"no progress" verdict
+  // with the specific unfixable reason. PURE (sets/strings only). Inert unless
+  // the producer attached failingSig on every window round (flag-off / legacy
+  // rounds omit it → no match → pre-M11 byte-identical).
+  if (history.length >= UNFIXABLE_ROUNDS) {
+    const window = history.slice(history.length - UNFIXABLE_ROUNDS);
+    const stuck = [...Fn].filter((id) => {
+      const sig = window[0]!.failingSig?.[id];
+      if (sig === undefined || sig === "") return false; // no signature captured — cannot judge
+      return window.every((r) => r.failingSig?.[id] === sig); // red + identical in every window round
+    });
+    if (stuck.length > 0) {
+      return { action: "escalate", reason: `unfixable gate: ${uniqSorted(stuck).join(", ")}` };
+    }
   }
 
   // Guard 3 — Progress / strict shrink. From the second round on, the failing

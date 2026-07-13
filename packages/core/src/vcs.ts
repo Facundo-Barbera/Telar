@@ -146,13 +146,39 @@ export function removeWorktree(git: GitRunner, repoRoot: string, wt: string): vo
 // worktree is checked out detached at the pinned base): `add -A` stages every
 // change, `commit` advances the detached HEAD, then `branch -f <branch> HEAD`
 // pins a shared ref at that commit (visible from the main repo, survives
-// `worktree remove`). Returns true if a commit was made, false if the worktree
+// `worktree remove`). Returns true if a branch was pinned, false if the worktree
 // had nothing to snapshot (caller then just removes the dir). THROWS on a real
 // git failure so the caller can fall back to RETAINING the dir rather than
 // silently lose work. Serialize through withWorktreeLock at the call site.
-export function snapshotWorktreeToBranch(git: GitRunner, worktree: string, branch: string): boolean {
+//
+// M11.5 (finding 5) — the CANCEL/abort worktree-recovery fix. A builder that
+// COMMITTED its attempt work inside the detached-HEAD worktree leaves a CLEAN
+// tree but an ADVANCED HEAD (past the pinned base). Pre-fix this returned false
+// on the clean tree → no branch pinned → removeWorktree destroyed the
+// committed-but-unreferenced commits (HEAD advanced, no branch points at it).
+// Now, when `baseSha` is supplied and the (clean) HEAD has diverged from it, we
+// pin the recovery branch straight at HEAD (no add/commit needed) so the
+// committed work survives. Precedence: a DIRTY tree still takes the stage+commit
+// path (uncommitted WIP is preserved as before); a CLEAN tree with HEAD===base
+// (or no baseSha given) still returns false — truly nothing to preserve, keeping
+// the "clean worktree → no branch" contract that vcs.test.ts pins.
+export function snapshotWorktreeToBranch(
+  git: GitRunner,
+  worktree: string,
+  branch: string,
+  baseSha?: string,
+): boolean {
   const status = git(worktree, ["-c", "core.quotepath=false", "status", "--porcelain"]).stdout.trim();
-  if (!status) return false; // clean worktree — nothing to preserve
+  if (!status) {
+    // Clean tree. The only work left to preserve is COMMITTED divergence from
+    // the pinned base (the builder committed inside the detached worktree).
+    if (!baseSha) return false; // caller gave no base to compare — legacy "clean → nothing" contract
+    const head = git(worktree, ["rev-parse", "HEAD"]).stdout.trim();
+    if (!head || head === baseSha) return false; // truly at base — nothing to preserve
+    const br = git(worktree, ["branch", "-f", branch, "HEAD"]);
+    if (br.status !== 0) throw new Error(`git branch failed during snapshot: ${br.stderr.trim() || br.stdout.trim()}`);
+    return true;
+  }
   const add = git(worktree, ["add", "-A"]);
   if (add.status !== 0) throw new Error(`git add failed during snapshot: ${add.stderr.trim() || add.stdout.trim()}`);
   const commit = git(worktree, ["commit", "--no-verify", "-m", `telar: recovered WIP\n\nBranch: ${branch}`]);
