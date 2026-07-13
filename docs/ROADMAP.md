@@ -357,6 +357,51 @@ fail-open/coverage hole before commit). Base green: 947 pass / core+web tsc 0.**
 drives to a real `ready` (orchestrator stood up the lane, verified the whole, fail-closed), the
 human accepts once, and the learned setup is persisted. Full spec in `orchestrator-owned-verification.md`.
 
+## M11 — Adaptive verification strategy (derive the method from the deliverable)
+
+*See `adaptive-verification.md` (design). Builds ON M10 and is deliberately SMALLER — it adds
+no new machinery and no new fail-closed invariant; it REUSES M10.1–M10.5 wholesale and reframes
+three existing seams. M10 wired verification web/dev-server-centric; M11 makes the orchestrator
+DERIVE the right verification method from what's being built.*
+
+- **Verification is a STRATEGY the orchestrator derives from the deliverable**, not "a dev
+  server": web app → browser live-critic; library → a `bun test` gate; CLI → run + assert on
+  exit/output; data-science → run an eval in a sandbox and assert on artifacts (accuracy ≥ X, no
+  nulls, schema-match, figure renders); API/DB → boot + hit endpoints. No new AssertionType — a
+  non-web method is already expressible as `command`+`expected`.
+- **Establish verification at any point**, not at a fixed gate. For anything that *becomes*
+  testable, the artifact only exists after the work — so the pre-flight reframes from "is a lane
+  viable NOW? park if not" to "can I form a plan to verify this at all?": proceed and defer
+  establishment; **asking the human is the last resort** (genuinely un-automatable, after trying),
+  not the first gate. Greenfield / library / CLI / DS all just proceed.
+- **The invariant (sacred, unchanged):** freedom in the METHOD, never in the VERDICT. The top-gate
+  fail-closed coercion + the read-only judge wall carry over verbatim, so a weak/mis-derived method
+  can never rubber-stamp — worst case it yields no evidence → fail-closed → honest escalation. `ready`
+  stays the autonomous ceiling; only a human writes `done`.
+
+**Motivation:** the M10.6 prove-run — a greenfield `bun test` arithmetic library (`loom_mrigs3zo_vxgrsr`)
+parked `blocked` at the M10.4 pre-flight because (a) `synthesizeContract` over-routed every criterion to
+a single live-critic (no gates configured; M10.5 routing was deliberately minimal) and (b) the pre-flight
+then demanded a dev command a *library* has no answer for. The moat held (nothing stranded, ~$0.28 spent)
+— it exposed that verification is wired for web apps, not derived from the deliverable. (Also: the
+"Orchestrator requires help" surface should be a conversation, not a form — tracked follow-up.)
+
+**Phases (flag-gated, default off, fail-closed, byte-identical when off — same discipline as M10):**
+- **M11.0** — pre-flight reframe: proceed-and-defer + escalate-last-resort (widen `isLaneViable`; park
+  only when no plan can be formed). *Size S; fixes today's block. Flag `laneEscalation` (widened).*
+- **M11.1** — modality derivation: `synthesizeContract` derives the assertion type from the deliverable
+  and honors the charter `proofStrategy` (bun test → gate; UI → live-critic; DS/CLI → command);
+  completes the M10.5-deferred routing. *Size M. Flag `adaptiveVerification` (new).*
+- **M11.2** — generalize the lane to non-server VerificationStrategies (test-gate / CLI-harness /
+  sandbox-eval / artifact-assert) established when the artifact exists, inside the frozen worktree.
+  *Size M. Flag `verifyLane` (widened).*
+- **M11.3** — prove & flip (INTERACTIVE): the redemption library reaches autonomous `ready`; a CLI + a
+  DS eval verify; confirm a mis-derived/weak strategy still demotes; flip defaults.
+
+**Done when:** a non-web deliverable (library, CLI, data-science eval) drives to a real `ready` via a
+method the orchestrator *derived* — no false dev-server escalation, fail-closed intact. Full spec in
+`adaptive-verification.md`.
+
 ## M8 follow-up (deferred, tracked)
 
 - **Authored live-critic degrade path (moat, medium).** In a *decomposed epic*, if the
@@ -411,7 +456,8 @@ human accepts once, and the learned setup is persisted. Full spec in `orchestrat
 
 `loom-model.md` · `loom-orchestrator.md` · `runtime-architecture.md` ·
 `verifier-agent.md` · `verification-environments.md` · `watchers-design.md` ·
-`mcp-oauth-design.md` · `phase-2-runner-plan.md`
+`mcp-oauth-design.md` · `phase-2-runner-plan.md` · `thread-as-workflow.md` ·
+`orchestrator-owned-verification.md` · `adaptive-verification.md`
 
 _These are **design intent**; where they disagree with shipped behavior, this
 roadmap and the code win. Reconcile opportunistically as each milestone touches them._
