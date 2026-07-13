@@ -25,6 +25,11 @@ import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "
 import { addWorktree, defaultGitRunner, isolationEnabled, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
 import { normalizeGateOutput } from "./repair-guard";
 import { isRunnableShape } from "./runnable-shape";
+// FINDING 6/7 integration — the shared author-repairable-error predicate. Safe
+// circular import: weave-contracts already imports partitionAssertions from here,
+// and both are hoisted function declarations used only at runtime (never at module
+// load), so ESM live bindings resolve them regardless of evaluation order.
+import { contractErrorsRepairable } from "./weave-contracts";
 import { foldChildOnDone } from "./consolidate";
 import { startProjectServer, startLane, laneTarget, type Lane, type StartLaneOpts } from "./run-server";
 import { ModelPolicy, ThreadWorkflow, validateContract, Verdict, VerificationContract } from "./schemas";
@@ -1865,11 +1870,15 @@ export async function executeLoom(
       // the flag-OFF (and any-non-park) safety net. Scoped tightly to the non-
       // runnable-command error so every OTHER null-cause (malformed JSON, dangling
       // expectedFile, prose-only assertion) keeps its exact prior deterministic:[].
-      if (
-        !routedContract &&
-        contractErrors.length > 0 &&
-        contractErrors.every((e) => e.includes("non-runnable expected"))
-      ) {
+      // FINDING 6/7 integration — a finding-6-shaped legacy contract (prose expected
+      // + a mis-placed runnable in `observable`) now yields TWO validateContract
+      // errors; route its RAW deterministic slice (fail-CLOSED) when EVERY error is
+      // author-repairable, so it never collapses to deterministic:[] (fail-OPEN). The
+      // shared helper also returns false on an empty list, preserving the prior
+      // length>0 guard. Every OTHER null-cause (malformed JSON, dangling expectedFile,
+      // prose-only) still falls through to the empty slice, and flag-off never reaches
+      // a tightened-predicate error ⇒ byte-identical.
+      if (!routedContract && contractErrorsRepairable(contractErrors)) {
         const raw = readBundleFile(loom.id, CONTRACT_FILE);
         if (raw !== null) {
           try {
@@ -2411,6 +2420,27 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
       // already wrote — so for the default 1-step template, whose failing
       // executeLoom already set loom.state, this guard is a no-op.
       if (!res.ok) {
+        // FINDING 8 — a step that PARKED the loom `blocked` is an awaiting-human
+        // PAUSE, not a step failure. A delegated executeLoom can park blocked via
+        // the breaker (unfixable gate after N attempts) or the item-2(iv) pre-flight
+        // lane-viability floor; that is a resumable question, not a dead step. Surface
+        // it (workflow-step-blocked) and RETURN the parked loom VERBATIM so the weave
+        // rollup lifts the blockedQuestion to the root — instead of the fail-close
+        // below coercing "blocked"→"failed" (run #3's swallow, which buried the ask
+        // and cascaded child→failed→root→failed). PROVENANCE GUARD: only the built-in
+        // delegateToExecuteLoom parks the SAME loom object (ctx.loom === loom), so
+        // loom.state is genuinely "blocked"; a forged {ok:false,state:"blocked"} from
+        // an injected runStep that did NOT park the loom fails the loom.state===
+        // "blocked" conjunct and falls through to fail-closed (mirrors the file's
+        // usedBuiltinExecutor trust discipline). Keyed STRICTLY to "blocked" so every
+        // OTHER non-green (failed/skipped) still coerces to failed — the
+        // m9-thread-workflow fail-close pins stay byte-identical. Flag-off a child
+        // never returns blocked (the breaker/park exist only under laneEscalation/
+        // adaptiveVerification), so this branch is unreachable ⇒ flag-off byte-identical.
+        if (res.state === "blocked" && loom.state === "blocked") {
+          emit({ type: "workflow-step-blocked", stepId: res.id });
+          return loom;
+        }
         if (!isTerminalFailure(loom.state)) {
           const message = `step "${res.id}" failed: terminated non-green (state "${res.state}")`;
           loom.error = message;

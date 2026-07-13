@@ -190,6 +190,29 @@ export function tick(view: LedgerView): TickResult {
     };
   }
 
+  // FINDING 8 — a required subgoal whose thread PARKED `blocked` with no live
+  // runner is AWAITING A HUMAN: not schedulable, not failed, not done. Emit an
+  // honest parking escalate (a NON-schedule, NON-finish decision — finish-loom
+  // stays illegal here per validateDecision since not every required is done) so
+  // the decision stream reads "awaiting human — parking" instead of the generic
+  // "no ready threads … (blocked)" the bottom fallthrough would otherwise log for
+  // a settled blocked child. Mirrors the failedRequired preemption exactly (a
+  // terminal required child stops the weave): runWeave breaks on escalate, then
+  // rollupWeave is authoritative and lifts the child's answerable question. The
+  // runnerInFlight guard matches failedRequired's — a blocked park is always
+  // settled (the breaker returns), so this never fires on a mid-flight thread.
+  // Flag-off no thread ever reaches `blocked`, so this branch is dead ⇒ byte-identical.
+  const blockedRequired = required.find((sg) => {
+    const t = threadBySubGoal.get(sg.id);
+    return t?.state === "blocked" && t.runnerInFlight !== true;
+  });
+  if (blockedRequired) {
+    return {
+      decision: { action: "escalate", reason: `${blockedRequired.id} awaiting human — parking` },
+      rationale: { summary: `required subgoal ${blockedRequired.id} parked blocked — awaiting human`, budget: snapshot },
+    };
+  }
+
   const ranked = prioritizeScored(readySubGoals(view), charter.decomposition);
   const ready = ranked.map((r) => r.id);
   const poolRoom = budget.maxAgents - view.inFlight;

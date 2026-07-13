@@ -50,6 +50,19 @@ export function rollupWeave(
   const envChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "env-review");
   if (envChild) return { state: "env-review" };
 
+  // FINDING 8 — a required child that PARKED `blocked` (the breaker fired on an
+  // unfixable gate, or the pre-flight lane-viability floor) is AWAITING A HUMAN,
+  // not failed. Lift it as `blocked` so the root parks carrying the child's
+  // answerable question (runWeave lifts blockedReason/blockedQuestion below) —
+  // rather than the generic needs-review fallthrough burying the ask (run #3's
+  // swallow). Ordered AFTER failedRequired (a genuinely failed child STILL fails
+  // the weave) and env-review (its own answerable gate), BEFORE the needs-review
+  // fallthrough. Flag-off no child ever reaches `blocked` (the breaker/park exist
+  // only under laneEscalation/adaptiveVerification), so this branch is dead ⇒
+  // byte-identical.
+  const blockedChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "blocked");
+  if (blockedChild) return { state: "blocked", error: `${blockedChild.id}: blocked` };
+
   const notDoneRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state !== "done");
   if (notDoneRequired) return { state: "needs-review", error: `${notDoneRequired.id}: not done` };
 
@@ -375,6 +388,22 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     if (r.state === "env-review") {
       const envChild = children.find((c) => c.state === "env-review");
       if (envChild) loom.proposedServers = envChild.proposedServers;
+    }
+    // FINDING 8 — mirror the env-review lift for a `blocked` rollup: carry the
+    // parked child's HUMAN-facing question (blockedReason/blockedQuestion) up onto
+    // the ROOT before setState so the existing blocked cockpit (form + Discuss)
+    // renders the ask on the thing the human interacts with, and record WHICH child
+    // /subgoal it came from (lane-escalation) for the event stream. The
+    // integration-verify block below is gated r.state === "ready", so blocked
+    // correctly skips it (nothing to verify on an awaiting-human park). Flag-off
+    // there is never a blocked child, so this is a pure no-op (byte-identical).
+    if (r.state === "blocked") {
+      const bChild = children.find((c) => c.state === "blocked");
+      if (bChild) {
+        loom.blockedReason = bChild.blockedReason;
+        loom.blockedQuestion = bChild.blockedQuestion;
+        emit({ type: "lane-escalation", by: "telar", childId: bChild.id, subGoalId: bChild.subGoalId });
+      }
     }
     setState(r.state);
     emit({ type: "weave-rollup", state: r.state });

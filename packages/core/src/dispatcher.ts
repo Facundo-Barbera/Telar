@@ -44,7 +44,7 @@ import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
 import { CONTRACT_FILE, appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
-import { synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
+import { contractErrorsRepairable, synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
 import { makeInProcessLiveness, type Liveness } from "./runner/liveness";
 import { adaptiveVerificationEnabled, envReviewEnabled, laneEscalationEnabled, orchestratorVerifyEnabled, setupAgentEnabled, verifyLaneEnabled } from "./runner/flag";
@@ -220,7 +220,14 @@ export function reviveRepairableAuthored(
   contractErrors: string[],
 ): VerificationContract | null {
   if (!adaptiveVerificationEnabled(manifest)) return null;
-  if (contractErrors.length === 0 || !contractErrors.every((e) => e.includes("non-runnable expected"))) return null;
+  // FINDING 6/7 integration — accept BOTH author-repairable error classes ("non-
+  // runnable expected" AND "observable is only valid on live-critic"), so a finding-
+  // 6-shaped legacy contract (prose expected + a mis-placed runnable in `observable`)
+  // — which now yields TWO validateContract errors — still revives+repairs on
+  // re-dispatch instead of the strict single-class .every() refusing it and forcing
+  // a synthesize. The helper stays NARROW (malformed JSON / dangling expectedFile /
+  // prose-only still fall through to synthesize) and returns false on an empty list.
+  if (!contractErrorsRepairable(contractErrors)) return null;
   const raw = readBundleFile(loom.id, CONTRACT_FILE);
   if (raw === null) return null;
   let parsed: VerificationContract;
@@ -503,6 +510,23 @@ function runWeaveWiring(
         existing.prompt = sg.detail;
         existing.title = sg.title;
         if (!existing.contractRequired) existing.acceptanceCriteria = sg.acceptanceCriteria;
+        // FINDING 8 (resume) — a child that PARKED `blocked` is being re-dispatched
+        // because a human ANSWERED the root (answerBlocked promoted a verifyCommand→
+        // telar.yaml and cleared the root park). The reused child must re-attempt
+        // against the REPAIRED contract, not re-gate on its stale broken command:
+        // (i) clear the child's own park fields, and (ii) RE-WIRE its contract slice
+        // from the freshly-tightened rootAssertions closure — the dispatch tightening
+        // pass above already repaired the root contract using the now-present
+        // manifest.verifyCommand, so re-running wireChildBundle lays down the answered
+        // runnable as the child's gate. SCOPED to the blocked case only: a steer/reject
+        // reuse (non-blocked) must NOT re-wire — steering folds into the prompt, not
+        // the contract (the invariant the branch below preserves). Flag-off a child is
+        // never `blocked`, so this is unreachable ⇒ byte-identical.
+        if (existing.state === "blocked") {
+          existing.blockedReason = undefined;
+          existing.blockedQuestion = undefined;
+          wireChildBundle(loom.id, existing, sg, rootAssertions, rootSynthesized);
+        }
         existing.state = "queued";
         existing.error = null;
         saveLoom(existing);
