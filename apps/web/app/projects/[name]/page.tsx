@@ -27,6 +27,7 @@ import {
   ChevronRightIcon,
   FolderGit2Icon,
   FolderXIcon,
+  GitBranchIcon,
   HistoryIcon,
   MessagesSquareIcon,
   PlayIcon,
@@ -80,6 +81,7 @@ import {
 import { ArchiveButton } from "@/components/session/archive-button";
 import { isTerminal, stateRailClass, sumCost } from "@/components/looms/utils";
 import { ProjectSettings } from "@/components/projects/settings-view";
+import { GitTab } from "@/components/projects/git-tab";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -89,7 +91,7 @@ type ProjectEntry = {
 
 type ChatMeta = ChatSummary;
 type Status = "loading" | "ready" | "missing" | "error";
-type Tab = "sessions" | "looms" | "settings";
+type Tab = "sessions" | "looms" | "git" | "settings";
 type StateFilter = "any" | "active" | "needs-you" | "done";
 
 /* -------------------------------------------------------------- state vocab */
@@ -932,7 +934,9 @@ function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
 
   const tabParam = searchParams.get("tab");
   const tab: Tab =
-    tabParam === "looms" || tabParam === "settings" ? tabParam : "sessions";
+    tabParam === "looms" || tabParam === "git" || tabParam === "settings"
+      ? tabParam
+      : "sessions";
 
   const [project, setProject] = useState<ProjectEntry | null>(null);
   const [status, setStatus] = useState<Status>("loading");
@@ -1130,6 +1134,7 @@ function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
         icon: WorkflowIcon,
         count: looms?.length,
       },
+      { key: "git", label: "Git", icon: GitBranchIcon },
       { key: "settings", label: "Settings", icon: SlidersHorizontalIcon },
     ];
 
@@ -1247,6 +1252,7 @@ function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
             newLoomHref={newLoomHref}
           />
         )}
+        {tab === "git" && <GitTab name={entry.name} />}
         {tab === "settings" && <ProjectSettings name={entry.name} embedded />}
       </div>
     </div>
