@@ -2392,10 +2392,15 @@ function SessionViewInner({
   // and plugin commands we don't advertise, so this only ever narrows, never
   // adds names the project scan didn't already find.
   const availableCommands = useMemo(() => {
+    // Codex sessions don't run slash commands (a Claude-session feature today),
+    // so a Codex session offers none — regardless of what .claude/commands the
+    // repo has. The menu still opens (below) to say so honestly, rather than
+    // listing commands that would only be sent as literal text.
+    if (provider === "codex") return [];
     if (sdkSlashCommands === null) return projectCommands;
     const known = new Set(sdkSlashCommands);
     return projectCommands.filter((c) => known.has(c.name));
-  }, [projectCommands, sdkSlashCommands]);
+  }, [projectCommands, sdkSlashCommands, provider]);
 
   const slashQuery =
     textInput.value.startsWith("/") && !textInput.value.includes(" ")
@@ -2416,7 +2421,11 @@ function SessionViewInner({
   const slashMenuOpen =
     slashQuery !== null &&
     !menuDismissed &&
-    (filteredCommands.length > 0 || projectCommands.length === 0);
+    (filteredCommands.length > 0 ||
+      projectCommands.length === 0 ||
+      // Codex: open even with a non-empty project scan, to show the honest
+      // "commands are a Claude-session feature" copy instead of nothing.
+      provider === "codex");
 
   // Reset the selection whenever the query text changes so it never points
   // past a shrunk list or feels stale after typing.
@@ -2748,8 +2757,11 @@ function SessionViewInner({
             />
           )}
           {/* Aggregate session cost with a hover breakdown (real grand total;
-              per-sub-agent split reserved — spend isn't attributed yet). */}
-          <CostPill total={sessionCost} />
+              per-sub-agent split reserved — spend isn't attributed yet).
+              Hidden for Codex: a ChatGPT-subscription account has no per-token
+              billing, so the figure is always $0.00 — a dead pill, not real
+              spend. The CTX pill stays; context occupancy is real either way. */}
+          {provider !== "codex" && <CostPill total={sessionCost} />}
           {/* Minimize this session to the mini-dock — the dock's natural entry
               point. Only once a real, persisted session id exists to follow. */}
           {dock && sessionId && chatPersisted && (
@@ -3000,7 +3012,9 @@ function SessionViewInner({
           <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
             {filteredCommands.length === 0 ? (
               <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                No commands — add .claude/commands/*.md or skills to this repo.
+                {provider === "codex"
+                  ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
+                  : "No commands — add .claude/commands/*.md or skills to this repo."}
               </p>
             ) : (
               filteredCommands.map((c, i) => (

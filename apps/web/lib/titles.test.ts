@@ -1,6 +1,6 @@
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
-import { cleanTitle } from "./titles";
+import { cleanTitle, messagePrefixTitle } from "./titles";
 
 // Only cleanTitle (pure post-processing) is tested here — generateTitle
 // spawns the Claude Agent SDK subprocess and is intentionally not exercised
@@ -131,5 +131,29 @@ describe("cleanTitle", () => {
     expect(cleanTitle('  "Refactor the payment retry logic!!"  \n')).toBe(
       "Refactor the payment retry logic",
     );
+  });
+});
+
+describe("messagePrefixTitle", () => {
+  test("empty/whitespace-only input yields null", () => {
+    expect(messagePrefixTitle("")).toBeNull();
+    expect(messagePrefixTitle("   \n\t ")).toBeNull();
+  });
+
+  test("collapses whitespace and trims", () => {
+    expect(messagePrefixTitle("  Fix\n the   login\tbug  ")).toBe("Fix the login bug");
+  });
+
+  test("caps at 60 code points without splitting a surrogate pair", () => {
+    const result = messagePrefixTitle("😀".repeat(80));
+    expect(Array.from(result ?? "").length).toBe(60);
+    expect(result).toBe("😀".repeat(60));
+  });
+
+  test("keeps content verbatim — no quote/punctuation stripping or refusal filter", () => {
+    // Unlike cleanTitle: a user message is not model output, so its literal
+    // opening words are the title, refusal-looking or not.
+    expect(messagePrefixTitle("I can't get login working")).toBe("I can't get login working");
+    expect(messagePrefixTitle('"quoted" request.')).toBe('"quoted" request.');
   });
 });

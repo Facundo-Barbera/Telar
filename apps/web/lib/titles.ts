@@ -82,6 +82,18 @@ export function cleanTitle(raw: string | null | undefined): string | null {
   return text || null;
 }
 
+// Deterministic, zero-spend title: the opening message's own first words,
+// whitespace-collapsed and length-capped. Used for providers with no cheap
+// summarization subprocess of their own (Codex today — a ChatGPT-subscription
+// account has no per-token billing and spawning a Claude subprocess would
+// charge the wrong provider). Never throws; returns null only for an empty
+// message.
+export function messagePrefixTitle(message: string): string | null {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return truncateCodePoints(text, TITLE_MAX_CODEPOINTS).trim() || null;
+}
+
 function buildPrompt(message: string): string {
   const truncated = truncateCodePoints(message, MESSAGE_TRUNCATE_CODEPOINTS).trim();
   return [
@@ -103,6 +115,15 @@ export async function generateTitle(
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (!message.trim()) return null;
+
+  // Codex has no cheap summarization path of its own, and a ChatGPT-
+  // subscription account isn't per-token billed. Spawning a Claude subprocess
+  // here would charge the WRONG provider for a Codex session's title, so use
+  // the deterministic message-prefix title instead — no subprocess, no spend.
+  // The Claude path below is unchanged.
+  if ((profile.provider ?? "claude") === "codex") {
+    return messagePrefixTitle(message);
+  }
 
   const abort = new AbortController();
   const forwardAbort = () => abort.abort();

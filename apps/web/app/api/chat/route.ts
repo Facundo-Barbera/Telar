@@ -950,6 +950,12 @@ export async function POST(req: Request) {
               }
               case "text_delta": {
                 const parent = resolveCodexParent(nev.threadId);
+                // Accumulate streamed-so-far text symmetrically with the SDK
+                // branch's content_block_delta handling, so the finally-block
+                // flush persists whatever was already visible when a Codex turn
+                // is aborted mid-stream (undefined main -> null key, as there).
+                const key = parent ?? null;
+                streamingText.set(key, (streamingText.get(key) ?? "") + nev.text);
                 send("delta", { text: nev.text, ...(parent ? { parent } : {}) });
                 break;
               }
@@ -957,6 +963,9 @@ export async function POST(req: Request) {
                 const parent = resolveCodexParent(nev.threadId);
                 parts.push({ type: "text", text: nev.text, ...(parent ? { parentId: parent } : {}) });
                 send("text", { text: nev.text, ...(parent ? { parent } : {}) });
+                // Block finalized -> its accumulated streaming text is now
+                // superseded by the pushed part, same clear as the SDK branch.
+                streamingText.set(parent ?? null, "");
                 break;
               }
               case "tool": {
