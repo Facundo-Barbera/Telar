@@ -317,10 +317,15 @@ function CompactStrip({
           return (
             <div key={name} className="flex items-center">
               <DropBar axis="x" show={showBar} />
+              {/* The wheel itself is the drag handle here — cursor-grab, no
+                  icon overlay, and NO hover lift: a transform on this parent
+                  would become the containing block for the tip's
+                  position:fixed and throw it off-screen. Hover reads via the
+                  ring/bg only. */}
               <div
                 {...bind(name)}
                 aria-label={`${a.name} plan usage — drag to reorder`}
-                className={`group/wheel relative cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:-translate-y-0.5 hover:bg-sidebar-accent ${
+                className={`cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                   dragging ? "opacity-40" : ""
                 }`}
               >
@@ -329,8 +334,6 @@ function CompactStrip({
                 <WheelTip account={a} dragActive={drag.drag != null} side="top">
                   <AccountWheel five={a.fiveHour} week={a.weekly} />
                 </WheelTip>
-                {/* subtle grab affordance on hover — coexists with the tip */}
-                <GripVerticalIcon className="pointer-events-none absolute -top-0.5 left-1/2 size-3 -translate-x-1/2 text-sidebar-foreground/50 opacity-0 transition-opacity group-hover/wheel:opacity-100" />
               </div>
             </div>
           );

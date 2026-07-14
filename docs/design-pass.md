@@ -95,3 +95,13 @@ Format per entry:
   theme wrapper (all lanes) sets text-foreground; probe re-run to confirm.
   LESSON for walkthrough rounds: visual/DOM verification, not tsc, closes
   display bugs.
+  Round 6 landed c70fa7a; probe re-run CONFIRMS: light-panel spans now
+  compute oklch(0.145), dark-shell spans lab(98.26). Closed.
+
+- **view:** sidebar-account-wheels compact strip — hover regressions (owner)
+- **verdict:** polish
+- **items:** (a) hover GripVertical icon must NOT appear over compact wheels —
+  grab the wheel directly (cursor-grab only); (b) the hover tooltip stopped
+  opening after the round-4 WheelTip rewrite — restore; (c) remove the hover
+  lift (wheel animates upward). Expanded rows may keep their grip handle.
+- **round:** demo-gallery round 7 (in flight)
