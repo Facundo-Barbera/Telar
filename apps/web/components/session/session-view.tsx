@@ -1346,6 +1346,47 @@ function SessionViewInner({
 
   const busy = status === "submitted" || status === "streaming";
 
+  // ── item 3: auto-dock on leaving a STANDALONE session mid-turn ────────────
+  // Stable callbacks off the optional dock context (each is a useCallback with
+  // empty deps in the provider, so destructuring keeps the effects from
+  // re-firing on unrelated dock state changes).
+  const autoDock = dock?.autoDock;
+  const clearAutoDock = dock?.clearAutoDock;
+
+  // Re-entering the standalone view for a session removes ITS auto-docked head
+  // (a manual head is left in place — clearAutoDock checks the flag). This is
+  // also what makes "pop out from the dock panel back into the session" safe:
+  // the pop-out mounts this view, which clears the head, and no unmount fires
+  // to immediately re-dock it. Never runs for an embedded surface (loom Chat
+  // tab / escalation never auto-dock, so they have nothing to clear).
+  useEffect(() => {
+    if (embedded || !clearAutoDock || !sessionId) return;
+    clearAutoDock(sessionId);
+  }, [embedded, clearAutoDock, sessionId]);
+
+  // On unmount (leaving the surface — App Router route change / navigation)
+  // auto-dock IFF the turn is still live and this is a real, persisted,
+  // non-embedded session. Latest values ride a ref so the cleanup, which runs
+  // only at unmount, reads leave-time state rather than a stale closure.
+  const leaveRef = useRef({ busy, chatPersisted, sessionId, title, project, embedded });
+  leaveRef.current = { busy, chatPersisted, sessionId, title, project, embedded };
+  useEffect(() => {
+    return () => {
+      const s = leaveRef.current;
+      if (!autoDock) return;
+      // Guards: embedded surfaces never auto-dock; idle sessions never auto-dock
+      // (busy); need a confirmed persisted id to follow. autoDock itself no-ops
+      // if the id is already docked, so no duplicate heads.
+      if (s.embedded || !s.busy || !s.chatPersisted || !s.sessionId) return;
+      autoDock({
+        id: s.sessionId,
+        title: s.title,
+        project: s.project,
+        initial: (s.title.trim()[0] ?? s.project.trim()[0] ?? "·").toUpperCase(),
+      });
+    };
+  }, [autoDock]);
+
   // Buckets a spawn's own transcript by its tool_use id — reconstructed fresh
   // from `messages` every render (live streaming or a persisted load look
   // identical here), never a separate piece of state. First pass finds every

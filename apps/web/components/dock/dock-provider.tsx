@@ -37,6 +37,12 @@ export interface DockEntry {
   title: string;
   project: string;
   initial: string;
+  // Marks a head the client parked automatically (item 3 auto-dock): the user
+  // navigated away from the standalone session while its turn was still
+  // running. Re-entering that session standalone removes ITS auto-docked head
+  // (clearAutoDock), while a manually-docked head (autoDocked falsy) is never
+  // touched by re-entry. Persisted like any other field.
+  autoDocked?: boolean;
 }
 
 export type CompactMsg =
@@ -71,6 +77,13 @@ interface DockCtx {
   runtime: Record<string, Runtime | undefined>;
   viewed: Record<string, number>;
   dockSession: (entry: DockEntry) => void;
+  // Item 3 auto-dock: park a session as a minimized head (no auto-expand) when
+  // the user leaves the standalone view mid-turn. No-ops if the id is already
+  // docked (manual OR auto) — never a duplicate head.
+  autoDock: (entry: DockEntry) => void;
+  // Remove an id's head ONLY if it was auto-docked; manual heads are left in
+  // place. Called when the standalone session view for that id (re)mounts.
+  clearAutoDock: (id: string) => void;
   undock: (id: string) => void;
   toggleExpand: (id: string) => void;
   minimize: (id: string) => void;
@@ -131,6 +144,10 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
   // markViewed needs the live assistant count — resolve it against runtime.
   const runtimeRef = useRef(runtime);
   runtimeRef.current = runtime;
+  // Latest entries for clearAutoDock's read-then-decide (avoids re-creating the
+  // callback and lets it check the autoDocked flag before mutating).
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const markViewedNow = useCallback((id: string) => {
     const count = runtimeRef.current[id]?.assistantCount ?? 0;
     setViewed((prev) => ({ ...prev, [id]: count }));
@@ -147,6 +164,31 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
     });
     markViewedNow(entry.id);
   }, [markViewedNow]);
+
+  // Auto-dock lands as a minimized head only — no auto-expand (the user didn't
+  // ask for a panel; they just walked away from a running turn). No-op if the
+  // id is already docked either way, so re-navigations never stack heads. Unread
+  // is NOT seeded here: the baseline effect below sets it once the runtime host
+  // loads, so pre-existing (already-seen) turns don't flash as unread.
+  const autoDock = useCallback((entry: DockEntry) => {
+    setEntries((prev) =>
+      prev.some((e) => e.id === entry.id)
+        ? prev
+        : [...prev, { ...entry, autoDocked: true }],
+    );
+  }, []);
+
+  const clearAutoDock = useCallback((id: string) => {
+    const existing = entriesRef.current.find((e) => e.id === id);
+    if (!existing || !existing.autoDocked) return; // manual heads untouched
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+    setExpanded((prev) => prev.filter((x) => x !== id));
+    setRuntimeState((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
 
   const undock = useCallback((id: string) => {
     setEntries((prev) => prev.filter((e) => e.id !== id));
@@ -227,6 +269,28 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
     return head;
   }, []);
 
+  // Auto-docked heads get their unread baseline the moment the runtime host
+  // finishes its first load: viewed := the assistant-count already persisted at
+  // that point (the turns the user had seen before leaving). The current, still
+  // in-flight reply isn't persisted yet, so it lands ABOVE this baseline and
+  // shows as the unread badge once the turn finishes — matching "keeps the head
+  // with the unread badge". While viewed stays undefined (pre-load), unreadOf
+  // reads 0, so nothing flashes before the baseline is set.
+  useEffect(() => {
+    setViewed((prev) => {
+      let next = prev;
+      for (const e of entries) {
+        if (!e.autoDocked || prev[e.id] !== undefined) continue;
+        const rt = runtime[e.id];
+        if (rt?.loaded) {
+          if (next === prev) next = { ...prev };
+          next[e.id] = rt.assistantCount;
+        }
+      }
+      return next;
+    });
+  }, [entries, runtime]);
+
   // Expanding an already-open session should also refresh its viewed marker as
   // new messages land — handled at open time (toggleExpand/dockSession) and by
   // the panel calling markViewed when the tail grows while it's open.
@@ -237,6 +301,8 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
       runtime,
       viewed,
       dockSession,
+      autoDock,
+      clearAutoDock,
       undock,
       toggleExpand,
       minimize,
@@ -246,7 +312,7 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
       enqueue,
       dequeue,
     }),
-    [entries, expanded, runtime, viewed, dockSession, undock, toggleExpand, minimize, isDocked, setRuntime, markViewedNow, enqueue, dequeue],
+    [entries, expanded, runtime, viewed, dockSession, autoDock, clearAutoDock, undock, toggleExpand, minimize, isDocked, setRuntime, markViewedNow, enqueue, dequeue],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
