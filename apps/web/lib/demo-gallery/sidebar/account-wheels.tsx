@@ -325,7 +325,7 @@ function CompactStrip({
               <div
                 {...bind(name)}
                 aria-label={`${a.name} plan usage — drag to reorder`}
-                className={`cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
+                className={`flex cursor-grab items-center justify-center rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                   dragging ? "opacity-40" : ""
                 }`}
               >
@@ -480,7 +480,7 @@ function RailWheels({
             <div
               {...bind(name)}
               aria-label={`${a.name} plan usage — drag to reorder`}
-              className={`group/wheel relative cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
+              className={`group/wheel relative flex cursor-grab items-center justify-center rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                 dragging ? "opacity-40" : ""
               }`}
             >

@@ -104,4 +104,16 @@ Format per entry:
   grab the wheel directly (cursor-grab only); (b) the hover tooltip stopped
   opening after the round-4 WheelTip rewrite — restore; (c) remove the hover
   lift (wheel animates upward). Expanded rows may keep their grip handle.
-- **round:** demo-gallery round 7 (in flight)
+- **round:** demo-gallery round 7 — landed c07d297, probe-verified (0 grip
+  icons, 0 lift classes, tip opens on-screen via pointerover). Root cause of
+  (b): the round-3 hover-lift transform made the ancestor the containing
+  block for the fixed-position tip — hover re-based its coords off-screen.
+  LESSON: no transforms on ancestors of fixed-position overlays.
+
+- **view:** sidebar-account-wheels compact strip — hover halo offset (owner)
+- **verdict:** polish
+- **items:** "shadow below the circle" on hover = the rounded-full wrapper
+  lays the wheel out as inline content, reserving descender space, so the
+  hover:bg-sidebar-accent halo is taller than the wheel and pokes out below.
+  Fix: flex-center the wrapper (kill baseline gap) so the halo is concentric.
+- **round:** demo-gallery round 8 (in flight)
