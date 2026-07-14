@@ -40,6 +40,10 @@ export function ChatTab({ loom }: { loom: Loom }) {
         // Minimal seed — SessionView hydrates the full registry via useAccounts().
         accounts={[{ name: loom.account }]}
         steerer
+        // Chrome-light: the loom cockpit header already carries identity, so the
+        // embedded chat drops the standalone back button / identity header /
+        // account+usage bar (critique 1.7) — transcript + composer only.
+        embedded
         loomId={loom.id}
         {...(seed ? { initialChat: seed, routeSessionId: seed.id } : {})}
       />

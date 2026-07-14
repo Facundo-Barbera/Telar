@@ -150,25 +150,31 @@ function ThreadNode({
     >
       <div className="flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-medium">{op.name}</span>
-            <span className="font-mono text-[10px] text-muted-foreground/60">{shortId(op.id)}</span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate text-sm font-medium">{op.name}</span>
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">{shortId(op.id)}</span>
           </div>
           {waitsOn.length > 0 && (
-            <span className="text-[10px] text-muted-foreground/70">waits on {waitsOn.join(", ")}</span>
+            <span className="truncate text-[10px] text-muted-foreground/70">waits on {waitsOn.join(", ")}</span>
           )}
         </div>
-        <StatusBadge kind={op.status.kind} state={op.state} active={op.active} label={op.status.label} />
+        <StatusBadge
+          kind={op.status.kind}
+          state={op.state}
+          active={op.active}
+          label={op.status.label}
+          className="shrink-0"
+        />
       </div>
 
       {/* agent lane */}
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-dashed border-border pt-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-dashed border-border pt-2">
         <span className="text-[10px] text-muted-foreground/50">agents</span>
         <ChevronRight className="size-3 text-muted-foreground/30" />
         {chips.map((c) => (
           <AgentChip key={c.key} chip={c} />
         ))}
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <LadderBadge op={op} />
           <span className="hidden items-center gap-0.5 text-[10px] text-muted-foreground/60 sm:flex">
             open <ChevronRight className="size-3" />

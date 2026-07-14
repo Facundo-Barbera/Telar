@@ -953,6 +953,14 @@ export function SessionView(props: {
   // like steerer it suppresses the address-bar rewrite (the surface stays on the
   // /looms/[id] page). Undefined everywhere else.
   escalation?: boolean;
+  // Chrome-light embed (critique 1.7): the loom Chat tab renders this surface
+  // INSIDE a page that already carries identity (the loom header + state/cost
+  // badges). So the standalone-session chrome — the back button, the "New
+  // session / <project>" identity header, and the account/usage heartbeat bar
+  // (incl. the mini-dock minimize, meaningless for an embedded chat) — is
+  // suppressed, leaving just the transcript + composer. Undefined everywhere a
+  // SessionView owns its own page.
+  embedded?: boolean;
   loomId?: string;
 }) {
   // The slash-command menu and account lock both need to read/drive the
@@ -976,6 +984,7 @@ function SessionViewInner({
   planner,
   steerer,
   escalation,
+  embedded,
   loomId,
 }: {
   project: string;
@@ -988,6 +997,7 @@ function SessionViewInner({
   planner?: boolean;
   steerer?: boolean;
   escalation?: boolean;
+  embedded?: boolean;
   loomId?: string;
 }) {
   const textInput = usePromptInputController().textInput;
@@ -2640,20 +2650,27 @@ function SessionViewInner({
 
   return (
     <>
-      <PageHeader
-        leading={
-          <BackLink
-            href={`/projects/${encodeURIComponent(project)}`}
-            label={`Back to ${project}`}
-          />
-        }
-        title={titleNode}
-        description={<span className="font-mono text-xs">{project}</span>}
-      />
+      {/* The standalone-session chrome (back button + identity header + account/
+          usage heartbeat bar) is suppressed for an embedded surface — the host
+          page (the loom cockpit) already carries identity. See the `embedded`
+          prop. */}
+      {!embedded && (
+        <PageHeader
+          leading={
+            <BackLink
+              href={`/projects/${encodeURIComponent(project)}`}
+              label={`Back to ${project}`}
+            />
+          }
+          title={titleNode}
+          description={<span className="font-mono text-xs">{project}</span>}
+        />
+      )}
 
       {/* Live heartbeat for this session — active account (editable pre-session,
           locked once one exists), session id once minted, elapsed while
           working, running cost + token counts. */}
+      {!embedded && (
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
         <Badge variant="outline" className="gap-1.5 font-mono text-xs">
           <UserRoundIcon className="size-3" />
@@ -2719,6 +2736,7 @@ function SessionViewInner({
           )}
         </div>
       </div>
+      )}
 
       {/* The "make this real → god-view" handoff (docs/loom-model.md §5) no
           longer pins a permanent banner: it now surfaces as the aggregate looms
