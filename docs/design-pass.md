@@ -67,7 +67,9 @@ Format per entry:
   the strip with a gap, or outside the sidebar edge), never covering the
   hovered wheel, its siblings, or adjacent sidebar items; no clipping at the
   sidebar boundary.
-- **round:** demo-gallery round 4 (in flight)
+- **round:** demo-gallery round 4 — landed 2ab4b16 (fixed-position
+  collision-aware tip: top-side in compact/expanded, right-side outside the
+  rail)
 
 - **view:** chat-working-indicator light panel — REGRESSION ("white mode",
   owner, 2nd report)
