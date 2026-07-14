@@ -69,6 +69,32 @@ function findFreePort() {
   });
 }
 
+// --- Build stamp -------------------------------------------------------------
+// build-desktop.sh writes build-info.json into the standalone tree, which
+// electron-builder copies to <Resources>/standalone/build-info.json. When it is
+// present (a packaged, stamped build) the window title becomes "Telar <sha>" so
+// you can always tell which build you're running. Absent (dev-repo mode) = plain
+// "Telar".
+function readBuildInfo() {
+  const fs = require("node:fs");
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "standalone", "build-info.json")]
+    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "build-info.json")];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return JSON.parse(fs.readFileSync(c, "utf8"));
+    } catch {
+      /* malformed / unreadable — fall through to the plain title */
+    }
+  }
+  return null;
+}
+
+function windowTitle() {
+  const info = readBuildInfo();
+  return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
+}
+
 // --- Resolve the standalone server.js ---------------------------------------
 // Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
 // Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
@@ -149,17 +175,26 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
 
 // --- (e) Window --------------------------------------------------------------
 function createWindow(url) {
+  const title = windowTitle();
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     backgroundColor: "#0a0a0a",
     show: false,
+    title,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  // Keep the build stamp in the title bar — don't let the loaded page's <title>
+  // overwrite it (that's how you answer "which build am I running?").
+  win.on("page-title-updated", (e) => {
+    e.preventDefault();
+    win.setTitle(title);
+  });
   win.once("ready-to-show", () => win.show());
+  win.setTitle(title);
   win.loadURL(url);
   return win;
 }
@@ -197,6 +232,7 @@ async function runSmoke() {
       startServer(port);
     }
     await waitForServer(port);
+    console.log(`BUILD ${windowTitle()}`);
     console.log("SMOKE_OK");
     app.isQuitting = true;
     killServer();
