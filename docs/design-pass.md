@@ -325,3 +325,19 @@ Format per entry:
   notifications — app-wide provider is the ONLY firing site (stripped from
   session-loom; single-point beats dedupe windows), ~30s poll of root
   looms, transition-only, no storm on load, zero work when prefs disabled.
+
+## Round 24 — Git tab "mini GitHub" polish
+
+- **view:** project Git tab (demo) sub-views
+- **verdict:** owner: switcher direction approved ("Git is a bit better");
+  branches chip cloud rejected; wants issues/PRs rendered; files touch-up;
+  overall framing "we are trying to make a mini github here".
+- **items:** 7bf5260 — BRANCHES chip cloud -> GitHub-grade table (mono
+  name, default badge, tip commit line, mirrored ahead/behind bars,
+  merged/stale chips, per-row + bulk delete; commit log demoted to a
+  compact strip below). REMOTE now connected-first (empty state behind the
+  toggle): issues w/ state icons, label chips, comment counts; PRs w/
+  head->base, CI check cluster, review chip, linked-loom chip; both
+  searchable. FILES -> navigable breadcrumb browser (GitHub pattern),
+  per-path last-commit subject + age, dirty badges bubble to parents.
+  AWAITING OWNER VERDICT on the polished shape.
