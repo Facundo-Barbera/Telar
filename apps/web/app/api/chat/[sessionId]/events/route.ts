@@ -1,5 +1,5 @@
 import { isSessionRunLive } from "@/lib/chat-runs";
-import { readSessionEvents } from "@/lib/session-log";
+import { type DeltaCursor, readSessionDeltas, readSessionEvents } from "@/lib/session-log";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,10 @@ export async function GET(
   const stream = new ReadableStream({
     start(controller) {
       let line = 0;
+      // Live delta ring cursor (§2). gen:-1 forces the first read to replay the
+      // whole current in-flight block; thereafter it advances incrementally and
+      // re-bases on block boundaries (see readSessionDeltas).
+      let deltaCursor: DeltaCursor = { gen: -1, index: 0 };
       let firstTick = true;
 
       const onAbort = () => finish();
@@ -69,15 +73,23 @@ export async function GET(
         }
 
         const live = isSessionRunLive(sessionId);
+        // Finalized/structural events first (the skeleton) — so the current
+        // block's deltas below apply on top in the right order.
         const { events, nextLine } = readSessionEvents(sessionId, line);
         line = nextLine;
         for (const { event, data } of events) {
           send(event, data);
           if (event === "closed") return finish();
         }
-        // Safety: the run went not-live and the log is fully drained (no
+        // Then the in-flight block's tokens from the bounded delta ring (§2).
+        // Disjoint from the file above — deltas never touch the file — so no
+        // event is ever double-sent between the two surfaces.
+        const { events: deltas, next } = readSessionDeltas(sessionId, deltaCursor);
+        deltaCursor = next;
+        for (const { event, data } of deltas) send(event, data);
+        // Safety: the run went not-live and both surfaces are fully drained (no
         // "closed" seen, e.g. a crash) — nothing more will arrive.
-        if (!live && events.length === 0) finish();
+        if (!live && events.length === 0 && deltas.length === 0) finish();
       };
 
       if (req.signal.aborted) return finish();

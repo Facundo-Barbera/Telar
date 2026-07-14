@@ -33,7 +33,13 @@ import { runCodexTurn } from "@/lib/codex-app-server";
 import { resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
-import { appendSessionEvent, startSessionLog } from "@/lib/session-log";
+import {
+  appendSessionEvent,
+  clearSessionDeltas,
+  endSessionDeltas,
+  pushSessionDelta,
+  startSessionLog,
+} from "@/lib/session-log";
 import {
   createLoomMcpServer,
   formatEscalationContext,
@@ -62,6 +68,7 @@ import {
   getChat,
   logUsage,
   savePlanUsage,
+  upsertChatStub,
   type Part,
   type PlanSnapshot,
 } from "@/lib/store";
@@ -436,12 +443,28 @@ export async function POST(req: Request) {
         } catch {
           // client went away — keep consuming so we still persist the turn
         }
-        // Mirror every event (except the token-level firehose) into the
-        // session's live log so a reconnecting client can tail the in-flight
+        // Mirror this event so a reconnecting client can tail the in-flight
         // turn (Phase 1b). capturedSession is only truthy after system:init,
         // which is exactly when startSessionLog has opened the file.
-        if (capturedSession && event !== "delta" && event !== "thinking_delta") {
-          appendSessionEvent(capturedSession, event, data);
+        if (capturedSession) {
+          if (event === "delta" || event === "thinking_delta") {
+            // Token firehose → bounded in-memory ring, kept OUT of the file
+            // (contract §2). A reconnect replays it to stream the in-flight
+            // block instead of watching it pop in whole on finalize.
+            pushSessionDelta(capturedSession, event, data);
+          } else {
+            // A "text" (block finalize) or "thinking" (new block) event means
+            // the deltas that built the prior in-flight block are now
+            // superseded — the file carries the finalized "text", or thinking
+            // is ephemeral (live-only, never persisted). Clear the ring BEFORE
+            // appending so a reconnect never re-streams tokens the file's
+            // finalized event already renders. (Node is single-threaded, so
+            // this clear+append pair is atomic w.r.t. the /events reader.)
+            if (event === "text" || event === "thinking") {
+              clearSessionDeltas(capturedSession);
+            }
+            appendSessionEvent(capturedSession, event, data);
+          }
         }
       };
 
@@ -854,6 +877,22 @@ export async function POST(req: Request) {
                   skills: [],
                   agents: [],
                 });
+                // Register-at-create (contract §1), same as the SDK path below:
+                // persist a stub row NOW and emit the "saved" event the client
+                // already handles, so chatPersisted flips at the START of the
+                // turn. Idempotent by id; appendTurn updates this row in place.
+                upsertChatStub({
+                  id: capturedSession,
+                  model,
+                  effort,
+                  account: profile.name,
+                  project,
+                  permissionMode,
+                  loomId: loomLink.loomId,
+                  role: loomLink.role,
+                  userText: message,
+                });
+                send("saved", { chatId: capturedSession });
                 break;
               }
               case "thinking_start": {
@@ -1163,6 +1202,32 @@ export async function POST(req: Request) {
               skills: init.skills ?? [],
               agents: init.agents ?? [],
             });
+            // Register-at-create (contract §1): persist a stub chat row NOW —
+            // the instant the session id is confirmed, before the first turn
+            // finishes — then emit the SAME "saved" event the client already
+            // handles (session-view.tsx's "saved" case just flips chatPersisted
+            // + refreshes). So rename / minimize-to-dock unlock at the START of
+            // the turn with zero new client event types. Idempotent by id: a
+            // resumed session's row already exists (no-op), and the end-of-turn
+            // appendTurn updates THIS row in place — never a duplicate.
+            // best-available title now is the message-prefix fallback
+            // (upsertChatStub derives it from userText); the generated title
+            // upgrades it at end-of-turn via appendTurn.
+            upsertChatStub({
+              id: capturedSession,
+              model,
+              effort,
+              account: profile.name,
+              project,
+              permissionMode,
+              // Best-available loom link at init (existing chat's, else the
+              // turn-1 wire seed); appendTurn narrows in any link a loom tool
+              // establishes during the turn.
+              loomId: loomLink.loomId,
+              role: loomLink.role,
+              userText: message,
+            });
+            send("saved", { chatId: capturedSession });
             // Fire the plan-usage control call now — the subprocess must still
             // be alive when it resolves; awaiting it at result-time is too late.
             const usageFn = (q as unknown as Record<string, () => Promise<any>>)
@@ -1668,6 +1733,10 @@ export async function POST(req: Request) {
         // endChatRun so a still-connected subscriber reads "closed" while the
         // run is technically still registered as live (Phase 1b).
         if (capturedSession) appendSessionEvent(capturedSession, "closed", {});
+        // Turn over — drop the current-turn delta ring (contract §2). The
+        // "closed" marker above lives in the file; the ring's in-flight tokens
+        // are all superseded by now, so a late reconnect reads the file only.
+        if (capturedSession) endSessionDeltas(capturedSession);
         endChatRun(runId);
         try {
           controller.close();

@@ -273,6 +273,64 @@ export function setChatTitle(id: string, title: string, opts?: { custom?: boolea
   return true;
 }
 
+// Register-at-create (docs/runtime-architecture.md §A, contract §1): the POST
+// /api/chat run calls this at system:init — the instant the SDK confirms the
+// session id, BEFORE the first turn finishes — so the chat row EXISTS while the
+// turn is still running. That lets the client flip chatPersisted on the "saved"
+// event at the START of the turn (unlocking rename / minimize-to-dock) instead
+// of only after appendTurn lands.
+//
+// Idempotent by id: a row that already exists (a resumed session, or a stray
+// double-init) is left completely untouched and NOTHING is written — appendTurn
+// below finds this same id and updates the row in place, so no duplicate row is
+// ever created. Atomic via writeChats' tmp-write + rename, the same convention
+// every other writer here uses, so a concurrent reader never sees a torn file.
+//
+// The row starts at turns:0 with an empty transcript — a "running, no turns
+// yet" state every list/dashboard/recents surface renders gracefully
+// (previewOf returns "" for empty messages; listChats maps it like any other).
+// The title is the best available at init (a message-prefix fallback, or an
+// early-generated one); appendTurn upgrades it at end-of-turn if a better
+// generated title exists and the user hasn't renamed it.
+export function upsertChatStub(opts: {
+  id: string;
+  model: string;
+  effort?: string;
+  account: string;
+  project?: string;
+  permissionMode?: ClientPermissionMode;
+  loomId?: string;
+  role?: "planner" | "steerer";
+  title?: string;
+  userText: string;
+}): void {
+  const chats = readChats();
+  if (chats.some((c) => c.id === opts.id)) return; // idempotent — never duplicate
+  const now = Date.now();
+  const fallbackTitle = (opts.userText.trim() || "New thread").slice(0, 60);
+  chats.push({
+    id: opts.id,
+    title: opts.title?.trim() || fallbackTitle,
+    model: opts.model,
+    effort: opts.effort,
+    account: opts.account,
+    project: opts.project,
+    permissionMode: opts.permissionMode,
+    loomId: opts.loomId,
+    role: opts.role,
+    createdAt: now,
+    updatedAt: now,
+    costUsd: 0,
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    messages: [],
+  });
+  writeChats(chats);
+}
+
 export function appendTurn(opts: {
   id: string;
   model: string;
@@ -327,6 +385,14 @@ export function appendTurn(opts: {
       messages: [],
     };
     chats.push(chat);
+  } else if (chat.turns === 0 && !chat.customTitle && opts.title?.trim()) {
+    // Register-at-create left a stub with a provisional (message-prefix or
+    // early-generated) title; a better generated title arriving at end-of-turn
+    // upgrades it in place. Bounded to a still-empty stub (turns === 0) and to
+    // non-renamed chats — a user rename (customTitle) always wins, and resumed
+    // real sessions never reach here anyway (their turns pass no title:
+    // titlePromise is null once a sessionId exists).
+    chat.title = opts.title.trim();
   }
   chat.messages.push(opts.userMessage, opts.assistantMessage);
   chat.costUsd += opts.costUsd;
