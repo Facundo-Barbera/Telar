@@ -3,8 +3,10 @@
 // The plan-usage account wheels, redesigned: compact by DEFAULT (a tight row of
 // just the rings) and grab-and-drop reorderable. Mirrors the production
 // AppSidebar's per-account PlanRing visuals (outer ring = 5h session, inner =
-// weekly; tone shifts amber→red as utilization climbs) but adds two things the
-// user asked for:
+// weekly; tone shifts amber→red as utilization climbs) — including the ring's
+// hover tooltip (account · plan · tier + the 5h/weekly numbers), restored here
+// as an anchored, out-of-flow overlay that coexists with drag — plus two things
+// the user asked for:
 //   1. reorder — drag a wheel to choose display order (HTML5 drag events only,
 //      no new deps). A subtle grip appears on hover; a primary insertion bar
 //      marks the drop point while dragging.
@@ -72,6 +74,82 @@ function AccountWheel({ five, week }: { five: number; week: number }) {
       {ring(12, five)}
       {ring(7, week)}
     </svg>
+  );
+}
+
+// ── per-wheel hover tooltip (mirrors production PlanRing's Radix tip) ───────
+
+// Tone by utilization, shared by the dot and the mini bar (matches ringTone).
+function tone(p: number): string {
+  if (p >= 90) return "bg-destructive";
+  if (p >= 70) return "bg-amber-500";
+  return "bg-primary";
+}
+
+// One window's row inside the tip: tone dot · label · mini bar · number —
+// the numeric detail the production tooltip lists per window.
+function TipStat({ label, pct }: { label: string; pct: number }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex items-center gap-1.5 whitespace-nowrap">
+        <span className={`size-1.5 shrink-0 rounded-full ${tone(pct)}`} />
+        {label}
+      </span>
+      <span className="ml-auto flex items-center gap-1.5">
+        <span className="h-1 w-10 overflow-hidden rounded-full bg-muted-foreground/20">
+          <span
+            className={`block h-full rounded-full ${tone(pct)}`}
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </span>
+        <span className="w-7 text-right font-mono tabular-nums">{pct}%</span>
+      </span>
+    </div>
+  );
+}
+
+// Anchored hover overlay for a wheel — restores the detail the production
+// PlanRing shows on hover (account · plan · tier, then the 5h + weekly split
+// with tone dots and mini bars). Absolutely positioned and out of flow so the
+// strip/list/rail never reflows, pointer-events off so it never intercepts the
+// drag. Opens on `group/wheel` hover; forced shut while any drag is in progress
+// so the grab gesture owns the pointer and the tip doesn't trail the cursor.
+function WheelTip({
+  account,
+  dragActive,
+  side = "right",
+}: {
+  account: DemoAccount;
+  dragActive: boolean;
+  side?: "right" | "top";
+}) {
+  const anchor =
+    side === "right"
+      ? "left-full top-1/2 ml-2 -translate-y-1/2"
+      : "bottom-full left-0 mb-2";
+  return (
+    <div
+      aria-hidden
+      className={`pointer-events-none absolute z-30 ${anchor} transition-opacity duration-100 ${
+        dragActive ? "opacity-0" : "opacity-0 group-hover/wheel:opacity-100"
+      }`}
+    >
+      <div className="w-max rounded-md border border-border bg-popover px-2.5 py-2 text-popover-foreground shadow-md">
+        <div className="mb-1 flex items-center gap-1.5 font-mono text-xs font-medium">
+          {account.name}
+          <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
+            {account.subscription}
+          </span>
+          {account.tier && (
+            <span className="text-[9px] text-muted-foreground">{account.tier}</span>
+          )}
+        </div>
+        <div className="space-y-1 text-[11px] text-muted-foreground">
+          <TipStat label="5-hour session" pct={account.fiveHour} />
+          <TipStat label="Weekly · all" pct={account.weekly} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -167,14 +245,15 @@ function CompactStrip({
               <DropBar axis="x" show={showBar} />
               <div
                 {...bind(name)}
-                title={`${a.name} — drag to reorder`}
+                aria-label={`${a.name} plan usage — drag to reorder`}
                 className={`group/wheel relative cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:-translate-y-0.5 hover:bg-sidebar-accent ${
                   dragging ? "opacity-40" : ""
                 }`}
               >
                 <AccountWheel five={a.fiveHour} week={a.weekly} />
-                {/* subtle grab affordance on hover */}
+                {/* subtle grab affordance on hover — coexists with the tip */}
                 <GripVerticalIcon className="pointer-events-none absolute -top-0.5 left-1/2 size-3 -translate-x-1/2 text-sidebar-foreground/50 opacity-0 transition-opacity group-hover/wheel:opacity-100" />
+                <WheelTip account={a} dragActive={drag.drag != null} side="right" />
               </div>
             </div>
           );
@@ -198,11 +277,13 @@ function CompactStrip({
 function ExpandedRow({
   account,
   dragging,
+  dragActive,
   showBar,
   bind,
 }: {
   account: DemoAccount;
   dragging: boolean;
+  dragActive: boolean;
   showBar: boolean;
   bind: ReturnType<ReturnType<typeof useDrag>[1]>;
 }) {
@@ -211,13 +292,17 @@ function ExpandedRow({
       <DropBar axis="y" show={showBar} />
       <div
         {...bind}
-        title="Drag to reorder"
+        aria-label={`${account.name} plan usage — drag to reorder`}
         className={`group/row flex cursor-grab items-center gap-2 rounded-md px-1 py-1 transition active:cursor-grabbing hover:bg-sidebar-accent ${
           dragging ? "opacity-40" : ""
         }`}
       >
         <GripVerticalIcon className="size-3.5 shrink-0 text-sidebar-foreground/30 transition-colors group-hover/row:text-sidebar-foreground/60" />
-        <AccountWheel five={account.fiveHour} week={account.weekly} />
+        {/* wheel is its own hover anchor so the tip floats above it, not the row */}
+        <span className="group/wheel relative inline-flex shrink-0">
+          <AccountWheel five={account.fiveHour} week={account.weekly} />
+          <WheelTip account={account} dragActive={dragActive} side="top" />
+        </span>
         <div className="flex min-w-0 flex-col">
           <span className="flex items-center gap-1.5">
             <span className="truncate font-mono text-xs text-sidebar-foreground/70">
@@ -284,6 +369,7 @@ function ExpandedList({
             key={name}
             account={byName(name)}
             dragging={drag.drag === name}
+            dragActive={drag.drag != null}
             showBar={drag.drag != null && drag.over === name && drag.drag !== name}
             bind={bind(name)}
           />
@@ -314,12 +400,13 @@ function RailWheels({
             <DropBar axis="y" show={drag.drag != null && drag.over === name && !dragging} />
             <div
               {...bind(name)}
-              title={`${a.name} — drag to reorder`}
-              className={`cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
+              aria-label={`${a.name} plan usage — drag to reorder`}
+              className={`group/wheel relative cursor-grab rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                 dragging ? "opacity-40" : ""
               }`}
             >
               <AccountWheel five={a.fiveHour} week={a.weekly} />
+              <WheelTip account={a} dragActive={drag.drag != null} side="right" />
             </div>
           </div>
         );

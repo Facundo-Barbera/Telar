@@ -39,7 +39,7 @@ export const sidebarEntries: DemoEntry[] = [
     concern: "extra",
     variant: "Focused: footer wheels",
     summary:
-      "The plan-usage account wheels, up close. Compact by default — a tight row of just the rings — with a chevron to expand into per-account detail (account · plan · tier · 5h/weekly split). Every wheel is a grab handle: drag to choose display order, with a primary bar marking the drop point; reorder works compact or expanded (and in the collapsed rail). Order is held in demo state — it becomes a persisted settings fact when it ships.",
+      "The plan-usage account wheels, up close. Compact by default — a tight row of just the rings — with a chevron to expand into per-account detail (account · plan · tier · 5h/weekly split). Hover any wheel for its plan tooltip, restored from the production PlanRing: account · plan · tier plus the 5h and weekly numbers with tone dots and mini bars, floated as an anchored overlay that never reflows the strip and hides mid-drag. Every wheel is also a grab handle: drag to choose display order, with a primary bar marking the drop point; hover and reorder work compact, expanded, and in the collapsed rail. Order is held in demo state — it becomes a persisted settings fact when it ships.",
     Component: SidebarAccountWheelsDemo,
   },
   {
