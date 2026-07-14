@@ -1,22 +1,42 @@
 "use client";
 
 // The session heartbeat bar's cost + context pills, each with an anchored,
-// zero-reflow hover breakdown (hover previews, click pins) — same grammar as the
-// 1.6 / /context demos (lib/demo-gallery/chat/session-cost.tsx + session-context
-// .tsx). Adapted to REAL data (production-wiring recon, data-availability):
-//   · Per-sub-agent cost DOES NOT EXIST — the transcript carries one running
-//     aggregate. So the cost hover shows the real grand total plus a single
-//     reserved "Main + all sub-agents" row, never fabricated per-agent splits.
-//   · Context CATEGORY breakdown DOES NOT EXIST — only the latest-turn prompt
-//     size. So the CTX hover shows the real used/window figures + the real
-//     lifetime token split, with the per-category bars as a reserved slot.
-// No transform on any ancestor of these absolute overlays; bg-card +
-// text-card-foreground are explicit so the cards re-theme legibly.
+// zero-reflow hover breakdown (hover previews, click pins).
+//
+// POSITIONING (round-4): both cards float `position:fixed` with coordinates
+// measured from the pill's getBoundingClientRect on open, recomputed on
+// scroll/resize, CLAMPED into the viewport with an 8px margin, and flipped above
+// the pill when there's no room below (see lib/use-anchored-overlay.ts). This
+// fixes the live bug where the CTX card spilled past the right viewport edge and
+// slid under the sub-agent rail. Opening a card never reflows the bar.
+//
+// CONTENT (Claude Code /context anatomy): a header row ("Context window" +
+// "<used> / <window> (<pct>%)"), a slim segmented usage bar, then legend rows —
+// each a colored swatch + label + right-aligned tokens + right-aligned percent.
+//
+// DATA HONESTY: Telar assembles the session itself, but per-category window
+// attribution (system prompt / individual tool + MCP definitions / skills /
+// memory files) is NOT reported by the SDK or tracked server-side, so those are
+// NOT invented as separate rows. What IS real, client-side:
+//   · used = the latest turn's prompt size (input + cache), SDK-reported.
+//   · Messages (~) = a chars/4 estimate of the transcript actually sent, so it
+//     is derived from a REAL source (tilde marks it an estimate). Clamped to
+//     `used`. Omitted entirely when no transcript estimate is supplied.
+//   · System + tools (~) = used − messages estimate: the real remainder of the
+//     prompt (system prompt + tool/MCP defs + memory + cache overhead), shown as
+//     ONE honest combined bucket rather than fabricated per-category splits.
+//   · Free space = window − used, real and derived.
+//   · The lifetime input/output/cache split lands as dash-percent informational
+//     rows — they're cumulative totals, not current-window share, so "—" percent
+//     is the honest value.
+// No transform on any ancestor of these fixed overlays; bg-card + colors via
+// class utilities so the cards re-theme legibly.
 
 import { useState } from "react";
 import { GaugeIcon, UserRoundIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtCost, fmtTokens } from "@/lib/format";
+import { useAnchoredOverlay } from "@/lib/use-anchored-overlay";
 import { cn } from "@/lib/utils";
 
 function usePinnableHover() {
@@ -33,11 +53,56 @@ function usePinnableHover() {
   };
 }
 
+// ── shared legend row (same anatomy across both cards) ──────────────────────
+function LegendRow({
+  swatch,
+  label,
+  value,
+  pct,
+  muted,
+}: {
+  swatch?: string; // tailwind bg-* for the color square; omit for a plain row
+  label: string;
+  value: string; // right-aligned token/cost figure
+  pct?: string | null; // right-aligned percent, or "—" for informational rows
+  muted?: boolean;
+}) {
+  return (
+    <li
+      className={cn(
+        "flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50",
+        muted && "text-muted-foreground",
+      )}
+    >
+      {swatch !== undefined ? (
+        <span className={cn("size-2.5 shrink-0 rounded-sm", swatch)} />
+      ) : (
+        <span className="size-2.5 shrink-0" />
+      )}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="shrink-0 font-mono text-[11px]">{value}</span>
+      {pct !== undefined && (
+        <span className="w-10 shrink-0 text-right font-mono text-[9px] text-muted-foreground/60">
+          {pct ?? "—"}
+        </span>
+      )}
+    </li>
+  );
+}
+
 export function CostPill({ total }: { total: number }) {
   const { open, pinned, bind, toggle } = usePinnableHover();
+  const { anchorRef, floatRef, style, ready } = useAnchoredOverlay<
+    HTMLDivElement,
+    HTMLDivElement
+  >(open, "end");
 
   return (
-    <div className="relative inline-flex items-center leading-none" {...bind}>
+    <div
+      ref={anchorRef}
+      className="relative inline-flex items-center leading-none"
+      {...bind}
+    >
       <button
         type="button"
         onClick={toggle}
@@ -56,7 +121,11 @@ export function CostPill({ total }: { total: number }) {
         </Badge>
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1.5">
+        <div
+          ref={floatRef}
+          style={style}
+          className={cn("z-50 transition-opacity", ready ? "opacity-100" : "opacity-0")}
+        >
           <div className="w-72 rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
             <div className="mb-1.5 flex items-center justify-between px-1.5">
               <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
@@ -65,8 +134,8 @@ export function CostPill({ total }: { total: number }) {
               <span className="font-mono text-xs font-semibold">{fmtCost(total)}</span>
             </div>
             <ul className="space-y-0.5">
-              <li className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs">
-                <UserRoundIcon className="size-3 shrink-0 text-muted-foreground" />
+              <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">Main + all sub-agents</span>
                 <span className="shrink-0 font-mono text-[11px]">{fmtCost(total)}</span>
               </li>
@@ -87,16 +156,39 @@ export function ContextPill({
   used,
   windowTokens,
   lifetime,
+  messagesEst,
 }: {
   used: number;
   windowTokens?: number;
   lifetime: { input: number; output: number; cacheRead: number; cacheCreate: number };
+  // Tilde estimate (chars/4) of the transcript actually sent — a REAL source for
+  // the Messages bucket. Omit to drop the per-bucket split entirely.
+  messagesEst?: number;
 }) {
   const { open, pinned, bind, toggle } = usePinnableHover();
+  const { anchorRef, floatRef, style, ready } = useAnchoredOverlay<
+    HTMLDivElement,
+    HTMLDivElement
+  >(open, "end");
+
   const usedPct = windowTokens ? Math.min(100, (used / windowTokens) * 100) : null;
+  const freeTok = windowTokens ? Math.max(0, windowTokens - used) : null;
+  const winPct = (tok: number) =>
+    windowTokens ? `${((tok / windowTokens) * 100).toFixed(1)}%` : null;
+
+  // Honest split of the used window: Messages (real estimate, clamped to used)
+  // and the real remainder (system prompt + tool/MCP defs + memory + cache
+  // overhead) as one combined bucket — never fabricated per-category rows.
+  const messagesTok =
+    messagesEst != null ? Math.max(0, Math.min(messagesEst, used)) : null;
+  const systemTok = messagesTok != null ? Math.max(0, used - messagesTok) : null;
 
   return (
-    <div className="relative inline-flex items-center leading-none" {...bind}>
+    <div
+      ref={anchorRef}
+      className="relative inline-flex items-center leading-none"
+      {...bind}
+    >
       <button
         type="button"
         onClick={toggle}
@@ -116,9 +208,13 @@ export function ContextPill({
         </Badge>
       </button>
       {open && (
-        // Anchored left so the wide card doesn't shove past the bar's right edge.
-        <div className="absolute left-0 top-full z-20 mt-1.5">
+        <div
+          ref={floatRef}
+          style={style}
+          className={cn("z-50 transition-opacity", ready ? "opacity-100" : "opacity-0")}
+        >
           <div className="w-80 rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
+            {/* header: used / window (pct%) */}
             <div className="mb-2 flex items-center justify-between px-1.5">
               <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
                 Context window
@@ -126,44 +222,97 @@ export function ContextPill({
               <span className="font-mono text-xs font-semibold">
                 {fmtTokens(used)}
                 {windowTokens ? (
-                  <span className="text-muted-foreground/70"> / {fmtTokens(windowTokens)}</span>
+                  <span className="text-muted-foreground/70">
+                    {" "}
+                    / {fmtTokens(windowTokens)}
+                    {usedPct !== null && ` (${usedPct.toFixed(0)}%)`}
+                  </span>
                 ) : null}
               </span>
             </div>
 
-            {usedPct !== null && (
+            {/* slim segmented usage bar: Messages · System+tools · free track */}
+            {windowTokens && (
               <div className="px-1.5">
                 <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
-                  <div className="h-full bg-foreground/80" style={{ width: `${Math.max(2, usedPct)}%` }} />
+                  {messagesTok != null ? (
+                    <>
+                      <div
+                        className="h-full bg-foreground/80"
+                        style={{ width: `${(messagesTok / windowTokens) * 100}%` }}
+                      />
+                      <div
+                        className="h-full bg-foreground/45"
+                        style={{ width: `${((systemTok ?? 0) / windowTokens) * 100}%` }}
+                      />
+                    </>
+                  ) : (
+                    <div
+                      className="h-full bg-foreground/80"
+                      style={{ width: `${Math.max(2, usedPct ?? 0)}%` }}
+                    />
+                  )}
                 </div>
-                <div className="mt-1 text-[9px] text-muted-foreground/70">
-                  {usedPct.toFixed(1)}% of the window used
-                </div>
+                {usedPct !== null && (
+                  <div className="mt-1 text-[9px] text-muted-foreground/70">
+                    {usedPct.toFixed(1)}% of the window used
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Real lifetime token split (the aggregate the bar never showed). */}
+            {/* legend: real window buckets, then the derived free-space row */}
             <ul className="mt-2 space-y-0.5">
-              {[
+              {messagesTok != null && (
+                <LegendRow
+                  swatch="bg-foreground/80"
+                  label="Messages ~"
+                  value={fmtTokens(messagesTok)}
+                  pct={winPct(messagesTok)}
+                />
+              )}
+              {systemTok != null && (
+                <LegendRow
+                  swatch="bg-foreground/45"
+                  label="System + tools ~"
+                  value={fmtTokens(systemTok)}
+                  pct={winPct(systemTok)}
+                />
+              )}
+              {messagesTok == null && (
+                <LegendRow
+                  swatch="bg-foreground/80"
+                  label="In use"
+                  value={fmtTokens(used)}
+                  pct={winPct(used)}
+                />
+              )}
+              {freeTok != null && (
+                <LegendRow
+                  swatch="border border-border bg-muted"
+                  label="Free space"
+                  value={fmtTokens(freeTok)}
+                  pct={winPct(freeTok)}
+                  muted
+                />
+              )}
+            </ul>
+
+            {/* dash-percent informational rows: lifetime totals, not window
+                share — so the percent column is honestly "—". */}
+            <ul className="mt-1.5 space-y-0.5 border-t border-border pt-1.5">
+              {([
                 ["Input", lifetime.input],
                 ["Output", lifetime.output],
                 ["Cache read", lifetime.cacheRead],
                 ["Cache write", lifetime.cacheCreate],
-              ].map(([label, tok]) => (
-                <li
-                  key={label as string}
-                  className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs"
-                >
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{label}</span>
-                  <span className="shrink-0 font-mono text-[11px]">{fmtTokens(tok as number)}</span>
-                </li>
+              ] as const).map(([label, tok]) => (
+                <LegendRow key={label} label={`${label} · lifetime`} value={fmtTokens(tok)} pct={null} muted />
               ))}
             </ul>
 
-            {/* Per-category window breakdown (system/tools/MCP/messages/thinking)
-                isn't instrumented yet — reserved for it once it lands. */}
             <div className="mt-1.5 border-t border-border px-1.5 pt-1.5 text-[10px] text-muted-foreground/70">
-              per-category window breakdown lands when instrumented
+              per-category window attribution lands when the SDK reports it
             </div>
           </div>
         </div>

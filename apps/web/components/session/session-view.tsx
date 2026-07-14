@@ -243,6 +243,24 @@ export type PermissionPart = Extract<Part, { type: "permission" }>;
 const parentOf = (p: Part): string | undefined =>
   p.type === "permission" ? undefined : p.parentId;
 
+// A tilde estimate (chars/4, the usual rough token heuristic) of the transcript
+// actually re-sent as the next turn's prompt — real message + tool text, so the
+// CTX overlay's "Messages" bucket has a genuine source rather than an invented
+// number. Clamped to `used` on the pill side; here we just measure real chars.
+function estimateTranscriptTokens(messages: ChatMessage[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (p.type === "text" || p.type === "thinking") chars += p.text.length;
+      else if (p.type === "tool") {
+        if (p.input) chars += JSON.stringify(p.input).length;
+        if (p.output) chars += p.output.length;
+      }
+    }
+  }
+  return Math.round(chars / 4);
+}
+
 // One spawned subagent's own transcript, reconstructed identically whether
 // it's arriving live (SSE events tagged with `parent`) or reconstructed from
 // persisted parts (tagged with `parentId`) — see agentBuckets below. `spawn`
@@ -2657,6 +2675,7 @@ function SessionViewInner({
             <ContextPill
               used={context}
               windowTokens={parseWindow(activeModel?.context)}
+              messagesEst={estimateTranscriptTokens(messages)}
               lifetime={{
                 input: tokens.input,
                 output: tokens.output,
