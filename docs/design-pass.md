@@ -116,4 +116,22 @@ Format per entry:
   lays the wheel out as inline content, reserving descender space, so the
   hover:bg-sidebar-accent halo is taller than the wheel and pokes out below.
   Fix: flex-center the wrapper (kill baseline gap) so the halo is concentric.
-- **round:** demo-gallery round 8 (in flight)
+- **round:** demo-gallery round 8 — landed 0946174, probe-verified: wrapper
+  34px = svg 30px + p-0.5 padding exactly, display:flex; halo concentric.
+  Rail wrapper had the same gap and got the same fix.
+
+- **view:** chat-subagent-lifecycle / chat-subagent-tray (1.1)
+- **verdict:** mock-alternative (owner request)
+- **items:** build a full SESSION BLOCK with the 1.1 treatments in context —
+  a realistic agent turn (message, thinking, tool steps) where sub-agent
+  tasks spawn mid-turn, complete, and dismiss; variant A (graceful dismiss →
+  done pill) and variant B (docked tray) switchable in place; replayable.
+- **round:** demo-gallery round 9 (in flight)
+
+- **view:** chat-session-cost session bar (1.6 + CTX)
+- **verdict:** polish
+- **items:** (a) CTX and cost pills sit at different heights — align them
+  (same height/baseline in the bar); (b) both breakdowns are hover-triggered
+  now, so the expand chevron (down arrow) on the pill(s) is a stale
+  affordance — remove it wherever it appears on the CTX/cost pills.
+- **round:** demo-gallery round 10 (queued behind round 9 — same lane files)

@@ -22,8 +22,12 @@ import { Shimmer } from "./shimmer";
 import { cn } from "@/lib/utils";
 import { Caption, DemoShell, Section, ThemePair } from "./_shared";
 
-type TaskStatus = "running" | "done" | "error";
-type Task = {
+// These primitives (Task shape, fmtDur, StatusMark, TaskChip, CompletedPill,
+// DockedTray) are exported so the in-context session block
+// (chat-session-block) drives the EXACT same chips/pill/tray as this 1.1 demo
+// — the treatments are judged as the real thing, not a re-implementation.
+export type TaskStatus = "running" | "done" | "error";
+export type Task = {
   id: string;
   label: string;
   tool: string;
@@ -33,13 +37,13 @@ type Task = {
   leaving?: boolean;
 };
 
-const fmtDur = (ms: number) => {
+export const fmtDur = (ms: number) => {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 };
 
-function StatusMark({ status }: { status: TaskStatus }) {
+export function StatusMark({ status }: { status: TaskStatus }) {
   if (status === "running")
     return (
       <Shimmer as="span" className="text-[10px] leading-none">
@@ -53,7 +57,7 @@ function StatusMark({ status }: { status: TaskStatus }) {
 // One compact active chip. `leaving` drives a pure CSS transition (opacity +
 // max-width + translate) — never a keyframe fade of a positioned layer, per
 // the WebKit 26 note in the app.
-function TaskChip({ task, now }: { task: Task; now: number }) {
+export function TaskChip({ task, now }: { task: Task; now: number }) {
   const elapsed = (task.finishedAt ?? now) - task.startedAt;
   return (
     <div
@@ -78,7 +82,7 @@ function TaskChip({ task, now }: { task: Task; now: number }) {
 }
 
 // The folded-history pill: "3 done · 1 failed", expands to the full list.
-function CompletedPill({ history }: { history: Task[] }) {
+export function CompletedPill({ history }: { history: Task[] }) {
   const [open, setOpen] = useState(false);
   if (history.length === 0) return null;
   const failed = history.filter((t) => t.status === "error").length;
@@ -258,20 +262,27 @@ function StateStrip() {
 // them, with a live count. Keeps the transcript totally clean but hides the
 // running work one click deep — shown so the tradeoff is visible next to the
 // preferred graceful-dismiss.
-function TrayVariant() {
-  const [open, setOpen] = useState(true);
-  const now = Date.now();
-  const items: Task[] = [
-    { id: "t1", label: "Crawl repo", tool: "explore", status: "running", startedAt: now - 8000 },
-    { id: "t2", label: "Port tests", tool: "general", status: "running", startedAt: now - 3000 },
-    { id: "t3", label: "Build spec", tool: "plan", status: "done", startedAt: now - 42000, finishedAt: now },
-    { id: "t4", label: "Flaky suite", tool: "general", status: "error", startedAt: now - 15000, finishedAt: now },
-  ];
+// Variant B, presentational: a header affordance holding the task list behind a
+// live count. `headerLabel` names the bar it docks into; `defaultOpen` seeds the
+// disclosure; `now` drives the live elapsed on running rows. Exported so the
+// session block docks the SAME tray into its real session header.
+export function DockedTray({
+  items,
+  headerLabel = "Session header",
+  defaultOpen = true,
+  now = Date.now(),
+}: {
+  items: Task[];
+  headerLabel?: string;
+  defaultOpen?: boolean;
+  now?: number;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const running = items.filter((t) => t.status === "running").length;
   return (
     <div className="rounded-xl border border-border bg-card">
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <span className="text-xs font-medium text-muted-foreground">Session header</span>
+        <span className="text-xs font-medium text-muted-foreground">{headerLabel}</span>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -287,7 +298,7 @@ function TrayVariant() {
           <ChevronRightIcon className={cn("size-3 transition-transform", open && "rotate-90")} />
         </button>
       </div>
-      {open && (
+      {open && items.length > 0 && (
         <ul className="space-y-0.5 p-2">
           {items.map((t) => (
             <li key={t.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50">
@@ -308,8 +319,22 @@ function TrayVariant() {
           ))}
         </ul>
       )}
+      {open && items.length === 0 && (
+        <p className="px-3 py-2 text-xs text-muted-foreground/60">no tasks running</p>
+      )}
     </div>
   );
+}
+
+function TrayVariant() {
+  const now = Date.now();
+  const items: Task[] = [
+    { id: "t1", label: "Crawl repo", tool: "explore", status: "running", startedAt: now - 8000 },
+    { id: "t2", label: "Port tests", tool: "general", status: "running", startedAt: now - 3000 },
+    { id: "t3", label: "Build spec", tool: "plan", status: "done", startedAt: now - 42000, finishedAt: now },
+    { id: "t4", label: "Flaky suite", tool: "general", status: "error", startedAt: now - 15000, finishedAt: now },
+  ];
+  return <DockedTray items={items} now={now} />;
 }
 
 export function SubagentTrayVariantDemo() {

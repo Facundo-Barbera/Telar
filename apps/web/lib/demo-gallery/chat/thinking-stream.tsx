@@ -17,12 +17,14 @@ import { Shimmer } from "./shimmer";
 import { cn } from "@/lib/utils";
 import { Caption, DemoShell, Section, ThemePair } from "./_shared";
 
-type Thinking = { text: string; done: boolean; durationMs?: number };
+export type Thinking = { text: string; done: boolean; durationMs?: number };
 
 // The single source of truth for how a thinking part renders. The very first
 // line is the suppression rule: whitespace-only content renders NOTHING, so an
-// empty collapsible is structurally impossible.
-function ThinkingBlock({ part }: { part: Thinking }) {
+// empty collapsible is structurally impossible. Exported so the in-context
+// session block (chat-session-block) streams thinking through the exact same
+// component the 1.3 demo does.
+export function ThinkingBlock({ part }: { part: Thinking }) {
   const [open, setOpen] = useState(false);
   if (!part.text.trim()) return null; // ← suppression
 

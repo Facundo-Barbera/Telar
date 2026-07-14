@@ -5,6 +5,7 @@ import {
   SubagentLifecycleDemo,
   SubagentTrayVariantDemo,
 } from "../chat/subagent-lifecycle";
+import { SessionBlockDemo } from "../chat/session-block";
 import { ThinkingStreamDemo } from "../chat/thinking-stream";
 import { WorkingIndicatorDemo } from "../chat/working-indicator";
 import { SessionCostDemo } from "../chat/session-cost";
@@ -29,6 +30,15 @@ export const chatEntries: DemoEntry[] = [
     summary:
       "The alternative the user weighed: chips leave the transcript entirely and live behind a header affordance with a live count. Cleanest flow but hides running work one click deep — shown so the tradeoff against graceful-dismiss is visible.",
     Component: SubagentTrayVariantDemo,
+  },
+  {
+    id: "chat-session-block",
+    title: "Session block — 1.1 in context",
+    concern: "1.1",
+    variant: "Both treatments, in a real turn",
+    summary:
+      "The two 1.1 sub-agent treatments judged in context, not as isolated widgets: a production-anatomy session excerpt — user bubble, then a full agent turn with streamed thinking (1.3), tool steps, and sub-agents that spawn mid-turn, run alongside the tools, and complete one by one — each dismissing per the chosen treatment — closing with final assistant text and the aggregate cost pill (1.6). Replay restarts the scripted timeline; a variant switch swaps A (graceful dismiss into the folded pill) and B (docked tray) in place so both are compared within the same conversation. Reuses the exact chips/pill/tray, thinking block, and cost bits from the isolated demos.",
+    Component: SessionBlockDemo,
   },
   {
     id: "chat-thinking-stream",
