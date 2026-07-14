@@ -17,7 +17,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { StateBadge } from "@/components/common/state-badge";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
-import { EnvReview } from "@/components/looms/env-review";
 import { DiscussEscalation } from "@/components/looms/discuss-escalation";
 import { LoomGodView } from "@/components/looms/god-view";
 import { AgentViewDrawer } from "@/components/looms/agent-view";
@@ -414,8 +413,6 @@ export default function LoomDetailPage() {
           </div>
         ) : loom.state === "charter-review" ? (
           <CharterReview loom={loom} />
-        ) : loom.state === "env-review" ? (
-          <EnvReview loom={loom} />
         ) : loom.state === "blocked" ? (
           <DiscussEscalation loom={loom} />
         ) : (

@@ -115,9 +115,9 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
 // other criterion keeps live-critic. The rich per-criterion authoring (command/
 // gate + the subjective marker) lives in the LLM charter proposer.
 //
-// M11.1 (adaptiveVerification, docs/adaptive-verification.md §3.1) — the
-// modality DERIVATION the M10.5 header above reserved. Flag-on (and only then),
-// two additional PRECISE tightenings run, in order, after the exact-gate-name
+// M11.1 (docs/adaptive-verification.md §3.1) — the
+// modality DERIVATION the M10.5 header above reserved. When a manifest is
+// present, two additional PRECISE tightenings run, in order, after the exact-gate-name
 // rule; everything they cannot map STAYS live-critic (worst case = today):
 //   1. HONOR a charter-authored per-criterion proofHint (schemas.ProofHint):
 //      a criterion whose exact text carries a hint becomes
@@ -153,12 +153,12 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
 // Both directions are live-critic → gate/command TIGHTENINGS (the direction
 // contractLoosenings never flags); the reverse (gate → live-critic) has no code
 // path here — the exact-gate-name rule stays FIRST, so a criterion that is a
-// named gate today is a named gate flag-on too. A derived gate/command never
+// named gate stays a named gate. A derived gate/command never
 // carries `subjective` (this deterministic path never authors the marker;
 // validateContract additionally rejects it on any non-live-critic type).
 // `synthesized: true` stays carried verbatim. The `manifest ? … : false` guard
-// mirrors the M10.5 routing line: a bare 1-arg caller is byte-identical even
-// under the TELAR_ADAPTIVE_VERIFY env override.
+// mirrors the M10.5 routing line: a bare 1-arg caller runs no modality
+// tightening (worst case = today's blanket live-critic).
 export function synthesizeContract(
   loom: Loom,
   manifest?: {
@@ -197,7 +197,7 @@ export function synthesizeContract(
   return { version: 1, assertions, synthesized: true };
 }
 
-// M11.1 (adaptiveVerification, docs/adaptive-verification.md §3.1). PURE. The
+// M11.1 (docs/adaptive-verification.md §3.1). PURE. The
 // TIGHTENING-ONLY derivation over an AUTHORED contract — the choke-point sibling
 // of synthesizeContract for the case synthesizeContract never reaches. Today
 // synthesizeContract runs ONLY when readContract is null; a human/agent-AUTHORED

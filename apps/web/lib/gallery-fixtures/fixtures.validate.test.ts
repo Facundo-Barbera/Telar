@@ -22,7 +22,6 @@ import {
   PanelReport,
   ProjectManifest,
   Provenance,
-  ServersConfig,
   validateContract,
   Verdict,
   VerificationContract,
@@ -49,7 +48,6 @@ const ALL_GROUPS: GalleryGroup[] = [
   "charter",
   "running",
   "blocked",
-  "env",
   "verify",
   "review",
   "ready",
@@ -59,8 +57,8 @@ const ALL_GROUPS: GalleryGroup[] = [
 ];
 
 describe("GALLERY_FIXTURES registry integrity", () => {
-  test("has one bundle per catalog entry (35) with unique ids", () => {
-    expect(GALLERY_FIXTURES.length).toBe(35);
+  test("has one bundle per catalog entry (34) with unique ids", () => {
+    expect(GALLERY_FIXTURES.length).toBe(34);
     const ids = GALLERY_FIXTURES.map((b) => b.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -97,11 +95,6 @@ describe("every bundle parses through the REAL @telar/core schemas", () => {
       if (b.loom.charter) expect(() => Charter.parse(b.loom.charter)).not.toThrow();
       for (const t of b.threads) {
         if (t.charter) expect(() => Charter.parse(t.charter)).not.toThrow();
-      }
-
-      // (4) proposed servers.yaml parses against ServersConfig.
-      if (b.loom.proposedServers) {
-        expect(() => ServersConfig.parse(b.loom.proposedServers)).not.toThrow();
       }
 
       // (5) each attempt's zod-backed artifacts parse; humanJudged is subjective
@@ -193,7 +186,7 @@ describe("(9) resolveGalleryFetch round-trips per bundle", () => {
 // ===========================================================================
 
 describe("(v2) App-view + Component registry integrity", () => {
-  test("every app + component id is unique and disjoint from the 35 loom ids", () => {
+  test("every app + component id is unique and disjoint from the 34 loom ids", () => {
     const loomIds = new Set(GALLERY_FIXTURES.map((b) => b.id));
     const v2Ids = [
       ...GALLERY_APP_VIEWS.map((e) => e.id),
@@ -217,8 +210,8 @@ describe("(v2) App-view + Component registry integrity", () => {
     }
   });
 
-  test("the 35-loom catalog is untouched by the v2 additions", () => {
-    expect(GALLERY_FIXTURES.length).toBe(35);
+  test("the 34-loom catalog is untouched by the v2 additions", () => {
+    expect(GALLERY_FIXTURES.length).toBe(34);
   });
 });
 

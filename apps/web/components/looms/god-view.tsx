@@ -328,7 +328,6 @@ const PLAN_DOT: Record<PlanNodeState, string> = {
   queued: "bg-muted-foreground/30",
   scoping: "bg-muted-foreground/30",
   "charter-review": "bg-muted-foreground/30",
-  "env-review": "bg-amber-500",
 };
 
 function planStateLabel(s: PlanNodeState): string {
@@ -346,8 +345,6 @@ function planStateLabel(s: PlanNodeState): string {
       return "done";
     case "needs-review":
       return "needs review";
-    case "env-review":
-      return "env review";
     case "blocked":
       return "blocked";
     case "failed":
@@ -837,12 +834,11 @@ function WovenAcceptanceGate({
   // Partition the outstanding children by what they actually need from the
   // owner, so the panel's tone matches reality instead of flagging a weave that
   // is merely still building.
-  //   awaitingYou  needs-review / blocked / env-review / charter-review /
+  //   awaitingYou  needs-review / blocked / charter-review /
   //                failed — every outstanding state that genuinely awaits the
   //                owner. A Thread's AcceptancePanel renders for ready /
-  //                needs-review / blocked / failed; env-review and
-  //                charter-review are answered from their own approve/steer
-  //                surfaces. `failed` is included because it awaits the owner
+  //                needs-review / blocked / failed; charter-review is answered
+  //                from its own approve/steer surface. `failed` is included because it awaits the owner
   //                (Resume / Send back) and will never self-complete; `ready`
   //                is excluded because it's already resolved (and so never
   //                reaches `unresolved`). This is the ONLY set that earns the
@@ -859,7 +855,6 @@ function WovenAcceptanceGate({
     (t) =>
       t.state === "needs-review" ||
       t.state === "blocked" ||
-      t.state === "env-review" ||
       t.state === "charter-review" ||
       t.state === "failed",
   );
@@ -876,7 +871,7 @@ function WovenAcceptanceGate({
   );
 
   // Calm / informational branch: nothing here needs the owner. Reserved for when
-  // NO child is owner-awaiting (needs-review/blocked/env-review/charter-review/
+  // NO child is owner-awaiting (needs-review/blocked/charter-review/
   // failed). Neutral styling — the amber "resolve it" language would
   // misrepresent a weave that's just working (or a lone halted thread).
   if (awaitingYou.length === 0) {
@@ -936,7 +931,7 @@ function WovenAcceptanceGate({
   }
 
   // Action-required branch: at least one child awaits the owner (needs-review /
-  // blocked / env-review / charter-review / failed) and the owner has a real
+  // blocked / charter-review / failed) and the owner has a real
   // move. Amber treatment applies to THAT set; any still-building or stopped
   // siblings are named neutrally so "awaiting/resolve" language attaches only to
   // the threads that actually await the owner.

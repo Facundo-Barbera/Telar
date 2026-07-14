@@ -26,7 +26,7 @@ const MANY_FILES_TOUCHED = 8;
 // signal-driven scale-up; the §M.3 floor (intent + >=1 adversarial/
 // reproduction blocker) is derived here unconditionally, never from a caller
 // flag or manifest/session policy — that is what makes it non-negotiable.
-// `opts.aesthetic` (M10.5, subjectiveRouting) adds an ADVISORY UX/polish lens
+// `opts.aesthetic` (M10.5) adds an ADVISORY UX/polish lens
 // (blocker:false) UNDER THE SAME UX-relevance signal that sizes live-experience
 // (risky). Default undefined ⇒ no aesthetic lens ⇒ byte-identical to every
 // existing panelSize(signals) caller/test.

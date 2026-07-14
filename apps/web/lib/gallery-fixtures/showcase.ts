@@ -40,7 +40,6 @@ const STATES = [
   "queued",
   "scoping",
   "charter-review",
-  "env-review",
   "preparing",
   "running",
   "verifying",

@@ -185,12 +185,6 @@ export const WorkUnitState = z.enum([
   "queued",
   "scoping",
   "charter-review",
-  // M7 — a live-critic loom whose verify needs a running app but the project
-  // has NO server recipe: paused awaiting a human Accept/Steer/Reject of the
-  // setup agent's proposed servers.yaml (approveEnv). Awaiting-human, like
-  // charter-review; NEITHER terminal NOR in-flight. Only reachable when the
-  // envReview flag is on — flag-off it is unreachable (byte-identical).
-  "env-review",
   "preparing",
   "running",
   "verifying",
@@ -233,111 +227,6 @@ export const ProjectManifest = z.object({
     .enum(["auto", "human-required-for-epics", "human-required"])
     .default("human-required-for-epics"),
   baseBranch: z.string().default("main"),
-  // M3 — per-loom worktree isolation + consolidation. Default OFF: every code
-  // path is byte-identical to pre-M3 when false. On, each child thread builds
-  // in its own git worktree forked from baseBranch's pinned SHA, and every
-  // done thread's diff folds onto a `telar/<rootId>` review branch (the
-  // human-review deliverable — never auto-merged to baseBranch). Also honored
-  // via the TELAR_ISOLATE_WORKTREES=1 env override for live-validation runs.
-  isolateWorktrees: z.boolean().default(false),
-  // M4 — bounded auto-repair of the woven root's integration verify, run
-  // against a FROZEN snapshot (worktree @ pinned SHA + ephemeral DB clone).
-  // Default OFF: every code path is byte-identical to pre-M4 when false. On,
-  // a red ALL-slice integration verdict may trigger a guarded, provably-
-  // terminating repair loop (repair-guard.ts) instead of an immediate
-  // needs-review demotion. Also honored via TELAR_AUTO_REPAIR=1 for a
-  // live-validation run. The one master flag gates the whole frozen-lane
-  // pipeline (frozen verify + checkpoints + auto-repair).
-  autoRepair: z.boolean().default(false),
-  // M5 — own loom execution in a standalone telar-runner process so a web
-  // reload/edit doesn't kill in-flight work. Default OFF: flag-off every path
-  // is byte-identical (dispatch stays in-process). Honored via TELAR_RUNNER=1.
-  outOfProcessRunner: z.boolean().default(false),
-  // M5 — a scoped setup agent runs in the `preparing` window (before build
-  // children spawn): brings the lane up, authors a missing servers.yaml,
-  // verifies the readyCheck. Default OFF (no lane at build time — byte-identical).
-  // Honored via TELAR_SETUP_AGENT=1.
-  setupAgent: z.boolean().default(false),
-  // M6 — wire the (already-built) intra-thread Build fan-out: a thread's build
-  // MAY split into N git-worktree-isolated builders over disjoint file pieces.
-  // Default OFF: flag-off every path is byte-identical (single builder). Rides
-  // on worktree isolation (each piece needs its own tree) — the dispatcher gates
-  // fan-out on isolateWorktrees too. Honored via TELAR_BUILD_FANOUT=1. The
-  // merged result still passes the SAME gates + one independent Verifier — more
-  // builders never changes WHO accepts (moat).
-  buildFanout: z.boolean().default(false),
-  // M7 — the env-review gate. When a live-critic loom reaches verify with no
-  // usable target AND the project has no server recipe, divert it to the
-  // `env-review` state (a setup-agent-PROPOSED servers.yaml the human must
-  // Accept/Steer/Reject) instead of skipping straight to needs-review. Default
-  // OFF: flag-off every path is byte-identical (the divert never fires; the
-  // added enum member + state maps are unreachable). Honored via
-  // TELAR_ENV_REVIEW=1. The moat holds: approveEnv needs a human `by`, the
-  // proposer writes/starts nothing before accept, verify stays read-only, and a
-  // green re-verify still lands `ready`, never `done`.
-  envReview: z.boolean().default(false),
-  // M9 — thread-as-workflow. Execute a thread's build as an N-step DAG
-  // (dependsOn) × M agents/step via runThreadWorkflow instead of the single
-  // executeLoom attempt loop. Default OFF: flag-off every path is byte-identical
-  // (executeLoom is the only reachable builder; the runner is unreferenced). The
-  // default template is one `build` step that RE-ENTERS executeLoom, so flag-on
-  // with the default template is behaviorally identical to today. Honored via
-  // TELAR_THREAD_WORKFLOW=1 for live-validation.
-  threadWorkflow: z.boolean().default(false),
-  // M9.3 — per-thread LLM step-planner. When on (AND threadWorkflow on), a
-  // READ-ONLY LLM call authors the ThreadWorkflow step-graph; degrades to the
-  // deterministic template library on any failure/invalid/empty/cyclic graph.
-  // Default OFF: templates only, no LLM spend. Honored via TELAR_THREAD_PLANNER=1.
-  threadPlanner: z.boolean().default(false),
-  // M9.4 — consume Step.check as an OPTIONAL, INFORMATIONAL per-step verify-lens.
-  // When on (AND threadWorkflow on), after a step completes with a `check`, run a
-  // READ-ONLY informational check of that step's output; on FAIL trigger a BOUNDED
-  // step-local repair (existing attempt budget) and, if still failing, HOLD
-  // dependents and FAIL THE THREAD CLOSED. A per-step check NEVER promotes the loom
-  // (loom-level contract+panel+human stay the only proof) and can only ADD scrutiny,
-  // never relax the loom's contract. Default OFF: Step.check ignored, byte-identical.
-  // Honored via TELAR_STEP_CHECKS=1.
-  stepChecks: z.boolean().default(false),
-  // M10.1 — run ONE authoritative whole-verification gate over the COMPOSED
-  // WHOLE after weave rollup (regression + completeness), forking the read-only
-  // verify from the consolidation branch and verifying the FULL contract.
-  // Fail-closed; only KEEPS or DEMOTES a ready loom (never authors "done").
-  // Default OFF: no top gate, byte-identical. Honored via TELAR_ORCHESTRATOR_VERIFY=1.
-  orchestratorVerify: z.boolean().default(false),
-  // M10.3 — proactively stand a SUPERVISED verification lane up for the top-gate
-  // pass (a real server/db/multi-service target) and bounded-restart a service
-  // that dies mid-verify. A PEER of orchestratorVerify, meaningful only when it
-  // (or autoRepair) is on. Fail-closed when the lane can't come up (M10.1 demote).
-  // Default OFF: one-shot startLane, no supervisor, byte-identical. Honored via
-  // TELAR_VERIFY_LANE=1.
-  verifyLane: z.boolean().default(false),
-  // M10.4 — PRE-FLIGHT lane-viability gate + bounded ask-once-persist human
-  // escalation. When on, before any spend (baseSha pin, consolidation branch,
-  // child spawn) the dispatcher checks the verification lane is achievable; if a
-  // live target is needed but there is no devCommand, no servers recipe tier, and
-  // no auto-provision path, it PARKS the loom in `blocked` with a narrative
-  // question a human answers ONCE (answerBlocked). Default OFF: no pre-flight
-  // park, children spawn as today, byte-identical. Honored via
-  // TELAR_LANE_ESCALATION=1.
-  laneEscalation: z.boolean().default(false),
-  // M10.5 — route criteria by objective-vs-subjective at two altitudes. When on,
-  // an EXPLICITLY subjective-marked criterion (ContractAssertion.subjective) is
-  // pulled out of the blocking panel into a human-judged bucket carried to accept
-  // (never a machine gate), the deterministic/agent-judged split for every
-  // unmarked criterion is UNCHANGED (default-to-objective, fail-closed), and an
-  // optional non-blocking aesthetic critic can nudge but never gate. A TOP-LEVEL
-  // flag. Default OFF: routing unchanged, no aesthetic lens, byte-identical.
-  // Honored via TELAR_SUBJECTIVE_ROUTING=1.
-  subjectiveRouting: z.boolean().default(false),
-  // M11.1 — modality derivation. When on, synthesizeContract derives each
-  // synthesized criterion's assertion TYPE from the deliverable (the pure
-  // deliverable-signal module + the charter's proof intent / per-criterion
-  // proofHints) instead of the blanket live-critic — live-critic → gate/command
-  // TIGHTENING only, never the reverse; an unmappable criterion stays
-  // live-critic. A TOP-LEVEL flag. Default OFF: every synthesized criterion
-  // maps live-critic/ALL exactly as today and the charter-drafting prompt is
-  // byte-identical. Honored via TELAR_ADAPTIVE_VERIFY=1.
-  adaptiveVerification: z.boolean().default(false),
   gates: z
     .array(z.object({ name: z.string(), run: z.string() }))
     .default([]),
@@ -492,7 +381,7 @@ export const SubGoal = z.object({
   required: z.boolean().default(true),
   status: z.enum(["pending", "ready", "active", "done", "blocked", "failed"]).default("pending"),
   // M11.1 — optional per-criterion proof hints for THIS SubGoal's criteria.
-  // Absent everywhere today (additive); consumed only under adaptiveVerification.
+  // Absent everywhere today (additive); consumed by the modality derivation.
   proofHints: z.array(ProofHint).optional(),
 });
 export type SubGoal = z.infer<typeof SubGoal>;
@@ -512,7 +401,7 @@ export const Charter = z.object({
   singleThread: z.boolean().optional(), // true iff a synthesized weave-of-one (§W); excluded from the epic policy/label sites
   // M11.1 — optional charter-level per-criterion proof hints (for the root's
   // own acceptanceCriteria / a non-decomposing charter). Additive; consumed
-  // only under adaptiveVerification. Per-SubGoal hints live on SubGoal.
+  // by the modality derivation. Per-SubGoal hints live on SubGoal.
   proofHints: z.array(ProofHint).optional(),
 });
 export type Charter = z.infer<typeof Charter>;
@@ -578,7 +467,7 @@ export const ContractAssertion = z.object({
   // A subjective criterion is carried as a normal `type:"live-critic"` assertion
   // (so validateContract's observable rule still applies) that ADDITIONALLY sets
   // subjective:true — AUTHORED per-criterion by the LLM charter proposer, never a
-  // deterministic keyword scan. When subjectiveRouting is on, ONLY an assertion
+  // deterministic keyword scan. ONLY an assertion
   // that explicitly carries subjective:true is pulled out of the autonomous panel
   // into the human-judged accept bucket; its absence keeps a criterion
   // objective/fail-closed (default-to-objective).
@@ -600,7 +489,7 @@ export type VerificationContract = z.infer<typeof VerificationContract>;
 
 // M9 (thread-as-workflow) — a Step's kind. `build`/`migrate` are WRITING steps
 // (disjoint-writer partition applies in M9.2); research/design/check fan out
-// freely. Additive; only consulted under threadWorkflow (flag-off unreachable).
+// freely. Additive; consulted by every thread's workflow.
 export const StepKind = z.enum(["research", "design", "build", "migrate", "check"]);
 export type StepKind = z.infer<typeof StepKind>;
 
@@ -815,8 +704,8 @@ export const CriticClass = z.enum([
   "security",
   "performance",
   "data-integrity",
-  // M10.5 — an ADVISORY UX/design lens. Sized in ONLY under subjectiveRouting +
-  // the UX-relevance signal, ALWAYS blocker:false (stamped from the LensSpec, not
+  // M10.5 — an ADVISORY UX/design lens. Sized in ONLY under the UX-relevance
+  // signal, ALWAYS blocker:false (stamped from the LensSpec, not
   // the agent's self-report), and NOT a §M.3 floor class — provably non-gating on
   // every aggregatePanel path (blocker:false defeats the failing-blocker path, it
   // cannot satisfy the floor, and aggregatePanel excludes class:"aesthetic" from

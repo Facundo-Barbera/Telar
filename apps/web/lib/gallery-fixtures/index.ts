@@ -21,7 +21,6 @@ import { charterBundles } from "./scenarios/charter";
 import { runningBundles } from "./scenarios/running";
 import { chatBundles } from "./scenarios/chat";
 import { blockedBundles } from "./scenarios/blocked";
-import { envBundles } from "./scenarios/env";
 import { verifyBundles } from "./scenarios/verify";
 import { reviewBundles } from "./scenarios/review";
 import { readyBundles } from "./scenarios/ready";
@@ -67,7 +66,6 @@ export type GallerySurface =
   | "godview"
   | "scoping"
   | "charter"
-  | "env"
   | "discuss"
   | "loom-cards"
   | "session";
@@ -78,7 +76,6 @@ export type GalleryGroup =
   | "charter"
   | "running"
   | "blocked"
-  | "env"
   | "verify"
   | "review"
   | "ready"
@@ -125,7 +122,6 @@ export const GALLERY_FIXTURES: GalleryFixtureBundle[] = [
   ...runningBundles,
   ...chatBundles,
   ...blockedBundles,
-  ...envBundles,
   ...verifyBundles,
   ...reviewBundles,
   ...readyBundles,

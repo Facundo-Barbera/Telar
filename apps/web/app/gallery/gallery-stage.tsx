@@ -4,7 +4,6 @@ import { useState } from "react";
 import type { GalleryFixtureBundle } from "@/lib/gallery-fixtures";
 import { setActiveScene } from "@/lib/gallery-fixtures";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
-import { EnvReview } from "@/components/looms/env-review";
 import { DiscussEscalation } from "@/components/looms/discuss-escalation";
 import { LoomGodView } from "@/components/looms/god-view";
 import { AgentViewDrawer } from "@/components/looms/agent-view";
@@ -82,7 +81,6 @@ export function GalleryStage({ bundle }: { bundle: GalleryFixtureBundle }) {
     );
   }
   if (loom.state === "charter-review") return <CharterReview loom={loom} />;
-  if (loom.state === "env-review") return <EnvReview loom={loom} />;
   if (loom.state === "blocked") return <DiscussEscalation loom={loom} />;
 
   // The unified god-view — mirrors page.tsx:335-447 verbatim (derivations included).

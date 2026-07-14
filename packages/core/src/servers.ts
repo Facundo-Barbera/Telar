@@ -5,13 +5,13 @@
 // returns EMPTY_SERVERS_CONFIG (driver: "none") instead of throwing — and
 // there is no self-heal registry cache. Malformed/invalid files still throw.
 //
-// M7 — a SECOND, higher-precedence tier: the HUMAN-ACCEPTED `.telar/servers.yaml`
-// an approveEnv writes. Precedence (D5): acceptedRoot/.telar/servers.yaml →
+// A SECOND, higher-precedence tier: the HUMAN-ACCEPTED `.telar/servers.yaml`
+// an answerBlocked servers answer writes. Precedence (D5): acceptedRoot/.telar/servers.yaml →
 // root/servers.yaml → driver:"none". First EXISTING file wins; only ENOENT
 // falls through; malformed/invalid at any tier still throws. `.telar/` is
 // gitignored + untracked, so the accepted config is project-local, reused
-// forever (once it exists the env-review trigger's driver==="none" check is
-// false → no re-proposal), and never committed.
+// forever (once it exists the lane resolves to a real driver), and never
+// committed.
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -59,10 +59,10 @@ export function resolveServersConfig(root: string, acceptedRoot: string = root):
   return ServersConfig.parse({});
 }
 
-// M7 — persist a human-accepted proposal to `.telar/servers.yaml` under `root`.
+// Persist a human-accepted servers recipe to `.telar/servers.yaml` under `root`.
 // atomicWrite creates `.telar/` on demand (mkdir recursive) + tmp+rename, so a
 // crash never leaves a half-written recipe. The moat: this is only ever called
-// from approveEnv, AFTER a human `by` accepted the proposal.
+// from answerBlocked, AFTER a human `by` accepted the recipe.
 export function writeAcceptedServersConfig(root: string, cfg: ServersConfig): void {
   atomicWrite(acceptedServersFile(root), YAML.stringify(cfg));
 }

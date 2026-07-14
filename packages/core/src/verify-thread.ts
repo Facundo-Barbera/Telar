@@ -8,7 +8,7 @@
 // construction and cannot mutate the deliverable.
 //
 // M11.2 (docs/adaptive-verification.md §3.3) — the lane is a STRATEGY SET, not
-// only a URL: under verifyLane, frozenLaneVerify chooses a VerificationStrategy
+// only a URL: frozenLaneVerify chooses a VerificationStrategy
 // (verification-strategy.ts) from the deliverable signal re-derived against the
 // frozen worktree (artifact-time) + the contract shape. "server-lane" keeps
 // today's resolveServersConfig → startLane → laneTarget path verbatim; a
@@ -105,7 +105,7 @@ export type FrozenLaneDeps = {
   // sets this to loom.consolidationBranch (telar/<rootId>) so the read-only
   // verify runs over the COMPOSED WHOLE the children built, not the pre-work base.
   forkRef?: string;
-  // M10.3 — when set (only under verifyLane, injected by dispatcher frozenDeps),
+  // M10.3 — when set (injected by the dispatcher via frozenDeps),
   // convert a lane BRING-UP failure (startLane throws, resolveServersConfig
   // throws on a malformed servers.yaml) into a FAIL-CLOSED return: leave
   // lane=null, drive runIntegrationVerify with NO url (target=undefined), so the
@@ -115,9 +115,9 @@ export type FrozenLaneDeps = {
   // false green. Absent/flag-off ⇒ the throw propagates as today (byte-identical).
   failClosedLaneDown?: boolean;
   // M11.2 (adaptive-verification.md §3.3) — strategy-layer seams. The layer is
-  // consulted ONLY when failClosedLaneDown is set (the dispatcher's verifyLane-ON
-  // injection): flag-off, neither seam is ever read and the whole path is
-  // byte-identical. Deliberately gated on the SAME condition that fail-closes
+  // consulted ONLY when failClosedLaneDown is set (the dispatcher's runtime
+  // lane-down injection): otherwise neither seam is ever read.
+  // Deliberately gated on the SAME condition that fail-closes
   // bring-up, so a strategy-selection throw can never escape into weave's
   // fail-open catch — it becomes laneDown → target=undefined → panel skip →
   // M10.1 demote.
@@ -189,7 +189,7 @@ export async function frozenLaneVerify(
     // M11.2 (adaptive-verification.md §3.3) — the bring-up generalizes to a
     // VERIFICATION STRATEGY, established HERE, when the artifact exists, inside
     // the frozen worktree. Default "server-lane" = today's path verbatim; the
-    // chooser runs ONLY under failClosedLaneDown (verifyLane ON), inside the
+    // chooser runs ONLY under failClosedLaneDown, inside the
     // same guarded try, so a selection failure fail-closes exactly like a
     // bring-up failure. A NON-server strategy calls NO startLane: the frozen
     // `wt` is already the substrate — the producer below (runIntegrationVerify,
@@ -198,7 +198,7 @@ export async function frozenLaneVerify(
     let laneDown = false;
     let strategy: VerificationStrategy = {
       kind: "server-lane",
-      reason: "strategy layer inactive (verifyLane off) — today's path",
+      reason: "strategy not yet chosen (default server-lane)",
     };
     try {
       const cfg = resolveCfg(wt, manifest.root);
@@ -221,7 +221,7 @@ export async function frozenLaneVerify(
       }
       // Only the server lane stands processes up. The chooser routes every
       // process-standing case (web, API/DB boot+hit, a DS kernel declared as a
-      // service) to "server-lane" — under the dispatcher's verifyLane injection
+      // service) to "server-lane" — under the dispatcher's injection
       // startLaneFn IS superviseStartLane, so those processes live behind the
       // executor/setup wall (verify-lane.ts). Defense-in-depth: a non-server
       // strategy skips bring-up even if a config resolves.

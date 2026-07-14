@@ -339,7 +339,7 @@ export function AcceptancePanel({
   // static heading/blurb; null falls back to the blurb alone.
   const verifiedSummary =
     loom.state === "ready" ? deriveVerifiedSummary(loom) : null;
-  // M10.5 (subjectiveRouting) — the criteria the loop DELIBERATELY carried to
+  // M10.5 — the criteria the loop DELIBERATELY carried to
   // the human instead of an autonomous machine gate: explicitly-marked
   // subjective assertions (`subjective:true`), pulled out of the panel into the
   // attempt's `humanJudged` bucket and never rubber-stamped by a check. The

@@ -30,12 +30,6 @@ const STYLES: Record<
     className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
     pulse: false,
   },
-  "env-review": {
-    label: "env review",
-    dot: "bg-amber-400",
-    className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-    pulse: false,
-  },
   preparing: {
     label: "preparing",
     dot: "bg-sky-400",

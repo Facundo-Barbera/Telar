@@ -37,10 +37,6 @@ beforeEach(() => {
   process.env.TELAR_HOME = home;
 });
 afterEach(() => {
-  // Defensive: keep any process-global flag another suite might have set from
-  // leaking across files (mirrors build-fanout-wiring.test.ts:19-24).
-  delete process.env.TELAR_BUILD_FANOUT;
-  delete process.env.TELAR_ISOLATE_WORKTREES;
   fs.rmSync(home, { recursive: true, force: true });
 });
 

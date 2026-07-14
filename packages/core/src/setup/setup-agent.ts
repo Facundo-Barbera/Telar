@@ -16,7 +16,7 @@ import { agent as defaultAgent, type AgentOpts } from "../engine";
 import { startLane as defaultStartLane, type Lane, type StartLaneOpts } from "../run-server";
 import { resolveServersConfig as defaultResolveServersConfig } from "../servers";
 import type { Loom } from "../looms";
-import { ServersConfig, ServersDriver, ServiceConfig } from "../schemas";
+import { ServersConfig } from "../schemas";
 import type { AccountProfile, ProjectManifest } from "../schemas";
 
 export type SetupResult = { ready: boolean; wroteServersYaml?: boolean; error?: string };
@@ -169,94 +169,3 @@ export async function runSetupAgent(loom: Loom, manifest: ProjectManifest, deps:
   return { ready: false, wroteServersYaml, error: "setup: exhausted lane bring-up repair attempts" };
 }
 
-// M7 — the PROPOSER. Runs at VERIFY time (not preparing) when a live-critic
-// loom needs a running app but the project has no recipe. Unlike runSetupAgent
-// it is READ-ONLY (D11): the same probe instructions as AUTHOR_TASK, but it
-// returns the DRAFTED config as structured output and WRITES NOTHING and STARTS
-// NOTHING. The human accepts it (approveEnv) — only then is it persisted and the
-// lane brought up. This is the load-bearing moat enforcement: no Write tool, no
-// startLane/bringUp, so the proposer physically cannot persist or run anything.
-const PROPOSE_TASK = (manifest: ProjectManifest) => `You are the Telar SETUP AGENT proposing this project's dev environment.
-There is currently NO servers.yaml recipe. Probe the repository (package.json
-scripts, framework config, existing docs) to determine how to start the dev
-server: the start command, the port it binds, and a real readiness signal.
-
-Return the DRAFTED config as structured output — do NOT write any file, do NOT
-start any server. The draft must conform to Telar's ServersConfig:
-- driver: host-process
-- one service with: command, portStrategy (fixed|dynamic), and (for fixed) port
-- a DECLARED readyCheck — either { kind: http, path, status } or
-  { kind: command, run } — NOT a "any response = up" fallback.
-${guardrailsBlock(manifest)}
-Return { driver: "host-process", services: { <name>: { ... } } }.`;
-
-// The agent's structured output: the driver + services block (re-validated
-// against ServersConfig before returning, so a malformed draft becomes a clean
-// {config:null} → honest needs-review, never a garbage config).
-const ProposeAgentResult = z.object({
-  driver: ServersDriver,
-  services: z.record(z.string(), ServiceConfig),
-});
-
-// READ-ONLY tool wall (D11): Read/Grep/Glob only. NO Bash (full write/exec) and
-// NO Write (so it cannot persist a servers.yaml), NO startLane/bringUp seam.
-// Diverges from setupAgentOpts precisely by dropping Write/Bash and hard-
-// disallowing them, mirroring the Verifier/Critic wall.
-function proposeAgentOpts(
-  manifest: ProjectManifest,
-  deps: SetupDeps,
-  cwd: string,
-): Omit<AgentOpts<typeof ProposeAgentResult.shape>, "schema"> & { schema: typeof ProposeAgentResult } {
-  return {
-    schema: ProposeAgentResult,
-    tools: ["Read", "Grep", "Glob"], // NO Write/Bash — cannot persist or exec (moat)
-    restrictTools: true,
-    disallowedTools: ["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit", "Agent", ...manifest.guardrails.disallowedTools],
-    settingSources: [],
-    cwd,
-    account: deps.account,
-    model: deps.model,
-    onEvent: deps.onEvent as AgentOpts<typeof ProposeAgentResult.shape>["onEvent"],
-  };
-}
-
-export async function proposeServersConfig(
-  loom: Loom,
-  manifest: ProjectManifest,
-  deps: SetupDeps = {},
-): Promise<{ config: ServersConfig | null; error?: string }> {
-  const runAgent = deps.agent ?? defaultAgent;
-  const emit = deps.onEvent ?? (() => {});
-  const cwd = deps.cwd ?? manifest.root;
-
-  emit({ type: "env-propose-started" });
-  let res: { driver: ServersDriver; services: Record<string, unknown> } | null | undefined;
-  try {
-    res = (await runAgent(PROPOSE_TASK(manifest), proposeAgentOpts(manifest, deps, cwd))) as typeof res;
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    emit({ type: "env-propose-failed", message: error });
-    return { config: null, error };
-  }
-  if (!res) {
-    const error = "setup: no environment proposed";
-    emit({ type: "env-propose-failed", message: error });
-    return { config: null, error };
-  }
-  // Re-validate the draft against the FULL schema (the fake agent in tests, and
-  // a real agent's structured output, both flow through here) so a malformed
-  // proposal is an honest {config:null}, never a garbage config.
-  const parsed = ServersConfig.safeParse({ version: 1, driver: res.driver, services: res.services });
-  if (!parsed.success) {
-    const error = z.prettifyError(parsed.error);
-    emit({ type: "env-propose-failed", message: error });
-    return { config: null, error };
-  }
-  if (parsed.data.driver === "none") {
-    const error = "setup: proposer returned no runnable driver";
-    emit({ type: "env-propose-failed", message: error });
-    return { config: null, error };
-  }
-  emit({ type: "env-proposed" });
-  return { config: parsed.data };
-}

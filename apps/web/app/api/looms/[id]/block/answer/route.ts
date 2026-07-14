@@ -8,7 +8,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// Answers a loom parked in `blocked` (M10.4 laneEscalation) and re-dispatches
+// Answers a loom parked in `blocked` (M10.4) and re-dispatches
 // the verified build. The answer payload is `{ devCommand?, verifyCommand?,
 // servers?, runbook? }` — at least one viability-making field must be present
 // (answerBlocked rejects an empty/runbook-only answer). `verifyCommand` is the
@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 // fail-closed verification gate — what the strategy-derived ask requests for a
 // library/CLI/DS deliverable). The answerer identity (`by`) is bound
 // server-side ("you"), NEVER read from the body — the moat requires a HUMAN
-// by, exactly like env/approve.
+// by.
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -49,7 +49,7 @@ export async function POST(
       runbook = body.runbook.trim();
     }
     // A servers recipe, if given, must parse to a valid ServersConfig before we
-    // hand it on (mirrors env/approve's Steer validation).
+    // hand it on.
     if (body?.servers !== undefined && body.servers !== null) {
       const parsed = ServersConfig.safeParse(body.servers);
       if (!parsed.success) {

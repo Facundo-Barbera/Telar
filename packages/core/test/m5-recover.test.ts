@@ -32,7 +32,6 @@ const EXPECTED: Record<Loom["state"], RecoverAction> = {
   running: "halt",
   verifying: "halt",
   "charter-review": "leave",
-  "env-review": "leave", // M7 — awaiting a human on the env proposal
   ready: "leave",
   blocked: "leave",
   "needs-review": "leave",

@@ -53,8 +53,7 @@ export * from "./consolidate";
 export * from "./bundle";
 export * from "./panel";
 export * from "./critic";
-// M5 — out-of-process runner scaffold + setup agent (flag-guarded; default OFF).
-export * from "./runner/flag";
+// M5 — out-of-process runner transport scaffold.
 export * from "./runner/transport";
 export * from "./runner/http-transport";
 export * from "./runner/resolve";

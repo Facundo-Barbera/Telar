@@ -63,14 +63,6 @@ export function agentsToPieces(agents: AgentSpec[]): BuildPiece[] {
   }));
 }
 
-// M6 — the fan-out master flag (mirrors isolationEnabled/autoRepairEnabled
-// exactly). Default OFF; also honored via TELAR_BUILD_FANOUT=1 for a
-// live-validation run. The dispatcher additionally requires isolationEnabled
-// (each piece needs its own worktree) before it will plan a fan-out.
-export function buildFanoutEnabled(manifest: { buildFanout?: boolean }): boolean {
-  return manifest.buildFanout === true || process.env.TELAR_BUILD_FANOUT === "1";
-}
-
 // --- path-overlap helpers (conservative: unsure => overlapping) -----------
 
 // globBase/normalizePath (the literal-prefix approximation of "do these path

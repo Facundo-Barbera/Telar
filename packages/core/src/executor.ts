@@ -31,7 +31,7 @@ import { isRunnableShape } from "./runnable-shape";
 // load), so ESM live bindings resolve them regardless of evaluation order.
 import { contractErrorsRepairable } from "./weave-contracts";
 import { foldChildOnDone } from "./consolidate";
-import { startProjectServer, startLane, laneTarget, type Lane, type StartLaneOpts } from "./run-server";
+import { startProjectServer } from "./run-server";
 import { ModelPolicy, ThreadWorkflow, validateContract, Verdict, VerificationContract } from "./schemas";
 import type {
   AccountProfile,
@@ -45,13 +45,10 @@ import type {
   WorkUnitState,
 } from "./schemas";
 import { verify } from "./verifier";
-import { envReviewEnabled } from "./runner/flag";
 import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig, resolveRunbook } from "./servers";
 import { blockedStrategyQuestion, charterHasGateIntent, deriveDeliverableSignal, type CharterProofIntent } from "./deliverable-signal";
-import { proposeServersConfig as defaultProposeServersConfig } from "./setup/setup-agent";
-import type { SetupDeps } from "./setup/setup-agent";
 
 export type ExecuteOpts = {
   policy?: ModelPolicy;
@@ -81,20 +78,6 @@ export type ExecuteOpts = {
   // expose — lets tests drive the build loop with a fake builder (no live
   // model) without mocking the engine module. Production never sets it.
   run?: typeof agent;
-  // M7 — the env-review PROPOSER seam. When a live-critic loom reaches verify
-  // with needsEnv (no target + no recipe, flag on), the divert calls this to
-  // DRAFT a servers.yaml (read-only; writes/starts nothing). Defaults to the
-  // real proposeServersConfig; tests inject a fake so no live agent runs.
-  // Absent + flag-off, the divert never fires — byte-identical to today.
-  proposeServersConfig?: (
-    loom: Loom,
-    manifest: ProjectManifest,
-    deps: SetupDeps,
-  ) => Promise<{ config: ServersConfig | null; error?: string }>;
-  // M7 (GAP 2) — injectable lane spin-up for the accept→verify round-trip so a
-  // test drives it with a fake lane and no real server. Threaded into
-  // runVerification; production leaves it unset (uses the real startLane).
-  startLane?: (config: ServersConfig, root: string, o?: StartLaneOpts) => Promise<Lane>;
   // M9 — recursion guard: set true when runThreadWorkflow re-enters executeLoom
   // to run the default `build` step. Suppresses the top-of-executeLoom flag
   // branch so the delegated call runs today's unchanged attempt loop instead of
@@ -106,10 +89,9 @@ export type ExecuteOpts = {
   // is never consulted.
   runStep?: (step: Step, ctx: WorkflowStepCtx) => Promise<StepResult>;
   // M9.3 — injectable step-planner (test seam, mirrors runStep?). Absent ⇒ the
-  // built-in planThreadWorkflow (deterministic templates; LLM only when
-  // threadPlanner on — SLICE-B). Lets a test inject a canned/invalid/cyclic plan
-  // or assert the planner is/isn't invoked, without a live model. Flag-off never
-  // consulted.
+  // built-in planThreadWorkflow (LLM planner is the norm; deterministic template
+  // is the degrade floor). Lets a test inject a canned/invalid/cyclic plan
+  // or assert the planner is/isn't invoked, without a live model.
   planWorkflow?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<ThreadWorkflow>;
   // M9.4 — injectable per-step CHECK evaluator (test seam, mirrors runStep?).
   // Absent ⇒ the built-in runStepCheck (partition st.check → deterministic gates
@@ -436,8 +418,8 @@ export function routeAssertions(assertions: ContractAssertion[]): {
 // (all-deterministic: no agent-judged assertions — the zero-browser backend
 // path) OR a live target is obtainable: manifest.devCommand set (M5 auto-spin
 // owns bringing it up) OR a servers recipe tier resolves to a real driver (a
-// repo servers.yaml OR an already-accepted `.telar/servers.yaml`). Reuses the
-// EXACT needsEnv predicate from runPanelVerification, so a previously-persisted
+// repo servers.yaml OR an already-accepted `.telar/servers.yaml`). Mirrors the
+// no-target lane check in runPanelVerification, so a previously-persisted
 // recipe means the lane is viable and the pre-flight NEVER re-asks. PURE over
 // already-resolved inputs (one filesystem tier read) — it cannot loop or spawn.
 //
@@ -548,12 +530,6 @@ async function runPanelVerification(
   report: VerifierReport | null;
   panelReport?: PanelReport | null;
   panelRequired: boolean;
-  // M7 — set true (only in the no-target branch below, flag on) when this
-  // live-critic loom has no way to obtain live evidence AND the project has no
-  // server recipe: the signal the executor loops act on to divert to
-  // `env-review` (propose a servers.yaml) instead of the M8 fail-closed skip →
-  // needs-review terminal. Undefined everywhere else.
-  needsEnv?: boolean;
 }> {
   // Unit 4 (docs §4): the panel only ever sees the AGENT-JUDGED slice — the
   // deterministic assertions were already settled as gates (executeLoom) and
@@ -572,19 +548,11 @@ async function runPanelVerification(
   }
   if (!target) {
     emit({ type: "panel", n: attempt.n, report: null });
-    // M7 trigger (GAP 1): a live-critic loom that reached verify with an
-    // agent-judged slice but NO target, NO devCommand (M5 auto-spin owns that),
-    // the flag ON, and NO server recipe (nor an already-accepted .telar config)
-    // needs an environment → set needsEnv so the executor loops divert to the
-    // env-review gate. envReviewEnabled is the FIRST && operand, so flag-off adds
-    // ZERO filesystem reads and the return shape is byte-identical to M8's.
-    // panelRequired stays M8's unconditional `true` (fail-closed): a divert that
-    // proposes nothing viable still lands the honest needs-review terminal.
-    const needsEnv =
-      envReviewEnabled(manifest) &&
-      !manifest.devCommand &&
-      resolveServersConfig(manifest.root).driver === "none";
-    return { verification: "skip", report: null, panelReport: null, panelRequired: true, ...(needsEnv ? { needsEnv: true } : {}) };
+    // M8 fail-closed: a live-critic loom that reached verify with an agent-judged
+    // slice but NO target skips with panelRequired:true, so decide() retries then
+    // lands the honest needs-review terminal. The unconditional top gate
+    // is what stands a lane up when one can be formed.
+    return { verification: "skip", report: null, panelReport: null, panelRequired: true };
   }
   try {
     const objective = readBundleFile(loom.id, "objective.md") ?? loom.prompt;
@@ -816,23 +784,15 @@ export async function runVerification(
   emit: (ev: { type: string } & Record<string, unknown>) => void,
   account?: AccountProfile,
   url?: string,
-  // M7 (GAP 2) — `startLane` is an injectable seam (default the real startLane)
-  // so a test can drive the accept→verify lane spin with a fake lane and no real
-  // server. Production never sets it; runVerification uses the real startLane.
   opts?: {
     abort?: AbortController;
     run?: typeof agent;
-    startLane?: (config: ServersConfig, root: string, o?: StartLaneOpts) => Promise<Lane>;
   },
 ): Promise<{
   verification: Verification;
   report: VerifierReport | null;
   panelReport?: PanelReport | null;
   panelRequired: boolean;
-  // M7 — threaded straight through from runPanelVerification's no-target branch.
-  // Only ever true for a live-critic loom under the flag with no target + no
-  // recipe; the executor loops divert on it to env-review.
-  needsEnv?: boolean;
 }> {
   const target = url ?? manifest.urls?.dev;
   const { contract } = readContract(loom.id);
@@ -872,35 +832,6 @@ export async function runVerification(
         return res;
       } finally {
         await server?.stop();
-      }
-    }
-    // M7 (GAP 2): the accept→verify round-trip. When the panel needs a target,
-    // none is set, and an accepted (or repo) servers recipe resolves (driver !==
-    // "none" — INCLUDING the `.telar/servers.yaml` tier approveEnv persists),
-    // bring the lane up and run the panel against its service URL, then tear it
-    // down. This is the SAME read-only lane spin frozenLaneVerify uses for the M4
-    // auto-repair leg (startLane + laneTarget, teardown in finally) — the lane is
-    // OBSERVED, never mutated. Flag-gated: flag-off this block never runs, so
-    // verify is byte-identical. The catch fallback keeps panelRequired:true (M8
-    // fail-closed — NOT the reference's `!isSynth`), so it never weakens the moat.
-    if (panelRequired && !target && envReviewEnabled(manifest)) {
-      const cfg = resolveServersConfig(manifest.root);
-      if (cfg.driver !== "none") {
-        const startLaneFn = opts?.startLane ?? startLane;
-        let lane: Lane | null = null;
-        try {
-          lane = await startLaneFn(cfg, manifest.root, { abort: opts?.abort });
-          const res = await runPanelVerification(loom, manifest, attempt, emit, contract, account, laneTarget(lane), opts, isSynth);
-          emitVerifySummary(emit, attempt.n, res);
-          return res;
-        } catch (err) {
-          emit({ type: "panel-error", message: err instanceof Error ? err.message : String(err) });
-          const res = { verification: "skip" as Verification, report: null, panelReport: null, panelRequired: true };
-          emitVerifySummary(emit, attempt.n, res);
-          return res;
-        } finally {
-          if (lane) await lane.stopAll().catch(() => {});
-        }
       }
     }
     const res = await runPanelVerification(loom, manifest, attempt, emit, contract, account, target, opts, isSynth);
@@ -1033,7 +964,7 @@ export async function runIntegrationVerify(
     // exclusive with subGoalId (whole-verify vs checkpoint); fullContract wins.
     fullContract?: boolean;
     // M11.2 (additive; absent ⇒ byte-identical). The EXPLICIT no-target marker:
-    // the caller (frozenLaneVerify, only under verifyLane's failClosedLaneDown
+    // the caller (frozenLaneVerify, only under its failClosedLaneDown
     // injection) determined there is NO honest live target — a downed lane or a
     // non-server strategy — and the panel must hit the no-target fail-closed
     // floor (runPanelVerification :576-590 → panelRequired skip → the M10.1
@@ -1298,8 +1229,8 @@ export function buildIntegrationRepairBrief(iv: {
 // writes only in the shared root (or the loom's own worktree if it carries
 // one) — the frozen verify always forks a FRESH pinned snapshot the repair can
 // never touch, so verification stays read-only against an immutable base.
-// LIVE-VALIDATION DEFERRED (M4 §8 item 3): only reached with the autoRepair
-// master flag ON in a supervised run; unit tests drive runAutoRepair with a
+// LIVE-VALIDATION DEFERRED (M4 §8 item 3): only reached in a supervised
+// run; unit tests drive runAutoRepair with a
 // fake repair spy and never construct this.
 export async function runRepairThread(
   loom: Loom,
@@ -1375,41 +1306,6 @@ export async function runRepairThread(
 // builder path: a ROOT verify loom (no parentLoomId — true for every verify
 // loom today, since nothing spawns one as a child) lands "ready", awaiting
 // owner acceptance via acceptLoom(), never straight to "done".
-// M7 — the env-review divert both executor loops share when runVerification
-// returns needsEnv. PROPOSE a servers.yaml (read-only; the proposer writes /
-// starts nothing) and pick the next state:
-//   - a viable draft → stash it on loom.proposedServers, emit env-proposed,
-//     return "env-review" (the cockpit renders the proposal; approveEnv is the
-//     only exit besides cancel/reject).
-//   - no draft (proposer returned null) → HONEST "needs-review" (the same
-//     terminal a flag-off/no-server loom lands — no fabricated pass, no infinite
-//     block, moat intact).
-// The caller does the setState (which persists via onState). Never promotes.
-async function proposeEnvOrNeedsReview(
-  loom: Loom,
-  manifest: ProjectManifest,
-  opts: ExecuteOpts,
-  model: string,
-  emit: (ev: { type: string } & Record<string, unknown>) => void,
-): Promise<"env-review" | "needs-review"> {
-  const propose = opts.proposeServersConfig ?? defaultProposeServersConfig;
-  const { config, error } = await propose(loom, manifest, {
-    agent: opts.run,
-    account: opts.accounts?.[manifest.account],
-    model,
-    onEvent: emit,
-    cwd: buildCwd(loom, manifest),
-  });
-  if (!config) {
-    loom.error = error ?? "no viable environment proposed";
-    emit({ type: "env-proposal-failed", message: loom.error });
-    return "needs-review";
-  }
-  loom.proposedServers = config;
-  emit({ type: "env-proposed", by: "telar" });
-  return "env-review";
-}
-
 export function decideVerifyLoom(
   v: Verification,
   loom: Pick<Loom, "parentLoomId">,
@@ -1476,21 +1372,13 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
       emit,
       opts.accounts?.[manifest.account],
       url,
-      { abort: opts.abort, startLane: opts.startLane },
+      { abort: opts.abort },
     );
     const { verification, report } = vr;
     attempt.endedAt = Date.now();
     opts.onState?.(loom);
 
     if (isAborted()) return halt();
-
-    // M7 — divert to the env-review gate before the skip → needs-review terminal
-    // when this live-critic verify loom needs a running app but the project has
-    // no recipe (flag on). Flag-off, needsEnv is never set → unchanged.
-    if (vr.needsEnv) {
-      setState(await proposeEnvOrNeedsReview(loom, manifest, opts, policy.dev, emit));
-      return loom;
-    }
 
     const d = decideVerifyLoom(verification, loom);
     if (d.error) loom.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
@@ -1951,7 +1839,6 @@ export async function executeLoom(
       let verification: Verification = "skip";
       let report: VerifierReport | null = null;
       let panelRequired = false;
-      let needsEnv = false;
       if (builderOk) {
         const vr = await runVerification(
           loom,
@@ -1960,27 +1847,14 @@ export async function executeLoom(
           emit,
           opts.accounts?.[manifest.account],
           undefined,
-          { abort: opts.abort, startLane: opts.startLane },
+          { abort: opts.abort },
         );
         verification = vr.verification;
         report = vr.report;
         panelRequired = vr.panelRequired;
-        needsEnv = vr.needsEnv === true;
       }
 
       if (isAborted()) return halt();
-
-      // M7 — the env-review divert (flag on). A live-critic loom that built green
-      // but has no target + no recipe PAUSES here for a human to Accept/Steer/
-      // Reject a proposed servers.yaml, instead of the skip → needs-review
-      // terminal decide() would otherwise reach. On a weave-of-one this is the
-      // CHILD; rollupWeave lifts its state + proposedServers to the ROOT so the
-      // human answers on the root (E10). Flag-off, needsEnv is never set → this
-      // branch is unreachable → byte-identical to today.
-      if (needsEnv) {
-        setState(await proposeEnvOrNeedsReview(loom, manifest, opts, policy.dev, emit));
-        return loom;
-      }
 
       // M10.2 — CHILD-scoped thread-advisory. The M10.1 top gate is UNCONDITIONAL,
       // so coverage a thread stops gating is always re-proven at the top. A ROOT
@@ -2404,15 +2278,9 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
         // "blocked" conjunct and falls through to fail-closed (mirrors the file's
         // usedBuiltinExecutor trust discipline). Keyed STRICTLY to "blocked" so every
         // OTHER non-green (failed/skipped) still coerces to failed — the
-        // m9-thread-workflow fail-close pins stay unchanged. The SAME provenance
-        // logic extends to the M7 `env-review` pause: a live-critic step that
-        // reached verify with no target + no recipe diverts to the env-review gate
-        // (awaiting a servers.yaml accept) — also a resumable PAUSE the built-in
-        // delegate sets on the shared loom, never a step failure. (env-review is
-        // slated for removal in the A2 de-flag round; until then it must survive
-        // the now-unconditional thread-workflow wrapper.)
-        if ((res.state === "blocked" || res.state === "env-review") && loom.state === res.state) {
-          emit({ type: res.state === "blocked" ? "workflow-step-blocked" : "workflow-step-paused", stepId: res.id, state: res.state });
+        // m9-thread-workflow fail-close pins stay unchanged.
+        if (res.state === "blocked" && loom.state === "blocked") {
+          emit({ type: "workflow-step-blocked", stepId: res.id, state: res.state });
           return loom;
         }
         if (!isTerminalFailure(loom.state)) {

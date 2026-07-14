@@ -5,7 +5,6 @@
 import type { Loom } from "../looms";
 import type { RunnerTransport, HealthInfo, StartFromBundleOpts } from "./transport";
 import type { StartLoomInput } from "../dispatcher";
-import type { ServersConfig } from "../schemas";
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -52,8 +51,6 @@ export function makeHttpTransport(cfg: HttpTransportConfig): RunnerTransport {
       call<Loom>("POST", "/dispatch/loom", { verb: "startFromBundle", loomId, by, opts }),
     approveCharter: (id: string, by: string) =>
       call<boolean>("POST", "/dispatch/loom", { verb: "approveCharter", id, by }),
-    approveEnv: (id: string, by: string, config?: ServersConfig) =>
-      call<boolean>("POST", "/dispatch/loom", { verb: "approveEnv", id, by, config }),
     steer: (id: string, directive: string, by: string) =>
       call<Loom>("POST", "/dispatch/loom", { verb: "steer", id, directive, by }),
     reject: (id: string, feedback: string, by: string) =>

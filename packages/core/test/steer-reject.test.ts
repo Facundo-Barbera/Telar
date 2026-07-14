@@ -167,7 +167,7 @@ describe("rejectLoom (§A)", () => {
     const m = makeProject();
     for (const state of ["running", "queued", "done"] as const) {
       const loom = loomInState(m.name, state);
-      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready', 'blocked', 'needs-review', 'failed', or 'env-review'/);
+      await expect(rejectLoom(loom.id, "f", "you", fakeDeps().deps)).rejects.toThrow(/only valid from 'ready', 'blocked', 'needs-review', or 'failed'/);
     }
   });
 

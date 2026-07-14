@@ -82,7 +82,7 @@ export function proofTemplate(s: ProofStrategy): ProofTemplate {
 // deterministic proposer (weave-contracts.synthesizeContract) emitting
 // command/gate assertions for independently-verifiable criteria instead of a
 // blanket live-critic — was reserved for M10.5, which delivered only the
-// narrow exact-gate-name tightening; M11.1 (adaptiveVerification) completes it:
+// narrow exact-gate-name tightening; M11.1 completes it:
 // verifyMechanism now feeds the derivation structurally (via the deliverable
 // signal's charter gate intent) and per-criterion proofHints carry a concrete
 // runnable into a fail-closed `command` assertion.
@@ -106,9 +106,8 @@ export const EXECUTABLE_PREFERENCE_GUIDANCE =
   "\"tests pass\"). `observable` is live-critic-ONLY (it names what a live critic " +
   "watches); do NOT put a command in `observable`.";
 
-// M10.5 (subjectiveRouting) — the STRUCTURAL extension M10.0 deferred. Appended to
-// the charter drafting prompt ONLY when the flag is on (scoping.draftCharter), so
-// flag-off the prompt is byte-identical to today. It instructs the proposer to
+// M10.5 — the STRUCTURAL extension M10.0 deferred. Appended to
+// the charter drafting prompt (scoping.draftCharter). It instructs the proposer to
 // classify each criterion by objective-vs-human-judgment and set the per-criterion
 // `subjective` marker CONSERVATIVELY — the default is OBJECTIVE; mark subjective
 // only when a criterion is unmistakably a matter of human taste ("premium feel",
@@ -130,9 +129,9 @@ export const SUBJECTIVE_ROUTING_GUIDANCE =
   "mis-marked objective criterion silently loses its fail-closed gate, so mark " +
   "subjective only when it is unmistakable.";
 
-// M11.1 (adaptiveVerification) — the PROOF-HINT authoring guidance. Appended to
-// the charter drafting prompt ONLY when the flag is on (scoping.draftCharter),
-// so flag-off the prompt is byte-identical to today. It instructs the proposer
+// M11.1 — the PROOF-HINT authoring guidance. Appended to
+// the charter drafting prompt (scoping.draftCharter).
+// It instructs the proposer
 // to author per-criterion `proofHints` ({criterion, run}) — the structural
 // channel through which a criterion provable by a runnable (a CLI invocation,
 // an eval with a threshold) reaches synthesizeContract as a fail-closed

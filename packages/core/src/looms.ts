@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, ContractAssertion, PanelReport, ServersConfig, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, ContractAssertion, PanelReport, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
@@ -53,10 +53,10 @@ export type AttemptRecord = {
   // contract exists) instead of the legacy single-Verifier path.
   panelReport?: PanelReport | null;
   gates?: GateResult[];
-  // M10.5 (subjectiveRouting) — the EXPLICITLY subjective-marked assertions this
+  // M10.5 — the EXPLICITLY subjective-marked assertions this
   // attempt pulled out of the autonomous panel. Informational only (alongside
   // gates/panelReport): carried to the human accept, NEVER converted into a
-  // machine verdict. Absent flag-off (no assertion carries subjective:true).
+  // machine verdict. Absent when no assertion carries subjective:true.
   humanJudged?: ContractAssertion[];
   costUsd?: number;
 };
@@ -116,9 +116,9 @@ export type Loom = {
   // will read it to gate finish-loom. Absent on plain looms and on woven roots
   // with no ALL contract (no integration verify ran).
   latestVerdict?: string;
-  // M3 (per-loom worktree isolation) — all three absent unless
-  // manifest.isolateWorktrees (or TELAR_ISOLATE_WORKTREES) is on, so flag-off
-  // every loom is byte-identical to pre-M3.
+  // M3 (per-loom worktree isolation) — worktree isolation is unconditional; all
+  // three are set only when the project is a git repo (a non-git project
+  // degrades gracefully and leaves them unset).
   //   worktree            — a CHILD thread's live worktree path, persisted at
   //                         build start and cleared on removal (a reclamation
   //                         record for the reaper if the process is killed).
@@ -134,17 +134,9 @@ export type Loom = {
   // M8 worktree recovery: WIP snapshot branch + reaper-shield flag
   recoveryBranch?: string;
   worktreeRetained?: boolean;
-  // M7 (env-review) — the setup agent's PROPOSED servers.yaml, stashed here when
-  // the loom diverts to `env-review` at verify time (no target + no recipe, flag
-  // on). On a weave-of-one the CHILD diverts and rollupWeave LIFTS this onto the
-  // ROOT (the same slot as loom.charter), so the human answers approveEnv on the
-  // root; approveEnv persists it to `.telar/servers.yaml`, CLEARS this, and
-  // re-dispatches verify. Absent unless the loom is (or was) in env-review;
-  // absent flag-off.
-  proposedServers?: ServersConfig;
   // M10.4 (lane-escalation) — the PRE-FLIGHT park draft. Set when the loom is
   // parked in `blocked` because its verification lane is unviable and cannot be
-  // auto-provisioned (analog of proposedServers). Two fields, cleared on answer:
+  // auto-provisioned. Two fields, cleared on answer:
   //   blockedReason   — MACHINE-facing: what it tried / why the lane is unviable
   //                     ("N agent-judged assertions need a live target; no
   //                     devCommand, no servers tier, setup agent off").
@@ -154,16 +146,15 @@ export type Loom = {
   blockedReason?: string;
   blockedQuestion?: string;
   // M4 (auto-repair) — the ordered log of frozen-lane integration-verify rounds
-  // (repair-guard.ts). Absent unless the autoRepair master flag fired: history[0]
-  // is the initial verify, each later entry follows one dispatched repair. Read
+  // (repair-guard.ts). Absent unless a repair loop ran: history[0] is the
+  // initial verify, each later entry follows one dispatched repair. Read
   // by the Verify tab (round deltas, escalate reason) and by nothing that gates
   // promotion — the guards are a pure function of THIS array, never re-parsed
-  // from gate output. Root-only, additive; absent flag-off.
+  // from gate output. Root-only, additive.
   repairHistory?: RepairRound[];
-  // M9 (thread-as-workflow) — the step DAG runThreadWorkflow executes when the
-  // threadWorkflow flag is on. Absent (today) ⇒ the default 1-step `build`
-  // template is synthesized at run time; runThreadWorkflow delegates that step
-  // to executeLoom, byte-identical to today. Additive; absent flag-off.
+  // M9 (thread-as-workflow) — the step DAG runThreadWorkflow executes.
+  // Absent ⇒ the default 1-step `build` template is synthesized at run time;
+  // runThreadWorkflow delegates that step to executeLoom. Additive.
   workflow?: ThreadWorkflow;
 };
 
@@ -437,11 +428,11 @@ function recordLanding(loom: Loom, by: string, git: GitRunner, land: boolean): v
 //  1. CLEAN — from `ready` (independently verified green). override:false, no
 //     flag.
 //  2. AUDITED OWNER OVERRIDE (P5) — from ANY other non-`done` state (`queued`,
-//     `scoping`, `charter-review`, `env-review`, `preparing`, `running`,
+//     `scoping`, `charter-review`, `preparing`, `running`,
 //     `verifying`, `needs-review`, `blocked`, `halted`, `failed`, `skipped`).
-//     The catch-all below already covers env-review (an owner may close a loom
-//     paused on the env gate; producedBuildOutput recurses into the child
-//     subtree so accepting a root whose child built lands correctly). The loom was
+//     The catch-all below covers any paused state (producedBuildOutput recurses
+//     into the child subtree so accepting a root whose child built lands
+//     correctly). The loom was
 //     NOT independently verified, so the owner closing it is a distinct,
 //     AUDITED override: recorded as `accepted {override:true, fromState}` + the
 //     `acceptedOverride` flag, never a silent clean accept. The owner's

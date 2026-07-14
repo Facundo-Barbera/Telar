@@ -201,7 +201,8 @@ export function tick(view: LedgerView): TickResult {
   // rollupWeave is authoritative and lifts the child's answerable question. The
   // runnerInFlight guard matches failedRequired's — a blocked park is always
   // settled (the breaker returns), so this never fires on a mid-flight thread.
-  // Flag-off no thread ever reaches `blocked`, so this branch is dead ⇒ byte-identical.
+  // A thread reaches `blocked` when its verification lane is unviable (pre-flight
+  // park); this lifts that settled block up to the root.
   const blockedRequired = required.find((sg) => {
     const t = threadBySubGoal.get(sg.id);
     return t?.state === "blocked" && t.runnerInFlight !== true;

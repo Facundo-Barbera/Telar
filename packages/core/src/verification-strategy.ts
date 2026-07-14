@@ -49,7 +49,7 @@ export type VerificationStrategy =
 //      accepted .telar tier) is the strongest "this deliverable stands up"
 //      evidence — API/DB (boot + hit endpoints, doc §3.4) stays unchanged from
 //      M10, and the PROCESS-STANDING DS case (a kernel declared as a service)
-//      rides this same path: the dispatcher's verifyLane injection makes the
+//      rides this same path: the dispatcher's injection makes the
 //      bring-up superviseStartLane (verify-lane.ts:48-86), so the kernel stands
 //      behind the executor/setup wall with restart-on-death + teardown-in-
 //      finally, and the judge still only ever RECEIVES the resolved target.

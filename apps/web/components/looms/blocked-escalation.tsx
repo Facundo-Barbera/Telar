@@ -11,8 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 // The "Orchestrator requires help" surface for a loom parked in `blocked`
-// (M10.4 laneEscalation). Distinct from the amber "needs you"
-// (needs-review/env-review) framing: this is a QUESTION the orchestrator can't
+// (M10.4). Distinct from the amber "needs you"
+// (needs-review) framing: this is a QUESTION the orchestrator can't
 // guess, not a deliverable to review — so it wears the orange `blocked`
 // language (StateBadge already colors blocked orange).
 //
@@ -80,7 +80,7 @@ export function ParkExplanation({ loom }: { loom: Loom }) {
 }
 
 // The answer-&-resume form: verifyCommand (the M11 strategy answer) / devCommand /
-// runbook → POST /api/looms/[id]/block/answer. Mirrors env-review's post()/busy/
+// runbook → POST /api/looms/[id]/block/answer. Uses the post()/busy/
 // telar:refresh + SSE-driven-unmount shape: the answer → persist → re-dispatch
 // round trip is server-authoritative, so we DO NOT optimistically clear state
 // client-side — the page's SSE loop flips loom.state off "blocked" and unmounts

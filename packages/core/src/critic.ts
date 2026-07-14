@@ -32,7 +32,7 @@ export type CriticContext = {
   url: string;
   objective: string;
   assertions: ContractAssertion[];
-  // M10.4 (laneEscalation) — the accepted `.telar/runbook.md` verification
+  // M10.4 — the accepted `.telar/runbook.md` verification
   // NARRATIVE (resolveRunbook), surfaced as READ-ONLY DRIVE/OBSERVE context: how
   // to reach/seed/login/drive the live app + known-flaky notes. It is NOT a
   // verdict directive and does NOT relax §M.5 isolation — it carries no builder
@@ -243,7 +243,7 @@ export type RunPanelOpts = Omit<CriticRunOpts, "onEvent"> & {
   signals: PanelSignals;
   maxCriticAgents?: number; // the reserved sub-pool (§M budget.maxCriticAgents), default 3
   retryBlockerOnly?: boolean; // retry-awareness: re-run only blocker lenses + a fresh reproduction lens
-  aesthetic?: boolean; // M10.5 (subjectiveRouting): size in the advisory aesthetic/polish lens (blocker:false)
+  aesthetic?: boolean; // M10.5: size in the advisory aesthetic/polish lens (blocker:false)
   onEvent?: (e: PanelEvent) => void;
 };
 

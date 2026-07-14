@@ -25,8 +25,6 @@ import type {
   Provenance,
   RegistryEntry,
   RepairRound,
-  ServersConfig,
-  ServiceConfig,
   SubGoal,
   Verdict,
   VerificationContract,
@@ -318,28 +316,6 @@ export function makeRepairRound(
 }
 
 // ---------------------------------------------------------------------------
-// Env-review proposal (ServersConfig — zod ServersConfig.parse).
-// ---------------------------------------------------------------------------
-
-export function makeService(p: Partial<ServiceConfig> & { command: string }): ServiceConfig {
-  return {
-    portStrategy: "dynamic",
-    dependsOn: [],
-    env: {},
-    ...p,
-  };
-}
-
-export function makeServers(p: Partial<ServersConfig> = {}): ServersConfig {
-  return {
-    version: 1,
-    driver: "host-process",
-    services: {},
-    ...p,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Provenance (zod Provenance / assertProvenance).
 // ---------------------------------------------------------------------------
 
@@ -409,20 +385,6 @@ export function makeManifest(
     account: "personal",
     charterPolicy: "human-required-for-epics",
     baseBranch: "main",
-    isolateWorktrees: false,
-    autoRepair: false,
-    outOfProcessRunner: false,
-    setupAgent: false,
-    buildFanout: false,
-    envReview: false,
-    threadWorkflow: false,
-    threadPlanner: false,
-    stepChecks: false,
-    orchestratorVerify: false,
-    verifyLane: false,
-    laneEscalation: false,
-    subjectiveRouting: false,
-    adaptiveVerification: false,
     gates: [],
     guardrails: { disallowedTools: [], protectedPaths: [] },
     mcpServers: {},

@@ -41,25 +41,15 @@ export function rollupWeave(
   const failedRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state === "failed");
   if (failedRequired) return { state: "failed", error: `${failedRequired.id}: failed` };
 
-  // M7 / E10 — a required child paused on the env gate LIFTS to the root, so the
-  // human answers approveEnv on the ROOT (the thing they interact with), the
-  // same position the root natively holds charter-review. Ordered after
-  // allRequiredDone -> ready and failedRequired -> failed, BEFORE the generic
-  // needs-review fallthrough that would otherwise bury the (answerable) gate.
-  // Flag-off no child ever diverts to env-review, so this branch is dead.
-  const envChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "env-review");
-  if (envChild) return { state: "env-review" };
-
   // FINDING 8 — a required child that PARKED `blocked` (the breaker fired on an
   // unfixable gate, or the pre-flight lane-viability floor) is AWAITING A HUMAN,
   // not failed. Lift it as `blocked` so the root parks carrying the child's
   // answerable question (runWeave lifts blockedReason/blockedQuestion below) —
   // rather than the generic needs-review fallthrough burying the ask (run #3's
   // swallow). Ordered AFTER failedRequired (a genuinely failed child STILL fails
-  // the weave) and env-review (its own answerable gate), BEFORE the needs-review
-  // fallthrough. Flag-off no child ever reaches `blocked` (the breaker/park exist
-  // only under laneEscalation/adaptiveVerification), so this branch is dead ⇒
-  // byte-identical.
+  // the weave), BEFORE the needs-review fallthrough. A child reaches `blocked`
+  // when its verification lane is unviable (the pre-flight park); surfacing it
+  // here lifts that block up to the root instead of masking it as needs-review.
   const blockedChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "blocked");
   if (blockedChild) return { state: "blocked", error: `${blockedChild.id}: blocked` };
 
@@ -93,13 +83,13 @@ export type RunWeaveDeps = {
     panelReport?: PanelReport | null;
     gates?: GateResult[];
   } | null>;
-  // M4 (auto-repair master flag ON) — REPLACES runIntegrationVerify at the
+  // M4 (auto-repair) — REPLACES runIntegrationVerify at the
   // terminal hook. Runs the frozen-lane read-only verify and, on a red ALL
   // verdict, a bounded provably-terminating repair loop (repair-guard.ts).
   // Returns the FINAL verify result: converged ⇒ pass/skip keeps "ready"
   // (never "done"); escalate ⇒ fail/flaky demotes ready→needs-review carrying
-  // the guard reason on loom.error (which this dep sets). Absent flag-off, so
-  // the runIntegrationVerify path above is byte-identical to today.
+  // the guard reason on loom.error (which this dep sets). Absent (not injected,
+  // e.g. in a test) ⇒ the runIntegrationVerify path above runs instead.
   runAutoRepair?: (loom: Loom) => Promise<{
     verification: string;
     gatesOk: boolean;
@@ -380,23 +370,13 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // required child done) always wins, clearing any stray escalate/
     // iteration-bound error string.
     loom.error = r.state === "ready" ? null : (r.error ?? loom.error ?? null);
-    // M7 / E10 — when a required child diverted to env-review, LIFT its proposed
-    // servers.yaml onto the ROOT before setState so approveEnv on the root finds
-    // it (root.proposedServers is the same slot root.charter occupies for the
-    // charter gate). Flag-off there is never an env-review child, so this is a
-    // pure no-op (byte-identical).
-    if (r.state === "env-review") {
-      const envChild = children.find((c) => c.state === "env-review");
-      if (envChild) loom.proposedServers = envChild.proposedServers;
-    }
-    // FINDING 8 — mirror the env-review lift for a `blocked` rollup: carry the
+    // FINDING 8 — carry a `blocked` rollup's
     // parked child's HUMAN-facing question (blockedReason/blockedQuestion) up onto
     // the ROOT before setState so the existing blocked cockpit (form + Discuss)
     // renders the ask on the thing the human interacts with, and record WHICH child
     // /subgoal it came from (lane-escalation) for the event stream. The
     // integration-verify block below is gated r.state === "ready", so blocked
-    // correctly skips it (nothing to verify on an awaiting-human park). Flag-off
-    // there is never a blocked child, so this is a pure no-op (byte-identical).
+    // correctly skips it (nothing to verify on an awaiting-human park).
     if (r.state === "blocked") {
       const bChild = children.find((c) => c.state === "blocked");
       if (bChild) {
@@ -416,11 +396,11 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // and no ALL verify has ever run — the whole point of catching a broken
     // assembled whole. A failed/needs-review assembly has nothing coherent to
     // integration-verify. A woven root with no ALL contract -> null -> no-op.
-    // M4 (auto-repair master flag ON): runAutoRepair REPLACES the plain
+    // M4 (auto-repair): runAutoRepair REPLACES the plain
     // producer — it drives the frozen-lane verify and, on a red ALL verdict,
-    // the bounded guarded repair loop, then returns the FINAL verdict. Flag-off
-    // (runAutoRepair absent) this is byte-identical to the runIntegrationVerify
-    // path. Either way the demote/keep semantics below are unchanged.
+    // the bounded guarded repair loop, then returns the FINAL verdict. When
+    // runAutoRepair is absent (not injected) the runIntegrationVerify path runs
+    // instead. Either way the demote/keep semantics below are unchanged.
     const verifyProducer = deps.runAutoRepair ?? deps.runIntegrationVerify;
     if (r.state === "ready" && verifyProducer) {
       // Best-effort: its OWN try/catch so a throw — a rejecting runner, or a

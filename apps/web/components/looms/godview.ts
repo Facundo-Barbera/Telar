@@ -241,8 +241,8 @@ export type VerifyReport = {
 
 // ---------------------------------------------------------------------------
 // Auto-repair history (M4) — the bounded convergence loop, read-only display.
-// Derived PURELY from the root loom's `repairHistory` (absent unless the
-// autoRepair flag fired) + `state`/`error`. Every field is honest: a round that
+// Derived PURELY from the root loom's `repairHistory` (absent unless a repair
+// loop ran) + `state`/`error`. Every field is honest: a round that
 // hasn't been reached is simply absent; the outcome is read off the loom's state
 // and the escalate reason is `loom.error` verbatim — never a fabricated verdict.
 // ---------------------------------------------------------------------------
@@ -323,8 +323,6 @@ export function godStatus(op: Loom, repairs: number): GodStatus {
       return { kind: "block", label: "needs you" };
     case "needs-review":
       return { kind: "block", label: "needs review" };
-    case "env-review":
-      return { kind: "block", label: "env review" };
     case "failed":
     case "halted":
       return { kind: "repair", label: op.state };
@@ -629,7 +627,7 @@ function deriveLoopStage(loom: Loom, operators: Operator[]): LoopStage {
   const s = loom.state;
   if (s === "queued" || s === "scoping" || s === "charter-review" || s === "preparing") return "plan";
   if (s === "verifying") return "decide";
-  if (s === "blocked" || s === "needs-review" || s === "env-review" || s === "ready" || isTerminal(s)) return "decide";
+  if (s === "blocked" || s === "needs-review" || s === "ready" || isTerminal(s)) return "decide";
   // running: scheduling until something is actually in flight, then observing.
   return operators.some((o) => o.active) ? "observe" : "schedule";
 }
@@ -1021,8 +1019,8 @@ function rootReport(loom: Loom, feed: LoomEvent[]): VerifyReport | null {
 }
 
 // The auto-repair loop history, derived purely from the root loom. `repairHistory`
-// is absent unless the M4 autoRepair flag fired, so this returns null on every
-// flag-off loom (byte-identical to today's Verify tab). The outcome is read off
+// is absent unless a repair loop ran, so this returns null on any loom that
+// never repaired. The outcome is read off
 // the loom's settled state — never inferred from a model verdict — and the
 // escalate reason is surfaced verbatim from `loom.error`.
 export function deriveRepair(loom: Loom): RepairView | null {
