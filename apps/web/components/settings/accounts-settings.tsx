@@ -13,7 +13,7 @@ import {
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
-import type { AccountProfile } from "@telar/core";
+import type { AccountProfile, AccountHealth } from "@telar/core";
 import type { PlanSnapshot, PlanWindow } from "@/lib/store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,29 @@ import { NotificationsSettings } from "@/components/settings/notifications-setti
 
 type Provider = "claude" | "codex";
 type AuthMode = "subscription" | "oauth-token" | "api-key";
+
+// GET /api/accounts enriches each profile with its on-disk liveness.
+type AccountWithHealth = AccountProfile & { health?: AccountHealth };
+
+// The liveness badge that replaces the old ambiguous copy: a real, honest
+// sign-in signal derived from cheap fs facts server-side (accountHealth).
+// "unknown" is deliberate, not a failure — a base/keychain login can't be
+// verified from disk, so we say so rather than guess.
+function LivenessBadge({ health }: { health?: AccountHealth }) {
+  if (!health) return null;
+  const map = {
+    ok: { label: "Logged in", variant: "default" as const },
+    "missing-config-dir": { label: "Not on this machine", variant: "destructive" as const },
+    "never-logged-in": { label: "Not logged in", variant: "destructive" as const },
+    unknown: { label: "Unknown", variant: "outline" as const },
+  };
+  const { label, variant } = map[health.status];
+  return (
+    <Badge variant={variant} className="text-[10px]" title={health.detail}>
+      {label}
+    </Badge>
+  );
+}
 
 // resets_at is a future ISO instant — show the countdown, not the wall clock.
 const fmtReset = (iso: string | null | undefined): string => {
@@ -104,7 +127,7 @@ function AccountCard({
   isDefault,
   onChanged,
 }: {
-  account: AccountProfile;
+  account: AccountWithHealth;
   snap?: PlanSnapshot;
   isDefault: boolean;
   onChanged: () => void;
@@ -142,6 +165,7 @@ function AccountCard({
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm font-medium">{account.name}</span>
           <Badge variant="secondary" className="text-[10px] uppercase">{provider}</Badge>
+          <LivenessBadge health={account.health} />
           {account.displayTier && (
             <Badge variant="outline" className="text-[10px]">{account.displayTier}</Badge>
           )}
@@ -306,7 +330,7 @@ const SECTIONS: SettingsSection[] = [
 // behavior (nothing here writes telar.yaml / .telar or an engine env).
 export function GeneralSettings() {
   const [active, setActive] = useState("appearance");
-  const [accounts, setAccounts] = useState<AccountProfile[]>([]);
+  const [accounts, setAccounts] = useState<AccountWithHealth[]>([]);
   const [defaultAccount, setDefaultAccount] = useState("personal");
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
   const [refreshing, setRefreshing] = useState(false);

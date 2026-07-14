@@ -8,15 +8,17 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   accountEnv,
+  accountHealth,
   deriveDeliverableSignal,
   getAccount,
-  getDefaultAccountName,
   getLoom,
   getProject,
+  providerOf,
   readBundleFile,
   readContract,
   resolveProjectMcpServers,
   STEERING_FILE,
+  type AccountProfile,
   type ProjectManifest,
 } from "@telar/core";
 import {
@@ -83,6 +85,16 @@ import {
 
 const toIso = (epoch?: number) =>
   epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
+
+// The exact terminal command to log an account in, mirroring the Accounts UI's
+// hint. Provider-neutral via the descriptor (config-dir env + login argv), so
+// the preflight's "not logged in" 4xx tells the user precisely what to run.
+function loginHint(account: AccountProfile): string {
+  const d = providerOf(account.provider);
+  const bin = d.id === "codex" ? "codex" : "claude";
+  const cmd = `${bin} ${d.loginArgs.join(" ")}`.trim();
+  return account.configDir ? `${d.configDirEnv}="${account.configDir}" ${cmd}` : cmd;
+}
 
 // Hard ceiling on how many tool calls a single turn persists with full
 // input/output detail. capToolInput/capToolOutput bound each part's own
@@ -329,18 +341,49 @@ export async function POST(req: Request) {
   }
 
   // Caller-supplied account wins (existing chats resume with their persisted
-  // chat.account, passed explicitly here), then the project's manifest
-  // default, then "personal". See AGENTS notes on the account-lock: a
-  // session's resume transcript lives under the account's config dir, so
-  // this route trusts whatever the client sends — the picker being
-  // choosable only pre-first-turn is a client-side rule, not enforced here.
-  // Resolved ahead of the effort/sandbox checks below because both are
-  // provider-shaped (Claude's EffortLevel vs Codex's ModelReasoningEffort;
-  // sandbox is Codex-only).
-  const profile =
-    (account ? getAccount(account) : undefined) ??
-    getAccount(manifest.account) ??
-    getAccount(getDefaultAccountName()) ?? { name: manifest.account };
+  // chat.account, passed explicitly here), else the project's manifest account.
+  // See AGENTS notes on the account-lock: a session's resume transcript lives
+  // under the account's config dir, so this route trusts whatever the client
+  // sends — the picker being choosable only pre-first-turn is a client-side
+  // rule, not enforced here. Resolved ahead of the effort/sandbox checks below
+  // because both are provider-shaped (Claude's EffortLevel vs Codex's
+  // ModelReasoningEffort; sandbox is Codex-only).
+  //
+  // FAIL-CLOSED: the old `?? { name: manifest.account }` bare fallback silently
+  // mis-billed a base login when the named account was gone. When the manifest
+  // names an account the registry doesn't have, that's a 4xx — never a silent
+  // slide onto a different login. (A caller `account` was validated up top.)
+  let profile: AccountProfile;
+  if (account) {
+    profile = getAccount(account)!;
+  } else {
+    const named = getAccount(manifest.account);
+    if (!named) {
+      return Response.json(
+        {
+          error: `Project "${project ?? manifest.name}" is set to account "${manifest.account}", which isn't registered on this machine. Add it in Settings → Accounts, or point the project at an account you have.`,
+        },
+        { status: 400 },
+      );
+    }
+    profile = named;
+  }
+
+  // Landmine guard: an account pinning a configDir whose login isn't on THIS
+  // machine would otherwise wedge the subprocess on an interactive re-auth
+  // prompt (and risk billing the wrong login). Refuse up front with the exact
+  // remedy. Base-login accounts (no configDir) can't be fs-verified and pass
+  // through unchanged.
+  const health = accountHealth(profile);
+  if (health.status === "missing-config-dir" || health.status === "never-logged-in") {
+    return Response.json(
+      {
+        error: `Account "${profile.name}" is not logged in on this machine — run ${loginHint(profile)}`,
+      },
+      { status: 400 },
+    );
+  }
+
   const provider = profile.provider ?? "claude";
 
   // Omitting effort means "let the model/SDK pick its own default" — only a

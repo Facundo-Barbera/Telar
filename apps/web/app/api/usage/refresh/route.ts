@@ -1,5 +1,11 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { accountEnv, getAccount, listAccounts, type AccountProfile } from "@telar/core";
+import {
+  accountEnv,
+  accountHealth,
+  getAccount,
+  listAccounts,
+  type AccountProfile,
+} from "@telar/core";
 import os from "os";
 import {
   readPlanUsage,
@@ -112,8 +118,19 @@ export async function POST(req: Request) {
 
   const profiles = account ? [getAccount(account)!] : listAccounts();
 
+  // Transient/unexpected failures (SDK hiccup, network) vs. accounts that are
+  // simply not logged in on this machine. The latter are separated out and,
+  // crucially, SKIPPED before we ever spawn a subprocess — a not-logged-in
+  // account otherwise wedges on an interactive re-auth prompt until the 10s
+  // init timeout fires. Health tells us that up front, for free.
   const errors: Record<string, string> = {};
+  const skipped: Record<string, string> = {};
   for (const profile of profiles) {
+    const health = accountHealth(profile);
+    if (health.status === "missing-config-dir" || health.status === "never-logged-in") {
+      skipped[profile.name] = `Not logged in on this machine — ${health.detail}`;
+      continue;
+    }
     try {
       if ((profile.provider ?? "claude") === "codex") {
         // Zero-cost: read the latest limits cached in Codex's session rollouts.
@@ -130,5 +147,6 @@ export async function POST(req: Request) {
   return Response.json({
     plan: readPlanUsage(),
     ...(Object.keys(errors).length ? { errors } : {}),
+    ...(Object.keys(skipped).length ? { skipped } : {}),
   });
 }

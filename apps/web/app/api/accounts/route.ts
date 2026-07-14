@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AccountProfile,
+  accountHealth,
   getDefaultAccountName,
   listAccounts,
   upsertAccount,
@@ -9,9 +10,12 @@ import {
 export const dynamic = "force-dynamic";
 
 // The registry holds no secrets (tokens live in credentials.json), so the whole
-// profile list is safe to hand to the local UI.
+// profile list is safe to hand to the local UI. Each account is enriched with
+// its on-disk liveness (accountHealth) so the UI can show a real Logged-in /
+// Not-on-this-machine / Unknown badge instead of guessing.
 export async function GET() {
-  return Response.json({ accounts: listAccounts(), default: getDefaultAccountName() });
+  const accounts = listAccounts().map((a) => ({ ...a, health: accountHealth(a) }));
+  return Response.json({ accounts, default: getDefaultAccountName() });
 }
 
 // Account names key the secret store and can seed a config-dir path, so keep
