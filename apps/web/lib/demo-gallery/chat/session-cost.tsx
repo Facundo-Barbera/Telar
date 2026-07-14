@@ -103,14 +103,14 @@ function CostPanel({ agents }: { agents: AgentCost[] }) {
 
   return (
     <div
-      className="relative inline-flex"
+      className="relative inline-flex items-center leading-none"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       <button
         type="button"
         onClick={() => setPinned((v) => !v)}
-        className="self-start"
+        className="flex items-center"
         aria-expanded={open}
         title={pinned ? "Click to unpin" : "Hover to preview · click to pin"}
       >
