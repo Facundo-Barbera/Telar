@@ -230,18 +230,12 @@ export function isOfferedRule(options: Array<{ rule: string; label: string }>, r
   return options.some((o) => o.rule === rule);
 }
 
-// The only SDK permission modes a client may ever select. The SDK's own
-// PermissionMode also includes "bypassPermissions" (skips canUseTool
-// entirely, requires an extra opt-in flag) and "dontAsk"/"plan" (not
-// meaningful choices from this UI) — none of those are ever accepted from a
-// client request even if sent; see isValidPermissionMode and its use in the
-// chat route's 400 check.
-export const PERMISSION_MODES = ["default", "auto", "acceptEdits"] as const;
-export type ClientPermissionMode = (typeof PERMISSION_MODES)[number];
-
-export function isValidPermissionMode(mode: unknown): mode is ClientPermissionMode {
-  return typeof mode === "string" && (PERMISSION_MODES as readonly string[]).includes(mode);
-}
+// The client-selectable permission modes live in the SDK-free ./permission-modes
+// module so "use client" components can import them at runtime — importing any
+// runtime value from THIS file drags ./loom-mcp -> the Agent SDK
+// (node:async_hooks) into the client bundle. Re-exported here so server call
+// sites (route.ts) and permissions.test.ts keep a single import site.
+export { PERMISSION_MODES, isValidPermissionMode, type ClientPermissionMode } from "./permission-modes";
 
 // Shell separators/substitution/redirection that chain or divert a second
 // command/target onto the first: ; & | ` newline, $( ), and < > (which also

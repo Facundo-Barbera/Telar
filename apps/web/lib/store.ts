@@ -3,7 +3,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import type { ClientPermissionMode } from "./permissions";
+import type { ClientPermissionMode } from "./permission-modes";
 
 const DIR = path.join(os.homedir(), ".telar");
 const CHATS = path.join(DIR, "chats.json");
