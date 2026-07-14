@@ -11,6 +11,7 @@ import {
   MessagesSquareIcon,
   PlusIcon,
   RotateCwIcon,
+  StethoscopeIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import type { Loom, ProjectManifest, RegistryEntry } from "@telar/core";
@@ -207,6 +208,7 @@ export default function DashboardPage() {
   const [looms, setLooms] = useState<Loom[] | null>(null);
   const [loomsError, setLoomsError] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
   const [q, setQ] = useState("");
@@ -226,7 +228,8 @@ export default function DashboardPage() {
     fetch("/api/projects")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setProjects(Array.isArray(d.projects) ? d.projects : []))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setProjectsLoaded(true));
 
     fetch("/api/chats")
       .then((r) => (r.ok ? r.json() : null))
@@ -399,6 +402,41 @@ export default function DashboardPage() {
             </>
           ) : (
             <>
+              {/* First-run setup — only while no project is registered. Points
+                  the user at the machine doctor and adding their first repo;
+                  disappears the moment a project exists. */}
+              {projectsLoaded && projects.length === 0 && (
+                <section className="rounded-xl border border-border bg-card p-4">
+                  <div className="flex items-start gap-3">
+                    <StethoscopeIcon className="mt-0.5 size-5 shrink-0 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-sm font-semibold text-foreground">
+                        Set up this machine
+                      </h2>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        No projects yet. Check that the tools, GitHub auth, and
+                        provider logins a loom needs are ready, then register
+                        your first repo.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button size="sm" render={<Link href="/settings#doctor" />}>
+                          <StethoscopeIcon />
+                          Run machine doctor
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          render={<Link href="/projects" />}
+                        >
+                          <PlusIcon />
+                          Add a project
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              )}
+
               {/* KPI hero — above-the-fold triage */}
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
                 <StatTile
