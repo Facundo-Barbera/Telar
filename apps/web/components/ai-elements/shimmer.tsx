@@ -31,6 +31,15 @@ export interface TextShimmerProps {
   spread?: number;
 }
 
+// Mask-based shimmer (see the chat-lane demo's root-cause note): the base label
+// is ORDINARY solid class-coloured text (`text-muted-foreground`) — the same
+// paint path every other label uses, so it re-themes correctly and stays fully
+// legible at every animation phase. The shimmer is a SECOND, aria-hidden copy
+// in `text-foreground` laid exactly on top and revealed only through a moving
+// mask band, so it merely BRIGHTENS a travelling stripe and can never wash the
+// base out. This replaces the earlier `bg-clip-text` + `var(--color-background)`
+// sweep, which WebKit does not re-resolve against inherited tokens and which
+// painted white-on-white the instant the app gains any light surface.
 const ShimmerComponent = ({
   children,
   as: Component = "p",
@@ -38,39 +47,47 @@ const ShimmerComponent = ({
   duration = 2,
   spread = 2,
 }: TextShimmerProps) => {
-  const MotionComponent = getMotionComponent(
-    Component as keyof JSX.IntrinsicElements
-  );
+  const MotionSpan = getMotionComponent("span");
 
   const dynamicSpread = useMemo(
     () => (children?.length ?? 0) * spread,
     [children, spread]
   );
 
+  // A travelling stripe that is opaque (reveals the overlay) only in a narrow
+  // band and transparent elsewhere. Prefixed + unprefixed for WebKit.
+  const maskImage = `linear-gradient(90deg, #0000 calc(50% - var(--shimmer-spread)), #000 50%, #0000 calc(50% + var(--shimmer-spread)))`;
+
   return (
-    <MotionComponent
-      animate={{ backgroundPosition: "0% center" }}
-      className={cn(
-        "relative inline-block bg-[length:250%_100%,auto] bg-clip-text text-transparent",
-        "[--bg:linear-gradient(90deg,#0000_calc(50%-var(--spread)),var(--color-background),#0000_calc(50%+var(--spread)))] [background-repeat:no-repeat,padding-box]",
-        className
-      )}
-      initial={{ backgroundPosition: "100% center" }}
-      style={
-        {
-          "--spread": `${dynamicSpread}px`,
-          backgroundImage:
-            "var(--bg), linear-gradient(var(--color-muted-foreground), var(--color-muted-foreground))",
-        } as CSSProperties
-      }
-      transition={{
-        duration,
-        ease: "linear",
-        repeat: Number.POSITIVE_INFINITY,
-      }}
-    >
+    <Component className={cn("relative inline-block text-muted-foreground", className)}>
       {children}
-    </MotionComponent>
+      <MotionSpan
+        aria-hidden
+        className="pointer-events-none absolute inset-0 text-foreground"
+        style={
+          {
+            "--shimmer-spread": `${dynamicSpread}px`,
+            WebkitMaskImage: maskImage,
+            maskImage,
+            WebkitMaskSize: "250% 100%",
+            maskSize: "250% 100%",
+            WebkitMaskRepeat: "no-repeat",
+            maskRepeat: "no-repeat",
+            WebkitMaskPosition: "var(--shimmer-x) center",
+            maskPosition: "var(--shimmer-x) center",
+          } as CSSProperties
+        }
+        initial={{ "--shimmer-x": "100%" }}
+        animate={{ "--shimmer-x": "0%" }}
+        transition={{
+          duration,
+          ease: "linear",
+          repeat: Number.POSITIVE_INFINITY,
+        }}
+      >
+        {children}
+      </MotionSpan>
+    </Component>
   );
 };
 

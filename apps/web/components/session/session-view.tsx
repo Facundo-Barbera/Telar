@@ -23,7 +23,20 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
-import { AgentTabsStrip, StatusDot, type AgentTab } from "@/components/session/agent-tabs";
+import { StatusDot, type AgentTab } from "@/components/session/agent-tabs";
+import {
+  SubagentRail,
+  SubagentBanner,
+  type RailAgent,
+} from "@/components/session/subagent-rail";
+import {
+  LoomsPill,
+  InlineLoomRow,
+  type PillLoom,
+  type LoomTone,
+  type LoomEventRow,
+} from "@/components/session/session-loom";
+import { CostPill, ContextPill } from "@/components/session/session-meters";
 import {
   Message,
   MessageContent,
@@ -43,9 +56,12 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   ToolStepRow,
+  stepPreview,
   type AgentInfo,
   type ToolPart,
 } from "@/components/session/tool-step";
+import { WorkingIndicator, type WorkState } from "@/components/session/working-indicator";
+import { ComposerSettings } from "@/components/session/composer-settings";
 import { PageHeader } from "@/components/common/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -75,7 +91,10 @@ import {
   type CodexSandbox,
   type ModelInfo,
 } from "@/lib/models";
-import type { ClientPermissionMode } from "@/lib/permissions";
+// Client-safe: permission-modes has NO SDK dependency. Importing these from
+// @/lib/permissions instead would pull loom-mcp -> the Agent SDK
+// (node:async_hooks) into the client bundle.
+import { isValidPermissionMode, type ClientPermissionMode } from "@/lib/permission-modes";
 import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
@@ -90,6 +109,46 @@ type Provider = "claude" | "codex";
 // literal here (not imported) since that module pulls in server-only
 // @telar/core code that has no business in the client bundle.
 const LOOM_START_TOOL = "mcp__loom__start_loom";
+
+// Map a real WorkUnitState to the loom pill/row urgency tone (accent only) and a
+// human verb. blocked/failed/halted demand the human (amber + pulse); ready /
+// needs-review / done are the green human-touchpoints; everything else weaves.
+function loomTone(s: WorkUnitState | null | undefined): LoomTone {
+  if (s === "blocked" || s === "failed" || s === "halted") return "blocked";
+  if (s === "ready" || s === "needs-review" || s === "done") return "ready";
+  return "weaving";
+}
+// Parse a model's context-window label ("1M", "200K", "200000") to a token
+// count, so the CTX hover can show a real used/window fill. Undefined when the
+// label isn't parseable — the hover then omits the bar (data-light).
+function parseWindow(label: string | undefined): number | undefined {
+  if (!label) return undefined;
+  const m = label.trim().match(/^([\d.]+)\s*([mMkK]?)/);
+  if (!m) return undefined;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return undefined;
+  const unit = m[2].toLowerCase();
+  return Math.round(n * (unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1));
+}
+
+function loomVerb(s: WorkUnitState | null | undefined): string {
+  switch (s) {
+    case "blocked":
+      return "Loom parked";
+    case "ready":
+      return "Loom ready";
+    case "needs-review":
+      return "Loom needs review";
+    case "done":
+      return "Loom done";
+    case "failed":
+      return "Loom failed";
+    case "halted":
+      return "Loom halted";
+    default:
+      return "Loom weaving";
+  }
+}
 
 // The Loom Session's agent-first greeting (docs/loom-model.md §5, feature
 // #34): rendered ONLY as a fresh-session seed — see the `planner && !sessionId
@@ -173,10 +232,8 @@ type Part =
 type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
 type Status = "ready" | "submitted" | "streaming" | "error";
 
-// GALLERY-SEAM (delete with /gallery): the permission Part shape, exported so the
-// dev view gallery can render PermissionCard in isolation. Permission parts are
-// live-stream-only (seedMessages maps only text/tool), so pending/allowed/denied
-// states are otherwise unreachable via props. Type-only export, zero logic change.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses
+// this shape directly. Type-only export, zero logic change.
 export type PermissionPart = Extract<Part, { type: "permission" }>;
 
 // A part's parentId, normalized to `undefined` for the main thread (permission
@@ -388,8 +445,8 @@ function permissionPreview(input: Record<string, unknown>): string {
   return json.length > 200 ? `${json.slice(0, 200)}…` : json;
 }
 
-// GALLERY-SEAM (delete with /gallery): `export` added so the dev view gallery can
-// render the permission card in isolation. Zero logic/JSX change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface)
+// renders this in isolation. Zero logic/JSX change.
 export function PermissionCard({
   part,
   onRespond,
@@ -518,11 +575,29 @@ function ThinkingRow({
   open: boolean;
   onToggle: () => void;
 }) {
+  // Suppression rule (1.3): whitespace-only content renders NOTHING, so an empty
+  // "✻ Thought" collapsible is structurally impossible — this is the durable fix
+  // for the reload case where the server persists no thinking text.
+  if (!part.text.trim()) return null;
+
   if (!part.done) {
+    // Live stream: a growing muted italic block with a ✻ + shimmering "Thinking"
+    // header and a blinking caret — the "something is happening" register.
     return (
-      <p className="rounded-md border border-dashed bg-muted/10 px-2.5 py-1.5 text-xs whitespace-pre-wrap italic text-muted-foreground">
-        {part.text || "…"}
-      </p>
+      <div className="rounded-md border border-dashed bg-muted/10 px-2.5 py-2">
+        <div className="mb-1 flex items-center gap-1.5">
+          <span aria-hidden className="text-xs">
+            ✻
+          </span>
+          <Shimmer as="span" className="text-[11px] font-medium">
+            Thinking
+          </Shimmer>
+        </div>
+        <p className="text-xs italic leading-relaxed whitespace-pre-wrap text-muted-foreground">
+          {part.text}
+          <span className="ml-0.5 inline-block h-3 w-[2px] translate-y-0.5 animate-pulse bg-muted-foreground/70 align-middle" />
+        </p>
+      </div>
     );
   }
   return (
@@ -543,6 +618,85 @@ function ThinkingRow({
           {part.text}
         </p>
       )}
+    </div>
+  );
+}
+
+// One queued message chip (1.5): a compact editable/removable row above the
+// composer. Click the text (or the pencil) to edit in place; Enter/blur commits,
+// Escape cancels; the ✕ drops it before it ever sends. No programmatic .focus()
+// beyond the input's own autoFocus (WebKit-safe — it's mount focus, not a
+// roving .focus() call on an existing element).
+function QueueChip({
+  index,
+  text,
+  editing,
+  onEdit,
+  onCommit,
+  onRemove,
+}: {
+  index: number;
+  text: string;
+  editing: boolean;
+  onEdit: () => void;
+  onCommit: (v: string) => void;
+  onRemove: () => void;
+}) {
+  const [draft, setDraft] = useState(text);
+  useEffect(() => setDraft(text), [text, editing]);
+
+  return (
+    <div className="group flex items-center gap-2 rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
+      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
+        {index}
+      </span>
+      {editing ? (
+        <Input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onCommit(draft.trim() || text);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCommit(text);
+            }
+          }}
+          onBlur={() => onCommit(draft.trim() || text)}
+          className="h-6 min-w-0 flex-1 border-0 border-b border-primary/40 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="min-w-0 flex-1 truncate text-left text-sm text-foreground hover:text-foreground"
+          title="Click to edit"
+        >
+          {text}
+        </button>
+      )}
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        aria-label="Edit queued message"
+        className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+        onClick={onEdit}
+      >
+        <PencilIcon />
+      </Button>
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        aria-label="Remove queued message"
+        className="text-muted-foreground hover:text-destructive"
+        onClick={onRemove}
+      >
+        <XIcon />
+      </Button>
     </div>
   );
 }
@@ -836,11 +990,13 @@ function SessionViewInner({
   // "default" = omit `effort` from the POST body entirely (let the model/SDK
   // pick). Any other value is a real EffortLevel string sent as-is.
   const [effort, setEffort] = useState(initialChat?.effort ?? "default");
-  // "Ask me" (interactive, the prior hardcoded behavior) by default —
-  // changeable between turns, persisted on the chat record like model/effort
-  // (route.ts's appendTurn) so a resumed session keeps whatever was last set.
+  // Auto Mode is the DEFAULT for a fresh session (owner-locked 1.2 decision):
+  // a classifier approves routine tool calls automatically. A resumed session
+  // keeps whatever was last persisted (route.ts's appendTurn), so an existing
+  // chat that ran under "Ask me" restores exactly that — the Auto default only
+  // seeds brand-new sessions with no persisted permissionMode yet.
   const [permissionMode, setPermissionMode] = useState<ClientPermissionMode>(
-    initialChat?.permissionMode ?? "default",
+    initialChat?.permissionMode ?? "auto",
   );
   // The caller already resolves the effective account (chat.account for an
   // existing session, the manifest default for a fresh one — contract #5:
@@ -985,6 +1141,53 @@ function SessionViewInner({
     };
   }, [activeAccount]);
   const [elapsed, setElapsed] = useState(0);
+  // 1.4 working indicator: seconds since the last streamed output, used to flip
+  // the indicator to its "still working — no output" reassurance on a long
+  // quiet step. Reset whenever `messages` changes (any delta/part is activity).
+  const [silentFor, setSilentFor] = useState(0);
+  const lastActivityRef = useRef(Date.now());
+  useEffect(() => {
+    lastActivityRef.current = Date.now();
+    setSilentFor(0);
+  }, [messages]);
+  // 1.2 composer settings popover open/pin state.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 1.2 remembered config: a fresh session boots from this project's last-used
+  // Claude config (model · effort · permission); a project never configured
+  // stays on the Auto default. Persisted per project in localStorage. The seed
+  // runs once and only for a brand-new session — a resumed chat keeps its own
+  // persisted config (route.ts) and must never be clobbered.
+  const rememberedSeeded = useRef(false);
+  useEffect(() => {
+    if (rememberedSeeded.current) return;
+    rememberedSeeded.current = true;
+    if (initialChat || typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(`telar:composer:${project}`);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        model?: string;
+        effort?: string;
+        perm?: unknown;
+      };
+      if (typeof saved.model === "string") setModel(saved.model);
+      if (typeof saved.effort === "string") setEffort(saved.effort);
+      if (isValidPermissionMode(saved.perm)) setPermissionMode(saved.perm);
+    } catch {
+      // ignore malformed / storage-blocked
+    }
+  }, [initialChat, project]);
+  useEffect(() => {
+    if (provider !== "claude" || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        `telar:composer:${project}`,
+        JSON.stringify({ model, effort, perm: permissionMode }),
+      );
+    } catch {
+      // ignore storage-blocked
+    }
+  }, [provider, project, model, effort, permissionMode]);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   // The current turn's server run id (docs/runtime-architecture.md §A.4) — sent
@@ -1016,6 +1219,15 @@ function SessionViewInner({
     initialChat?.loomId ? { loomId: initialChat.loomId, url: `/looms/${initialChat.loomId}` } : null,
   );
   const [handoffDismissed, setHandoffDismissed] = useState(false);
+  // Collapse toggle for the right-hand sub-agents rail (replaces the old tab
+  // strip). Purely a UI preference for this mount.
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  // Live loom lifecycle for the aggregate pill + inline transcript rows (replaces
+  // the persistent "Loom started" banner). `loomLive` is the latest state/title
+  // from the loom's own event stream; `loomEvents` is the durable in-stream
+  // record appended on each transition. Both are seeded/driven by loomHandoff.
+  const [loomLive, setLoomLive] = useState<{ title: string; state: WorkUnitState } | null>(null);
+  const [loomEvents, setLoomEvents] = useState<LoomEventRow[]>([]);
   // tool_use id -> tool name, populated as "tool" events arrive so the
   // "tool_result" case (which only carries id/output/isError) can tell
   // whether a given result belongs to start_loom. A ref, not state: purely
@@ -1091,6 +1303,14 @@ function SessionViewInner({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(title);
 
+  // Message queue (1.5): typing + Enter while the agent works QUEUES the message
+  // (never dropped, never force-sent mid-turn — the busy guard forbids that).
+  // Queued messages render as editable/removable chips above the composer and
+  // dispatch in order the moment the turn settles, via the same send() path.
+  const [messageQueue, setMessageQueue] = useState<{ id: string; text: string }[]>([]);
+  const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+  const queueSeqRef = useRef(0);
+
   const busy = status === "submitted" || status === "streaming";
 
   // Buckets a spawn's own transcript by its tool_use id — reconstructed fresh
@@ -1162,10 +1382,10 @@ function SessionViewInner({
     if (!busy) return;
     const started = Date.now();
     setElapsed(0);
-    const t = setInterval(
-      () => setElapsed(Math.floor((Date.now() - started) / 1000)),
-      1000,
-    );
+    const t = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000));
+      setSilentFor(Math.floor((Date.now() - lastActivityRef.current) / 1000));
+    }, 1000);
     return () => clearInterval(t);
   }, [busy]);
 
@@ -1926,6 +2146,73 @@ function SessionViewInner({
     };
   }, [watchedLoomIds]);
 
+  // Loom-notify (replaces the banner): tail THIS session's loom event stream so
+  // the aggregate pill reflects the loom's real state and each transition lands
+  // as a durable inline transcript row. Durable-minimum only — state word +
+  // title + short id + god-view — no thread/gate detail (the loom UI is still
+  // being shaped). Seeded/keyed on loomHandoff.loomId.
+  const loomHandoffId = loomHandoff?.loomId;
+  const loomHandoffUrl = loomHandoff?.url;
+  const loomLastStateRef = useRef<WorkUnitState | null>(null);
+  const loomEventSeqRef = useRef(0);
+  useEffect(() => {
+    if (!loomHandoffId) return;
+    loomLastStateRef.current = null;
+    const url = loomHandoffUrl ?? `/looms/${loomHandoffId}`;
+    const es = new EventSource(`/api/looms/${encodeURIComponent(loomHandoffId)}/events`);
+    const onRun = (e: MessageEvent) => {
+      let loom: any;
+      try {
+        loom = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      const state = loom?.state as WorkUnitState | undefined;
+      if (!state) return;
+      const title =
+        typeof loom.title === "string" && loom.title ? loom.title : shortId(loomHandoffId);
+      setLoomLive({ title, state });
+      // Append an inline row only on a genuine state change (the connect-time
+      // snapshot seeds the first row; later transitions each add one).
+      if (loomLastStateRef.current !== state) {
+        loomLastStateRef.current = state;
+        const seq = loomEventSeqRef.current++;
+        setLoomEvents((prev) => [
+          ...prev,
+          {
+            id: `le${seq}`,
+            loomId: shortId(loomHandoffId),
+            title,
+            verb: loomVerb(state),
+            tone: loomTone(state),
+            url,
+          },
+        ]);
+      }
+    };
+    es.addEventListener("run", onRun as EventListener);
+    es.addEventListener("end", () => es.close());
+    return () => es.close();
+  }, [loomHandoffId, loomHandoffUrl]);
+
+  // The aggregate looms pill's data — one loom per session in practice (the
+  // persisted Chat.loomId is single), modelled as an array so N looms roll up
+  // cleanly if that ever changes. Tone follows the live state; title/state fall
+  // back to sensible defaults before the first event lands.
+  const pillLooms: PillLoom[] = useMemo(() => {
+    if (!loomHandoff) return [];
+    return [
+      {
+        key: loomHandoff.loomId,
+        id: shortId(loomHandoff.loomId),
+        title: loomLive?.title ?? title,
+        tone: loomTone(loomLive?.state),
+        stateWord: loomLive?.state ?? "weaving",
+        url: loomHandoff.url,
+      },
+    ];
+  }, [loomHandoff, loomLive, title]);
+
   // §6.D — injection: when the composer is idle ("ready" — mid-turn is forbidden
   // by the busy guard) and a watcher turn is queued, dequeue exactly ONE and
   // dispatch it via the normal send() path. Removing the item BEFORE send()
@@ -1952,15 +2239,77 @@ function SessionViewInner({
 
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();
-    if (!text || busy) return;
+    if (!text) return;
+    // Agent busy → queue instead of dropping. Returning void (sync) lets
+    // PromptInput clear the textarea, exactly as a real send would.
+    if (busy) {
+      setMessageQueue((q) => [...q, { id: `q${queueSeqRef.current++}`, text }]);
+      return;
+    }
     void send(text);
   };
+
+  // Dispatch the head of the message queue once the composer is genuinely idle
+  // — mirrors the watcher-injection gate (§6.D): status "ready" AND no live
+  // reader (so the reconnect tail can't race a second concurrent turn). Removing
+  // the item before send() (which synchronously flips status to "submitted")
+  // guarantees strictly one-at-a-time, in order.
+  useEffect(() => {
+    if (
+      status !== "ready" ||
+      abortRef.current ||
+      reconnectAbortRef.current ||
+      messageQueue.length === 0
+    )
+      return;
+    const [next, ...rest] = messageQueue;
+    setMessageQueue(rest);
+    void send(next.text);
+  }, [status, messageQueue, send]);
 
   // Prefer the fetched catalog (matches what's actually offered in the
   // select) and fall back to the static list for a model id seeded from a
   // resumed chat before the fetch resolves.
   const activeModel = modelOptions.find((m) => m.id === model) ?? modelById(model);
   const effortOptions = provider === "codex" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
+
+  // 1.4 working indicator: the current main-thread tool call still in flight
+  // (no output yet) — the thing the agent is actively doing right now. Scans
+  // the latest assistant message's trailing tool part; a finished trailing
+  // tool means "no tool running" (we're between calls / streaming text).
+  const runningTool = useMemo<{ name: string; target: string } | null>(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      for (let j = m.parts.length - 1; j >= 0; j--) {
+        const p = m.parts[j];
+        if (p.type !== "tool" || p.parentId) continue;
+        if (p.output === undefined && !p.isError && !p.interrupted) {
+          return { name: p.name, target: stepPreview(p.input) ?? "" };
+        }
+        return null;
+      }
+      return null;
+    }
+    return null;
+  }, [messages]);
+
+  // Derive the single live-work state the header indicator renders while busy.
+  const liveWork: WorkState | null = !busy
+    ? null
+    : status === "submitted"
+      ? { kind: "starting" }
+      : runningTool
+        ? {
+            kind: "tool",
+            tool: runningTool.name,
+            target: runningTool.target,
+            elapsed,
+            silentFor,
+          }
+        : thinking
+          ? { kind: "thinking", elapsed }
+          : { kind: "working", elapsed };
 
   // Merge project's scanned commands+skills with what the live SDK session
   // actually reports (once known) — the SDK's slash_commands list includes
@@ -2039,16 +2388,32 @@ function SessionViewInner({
     }
   };
 
-  // Tab strip data — derived straight from agentBuckets, never stored on its
-  // own (contract #5). Order follows first appearance so a tab never jumps
-  // around later as its own spawn's status changes.
-  const agentTabs: AgentTab[] = useMemo(
+  // Sub-agents rail data — derived straight from agentBuckets, never stored on
+  // its own (contract #5). Order follows first appearance so a card never jumps
+  // around later as its own spawn's status changes. Per-sub-agent elapsed/cost
+  // don't exist in the transcript (recon), so a card carries the real, available
+  // step count plus, while running, its current tool as a live activity line.
+  const railAgents: RailAgent[] = useMemo(
     () =>
-      agentBuckets.map((b) => ({
-        id: b.id,
-        label: agentLabel(b.spawn.agent ?? { type: null, description: "" }),
-        status: agentStatus(b.spawn),
-      })),
+      agentBuckets.map((b) => {
+        const lastTool = [...b.parts]
+          .reverse()
+          .find((p): p is ToolPart => p.type === "tool");
+        const preview = lastTool ? stepPreview(lastTool.input) : null;
+        const activity = lastTool
+          ? preview
+            ? `${lastTool.name} · ${preview}`
+            : lastTool.name
+          : undefined;
+        return {
+          id: b.id,
+          label: agentLabel(b.spawn.agent ?? { type: null, description: "" }),
+          tool: b.spawn.agent?.type ?? "general",
+          status: agentStatus(b.spawn),
+          steps: b.parts.length,
+          activity,
+        };
+      }),
     [agentBuckets],
   );
 
@@ -2276,79 +2641,41 @@ function SessionViewInner({
             {shortId(sessionId)}
           </Badge>
         )}
-        {/* Persistent link back to this session's loom (docs/loom-model.md
-            §5) — up the instant start_loom's result lands live, and again on
-            every reload once Chat.loomId is persisted. */}
-        {loomHandoff && (
-          <Badge
-            variant="outline"
-            className="gap-1.5 border-primary/30 bg-primary/5 font-mono text-xs text-primary"
-            render={<Link href={loomHandoff.url} />}
-          >
-            <WorkflowIcon className="size-3" />
-            Planning loom
-          </Badge>
-        )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {busy && (
-            <Shimmer className="text-xs">
-              {`${status === "submitted" ? "starting" : thinking ? "thinking" : "working"} · ${elapsed}s`}
-            </Shimmer>
+          {liveWork && (
+            <WorkingIndicator state={liveWork} className="max-w-[min(420px,60vw)]" />
           )}
+          {/* The aggregate looms pill (replaces the persistent banner + the old
+              "Planning loom" chip). Solo → state + short id; N → most-urgent
+              rollup. Hover previews the per-loom overlay, click pins. */}
+          <LoomsPill looms={pillLooms} />
           <UsagePill snap={usageSnap} />
-          {/* Context-window occupancy after the latest turn — the number that
-              actually answers "how full is this conversation". The lifetime
-              in/out/cache totals live in the tooltip rather than the bar. */}
+          {/* Context-window occupancy after the latest turn, with a /context-
+              style hover: real used/window fill + lifetime token split (per-
+              category breakdown reserved — not instrumented yet). */}
           {context > 0 && (
-            <Badge
-              variant="outline"
-              className="font-mono text-xs"
-              title={`context ${fmtTokens(context)}${activeModel?.context ? ` of ${activeModel.context}` : ""} · lifetime ${fmtTokens(tokens.input)} in · ${fmtTokens(tokens.output)} out · cache read ${fmtTokens(tokens.cacheRead)}`}
-            >
-              CTX {fmtTokens(context)}
-            </Badge>
+            <ContextPill
+              used={context}
+              windowTokens={parseWindow(activeModel?.context)}
+              lifetime={{
+                input: tokens.input,
+                output: tokens.output,
+                cacheRead: tokens.cacheRead,
+                cacheCreate: tokens.cacheCreate,
+              }}
+            />
           )}
-          <Badge variant="outline" className="font-mono text-xs">
-            {fmtCost(sessionCost)}
-          </Badge>
+          {/* Aggregate session cost with a hover breakdown (real grand total;
+              per-sub-agent split reserved — spend isn't attributed yet). */}
+          <CostPill total={sessionCost} />
         </div>
       </div>
 
-      {/* The "make this real → god-view" handoff (docs/loom-model.md §5) —
-          prominent but never auto-navigating: the user may still want to
-          keep chatting (steer, ask questions) after the loom starts, so this
-          is a one-click link, not a redirect. Dismissible independently of
-          the header chip above, which stays up for the life of the session. */}
-      {loomHandoff && !handoffDismissed && (
-        <div className="shrink-0 border-b px-4 py-2.5">
-          <div className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
-            <WorkflowIcon className="size-4 shrink-0 text-primary" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Loom started</p>
-              <p className="truncate text-xs text-muted-foreground">
-                The spec bundle is committed and weaving — watch it unfold in the god-view.
-              </p>
-            </div>
-            <Button
-              size="sm"
-              render={<Link href={loomHandoff.url} target="_blank" rel="noopener noreferrer" />}
-            >
-              View god-view
-              <ExternalLinkIcon />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Dismiss"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => setHandoffDismissed(true)}
-            >
-              <XIcon />
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* The "make this real → god-view" handoff (docs/loom-model.md §5) no
+          longer pins a permanent banner: it now surfaces as the aggregate looms
+          PILL in the heartbeat bar above (live state, hover for detail, one-click
+          god-view) plus durable INLINE event rows in the transcript below. Both
+          replace the old momentary-event-as-permanent-chrome banner. */}
 
       {/* §6.E watcher alerts — the loom-handoff banner pattern (above) reused
           for a watched loom reaching a trigger state. Surfaces immediately,
@@ -2386,24 +2713,14 @@ function SessionViewInner({
         </div>
       ))}
 
-      {/* Main tab always present; a tab for a spawn appears the instant its
-          tool-call part arrives (live) or is reconstructed from persisted
-          parts (load) — see agentBuckets. Scrolls horizontally on overflow,
-          never wraps into the conversation below it. */}
-      {/* The strip carries its own "Main" tab, so with no subagents spawned it
-          would render a lone, pointless "Main" — only show it once at least one
-          subagent tab exists. */}
-      {agentTabs.length > 0 && (
-        <AgentTabsStrip
-          tabs={agentTabs}
-          activeId={activeTab}
-          onSelect={setActiveTab}
-          mainNeedsAttention={mainNeedsAttention}
-          availableAgents={availableAgents ?? undefined}
-        />
-      )}
-
-      <Conversation className="flex-1">
+      {/* The conversation column with the sub-agents RAIL docked on its right
+          (replaces the old top tab strip). The rail lists spawns as rich cards —
+          running up top with a live activity line, failures pinned in
+          destructive, completions folded into a compact "Done" section — with a
+          pinned Main anchor always one click back. It only appears once at least
+          one sub-agent has spawned. The composer below stays full-width. */}
+      <div className="flex min-h-0 flex-1">
+      <Conversation className="min-w-0 flex-1">
         {/* Full-width transcript (explicit user request — no inner padding):
             no max-w-3xl/mx-auto centering, no horizontal padding. Vertical
             padding (py-4) and the scroll behavior are unchanged. Individual
@@ -2411,7 +2728,17 @@ function SessionViewInner({
             themselves (overflow-x-auto — see ToolStepRow), never the page. */}
         <ConversationContent className="px-4">
           {activeBucket ? (
-            renderAgentBucket(activeBucket)
+            <div className="mx-auto flex w-full max-w-7xl flex-col gap-3">
+              {/* Breadcrumb: names the sub-agent you're viewing and makes the
+                  exit unmistakable — the "Main" crumb, the highlighted Main
+                  anchor in the rail, and Escape all return. */}
+              <SubagentBanner
+                label={agentLabel(activeBucket.spawn.agent ?? { type: null, description: "" })}
+                status={agentStatus(activeBucket.spawn)}
+                onBack={() => setActiveTab("main")}
+              />
+              {renderAgentBucket(activeBucket)}
+            </div>
           ) : messages.length === 0 && planner && !sessionId ? (
             // Agent-first greeting (feature #34): a templated assistant
             // bubble — same Message/MessageContent/MessageResponse
@@ -2530,9 +2857,32 @@ function SessionViewInner({
               );
             })
           )}
+          {/* Durable in-stream loom record (replaces the banner): a compact row
+              per lifecycle transition — started/parked/resumed/ready — carrying
+              the title, short id, and a god-view link. Scrolls away with
+              history; the live pill in the bar is the at-a-glance status. */}
+          {!activeBucket && loomEvents.length > 0 && (
+            <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 pt-3">
+              {loomEvents.map((r) => (
+                <InlineLoomRow key={r.id} row={r} />
+              ))}
+            </div>
+          )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
+      {railAgents.length > 0 && (
+        <SubagentRail
+          agents={railAgents}
+          activeId={activeTab}
+          onSelect={setActiveTab}
+          collapsed={railCollapsed}
+          onToggle={() => setRailCollapsed((v) => !v)}
+          sessionLabel={title}
+          mainNeedsAttention={mainNeedsAttention}
+        />
+      )}
+      </div>
 
       {/* Composer matches the transcript's reading column — same mx-auto
           max-w-7xl the Message wrapper uses, so the input aligns with the
@@ -2579,11 +2929,41 @@ function SessionViewInner({
             )}
           </div>
         )}
+        {messageQueue.length > 0 && (
+          <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
+            <div className="flex items-center justify-between px-1.5 pt-0.5">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Queued · sends in order
+              </span>
+              <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                {messageQueue.length}
+              </span>
+            </div>
+            {messageQueue.map((m, i) => (
+              <QueueChip
+                key={m.id}
+                index={i + 1}
+                text={m.text}
+                editing={editingQueueId === m.id}
+                onEdit={() => setEditingQueueId(m.id)}
+                onCommit={(v) => {
+                  setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
+                  setEditingQueueId(null);
+                }}
+                onRemove={() => setMessageQueue((q) => q.filter((x) => x.id !== m.id))}
+              />
+            ))}
+          </div>
+        )}
         <PromptInput onSubmit={handleSubmit}>
           <PromptInputBody>
             <PromptInputTextarea
               className="min-h-10"
-              placeholder={`Ask about ${project}… ("/" for commands)`}
+              placeholder={
+                busy
+                  ? "Agent is working — Enter queues a message…"
+                  : `Ask about ${project}… ("/" for commands)`
+              }
               onKeyDown={handleComposerKeyDown}
               onChange={() => setMenuDismissed(false)}
             />
@@ -2695,28 +3075,29 @@ function SessionViewInner({
                   </SelectContent>
                 </Select>
               ) : (
-                <Select
-                  value={permissionMode}
-                  onValueChange={(v) => v && setPermissionMode(v as ClientPermissionMode)}
-                >
-                  <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
-                    <SelectValue>
-                      {PERMISSION_MODE_OPTIONS.find((o) => o.value === permissionMode)?.label ??
-                        "Ask me"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
-                    {PERMISSION_MODE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value} className="py-2">
-                        <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                          <span className="font-medium">{o.label}</span>
-                          <span className="text-xs text-muted-foreground">{o.description}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                /* 1.2 — the Claude config trio (permission · model · effort)
+                   collapses into one chip + settings popover. Provider and
+                   account stay as their own pre-session controls above. */
+                <ComposerSettings
+                  project={project}
+                  open={settingsOpen}
+                  onOpenChange={setSettingsOpen}
+                  model={model}
+                  setModel={setModel}
+                  effort={effort}
+                  setEffort={setEffort}
+                  permissionMode={permissionMode}
+                  setPermissionMode={setPermissionMode}
+                  modelOptions={modelOptions}
+                  effortOptions={effortOptions}
+                  permissionOptions={PERMISSION_MODE_OPTIONS}
+                />
               )}
+              {/* Codex keeps the explicit model + effort selects — its collapse
+                  isn't part of the 1.2 redesign (the popover is Claude-shaped:
+                  a Claude badge, Claude permission language). */}
+              {provider === "codex" && (
+                <>
               <Select value={model} onValueChange={(v) => v && setModel(v)}>
                 <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
                   <SelectValue>
@@ -2792,6 +3173,8 @@ function SessionViewInner({
                   ))}
                 </SelectContent>
               </Select>
+                </>
+              )}
             </PromptInputTools>
             {/* ml-auto/self-end: when the tools row wraps onto multiple lines
                 on a narrow composer, the submit button stays pinned to the
