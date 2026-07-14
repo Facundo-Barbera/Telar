@@ -6,392 +6,391 @@
 
 ## Executive summary (for the owner)
 
-1. **Ultra brings the tool you already develop Telar with — the fan-out
-   orchestration harness — INSIDE Telar**, as an `ultra` MCP tool the chat's
-   main agent authors a script for and the engine executes deterministically.
-2. It is **lighter than looms on purpose**: no charter, no gates ceremony, no
-   verify/mediate rungs, no `ready→done`. One user-requested orchestrated turn
-   that returns a value to the main agent. Looms stay exactly as they are.
-3. **It reuses, it does not rebuild.** Every subagent is one existing
-   `agent()` call; fan-out is existing `parallel()`. Ultra adds a script
-   sandbox, a journal, and a progress surface — no new spawn primitive.
-4. **One engine, both providers.** Because Ultra only ever calls `agent()`, it
-   inherits Claude today and Codex the moment the codex-driver seam lands —
-   the same free ride the dispatcher and executor get. No dual path. **One
-   carve-out, stated up front:** the USD *budget ceiling* rides free on Claude
-   but is BLOCKED on Codex until codex-driver Open Q4 ships a price table (§3);
-   the Codex backend already waits on the seam, so this adds no new gate.
-5. **Isolation is honest and layered.** The real security boundary is the
-   subagent layer: every child runs under its provider's shipped isolation
-   (Agent SDK tool allow-lists/permission modes; Codex native read-only sandbox
-   + `approval:never`). The *script* runs in a `node:vm` context that is a
-   **capability-shaping and determinism device, not a security sandbox** — Node
-   documents `vm` as not a security mechanism, and a determined script can walk
-   the prototype chain to host globals. That is acceptable because the author is
-   the **first-party main agent** under the owner's own account: the script
-   holds no authority the author doesn't already have, so the vm is not a trust
-   boundary and we never present it as one. Spend is capped by the executor
-   (§3), and every prompt/opts/result is journaled.
-6. **A UI comes with it**: a composer Ultra chip, an in-transcript run block
-   (phases, per-agent rows, narrator log), and an expandable inspector.
-
----
+1. **Ultra is a side quest — a tool of the main agent.** It brings the fan-out
+   harness you develop Telar with INSIDE Telar, as an `ultra` MCP tool the main
+   agent authors a script for and the engine executes deterministically. Not a
+   mode, not a loom — one more thing the agent reaches for, launches, and stops.
+   **It reuses, not rebuilds:** every subagent is one existing `agent()`, fan-out
+   is existing `parallel()`; Ultra adds only a script sandbox, an ordinal-keyed
+   journal, and a progress surface — no new spawn primitive.
+2. It is **lighter than looms on purpose**: no charter, no gates, no
+   verify/mediate rungs, no `ready→done`. **Non-blocking:** the tool returns
+   `{runId}` immediately, the run detaches, and completion comes back to the main
+   agent as an event it reacts to. **Several runs per session run in parallel**,
+   a supported case. Looms stay exactly as they are.
+3. **One engine, both providers.** Ultra only ever calls `agent()`, so it
+   inherits Claude today and Codex the moment the codex-driver seam lands. **No
+   budget carve-out:** budgets removed (pt 5) means the Codex path needs only the
+   seam — no price table, no Open-Q4 dependency. Cost is *visibility*, not a cap
+   (USD Claude / tokens Codex). No Ultra code branches on provider.
+4. **Isolation is honest and layered.** The real security boundary is the **child
+   posture** (§3): subagents run non-interactive under a fixed, vendor-shipped
+   posture — the normal session tool surface for that provider — and any action
+   needing an interactive approval **fails the `agent()` call** rather than
+   pausing the run. The *script* vm is a capability/determinism device, **not a
+   security sandbox** — fine because the **first-party main agent** authors it and
+   holds no authority to fence (§3).
+5. **No budgets, explicit models (owner decisions).** No spend ceiling anywhere —
+   no spend-holdback math, no `budget` global; bounded discovery is *loop-until-dry*.
+   What remains: live **cost visibility** (per-agent tokens/cost, in the session's
+   cost language) plus **runaway brakes** (per-run concurrency cap, lifetime
+   agent-count backstop, human Stop, the agent's stop control). Separately, every
+   `agent()` call must name its `model` — validation rejects a script that omits
+   it — and the UI shows `model·effort` on every agent row.
+6. **A UI comes with it, arranged as a side quest**: a composer Ultra chip that
+   only arms; a compact **fixed-height transcript anchor** per run; and the
+   **existing sub-agent rail** gains a Workflows section. No inline-large run
+   block, no bespoke inspector, no budget meter (§6).
 
 ## 1. Problem & shape
 
 The owner develops Telar with an external fan-out harness (Claude Code's
 Workflow tool): the orchestrating model authors a deterministic JS script, the
 harness executes it, spawning subagents with a journal + resume. Looms are the
-heavyweight, autonomous, human-gated build system. Ultra is the **light** one:
+heavyweight, autonomous, human-gated build system; Ultra is the **light** one —
 a single user-requested orchestrated turn, no autonomy ladder.
 
-**Ultra = a deterministic script executor living in `@telar/core`** that fans
-out provider subagents from a normal Telar chat session. What it is NOT: it has
-no charter, no Verification Contract, no gates, no thread inner-loop, no
-mediation rungs, and it **never writes loom state and never writes `done`**. It
-is not a loom and must never be mistaken for one. The chat's main agent decides
-the decomposition; Ultra just runs it and hands back the result.
-
-Relationship to looms: **orthogonal and untouched.** Ultra composes the same
-leaf primitive (`agent()`) that looms compose, one layer lower than the loom
-dispatcher. Nothing in `dispatcher.ts`/`executor.ts`/`verifier.ts` changes.
+**Ultra = a deterministic script executor in `@telar/core`** that fans out
+provider subagents from a normal chat session. What it is NOT: no charter, no
+Verification Contract, no gates, no thread inner-loop, no mediation rungs, and it
+**never writes loom state and never `done`**. It is not a loom; the main agent
+decides the decomposition and Ultra just runs it and hands back the result.
+**Orthogonal and untouched:** Ultra composes the same leaf `agent()` looms
+compose, one layer below the loom dispatcher — nothing in
+`dispatcher.ts`/`executor.ts`/`verifier.ts` changes.
 
 ## 2. Doctrine fit
 
-- **One engine.** Ultra is one executor used identically from a Claude session
-  and a Codex session. It never inspects the provider itself: it calls
-  `agent()`, which already dispatches env by the account fact (`accountEnv`,
-  engine.ts:107) and — once the codex-driver seam lands — routes the spawn
-  through `driverFor(provider)`. Ultra is provider-agnostic *for free*, exactly
-  as the dispatcher/executor/thread-loop are (codex-driver §"Thread
-  transcripts"). **Dependency, stated honestly:** Ultra needs nothing from the
-  codex-driver track to ship on Claude. It needs the driver seam — and only the
-  seam, no Ultra-specific work — to run on a Codex session. **Ship order:**
-  Ultra Claude-first; Codex is the already-approved follow-on that lights up
-  automatically. No Ultra code branches on provider.
+- **One engine.** Ultra is one executor used identically from a Claude and a
+  Codex session; it never inspects the provider. It calls `agent()`, which
+  already dispatches env by the account fact (`accountEnv`, engine.ts:107) and —
+  once the codex-driver seam lands — routes the spawn through
+  `driverFor(provider)`. Ultra is provider-agnostic *for free*, like the
+  dispatcher/executor/thread-loop; it ships Claude-first and lights up on Codex
+  when the seam lands (no Ultra-specific work either way).
 - **Opt-in is a REQUEST, not a behavior flag.** The engine has no "ultra mode."
-  Ultra is a tool the main agent may call; the tool description forbids
-  reaching for it unless the user asked (keyword "ultra" or the composer Ultra
-  chip annotates the message). This is a per-message user request, the same
-  category as a user asking for anything — not a `TELAR_*` switch, not a
+  It is a tool the main agent may call; the description forbids reaching for it
+  unless the user asked (keyword "ultra" or the composer chip annotates the
+  message). A per-message user request — not a `TELAR_*` switch, not a
   `telar.yaml` key, not a default/alternative (forbidden by §1/§2).
-- **No placebo.** Every UI knob is backed. There is exactly one control that
-  writes anything (the composer Ultra chip → a message annotation the tool
-  reads) and one that acts on a live run (Stop → the run's AbortController).
-  Everything else is read-only projection of journaled state.
-- **Structured output, one loop for both providers.** Ultra's injected
-  `agent()` is a thin wrapper over engine `agent()`, whose typed-result
-  contract is already "no emit = `null`, success never inferred" (engine.ts:222).
-  Where a provider lacks native forcing (Codex, per codex-driver §emit_result),
-  the *driver* owns the emit mechanism; Ultra adds one **executor-side
-  validate-and-retry** on top — identical code for both backends: a `null`
-  return triggers up to `K` re-spawns with a correction appendix, then a final
-  `null`. No silent degradation, no dual path.
-- **Ultra never writes loom state, never `done`.** It has no access to
-  `saveLoom`/`appendEvent`/acceptance. Its store is a separate top-level dir
-  (§5) so loom code (`listLooms`, `reconcileStuckLooms`) can never enumerate an
-  Ultra run as a loom.
+- **No placebo.** Every UI knob is backed. Exactly two things write: the composer
+  Ultra chip (→ a message annotation the tool reads) and Stop (→ the run's
+  AbortController, from the human's button or the agent's `ultra_stop`).
+  Everything else is a read-only projection of journaled state.
+- **Structured output, one loop for both providers.** The injected `agent()`
+  wraps engine `agent()`, whose contract is already "no emit = `null`, success
+  never inferred" (engine.ts:222). Where a provider lacks native forcing (Codex)
+  the *driver* owns the emit; Ultra adds one **executor-side validate-and-retry**
+  (K=2, then a final `null`), identical for both backends. No dual path.
+- **Ultra never writes loom state, never `done`.** No access to
+  `saveLoom`/`appendEvent`/acceptance; its store is a separate top-level dir (§5)
+  so loom code (`listLooms`, `reconcileStuckLooms`) can never enumerate a run.
 
 ## 3. Executor
 
-**Script format** (mirrors the reference harness exactly):
+**Script format** (mirrors the reference harness, minus the budget global):
 
 ```js
 export const meta = { name, description, phases };   // pure literal, no exec
 export default async function ({ agent, parallel, pipeline, phase, log,
-                                 budget, args }) { /* body */ }
+                                 args }) { /* body */ }
 ```
 
 `meta` is a pure object literal (statically read before any execution). The
-body is `async` and receives ONE argument: the frozen injected surface. There
-are no other globals.
+`async` body receives ONE argument, the frozen injected surface; there are no
+other globals — and, deliberately, **no `budget`** (owner decision, pt 5).
 
 **Injected surface** (the ONLY capabilities the script has):
 
 | Global | Contract |
 |---|---|
-| `agent(prompt, opts?)` | wraps engine `agent()`; `opts`: `label`, `phase`, `schema` (forces validated object via the driver's emit path; without it returns final text), `model`, `effort`, `isolation` (fresh worktree for parallel mutators). Returns the typed value or `null` (dead agent). |
-| `parallel(thunks)` | concurrent with a barrier; a thunk that throws an **agent failure** → `null`, never rejects. **Carve-out:** `BudgetExhausted`/`AbortError` are control signals, not failures — they propagate past the barrier and terminate the run (never coerced to `null`). (Existing `parallel`, engine.ts:228.) |
+| `agent(prompt, opts)` | wraps engine `agent()`. `opts.model` is **REQUIRED** (a call without it throws `MissingModel`; §4 rejects it). Other `opts`: `label`, `phase`, `effort`, `schema` (forces a validated object via the driver's emit path; without it returns final text), `isolation` (fresh worktree for parallel mutators — narrows *where* writes land, never *whether* the child can write). Returns the typed value or `null` (dead agent). **No per-agent permission knob** — the child posture is fixed (below). |
+| `parallel(thunks)` | concurrent with a barrier; a thunk that throws an **agent failure** → `null`, never rejects. **Carve-out:** `AbortError` (Stop) and `MissingModel` (the explicit-model contract) are **control signals**, not failures — they propagate past the barrier and terminate the run (never coerced to `null`). (Existing `parallel`, engine.ts:228.) |
 | `pipeline(items, ...stages)` | each item flows all stages independently, no inter-stage barrier; stage cb gets `(prev, item, i)`; a throwing stage drops that item to `null` (same control-signal carve-out as `parallel`). |
 | `phase(title)`, `log(msg)` | progress grouping + narrator lines into the run's event stream. |
-| `budget` | `{ total, spent(), reserved(), remaining() }` — one USD ceiling; `agent()` **reserves** a per-agent max before spawning and throws `BudgetExhausted` when a reservation won't fit (§3, reservation-based). |
 | `args` | the JSON value passed at invocation. |
 
-**Sandboxing — capability-shaping + determinism, NOT a security boundary
-(zero new deps).** The script runs in a `node:vm` context (`vm.createContext`)
-whose global object exposes ONLY the injected surface plus pure intrinsics
-(`Object`, `Array`, `JSON`, `Math` sans `random`, `Promise`, `String`,
-`Number`, etc.) — `require`/`import`/`process`/`fs`/`Buffer` are simply not in
-scope, so an *authoring mistake* (a stray `fs.readFileSync`) is a
-`ReferenceError` rather than a footgun, and the injected surface is
-`Object.freeze`d so a capability can't be monkeypatched onto a shared
-reference. **This is explicitly not a security sandbox.** Node documents `vm`
-as "not a security mechanism"; a determined script reaches host globals by
-walking the prototype chain (`agent.constructor` resolves through the
-host-realm `Function` constructor → `agent.constructor('return process')()`),
-and `Object.freeze` on own props does nothing to that inherited `.constructor`.
-We do not pretend otherwise, because **there is no privilege drop to enforce**:
-the script is authored by the same first-party main agent that already drives
-looms and MCP under the owner's account, so it holds no authority the author
-lacks — the vm buys capability-shaping and mechanical determinism (below), and
-the real trust boundary is the subagent layer plus the spend cap, never this
-context. Compilation: `new vm.Script(code)` once, source wrapped as
-`({meta, default:...})` via a fixed CJS-style shim — no `vm.SourceTextModule`
-experimental flag. **Event-loop honesty:** `vm`'s `timeout` guards only
-synchronous *first* execution, not an async body — a first-party script with a
-runaway `while(true)` would hang the single Node event loop (and with it the
-dev server and every loom, §"single-process reality"). We treat that as an
-author-quality bug, not a threat; the future hardening (untrusted authorship, a
-`worker_threads` run with a real kill switch — still zero new deps) is in the
-deviations table so it is never mistaken for shipped isolation.
+**Child posture — the real security boundary (fixed, non-interactive,
+fail-closed).** Every subagent runs under the **same tool surface a normal Telar
+session agent has for that provider** — no elevation, no human-approval path
+mid-run. Any action that would require an interactive approval **fails that
+`agent()` call** (fail-closed, the shape of a charter-time refusal) instead of
+pausing the run. Enforcement is **vendor-shipped only**, never Ultra-invented:
+**Claude** via Agent SDK `canUseTool`/`allowedTools` (writes confined to the
+project root, or the `opts.isolation` worktree); **Codex** via native sandbox
+`workspace-write` + `approval-policy: never`. There is deliberately **no
+per-agent permission knob** in `agent()` opts — scripts *narrow* work
+(`isolation`, `schema`), never *grant* capability. The isolation story rests
+here; the script vm below is not it.
+
+**Script sandboxing — capability-shaping + determinism, NOT a security boundary
+(zero new deps).** The script runs in a `node:vm` context whose global exposes
+ONLY the injected surface plus pure intrinsics (`Object`, `Array`, `JSON`,
+`Math` sans `random`, `Promise`, …) — `require`/`import`/`process`/`fs` are not
+in scope, so an authoring mistake (a stray `fs.readFileSync`) is a
+`ReferenceError`, not a footgun, and the surface is `Object.freeze`d against
+monkeypatching. Compilation: `new vm.Script(code)` once, wrapped
+`({meta, default:...})` via a fixed CJS shim — no experimental module flag.
+**This is explicitly not a security sandbox:** Node documents `vm` as "not a
+security mechanism"; a determined script reaches host globals via the prototype
+chain (`agent.constructor('return process')()`), which `Object.freeze` cannot
+stop. We do not pretend otherwise, because **there is no privilege to drop** —
+the first-party author already drives looms and MCP under the owner's account and
+holds no authority to fence; the trust boundary is the child posture above.
+**Event-loop honesty:** `vm`'s `timeout` guards only synchronous *first*
+execution, so a runaway `while(true)` hangs the single Node event loop (and every
+loom) — an author-quality bug, not a threat; the future `worker_threads` kill
+switch (deviations table, zero new deps) is not shipped now.
 
 **Determinism bans** (resume correctness depends on them): `Date.now`,
-`new Date()`, and `Math.random` are made to **throw** inside the context
-(`Date` and `Math.random` are replaced with throwing stubs; the rest of `Math`
-is preserved). The script literally cannot observe wall-clock or entropy, so a
-re-run is byte-identical given the same journal. This is stricter than the
-reference (which documents the ban); Telar enforces it mechanically.
+`new Date()`, and `Math.random` **throw** inside the context (throwing stubs; the
+rest of `Math` preserved). The script cannot observe wall-clock or entropy, so a
+re-run is byte-identical given the same journal — stricter than the reference,
+which only documents the ban.
 
-**Concurrency.** Fan-out is bounded by the engine's existing single in-process
-gate (`MAX_CONCURRENT`, engine.ts:89) — every Ultra `agent()` acquires it, so
-Ultra shares the process-wide budget with any looms running, and cannot
-stampede. A per-run **1000-agent lifetime backstop** and the USD budget are the
-two hard ceilings. (Deviation from the reference's `min(16, cores-2)`: the cap
-is the engine's shared gate, because raising concurrency is an engine change
-that must land for everyone at once — §1 — not an Ultra-local number.)
+**Concurrency + runaway brakes (numbers, no budget).** Fan-out is bounded by
+two layered caps, both concrete:
 
-**Budget is a hard ceiling — reservation-based, concurrency-safe.** A naïve
-"throw once `spent() ≥ total`" does NOT bound fan-out: under `parallel()` every
-thunk's `agent()` passes the check before any child has returned its `costUsd`,
-so a `total=$5` run with 100 concurrent `$1` agents spends ~`$100`. Instead
-each `agent()` **reserves** a per-agent max (`opts.maxUsd` or a run default)
-*before* spawning; admission is `remaining() = total − spent − reserved ≥
-reservation`, else it throws `BudgetExhausted`. On completion the reservation
-is released and the real `costUsd` booked into `spent()`. Because *reserved*
-(not just settled) spend gates the next spawn, peak concurrent commitment can
-never exceed `total`. The `BudgetExhausted` throw is a **control signal**:
-`parallel`/`pipeline` do not coerce it to `null` (they swallow only agent
-failures) — it unwinds past the barrier, no further `agent()` admits, and the
-run ends `failed(budget)` with the journal intact for an edited resume. Claude
-`costUsd` = `total_cost_usd` (engine.ts:217). **Codex USD ceiling is BLOCKED,
-not free:** codex-app-server exposes token counts only (no `cost_usd`;
-`cache_creation` hardcoded 0), and the tokens×price table is codex-driver
-**Open Q4 — still open**. Until Q4 ships that table as a provider-fact the
-Codex path cannot enforce a USD reservation; since the whole Codex backend
-already waits on the driver seam, Ultra treats Q4 as a **blocking dependency of
-the Codex path**, not a solved fact. There is no token-only USD path — that
-would silently unbound the waste guard, exactly as the codex-driver doc
-forbids.
+- **Per-run cap = 3.** A run-local semaphore: no single run holds more than 3
+  in-flight `agent()` calls, so a burst of 100 parallel thunks can never
+  monopolize the process or starve sibling runs / looms.
+- **Per-process ceiling = 4.** Every Ultra `agent()` also acquires the engine's
+  shared gate (`MAX_CONCURRENT = 4`, engine.ts:89), the honest hard ceiling on
+  concurrent child turns across *all* runs and looms in the single Node process.
+  Low by design; raising it is an engine change for everyone (§1), not an Ultra
+  knob. **Lifetime backstop = 1000 agents/run**, so an unbounded loop can't spawn
+  forever.
+
+Beyond these caps the runaway story is human/agent control, not a budget: the
+**human Stop** and the **agent's `ultra_stop`** (§4) both abort a run.
+
+**Cost visibility (not a cap).** Each `agent()`'s settled cost streams live
+per-agent in the session's cost language — **USD on Claude** (`total_cost_usd`,
+engine.ts:217), **tokens on Codex** (no `cost_usd`) — and the run total rolls up
+into the owning chat message's usage (§4). Nothing gates on it; it is a readout.
 
 **Journal + deterministic-ordinal resume.** The script is deterministic
 (time/random banned), so the *order in which `agent()` calls are ISSUED* is
-reproducible — even though completion order under `parallel()` is not, and even
-though identical fan-out calls would collide on a content hash. Ultra therefore
-keys each call by a **monotonic ordinal assigned at invocation time** (in issue
-order, at the synchronous moment `agent()` is called — deterministic because
-`parallel` kicks off its thunks in array order), NOT by completion order and
-NOT by content alone. Each result is journaled under its ordinal together with
-a content hash of `(prompt, opts)` (stable-stringify, schema included) for
-divergence detection. **Resume** re-runs the script from the top; the Nth
-issued `agent()` call is served from journal entry N instantly (no spawn) when
-its content hash matches; the first ordinal whose hash diverges (the script was
-edited there) resumes live from that point on. Stop → edit → resume is the
-standard surgery. `phase`/`log` re-emit from the deterministic re-run (cheap).
-**Corruption tolerance:** `journal.jsonl` is parsed line-by-line on resume; a
-torn or unparseable trailing line (crash mid-append) is dropped and that
-ordinal simply re-runs — a single interrupted write never breaks recovery.
+reproducible — even though completion order under `parallel()` is not. Ultra
+keys each call by a **monotonic ordinal assigned at issue time** (deterministic
+because `parallel` kicks off its thunks in array order). **The ordinal is THE
+key everywhere** — journal records, transcripts (`agents/<ordinal>.ndjson`), the
+API (`/agents/[ordinal]`). A **content hash of `(prompt, opts)`** (stable-
+stringify, schema included) is stored *inside* each record purely as a
+**cache-validity check**. **Resume** re-runs the script from the top; call `i`
+is served from journal record `i` instantly (no spawn) **iff** its stored hash
+matches call `i` of the re-executed script; the **first mismatch invalidates `i`
+and every later ordinal** (the script was edited there) and resumes those live.
+Stop → edit → resume is the standard surgery; `phase`/`log` re-emit from the
+cheap re-run. **Corruption tolerance:** `journal.jsonl` is parsed line-by-line; a
+torn trailing line (crash mid-append) is dropped and that ordinal re-runs.
 
-**Abort.** One `AbortController` per run, shared into every `agent()` call
-(`opts.abort`, engine.ts:169). The user Stop button aborts it → every in-flight
-child is interrupted and the run ends `stopped`. The journal keeps completed
-prefix for resume.
-
-**Single-process reality (honest).** A Telar run is an in-process detached
-async task, like a chat turn and its delta ring (session-log.ts §"single-process
-assumption"): the run registry is `globalThis`-backed so it survives Next dev
-HMR and **survives page navigation** (the browser re-subscribes over SSE and
-tails `journal.jsonl` + the in-memory activity ring). **On server restart the
-running task dies** — there is no cross-process supervisor, by design (local-
-first) — and so does the blocking `ultra` tool call's chat turn. Recovery is
-**explicit, not hand-waved**: on startup Ultra scans `~/.telar/ultra/` for runs
-left in `running` with no live in-memory task and marks them `interrupted`. The
-UI surfaces an `interrupted` run with a **Resume** affordance; resume is
-**user- or agent-initiated** via `/api/ultra/[id]/resume`, which re-runs serving
-the journal prefix (no completed work repaid; in-flight-at-crash ordinals
-re-run). The orphaned tool call is reconciled the way the chat already handles
-an interrupted turn: its `tool_use` never receives a result, the session marks
-the turn interrupted, and the resumed run's outcome is delivered as a **fresh
-assistant message**, not through the dead call. Nothing is assumed to
-spontaneously re-invoke the owner.
+**Abort + single-process reality (honest).** One `AbortController` per run,
+shared into every `agent()` call (`opts.abort`, engine.ts:169); Stop (human
+button or `ultra_stop`) aborts it → in-flight children interrupt, the run ends
+**`stopped`**, journal prefix kept. A run is an in-process detached task: the
+registry is `globalThis`-backed so it survives Next dev HMR and page navigation
+(the browser re-subscribes over SSE, tailing `journal.jsonl` + the in-memory
+ring). **On server restart the task dies** — no cross-process supervisor, by
+design (local-first). A user Stop and a server death land in the **same state,
+`stopped`**, both resuming from the journal; on startup Ultra scans
+`~/.telar/ultra/` for `running` runs with no live task and marks them `stopped`
+(Resume offered). Because the tool is **non-blocking** (§4) there is no orphaned
+tool call to reconcile — the completion event simply fires on the resumed run's
+terminal instead.
 
 ## 4. Authoring & invocation
 
-The session's **main agent authors the script**, exactly like the reference
-harness. Ultra is exposed as an `ultra` MCP tool (an in-process
-`createSdkMcpServer` tool, the same pattern as `loom-mcp.ts` and engine
-`emit_result`) available to **both** provider main agents — the single harness.
+The session's **main agent authors the script**, like the reference harness.
+Ultra is exposed as MCP tools (in-process `createSdkMcpServer`, the pattern of
+`loom-mcp.ts` and engine `emit_result`) to **both** provider main agents.
 
-- **Tool input:** `{ script: string, args?: JSON }`. **Opt-in rule lives in the
-  tool description:** "Only call `ultra` when the user explicitly asked for a
-  large orchestrated run (said 'ultra', or the message is Ultra-annotated).
-  Never infer it." The composer Ultra chip annotates the user message; the
-  system prompt tells the agent an annotated message is the user's request.
-- **Return:** the tool blocks until the run reaches a terminal state and returns
-  the script's resolved value (or a structured `{stopped|failed|blocked, ...}`).
-  The main agent narrates the result to the user.
-- **Validation errors → back to the author agent.** Before execution Ultra
-  statically checks: `meta` is a pure literal, a default export exists, and the
-  source parses. It also **lints** for obvious non-capabilities (`require`,
-  `import`, `process`, `Date`, `Math.random`) — but purely to return a fast,
-  legible authoring error ("`process` isn't in scope; use the injected
-  surface"). This lint is an **ergonomics aid, not a security control**: it is
-  trivially bypassed by dynamic access (`this['pro'+'cess']`,
-  `globalThis['req'+'uire']`), so it is never presented as the admission
-  boundary — §3 is explicit that there is no security boundary at the script
-  layer. A failure returns a structured `{error, kind, detail, line}` to the
-  agent (not the user) so it revises and re-calls — the tool-layer retry the
-  reference relies on.
-- **Nested-run policy:** the injected surface does **not** include `ultra`, and
-  subagents get their normal restricted tool sets, so a script cannot recurse
-  into another Ultra run. One level of orchestration, always.
-- **Spend in session cost:** the run's `spentUsd` is attributed to the owning
-  chat message (linkage in §5) and folds into the session's existing per-turn
-  cost accounting — the user sees Ultra spend in the same usage bar as chat.
+- **Tools:** `ultra({ script, args? })`, `ultra_status({ runId })`,
+  `ultra_stop({ runId })`. **Opt-in rule lives in the `ultra` description:**
+  "Only call `ultra` when the user explicitly asked for a large orchestrated run
+  (said 'ultra', or the message is Ultra-annotated). Never infer it." The
+  composer Ultra chip annotates the user message; the system prompt tells the
+  agent an annotated message is the user's request.
+- **Non-blocking return (owner decision).** `ultra` **validates synchronously,
+  then returns `{runId}` immediately** — it does NOT block. The run detaches; the
+  agent and user keep talking. The agent polls `ultra_status(runId)` and stops
+  via `ultra_stop(runId)`. On terminal, the outcome reaches the agent as a
+  **completion event / fresh tool-result** (resolved value, or `{state, ...}`)
+  which it summarizes in chat. **Several runs may be live at once** — every
+  control is keyed by `runId`.
+- **Explicit-model enforcement (owner decision).** A best-effort **static lint**
+  on the `agent()` call sites catches a `model`-less call *before* `runId` is
+  returned — a fast, synchronous reject. The hard contract is at the runtime
+  `agent()` boundary: a call reached without `model` throws `MissingModel`, a
+  control signal that unwinds past any `parallel` barrier and ends the run
+  `failed`, structured error back to the agent so it re-authors.
+- **Other validation → back to the author agent.** Before returning `runId` Ultra
+  checks that `meta` is a pure literal, a default export exists, and the source
+  parses. It also **lints** out-of-scope identifiers (`require`, `import`,
+  `process`, `Date`, `Math.random`) — **a determinism/hygiene aid, not a security
+  control:** trivially bypassed by dynamic access (`this['pro'+'cess']`), so never
+  presented as an admission boundary (§3: no security boundary at the script
+  layer). Failures return `{error, kind, detail, line}` to the agent, not the
+  user.
+- **Child posture (restated for the author).** Subagents run non-interactive
+  under the fixed vendor-shipped posture of §3 — the normal Telar tool surface,
+  no elevation, any approval-needing action fails the `agent()` call. Scripts
+  narrow work; they never grant capability.
+- **Nested-run policy.** The injected surface does **not** include `ultra`, so a
+  script cannot recurse into another run. One level of orchestration, always.
+- **Spend visibility.** The run's live spend (§3) is attributed to the owning
+  chat message and folds into the session's per-turn usage display — a readout,
+  no cap.
+
+**Authoring reference (ships with the tool).** A **single source file in core**
+ships **with** the tool so agents know how to write good scripts — **for Claude**
+injected as a skill / system-prompt appendix, **for Codex** folded into the
+`ultra` tool description. Same content both ways: the injected surface API; the
+**explicit-model rule** (every `agent()` names `model·effort`); quality patterns
+(**adversarial-verify** — a critic `agent()` checks a builder; **loop-until-dry**
+— the no-budget way to bound discovery, iterate until the queue is empty, not to
+a ceiling); and a worked example. Hidden from chrome; the rail's Script tab (§6)
+may link it.
 
 ## 5. Storage & API
 
 **Where runs live.** `~/.telar/ultra/<runId>/` (override `TELAR_HOME`), a new
-top-level sibling of `looms/` and `sessions/` — deliberately NOT under
-`looms/`, so no loom-listing/reaper code can ever see an Ultra run. It mirrors
-the loom file conventions:
+top-level sibling of `looms/`/`sessions/` — deliberately NOT under `looms/`, so
+no loom-listing/reaper code can ever see a run. It mirrors loom conventions:
 
 - `manifest.json` — atomic rewrite (temp+rename, as looms.ts): `{runId,
-  sessionId, messageId, account, meta, args, state, spentUsd, startedAt}`.
-  `sessionId`+`messageId` are the **linkage to the owning chat message**.
-- `journal.jsonl` — append-only, the content-keyed `agent()` results (resume
-  source), tailed by the UI by line offset like `events.ndjson`.
-- `events.ndjson` — append-only progress stream (phase/log/agent-state/result),
-  the SSE tail source.
-- `agents/<contentKey>.ndjson` — per-agent transcript (the `EngineEvent`
-  stream from that `agent()` call: text/tool/tool-result), for the inspector.
+  sessionId, messageId, account, meta, args, state, spend, startedAt}`,
+  `state ∈ running | stopped | completed | failed`, `spend` the live total (USD
+  Claude / tokens Codex); `sessionId`+`messageId` **link the owning chat message**.
+- `journal.jsonl` — append-only, one record per **ordinal** (the resume source):
+  the `agent()` result + its `(prompt, opts)` content hash (cache check, §3); UI
+  tails it by line offset.
+- `events.ndjson` — append-only progress stream (phase/log/agent/result), the SSE
+  tail source.
+- `agents/<ordinal>.ndjson` — per-agent transcript (that ordinal's `EngineEvent`
+  stream: text/tool/tool-result), for the rail's agent view.
 
-**API routes** (mirror the loom/chat SSE idioms in the recon):
+**API routes** (mirror the loom/chat SSE idioms):
 
 | Route | Verb | Purpose |
 |---|---|---|
-| `/api/ultra` | POST | create+start a run (called by the tool handler); returns `runId`. |
-| `/api/ultra/[id]` | GET | manifest + terminal result. |
-| `/api/ultra/[id]/events` | GET (SSE) | progress tail (`run` events with phase/agent/log deltas by line offset; `end` closes), same shape as `/api/looms/[id]/events`. |
-| `/api/ultra/[id]/stop` | POST | abort the AbortController. |
-| `/api/ultra/[id]/resume` | POST | re-run the (possibly edited) script serving the journal prefix. |
-| `/api/ultra/[id]/agents/[key]` | GET | one agent transcript for the inspector. |
+| `/api/ultra` | POST | validate + create + start a run (called by the `ultra` tool handler); returns `{runId}` immediately. |
+| `/api/ultra/[id]` | GET | manifest + state + terminal result. |
+| `/api/ultra/[id]/events` | GET (SSE) | progress tail (phase/agent/log deltas by line offset; `end` closes), same shape as `/api/looms/[id]/events`. |
+| `/api/ultra/[id]/stop` | POST | abort the AbortController → `stopped`. |
+| `/api/ultra/[id]/resume` | POST | re-run the (possibly edited) script serving the journal prefix by ordinal. |
+| `/api/ultra/[id]/agents/[ordinal]` | GET | one agent transcript for the rail. |
 
-## 6. UI CONTRACT (FROZEN — the mockup agent builds EXACTLY this)
+## 6. UI CONTRACT v2 (FROZEN — the mockup builds EXACTLY this)
 
 House rules apply (design-pass.md): terse copy, `min-w-0`+`truncate` on
 variable-width flex children, density over height, no placebo, masked shimmer
-only. Gallery mock uses fixtures (client-bundle rule) — a `setInterval`-driven
-fake of the `/api/ultra/[id]/events` EventSource, no real SDK.
+only. The gallery mock is **fixtures-only** (client-bundle rule) — a
+`setInterval` fake of the `/api/ultra/[id]/events` EventSource, no real SDK; no
+`Date.now()`/`toLocale*` in any SSR-reachable path (use `DEMO_NOW` + `fmtAgo`).
 
-1. **Composer Ultra affordance.** A toggle chip in the chat composer ("Ultra").
-   Active → the sent message is annotated `ultra:true`; the chip shows an armed
-   state. It is the ONLY new composer control. No submenu, no options.
-2. **In-transcript RUN BLOCK** (durable, appended after the message like the
-   loom `InlineLoomRow`, fed by the SSE subscriber):
-   - Header: run name (`meta.name`), overall state pill
-     (`running`/`stopped`/`completed`/`failed`), live budget meter
-     (`spent / total` USD), elapsed agent count.
-   - **Phase groups** (`phase()` titles) as collapsible sections.
-   - **Per-agent rows** inside a phase: `label` · state
-     (`queued`/`running`/`done`/`failed`) · a one-line **live activity snippet**
-     (latest tool/text from that agent's transcript, truncated) · token/cost
-     count. Queued rows are dimmed; running rows carry the masked shimmer;
-     failed rows a quiet error affordance.
-   - **Narrator `log()` lines** interleaved in timeline order with agent-row
-     state changes (a lightweight lifecycle log, not a wall).
-   - **Collapse:** the whole block collapses to a one-line summary (name, state,
-     `n agents`, spend); phases collapse independently. Default expanded while
-     running, auto-collapsed on terminal.
-3. **Expanded run inspector.** Opens in the existing **SubagentRail** side rail
-   (persistent, collapsible — reuse, don't invent), keyed to the run. Adds over
-   the inline block: (a) **per-agent detail** — full transcript for the selected
-   agent row (tool calls, result JSON); (b) **script view** — read-only source +
-   `meta`; (c) **budget meter** — spend over time / per-phase. No controls here
-   except Stop.
-4. **Terminal states.** `completed` → a result block (the returned value,
-   pretty-printed/JSON, collapsible) under the run block. `stopped` → "Stopped
-   by you" with the partial journal still inspectable + a Resume affordance.
-   `failed` → the terminal error (script throw / validation) terse, Resume
-   offered. (No `blocked` — Ultra has no human-question rung.)
-5. **Dock/bubble for a live run.** While a run is live and the user scrolls away
-   or navigates, a small persistent **dock bubble** (run name + state + spend +
-   Stop) keeps it reachable and re-opens the inspector on tap — reusing the rail
-   collapse state, not a new overlay. One bubble per live run.
+1. **CONTEXT — a session, not a stage.** Everything renders inside real
+   session-window chrome: header, transcript, composer, and the **existing
+   sub-agent rail** (the owner-selected round-1.1 sidebar). The mockup **embeds a
+   session view**, not a standalone Ultra surface; the composer Ultra chip is a
+   normal composer control here.
+2. **ANCHOR — a side quest, not a window.** Each run appears in the transcript as
+   **ONE compact fixed-height tool-style row**: run name, state pill, agents
+   done/total, a quiet spend readout (`$` Claude / tokens Codex), a thin progress
+   sliver. **Fixed-height while running — it never grows or reflows**; conversation continues beneath it. Its **sole permitted height change** is a one-time collapse to a one-liner on reaching a terminal state (§6.7) — no per-tick resize. Clicking it **focuses that run in the rail**.
+3. **RAIL — Workflows section.** The existing sub-agent rail gains a
+   **Workflows** section listing every run of the session. A run **card** shows
+   name + state + spend; **phase groups** with per-agent rows (`label` · state ·
+   `model·effort` chip · masked-shimmer live snippet · tokens/cost); and a
+   **fixed-height scrolling narrator `log()` window** (no layout shift, ever).
+   Clicking an agent row **opens its transcript as a sub-agent tab does today**.
+   A **Script tab** shows the script read-only (model pins visible) + a link-out
+   to the authoring reference. **Stop** lives on the card.
+4. **MULTIPLE RUNS.** The story shows **≥2 runs live concurrently plus 1
+   completed** — anchors stacked in the transcript where launched, all listed
+   together in the rail.
+5. **MAIN-AGENT CONTROL.** The transcript story shows the main agent **launching
+   a run** (tool call → immediate `runId`), human and agent **continuing the
+   conversation** while it runs, the agent **stopping one run by tool call**
+   (visible in anchor + rail), and **reacting to another run's completion event**
+   by summarizing it in chat. Include one beat where a script omitting
+   `opts.model` is **validation-REJECTED** and the agent **re-authors** — teaching
+   the explicit-model rule on screen.
+6. **NO BUDGET UI anywhere.** No meters, no ceilings, no reserved headroom —
+   **spend readouts only**. The composer Ultra chip just **arms** ultra (no
+   ceiling editor, no submenu).
+7. **TERMINAL STATES.** `completed` / `stopped` / `failed` chips. `stopped` shows
+   a **Resume** affordance; `completed` triggers the anchor's **one permitted terminal transition** — a single collapse to a one-liner (§6.2: the only resize, once, at the end — not the live-run growth owner decision E killed), result reachable from the rail card; `failed` shows the terse terminal error, Resume offered.
+8. **REPLAY.** Play / Pause / Restart / speed drive the whole story
+   **deterministically** — virtual time only, so replay is exact.
+9. **DOCK.** A session with live runs shows **run state in its dock bubble** (name
+   · state · spend), adapting v1's dock behavior to the anchor+rail arrangement —
+   tapping re-focuses the run. One dock signal per session; live runs summarize.
 
 ## 7. Build plan
 
-Cuts sized like codex-driver — each independently green-gate-able
+Cuts sized like codex-driver, each independently green-gate-able
 (`bun test packages/core`, `tsc` core + web).
 
 - **U1 — sandbox + executor core (`packages/core/src/ultra/`).** `node:vm`
-  context, frozen injected surface, determinism bans, `meta` static read,
-  `agent()`/`parallel()` wired to engine, budget accounting, 1000-agent
-  backstop, AbortController. Unit tests: banned-identifier rejection, frozen
-  surface, budget throw, abort.
-- **U2 — journal + resume.** Content-key hashing, `journal.jsonl` append,
-  prefix-serve resume, `agents/<key>.ndjson` transcripts. Test: edit-tail
-  resume serves the unchanged prefix and re-runs from divergence.
-- **U3 — validate-and-retry + `pipeline`/`phase`/`log`.** The structured-output
-  retry loop; the remaining injected globals; the run event stream.
+  context, frozen surface, determinism bans, `meta` static read,
+  `agent()`/`parallel()` wired to engine, per-run cap + 1000-agent backstop,
+  AbortController. Tests: banned-identifier reject, frozen surface, `MissingModel`
+  throw, per-run cap, abort.
+- **U2 — journal + ordinal resume.** Ordinal keying, `(prompt,opts)` hash cache
+  check, `journal.jsonl` append, prefix-serve resume, `agents/<ordinal>.ndjson`.
+  Test: edit-tail resume serves the prefix by ordinal, re-runs from divergence.
+- **U3 — validate-and-retry + `pipeline`/`phase`/`log`.** The K=2 retry loop; the
+  remaining globals; the run event stream; cost-visibility roll-up.
 - **U4 — storage + API routes** (`~/.telar/ultra/`, the six routes, SSE tail).
-- **U5 — `ultra` MCP tool + composer annotation + session-cost linkage.** Tool
-  in the shared MCP surface, opt-in description, validation-error return path.
-- **U6 — UI** (separate mockup agent builds §6 against fixtures; then wire to
-  the real SSE). Ships behind the same green gate; gallery entry first.
+- **U5 — `ultra`/`ultra_status`/`ultra_stop` tools + composer annotation +
+  session-cost linkage + authoring reference.** Non-blocking return, opt-in
+  description, validation-error return path, child posture via SDK `allowedTools`
+  / Codex sandbox.
+- **U6 — UI** (mockup agent builds §6 against fixtures; then wire to real SSE).
+  Same green gate; gallery entry first.
 
 **Prove-run plan** (sandbox project, cheap real runs):
 
-1. **Claude path:** a small real run — e.g. "ultra: summarize these 8 files in
-   parallel and rank them" — asserting: script sandboxed (a `require` attempt
-   is rejected at validation); `parallel` fan-out through the shared gate;
-   every `agent()` typed result Zod-valid; `budget.spent() > 0` and a synthetic
-   low `budget.total` makes the next **reservation** throw `BudgetExhausted`,
-   the throw unwinds past the `parallel` barrier (asserted NOT swallowed to
-   `null`), and the run ends `failed(budget)` with fan-out clamped; Stop aborts
-   all children; edit-and-resume serves the journal prefix by ordinal.
-2. **Codex path (gated on the codex-driver seam AND Open Q4's price table):**
-   the SAME script on a Codex-account session, asserting identical behavior with
-   `costUsd` populated from tokens×price and the structured-output retry loop
-   exercising the Codex emit path — proving the single executor, both backends,
-   no Ultra branch. Until Q4 lands the Codex USD ceiling is unenforceable, so
-   this path stays blocked (Claude-first ship order, exec-summary pt 4).
+1. **Claude path:** a small real run ("ultra: summarize these 8 files in parallel
+   and rank them") asserting: the hygiene lint catches a `require`; `parallel`
+   honors the per-run cap under the shared gate; every schema'd result is
+   Zod-valid; a `model`-less call is **rejected** (static lint) and a runtime
+   `MissingModel` ends a run `failed`, not swallowed to `null`; **cost
+   visibility** accrues (`spend > 0`); Stop aborts all children → `stopped`;
+   edit-and-resume serves the journal prefix **by ordinal**; the tool returns
+   `{runId}` and the completion event delivers the result.
+2. **Codex path (gated ONLY on the codex-driver seam — no price table):** the
+   SAME script on a Codex session, asserting identical behavior with the retry
+   loop exercising the Codex emit path and cost visibility showing **tokens** —
+   one executor, both backends, no Ultra branch. Budgets gone → no Open-Q4
+   dependency; it lights up when the seam lands (Claude-first, exec pt 3).
 
 ## Deviations from the reference harness
 
 | Reference | Telar Ultra | Why |
 |---|---|---|
-| Concurrency `min(16, cores-2)` | the engine's shared in-process gate | raising concurrency is an engine change that lands for everyone (§1), not an Ultra-local knob. |
-| Time/random "banned by convention" | banned **mechanically** (stubs throw in the `vm` context) | Telar enforces resume determinism by construction, not documentation. |
-| Harness may run out-of-process/persistent | in-process, dies on server restart; journal-resume recovers | local-first single-process reality (session-log.ts); honest, no invented supervisor. |
-| Store unspecified | new `~/.telar/ultra/` top-level | keeps Ultra runs invisible to loom listing/reaper — Ultra is not a loom. |
-| Result emit provider-native | executor-side validate-and-retry over the driver's emit | one loop both backends; no silent degradation where a provider lacks native forcing. |
-| Subagent isolation is vendor-shipped; script isolation is invented | subagents keep vendor isolation (SDK tool allow-lists/permission modes; Codex native read-only sandbox + `approval:never`); the **script** runs in `node:vm`, a **non-security** capability/determinism device that a determined script can escape (prototype-chain walk to host `process`) | Node documents `vm` as not a security mechanism; no-new-deps rules out a real isolate (`isolated-vm`/subprocess), and the first-party author holds no authority to fence off — disclosed honestly, never sold as a boundary. `worker_threads` is the future hardening if untrusted scripts arrive. |
+| Token budgets / spend ceilings | **no budget at all** — live cost visibility + runaway brakes (per-run cap, 1000-agent backstop, human Stop, agent stop) only | owner decision: "we should not have a budget for these." Bounded discovery is loop-until-dry. |
+| `agent()` inherits the session model | `opts.model` **required per call** (validation rejects otherwise) | owner decision: the script must state the model explicitly; the UI shows `model·effort` per agent. |
+| Children may pause for interactive approval | children **non-interactive, fixed posture**; an approval-needing action **fails the `agent()` call** (fail-closed) | the child posture is the real security boundary; enforcement is vendor-shipped (SDK `canUseTool`/`allowedTools`; Codex `workspace-write` + `approval:never`), never an Ultra-invented knob. |
+| Concurrency `min(16, cores-2)` | per-run cap **3** under the shared engine gate **4** (engine.ts:89) | per-run fairness across parallel runs; raising the process ceiling is an engine change for everyone (§1), not an Ultra knob. |
+| Blocking harness call | **non-blocking** — returns `{runId}`; several runs per session; completion is an event | owner decision: "multiple ultras can run in parallel"; Ultra is a side-quest tool, not a turn-blocker. |
+| Time/random "banned by convention" | banned **mechanically** (stubs throw in the `vm` context) | resume determinism by construction, not documentation. |
+| Harness may run out-of-process/persistent | in-process, dies on restart → `stopped`; journal-resume recovers | local-first single-process reality; honest, no invented supervisor. |
+| Store unspecified | new `~/.telar/ultra/`, **ordinal-keyed** journal/transcripts | invisible to loom listing/reaper — Ultra is not a loom. |
+| Result emit provider-native | executor-side **validate-and-retry (K=2)** over the driver's emit | one loop both backends; no silent degradation where a provider lacks native forcing. |
+| Script isolation invented | the **script** runs in `node:vm`, a **non-security** capability/determinism device a determined script can escape (prototype-chain walk to host `process`) | Node documents `vm` as not a security mechanism; no-new-deps rules out a real isolate, and the first-party author holds no authority to fence. `worker_threads` is the future hardening if untrusted scripts arrive. |
 
 ## Open questions (owner verdict)
 
-1. **Store location:** `~/.telar/ultra/<id>/` (this plan) vs reusing
-   `looms/<id>/` (recon's suggestion). I chose a separate dir to keep loom code
-   from ever enumerating a run. Confirm?
-2. **Composer chip vs keyword-only:** ship the composer Ultra chip in U5, or
-   start keyword-only ("ultra" in the message) and add the chip later? The chip
-   is the clearer affordance but is the one new composer control.
-3. **`schema`-less `agent()`** returning raw final text: keep it (reference
-   parity, cheaper for read-only fan-out) or force a schema always (stronger
-   typed-result guarantee)? Reference allows both.
-4. **Resume ergonomics:** should Stop→edit→Resume be driven by the main agent
-   re-calling `ultra` with an edited script, or a first-class UI "edit & resume"
-   on the run block? The former is simpler; the latter matches the reference's
-   "standard surgery" framing.
-5. **Codex ship gating:** advertise Ultra as Claude-only until the codex-driver
-   seam lands (honest, no half-Codex), or hold Ultra's release until both
-   backends prove? I recommend Claude-first, Codex auto-lights-up.
+1. **`schema`-less `agent()`** returning raw final text: keep it (reference
+   parity, cheaper for read-only fan-out) or always force a `schema`? Both allowed
+   by the reference.
+2. **Completion delivery mechanism.** When a detached run reaches terminal, how
+   does its outcome reach the main agent — a synthetic tool-result that wakes a
+   fresh assistant turn, a system event surfaced on the user's next turn, or pure
+   `ultra_status` polling? The non-blocking contract is fixed; the wake mechanism
+   is the open fork.
+3. **Codex ship gating.** Advertise Ultra as Claude-only until the codex-driver
+   seam lands (honest, no half-Codex), or hold release until both backends prove?
+   I recommend Claude-first — budgets gone, Codex needs only the seam.
