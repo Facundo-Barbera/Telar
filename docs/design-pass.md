@@ -359,3 +359,21 @@ Format per entry:
   empty (repo has no issues/PRs yet), per-file last-touched-by omitted
   (core stores a count, not paths — needs schema change), demo replay/
   attention-dots dropped (were synthetic-state devices).
+
+## Remote goes full — issue/PR detail + writes (owner: "like fully?")
+
+- **view:** Git tab > Remote sub-view
+- **verdict:** shipped — d87ad57 (API) + 83c8539 (UI), 1 fix round.
+- **items:** 7 new endpoints (issue/PR detail w/ comments, reviews, checks,
+  capped file diffs; POST create-issue / comment / close-reopen; PR
+  comment). List -> in-place detail (breadcrumb back, ?tab=git preserved),
+  markdown via the chat renderer, optimistic comments, two-step
+  close/reopen, New-issue modal. PR merge deliberately NOT offered.
+  SAFETY EPISODE: the first run's agent was classifier-blocked for
+  planning an autonomous GitHub write (smoke-test issue) — correct block;
+  rerun shipped with ZERO agent writes: argv builders asserted unexecuted,
+  invalid-payload 400s curled, reads exercised via -R cli/cli. The OWNER
+  performs the first real write from the UI (the human-triggered path the
+  doctrine wants anyway). GAPS: connected:true detail unproven against
+  telar's own repo (it has no issues/PRs yet); huge text diffs labeled
+  binary (gh omits patch for both); >100-file PR pagination untested.
