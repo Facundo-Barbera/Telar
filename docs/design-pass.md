@@ -434,3 +434,44 @@ Format per entry:
   Packaged .app re-smoked green; bun.lock needed no re-record. Honest
   remaining machine requirement: Playwright BROWSER binaries — now a
   doctor check, not a caveat doc footnote.
+
+## Rounds 26-27: Ultra — design + mockup (owner-directed)
+
+- **verdict:** doc v2 at fa8855e (396 lines, awaiting build go-ahead);
+  mockup round 27 at 13939b9 (session-ultra, in place). Round 26
+  (0b5071a/9dc7d4e) superseded same-day by owner feedback.
+- **items:** Ultra = deterministic script executor in @telar/core; the
+  session's main agent authors runs via an `ultra` MCP tool; subagents
+  dispatch through driverFor(provider). Security posture per owner
+  ("make it as similar as anthropic and openai have made it"): node:vm
+  is NOT a boundary (critic killed the false claim — host-fn prototype
+  chains reach the host realm); trust = vendor-shipped isolation
+  (SDK canUseTool/allowedTools; codex sandbox + approval:never) +
+  executor caps + journaling; children non-interactive, fail-closed on
+  would-need-approval; no permission knobs in agent() opts. Owner cuts:
+  NO budgets (caps + human/agent Stop + visible spend instead);
+  parallel non-blocking runs (tool returns runId; status/stop by id);
+  explicit opts.model REQUIRED per call (validation-rejected);
+  authoring skill ships with the tool. §6 v2 = side-quest contract:
+  fixed-height transcript anchors (one terminal collapse), runs live in
+  the round-1.1 sub-agent rail (Workflows section), fixed-height
+  narrator log, model·effort chips, spend readouts only. Mockup flags:
+  provider toggle dropped (Claude-first); "failed" chip styled but
+  unexercised; 2-concurrent moment is a replay beat (Play to see).
+
+## Demo-gallery: hydration fix + retirement
+
+- **verdict:** shipped — 14e6cd0 (fix) + 8d8a83d (retirement).
+- **items:** systemic hydration failure diagnosed live (owner report):
+  fixture modules froze NOW at load, components used render-time
+  Date.now(); on a quiet server the clocks drift → text mismatch →
+  React regenerates the tree → demo bodies never paint. Fix: one
+  frozen epoch (lib/demo-gallery/now.ts DEMO_NOW + fmtAgo); real
+  clocks only post-mount. Probe: 38/38 pages clean twice, >65s apart.
+  RETIREMENT (owner: "start removing designs we already implemented"):
+  two-audit evidence pass (design-pass verdicts + production files) →
+  33 delete / 5 keep; 12.5k lines removed live on the owner-watched
+  dev server. Survivors: project-github-tab (verdict pending),
+  session-ultra (active), lists-command-palette, loom-agent-compare,
+  loom-mediation-ledger (all genuinely unshipped). Gate: tsc + all
+  survivors hydration-probed on :3200.
