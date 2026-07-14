@@ -1,0 +1,51 @@
+{
+  "name": "telar-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telar desktop shell (viable tier) — boots the standalone Next server and points a window at it.",
+  "main": "main.js",
+  "scripts": {
+    "build:web": "bash ./build-web.sh",
+    "smoke": "electron . --smoke",
+    "pack": "electron-builder --dir"
+  },
+  "trustedDependencies": [
+    "electron"
+  ],
+  "build": {
+    "appId": "ai.ozom.telar.desktop",
+    "productName": "Telar",
+    "asar": true,
+    "files": [
+      "main.js",
+      "server-preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/.next-desktop/standalone",
+        "to": "standalone"
+      },
+      {
+        "from": "../web/.next-desktop/standalone/node_modules/.bun",
+        "to": "standalone/node_modules/.bun"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": "arm64"
+        }
+      ],
+      "identity": null
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
+  }
+}
