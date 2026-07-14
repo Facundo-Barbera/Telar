@@ -19,7 +19,7 @@ import { StateBadge } from "@/components/common/state-badge";
 import { CharterReview, ScopingCharter } from "@/components/looms/charter-review";
 import { DiscussEscalation } from "@/components/looms/discuss-escalation";
 import { LoomGodView } from "@/components/looms/god-view";
-import { AgentViewDrawer } from "@/components/looms/agent-view";
+import { ThreadDrawer } from "@/components/looms/thread-drawer";
 import { SpecDrawer } from "@/components/looms/spec-bundle";
 import { ScopingFeed, WorkstreamsPreview } from "@/components/looms/scoping-view";
 import { deriveGodView, deriveThreadOperator } from "@/components/looms/godview";
@@ -430,7 +430,7 @@ export default function LoomDetailPage() {
             />
             {/* Non-invasive overlay drawers — the agent view slides in over a
                 scrim; the spec drawer is separate. */}
-            <AgentViewDrawer
+            <ThreadDrawer
               operator={
                 liveThreadOp ??
                 view.operators.find((o) => o.id === openOperatorId) ??

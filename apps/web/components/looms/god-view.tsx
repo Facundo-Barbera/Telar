@@ -21,7 +21,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import type { CriticFinding, CriticVerdict, GateResult, Loom, SubGoal } from "@telar/core";
+import type { CriticFinding, CriticVerdict, GateResult, Loom } from "@telar/core";
 import type {
   AssertionOutcome,
   DecisionKind,
@@ -64,6 +64,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChatTab } from "@/components/looms/chat-tab";
 import { ConsolidationBranch } from "@/components/looms/consolidation-branch";
+import { WeaveOrgChart } from "@/components/looms/weave-orgchart";
 import { cn } from "@/lib/utils";
 import { fmtAgo, fmtCost, shortId } from "@/lib/format";
 
@@ -390,8 +391,7 @@ function PlanNodeRow({ node }: { node: PlanNode }) {
   );
 }
 
-// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review
-// in the dev view gallery (fed a real deriveGodView-derived Plan). Zero change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses this.
 export function PlanGraph({ plan }: { plan: Plan }) {
   if (plan.nodes.length === 0) return null;
   return (
@@ -421,47 +421,6 @@ export function PlanGraph({ plan }: { plan: Plan }) {
 // ---------------------------------------------------------------------------
 
 type DepInfo = { hasDeps: boolean; waitsOn: string[] };
-
-// Layout-only dependency derivation (godview.ts's Operator omits the graph):
-// map each operator (= a child thread) to its subgoal's dependsOn, and list any
-// dep whose thread hasn't reached "done" yet. Single looms have no threads, so
-// no deps. Guarded against a missing charter / empty threads.
-function deriveDeps(loom: Loom, threads: Loom[]): Map<string, DepInfo> {
-  const out = new Map<string, DepInfo>();
-  const decomposition: SubGoal[] = loom.charter?.decomposition ?? [];
-  if (decomposition.length === 0 || threads.length === 0) return out;
-
-  const bySubGoal = new Map<string, Loom>();
-  for (const t of threads) if (t.subGoalId) bySubGoal.set(t.subGoalId, t);
-
-  for (const t of threads) {
-    const sg = decomposition.find((d) => d.id === t.subGoalId);
-    const dependsOn = sg?.dependsOn ?? [];
-    const waitsOn = dependsOn
-      .filter((dep) => bySubGoal.get(dep)?.state !== "done")
-      .map((dep) => {
-        const depThread = bySubGoal.get(dep);
-        const depSg = decomposition.find((d) => d.id === dep);
-        return depThread ? shortId(depThread.id) : (depSg?.title ?? dep);
-      });
-    out.set(t.id, { hasDeps: dependsOn.length > 0, waitsOn });
-  }
-  return out;
-}
-
-function summarize(operators: Operator[]): string {
-  const total = operators.length;
-  const done = operators.filter((o) => o.status.kind === "done").length;
-  const weaving = operators.filter((o) => o.active).length;
-  const waiting = operators.filter((o) => o.status.kind === "wait").length;
-  const needsYou = operators.filter((o) => o.status.kind === "block").length;
-  const bits = [`${total} thread${total === 1 ? "" : "s"}`];
-  if (done) bits.push(`${done} done`);
-  if (weaving) bits.push(`${weaving} weaving`);
-  if (waiting) bits.push(`${waiting} waiting`);
-  if (needsYou) bits.push(`${needsYou} needs you`);
-  return bits.join(" · ");
-}
 
 // One derived step as a calm chip — one quiet signal, not a highlighter.
 // `fanCount` only decorates a live Build with its parallel-builder count.
@@ -541,8 +500,7 @@ function OperatorNote({ op, dep }: { op: Operator; dep: DepInfo | undefined }) {
   return null;
 }
 
-// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review
-// in the dev view gallery (fed a real deriveThreadOperator-derived Operator). Zero change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses this.
 export function OperatorCard({
   op,
   dep,
@@ -617,45 +575,6 @@ export function OperatorCard({
         <OperatorNote op={op} dep={dep} />
       </CardContent>
     </Card>
-  );
-}
-
-function Weave({
-  operators,
-  loom,
-  threads,
-  onOpenOperator,
-}: {
-  operators: Operator[];
-  loom: Loom;
-  threads: Loom[];
-  onOpenOperator: (id: string) => void;
-}) {
-  const deps = useMemo(() => deriveDeps(loom, threads), [loom, threads]);
-
-  return (
-    <section className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">The weave</span>
-          <span className="text-xs text-muted-foreground/60">{summarize(operators)}</span>
-        </div>
-        <Separator />
-        <p className="text-xs text-muted-foreground/70">
-          Operators the orchestrator is weaving — select one to open its agent view.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-2.5">
-        {operators.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No operators weaving yet.</p>
-        ) : (
-          operators.map((op) => (
-            <OperatorCard key={op.id} op={op} dep={deps.get(op.id)} onOpen={onOpenOperator} />
-          ))
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -1135,7 +1054,7 @@ const FINDING_SEVERITY: Record<CriticFinding["severity"], string> = {
 
 // A single critic finding — same fields as a DesignFinding minus `category`, so
 // rendered with its own compact row (reusing EvidenceImage for screenshots).
-// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses this.
 export function CriticFindingRow({ loomId, finding }: { loomId: string; finding: CriticFinding }) {
   const shots = screenshots(finding.evidence);
   return (
@@ -1165,7 +1084,7 @@ export function CriticFindingRow({ loomId, finding }: { loomId: string; finding:
 
 // One critic lens's verdict: pass/fail + must-clear/advisory + summary, its
 // findings and evidence expandable. A blocker lens that DIDN'T clear reads red.
-// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses this.
 export function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: CriticVerdict }) {
   const [open, setOpen] = useState(false);
   const shots = screenshots(critic.evidence);
@@ -1240,7 +1159,7 @@ export function CriticVerdictRow({ loomId, critic }: { loomId: string; critic: C
   );
 }
 
-// GALLERY-SEAM (delete with /gallery): `export` added for isolated design review in the dev view gallery. Zero change; revert = drop `export`.
+// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses this.
 export function GateRunRow({ gate }: { gate: GateResult }) {
   const [open, setOpen] = useState(false);
   const hasOutput = gate.output.trim().length > 0;
@@ -1864,8 +1783,8 @@ export function LoomGodView({
           </TabsContent>
 
           <TabsContent value="threads" className="pt-2">
-            <Weave
-              operators={view.operators}
+            <WeaveOrgChart
+              view={view}
               loom={loom}
               threads={threads}
               onOpenOperator={onOpenOperator}
