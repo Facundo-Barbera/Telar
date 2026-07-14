@@ -395,3 +395,42 @@ Format per entry:
   subagent-interleave can degrade one block to pop-at-finalize (content
   never lost); unread baseline misses if a turn finishes before first
   host load.
+
+## Multi-machine batch: quick-wins + machine doctor + app-driven logins
+
+- **verdict:** shipped — fd72d44/30bb8d1/0b0cf75 (quick-wins),
+  53d4435 (doctor), 988c8b7 (login driver). Core suite 1157 → 1178.
+- **items:** QUICK-WINS: core accountHealth (existence-only fs classifier,
+  never reads secrets; Claude keychain honestly "unknown"), home-relative
+  configDir storage + migrate-on-load, relocateProject (core only, no UI
+  yet), loginHint; web health badges + classified usage failures +
+  fail-fast chat preflight (400 over silent base-login fallback); codex
+  honesty (dead cost pill hidden, prefix titles, interrupted-stream
+  persistence, honest slash-command copy). DOCTOR: /api/doctor +
+  Settings section + first-run dashboard card (empty registry only) —
+  probes bun/git/gh/claude/codex binaries, gh auth (name only, token
+  never surfaced), every account via accountHealth w/ login-command
+  remedy, Playwright chromium cache ("bunx playwright install chromium"
+  remedy), TELAR_HOME real-vs-dev. LOGIN DRIVER: both provider CLIs
+  proven pipe-drivable (codex device-auth self-completes; claude waits
+  on stdin for the OAuth code) — core spawnProviderLogin + SSE route +
+  LoginPanel (live log, Open-URL, device code, paste-code, health
+  re-check); Terminal.app osascript escape hatch kept but no provider
+  needs it. 14 hermetic fake-CLI tests; real logins never driven by
+  agents. Known edges: claude health stays "unknown" post-login
+  (keychain) — success keys off exit-0; SSE login map is per-process.
+
+## Desktop caveats: bundled playwright-mcp + separate dev data
+
+- **verdict:** shipped — f422a0c (bundle) + ab5c00f (dev dir).
+- **items:** build-web.sh materializes a symlink-dereferenced
+  playwright-mcp closure (17M) into the standalone dir; electron-builder
+  extraResources must point AT the node_modules dir (its traversal skips
+  dirs named node_modules — same trick as the .bun store); main.js sets
+  TELAR_PLAYWRIGHT_MCP_BIN only when packaged and unset; --smoke now
+  asserts PLAYWRIGHT_MCP_BUNDLED_OK fail-closed. Dev servers default
+  TELAR_HOME to ~/.telar-dev (explicit override wins; build/start/pack
+  stay on ~/.telar); gate seeded ~/.telar-dev once from ~/.telar.
+  Packaged .app re-smoked green; bun.lock needed no re-record. Honest
+  remaining machine requirement: Playwright BROWSER binaries — now a
+  doctor check, not a caveat doc footnote.
