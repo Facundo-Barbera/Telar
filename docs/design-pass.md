@@ -209,7 +209,14 @@ Format per entry:
   looms of the project) in the new UI-v2 language: density, search-first,
   grouping, hover pills, scroll reduction; harmonize with the applied lists/
   sidebar. Two labeled variants for owner verdict, then a follow-up apply.
-- **round:** demo-gallery round 17 (in flight, parallel to ui-v2-apply)
+- **round:** demo-gallery round 17 — landed 1565ea3 (project-hub-a
+  work-first / project-hub-b command view; awaiting owner verdict, then a
+  follow-up apply for the winner).
+  OWNER VERDICT: neither fully — HYBRID (round 19, project-hub-c): B's TABS
+  structure + A's visually-appealing dense grouped list; sessions and looms
+  NOT mixed (separate tabs); NO right-side preview pane (context too hard to
+  gather); SETTINGS becomes a tab on the project page (fold the concern-4
+  project-settings side-nav design in). A/B marked retired.
 
 - **view:** MINI-CHAT DOCK (owner idea): Facebook-style docked session chats
 - **verdict:** new mockup (round 18)
@@ -218,4 +225,20 @@ Format per entry:
   docked panel using the 1.7 COMPACT ChatSurface (minimal chrome, queue-able
   input); multiple sessions stack; pop-out to the full session; app-shell
   portal so it survives navigation. Mockup first, wiring after verdict.
-- **round:** demo-gallery round 18 (in flight)
+- **round:** demo-gallery round 18 — landed e783668 (chat-mini-dock: heads
+  w/ unread + working ring + parked tint, ~340x480 compact panels capped at
+  2, queue-capable composer, fake-nav proves persistence across routes).
+  OWNER: "I like the mini dock" + heads should TOGGLE (click open head =
+  minimize) — round 20 in flight. Wiring to the app shell pends the apply
+  round settling.
+
+## Post-apply polish queue (found live on the applied UI, round 19)
+
+- **view:** session bar CTX overlay (applied, production)
+- **verdict:** fix
+- **items:** the /context hover overlay goes OUT OF BOUNDS at the right
+  viewport edge (spills past the window / under the sub-agent rail). Apply
+  the round-4 pattern: fixed-position measured from the anchor,
+  viewport-clamped with margin, flip side on overflow — for BOTH the CTX and
+  cost overlays (any pill overlay in the bar).
+- **round:** post-apply polish (queued behind ui-v2-apply)

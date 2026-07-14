@@ -54,6 +54,11 @@ const DARK: Vars = {
   "--border": "oklch(1 0 0 / 10%)",
   "--input": "oklch(1 0 0 / 15%)",
   "--ring": "oklch(0.556 0 0)",
+  // sidebar tokens — so the embedded Settings side-nav (bg-sidebar) themes with
+  // the stage instead of inheriting the shell's dark value in a LIGHT island.
+  "--sidebar": "oklch(0.205 0 0)",
+  "--sidebar-foreground": "oklch(0.985 0 0)",
+  "--sidebar-border": "oklch(1 0 0 / 10%)",
 };
 
 const LIGHT: Vars = {
@@ -75,6 +80,9 @@ const LIGHT: Vars = {
   "--border": "oklch(0.922 0 0)",
   "--input": "oklch(0.922 0 0)",
   "--ring": "oklch(0.708 0 0)",
+  "--sidebar": "oklch(0.985 0 0)",
+  "--sidebar-foreground": "oklch(0.145 0 0)",
+  "--sidebar-border": "oklch(0.922 0 0)",
 };
 
 export type Theme = "dark" | "light";
