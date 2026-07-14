@@ -251,3 +251,62 @@ Format per entry:
   Categories computed from Telar's OWN session assembly (system prompt, MCP
   tool defs, message usage); ~ estimates ok; omit sourceless categories.
 - **round:** apply round 2 (queued behind ui-v2-apply)
+  APPLY ROUND 2 LANDED (after a false restart — /compact killed my task
+  tracking, not the run): 10ff67c (both bar overlays fixed-position from
+  anchor + viewport-clamped + flip; CTX content matches /context anatomy
+  with HONEST categories only: Messages ~chars/4, System+tools = used −
+  messages, Free space, lifetime splits as dash rows; per-category
+  attribution NOT SDK-reported so omitted), 3ee5650 (mini-dock wired
+  app-wide: heads + panels + real send, localStorage persistence, dock
+  affordance in session header; live tail is per-turn, not token-by-token —
+  no shared client stream store), 48b82ff (project-hub-c to production:
+  Sessions | Looms | Settings tabs, ?tab= URL state, old settings route
+  307s, deep links intact).
+
+## Round 21+22 — project Git tab (owner request)
+
+- **view:** project hub, new Git tab
+- **verdict:** owner asked for git state as a first-class project surface:
+  worktree tracking + fast cleanup (AI work generates many), issues/PRs
+  loaded into Telar later, maybe a file tree.
+- **items:** round 21 delivered THREE entries (cf8bb6e); owner: "I was
+  thinking that the git view was going to be unified" — round 22 merged
+  them into ONE dense view (6abd662, project-git-unified): header strip;
+  worktrees centerpiece (loom-owner chips, done+merged ⇒ RECLAIMABLE, bulk
+  clean-up confirm, typed force for dirty); branches+activity band;
+  Issues|PRs read-only w/ first-class gh-not-connected state; files as
+  collapsed git-aware tree. DATA: worktrees/branches/commits real (git
+  plumbing + registry naming); sizes ~du; issues/PRs gh-CLI auth-gated
+  (future); per-file last-touched-by is a GAP (store keeps filesTouched as
+  a COUNT — needs paths in the schema). Owner: entry summary text was
+  burying the demo — 93cc7ff clamps all gallery summaries to 2 lines
+  (show-more) and trims the blurb. AWAITING OWNER VERDICT on the unified
+  view.
+
+## Post-apply polish round 2 (owner screenshots, live loom page)
+
+- **view:** loom page (applied) — Threads tab + Chat tab
+- **verdict:** fixed (28b5efc)
+- **items:** (a) thread-card content escaped the center grid track and
+  painted under the opaque Activity aside + right rail (grid tracks were
+  correct; the cards lacked min-w-0/truncate) — content now truncates
+  in-cell; (b) Chat tab embedded the full standalone session chrome (back
+  button, identity header, account/usage bar) — new `embedded` prop on
+  SessionView suppresses standalone chrome (also hides dock-minimize);
+  loom chat is now transcript + composer only. NOTE: DiscussEscalation on
+  the blocked page may want the same `embedded` flag — unreviewed.
+
+## Settings completion (owner: "Settings page is missing a few things")
+
+- **view:** global /settings
+- **verdict:** shipped (63c4bd2) — the sections withheld by the no-placebo
+  rule now have real backing: lib/ui-prefs.ts (useSyncExternalStore +
+  localStorage, dependency-free) + lib/notify.ts.
+- **items:** Appearance (System/Light/Dark; dark was hard-coded on <html> —
+  hand-rolled next-themes pattern w/ pre-paint init script); Agent defaults
+  (permission mode + model seed NEW sessions only; per-project memory wins;
+  UI default, never an engine flag); Notifications (loom needs-you / ready,
+  transition-only, hidden-tab-only, permission flow w/ honest denied
+  state). GAPS: notifications need a mounted session view (global loom
+  subscription = follow-up); charter/dead-end/gate events have no client
+  source yet — toggles omitted, not faked.
