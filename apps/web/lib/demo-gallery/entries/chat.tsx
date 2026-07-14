@@ -12,6 +12,7 @@ import { WorkingIndicatorDemo } from "../chat/working-indicator";
 import { SessionCostDemo } from "../chat/session-cost";
 import { SessionContextDemo } from "../chat/session-context";
 import { ChatSurfaceVariantsDemo } from "../chat/chat-surface";
+import { ChatMiniDockDemo } from "../chat/mini-dock";
 import {
   LoomNotifyPillDemo,
   LoomNotifyInlineDemo,
@@ -94,6 +95,14 @@ export const chatEntries: DemoEntry[] = [
     summary:
       "The surface is copy-pasted uniformly today, so a back-to-project button shows inside a loom where it makes no sense. Here one ChatSurface takes a context — standalone / loom-embedded / compact-drawer — and only the chrome adapts; the same fixture conversation renders in all three, shown side by side.",
     Component: ChatSurfaceVariantsDemo,
+  },
+  {
+    id: "chat-mini-dock",
+    title: "Mini-chat dock — sessions that follow you",
+    concern: "extra",
+    summary:
+      "A Messenger-style dock, pinned bottom-right, that follows you across every route: one chat HEAD per live session (session initial, subtle border) stacked right-to-left, carrying an unread count, a rotating shimmer ring while its agent works, and an amber tint when its loom parks; hover floats a collision-aware fixed tooltip, an X-on-hover dismisses. Click a head to open a small docked panel (~340×480) that IS the approved 1.7 ChatSurface in its compact grammar — minimal-chrome header (title, working dot, pop-out to the full session, minimize, close), the same message body, and a queue-capable composer (1.5: typing while the agent works queues a chip). Panels sit side by side; a third collapses the oldest to its head, and because the dock is out of flow, opening one never reflows the page. A scripted, replayable timeline drives it: a background session gets a reply (head beats + unread) → user expands (badge clears) → the other session starts working → a queued message dispatches. Both themes; a fake nav swaps the backdrop to prove persistence across pages. Wiring is real, not sci-fi: mount the dock once in the app shell above all routes and drive it from the session state that already live-updates.",
+    Component: ChatMiniDockDemo,
   },
   {
     id: "loom-notify-pill",
