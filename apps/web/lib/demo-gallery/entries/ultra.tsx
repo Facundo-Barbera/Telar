@@ -9,9 +9,9 @@ export const ultraEntries: DemoEntry[] = [
     id: "session-ultra",
     title: "Session — Ultra runs",
     concern: "extra",
-    variant: "In-transcript run block + SubagentRail inspector + dock",
+    variant: "Side-quest anchors + Workflows rail + dock",
     summary:
-      "The frozen Ultra UI contract (ultra-harness §6): the main agent authors “Quick-wins batch — recon → 3 lanes → gate → commit” (8 subagents). A durable in-transcript RUN BLOCK holds the header (name, state pill, reservation-based budget meter, agent count), collapsible phase groups, per-agent rows (label · state · shimmering activity snippet · token/cost), and an interleaved narrator log(). Press Play: phases activate in order, rows tick queued→running→done, one lane returns null and is re-spawned, tokens count up, then the result lands. Terminal chips reach completed / stopped (journal + Resume) / failed-budget. The SubagentRail inspector holds the per-agent transcript, read-only script+meta, and a per-phase budget meter; Stop + a dock bubble act on the run. Provider switch shows both backends — on Codex the USD ceiling is honestly blocked (Q4). Masked shimmer, both themes, fixtures.",
+      "Ultra UI contract v2 (ultra-harness §6, frozen): Ultra runs as side quests inside a chat session. The main agent launches three — “Quick-wins batch” (completed), a doc sweep (running), a flake triage it later STOPS by tool call. Each is ONE compact fixed-height ANCHOR in the transcript (name · state · agents done/total · spend · progress); completing collapses it to a one-liner. Clicking focuses the run in the existing sub-agent RAIL, now with a Workflows section: run cards, phase groups, per-agent rows (label · state · model·effort chip · masked-shimmer snippet · tokens/cost), a fixed-height narrator log(), a read-only Script tab. The story shows a model-validation rejection → re-author, launching, and reacting to a completion. No budget UI — spend readouts only. Stopped → Resume; a dock bubble summarizes live runs. Play/Pause/Restart/speed on virtual time. Both themes, fixtures.",
     Component: SessionUltraDemo,
   },
 ];
