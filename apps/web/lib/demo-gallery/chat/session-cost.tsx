@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { fmtCost, fmtTokens } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Caption, DemoShell, Section, ThemePair } from "./_shared";
+import { ContextPill } from "./session-context";
 
 type AgentCost = {
   id: string;
@@ -150,9 +151,7 @@ function HeartbeatBar() {
         a1b2c3d4
       </Badge>
       <div className="ml-auto flex items-center gap-2">
-        <Badge variant="outline" className="font-mono text-xs">
-          CTX 58.2k
-        </Badge>
+        <ContextPill />
         <CostPanel agents={AGENTS} />
       </div>
     </div>
@@ -164,7 +163,7 @@ export function SessionCostDemo() {
     <DemoShell>
       <Section
         title="Aggregate cost in the bar"
-        note="The pill totals main + every sub-agent and labels the makeup (main + 3). Hover the pill to float the per-agent breakdown as an anchored overlay — the bar never reflows; click to pin it open."
+        note="Both hovers now live in one bar: hover CTX for the /context-style window breakdown, hover the cost pill for the per-agent breakdown. Each floats an anchored overlay — the bar never reflows; click either to pin it open."
       >
         <HeartbeatBar />
       </Section>

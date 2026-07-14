@@ -8,6 +8,7 @@ import {
 import { ThinkingStreamDemo } from "../chat/thinking-stream";
 import { WorkingIndicatorDemo } from "../chat/working-indicator";
 import { SessionCostDemo } from "../chat/session-cost";
+import { SessionContextDemo } from "../chat/session-context";
 import { ChatSurfaceVariantsDemo } from "../chat/chat-surface";
 
 export const chatEntries: DemoEntry[] = [
@@ -52,6 +53,14 @@ export const chatEntries: DemoEntry[] = [
     summary:
       "The heartbeat pill today counts only the main agent's spend. Here it shows the aggregate of main + every sub-agent; hovering the pill floats a per-agent breakdown (cost, share bar, token split) as an anchored overlay that never reflows the bar — click to pin it open — with a callout of exactly how much sub-agent spend the old number was hiding.",
     Component: SessionCostDemo,
+  },
+  {
+    id: "chat-context-breakdown",
+    title: "CTX pill → /context breakdown",
+    concern: "extra",
+    summary:
+      "The production CTX pill shows a bare token count with no sense of what fills the window. Modeled on Claude Code's /context, hovering it floats an anchored, zero-reflow overlay: a segmented usage bar + legend splitting the window into system prompt, system tools, MCP tools, memory/CLAUDE.md, messages, and thinking — each with tokens and window-share — plus free space, total used vs 200k, and an autocompact marker showing how much room is left. Click pins it open; same grammar as the 1.6 cost hover, so both breakdowns live in one bar.",
+    Component: SessionContextDemo,
   },
   {
     id: "chat-surface-variants",
