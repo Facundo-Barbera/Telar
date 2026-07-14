@@ -10,6 +10,7 @@ import { listsEntries } from "./entries/lists";
 import { sidebarEntries } from "./entries/sidebar";
 import { settingsEntries } from "./entries/settings";
 import { loomEntries } from "./entries/loom";
+import { projectEntries } from "./entries/project";
 
 // A single redesign candidate rendered full-screen on the stage. `concern` keys
 // the entry into a nav group (see GROUP_DEFS). `variant` labels competing takes
@@ -32,6 +33,7 @@ export const allEntries: DemoEntry[] = [
   ...sidebarEntries,
   ...settingsEntries,
   ...loomEntries,
+  ...projectEntries,
 ];
 
 // Nav groups, in walkthrough order. Each group claims a set of concerns; an

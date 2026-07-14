@@ -199,3 +199,23 @@ Format per entry:
   gate mini-bars, activity lines) from all three variants: state word +
   title/short-id + elapsed + god-view link only; tone/rollup stay; overlay
   reserves the slot for richer data post loom-UI design.
+  Round 16 landed b7cbaa8 (models stripped, MiniBar/ThreadDots removed,
+  reserved placeholder line in the overlay).
+
+- **view:** PROJECT VIEW (per-project hub) — owner: "we forgot one important
+  view"
+- **verdict:** new design round (round 17) — never covered by any lane
+- **items:** redesign the project page (sessions list + detail, New session,
+  looms of the project) in the new UI-v2 language: density, search-first,
+  grouping, hover pills, scroll reduction; harmonize with the applied lists/
+  sidebar. Two labeled variants for owner verdict, then a follow-up apply.
+- **round:** demo-gallery round 17 (in flight, parallel to ui-v2-apply)
+
+- **view:** MINI-CHAT DOCK (owner idea): Facebook-style docked session chats
+- **verdict:** new mockup (round 18)
+- **items:** floating mini-chat that follows you app-wide: minimized heads
+  (bottom-right, session identity + unread/working badge) expand to a small
+  docked panel using the 1.7 COMPACT ChatSurface (minimal chrome, queue-able
+  input); multiple sessions stack; pop-out to the full session; app-shell
+  portal so it survives navigation. Mockup first, wiring after verdict.
+- **round:** demo-gallery round 18 (in flight)
