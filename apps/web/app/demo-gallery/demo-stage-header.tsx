@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, ArrowRightIcon, LayoutGridIcon } from "lucide-react";
@@ -32,6 +32,10 @@ export function DemoStageHeader({
   next: StageNeighbor;
 }) {
   const router = useRouter();
+  // Long specs were burying the demo below the fold — clamp to two lines and
+  // let the reader opt into the rest.
+  const [expanded, setExpanded] = useState(false);
+  const clampable = summary.length > 220;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -79,7 +83,22 @@ export function DemoStageHeader({
               </span>
             )}
           </div>
-          <p className="mt-0.5 max-w-3xl text-xs text-muted-foreground">{summary}</p>
+          <p
+            className={`mt-0.5 max-w-3xl text-xs text-muted-foreground ${
+              clampable && !expanded ? "line-clamp-2" : ""
+            }`}
+          >
+            {summary}
+          </p>
+          {clampable && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-0.5 text-[10px] font-medium text-muted-foreground/70 transition-colors hover:text-foreground"
+            >
+              {expanded ? "show less" : "show more"}
+            </button>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1 text-xs">
