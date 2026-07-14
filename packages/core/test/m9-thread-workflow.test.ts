@@ -1054,6 +1054,85 @@ describe("M9.4 (c) a FAILING per-step check fails the thread CLOSED (bounded rep
   });
 });
 
+// ── (c-B1) a failing step-check on a CHILD thread ESCALATES (blocked), not demotes ─
+// B1 (doctrine §70-72): a per-step CHECK is a per-thread VERIFICATION gate. On a
+// CHILD thread (has a parent to fold up to) a check FAIL that survives the seam's
+// step-local mediation is NOT a terminal thread demote — the thread ESCALATES: it
+// parks `blocked` carrying an answerable strategy question, the weave lifts it to
+// the orchestrator (FINDING-8), and B2 re-routes the block to orchestrator
+// mediation. It never promotes green (dependents HELD, no doneSteps.add), so no
+// coverage is relaxed and nothing is recorded — the escalation itself is the
+// handoff. A ROOT (its authoritative verify is the TOP GATE, not a step check)
+// keeps the fail-closed demote (the (c) tests). Scoped to a child by parentLoomId —
+// a contract is NOT required (an escalation parks blocked, never re-proven green).
+describe("M9.4 (c-B1) a failing step-check on a CHILD thread ESCALATES (blocked), never a terminal demote", () => {
+  // The check whose id the lane-escalation carries; runStepCheck is INJECTED to
+  // return "fail", so only the presence of the check matters (built-in never runs).
+  const stepCheck = { version: 1, assertions: [cmdBlocker("chk")] } as unknown as Step["check"];
+
+  test("a research step whose check FAILS on a CHILD parks the thread BLOCKED (escalation), never failed, never a green proceed", async () => {
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({
+      project: name,
+      kind: "custom",
+      title: "t",
+      prompt: "x",
+      account: manifest.account,
+      parentLoomId: "ROOT-B1",
+      subGoalId: "s1",
+    });
+    loom.workflow = { version: 1, steps: [step("F", [], { kind: "research", agents: [], check: stepCheck })] };
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const out = await runThreadWorkflow(loom, manifest, {
+      runStepCheck: (async () => "fail") as any,
+      onEvent: (e) => events.push(e),
+      onState: () => {},
+    });
+    // ESCALATE, not a terminal per-thread demote: parked blocked with an answerable ask.
+    expect(out.state).toBe("blocked");
+    expect(out.blockedQuestion).toBeTruthy();
+    expect(out.blockedReason).toMatch(/step check "F" failed/);
+    // The escalation is surfaced for the orchestrator (B2 re-routes it to mediation).
+    expect(events.some((e) => e.type === "lane-escalation" && e.reason === "thread-check-exhausted" && e.stepId === "F")).toBe(true);
+    // Escalation NEVER relaxes coverage to green — nothing recorded, no fail-close.
+    expect(out.relaxedCoverage).toBeUndefined();
+    expect(events.some((e) => e.type === "error" && /check failed/.test(String(e.message)))).toBe(false);
+  });
+
+  test("(control) the SAME failing check on a ROOT (no parentLoomId) still FAILS the thread CLOSED — its authoritative verify is the top gate, not a step check", async () => {
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    // No parentLoomId ⇒ not a child thread ⇒ fail-closed (the root's own path).
+    const loom = createLoom({ project: name, kind: "custom", title: "t", prompt: "x", account: manifest.account });
+    loom.workflow = { version: 1, steps: [step("F", [], { kind: "research", agents: [], check: stepCheck })] };
+    const out = await runThreadWorkflow(loom, manifest, { runStepCheck: (async () => "fail") as any, onState: () => {} });
+    expect(out.state).toBe("failed");
+    expect(out.state).not.toBe("blocked");
+    expect(out.relaxedCoverage).toBeUndefined();
+  });
+
+  test("a CHILD with a parentLoomId but NO contract still ESCALATES (blocked) — an escalation parks blocked and needs no top-gate coverage re-proof", async () => {
+    const { name } = makeGitProject();
+    const manifest = getProject(name).manifest;
+    const loom = createLoom({
+      project: name,
+      kind: "custom",
+      title: "t",
+      prompt: "x",
+      account: manifest.account,
+      parentLoomId: "ROOT-B1",
+      subGoalId: "s1",
+    });
+    // parentLoomId set, NO writeContract — the escalate scope is a child thread, not
+    // a contract-backed one (unlike the loom-level skip→green relaxation).
+    loom.workflow = { version: 1, steps: [step("F", [], { kind: "research", agents: [], check: stepCheck })] };
+    const out = await runThreadWorkflow(loom, manifest, { runStepCheck: (async () => "fail") as any, onState: () => {} });
+    expect(out.state).toBe("blocked");
+    expect(out.relaxedCoverage).toBeUndefined();
+  });
+});
+
 // ── (d) NEVER-PROMOTES — a passing check on a non-writing step does not promote ─
 describe("M9.4 (d) a passing per-step check NEVER promotes the loom", () => {
   test("a free (research) step with a PASSING check leaves the loom un-promoted (not ready/done)", async () => {

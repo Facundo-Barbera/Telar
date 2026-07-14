@@ -156,7 +156,52 @@ export type Loom = {
   // Absent ⇒ the default 1-step `build` template is synthesized at run time;
   // runThreadWorkflow delegates that step to executeLoom. Additive.
   workflow?: ThreadWorkflow;
+  // B1 (COVERAGE INVARIANT) — the explicit record of every criterion this thread
+  // RELAXED to green (stopped gating) instead of demoting. The one relaxation a
+  // thread makes is a `panelRequired` SKIP whose evidence is structurally
+  // unobtainable at thread altitude (the couldn't-verify case §70-72): it resolves
+  // to a terminal GREEN and stamps the exact contract-assertion ids it no longer
+  // gates. The top gate (runIntegrationVerify with fullContract) CONSUMES this and
+  // fails CLOSED (demotes ready→needs-review) if any relaxed id is not provably
+  // re-proven by the root ALL verify — the fail-open moat: a thread may relax ONLY
+  // what the top gate re-proves. A verification-shaped FAIL (a panel FAIL, a
+  // contract-miss, a step-check fail) is NOT recorded here — it ESCALATES (the
+  // thread parks `blocked`; B2 re-routes to orchestrator mediation) rather than
+  // promoting green, so there is no coverage to re-prove. Absent on a thread that
+  // relaxed nothing.
+  relaxedCoverage?: RelaxedCoverage[];
 };
+
+// B1 — one relaxation a thread made: the criteria it stopped gating and why.
+// `assertionIds` are the exact contract-assertion ids the top gate must
+// re-prove; an empty/absent set relaxes nothing and never demotes the top gate.
+export type RelaxedCoverage = {
+  // What the thread relaxed. The executor writes "panel-skip" (evidence
+  // unobtainable at thread altitude — the only relax-to-green case; every
+  // verification-shaped FAIL escalates `blocked` instead of recording here).
+  // Kept an open string because the top-gate coverage check is kind-agnostic — it
+  // keys ONLY on assertionIds — so any future relaxation shape is re-proven the
+  // same way without a schema change.
+  kind: string;
+  // The contract-assertion ids this thread no longer gates. The top gate proves
+  // coverage by presence in its passing set — a relaxed id absent from that set
+  // is NOT re-proven and demotes the whole, fail-closed.
+  assertionIds: string[];
+  note?: string;
+};
+
+// B1 — PURE coverage check for the generalized COVERAGE INVARIANT. Returns the
+// relaxed assertion ids that the top gate could NOT re-prove: every id a thread
+// relaxed which is absent from the top gate's `provenIds` (its passing set over
+// the composed whole). A non-empty result MUST demote the top gate fail-closed
+// — the thread stopped gating something the orchestrator never re-proved, so the
+// deliverable is not provably green. Deduped + sorted for a stable demote reason.
+export function uncoveredRelaxedIds(relaxed: RelaxedCoverage[], provenIds: string[]): string[] {
+  const proven = new Set(provenIds);
+  const uncovered = new Set<string>();
+  for (const r of relaxed) for (const id of r.assertionIds) if (!proven.has(id)) uncovered.add(id);
+  return [...uncovered].sort();
+}
 
 // docs/loom-model.md §5 — a loom is "listable" (shown in the top-level Looms
 // list) once it's no longer a draft awaiting commit and isn't a child loom

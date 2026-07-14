@@ -162,14 +162,19 @@ describe("decide — NO-GATES + panelRequired skip fix (§5)", () => {
   });
 });
 
-// M10.2 — CHILD-scoped thread-advisory. A contract-backed child's `panelRequired`
-// skip (evidence unobtainable at thread altitude) SHORT-CIRCUITS to a green `done`
-// at the FIRST attempt (no retry burn); the UNCONDITIONAL M10.1 top gate re-proves
-// the full contract fail-closed. When childAdvisory is falsy (a root, or a
-// no-contract child) the decision is identical to the panelRequired tests above.
-// The relaxation matches ONLY the exact evidence-unobtainable triple:
-// verdict.ok && verification==="skip" && panelRequired===true.
-describe("decide — M10.2 childAdvisory (thread verification advisory)", () => {
+// CHILD-scoped thread-advisory (doctrine §70-72). Two DISTINCT postures for two
+// distinct causes:
+//   - RELAX (childAdvisory, contract-backed): a `panelRequired` SKIP (evidence
+//     structurally unobtainable — couldn't-verify) SHORT-CIRCUITS to a green `done`
+//     at the FIRST attempt (no retry burn); the UNCONDITIONAL top gate re-proves
+//     the relaxed slice fail-closed (COVERAGE INVARIANT).
+//   - ESCALATE (childThread, any child): a panel FAIL / contract-miss MEDIATES via
+//     retries, then — once exhausted — ESCALATES (executeLoom parks it `blocked`;
+//     B2 re-routes to orchestrator mediation) instead of a terminal needs-review.
+// A panel FAIL is NEVER relaxed to green (the top gate cannot re-prove a negative
+// panel verdict into a pass). A GENUINE BUILD DEFECT (a red deterministic gate, a
+// builder blocker) is NEVER relaxed OR escalated — it still fails/needs-review.
+describe("decide — childAdvisory (thread verification advisory)", () => {
   test("gated + gatesOk + verdict.ok + skip + panelRequired + childAdvisory -> done at FIRST attempt (no retry burn)", () => {
     expect(run({ verification: "skip", panelRequired: true, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
       action: "done",
@@ -247,11 +252,50 @@ describe("decide — M10.2 childAdvisory (thread verification advisory)", () => 
     });
   });
 
-  test("childAdvisory NEVER relaxes verification==='fail' -> retry then needs-review unchanged", () => {
-    expect(run({ verification: "fail", panelRequired: true, childAdvisory: true, n: 1, maxAttempts: 3 })).toEqual({
+  // B1 (§70-72) — a panel FAIL is a VERIFICATION-shaped cause, not a build defect.
+  // On a CHILD thread (childThread) the thread MEDIATES via retries, then — once
+  // mediation is exhausted — ESCALATES (executeLoom parks it `blocked`, B2 re-routes
+  // to orchestrator mediation) instead of the terminal needs-review demote. It is
+  // NEVER relaxed to a green `done` (the top gate cannot re-prove a negative panel
+  // verdict). A ROOT (childThread falsy) keeps the fail-closed retry→needs-review.
+  test("(B1) childThread verification==='fail' MEDIATES (retry) while attempts remain", () => {
+    expect(run({ verification: "fail", panelRequired: true, childThread: true, n: 1, maxAttempts: 3 })).toEqual({
       action: "retry",
     });
-    expect(run({ verification: "fail", panelRequired: true, childAdvisory: true, n: 3, maxAttempts: 3 })).toEqual({
+  });
+
+  test("(B1) childThread verification==='fail' ESCALATES once mediation is exhausted — never a terminal per-thread demote, never a green done", () => {
+    expect(run({ verification: "fail", panelRequired: true, childThread: true, n: 3, maxAttempts: 3 })).toEqual({
+      action: "escalate",
+      error: "verification failed",
+    });
+    // symmetric in the no-gates branch (the Verifier IS the gate)
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "fail",
+        panelRequired: true,
+        childThread: true,
+        n: 3,
+        maxAttempts: 3,
+      }),
+    ).toEqual({ action: "escalate", error: "verification failed" });
+  });
+
+  // contract-miss: a required contract structurally absent surfaces as verification
+  // "fail" with NO on-disk contract ⇒ childAdvisory is FALSE (no coverage to relax)
+  // but childThread is TRUE ⇒ it still ESCALATES (blocked), never a terminal demote.
+  test("(B1) contract-miss (childThread true, childAdvisory false) verification==='fail' ESCALATES once exhausted", () => {
+    expect(run({ verification: "fail", panelRequired: true, childThread: true, childAdvisory: false, n: 3, maxAttempts: 3 })).toEqual({
+      action: "escalate",
+      error: "verification failed",
+    });
+  });
+
+  test("(B1) a ROOT (childThread falsy) verification==='fail' still lands the fail-closed needs-review", () => {
+    expect(run({ verification: "fail", n: 3, maxAttempts: 3 })).toEqual({
       action: "needs-review",
       error: "verification failed",
     });

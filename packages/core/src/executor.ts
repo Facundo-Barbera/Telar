@@ -21,7 +21,7 @@ import { selectTemplate, validateWorkflow } from "./thread-templates";
 import { runPanel, type CriticContext, type PanelEvent } from "./critic";
 import { classifyPanel, panelReason, type PanelSignals } from "./panel";
 import { type Gate, runGate, runGates, type GateResult } from "./gates";
-import { getLoom, loomDir, type AttemptRecord, type Loom, type LoomKind } from "./looms";
+import { getLoom, listChildLooms, loomDir, uncoveredRelaxedIds, type AttemptRecord, type Loom, type LoomKind } from "./looms";
 import { addWorktree, defaultGitRunner, removeWorktree, snapshotWorktreeToBranch, withWorktreeLock } from "./vcs";
 import { normalizeGateOutput } from "./repair-guard";
 import { isRunnableShape } from "./runnable-shape";
@@ -210,6 +210,17 @@ export type Decision =
   | { action: "done" }
   | { action: "needs-review"; error?: string }
   | { action: "failed"; error?: string }
+  // B1 §70-72 — the CHILD-thread escalation rung. A per-thread VERIFICATION-shaped
+  // failure (the agent-judged panel/critic said fail, or the required contract is
+  // structurally absent) that has EXHAUSTED the thread's own bounded mediation
+  // (the retry legs) is NOT a terminal per-thread demote — the doctrine forbids a
+  // thread demoting itself for a "couldn't verify" cause. It is the thread's cue
+  // to ESCALATE to the orchestrator: executeLoom parks the loom `blocked`, which
+  // the weave rollup lifts to the root (B2 re-routes that block to orchestrator
+  // mediation before any human ping). A GENUINE BUILD DEFECT — a red deterministic
+  // gate, or the builder self-reporting a blocker — is NOT verification-shaped and
+  // still fails/needs-review unchanged.
+  | { action: "escalate"; error?: string }
   | { action: "retry" };
 
 // Pure: §A (docs/loom-model.md) — a completed ROOT loom (no parentLoomId)
@@ -239,14 +250,30 @@ export function decide(input: {
   flakyUsed: number;
   maxFlaky: number;
   panelRequired?: boolean;
-  // M10.2 — CHILD-scoped, gated on the SAME flag as M10.1's top gate. When true,
-  // a `panelRequired` skip (evidence structurally unobtainable at thread altitude)
-  // resolves to a GREEN `done` instead of retry/needs-review — the full contract is
-  // re-proven fail-closed at the orchestrator top gate over the composed whole.
-  // Default undefined/false ⇒ decide() is byte-identical to today (root or flag-off).
+  // CHILD-scoped RELAX posture (doctrine §70-72). True only for a CHILD backed by
+  // an on-disk contract — the slice the UNCONDITIONAL top gate re-proves in full.
+  // When true, a `panelRequired` SKIP whose evidence is structurally unobtainable
+  // (couldn't-verify) resolves to a GREEN `done` instead of a terminal per-thread
+  // needs-review: the thread ADVISES and the relaxed criteria are re-proven
+  // fail-closed at the orchestrator top gate over the composed whole (COVERAGE
+  // INVARIANT). False for a root or a legacy/no-contract child (whose relaxed prose
+  // the top gate cannot see): its own fail-closed path stands. NOTE: this gates
+  // ONLY the skip→green RELAXATION — a panel FAIL is escalated via `childThread`,
+  // never relaxed to green (the top gate cannot re-prove a negative panel verdict
+  // into a pass without the thread's mediation resolving it first).
   childAdvisory?: boolean;
+  // CHILD-scoped ESCALATE posture (doctrine §70-72, escalation ladder). True for
+  // ANY child thread (has a parent to fold up to), contract or not. When true, a
+  // VERIFICATION-shaped FAIL that survived the thread's bounded mediation (retries)
+  // — a panel FAIL, or a contract-miss (a required contract structurally absent) —
+  // ESCALATES rather than terminally demoting: executeLoom parks the loom `blocked`
+  // and the weave lifts it to the orchestrator (B2 re-routes the block to
+  // orchestrator mediation). A root keeps its fail-closed needs-review. A GENUINE
+  // BUILD DEFECT — a red deterministic gate, or the builder self-reporting a
+  // blocker — is NOT verification-shaped and still fails/needs-review unchanged.
+  childThread?: boolean;
 }): Decision {
-  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired, childAdvisory } =
+  const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired, childAdvisory, childThread } =
     input;
   const canRetry = n < maxAttempts;
   const flakyDecision = (): Decision =>
@@ -271,7 +298,18 @@ export function decide(input: {
         case "pass":
           return { action: "done" };
         case "fail":
-          return canRetry ? { action: "retry" } : { action: "needs-review", error: "verification failed" };
+          // B1 (§70-72): a panel FAIL is a VERIFICATION-shaped cause, not a build
+          // defect (a red deterministic gate lands in gatesConfigured && !gatesOk →
+          // failed, below — never here). The thread MEDIATES via retries; on a CHILD
+          // thread, once mediation is exhausted it ESCALATES (executeLoom parks it
+          // `blocked`, the weave lifts it to the orchestrator; B2 re-routes to
+          // orchestrator mediation) instead of a terminal per-thread needs-review
+          // demote. A root keeps its fail-closed needs-review.
+          return canRetry
+            ? { action: "retry" }
+            : childThread
+              ? { action: "escalate", error: "verification failed" }
+              : { action: "needs-review", error: "verification failed" };
         case "flaky":
           return flakyDecision();
       }
@@ -303,7 +341,13 @@ export function decide(input: {
         case "pass":
           return { action: "done" }; // promote
         case "fail":
-          return canRetry ? { action: "retry" } : { action: "needs-review", error: "verification failed" };
+          // B1 (§70-72) — symmetric to the gated branch: a CHILD thread's panel
+          // FAIL escalates (blocked) once its internal mediation (retries) exhausts.
+          return canRetry
+            ? { action: "retry" }
+            : childThread
+              ? { action: "escalate", error: "verification failed" }
+              : { action: "needs-review", error: "verification failed" };
         case "flaky":
           return flakyDecision();
       }
@@ -314,6 +358,51 @@ export function decide(input: {
 
   // gatesConfigured && !gatesOk
   return canRetry ? { action: "retry" } : { action: "failed" };
+}
+
+// B1 (doctrine §70-72) — is THIS loom a THREAD whose per-thread verification is
+// ADVISORY? True only for a CHILD (has a parent to fold up to) backed by an
+// on-disk contract — the assertions the UNCONDITIONAL top gate re-proves in full.
+// A root, or a legacy/no-contract child (whose relaxed criterion the top gate
+// STRUCTURALLY cannot see), is NOT advisory: its own fail-closed path stands
+// (m10-thread-advisory-coverage pins the split). Load-bearing for the moat: the
+// advisory relaxation may fire ONLY where the top gate can re-prove what was
+// relaxed, so this predicate gates every relaxation site (decide() childAdvisory
+// and the step-check seam alike).
+export function isChildAdvisory(loom: Pick<Loom, "id" | "parentLoomId">): boolean {
+  return !!loom.parentLoomId && !!readContract(loom.id).contract;
+}
+
+// B1 — RECORD the coverage a thread RELAXED to green (the explicit
+// `relaxedCoverage` step 1 consumes) and surface the human-readable advisory.
+// Called on a childAdvisory child that resolved a `panelRequired` SKIP (evidence
+// structurally unobtainable at thread altitude — the couldn't-verify case §70-72)
+// to a terminal GREEN. The recorded ids are the child contract's AGENT-JUDGED
+// slice — a wireChildBundle slice of the root contract the UNCONDITIONAL top gate
+// re-verifies fail-closed (COVERAGE INVARIANT: any relaxed id it cannot re-prove
+// demotes the whole). A deterministic gate defect never reaches here (it fails the
+// thread via gatesConfigured && !gatesOk); a panel FAIL never reaches here either
+// (it ESCALATES to blocked, never relaxes to green) — so ONLY genuinely agent-
+// judged, top-gate-re-provable coverage is ever relaxed.
+function recordThreadRelaxation(
+  loom: Loom,
+  contract: VerificationContract | null,
+  emit: (ev: { type: string } & Record<string, unknown>) => void,
+  n: number,
+): void {
+  const relaxedIds = contract ? routeAssertions(contract.assertions).agentJudged.map((a) => a.id) : [];
+  if (relaxedIds.length) {
+    loom.relaxedCoverage = [
+      ...(loom.relaxedCoverage ?? []),
+      { kind: "panel-skip", assertionIds: relaxedIds, note: "panel evidence unobtainable at thread altitude; carried as advisory" },
+    ];
+  }
+  emit({
+    type: "thread-advisory",
+    n,
+    subGoalId: loom.subGoalId,
+    note: "couldn't independently verify at thread altitude (panel evidence unobtainable); re-proven at the orchestrator top gate over the composed whole",
+  });
 }
 
 // Summarize the failing (and flaky) criteria into a repair brief for the builder.
@@ -1183,6 +1272,26 @@ export async function runIntegrationVerify(
     verification = "pass";
   }
 
+  // B1 (COVERAGE INVARIANT, generalized — the fail-open moat). The top gate is
+  // where everything a thread RELAXED must be independently re-proven. Collect
+  // every child's relaxed-coverage records and demote fail-closed if ANY relaxed
+  // assertion id is absent from THIS whole-verify's passing set — i.e. the top
+  // gate could not re-prove it. Reachable ONLY under fullContract (the top-gate
+  // producer): a checkpoint / per-child slice never carries the whole's
+  // authority, so it must not consume the whole's relaxations. A run with no
+  // relaxed records (every pre-B1 root) yields uncovered:[] ⇒ inert, byte-
+  // identical to today. This subsumes the implicit routedContract coupling: a
+  // relaxed id that the full contract structurally omits (a legacy/no-contract
+  // relaxation, step 2) is simply never in passingIds ⇒ demote, no assumption.
+  if (opts.fullContract) {
+    const relaxed = listChildLooms(loom.id).flatMap((c) => c.relaxedCoverage ?? []);
+    const uncovered = uncoveredRelaxedIds(relaxed, passingIds);
+    if (uncovered.length) {
+      verification = "fail";
+      ivError = `relaxed coverage not re-proven at top gate: ${uncovered.join(", ")}`;
+    }
+  }
+
   attempt.endedAt = Date.now();
   emit({ type: "integration-verify", verification, gatesOk });
   // M1 (D2): terminal summary for the integration verify (source derived like
@@ -1856,25 +1965,30 @@ export async function executeLoom(
 
       if (isAborted()) return halt();
 
-      // M10.2 — CHILD-scoped thread-advisory. The M10.1 top gate is UNCONDITIONAL,
-      // so coverage a thread stops gating is always re-proven at the top. A ROOT
-      // (no parentLoomId) yields false ⇒ decide() takes its unchanged fail-closed
-      // path.
+      // CHILD-scoped thread-advisory (doctrine §70-72; isChildAdvisory). The top
+      // gate is UNCONDITIONAL, so coverage a thread stops gating is always re-proven
+      // at the top. A ROOT (no parentLoomId) yields false ⇒ decide() takes its
+      // unchanged fail-closed path.
       //
       // COVERAGE INVARIANT (fail-open hole closed): the relaxation may fire ONLY
-      // for a CONTRACT-BACKED child — one whose `panelRequired` skip came from the
-      // contract-partition path (readContract non-null ⇒ runVerification took the
-      // `if (contract)` branch, so panelRequired = agentJudged.length > 0 over the
-      // child's `contract.assertions`). Those assertions are a `wireChildBundle`
-      // filtered slice of the ROOT contract, which M10.1's top gate re-verifies in
-      // full (`runIntegrationVerify` with `fullContract:true` over the root's
-      // `contract.assertions`). A LEGACY / no-contract child instead reaches a
-      // `panelRequired` skip via the `verify()` null/throw fallback, where the
-      // relaxed criterion is the subGoal's PROSE `acceptanceCriteria` — NOT an
-      // assertion in any contract, so the top gate STRUCTURALLY cannot re-prove it.
-      // Relaxing that would silently drop coverage (fail-open). `!!routedContract`
-      // gates the relaxation to exactly the criteria the top gate re-proves.
-      const childAdvisory = !!loom.parentLoomId && !!routedContract;
+      // for a CONTRACT-BACKED child — its `contract.assertions` are a wireChildBundle
+      // slice of the ROOT contract the top gate re-verifies in full (runIntegration-
+      // Verify with fullContract:true). A LEGACY / no-contract child reaches its
+      // non-green via the `verify()` prose fallback whose criterion is NOT in any
+      // contract — the top gate structurally cannot re-prove it, so relaxing it
+      // would drop coverage (fail-open). isChildAdvisory (parentLoomId + on-disk
+      // contract) gates the relaxation to exactly what the top gate re-proves. This
+      // is the SAME predicate the step-check seam consults, so both relaxation
+      // sites share one fail-open guard.
+      const childAdvisory = isChildAdvisory(loom);
+      // B1 (§70-72) — the ESCALATE scope: ANY child thread (has a parent to fold
+      // up to), contract or not. A panel FAIL / contract-miss that exhausts the
+      // thread's mediation escalates (blocked) rather than terminally demoting.
+      // Broader than childAdvisory because an escalation parks blocked — it never
+      // promotes the child green — so it needs no top-gate coverage re-proof and
+      // is safe even for a no-contract child (a contract-miss has no contract at
+      // all). childAdvisory (skip→green relaxation) still requires the contract.
+      const childThread = !!loom.parentLoomId;
 
       const decision = decide({
         gatesConfigured,
@@ -1887,25 +2001,28 @@ export async function executeLoom(
         flakyUsed,
         maxFlaky,
         childAdvisory,
+        childThread,
       });
 
       if (decision.action === "done") {
-        setState(terminalStateForCompletedLoom(loom));
-        // M10.2 — surface the human-readable advisory ONLY when this green terminal
-        // is the relaxed evidence-unobtainable case (the exact triple decide()
-        // short-circuited). Purely additive: it gates nothing, never sets
-        // loom.error (which would read as broken), and mirrors emitVerifySummary's
-        // contract. The green child's state stays "done"; the note is the only
-        // distinguisher from a plain pass. The criterion is re-proven fail-closed
-        // at M10.1's top gate over the composed whole.
+        // B1 (COVERAGE INVARIANT) — a childAdvisory child that RELAXED a
+        // `panelRequired` SKIP (evidence structurally unobtainable at thread
+        // altitude — the couldn't-verify case §70-72) to a terminal GREEN records
+        // EXACTLY what it stopped gating (and surfaces the advisory note) so the
+        // top gate can independently re-prove it. The deterministic gates already
+        // ran green (a red gate never yields a `done` decision — it fails via
+        // gatesConfigured && !gatesOk); a panel FAIL never reaches this `done`
+        // branch (it ESCALATES to blocked below), so only genuinely agent-judged,
+        // top-gate-re-provable coverage is recorded. The record MUST be stamped
+        // BEFORE the terminal setState: setState fires onState (saveLoom), the
+        // write that persists this loom to the child loom.json the top gate later
+        // reads via listChildLooms. Weave does NOT re-save the returned child, so a
+        // mutation made AFTER setState would never reach disk ⇒ the top gate would
+        // read a record-less child ⇒ fail-OPEN.
         if (childAdvisory && panelRequired && verification === "skip") {
-          emit({
-            type: "thread-advisory",
-            n,
-            subGoalId: loom.subGoalId,
-            note: "couldn't independently verify at thread altitude (panel evidence unobtainable); re-proven at the orchestrator top gate over the composed whole",
-          });
+          recordThreadRelaxation(loom, routedContract, emit, n);
         }
+        setState(terminalStateForCompletedLoom(loom));
         // M3 consolidation: on a CHILD's success, fold its isolated-worktree
         // diff onto the root's review branch BEFORE the finally removes the
         // worktree. Moat: this only ever commits onto telar/<rootId>, never
@@ -1938,6 +2055,28 @@ export async function executeLoom(
             }
           }
         }
+        return loom;
+      }
+      if (decision.action === "escalate") {
+        // B1 (§70-72, the escalation ladder) — a CHILD thread's VERIFICATION-shaped
+        // failure (a panel FAIL, or a contract-miss) that SURVIVED the thread's own
+        // bounded mediation (the retry legs above) is NOT a terminal per-thread
+        // demote: the thread ESCALATES. Park `blocked` carrying an answerable
+        // strategy question; the weave rollup lifts it to the root (FINDING-8 path),
+        // and B2 re-routes that block to ORCHESTRATOR mediation (re-plan / reassign /
+        // re-derive verification) before any human ping. NOT a green terminal — the
+        // child never promotes, so no coverage leaks (the top gate never sees a
+        // green child for this subgoal; nothing to re-prove). A genuine build defect
+        // (red gate / builder blocker) never reaches here — it fails/needs-review.
+        const signal = deriveDeliverableSignal(manifest.root, loom.charter);
+        loom.blockedReason =
+          `Per-thread verification failed after ${maxAttempts} attempt(s) of internal mediation` +
+          `${report?.summary ? `: ${report.summary}` : verification === "fail" ? " (contract required but missing/invalid)" : ""}. ` +
+          `The thread exhausted its own repair legs; the orchestrator should mediate ` +
+          `(re-plan, reassign, or re-derive the verification method) before escalating further. ${signal.reason}.`;
+        loom.blockedQuestion = blockedStrategyQuestion(signal);
+        emit({ type: "lane-escalation", by: "telar", reason: "thread-verify-exhausted", subGoalId: loom.subGoalId });
+        setState("blocked");
         return loom;
       }
       if (decision.action === "needs-review") {
@@ -2180,6 +2319,36 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
       opts.onState?.(loom);
     }
   };
+  // B1 (doctrine §70-72) — a per-step CHECK is a per-thread VERIFICATION gate, so a
+  // check-verdict FAIL that survived the seam's internal mediation (step-local
+  // repair, or none possible for a read-only step) is NOT a terminal thread demote
+  // on a CHILD thread: it ESCALATES. Park the loom `blocked` carrying an answerable
+  // strategy question — the weave lifts it to the orchestrator (FINDING-8 path) and
+  // B2 re-routes the block to mediation — instead of the fail-closed demote. A ROOT
+  // (whose authoritative verify is the TOP GATE, not a step check) keeps the
+  // fail-closed failStepClosed. Either way the caller RETURNS loom WITHOUT
+  // doneSteps.add, so every dependent is HELD and a failing check NEVER yields a
+  // green loom. Scoped to a child (parentLoomId) — an escalation parks blocked and
+  // never promotes green, so it needs no top-gate coverage re-proof (unlike the
+  // loom-level skip→green relaxation, which is contract-gated via isChildAdvisory).
+  // Budget-exhaustion and a thrown check-error stay fail-closed at their call sites
+  // (a waste breaker / not a clean verify verdict), never escalated.
+  const escalateOrFailStep = (message: string, step: Step) => {
+    if (isTerminalFailure(loom.state) || loom.state === "blocked") return;
+    if (loom.parentLoomId) {
+      const signal = deriveDeliverableSignal(manifest.root, loom.charter);
+      loom.blockedReason =
+        `Per-thread step check "${step.id}" failed after bounded mediation: ${message}. ` +
+        `The thread exhausted its step-local repair; the orchestrator should mediate before escalating further. ${signal.reason}.`;
+      loom.blockedQuestion = blockedStrategyQuestion(signal);
+      loom.state = "blocked";
+      emit({ type: "lane-escalation", by: "telar", reason: "thread-check-exhausted", stepId: step.id });
+      emit({ type: "state", state: "blocked" });
+      opts.onState?.(loom);
+    } else {
+      failStepClosed(message);
+    }
+  };
   // CF2 provenance: the built-in defaultRunStep fills the verification-proof
   // fields ONLY from executeLoom's real read-only verifier (never fabricated);
   // an injected opts.runStep supplies them itself and can forge them. This flag
@@ -2375,59 +2544,66 @@ export async function runThreadWorkflow(loom: Loom, manifest: ProjectManifest, o
           if (verdict === "fail") {
             // FIX 3a — a failing NON-WRITING (research/design/check) step would re-run
             // read-only agents against an UNCHANGED worktree, so a repair can never
-            // change the verdict. Fail the thread closed immediately (no repair).
+            // change the verdict: no mediation is possible, straight to escalate-or-fail.
+            // B1 (§70-72): a CHILD thread ESCALATES (park blocked); a root fails the
+            // thread closed. Either way dependents are HELD (return loom, no doneSteps.add).
             if (!isWritingKind(st.kind)) {
-              failStepClosed(`step "${res.id}" check failed (non-writing step — no repair can change the outcome)`);
+              escalateOrFailStep(`step "${res.id}" check failed (non-writing step — no repair can change the outcome)`, st);
               return loom;
-            }
-            // BOUNDED step-local repair for a WRITING step: re-run the FAILING step at
-            // most maxStepRepairs times (the SAME cap as the builder loop's
-            // maxAttempts), then fail closed. NO infinite loop: this outer loop is
-            // <= maxStepRepairs (<=3) and each runStepFor re-enters executeLoom, itself
-            // internally clamped at maxAttempts. FIX 3b — the repair nests OUTSIDE
-            // executeLoom's own maxAttempts loop, so gate each iteration on REMAINING
-            // BUDGET: charge a conservative per-iteration estimate (one writer wave)
-            // against the step's budget SLICE and fail closed once the slice can no
-            // longer afford another writer. An uncapped slice is Infinity, so the gate
-            // never fires and cost-unbounded runs are byte-identical to before.
-            let repairSpentUsd = 0;
-            for (let r = 0; verdict === "fail" && r < maxStepRepairs; r++) {
-              const sliceLeftUsd = budgetLeftUsd({
-                maxAgents: perStepClamp.maxAgents,
-                inFlight: 0,
-                spentUsd: repairSpentUsd,
-                startedAtMs: 0,
-                maxCostUsd: isFinite(perStepClamp.budgetLeftUsd) ? perStepClamp.budgetLeftUsd : undefined,
-              });
-              if (fanoutSize(1, { ...perStepClamp, budgetLeftUsd: sliceLeftUsd }) < 1) {
-                failStepClosed(`step "${res.id}" check failed; repair budget slice exhausted after ${r} attempt(s)`);
+            } else {
+              // BOUNDED step-local repair (MEDIATE) for a WRITING step: re-run the
+              // FAILING step at most maxStepRepairs times (the SAME cap as the builder
+              // loop's maxAttempts), then advise-or-fail. NO infinite loop: this outer
+              // loop is <= maxStepRepairs (<=3) and each runStepFor re-enters
+              // executeLoom, itself internally clamped at maxAttempts. FIX 3b — the
+              // repair nests OUTSIDE executeLoom's own maxAttempts loop, so gate each
+              // iteration on REMAINING BUDGET: charge a conservative per-iteration
+              // estimate (one writer wave) against the step's budget SLICE and fail
+              // closed once the slice can no longer afford another writer. An uncapped
+              // slice is Infinity, so the gate never fires. The budget gate and the
+              // repair-re-run guard stay FAIL-CLOSED even under advisory — a waste
+              // breaker and a genuine build/provenance failure are not verification-
+              // shaped, so B1 never relaxes them.
+              let repairSpentUsd = 0;
+              for (let r = 0; verdict === "fail" && r < maxStepRepairs; r++) {
+                const sliceLeftUsd = budgetLeftUsd({
+                  maxAgents: perStepClamp.maxAgents,
+                  inFlight: 0,
+                  spentUsd: repairSpentUsd,
+                  startedAtMs: 0,
+                  maxCostUsd: isFinite(perStepClamp.budgetLeftUsd) ? perStepClamp.budgetLeftUsd : undefined,
+                });
+                if (fanoutSize(1, { ...perStepClamp, budgetLeftUsd: sliceLeftUsd }) < 1) {
+                  failStepClosed(`step "${res.id}" check failed; repair budget slice exhausted after ${r} attempt(s)`);
+                  return loom;
+                }
+                const repaired = await runStepFor(res.id);
+                // Conservative charge against the slice: one estimated writer wave/iter.
+                repairSpentUsd += perStepClamp.estCostPerAgent * Math.max(1, perStepClamp.maxAgents);
+                emit({ type: "workflow-step", stepId: repaired.id, state: repaired.state });
+                // Re-validate the re-run through the SAME guards the first run passed
+                // (BLOCKER 1 + CF2). A non-green or forged-green repair fails closed.
+                const rTerminalGreen = repaired.state === "ready" || repaired.state === "done";
+                const rHasProof = !!(repaired.verifierReport || repaired.panelReport || repaired.gatesGreen);
+                if (!repaired.ok || (isWritingKind(st.kind) && rTerminalGreen && !(usedBuiltinExecutor && rHasProof))) {
+                  failStepClosed(
+                    !repaired.ok
+                      ? `step "${res.id}" repair re-run terminated non-green (state "${repaired.state}")`
+                      : `step "${res.id}" repair re-run reported green without verifier proof`,
+                  );
+                  return loom; // dependents HELD — never reaches doneSteps.add
+                }
+                verdict = await evalCheck(); // re-check this step's NEW output (state-neutral)
+                if (sideChanneled) return loom;
+              }
+              if (verdict === "fail") {
+                // Mediation exhausted, check still failing. B1 (§70-72): a CHILD
+                // thread ESCALATES (park blocked → orchestrator mediation via B2); a
+                // root FAILS THE THREAD CLOSED. Dependents HELD either way (return
+                // loom, no doneSteps.add) — a failing check NEVER yields a green loom.
+                escalateOrFailStep(`step "${res.id}" check failed after ${maxStepRepairs} repair attempt(s)`, st);
                 return loom;
               }
-              const repaired = await runStepFor(res.id);
-              // Conservative charge against the slice: one estimated writer wave/iter.
-              repairSpentUsd += perStepClamp.estCostPerAgent * Math.max(1, perStepClamp.maxAgents);
-              emit({ type: "workflow-step", stepId: repaired.id, state: repaired.state });
-              // Re-validate the re-run through the SAME guards the first run passed
-              // (BLOCKER 1 + CF2). A non-green or forged-green repair fails closed.
-              const rTerminalGreen = repaired.state === "ready" || repaired.state === "done";
-              const rHasProof = !!(repaired.verifierReport || repaired.panelReport || repaired.gatesGreen);
-              if (!repaired.ok || (isWritingKind(st.kind) && rTerminalGreen && !(usedBuiltinExecutor && rHasProof))) {
-                failStepClosed(
-                  !repaired.ok
-                    ? `step "${res.id}" repair re-run terminated non-green (state "${repaired.state}")`
-                    : `step "${res.id}" repair re-run reported green without verifier proof`,
-                );
-                return loom; // dependents HELD — never reaches doneSteps.add
-              }
-              verdict = await evalCheck(); // re-check this step's NEW output (state-neutral)
-              if (sideChanneled) return loom;
-            }
-            if (verdict === "fail") {
-              // Repair exhausted, check still failing ⇒ FAIL THE THREAD CLOSED. Does
-              // NOT reach doneSteps.add ⇒ every dependent is HELD (never scheduled);
-              // a failing per-step check therefore NEVER yields a green loom.
-              failStepClosed(`step "${res.id}" check failed after ${maxStepRepairs} repair attempt(s)`);
-              return loom;
             }
           }
           // verdict is "pass" or "skip" ⇒ fall through to doneSteps.add (proceed).
