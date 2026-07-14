@@ -36,16 +36,19 @@
 //    touched by" is a GAP: the store records filesTouched as a COUNT, not the
 //    paths a session changed (executor.ts), so attribution needs a schema that
 //    records paths. Toggleable + flagged inline as design intent, not fact.
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckCircle2Icon,
+  CheckIcon,
   ChevronRightIcon,
   CircleDotIcon,
   ClockIcon,
+  CornerDownRightIcon,
   FileIcon,
   FolderIcon,
+  FolderOpenIcon,
   GitBranchIcon,
   GitCommitHorizontalIcon,
   GitMergeIcon,
@@ -56,6 +59,7 @@ import {
   MessagesSquareIcon,
   PlugZapIcon,
   RotateCcwIcon,
+  SearchIcon,
   ShieldAlertIcon,
   Trash2Icon,
   TreePineIcon,
@@ -76,16 +80,22 @@ import {
   DEMO_PRS,
   DEMO_WORKTREES,
   GIT_HEAD,
+  checksVerdict,
   isReclaimable,
-  type ChecksState,
+  labelColor,
+  type ChecksCluster,
+  type ChecksVerdict,
+  type DemoBranch,
   type DemoFileNode,
   type DemoIssue,
   type DemoPR,
   type DemoWorktree,
   type GitStatus,
   type RemoteState,
+  type ReviewState,
 } from "./git-fixtures";
 import { GitChip, HubShell, SectionBand, fmtSize } from "./git-shared";
+import { DEMO_PROJECT } from "./fixtures";
 import type { Theme } from "./shared";
 
 /* -------------------------------------------------------------- header */
@@ -628,72 +638,229 @@ function WorktreesSection({
   );
 }
 
-/* --------------------------------------------------- branches (compact) */
+/* ------------------------------------------------- branches (the hero) */
+
+// Mirrored ahead/behind bars around a center axis — GitHub's divergence glyph.
+// behind extends LEFT (amber), ahead extends RIGHT (emerald); scaled to the
+// busiest branch so relative divergence reads at a glance. Numbers beside, full
+// count on hover.
+function AheadBehindBars({
+  ahead,
+  behind,
+  max,
+  defaultName,
+}: {
+  ahead: number;
+  behind: number;
+  max: number;
+  defaultName: string;
+}) {
+  if (ahead === 0 && behind === 0) {
+    return (
+      <span
+        className="w-[7.5rem] shrink-0 text-center font-mono text-[11px] text-muted-foreground/60"
+        title="Even with the default branch"
+      >
+        —
+      </span>
+    );
+  }
+  const pct = (n: number) => (max > 0 ? Math.max(n > 0 ? 12 : 0, (n / max) * 100) : 0);
+  return (
+    <div
+      className="flex w-[7.5rem] shrink-0 items-center gap-1"
+      title={`${ahead} ahead, ${behind} behind ${defaultName}`}
+    >
+      <span className="w-4 text-right font-mono text-[10px] tabular-nums text-amber-300/90">
+        {behind || ""}
+      </span>
+      <div className="flex flex-1 items-center">
+        <div className="flex h-1.5 flex-1 justify-end">
+          <span
+            className="h-full rounded-l-full bg-amber-400/70"
+            style={{ width: `${pct(behind)}%` }}
+          />
+        </div>
+        <span className="h-3 w-px shrink-0 bg-border" />
+        <div className="flex h-1.5 flex-1 justify-start">
+          <span
+            className="h-full rounded-r-full bg-emerald-400/70"
+            style={{ width: `${pct(ahead)}%` }}
+          />
+        </div>
+      </div>
+      <span className="w-4 font-mono text-[10px] tabular-nums text-emerald-300/90">
+        {ahead || ""}
+      </span>
+    </div>
+  );
+}
+
+function BranchStateChips({ b }: { b: DemoBranch }) {
+  if (b.isDefault) {
+    return (
+      <Badge
+        variant="outline"
+        className="shrink-0 gap-1 border-primary/40 bg-primary/10 px-1.5 py-0 text-[10px] text-primary"
+      >
+        default
+      </Badge>
+    );
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {b.merged ? (
+        <GitChip tone="merged">merged</GitChip>
+      ) : (
+        <GitChip tone="active">
+          <CircleDotIcon className="size-2.5" />
+          active
+        </GitChip>
+      )}
+      {b.stale && <GitChip tone="stale">stale</GitChip>}
+    </div>
+  );
+}
+
+function BranchRow({
+  b,
+  max,
+  defaultName,
+  onDelete,
+}: {
+  b: DemoBranch;
+  max: number;
+  defaultName: string;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 transition-colors hover:bg-muted/30">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate font-mono text-sm font-medium" title={b.name}>
+            {b.name}
+          </span>
+          <BranchStateChips b={b} />
+        </div>
+        {/* tip commit — secondary line, muted, truncates */}
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-[1.375rem] text-xs text-muted-foreground">
+          <span className="shrink-0 font-mono text-muted-foreground/80">{b.sha}</span>
+          <span className="min-w-0 truncate">{b.subject}</span>
+          <span className="shrink-0 text-border">·</span>
+          <span className="shrink-0">{b.author}</span>
+          <span className="shrink-0 text-border">·</span>
+          <span className="shrink-0 text-muted-foreground/70">{fmtAgo(b.updatedAt)}</span>
+        </div>
+      </div>
+
+      <AheadBehindBars
+        ahead={b.ahead}
+        behind={b.behind}
+        max={max}
+        defaultName={defaultName}
+      />
+
+      <div className="flex w-6 shrink-0 justify-end">
+        {b.merged && !b.isDefault && (
+          <button
+            type="button"
+            onClick={onDelete}
+            aria-label={`Delete ${b.name}`}
+            title="Delete merged branch"
+            className="text-muted-foreground/60 transition-colors hover:text-destructive"
+          >
+            <Trash2Icon className="size-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function BranchesSection() {
-  const merged = DEMO_BRANCHES.filter((b) => b.merged);
+  const [deleted, setDeleted] = useState<Set<string>>(new Set());
+  const rows = DEMO_BRANCHES.filter((b) => !deleted.has(b.name));
+  const merged = rows.filter((b) => b.merged && !b.isDefault);
+  const defaultName = DEMO_BRANCHES.find((b) => b.isDefault)?.name ?? "main";
+  const max = Math.max(1, ...rows.map((b) => Math.max(b.ahead, b.behind)));
+
+  const del = (name: string) =>
+    setDeleted((s) => new Set(s).add(name));
+  const delMerged = () =>
+    setDeleted((s) => {
+      const next = new Set(s);
+      merged.forEach((b) => next.add(b.name));
+      return next;
+    });
+
   return (
     <div>
       <SectionBand
         icon={GitBranchIcon}
         label="Branches"
-        count={DEMO_BRANCHES.length}
+        count={rows.length}
         right={
           merged.length > 0 ? (
-            <Button size="sm" variant="outline">
+            <Button size="sm" variant="outline" onClick={delMerged}>
               <Trash2Icon />
               Delete {merged.length} merged
             </Button>
           ) : undefined
         }
       />
-      <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-        {DEMO_BRANCHES.map((b) => (
-          <Badge
+      {/* column hint — keeps the mirrored-bar axis legible */}
+      <div className="flex items-center gap-3 px-4 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground/70 uppercase">
+        <span className="flex-1">Branch · last commit</span>
+        <span className="w-[7.5rem] text-center">← behind · ahead →</span>
+        <span className="w-6" />
+      </div>
+      <div className="divide-y divide-border border-t border-border">
+        {rows.map((b) => (
+          <BranchRow
             key={b.name}
-            variant="outline"
-            className={cn(
-              "gap-1.5 px-2 py-0.5 font-mono text-[11px]",
-              b.merged
-                ? "border-border bg-muted/40 text-muted-foreground"
-                : "border-sky-500/25 bg-sky-500/5 text-sky-300",
-            )}
-          >
-            {b.name}
-            {!b.merged && (b.ahead > 0 || b.behind > 0) && (
-              <span className="text-muted-foreground/70">
-                +{b.ahead}/-{b.behind}
-              </span>
-            )}
-          </Badge>
+            b={b}
+            max={max}
+            defaultName={defaultName}
+            onDelete={() => del(b.name)}
+          />
         ))}
       </div>
+
+      <ActivityStrip />
     </div>
   );
 }
 
-/* ------------------------------------------------- activity (mini-log) */
+/* ---------------------------------------- activity (secondary strip) */
 
-function ActivitySection() {
+// Kept available but SECONDARY — a compact commit strip below the branches
+// table, not a sidebar fighting the hero for width.
+function ActivityStrip() {
   return (
-    <div>
-      <SectionBand icon={HistoryIcon} label="Activity" />
-      <ol className="px-4 pb-4">
+    <div className="border-t border-border bg-background/40">
+      <div className="flex items-center gap-2 px-4 pt-2.5 pb-1">
+        <HistoryIcon className="size-3.5 text-muted-foreground" />
+        <span className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+          Recent commits
+        </span>
+      </div>
+      <ol className="px-4 pb-3">
         {DEMO_COMMITS.map((c) => (
           <li
             key={c.sha}
-            className="flex items-center gap-2.5 border-l border-border py-1.5 pl-3"
+            className="flex items-center gap-2 border-l border-border py-1 pl-3"
           >
-            <span className="font-mono text-xs text-muted-foreground">
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground/80">
               {c.sha}
             </span>
-            <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+            <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/90">
               {c.subject}
             </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
+            <span className="hidden shrink-0 text-[11px] text-muted-foreground sm:inline">
               {c.author}
             </span>
-            <span className="shrink-0 text-xs text-muted-foreground/70">
+            <span className="shrink-0 text-[11px] text-muted-foreground/60">
               {fmtAgo(c.updatedAt)}
             </span>
           </li>
@@ -705,113 +872,154 @@ function ActivitySection() {
 
 /* ---------------------------------------------------------- remote bits */
 
-function RemoteStateChip({ state }: { state: RemoteState }) {
-  const map: Record<RemoteState, { label: string; cls: string; icon: LucideIcon }> = {
-    open: {
-      label: "open",
-      cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-      icon: CircleDotIcon,
-    },
-    draft: {
-      label: "draft",
-      cls: "border-border bg-muted/40 text-muted-foreground",
-      icon: GitPullRequestDraftIcon,
-    },
-    merged: {
-      label: "merged",
-      cls: "border-violet-500/30 bg-violet-500/10 text-violet-300",
-      icon: GitMergeIcon,
-    },
-    closed: {
-      label: "closed",
-      cls: "border-destructive/30 bg-destructive/10 text-destructive",
-      icon: XCircleIcon,
-    },
+// GitHub-style state glyph: an OPEN issue is a green dot, a CLOSED one a purple
+// check; PRs reuse the same map (open green / merged purple / closed rose) with
+// draft handled by the caller.
+function RemoteStateIcon({ state }: { state: RemoteState }) {
+  const map: Record<RemoteState, { icon: LucideIcon; cls: string; label: string }> = {
+    open: { icon: CircleDotIcon, cls: "text-emerald-400", label: "open" },
+    closed: { icon: CheckCircle2Icon, cls: "text-violet-400", label: "closed" },
+    merged: { icon: GitMergeIcon, cls: "text-violet-400", label: "merged" },
+    draft: { icon: GitPullRequestDraftIcon, cls: "text-muted-foreground", label: "draft" },
   };
   const s = map[state];
+  return (
+    <span className={cn("flex shrink-0 items-center", s.cls)} title={s.label}>
+      <s.icon className="size-4" />
+    </span>
+  );
+}
+
+// CI cluster — passed check / failed x / pending dot, GitHub's checks summary.
+function ChecksClusterChip({ checks }: { checks: ChecksCluster }) {
+  const verdict: ChecksVerdict = checksVerdict(checks);
+  if (verdict === "none") return null;
+  const total = checks.passed + checks.failed + checks.pending;
+  const parts: { icon: LucideIcon; cls: string; n: number }[] = [
+    { icon: XCircleIcon, cls: "text-destructive", n: checks.failed },
+    { icon: ClockIcon, cls: "text-amber-400", n: checks.pending },
+    { icon: CheckCircle2Icon, cls: "text-emerald-400", n: checks.passed },
+  ];
+  const lead = verdict === "fail" ? parts[0] : verdict === "pending" ? parts[1] : parts[2];
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1"
+      title={`${checks.passed}/${total} checks passed${checks.failed ? `, ${checks.failed} failed` : ""}${checks.pending ? `, ${checks.pending} pending` : ""}`}
+    >
+      <lead.icon className={cn("size-3.5", lead.cls)} />
+      <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+        {checks.passed}/{total}
+      </span>
+    </span>
+  );
+}
+
+function ReviewChip({ review }: { review: ReviewState }) {
+  if (!review || review === "review_required") return null;
+  const map: Record<"approved" | "changes_requested", { label: string; cls: string }> = {
+    approved: {
+      label: "approved",
+      cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+    },
+    changes_requested: {
+      label: "changes",
+      cls: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+    },
+  };
+  const s = map[review];
   return (
     <Badge
       variant="outline"
       className={cn("shrink-0 gap-1 px-1.5 py-0 text-[10px]", s.cls)}
     >
-      <s.icon className="size-2.5" />
+      {review === "approved" ? (
+        <CheckIcon className="size-2.5" />
+      ) : (
+        <TriangleAlertIcon className="size-2.5" />
+      )}
       {s.label}
     </Badge>
   );
 }
 
-function ChecksChip({ checks }: { checks: ChecksState }) {
-  if (checks === "none") return null;
-  const map: Record<Exclude<ChecksState, "none">, { icon: LucideIcon; cls: string; label: string }> = {
-    pass: { icon: CheckCircle2Icon, cls: "text-emerald-400", label: "checks pass" },
-    fail: { icon: XCircleIcon, cls: "text-destructive", label: "checks fail" },
-    pending: { icon: ClockIcon, cls: "text-amber-400", label: "checks pending" },
-  };
-  const s = map[checks];
+function LabelChips({ labels }: { labels: string[] }) {
   return (
-    <span className={cn("inline-flex items-center", s.cls)} title={s.label}>
-      <s.icon className="size-3.5" />
-    </span>
+    <div className="hidden shrink-0 items-center gap-1 md:flex">
+      {labels.map((l) => (
+        <Badge
+          key={l}
+          variant="outline"
+          className={cn("px-1.5 py-0 text-[10px] font-normal", labelColor(l))}
+        >
+          {l}
+        </Badge>
+      ))}
+    </div>
   );
 }
 
 function IssueRow({ issue }: { issue: DemoIssue }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2 hover:bg-muted/30">
-      <span className="w-12 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+    <div className="flex items-center gap-2.5 px-4 py-2 hover:bg-muted/30">
+      <RemoteStateIcon state={issue.state} />
+      <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
         #{issue.number}
       </span>
-      <RemoteStateChip state={issue.state} />
-      <span className="min-w-0 flex-1 truncate text-sm">{issue.title}</span>
-      <div className="hidden shrink-0 items-center gap-1 sm:flex">
-        {issue.labels.map((l) => (
-          <Badge
-            key={l}
-            variant="outline"
-            className="px-1.5 py-0 text-[10px] text-muted-foreground"
-          >
-            {l}
-          </Badge>
-        ))}
-      </div>
-      <span className="w-16 shrink-0 truncate text-right text-xs text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+        {issue.title}
+      </span>
+      <LabelChips labels={issue.labels} />
+      <span className="hidden w-16 shrink-0 truncate text-right text-xs text-muted-foreground sm:inline">
         {issue.author}
       </span>
-      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground/70">
+      <span className="w-12 shrink-0 text-right text-xs text-muted-foreground/70">
         {fmtAgo(issue.updatedAt)}
+      </span>
+      <span
+        className="flex w-10 shrink-0 items-center justify-end gap-0.5 text-xs text-muted-foreground"
+        title={`${issue.comments} comments`}
+      >
+        <MessagesSquareIcon className="size-3" />
+        <span className="tabular-nums">{issue.comments}</span>
       </span>
     </div>
   );
 }
 
 function PRRow({ pr }: { pr: DemoPR }) {
+  // a draft shows a draft glyph; otherwise the shared open/merged/closed map
+  const iconState: RemoteState = pr.state === "draft" ? "draft" : pr.state;
   return (
-    <div className="flex items-center gap-3 px-4 py-2 hover:bg-muted/30">
-      <span className="w-12 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+    <div className="flex items-center gap-2.5 px-4 py-2 hover:bg-muted/30">
+      <RemoteStateIcon state={iconState} />
+      <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
         #{pr.number}
       </span>
-      <RemoteStateChip state={pr.state} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm">{pr.title}</div>
-        <div className="mt-0.5 flex items-center gap-1.5">
-          <span className="truncate font-mono text-[11px] text-muted-foreground">
-            {pr.branch}
+        <div className="truncate text-sm font-medium">{pr.title}</div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px]">
+          <span className="flex min-w-0 items-center gap-1 truncate font-mono text-muted-foreground">
+            <span className="truncate">{pr.branch}</span>
+            <CornerDownRightIcon className="size-3 shrink-0 rotate-0 text-muted-foreground/50" />
+            <span className="shrink-0 text-muted-foreground/80">{pr.base}</span>
           </span>
           {pr.linkedLoomId && (
             <GitChip
               tone="active"
               className="border-indigo-500/30 bg-indigo-500/10 text-indigo-300"
             >
+              <WorkflowIcon className="size-2.5" />
               wove {pr.linkedLoomId}
             </GitChip>
           )}
         </div>
       </div>
-      <ChecksChip checks={pr.checks} />
-      <span className="w-16 shrink-0 truncate text-right text-xs text-muted-foreground">
+      <ReviewChip review={pr.review} />
+      <ChecksClusterChip checks={pr.checks} />
+      <span className="hidden w-16 shrink-0 truncate text-right text-xs text-muted-foreground sm:inline">
         {pr.author}
       </span>
-      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground/70">
+      <span className="w-12 shrink-0 text-right text-xs text-muted-foreground/70">
         {fmtAgo(pr.updatedAt)}
       </span>
     </div>
@@ -929,14 +1137,81 @@ function RemoteSection({ prs }: { prs: DemoPR[] }) {
               );
             })}
           </div>
-          <div className="divide-y divide-border">
-            {sub === "issues"
-              ? DEMO_ISSUES.map((i) => <IssueRow key={i.number} issue={i} />)
-              : prs.map((p) => <PRRow key={p.number} pr={p} />)}
-          </div>
+          {sub === "issues" ? (
+            <RemoteList
+              key="issues"
+              placeholder="Search issues by title, label, author…"
+              rows={DEMO_ISSUES}
+              match={(i, q) =>
+                i.title.toLowerCase().includes(q) ||
+                `#${i.number}`.includes(q) ||
+                i.author.toLowerCase().includes(q) ||
+                i.labels.some((l) => l.toLowerCase().includes(q))
+              }
+              render={(i) => <IssueRow key={i.number} issue={i} />}
+              noun="issue"
+            />
+          ) : (
+            <RemoteList
+              key="prs"
+              placeholder="Search pull requests by title, branch, author…"
+              rows={prs}
+              match={(p, q) =>
+                p.title.toLowerCase().includes(q) ||
+                `#${p.number}`.includes(q) ||
+                p.author.toLowerCase().includes(q) ||
+                p.branch.toLowerCase().includes(q) ||
+                p.base.toLowerCase().includes(q)
+              }
+              render={(p) => <PRRow key={p.number} pr={p} />}
+              noun="pull request"
+            />
+          )}
         </>
       ) : (
         <NotConnected />
+      )}
+    </div>
+  );
+}
+
+// Searchable list wrapper — a slim search field over a divided row list, with an
+// empty state when the query matches nothing.
+function RemoteList<T>({
+  rows,
+  match,
+  render,
+  placeholder,
+  noun,
+}: {
+  rows: T[];
+  match: (row: T, q: string) => boolean;
+  render: (row: T) => ReactNode;
+  placeholder: string;
+  noun: string;
+}) {
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+  const filtered = query ? rows.filter((r) => match(r, query)) : rows;
+  return (
+    <div>
+      <div className="relative px-4 py-2">
+        <SearchIcon className="pointer-events-none absolute top-1/2 left-6 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={placeholder}
+          className="h-8 w-full rounded-md border border-border bg-background/60 pr-3 pl-8 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:bg-background focus:ring-2 focus:ring-ring/30"
+        />
+      </div>
+      {filtered.length > 0 ? (
+        <div className="divide-y divide-border border-t border-border">
+          {filtered.map((r) => render(r))}
+        </div>
+      ) : (
+        <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+          No {noun}s match “{q}”.
+        </p>
       )}
     </div>
   );
@@ -995,68 +1270,7 @@ function TouchedBy({ node }: { node: DemoFileNode }) {
   );
 }
 
-function TreeNode({
-  node,
-  showTouched,
-}: {
-  node: DemoFileNode;
-  showTouched: boolean;
-}) {
-  // folders collapsed by default (orientation surface, not a file browser)
-  const [open, setOpen] = useState(false);
-  const isDir = node.kind === "dir";
-  const Icon = isDir ? FolderIcon : FileIcon;
-  return (
-    <div>
-      <div
-        role={isDir ? "button" : undefined}
-        onClick={isDir ? () => setOpen((o) => !o) : undefined}
-        className={cn(
-          "flex items-center gap-2 py-1.5 pr-4 transition-colors",
-          isDir ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20",
-        )}
-        style={{ paddingLeft: `${node.depth * 16 + 12}px` }}
-      >
-        {isDir ? (
-          <ChevronRightIcon
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-90",
-            )}
-          />
-        ) : (
-          <span className="w-3.5 shrink-0" />
-        )}
-        <Icon
-          className={cn(
-            "size-4 shrink-0",
-            isDir ? "text-sky-400/80" : "text-muted-foreground",
-          )}
-        />
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-sm",
-            isDir ? "font-medium" : "text-foreground/90",
-          )}
-        >
-          {node.name}
-        </span>
-        <HeatDot heat={node.heat} />
-        <StatusBadge status={node.status} />
-        {showTouched && <TouchedBy node={node} />}
-      </div>
-      {isDir && open && node.children && (
-        <div>
-          {node.children.map((c) => (
-            <TreeNode key={c.name} node={c} showTouched={showTouched} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// count files + dirty (files carrying a git status) across the whole tree
+// count files + dirty (files carrying a git status) across a subtree
 function fileCounts(nodes: DemoFileNode[]): { files: number; dirty: number } {
   let files = 0;
   let dirty = 0;
@@ -1073,10 +1287,149 @@ function fileCounts(nodes: DemoFileNode[]): { files: number; dirty: number } {
   return { files, dirty };
 }
 
+// dirty file count under a dir — bubbles a badge onto the parent directory row
+function dirtyUnder(node: DemoFileNode): number {
+  return node.children ? fileCounts(node.children).dirty : 0;
+}
+
+// the nodes at a given path (segment names from the repo root)
+function childrenAt(path: string[]): DemoFileNode[] {
+  let level = DEMO_FILE_TREE;
+  for (const seg of path) {
+    const node = level.find((n) => n.name === seg);
+    if (!node?.children) return [];
+    level = node.children;
+  }
+  return level;
+}
+
+// dirs first, then files — GitHub's ordering
+function ordered(nodes: DemoFileNode[]): DemoFileNode[] {
+  return [...nodes].sort((a, b) =>
+    a.kind === b.kind ? 0 : a.kind === "dir" ? -1 : 1,
+  );
+}
+
+function FileBrowserRow({
+  node,
+  showTouched,
+  onOpen,
+}: {
+  node: DemoFileNode;
+  showTouched: boolean;
+  onOpen?: () => void;
+}) {
+  const isDir = node.kind === "dir";
+  const Icon = isDir ? FolderIcon : FileIcon;
+  const dirty = isDir ? dirtyUnder(node) : 0;
+  return (
+    <div
+      role={isDir ? "button" : undefined}
+      onClick={onOpen}
+      className={cn(
+        "flex items-center gap-2 px-4 py-2 transition-colors",
+        isDir ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20",
+      )}
+    >
+      <Icon
+        className={cn(
+          "size-4 shrink-0",
+          isDir ? "text-sky-400/80" : "text-muted-foreground",
+        )}
+      />
+      {/* name cluster — capped so the commit column keeps room */}
+      <div className="flex min-w-0 shrink items-center gap-1.5 sm:basis-2/5">
+        <span
+          className={cn(
+            "truncate text-sm",
+            isDir ? "font-medium" : "text-foreground/90",
+          )}
+          title={node.name}
+        >
+          {node.name}
+        </span>
+        {dirty > 0 && (
+          <Badge
+            variant="outline"
+            className="shrink-0 gap-0.5 border-amber-500/40 bg-amber-500/10 px-1 py-0 font-mono text-[10px] tabular-nums text-amber-300"
+            title={`${dirty} dirty file${dirty === 1 ? "" : "s"} inside`}
+          >
+            {dirty}
+          </Badge>
+        )}
+        <StatusBadge status={node.status} />
+        <HeatDot heat={node.heat} />
+      </div>
+
+      {/* last commit for this path — muted middle column */}
+      <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:inline">
+        {node.commit.subject}
+      </span>
+
+      {showTouched && <TouchedBy node={node} />}
+      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground/70">
+        {fmtAgo(node.commit.updatedAt)}
+      </span>
+      {isDir ? (
+        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+      ) : (
+        <span className="w-3.5 shrink-0" />
+      )}
+    </div>
+  );
+}
+
+function Breadcrumb({
+  path,
+  onNavigate,
+}: {
+  path: string[];
+  onNavigate: (p: string[]) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1 border-y border-border bg-background/40 px-4 py-1.5 text-xs">
+      <button
+        type="button"
+        onClick={() => onNavigate([])}
+        className={cn(
+          "flex items-center gap-1 rounded px-1 py-0.5 font-medium transition-colors",
+          path.length === 0
+            ? "text-foreground"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <FolderOpenIcon className="size-3.5" />
+        {DEMO_PROJECT.name}
+      </button>
+      {path.map((seg, i) => {
+        const last = i === path.length - 1;
+        return (
+          <span key={i} className="flex items-center gap-1">
+            <ChevronRightIcon className="size-3 text-muted-foreground/50" />
+            <button
+              type="button"
+              onClick={() => onNavigate(path.slice(0, i + 1))}
+              className={cn(
+                "rounded px-1 py-0.5 font-mono transition-colors",
+                last
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {seg}
+            </button>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function FilesSection() {
-  // owns its sub-view now — always expanded, no collapse chrome.
   const [showTouched, setShowTouched] = useState(true);
+  const [path, setPath] = useState<string[]>([]);
   const counts = useMemo(() => fileCounts(DEMO_FILE_TREE), []);
+  const nodes = useMemo(() => ordered(childrenAt(path)), [path]);
 
   return (
     <div>
@@ -1110,9 +1463,11 @@ function FilesSection() {
         }
       />
 
+      <Breadcrumb path={path} onNavigate={setPath} />
+
       {/* honesty caveat — the attribution is aspirational, not a fact yet */}
       {showTouched && (
-        <div className="flex items-start gap-2 border-y border-border bg-amber-500/5 px-4 py-2">
+        <div className="flex items-start gap-2 border-b border-border bg-amber-500/5 px-4 py-2">
           <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-amber-400" />
           <p className="text-[11px] text-muted-foreground">
             <span className="font-medium text-foreground">
@@ -1125,9 +1480,17 @@ function FilesSection() {
           </p>
         </div>
       )}
-      <div className="py-1">
-        {DEMO_FILE_TREE.map((n) => (
-          <TreeNode key={n.name} node={n} showTouched={showTouched} />
+
+      <div className="divide-y divide-border">
+        {nodes.map((n) => (
+          <FileBrowserRow
+            key={n.name}
+            node={n}
+            showTouched={showTouched}
+            onOpen={
+              n.kind === "dir" ? () => setPath([...path, n.name]) : undefined
+            }
+          />
         ))}
       </div>
     </div>
@@ -1216,12 +1579,22 @@ export function GitUnifiedDemo() {
     });
   };
 
-  // same-tick PR liveness: pending → pass on the linked PR when the loom lands
+  // same-tick PR liveness: the linked PR's pending checks flip green when the
+  // loom lands (l-03 / #144: 2 pending → passed, in the same tick).
   const prs = useMemo(
     () =>
       replayed
         ? DEMO_PRS.map((p) =>
-            p.number === 144 ? { ...p, checks: "pass" as ChecksState } : p,
+            p.number === 144
+              ? {
+                  ...p,
+                  checks: {
+                    passed: p.checks.passed + p.checks.pending,
+                    failed: p.checks.failed,
+                    pending: 0,
+                  } satisfies ChecksCluster,
+                }
+              : p,
           )
         : DEMO_PRS,
     [replayed],
@@ -1262,15 +1635,7 @@ export function GitUnifiedDemo() {
               />
             )}
 
-            {active === "branches" && (
-              // branches beside the activity mini-log — two-column if it fits
-              <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x lg:divide-border">
-                <BranchesSection />
-                <div className="border-t border-border lg:border-t-0">
-                  <ActivitySection />
-                </div>
-              </div>
-            )}
+            {active === "branches" && <BranchesSection />}
 
             {active === "remote" && <RemoteSection prs={prs} />}
 
