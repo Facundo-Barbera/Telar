@@ -11,6 +11,7 @@ import {
   ChevronRightIcon,
   ExternalLinkIcon,
   PencilIcon,
+  PictureInPicture2Icon,
   ShieldAlertIcon,
   TriangleAlertIcon,
   UserRoundIcon,
@@ -37,6 +38,7 @@ import {
   type LoomEventRow,
 } from "@/components/session/session-loom";
 import { CostPill, ContextPill } from "@/components/session/session-meters";
+import { useDockOptional } from "@/components/dock/dock-provider";
 import {
   Message,
   MessageContent,
@@ -1004,6 +1006,9 @@ function SessionViewInner({
   // thread title immediately — the server can't re-title mid-stream (getChat is
   // undefined until the first turn persists, long after the URL is rewritten).
   const [title, setTitle] = useState(initialTitle ?? "New session");
+  // Mini-dock: docking the current session is its natural entry point. Optional
+  // context so an out-of-provider render (dev gallery) simply hides the button.
+  const dock = useDockOptional();
   const [model, setModel] = useState(initialChat?.model ?? DEFAULT_MODEL);
   // "default" = omit `effort` from the POST body entirely (let the model/SDK
   // pick). Any other value is a real EffortLevel string sent as-is.
@@ -2687,6 +2692,31 @@ function SessionViewInner({
           {/* Aggregate session cost with a hover breakdown (real grand total;
               per-sub-agent split reserved — spend isn't attributed yet). */}
           <CostPill total={sessionCost} />
+          {/* Minimize this session to the mini-dock — the dock's natural entry
+              point. Only once a real, persisted session id exists to follow. */}
+          {dock && sessionId && chatPersisted && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={dock.isDocked(sessionId) ? "In the dock" : "Minimize to dock"}
+              title={dock.isDocked(sessionId) ? "Already in the dock" : "Minimize to dock"}
+              className={cn(
+                "shrink-0 text-muted-foreground hover:text-foreground",
+                dock.isDocked(sessionId) && "text-primary",
+              )}
+              onClick={() =>
+                dock.dockSession({
+                  id: sessionId,
+                  title,
+                  project,
+                  initial: (title.trim()[0] ?? project.trim()[0] ?? "·").toUpperCase(),
+                })
+              }
+            >
+              <PictureInPicture2Icon />
+            </Button>
+          )}
         </div>
       </div>
 

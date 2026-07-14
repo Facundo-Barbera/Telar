@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { DockProvider } from "@/components/dock/dock-provider";
+import { Dock } from "@/components/dock/dock";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,10 +32,14 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <SidebarProvider>
-          <AppSidebar />
-          <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>
-        </SidebarProvider>
+        <DockProvider>
+          <SidebarProvider>
+            <AppSidebar />
+            <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>
+          </SidebarProvider>
+          {/* The mini-dock rides above every route — portaled to <body>. */}
+          <Dock />
+        </DockProvider>
       </body>
     </html>
   );
