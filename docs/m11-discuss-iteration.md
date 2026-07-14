@@ -4,6 +4,12 @@ Feedback from live-testing the conversational blocked-escalation on
 `loom_mrinlb18_0s6x5h` (vindication). Items numbered as given; this list is
 appended to as testing continues, then executed as one build round.
 
+> **ALL CLOSED (three fix rounds).** Each finding carries a closure stamp with its
+> landing SHA below. The whole set was re-proven wire-to-wire on the run-4 loom
+> `loom_mrjj3sch_0toxc0` — a greenfield `bun test` library that reached autonomous
+> `ready` via a DERIVED test-gate, no false escalation, `blocked` never spuriously
+> fired (independent 59/0 suite). Full run narrative: `docs/m11-prove-run.md`.
+
 ## 1. AI opens with an initial proposal (one-shot when possible)
 
 When the human clicks **Discuss**, the FIRST turn is the AGENT's, not an empty
@@ -28,6 +34,10 @@ upfront — e.g. "This is a greenfield bun-test library; I propose
   (`PLANNER_GREETING` pattern, never sent/billed). This item replaces that
   with a REAL first agent turn auto-fired on chat open (post-click), so the
   proposal is genuine analysis, not static copy.
+
+**CLOSED — `0a88528`.** The Discuss surface opens with a real agent proposal;
+the moat boundary holds (no session before the click, execution still waits on the
+`answer_blocked` permission card). Re-proven run-4.
 
 ## 2. Non-runnable command/gate `expected` must never reach `sh -c` (live bug)
 
@@ -60,6 +70,12 @@ contract-tightened events) but garbage flowed through unvalidated at every hop:
   (weakening risk), but a NON-runnable prose expected + a matching runnable hint
   is exactly the repair the moat wants — install it with an event trail.
 
+**CLOSED — `8fa0e18`.** Non-runnable `expected` is rejected at validation and
+fails closed TO ESCALATION at execution (never the repair loop); the runnable-shape guard
+chain validates at contract emit, `ProofHint.run` emit, and tightening install; the
+nuanced no-overwrite rule installs a matching runnable hint over a prose `expected` with
+an event trail. Re-proven run-4 (no prose gate reached `sh -c`).
+
 ## 3. The escalation answer must reach the gate layer
 
 The human's `verifyCommand: bun test` made the lane viable and informs the TOP
@@ -68,6 +84,10 @@ command. The human-answered verifyCommand is the authoritative runnable for
 the test criterion — it should (with an event trail) sanction repairing or
 overriding an unrunnable command assertion in the slice, instead of the child
 gating on garbage while the correct answer sits in the manifest.
+
+**CLOSED — `8fa0e18`.** The human-answered `verifyCommand` reaches the gate
+layer and sanctions overriding an unrunnable command assertion (with an event trail).
+Re-proven run-4.
 
 ## 5. Cancel-path worktree removal loses committed, un-consolidated work
 
@@ -81,6 +101,10 @@ behind, with the deliverable preserved as a BRANCH") is violated on the
 cancel/abort path — likely the documented M8 crash-window (snapshot lives in
 the executor finally; an abort mid-attempt may bypass it). Reproduce + close.
 
+**CLOSED — `49f4283`.** The cancel/abort path preserves committed work on a
+recovery branch (proven live on run #3: `telar/loom_mriuu8la_lrtwxx-wip-loom_mrjgch8b_g9r7g4`);
+`worktreeRetained`/`recoveryBranch` are set. Re-proven run-4.
+
 ## 4. Unfixable-gate circuit breaker (repair-guard extension)
 
 A gate that fails IDENTICALLY across attempts while the tree changes
@@ -89,6 +113,10 @@ substantially is not builder-fixable — the repair loop must detect this
 park instead of spending. Related: proof-intent capture is creation-time only;
 looms created before the plumbing fix (or whose planner emitted no hints) have
 no repair route at re-dispatch — the breaker is their safety net.
+
+**CLOSED — `49f4283`.** The unfixable-gate breaker detects same-assertion /
+same-signature / N-attempts and parks/escalates instead of spending (fired as designed on
+run #3's child `loom_mrjgch8b_g9r7g4`). Re-proven run-4 (never spuriously fired).
 
 ## 6. Planner field inversion on authored command assertions (run #3)
 
@@ -101,6 +129,10 @@ for command types — the real commands are unused. Fix: pin the field semantics
 message naming the right field, plus propose_contract prompt guidance), or
 consciously adopt observable-as-runnable — pick ONE and enforce it everywhere.
 
+**CLOSED — `5a0e51d`.** Field semantics pinned: the runnable lives in `expected`,
+and `observable` on a command/gate assertion is rejected at validation with a
+right-field message (plus `propose_contract` prompt guidance). Re-proven run-4.
+
 ## 7. isRunnableShape is too lenient — and a false-runnable becomes UN-repairable
 
 "exit code 0" and "process exit code 0; summary output reports 0 fail" both
@@ -111,6 +143,10 @@ The predicate's false-positives are therefore self-sealing. Tighten it (e.g.
 first token must resolve via `command -v` allow-listing builtins that make
 sense as gate entrypoints; reject bare `exit`/semicolon-chained prose), and
 consider requiring the runnable to match a hint for planner-authored contracts.
+
+**CLOSED — `5a0e51d`.** `isRunnableShape` tightened so a false-runnable prose
+`expected` (e.g. `exit code 0`) no longer certifies as runnable, closing the self-sealing
+UN-repairable trap. Re-proven run-4.
 
 ## 8. A child's `blocked` park must propagate as a PAUSE, not a step failure
 
@@ -126,3 +162,8 @@ blockedQuestion; keep everything resumable), never coerce into `failed`.
 Wins proven by the same run: the breaker fired as designed, and the child's
 committed work was preserved on a recovery branch
 (telar/loom_mriuu8la_lrtwxx-wip-loom_mrjgch8b_g9r7g4) — findings 4 and 5 work.
+
+**CLOSED — `c60a7cd`.** `blocked` propagates through the step runner and weave
+rollup as an awaiting-human PARK on the root (child's `blockedQuestion` surfaced,
+everything resumable), never coerced into `failed`. Re-proven run-4 (the escalation
+reaches the human; on the clean run `blocked` never fired at all).

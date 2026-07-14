@@ -1,5 +1,13 @@
 # Telar — Roadmap to Completion
 
+> **`docs/PRINCIPLES.md` (the Loom Doctrine) is AUTHORITATIVE.** Where this roadmap and
+> the doctrine disagree, the doctrine wins and the roadmap is the defect. This file is the
+> single source of truth for *what's left to build*, not for *how the engine behaves* —
+> that is the doctrine's. In particular: there is ONE engine and no behavior flags,
+> defaults, or dual paths (§1); the historical "flag-gated / prove & flip" milestone
+> framing below is retained only as shipped HISTORY — every such flag has since been
+> COLLAPSED to the sole engine path by the de-flag cut (`docs/deflag-cut-plan.md`).
+
 > **Thesis:** Generation is solved; **verification is the moat.** A loom never
 > auto-accepts its own work — a human accepts, always. Everything below serves
 > making that trustworthy, observable, and drivable from where you work.
@@ -229,13 +237,15 @@ the attempt-loop + repair leg + build-fanout + several flags into one abstractio
 - **Moat unchanged, optionally deeper** — the loom still verifies the thread deliverable
   fail-closed (green → `ready` → human accept → `done`); an optional informational
   per-step check never earns `done`.
-- Flag-gated, default off, byte-identical until proven on a real multi-step thread.
+- Proven on a real multi-step thread, then landed as the sole path — the single-agent
+  thread is the degenerate 1-step case, not a separate mode.
 
 **Done when:** a thread runs a real N-step, M-agent workflow under the same clamps and
-the same moat; the single-agent thread stays the default until the flag flips. Subsumes
-M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
+the same moat; the workflow runner IS how a thread runs. Subsumes M6 (keeps its
+partition/merge/stray machinery, retires its single-step framing).
 
-**Progress (overnight build, behind `threadWorkflow`, default off):**
+**Progress (overnight build; the `threadWorkflow` flag has since been collapsed — this is
+the engine now):**
 - ✅ **M9.1 — Step types + thread workflow-runner** (`19aafce`). `Step`/`ThreadWorkflow`/
   `AgentSpec` types; `runThreadWorkflow` step-DAG runner reusing the weaver's readiness
   kernel one altitude down; default 1-step `build` template re-enters `executeLoom`
@@ -272,8 +282,8 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
   with a raw command/db runnable is a code-exec surface (same trust model as loom-level gates,
   but planner-authored) — restrict the deterministic slice to named manifest gates if that
   combination ships.
-- ◑ **M9.5 — Prove ✅ / flip ⏳.** **E2E prove complete** (real looms, real agents, all M9
-  flags on, `personal` account, isolated sandbox):
+- ✅ **M9.5 — Proven, then collapsed to the sole path.** **E2E prove complete** (real looms,
+  real agents, `personal` account, isolated sandbox):
   - *Single-agent path:* a complex build task ran through `runThreadWorkflow` → contract gates →
     green → `ready` → human `acceptLoom` → `done` (clean accept, real commit). Moat never
     auto-promoted.
@@ -284,8 +294,9 @@ M6 (keeps its partition/merge/stray machinery, retires its single-step framing).
     `git status --porcelain`, which collapses a fully-untracked dir to `dir/` and false-flagged
     every greenfield fan-out file as stray (fail-closed but wrongly rejecting valid work). Fixed
     with `--untracked-files=all` (`a252432`); genuine strays still fail closed. 856 core tests.
-  - **Flip still pending (human decision):** flip `threadWorkflow` on as the default + retire
-    M6's single-step framing. Flags remain default-off, so the live `:3000` is unchanged.
+  - **Collapsed (de-flag cut, `docs/deflag-cut-plan.md`):** `threadWorkflow` is no longer a
+    flag — the workflow runner IS how every thread runs; M6's single-step framing is retired,
+    the engine is this now.
 
   *Fan-out robustness follow-ups (both surfaced by the e2e; both fail-**closed**, moat intact —
   harden before making the multi-agent path a default):*
@@ -328,10 +339,12 @@ runnable target (greenfield library, no dev server) → per-thread `needs-review
 Right, but unsatisfying: the gap was environment-provisioning + planner-contract quality, not a
 build defect. M10 makes the orchestrator own that.
 
-**Phases (flag-gated, default off, fail-closed; the TOP GATE ships before thread demotion so
-fail-closed is never lost). M10.0–M10.5 SHIPPED on branch `m10` (each: workflow → adversarial
+**Phases (fail-closed; the TOP GATE ships before thread demotion so fail-closed is never lost;
+each shipped behind a milestone flag SINCE COLLAPSED to the sole engine path by the de-flag cut,
+`docs/deflag-cut-plan.md`). M10.0–M10.5 SHIPPED on branch `m10` (each: workflow → adversarial
 moat-lens verify + PoCs → independent green-gate → commit; every phase found & closed a real
-fail-open/coverage hole before commit). Base green: 947 pass / core+web tsc 0.**
+fail-open/coverage hole before commit). Base green: 947 pass / core+web tsc 0. The per-phase
+`Flag` labels below are retained as shipped history.**
 - **✅ M10.0** — adjacent fixes: cockpit copy (Finding 1, `257c3e2`) + proposer prefers
   command/gate over live-critic (Finding 3, prompt-guidance, `40f2223`). *(unflagged corrections)*
 - **✅ M10.1** — orchestrator final-verification GATE (`1e30fa7`): verify the composed whole after
@@ -348,10 +361,12 @@ fail-open/coverage hole before commit). Base green: 947 pass / core+web tsc 0.**
 - **✅ M10.5** — objective/subjective routing (`99d8e86` core + `18807b9` web): default-to-objective;
   subjective → human accept (never a machine gate); optional advisory aesthetic critic, provably
   non-gating. *Flag `subjectiveRouting`.*
-- **▶ M10.6** — prove & flip (INTERACTIVE, human-in-seat): live-validate on the greenfield lib +
-  a web app (lane stood up) + a pure refactor; confirm fail-closed still demotes a genuinely-broken
-  whole; then flip `orchestratorVerify`/`verifyLane`/`laneEscalation`/`subjectiveRouting` on as
-  defaults. *(the greenfield lib now reaches autonomous `ready → human done`).*
+- **✅ M10.6** — prove, then collapse (INTERACTIVE, human-in-seat): live-validated on the
+  greenfield lib + a web app (lane stood up) + a pure refactor; fail-closed still demotes a
+  genuinely-broken whole; the four flags (`orchestratorVerify`/`verifyLane`/`laneEscalation`/
+  `subjectiveRouting`) are no longer flags — the top gate + lane + routing IS the engine now
+  (de-flag cut, `docs/deflag-cut-plan.md`). *(the greenfield lib reaches autonomous
+  `ready → human done`).*
 
 **Done when:** a loom that today punts to `needs-review` for a missing verification lane instead
 drives to a real `ready` (orchestrator stood up the lane, verified the whole, fail-closed), the
@@ -386,11 +401,12 @@ then demanded a dev command a *library* has no answer for. The moat held (nothin
 — it exposed that verification is wired for web apps, not derived from the deliverable. (Also: the
 "Orchestrator requires help" surface should be a conversation, not a form — tracked follow-up.)
 
-**Phases (flag-gated, default off, fail-closed, byte-identical when off — same discipline as M10).
-M11.0–M11.2 SHIPPED on branch `m11` (same per-phase discipline: implement → green-gate → atomic
-commit). Base green: 1033 pass / 0 fail, core+web tsc 0; 86 new tests across 5 files. New shared
-seam: `deliverable-signal.ts` — a PURE, bounded signal (one top-level package.json parse + one
-readdir + the charter's proof intent) feeding both the M11.0 pre-flight and the M11.1 derivation.**
+**Phases (fail-closed; each shipped behind a milestone flag SINCE COLLAPSED to the sole engine
+path by the de-flag cut, `docs/deflag-cut-plan.md`; the per-phase `Flag` labels are retained as
+shipped history). M11.0–M11.2 SHIPPED on branch `m11` (implement → green-gate → atomic commit).
+Base green: 1033 pass / 0 fail, core+web tsc 0; 86 new tests across 5 files. New shared seam:
+`deliverable-signal.ts` — a PURE, bounded signal (one top-level package.json parse + one readdir +
+the charter's proof intent) feeding both the M11.0 pre-flight and the M11.1 derivation.**
 - **✅ M11.0** — pre-flight reframe (`68b39fd`): proceed-and-defer + escalate-last-resort; `isLaneViable`
   widened additively (signal + human `verifyCommand` paths); park copy strategy-derived (a library is
   asked for a test command, never a dev command); `answerBlocked` accepts a `verifyCommand` strategy
@@ -399,14 +415,26 @@ readdir + the charter's proof intent) feeding both the M11.0 pre-flight and the 
   the deliverable — charter-authored per-criterion `proofHints` → `command`, test-gate signal → the
   lockfile-aware test runnable for every remaining criterion (the redemption library no longer yields a
   synth-0 live-critic); tightening only, web never blanket-tightened, no runnable ever fabricated from
-  prose; flag-gated proofHints guidance in `draftCharter`. *Flag `adaptiveVerification` (NEW).*
+  prose; proofHints guidance in `draftCharter`. *Flag `adaptiveVerification` (NEW).*
 - **✅ M11.2** — non-server VerificationStrategies (`734f556`): `verification-strategy.ts` union
   (server-lane | test-gate | cli-harness | sandbox-eval | artifact-assert) + pure chooser; established
   at artifact time inside the frozen worktree; web / any resolvable servers recipe stay server-lane
   verbatim; a non-server strategy stands nothing up and hands the panel no stale URL target —
   fail-closed coercion and teardown carry over for every strategy. *Flag `verifyLane` (widened).*
-- **▶ M11.3** — prove & flip (INTERACTIVE): the redemption library reaches autonomous `ready`; a CLI + a
-  DS eval verify; confirm a mis-derived/weak strategy still demotes; flip defaults.
+- **✅ M11 live-proof fix rounds** (three rounds, findings 1–8; details in
+  `docs/m11-prove-run.md` + closure stamps in `docs/m11-discuss-iteration.md`): AI-opens-with-a-proposal
+  conversational escalation (finding 1, `0a88528`); non-runnable `expected` rejected/escalated + the
+  escalation answer reaching the gate layer (findings 2+3, `8fa0e18`); unfixable-gate circuit breaker +
+  cancel-path worktree/recovery-branch preservation (findings 4+5, `49f4283`); field-semantics pinned
+  (runnable in `expected`, `observable` rejected on command/gate) + `isRunnableShape` tightened (findings
+  6+7, `5a0e51d`); child `blocked` propagates as an awaiting-human PAUSE through the step runner + weave
+  rollup, never a step `failed` (finding 8, `c60a7cd`).
+- **▶ M11.3** — prove on real deliverables (INTERACTIVE): scenario (a) **PROVEN** — the redemption-shaped
+  greenfield library `loom_mrjj3sch_0toxc0` reached autonomous `ready` via a DERIVED test-gate, no false
+  dev-server escalation (independent 59/0 suite). *Remaining:* a CLI (`command` gates drive the top gate),
+  a DS eval (sandbox artifact assertions), and a weak-strategy demotion (a mis-derived strategy still
+  demotes a genuinely-unproven whole). The flag-flip question is **SUPERSEDED** by the de-flag cut
+  (`docs/deflag-cut-plan.md`) — the derivation is already the sole engine path.
 
 **Done when:** a non-web deliverable (library, CLI, data-science eval) drives to a real `ready` via a
 method the orchestrator *derived* — no false dev-server escalation, fail-closed intact. Full spec in
@@ -455,6 +483,9 @@ method the orchestrator *derived* — no false dev-server escalation, fail-close
 - **Orphan `apps/web/components/looms/loom-view.tsx`** — references non-existent
   `deriveSteps`/`StepAgent`/`WeaveStep`, breaks `apps/web` tsc, nothing imports it.
   Delete or finish (needs auth for removal — no `rm`).
+- **Retire the gallery** — after the design pass lands, delete the `/gallery` route, the
+  `telar-gallery` worktree, and the `view-gallery` branch (`docs/view-gallery.md` +
+  `docs/design-pass.md` context).
 - **`.telar/` per-project config dir** — gitignored home for `telar.yaml` & friends.
 - **MCP v2 — CIMD hosted client-doc** — stand up the client-metadata URL.
 - **Account `displayTier` labels (5x/20x) + in-app login UI.**

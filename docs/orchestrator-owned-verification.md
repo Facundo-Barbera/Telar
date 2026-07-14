@@ -334,15 +334,16 @@ be stood up. The moat's coverage is the same; its *altitude* is higher.
 
 ## 8. Execution plan (M10.1–M10.6)
 
-Follows the M9 discipline (`docs/thread-as-workflow.md`): every phase is **flag-gated, default
-OFF, byte-identical when off, fail-closed, independently green-gated, committed as its own
-unit.** Milestone flag: **`orchestratorVerify`** (default off); sub-flags per phase named below.
+Every phase is **fail-closed, independently green-gated, committed as its own unit.** Each
+shipped behind a milestone flag (`orchestratorVerify` + per-phase sub-flags) SINCE COLLAPSED to
+the sole engine path by the de-flag cut (`docs/deflag-cut-plan.md`); the flag names below are
+retained as shipped history.
 
 > **CRITICAL SEQUENCING — never lose fail-closed.** Build the **TOP gate BEFORE demoting
 > threads.** Demoting thread verification (M10.2) before the orchestrator gate exists (M10.1)
 > would fail-**open** — a window where nothing proves the whole. So **M10.1 strictly precedes
 > M10.2**, and M10.2 is "safe only because M10.1 exists." M10.3–M10.5 build outward from the top
-> gate; M10.6 flips defaults only after a live-fail-closed proof.
+> gate; M10.6 is the live fail-closed proof.
 
 ### M10.0 (adjacent quick fixes — already captured)
 Two correctness/UX fixes from `docs/cockpit-ux-findings.md`, landable independently:
@@ -450,19 +451,21 @@ Two correctness/UX fixes from `docs/cockpit-ux-findings.md`, landable independen
   never blocks; the aesthetic critic is provably non-gating.
 - **Flag.** `subjectiveRouting`.
 
-### M10.6 — PROVE & FLIP
-- **Goal.** Live-validate on real scenarios, confirm fail-closed holds **at the orchestrator**,
-  flip defaults. **Interactive — needs a real run, not a build workflow.**
+### M10.6 — PROVE, then COLLAPSE
+- **Goal.** Live-validate on real scenarios and confirm fail-closed holds **at the
+  orchestrator**. **Interactive — needs a real run, not a build workflow.**
 - **Scenarios.** (a) the greenfield lib that punted (`telar-test-m9`) → now autonomous `ready` →
   human `done`; (b) a web app needing a dev-server lane (M10.3 stands it up); (c) a pure
   refactor (regression IS the job). Confirm the top gate can still demote a genuinely-broken
   whole (inject a regression → `needs-review`).
 - **Done when.** Fail-closed demonstrably holds at the orchestrator on a real red whole; the
-  three scenarios reach `ready` autonomously where they deserve it; then flip
-  `orchestratorVerify`/`verifyLane`/`laneEscalation`/`subjectiveRouting` on as defaults.
-- **Relationship to M9.5.** M9.5's `threadWorkflow` flip (`docs/ROADMAP.md`) is orthogonal but
-  should land first so the prove-run exercises the full M9+M10 stack; M10.6 is the analogous
-  interactive flip one altitude up (verification, not execution).
+  three scenarios reach `ready` autonomously where they deserve it. There is no default to
+  flip — the top gate + lane + routing IS the engine now; the four flags
+  (`orchestratorVerify`/`verifyLane`/`laneEscalation`/`subjectiveRouting`) were collapsed to the
+  sole path by the de-flag cut (`docs/deflag-cut-plan.md`).
+- **Relationship to M9.5.** M9.5 (`docs/ROADMAP.md`) landed the thread-workflow runner as the
+  sole path first, so the prove-run exercises the full M9+M10 stack; M10.6 is the analogous
+  proof one altitude up (verification, not execution).
 
 ### Process (every phase — the invariants the pass must hold)
 - **Orchestrate only.** Build each phase via one Workflow (ground → design → implement →
@@ -477,8 +480,8 @@ Two correctness/UX fixes from `docs/cockpit-ux-findings.md`, landable independen
   observe-capability, never mutates or relaxes an assertion.**
 - **Sequencing (sacred):** the **top gate (M10.1) ships before thread demotion (M10.2)** — never
   a window where nothing proves the whole.
-- **Flag discipline:** every phase default off; **flag-off byte-identical**; the thread-advisory
-  leg (M10.2) cannot be enabled without the top gate (M10.1).
+- **Ordering invariant:** the thread-advisory leg (M10.2) cannot exist without the top gate
+  (M10.1) beneath it — the fail-closed weight only ever shifts UP onto a gate that is already there.
 - **Build hygiene:** atomic edits (a live `bun dev` on :3000; never a duplicate-definition
   window); `NODE_OPTIONS=` prefix on all bun/bunx/tsc; never touch `.env`/secrets/lockfiles;
   removal via git only (no `rm`); commit messages with backticks via `git commit -F`; author
@@ -505,10 +508,11 @@ Two correctness/UX fixes from `docs/cockpit-ux-findings.md`, landable independen
   instead of looping. **Open:** the exact retry/backoff policy for a flapping service.
 - **Where autonomy stops.** The ceiling stays `ready` (§6, invariant 6). The orchestrator drives
   a stranded whole *up to* `ready` — it never promotes to `done`, never lands the branch, never
-  self-accepts an env proposal (`approveEnv` requires a human `by`, `dispatcher.ts:621`). **Open:**
-  should a *fully machine-verifiable* whole (all-deterministic contract, regression + completeness
-  green) ever auto-`done`, or does `ready → done` stay human-only forever? The current model says
-  human-only; revisit only with an explicit, audited opt-in.
+  self-accepts an env proposal (`approveEnv` requires a human `by`, `dispatcher.ts:621`). This is
+  **settled, not open:** `ready → done` is a human click, ALWAYS — a standing principle
+  (`docs/PRINCIPLES.md` §75 / Level 0, "no autonomous path writes `done`"), not a default awaiting
+  reconsideration. Even a fully machine-verifiable whole stops at `ready`; the human accept is the
+  point, by design.
 - **`blocked` reachability is new surface.** Making `blocked` reachable-as-output (M10.4) touches
   the resume/steer verbs (`dispatcher.ts:865-927`) and the cockpit. Risk: a park that never gets
   answered strands a loom silently. Mitigation: the cockpit "Orchestrator requires help" surface

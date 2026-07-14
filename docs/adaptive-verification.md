@@ -1,7 +1,11 @@
-# Adaptive verification strategy (design)
+# Adaptive verification strategy (as-built)
 
-> **Status:** proposed direction (**M11**). No code yet — this is the alignment +
-> execution-plan doc. **Builds ON M10** (`docs/orchestrator-owned-verification.md`):
+> **Status:** SHIPPED (**M11**, branch `m11`) and live-proven. M11.0–M11.2 landed as ONE
+> engine — the orchestrator DERIVES the verification method from the deliverable; there is
+> no flag, no default-off, no dual path (the de-flag cut collapsed the milestone flags —
+> `docs/deflag-cut-plan.md`; `docs/PRINCIPLES.md` §1 "one engine, git is the flag"). This
+> doc is the design record; the sections below describe the shipped behavior.
+> **Builds ON M10** (`docs/orchestrator-owned-verification.md`):
 > M10 moved the verification gate UP (threads advise ↑ orchestrator gates ↑ human
 > signs) and wired it **web/dev-server-centric** — a "lane" is a URL, a "critic"
 > reads a DOM. M11 **generalizes the method**: verification becomes an **adaptive
@@ -12,7 +16,22 @@
 > derivation, (2) establish-verification-at-any-point, (3) generalize the lane.
 > **Motivating evidence:** the `loom_mrigs3zo_vxgrsr` prove-run (project
 > "redemption") — a greenfield TypeScript library that parked `blocked` at the M10.4
-> pre-flight, the moat holding as it did so.
+> pre-flight, the moat holding as it did so — is now PROVEN autonomous: the
+> redemption-shaped greenfield library `loom_mrjj3sch_0toxc0` DERIVED a test-gate and
+> reached `ready` with no false dev-server escalation (M11.3 scenario (a), independent
+> 59/0 suite).
+>
+> **As-built deltas beyond the original design** (M11.0–M11.2 + three live-proven fix
+> rounds — findings 1–8, `docs/m11-prove-run.md` + `docs/m11-discuss-iteration.md`):
+> a `verifyCommand` human-answer tier that persists as a project FACT and feeds the
+> top-gate strategy; a runnable-shape guard CHAIN (validation at contract emit, at
+> `ProofHint.run` emit, and at the tightening install — a non-runnable prose `expected`
+> never reaches `sh -c`, and the tightening pass installs a matching runnable hint over a
+> prose `expected` with an event trail); `blocked` propagates through the step runner and
+> weave rollup as an awaiting-human PAUSE, never coerced into a step `failed`; a pinned
+> field-semantics rule (the runnable lives in `expected`, a misplaced `observable` on a
+> command/gate is rejected at validation); and the conversational escalation surface
+> (Discuss) whose first turn is the AGENT's proposal, not an empty form. See §9.
 
 ---
 
@@ -123,14 +142,14 @@ M10.5 delivered only the **narrow exact-gate-name tightening** (`weave-contracts
   spawn (`dispatcher.ts:372, 389`) and the child's **legacy** fallback
   (`wireChildBundle`, `weave-contracts.ts:99-101`). **`charter.proofStrategy` never
   reaches the ROOT contract** — the whole proof-derivation intent is dropped.
-- **What M11 changes.** Behind a new flag, `synthesizeContract` **derives the
-  assertion TYPE from the deliverable** (charter `proofStrategy` + a cheap project-type
-  signal — a `bun test`/`package.json` test script, a CLI bin, a notebook/dataset).
-  A library with a test script → a `command`/`gate` assertion (the type already
-  exists, `schemas.ts:488-489`; run by `runContractGates`, `executor.ts:457+`) **NOT**
-  a live-critic. The `PROOF_TEMPLATES.verifyMechanism` signal becomes **structural**,
-  not prompt-only. Flag-off (or no hints) **every** criterion still maps to
-  live-critic/exact-name-gate exactly as `weave-contracts.ts:53` today.
+- **What M11 does (shipped).** `synthesizeContract` **derives the assertion TYPE from
+  the deliverable** (charter `proofStrategy` + a cheap project-type signal — a
+  `bun test`/`package.json` test script, a CLI bin, a notebook/dataset). A library with a
+  test script → a `command`/`gate` assertion (the type already exists,
+  `schemas.ts:488-489`; run by `runContractGates`, `executor.ts:457+`) **NOT** a
+  live-critic. The `PROOF_TEMPLATES.verifyMechanism` signal is now **structural**, not
+  prompt-only. When no signal/hint applies, a criterion stays live-critic/exact-name-gate
+  exactly as `weave-contracts.ts:53` before — the derivation only ever **tightens**.
 
 ### 3.2 Establish at any point — the pre-flight becomes proceed-and-defer
 Today the pre-flight (`dispatcher.ts:304-325`) asks *"is a lane viable RIGHT NOW?"* via
@@ -150,8 +169,7 @@ assumption**. A testable-later library/CLI/DS deliverable satisfies none.
   (`parkBlockedIfLaneUnviable`, `dispatcher.ts:111`) becomes the **LAST RESORT**:
   reached only when **no** plan of any kind can be formed and the criterion is
   genuinely un-automatable (true subjective quality, credentials/secrets), after the
-  orchestrator tried and reported what it tried. `laneEscalationEnabled` stays the
-  **first `&&` operand** (`dispatcher.ts:319`), so flag-off is byte-identical.
+  orchestrator tried and reported what it tried.
 - **The escalation copy is web-shaped and must derive.** The park's hardcoded question
   — *"How do I run this app? Give me a dev command (e.g. `bun run dev`) or a servers
   recipe"* (`dispatcher.ts:117-119`) — is the **wrong question** for a library/CLI/DS
@@ -272,34 +290,36 @@ seams**:
   to the gate layer (`executor.ts:384-395`), and `runContractGates` already runs them
   fail-closed. M11 needs the **PROPOSER to emit them** for non-web deliverables — not
   new verification machinery.
-- The **pre-flight reframe rides on the EXISTING `laneEscalation` flag** — it widens the
-  true-branch of `isLaneViable`; correct derivation (§3.1) makes path 1 fire for a
-  library **without touching the pre-flight logic at all**.
-- The **lane generalization rides on the EXISTING `verifyLane` flag** — strategy
-  variants slot inside `frozenLaneVerify`, whose frozen `wt` is already the substrate.
+- The **pre-flight reframe widens the true-branch of `isLaneViable`** — correct
+  derivation (§3.1) makes path 1 fire for a library **without touching the pre-flight
+  logic at all**.
+- The **lane generalization slots strategy variants inside `frozenLaneVerify`**, whose
+  frozen `wt` is already the substrate.
 - The **verdict floor** (top-gate coercion `executor.ts:1157-1160`, no-target skip
   `:552-566`, the read-only wall `verifier.ts:237` / `critic.ts:201`) is **quoted,
   not modified.**
 
-One genuinely new flag (`adaptiveVerification` / `proposerStrategy`), modeled
-**verbatim** on `subjectiveRoutingEnabled` (`runner/flag.ts:96-98`). Every off-path is
-byte-identical.
+No new machinery, no new fail-closed invariant — the derivation and the strategy set are
+the whole of M11, and they are now the sole path for every project.
 
 ---
 
-## 7. Execution plan (M11.0–M11.3)
+## 7. Execution plan (M11.0–M11.3) — AS BUILT
 
-Follows the M10 discipline: every phase is **flag-gated, default OFF, byte-identical
-when off, fail-closed, independently green-gated, committed as its own unit.**
+Each phase landed **fail-closed, independently green-gated, committed as its own atomic
+unit** (M11.0 `68b39fd`, M11.1 `aa0122d`, M11.2 `734f556`; base green 1033/0, 86 new
+tests across 5 files), then was live-proven across three fix rounds (§9,
+`docs/m11-prove-run.md`). There is no flag — the engine derives the method for every
+registered project.
 
-> **SEQUENCING.** M11.0 (pre-flight reframe) is the smallest and fixes today's block,
-> but its *full* power depends on M11.1 (correct derivation) to make path 1 fire; the
-> two are complementary. Ship M11.0 to make the pre-flight proceed-and-defer safe, then
-> M11.1 to make the derivation emit deterministic assertions, then M11.2 to establish
-> non-server strategies when the artifact exists. M11.3 flips defaults after a live
-> fail-closed proof.
+> **SEQUENCING (as built).** M11.0 (pre-flight reframe) is the smallest and fixed the
+> original block, but its *full* power depends on M11.1 (correct derivation) to make
+> path 1 fire — the two are complementary. M11.0 made the pre-flight proceed-and-defer
+> safe; M11.1 made the derivation emit deterministic assertions; M11.2 established
+> non-server strategies when the artifact exists. M11.3 is the live proof that the derived
+> methods hold fail-closed on real deliverables.
 
-### M11.0 — Pre-flight reframe: proceed-and-defer + escalate-last-resort
+### ✅ M11.0 — Pre-flight reframe: proceed-and-defer + escalate-last-resort (`68b39fd`)
 - **Goal.** Reframe the M10.4 pre-flight from *"is a lane viable NOW? park if not"* to
   *"can I form a PLAN to verify this at all?"* — proceed and defer establishment;
   make the park the last resort. **Smallest phase; the fix that unblocks today's run.**
@@ -310,17 +330,15 @@ when off, fail-closed, independently green-gated, committed as its own unit.**
   (`dispatcher.ts:318-325`) parks **only** when no plan of any kind can be formed and
   the criterion is genuinely un-automatable; the park copy
   (`parkBlockedIfLaneUnviable`, `dispatcher.ts:111-124`) becomes strategy-derived.
-- **Flag.** `laneEscalation` (widens the existing flag's true-branch; first `&&`
-  operand stays, `dispatcher.ts:319`).
 - **Tests.** A library/CLI/DS contract returns `canPlan = true` and PROCEEDS (never
   parks); a genuinely un-automatable criterion still parks with a **strategy-specific**
   question; the pre-flight introduces **no spend** before the decision; `setupAgent`
-  and the new proceed-path don't double-fire; flag-off byte-identical.
+  and the new proceed-path don't double-fire.
 - **Done when.** Green-gate clean; the greenfield library no longer parks; the park is
   reachable only as a last resort; no autonomous path reaches `done`.
 - **Size.** **S** — a widening of one pure predicate + the gate condition + the copy.
 
-### M11.1 — Modality derivation (right method per deliverable, honor `proofStrategy`)
+### ✅ M11.1 — Modality derivation (right method per deliverable, honor `proofStrategy`) (`aa0122d`)
 - **Goal.** Make `synthesizeContract` **derive** the assertion type from the deliverable
   and **honor** the charter's proof intent — completing the M10.5 routing the header
   comment reserved (`weave-contracts.ts:26-39`, `proof-templates.ts:74-78`).
@@ -333,20 +351,22 @@ when off, fail-closed, independently green-gated, committed as its own unit.**
   (`proof-templates.ts:7-12`) **structural**; optionally have `draftCharter`
   (`scoping.ts:169`) emit a per-criterion proof hint. Fix once at the choke point
   `dispatcher.ts:296-300` and it propagates via `wireChildBundle` to every child slice.
-- **Flag.** `adaptiveVerification` (new peer flag, modeled verbatim on
-  `subjectiveRoutingEnabled`, `runner/flag.ts:96` + `TELAR_ADAPTIVE_VERIFY=1`).
+- **Landed.** `synthesizeContract` derives the assertion type from the deliverable —
+  charter-authored per-criterion `proofHints` → `command`, a test-gate signal → the
+  lockfile-aware test runnable for every remaining criterion; tightening only, web never
+  blanket-tightened, no runnable ever fabricated from prose.
 - **Tests.** An all-`bun test` library → a `gate`/`command` assertion (not synth-0
   live-critic); a CLI → a `command` asserting exit/output; the derivation only
   **tightens** live-critic → gate/command (never gate → live-critic); a criterion it
   can't map stays live-critic; `subjective:true` never rides a derived gate
-  (`schemas.ts:503-513`); flag-off **every** criterion maps live-critic/ALL exactly as
-  `weave-contracts.ts:53` (m1-forced-contracts / weave-planner / contract tests green).
+  (`schemas.ts:503-513`); a criterion with no signal/hint maps live-critic/ALL exactly as
+  `weave-contracts.ts:53` before (m1-forced-contracts / weave-planner / contract tests green).
 - **Done when.** Green-gate clean; the "redemption" library's charter yields a
   deterministic contract; `isLaneViable` path 1 fires; the top gate settles it on the
   gate exit code, fail-closed.
 - **Size.** **M** — the proposer signature + the derivation + honoring `proofStrategy`.
 
-### M11.2 — Generalize the lane to non-server VerificationStrategies
+### ✅ M11.2 — Generalize the lane to non-server VerificationStrategies (`734f556`)
 - **Goal.** Establish non-server strategies (test-gate / CLI-harness / sandbox-eval /
   artifact-assert) **when the artifact exists**, inside the frozen worktree.
 - **Seams.** A `VerificationStrategy` discriminated union established in
@@ -358,28 +378,36 @@ when off, fail-closed, independently green-gated, committed as its own unit.**
   executor/setup wall (`verify-lane.ts:48-86`). Any bring-up that can throw is wrapped
   in the **same** `failClosedLaneDown` guard (`verify-thread.ts:146-159`) so a strategy
   error becomes `target = undefined`, never a false green.
-- **Flag.** `verifyLane` (adds strategy variants inside the existing lane flag).
+- **Landed.** `verification-strategy.ts` union (server-lane | test-gate | cli-harness |
+  sandbox-eval | artifact-assert) + a pure chooser; web / any resolvable servers recipe
+  stay server-lane verbatim; a non-server strategy stands nothing up and hands the panel
+  no stale URL target.
 - **Tests.** A library strategy produces `GateResult[]` from `wt` with no URL; a DS
   sandbox strategy asserts on artifacts behind the read-only wall; a strategy bring-up
   throw fail-closes to no-target (demotes, never false-green); the lane tears down in
-  `finally` (`verify-thread.ts:168-172`); flag-off byte-identical.
+  `finally` (`verify-thread.ts:168-172`).
 - **Done when.** Green-gate clean; a non-server deliverable reaches a real verification
   autonomously; establishment happens when the artifact exists; the judge wall untouched.
 - **Size.** **M** — the strategy union + establishment inside `frozenLaneVerify`.
 
-### M11.3 — Prove & flip (interactive)
-- **Goal.** Live-validate on real scenarios, confirm fail-closed holds at the
-  orchestrator under adaptive derivation, flip defaults. **Interactive — needs a real
-  run.**
-- **Scenarios.** (a) the `loom_mrigs3zo_vxgrsr` library → now autonomous `ready` →
-  human `done`; (b) a CLI deliverable → command gates alone drive the top gate;
-  (c) a DS eval → sandbox artifact assertions; (d) confirm a **mis-derived / weak**
-  strategy still demotes a genuinely-unproven whole (inject a case where no evidence is
+### ▶ M11.3 — Prove on real deliverables (interactive)
+- **Goal.** Live-validate on real scenarios and confirm fail-closed holds at the
+  orchestrator under adaptive derivation. There is no default to flip — the engine
+  derives the method for every project; this milestone is the live proof.
+  **Interactive — needs a real run.**
+- **Scenarios.** (a) **PROVEN** — a greenfield `bun test` library
+  (`loom_mrjj3sch_0toxc0`, redemption-shaped) DERIVED a test-gate and reached autonomous
+  `ready` with no false dev-server escalation (independent 59/0 suite);
+  (b) *remaining* a CLI deliverable → command gates alone drive the top gate;
+  (c) *remaining* a DS eval → sandbox artifact assertions;
+  (d) *remaining* a weak-strategy demotion — confirm a **mis-derived / weak** strategy
+  still demotes a genuinely-unproven whole (inject a case where no evidence is
   obtainable → `panelRequired` skip → coercion `executor.ts:1157-1160` → `needs-review`).
 - **Done when.** Fail-closed demonstrably holds at the orchestrator (a weak method
-  produces an honest "could not prove it", never a rubber-stamp); the scenarios reach
-  `ready` autonomously where they deserve it; then flip `adaptiveVerification` (and the
-  widened `laneEscalation`/`verifyLane` behavior) on as defaults.
+  produces an honest "could not prove it", never a rubber-stamp) and each remaining
+  scenario reaches `ready` autonomously where it deserves it. The flag-flip question is
+  **SUPERSEDED** by the de-flag cut (`docs/deflag-cut-plan.md`): the derivation is
+  already the sole engine path.
 - **Size.** **S** — interactive, no new build surface.
 
 ### Process (every phase — the invariants the pass must hold)
@@ -391,8 +419,6 @@ when off, fail-closed, independently green-gated, committed as its own unit.**
   `critic.ts:201`) are quoted-unchanged. Derivation touches only the METHOD.
 - **Tightening is one-directional:** live-critic → gate/command only; never
   gate → live-critic (a loosening `contractLoosenings` would flag).
-- **Flag discipline:** every phase default off; flag-off byte-identical; the new
-  `adaptiveVerification` flag models `subjectiveRoutingEnabled` verbatim.
 - **Build hygiene:** `NODE_OPTIONS=` prefix on all bun/bunx/tsc; never touch
   `.env`/secrets/lockfiles; **do NOT run `git commit`**; the only WRITE this pass is
   this doc.

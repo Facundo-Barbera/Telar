@@ -38,8 +38,8 @@ A Loom is `leaf` (one thread — today's verified loop) or `epic` (a tree of Thr
 1. **The Ledger is the truth, not any agent's context.** A Loom's state lives on disk (`loom.json` + `events.ndjson`), never in a transcript. This single decision answers all four axes: scope is an approvable ledger artifact, the orchestrator's context stays fresh because it's re-composed per tick from the ledger, and any agent or human can take over by loading it.
 2. **Deterministic control flow in code; intelligence in the leaves.** The orchestrator's *scheduling* is pure/deterministic. Individual judgment calls inside a tick (scope-conformance, decomposition) route to cheap agent calls. "The orchestrator is a pure function" is precise for scheduling, and honestly qualified as **pure scheduler + agent-adjudicated gates** for the judgment parts.
 3. **The moat is a code invariant, not a convention.** Independence of the Verifier is enforced by construction (tool restriction + a `validateDecision` invariant), on every write surface.
-4. **Least privilege by omission.** Workers get only their tools; the orchestrator holds only the ledger; chats get a narrow, mostly-read toolset. New power is opt-in.
-5. **Additive & reversible first.** The fast path (no charter) is byte-identical to today. Fan-out, scoping, and orchestration engage only when a Loom actually needs them.
+4. **Least privilege by omission.** Workers get only their tools; the orchestrator holds only the ledger; chats get a narrow, mostly-read toolset. Capability is granted by role, never toggled on.
+5. **The engine adapts to the INPUT, not to a switch.** A Loom's path is chosen by what it actually is: a no-charter quickfix takes the fast path; fan-out, scoping, and orchestration engage only when a Loom genuinely needs them. This is a fact-driven branch on the input's shape — one engine, no flag, no dual code path (`docs/PRINCIPLES.md` §1).
 
 ---
 
@@ -108,7 +108,7 @@ const Charter = z.object({
 - **Human approval.** Gated by `manifest.charterPolicy × shape` (default: `human-required-for-epics`, so quickfix stays frictionless). Approval stamps `approvedBy`.
 - **Mid-flight revision.** A Charter is versioned; revisions arrive as `edit_charter` **Directives** (§10), never a second write path.
 
-**Fast path (byte-identical to today).** If the caller supplies `acceptanceCriteria` directly (existing API/scripts/tests), scoping is **skipped** and behavior is exactly today's `executeRun` — same discipline as `classify()`'s "skip" path. No planning tax on a one-line quickfix.
+**Fast path (chosen by input shape).** If the caller supplies `acceptanceCriteria` directly (existing API/scripts/tests), scoping is **skipped** — the input already carries its own proof, so there is nothing to draft. Same fact-driven branch as `classify()`'s "skip" path. No planning tax on a one-line quickfix.
 
 ---
 
@@ -237,7 +237,7 @@ queued → scoping → [charter-review] → preparing → running → verifying 
 
 **Create:** `scoping.ts` (`draftCharter`), `proof-templates.ts`, `orchestrator/tick.ts` (`tick`, `validateDecision`), `orchestrator/rollup.ts` (pure epic roll-up, mirrors `decide()`), `orchestrator/budget.ts` (pool + fan-out sizing + priority), `orchestrator/directives.ts` (append + `basedOnVersion` + lease), `apps/web/.../telar-tools.ts` (the cockpit MCP server), the Loom-detail god-view + Looms list UI.
 
-**Touch:** `schemas.ts` (Charter/SubGoal/ScopeBoundary/Budget/Directive), `runs.ts→looms.ts` (`parentLoomId`/`subGoalId`/`charter`/`role`; states), `executor.ts` (extract `runThread` = today's verified loop; branch epic Looms to the orchestrator; keep leaf fast-path byte-identical), `dispatcher.ts` (`startLoom`, `steerRun`, boot rehydration/lease), `engine.ts` (worktree isolation for fan-out — extend `parallel()`), `verifier.ts` (unchanged; reused per thread), `distill.ts` (verifiedBy provenance check), `gates.ts` (scope-boundary diff check hook), `api/runs→api/looms`, `api/chat/route.ts` (mount the cockpit server), `session-view.tsx` (steer UI + loom-detail), plus the whole `runs→looms` rename (M7.0).
+**Touch:** `schemas.ts` (Charter/SubGoal/ScopeBoundary/Budget/Directive), `runs.ts→looms.ts` (`parentLoomId`/`subGoalId`/`charter`/`role`; states), `executor.ts` (extract `runThread` = the verified leaf loop; branch epic Looms to the orchestrator; the leaf fast-path behavior is preserved through the refactor), `dispatcher.ts` (`startLoom`, `steerRun`, boot rehydration/lease), `engine.ts` (worktree isolation for fan-out — extend `parallel()`), `verifier.ts` (unchanged; reused per thread), `distill.ts` (verifiedBy provenance check), `gates.ts` (scope-boundary diff check hook), `api/runs→api/looms`, `api/chat/route.ts` (mount the cockpit server), `session-view.tsx` (steer UI + loom-detail), plus the whole `runs→looms` rename (M7.0).
 
 ---
 
@@ -251,7 +251,7 @@ Ranked by "blocks building." **Bold = my recommendation.**
 4. **Epic closing-proof → a required must-thread in the DAG** (not a documented step), so `validateDecision`'s finish invariant can't be met without it.
 5. **Moat under override → code-enforced**: override can't reach `done` without independent verify; `distillSpec` checks provenance; override-to-done needs a human co-sign. *Right from the first Loom.*
 6. **Scope-creep guard → `allowedPaths` + diff check ship with the repair loop**, not later.
-7. **Fast path preserved → charter/plan absent ⇒ today's `executeRun` byte-identical.** No quickfix planning tax.
+7. **Fast path is input-driven → charter/plan absent ⇒ scoping is skipped** (the input carries its own criteria). No quickfix planning tax.
 8. **Fan-out priority when contended → critical-path-first.**
 9. **`autoStartRuns` default false; scoping always drafts** (auto-approve trivial), only human-*review* is policy-gated.
 10. **On-disk dir rename `~/.telar/runs → looms` → migrate with a symlink shim** (vs keep internal). And: **do the rename first** (M7.0), so M7 is born in the right vocabulary.
@@ -269,7 +269,7 @@ Mechanical, test-guarded. **Acceptance:** full suite green; `/looms` + `/api/loo
 `parentLoomId`/`subGoalId`; an epic Loom spawns child Looms; each child = today's verified loop. **Acceptance:** an epic Loom with two *independent* child Looms runs both to `done` and folds up; each child writes only its own `loom.json` (no shared-file write — grep proves it).
 
 ### M7.2 — Charter & scoping
-`draftCharter` (read-only), the state machine, `charter-review`, ProofTemplates. **Acceptance:** a vague prompt → a drafted Charter you approve → a decomposition; a prompt with `acceptanceCriteria` supplied **skips scoping byte-identically** to today.
+`draftCharter` (read-only), the state machine, `charter-review`, ProofTemplates. **Acceptance:** a vague prompt → a drafted Charter you approve → a decomposition; a prompt with `acceptanceCriteria` supplied **skips scoping** (the input-shaped fast path).
 
 ### M7.3 — Orchestrator loop + fan-out + budget
 `tick`/`rollup`/`validateDecision`, the concurrency pool, intra-thread Build fan-out with worktree isolation, critical-path priority. **Acceptance:** a decomposable thread fans to N (N = independent pieces, capped by `maxAgents`); a simple thread stays 1; agents in flight never exceed `maxAgents`; promotion still gated by an independent verify; a decision-log replay shows no tick-vs-tick contradiction.

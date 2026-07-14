@@ -79,9 +79,9 @@ created without the same clamps.
   clamped. No new runaway surface.
 - **Disjoint-writer partition** prevents multi-agent collisions (build-fanout's
   proven rule, generalized).
-- **Flag-gated, default off, byte-identical** until proven — the single-agent
-  thread stays the default; the workflow runner ships dark and is validated on a
-  real multi-step thread before the flag flips.
+- **Proven on a real multi-step thread, then landed as the sole path** — the
+  single-agent thread is the degenerate 1-step case of the workflow runner, not a
+  separate mode. (Shipped behind `threadWorkflow`, since collapsed — `docs/deflag-cut-plan.md`.)
 
 ## Parallelism — three axes, one primitive
 
@@ -120,9 +120,9 @@ inspired by — and the map draws as three clean tiers instead of a 14-state spr
 
 Five phases, each a **single orchestrated build pass** (one workflow: ground → design →
 implement → adversarially verify → integrate), then a self green-gate + commit — exactly
-how M1–M8 shipped. Flags: the milestone flag is **`threadWorkflow`** (default off); the
-LLM planner rides a sub-flag **`threadPlanner`** (default off). Every phase is
-byte-identical to today when `threadWorkflow` is off.
+how M1–M8 shipped. Each phase shipped behind a milestone flag (`threadWorkflow`; the LLM
+planner behind `threadPlanner`) SINCE COLLAPSED to the sole engine path by the de-flag cut
+(`docs/deflag-cut-plan.md`); the flag names below are retained as shipped history.
 
 **M9.1 — Step types + thread workflow-runner (behavior-preserving).**
 - Build: `Step` + `ThreadWorkflow` types in `schemas.ts` (`Step = {id, goal, kind,
@@ -164,11 +164,12 @@ byte-identical to today when `threadWorkflow` is off.
   never promote a loom; off by default.
 - Done when: green-gate clean; the moat invariants are provably untouched.
 
-**M9.5 — Prove & flip.**
+**M9.5 — Prove, then collapse.**
 - Live-validate on a real multi-step, multi-agent thread (a human in the seat), confirm
-  the moat holds (green → `ready` → human accept → `done`), then flip `threadWorkflow` on
-  as the default and retire M6's single-step framing (keeping its partition/merge/stray
-  code). This phase needs a real run — it is the interactive step, not a build workflow.
+  the moat holds (green → `ready` → human accept → `done`). There is no default to flip:
+  the workflow runner IS how every thread runs, and M6's single-step framing is retired
+  (its partition/merge/stray code kept). This phase needs a real run — it is the
+  interactive step, not a build workflow. (`threadWorkflow` collapsed — `docs/deflag-cut-plan.md`.)
 
 ## Process (every phase — the invariants the overnight pass must hold)
 - **Orchestrate only.** Build each phase via one Workflow (ground → design → implement →
@@ -179,7 +180,8 @@ byte-identical to today when `threadWorkflow` is off.
   `NODE_OPTIONS= bunx tsc -p apps/web/tsconfig.json --noEmit` (0 `error TS`).
 - **Moat invariants (never weaken):** forced contract; read-only verifier; green → `ready`
   (never `done`); only a human `acceptLoom` writes `done`; fail-closed.
-- **Flag discipline:** `threadWorkflow`/`threadPlanner` default off; flag-off byte-identical.
+- **Moat weight:** the loom-level contract + panel + human remain the only proof; the
+  workflow runner authors execution, never verification.
 - **Build hygiene:** atomic edits (a live `bun dev` runs on :3000; never a duplicate-
   definition window); `NODE_OPTIONS=` prefix on all bun/bunx/tsc; never touch
   .env/secrets/lockfiles; removal via git only (no `rm`); commit messages with backticks
