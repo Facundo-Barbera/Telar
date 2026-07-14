@@ -101,7 +101,7 @@ export const chatEntries: DemoEntry[] = [
     concern: "extra",
     variant: "A: session-bar pill — RECOMMENDED",
     summary:
-      "RECOMMENDED. The production ‘Loom started’ banner is permanent chrome for a momentary event that never reflects the loom's actual state and eats transcript space until dismissed. Here it becomes a compact LIVE aggregate pill sitting with CTX/cost in the session bar — never one pill per loom: solo shows its state + short id, multiple show a count + most-urgent rollup (‘2 looms · 1 needs you’). Tone follows the most-urgent loom (neutral weaving, amber + gentle pulse when a loom parks and needs you, green at ready — the doctrine's human-touchpoints surfacing). On start the pill spawns with a brief highlight beat, no banner; a second loom joins mid-run so it rolls single → aggregate. Hover floats a per-loom overlay (title, state, thread + gate mini-bars, last event, elapsed, per-row god-view link); click pins — the lane's zero-reflow pill grammar. Composes with variant B: the pill is live status, the inline row is the historical record — the recommended combo. Scripted, replayable, both themes.",
+      "RECOMMENDED. The production ‘Loom started’ banner is permanent chrome for a momentary event that never reflects the loom's actual state and eats transcript space until dismissed. Here it becomes a compact LIVE aggregate pill sitting with CTX/cost in the session bar — never one pill per loom: solo shows its state + short id, multiple show a count + most-urgent rollup (‘2 looms · 1 needs you’). Tone follows the most-urgent loom (neutral weaving, amber + gentle pulse when a loom parks and needs you, green at ready — the doctrine's human-touchpoints surfacing). On start the pill spawns with a brief highlight beat, no banner; a second loom joins mid-run so it rolls single → aggregate. Hover floats a per-loom overlay (title, state, elapsed, per-row god-view link); click pins — the lane's zero-reflow pill grammar. Data is intentionally minimal — no thread/gate/last-event detail — while the loom UI is still being shaped; a slot is reserved in the overlay for that once it lands. Composes with variant B: the pill is live status, the inline row is the historical record — the recommended combo. Scripted, replayable, both themes.",
     Component: LoomNotifyPillDemo,
   },
   {
@@ -110,7 +110,7 @@ export const chatEntries: DemoEntry[] = [
     concern: "extra",
     variant: "B: inline event row",
     summary:
-      "No persistent chrome at all. Loom-start renders as a compact in-stream event row at the exact turn (tool-step grammar: glyph + ‘Loom started · <title>’ + god-view link) and scrolls away with history. State changes append further compact rows — parked (amber + pulse), resumed, ready (green) — so the transcript IS the record. Handles N naturally: two looms interleave here, and every row carries its short id so the log stays unambiguous. Pairs with variant A as the durable record beneath the live pill. Scripted, replayable, both themes.",
+      "No persistent chrome at all. Loom-start renders as a compact in-stream event row at the exact turn (tool-step grammar: glyph + ‘Loom started · <title>’ + elapsed + god-view link) and scrolls away with history. State changes append further compact rows — parked (amber + pulse), resumed, ready (green) — so the transcript IS the record. Handles N naturally: two looms interleave here, and every row carries its short id so the log stays unambiguous. Rows carry no activity/last-event text — data is intentionally minimal while the loom UI is still being shaped. Pairs with variant A as the durable record beneath the live pill. Scripted, replayable, both themes.",
     Component: LoomNotifyInlineDemo,
   },
   {
@@ -119,7 +119,7 @@ export const chatEntries: DemoEntry[] = [
     concern: "extra",
     variant: "C: docked live card",
     summary:
-      "A slim card docks under the header with live progress — state, thread dots, current-activity line (shimmering while weaving), god-view button — replacing the static banner with something that tracks the loom. Collapsible to the variant-A pill at any time. When N>1 the cards stack into a slim tray, each with its own live status; collapse the whole tray to the aggregate pill. When a loom parks (needs you) or lands ready the tray auto-re-expands and highlights ONLY the escalating card — momentary attention, never permanent chrome. Scripted, replayable, both themes.",
+      "A slim card docks under the header with title, short id, state, elapsed, and a god-view button — replacing the static banner with something that tracks the loom. Deliberately minimal: no thread/gate detail or activity line while the loom UI is still being shaped; a slot is reserved for that once it lands. Collapsible to the variant-A pill at any time. When N>1 the cards stack into a slim tray, each with its own live status; collapse the whole tray to the aggregate pill. When a loom parks (needs you) or lands ready the tray auto-re-expands and highlights ONLY the escalating card — momentary attention, never permanent chrome. Scripted, replayable, both themes.",
     Component: LoomNotifyCardDemo,
   },
 ];

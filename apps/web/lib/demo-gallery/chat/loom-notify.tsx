@@ -10,8 +10,13 @@
 // multiple looms spring from one session?".
 //
 // THREE REDESIGNS, all on ONE scripted, replayable timeline
-// (start → weave with live thread/gate progress → PARK blocked needing the
-// human → resume → land ready), and all designed for N looms from the start:
+// (start → weave → PARK blocked needing the human → resume → land ready),
+// and all designed for N looms from the start. Data shown is deliberately the
+// durable minimum — state word, title + short id, elapsed, god-view — no
+// thread/gate/last-event detail: the loom UI (threads, gates, progress
+// semantics) is still being shaped, and this layer must not freeze
+// assumptions about its internals. A reserved slot in the overlay/card marks
+// where richer detail lands once that shape settles.
 //   A) a compact LIVE aggregate pill in the session bar (RECOMMENDED)
 //   B) inline in-stream event rows — the transcript IS the record
 //   C) a slim docked live card / tray under the header
@@ -42,16 +47,15 @@ import { DemoShell, Section, ThemePair } from "./_shared";
 
 type LoomState = "weaving" | "blocked" | "ready";
 
+// Durable minimum only — no thread/gate counts or last-event text. The loom
+// UI (threads, gates, progress semantics) is still being shaped; this layer
+// must not freeze assumptions about its internals. Richer detail gets a home
+// once that shape settles (see the reserved slot in LoomOverlay below).
 interface Loom {
   key: string;
   id: string; // short loom id
   title: string;
   state: LoomState;
-  tDone: number;
-  tTotal: number; // threads
-  gDone: number;
-  gTotal: number; // gates
-  last: string; // last event line
   startedAt: number;
   bornAt: number; // for the spawn highlight beat
   changedAt: number; // for the state-change attention pulse
@@ -159,41 +163,15 @@ function useLoomTimeline(runKey: number): Loom[] {
       );
 
     at(400, () =>
-      spawn({
-        key: "L1",
-        id: "l7f3a2",
-        title: "Refactor auth middleware",
-        state: "weaving",
-        tDone: 0,
-        tTotal: 3,
-        gDone: 0,
-        gTotal: 4,
-        last: "spec bundle committed — weaving",
-      }),
+      spawn({ key: "L1", id: "l7f3a2", title: "Refactor auth middleware", state: "weaving" }),
     );
-    at(1600, () => patch("L1", { tDone: 1, gDone: 1, last: "thread ‘extract-guard’ landed ready" }));
-    at(2800, () => patch("L1", { tDone: 2, gDone: 2, last: "gate ‘typecheck’ green" }));
     at(3600, () =>
-      spawn({
-        key: "L2",
-        id: "l9c1e5",
-        title: "Port tests to vitest",
-        state: "weaving",
-        tDone: 0,
-        tTotal: 2,
-        gDone: 0,
-        gTotal: 3,
-        last: "spec bundle committed — weaving",
-      }),
+      spawn({ key: "L2", id: "l9c1e5", title: "Port tests to vitest", state: "weaving" }),
     );
-    at(4800, () => patch("L1", { state: "blocked", last: "needs you: pick migration strategy" }));
-    at(6000, () => patch("L2", { tDone: 1, gDone: 1, last: "thread ‘fixture-port’ landed ready" }));
-    at(7400, () => patch("L1", { state: "weaving", tDone: 2, last: "resolved — resuming weave" }));
-    at(8600, () =>
-      patch("L2", { state: "ready", tDone: 2, gDone: 3, last: "verified green — awaiting your accept" }),
-    );
-    at(9800, () => patch("L1", { tDone: 3, gDone: 4, last: "composed whole verified" }));
-    at(10600, () => patch("L1", { state: "ready", last: "verified green — awaiting your accept" }));
+    at(4800, () => patch("L1", { state: "blocked" }));
+    at(7400, () => patch("L1", { state: "weaving" }));
+    at(8600, () => patch("L2", { state: "ready" }));
+    at(10600, () => patch("L1", { state: "ready" }));
 
     return () => {
       timers.current.forEach(clearTimeout);
@@ -227,50 +205,6 @@ function Pulse() {
     <span className="relative flex size-1.5 shrink-0">
       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
       <span className="relative inline-flex size-1.5 rounded-full bg-amber-500" />
-    </span>
-  );
-}
-
-// A slim thread OR gate progress mini-bar.
-function MiniBar({
-  done,
-  total,
-  label,
-  accent,
-}: {
-  done: number;
-  total: number;
-  label: string;
-  accent: string;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-9 shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground/60">
-        {label}
-      </span>
-      <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn("h-full rounded-full", accent)}
-          style={{ width: `${total > 0 ? Math.max(3, (done / total) * 100) : 0}%` }}
-        />
-      </div>
-      <span className="w-7 shrink-0 text-right font-mono text-[9px] text-muted-foreground/70">
-        {done}/{total}
-      </span>
-    </div>
-  );
-}
-
-// Thread progress as dots (used on the docked card, variant C).
-function ThreadDots({ done, total }: { done: number; total: number }) {
-  return (
-    <span className="flex items-center gap-1">
-      {Array.from({ length: total }).map((_, i) => (
-        <span
-          key={i}
-          className={cn("size-1.5 rounded-full", i < done ? "bg-foreground/70" : "bg-muted-foreground/25")}
-        />
-      ))}
     </span>
   );
 }
@@ -336,8 +270,10 @@ function AggregateBadge({
   );
 }
 
-// The hover overlay: one row PER loom (title, state, thread + gate mini-bars,
-// last-event line, elapsed, per-row god-view link). Hover previews, click pins —
+// The hover overlay: one row PER loom — title, short id, state, elapsed, and a
+// per-row god-view link. Deliberately durable-minimum: no thread/gate detail,
+// no last-event line — the loom UI is still being shaped, so this layer must
+// not freeze assumptions about its internals. Hover previews, click pins —
 // the lane's established pill grammar, zero reflow (it is absolutely positioned).
 function LoomOverlay({ looms, now }: { looms: Loom[]; now: number }) {
   return (
@@ -362,19 +298,16 @@ function LoomOverlay({ looms, now }: { looms: Loom[]; now: number }) {
                 {fmtElapsed(now - l.startedAt)}
               </span>
             </div>
-            <div className="mt-1.5 space-y-1 pl-4">
-              <MiniBar done={l.tDone} total={l.tTotal} label="thr" accent="bg-foreground/70" />
-              <MiniBar done={l.gDone} total={l.gTotal} label="gate" accent="bg-foreground/45" />
-            </div>
-            <div className="mt-1.5 flex items-center gap-2 pl-4">
-              <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{l.last}</span>
+            <div className="mt-1.5 flex items-center justify-end pl-4">
               <GodViewLink compact />
             </div>
           </li>
         ))}
       </ul>
-      <div className="mt-1.5 border-t border-border px-1.5 pt-1.5 text-[10px] text-muted-foreground">
-        Tone follows the most-urgent loom — the old banner never reflected any of this.
+      {/* details land when the loom view ships — reserved for thread/gate
+          progress once that shape is settled; intentionally empty for now. */}
+      <div className="mt-1.5 border-t border-border px-1.5 pt-1.5 text-[10px] text-muted-foreground/60">
+        details land when the loom view ships
       </div>
     </div>
   );
@@ -448,8 +381,8 @@ export function LoomNotifyPillDemo() {
   // A representative multi-loom state for the static overlay showcase.
   const now = Date.now();
   const sample: Loom[] = [
-    { key: "a", id: "l7f3a2", title: "Refactor auth middleware", state: "blocked", tDone: 2, tTotal: 3, gDone: 2, gTotal: 4, last: "needs you: pick migration strategy", startedAt: now - 214_000, bornAt: 0, changedAt: 0 },
-    { key: "b", id: "l9c1e5", title: "Port tests to vitest", state: "ready", tDone: 2, tTotal: 2, gDone: 3, gTotal: 3, last: "verified green — awaiting your accept", startedAt: now - 176_000, bornAt: 0, changedAt: 0 },
+    { key: "a", id: "l7f3a2", title: "Refactor auth middleware", state: "blocked", startedAt: now - 214_000, bornAt: 0, changedAt: 0 },
+    { key: "b", id: "l9c1e5", title: "Port tests to vitest", state: "ready", startedAt: now - 176_000, bornAt: 0, changedAt: 0 },
   ];
 
   return (
@@ -469,7 +402,7 @@ export function LoomNotifyPillDemo() {
 
       <Section
         title="The hover overlay, pinned open"
-        note="One row per loom — title, state, thread + gate mini-bars, last-event line, elapsed, and a per-row god-view link. Reads in both themes because every word is a theme token and color is accent-only."
+        note="One row per loom — title, short id, state, elapsed, and a per-row god-view link. Deliberately minimal: no thread/gate detail while the loom UI is still being shaped, with a reserved slot for it once that lands. Reads in both themes because every word is a theme token and color is accent-only."
       >
         <ThemePair className="items-start">
           <LoomOverlay looms={sample} now={now} />
@@ -483,12 +416,12 @@ export function LoomNotifyPillDemo() {
 
 type RowKind = "started" | "blocked" | "resumed" | "ready";
 
+// Durable minimum only — no activity/last-event text, just the state word.
 interface EventRow {
   id: number;
   loomId: string;
   title: string;
   kind: RowKind;
-  text: string;
   at: number;
 }
 
@@ -523,12 +456,12 @@ function useEventLog(runKey: number): EventRow[] {
         }, ms),
       );
 
-    at(400, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "started", text: "spec bundle committed — weaving" });
-    at(3600, { loomId: "l9c1e5", title: "Port tests to vitest", kind: "started", text: "spec bundle committed — weaving" });
-    at(4800, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "blocked", text: "needs you: pick migration strategy" });
-    at(7400, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "resumed", text: "resolved — resuming weave" });
-    at(8600, { loomId: "l9c1e5", title: "Port tests to vitest", kind: "ready", text: "verified green — awaiting your accept" });
-    at(10600, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "ready", text: "verified green — awaiting your accept" });
+    at(400, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "started" });
+    at(3600, { loomId: "l9c1e5", title: "Port tests to vitest", kind: "started" });
+    at(4800, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "blocked" });
+    at(7400, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "resumed" });
+    at(8600, { loomId: "l9c1e5", title: "Port tests to vitest", kind: "ready" });
+    at(10600, { loomId: "l7f3a2", title: "Refactor auth middleware", kind: "ready" });
 
     return () => {
       timers.current.forEach(clearTimeout);
@@ -539,7 +472,7 @@ function useEventLog(runKey: number): EventRow[] {
   return rows;
 }
 
-function InlineRow({ row }: { row: EventRow }) {
+function InlineRow({ row, now }: { row: EventRow; now: number }) {
   const t = TONE[ROW_TONE[row.kind]];
   return (
     <div
@@ -553,11 +486,10 @@ function InlineRow({ row }: { row: EventRow }) {
         <WorkflowIcon className={cn("size-3", t.text)} />
       </span>
       <span className={cn("shrink-0 font-medium", t.text)}>{ROW_VERB[row.kind]}</span>
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">
-        · {row.title} — {row.text}
-      </span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">· {row.title}</span>
       {ROW_TONE[row.kind] === "blocked" && <Pulse />}
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">{row.loomId}</span>
+      <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">{fmtElapsed(now - row.at)}</span>
       <GodViewLink compact />
     </div>
   );
@@ -565,6 +497,7 @@ function InlineRow({ row }: { row: EventRow }) {
 
 function InlineTranscript({ runKey }: { runKey: number }) {
   const rows = useEventLog(runKey);
+  const now = useNow();
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
@@ -585,7 +518,7 @@ function InlineTranscript({ runKey }: { runKey: number }) {
         On it. Committing the spec bundle for the auth refactor and handing it to a loom.
       </div>
       {rows.map((r) => (
-        <InlineRow key={r.id} row={r} />
+        <InlineRow key={r.id} row={r} now={now} />
       ))}
       {rows.length < 6 && (
         <Shimmer as="div" className="pl-0.5 text-[11px]">
@@ -602,7 +535,7 @@ export function LoomNotifyInlineDemo() {
     <DemoShell>
       <Section
         title="Inline in-stream event rows — no persistent chrome"
-        note="Loom-start renders as a compact event row at the exact turn (tool-step grammar: glyph + ‘Loom started · <title>’ + god-view link), and scrolls away with history. State changes append further rows — parked (amber + pulse), resumed, ready (green) — so the transcript IS the record. Two looms interleave here; every row carries its short id so the log stays unambiguous. Composes with variant A: the pill is live status, these rows are the durable record. Replay restarts."
+        note="Loom-start renders as a compact event row at the exact turn (tool-step grammar: glyph + ‘Loom started · <title>’ + elapsed + god-view link), and scrolls away with history. State changes append further rows — parked (amber + pulse), resumed, ready (green) — so the transcript IS the record. Two looms interleave here; every row carries its short id so the log stays unambiguous. Rows are deliberately minimal — no activity/last-event text — while the loom UI is still being shaped. Composes with variant A: the pill is live status, these rows are the durable record. Replay restarts."
       >
         <ReplayBar
           onReplay={() => setRunKey((k) => k + 1)}
@@ -636,18 +569,9 @@ function LoomCard({ loom, now, highlighted }: { loom: Loom; now: number; highlig
         <StateChip state={loom.state} />
         <GodViewLink />
       </div>
-      <div className="mt-1.5 flex items-center gap-2">
-        <ThreadDots done={loom.tDone} total={loom.tTotal} />
-        <span className="font-mono text-[9px] text-muted-foreground/60">
-          gate {loom.gDone}/{loom.gTotal}
-        </span>
-        {loom.state === "weaving" ? (
-          <Shimmer as="span" className="min-w-0 flex-1 truncate text-[11px]">
-            {loom.last}
-          </Shimmer>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">{loom.last}</span>
-        )}
+      {/* details land when the loom view ships — reserved for thread/gate
+          progress once that shape is settled */}
+      <div className="mt-1.5 flex items-center justify-end">
         <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">
           {fmtElapsed(now - loom.startedAt)}
         </span>
@@ -734,7 +658,7 @@ export function LoomNotifyCardDemo() {
     <DemoShell>
       <Section
         title="Docked live card, collapsible to the pill"
-        note="A slim card docks under the header with live progress — state, thread dots, current-activity line (shimmering while weaving), god-view button. Collapse it to the aggregate A pill any time. When N>1 the cards stack into a slim tray; when a loom PARKS (needs you) or lands READY the tray auto-re-expands and highlights ONLY the escalating card — momentary attention, not permanent chrome. Replay restarts."
+        note="A slim card docks under the header with title, short id, state, elapsed, and a god-view button — deliberately minimal, no thread/gate detail while the loom UI is still being shaped. Collapse it to the aggregate A pill any time. When N>1 the cards stack into a slim tray; when a loom PARKS (needs you) or lands READY the tray auto-re-expands and highlights ONLY the escalating card — momentary attention, not permanent chrome. Replay restarts."
       >
         <ReplayBar
           onReplay={() => setRunKey((k) => k + 1)}

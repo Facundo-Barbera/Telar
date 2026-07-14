@@ -191,4 +191,11 @@ Format per entry:
   hover lists each loom as a row); B = rows carry loom short-ids, N is
   natural; C = cards stack into a tray, only the escalating loom re-expands.
   Demo timelines spawn a 2nd loom mid-run to show the rollup.
-- **round:** demo-gallery round 15 (queued behind round 14 — same lane)
+- **round:** demo-gallery round 15 — landed 30c2355 (loom-notify-pill /
+  -inline / -card; shared replayable timeline incl. 2nd loom spawn at ~3.6s;
+  aggregate pill reuses the zero-reflow hover grammar; awaiting owner pick).
+  Owner: "I like it but we should not show data of the loom right now since
+  we are still shaping it" — round 16 strips loom internals (thread dots,
+  gate mini-bars, activity lines) from all three variants: state word +
+  title/short-id + elapsed + god-view link only; tone/rollup stay; overlay
+  reserves the slot for richer data post loom-UI design.
