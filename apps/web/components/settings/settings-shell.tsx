@@ -220,6 +220,41 @@ export function Row({
   );
 }
 
+// Segmented control — the theme / permission-mode picker. Single-tap, reads like
+// the app's button-group idiom but self-contained. Colors are theme tokens only.
+export function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: ReactNode }[];
+}) {
+  return (
+    <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-[7px] px-2.5 py-1 text-xs font-medium transition-colors",
+              on
+                ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // Labelled toggle row.
 export function ToggleRow({
   label,

@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  BellIcon,
   GaugeIcon,
   KeyRoundIcon,
   LogInIcon,
+  PaletteIcon,
   PlusIcon,
   RotateCwIcon,
+  SparklesIcon,
   StarIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -30,6 +33,9 @@ import {
   SettingsGroup,
   type SettingsSection,
 } from "@/components/settings/settings-shell";
+import { AppearanceSettings } from "@/components/settings/appearance-settings";
+import { AgentDefaultsSettings } from "@/components/settings/agent-defaults-settings";
+import { NotificationsSettings } from "@/components/settings/notifications-settings";
 
 type Provider = "claude" | "codex";
 type AuthMode = "subscription" | "oauth-token" | "api-key";
@@ -285,18 +291,21 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
 }
 
 const SECTIONS: SettingsSection[] = [
-  { id: "accounts", label: "Accounts", icon: KeyRoundIcon },
-  { id: "usage", label: "Usage", icon: GaugeIcon },
+  { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Preferences" },
+  { id: "agent", label: "Agent defaults", icon: SparklesIcon, group: "Preferences" },
+  { id: "notifications", label: "Notifications", icon: BellIcon, group: "Preferences" },
+  { id: "accounts", label: "Accounts", icon: KeyRoundIcon, group: "Provider" },
+  { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
 ];
 
-// The top-level Settings surface. Today the loom's real global config is
-// accounts + plan usage — so those are the only sections here. There is no
-// persisted store for per-agent defaults (Auto Mode, model, effort) or theme,
-// and the Loom Doctrine forbids turning UI preferences into engine behavior
-// flags — so those demo sections are intentionally omitted rather than shipped
-// as placebo controls. New sections appear here only when they gain real backing.
+// The top-level Settings surface. Two families of section: device-local UI
+// PREFERENCES (appearance, new-session agent defaults, notifications) backed by
+// the ui-prefs store, and PROVIDER config (accounts + plan usage) backed by the
+// account registry. Every control takes real effect — the Loom Doctrine forbids
+// placebo switches, and forbids any of these UI prefs from becoming engine
+// behavior (nothing here writes telar.yaml / .telar or an engine env).
 export function GeneralSettings() {
-  const [active, setActive] = useState("accounts");
+  const [active, setActive] = useState("appearance");
   const [accounts, setAccounts] = useState<AccountProfile[]>([]);
   const [defaultAccount, setDefaultAccount] = useState("personal");
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
@@ -337,16 +346,24 @@ export function GeneralSettings() {
   return (
     <SettingsShell
       title="Settings"
-      subtitle="Provider logins & plan usage"
+      subtitle="Appearance, agent defaults, notifications & accounts"
       sections={sections}
       active={active}
       onSelect={setActive}
       headerActions={
-        <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
-          <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
-        </Button>
+        (active === "accounts" || active === "usage") && (
+          <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+            <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
+          </Button>
+        )
       }
     >
+      {active === "appearance" && <AppearanceSettings />}
+
+      {active === "agent" && <AgentDefaultsSettings />}
+
+      {active === "notifications" && <NotificationsSettings />}
+
       {active === "accounts" && (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">

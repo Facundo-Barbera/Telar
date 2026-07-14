@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { DockProvider } from "@/components/dock/dock-provider";
 import { Dock } from "@/components/dock/dock";
+import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/settings/theme-provider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,9 +30,16 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased`}
+      suppressHydrationWarning
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* Sets the theme class on <html> before first paint so the appearance
+            preference never flashes. Kept in sync with ThemeProvider / ui-prefs. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body className="min-h-full flex flex-col">
+        <ThemeProvider />
         <DockProvider>
           <SidebarProvider>
             <AppSidebar />

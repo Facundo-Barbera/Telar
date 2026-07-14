@@ -11,7 +11,7 @@
 // (modelOptions), the effort list is the provider's real EFFORT_OPTIONS, and
 // permissions are the real PERMISSION_MODE_OPTIONS — nothing is hardcoded here.
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   BotIcon,
   CheckIcon,
@@ -26,8 +26,9 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import type { ModelInfo } from "@/lib/models";
+import { DEFAULT_MODEL, type ModelInfo } from "@/lib/models";
 import type { ClientPermissionMode } from "@/lib/permission-modes";
+import { getUiPrefs } from "@/lib/ui-prefs";
 
 type PermOption = { value: ClientPermissionMode; label: string; description: string };
 type EffortOpt = { id: string; label: string; blurb: string };
@@ -156,6 +157,37 @@ export function ComposerSettings({
   effortOptions: EffortOpt[];
   permissionOptions: PermOption[];
 }) {
+  // New-session fallback: for a project with NO remembered composer config, seed
+  // the still-untouched hardcoded defaults from the global UI preference (see
+  // settings › Agent defaults). Per-project memory (telar:composer:<project>)
+  // and any explicit choice always win — hence the guards below:
+  //   • only when this project has no remembered config yet;
+  //   • only while model/permission are still the session's hardcoded defaults
+  //     (DEFAULT_MODEL / "auto"), so a resumed session's own values are never
+  //     clobbered;
+  //   • only for a Claude session (the global model appears in modelOptions),
+  //     so a Codex session's model list isn't seeded a Claude id.
+  // This effect (a child of the composer) runs before the parent's own seed +
+  // persist effects, so it reads the pre-existing memory state correctly.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    if (typeof window === "undefined") return;
+    try {
+      if (window.localStorage.getItem(`telar:composer:${project}`)) return;
+    } catch {
+      return;
+    }
+    const prefs = getUiPrefs();
+    if (model === DEFAULT_MODEL && modelOptions.some((m) => m.id === prefs.defaultModel)) {
+      setModel(prefs.defaultModel);
+      if (permissionMode === "auto") setPermissionMode(prefs.defaultPermissionMode);
+    }
+    // Seed once per project mount; deliberately not reacting to model changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
+
   const activeModel = modelOptions.find((m) => m.id === model);
   const modelLabel = activeModel?.name ?? model;
   const permLabel = permissionOptions.find((p) => p.value === permissionMode)?.label ?? "Ask me";
