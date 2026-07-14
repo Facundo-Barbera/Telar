@@ -4,11 +4,7 @@
 // and overwrites only that file; the shell here never changes once frozen.
 import type { ComponentType } from "react";
 
-import { chatEntries } from "./entries/chat";
-import { inputEntries } from "./entries/input";
 import { listsEntries } from "./entries/lists";
-import { sidebarEntries } from "./entries/sidebar";
-import { settingsEntries } from "./entries/settings";
 import { loomEntries } from "./entries/loom";
 import { projectEntries } from "./entries/project";
 import { ultraEntries } from "./entries/ultra";
@@ -28,11 +24,7 @@ export interface DemoEntry {
 // The whole catalog in lane order. Each lane's array is spliced in as-is so the
 // nav/index/pager all read one flat source of truth.
 export const allEntries: DemoEntry[] = [
-  ...chatEntries,
-  ...inputEntries,
   ...listsEntries,
-  ...sidebarEntries,
-  ...settingsEntries,
   ...loomEntries,
   ...projectEntries,
   ...ultraEntries,
