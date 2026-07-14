@@ -212,6 +212,123 @@ export type RemoteResponse =
   | { connected: false; reason: RemoteReason }
   | { connected: true; repo: string; issues: RemoteIssue[]; prs: RemotePR[] };
 
+/* ---------------------------------------- remote detail + HUMAN-triggered writes */
+// Client-local mirrors of the frozen JSON contract for the Remote DETAIL views
+// and the four writes (create issue, comment, close/reopen). Server route
+// handlers own the real `gh` reads/writes; the UI only ever sees JSON shaped
+// like this. Every write is confirmed in the UI and refetches the list — no
+// autonomous remote action (Loom Doctrine).
+
+export interface RemoteComment {
+  id: string;
+  author: string;
+  // OWNER / MEMBER / COLLABORATOR / CONTRIBUTOR / NONE — null when unknown.
+  authorAssociation: string | null;
+  createdAt: EpochMs;
+  body: string;
+}
+
+export interface IssueDetail {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  author: string;
+  createdAt: EpochMs;
+  updatedAt: EpochMs;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+  body: string; // markdown; may be empty
+  comments: RemoteComment[];
+  url: string;
+}
+
+export type CheckState =
+  | "success"
+  | "failure"
+  | "pending"
+  | "skipped"
+  | "neutral"
+  | "cancelled"
+  | "timed_out";
+export interface CheckRun {
+  name: string;
+  state: CheckState;
+  durationMs: number | null;
+  url: string | null;
+}
+
+export type PRReviewState =
+  | "approved"
+  | "changes_requested"
+  | "commented"
+  | "dismissed"
+  | "pending";
+export interface PRReviewEntry {
+  author: string;
+  state: PRReviewState;
+  submittedAt: EpochMs | null;
+}
+
+export type Mergeable = "mergeable" | "conflicting" | "unknown";
+export interface PRFileChange {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  patch: string | null; // capped by the server
+  patchTruncated: boolean; // true when the server truncated the patch
+}
+
+export interface PRDetail {
+  number: number;
+  title: string;
+  state: RemoteState; // open | closed | merged | draft
+  draft: boolean;
+  merged: boolean;
+  author: string;
+  createdAt: EpochMs;
+  updatedAt: EpochMs;
+  head: string;
+  base: string;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+  mergeable: Mergeable;
+  body: string; // markdown; may be empty
+  comments: RemoteComment[];
+  reviews: PRReviewEntry[];
+  checks: CheckRun[];
+  files: PRFileChange[];
+  url: string;
+}
+
+export type IssueDetailResponse =
+  | { connected: false; reason: RemoteReason }
+  | { connected: true; issue: IssueDetail };
+export type PRDetailResponse =
+  | { connected: false; reason: RemoteReason }
+  | { connected: true; pr: PRDetail };
+
+// Writes — every response is connected-gated and returns { ok } so the UI can
+// surface an honest failure inline (never a 500). `T` carries the write's echo.
+export type RemoteWriteResponse<T = Record<string, never>> =
+  | { connected: false; reason: RemoteReason }
+  | ({ connected: true; ok: true } & T)
+  | { connected: true; ok: false; error: string };
+
+export type CreateIssueResult = RemoteWriteResponse<{ issue: RemoteIssue }>;
+export type CommentResult = RemoteWriteResponse<{ comment: RemoteComment }>;
+export type IssueStateResult = RemoteWriteResponse<{ state: "open" | "closed" }>;
+
+// Human-readable rendering of a machine-stable remote disconnect reason.
+export const REMOTE_REASON_TEXT: Record<RemoteReason, string> = {
+  "no-gh": "the gh CLI isn't installed",
+  unauthed: "the gh CLI isn't authenticated (run gh auth login)",
+  "no-remote": "this repo has no GitHub remote",
+  "gh-error": "the gh CLI returned an error",
+};
+
 /* ------------------------------------------------------------- files GET */
 
 export interface FileEntry {

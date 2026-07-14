@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   CheckCircle2Icon,
   CheckIcon,
+  ChevronRightIcon,
   CircleDotIcon,
   ClockIcon,
   CornerDownRightIcon,
@@ -17,6 +18,7 @@ import {
   GitPullRequestIcon,
   MessagesSquareIcon,
   PlugZapIcon,
+  PlusIcon,
   SearchIcon,
   TriangleAlertIcon,
   WorkflowIcon,
@@ -43,6 +45,8 @@ import {
   type RemoteState,
   type ReviewState,
 } from "./git-tab-shared";
+import { IssueDetailView, PRDetailView } from "./git-tab-remote-detail";
+import { NewIssueDialog } from "./git-tab-remote-new-issue";
 
 function RemoteStateIcon({ state }: { state: RemoteState }) {
   const map: Record<
@@ -142,9 +146,19 @@ function LabelChips({ labels }: { labels: string[] }) {
   );
 }
 
-function IssueRow({ issue }: { issue: RemoteIssue }) {
+function IssueRow({
+  issue,
+  onOpen,
+}: {
+  issue: RemoteIssue;
+  onOpen: () => void;
+}) {
   return (
-    <div className="flex items-center gap-2.5 px-4 py-2 hover:bg-muted/30">
+    <div
+      role="button"
+      onClick={onOpen}
+      className="flex cursor-pointer items-center gap-2.5 px-4 py-2 hover:bg-muted/30"
+    >
       <RemoteStateIcon state={issue.state} />
       <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
         #{issue.number}
@@ -166,14 +180,19 @@ function IssueRow({ issue }: { issue: RemoteIssue }) {
         <MessagesSquareIcon className="size-3" />
         <span className="tabular-nums">{issue.comments}</span>
       </span>
+      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
     </div>
   );
 }
 
-function PRRow({ pr }: { pr: RemotePR }) {
+function PRRow({ pr, onOpen }: { pr: RemotePR; onOpen: () => void }) {
   const iconState: RemoteState = pr.state === "draft" ? "draft" : pr.state;
   return (
-    <div className="flex items-center gap-2.5 px-4 py-2 hover:bg-muted/30">
+    <div
+      role="button"
+      onClick={onOpen}
+      className="flex cursor-pointer items-center gap-2.5 px-4 py-2 hover:bg-muted/30"
+    >
       <RemoteStateIcon state={iconState} />
       <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
         #{pr.number}
@@ -205,6 +224,7 @@ function PRRow({ pr }: { pr: RemotePR }) {
       <span className="w-12 shrink-0 text-right text-xs text-muted-foreground/70">
         {fmtAgo(pr.updatedAt)}
       </span>
+      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
     </div>
   );
 }
@@ -311,10 +331,19 @@ function RemoteList<T>({
 
 type Sub = "issues" | "prs";
 
+// In-place navigation inside the Remote sub-view (no route change; keeps
+// ?tab=git). LIST -> DETAIL mirrors the Files browser's breadcrumb-back pattern.
+type RemoteView =
+  | { kind: "list" }
+  | { kind: "issue"; number: number }
+  | { kind: "pr"; number: number };
+
 export function RemoteSection({ name }: { name: string }) {
   const [data, setData] = useState<RemoteResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sub, setSub] = useState<Sub>("prs");
+  const [view, setView] = useState<RemoteView>({ kind: "list" });
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -363,6 +392,31 @@ export function RemoteSection({ name }: { name: string }) {
     },
   ];
 
+  const back = () => setView({ kind: "list" });
+
+  // DETAIL — an in-place view; writes ask us to refetch the list so a return
+  // to it reflects the new truth (new comment counts, closed state, etc.).
+  if (view.kind === "issue") {
+    return (
+      <IssueDetailView
+        name={name}
+        number={view.number}
+        onBack={back}
+        onListStale={() => void load()}
+      />
+    );
+  }
+  if (view.kind === "pr") {
+    return (
+      <PRDetailView
+        name={name}
+        number={view.number}
+        onBack={back}
+        onListStale={() => void load()}
+      />
+    );
+  }
+
   return (
     <div>
       <SectionBand
@@ -373,7 +427,7 @@ export function RemoteSection({ name }: { name: string }) {
             variant="outline"
             className="border-amber-500/30 bg-amber-500/5 px-1.5 py-0 text-[10px] text-amber-300"
           >
-            read-only
+            reads live · writes on confirm
           </Badge>
         }
       />
@@ -409,6 +463,14 @@ export function RemoteSection({ name }: { name: string }) {
                 </button>
               );
             })}
+            <Button
+              size="xs"
+              className="my-1 ml-auto"
+              onClick={() => setNewIssueOpen(true)}
+            >
+              <PlusIcon />
+              New issue
+            </Button>
           </div>
           {sub === "issues" ? (
             <RemoteList
@@ -421,7 +483,13 @@ export function RemoteSection({ name }: { name: string }) {
                 i.author.toLowerCase().includes(q) ||
                 i.labels.some((l) => l.toLowerCase().includes(q))
               }
-              render={(i) => <IssueRow key={i.number} issue={i} />}
+              render={(i) => (
+                <IssueRow
+                  key={i.number}
+                  issue={i}
+                  onOpen={() => setView({ kind: "issue", number: i.number })}
+                />
+              )}
               noun="issue"
             />
           ) : (
@@ -436,12 +504,29 @@ export function RemoteSection({ name }: { name: string }) {
                 p.branch.toLowerCase().includes(q) ||
                 p.base.toLowerCase().includes(q)
               }
-              render={(p) => <PRRow key={p.number} pr={p} />}
+              render={(p) => (
+                <PRRow
+                  key={p.number}
+                  pr={p}
+                  onOpen={() => setView({ kind: "pr", number: p.number })}
+                />
+              )}
               noun="pull request"
             />
           )}
         </>
       )}
+
+      <NewIssueDialog
+        name={name}
+        open={newIssueOpen}
+        onOpenChange={setNewIssueOpen}
+        onCreated={(num) => {
+          void load(); // refetch list after the write
+          setSub("issues");
+          setView({ kind: "issue", number: num });
+        }}
+      />
     </div>
   );
 }
