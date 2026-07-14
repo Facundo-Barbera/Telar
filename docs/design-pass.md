@@ -341,3 +341,21 @@ Format per entry:
   searchable. FILES -> navigable breadcrumb browser (GitHub pattern),
   per-path last-commit subject + age, dirty badges bubble to parents.
   AWAITING OWNER VERDICT on the polished shape.
+
+## Git tab — PRODUCTION APPLY (owner approved round 24)
+
+- **view:** /projects/<name>?tab=git
+- **verdict:** shipped — d72c5f4 (API) + 85919e9 (UI), 1 fix round.
+- **items:** real plumbing: git worktree/for-each-ref/log via execFile
+  (no shell; 0x1F delimiters — NUL in argv silently breaks Node), loom
+  join via registry naming, gh CLI remote (connected:true verified against
+  Facundo-Barbera/Telar), breadcrumb file API (traversal-guarded,
+  realpath-confined). CLEANUP: 7 refusal paths live-verified side-effect-
+  free (main checkout, server worktree force-proof; dirty/unmerged need
+  force + typed basename confirm; branch delete -d only); happy paths
+  proven on throwaway scratch worktrees only; active-loom refusal
+  code-verified (faking one would mean writing ~/.telar). GAPS: sizeMb
+  null (du skipped for speed — headline degrades honestly), remote lists
+  empty (repo has no issues/PRs yet), per-file last-touched-by omitted
+  (core stores a count, not paths — needs schema change), demo replay/
+  attention-dots dropped (were synthetic-state devices).
