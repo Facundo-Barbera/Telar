@@ -4,6 +4,7 @@ export * from "./secrets";
 export * from "./mcp";
 export * from "./mcp-oauth";
 export * from "./accounts";
+export * from "./login";
 export * from "./engine";
 export * from "./manifest";
 export * from "./servers";

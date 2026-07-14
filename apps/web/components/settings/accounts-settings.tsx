@@ -1,19 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BellIcon,
+  CheckIcon,
+  ExternalLinkIcon,
   GaugeIcon,
   KeyRoundIcon,
+  Loader2Icon,
   LogInIcon,
   PaletteIcon,
   PlusIcon,
   RotateCwIcon,
   SparklesIcon,
   StarIcon,
+  StethoscopeIcon,
+  TerminalIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
-import type { AccountProfile, AccountHealth } from "@telar/core";
+import type { AccountProfile, AccountHealth, LoginEvent } from "@telar/core";
 import type { PlanSnapshot, PlanWindow } from "@/lib/store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +42,7 @@ import {
 import { AppearanceSettings } from "@/components/settings/appearance-settings";
 import { AgentDefaultsSettings } from "@/components/settings/agent-defaults-settings";
 import { NotificationsSettings } from "@/components/settings/notifications-settings";
+import { DoctorSettings } from "@/components/settings/doctor-settings";
 
 type Provider = "claude" | "codex";
 type AuthMode = "subscription" | "oauth-token" | "api-key";
@@ -110,15 +117,233 @@ function usageHint(snap?: PlanSnapshot): string | null {
   return parts.join(" · ");
 }
 
-// The exact terminal command to log this account in. Interactive OAuth needs a
-// browser, so we hand the user the command rather than driving it (for now).
-function loginCommand(a: AccountProfile): string {
-  if ((a.provider ?? "claude") === "codex") {
-    return `CODEX_HOME="${a.configDir ?? "~/.codex"}" codex login`;
-  }
-  return a.configDir
-    ? `CLAUDE_CONFIG_DIR="${a.configDir}" claude auth login`
-    : "claude auth login";
+// The live login panel. Instead of handing the user a command to copy-paste,
+// the app DRIVES the provider CLI (server-side, with THIS account's config-dir
+// env) and streams its progress here over SSE:
+//
+//   codex  → `codex login --device-auth`: we surface the verification URL and
+//            one-time code; the CLI polls and self-completes, then we re-check
+//            health (auth.json → "Logged in").
+//   claude → `claude auth login --claudeai`: we surface the URL (the CLI also
+//            opens the browser), then collect the authorization code the
+//            callback page shows and POST it back to the CLI's stdin.
+//
+// Neither needs a TTY, so both drive fully; "Open in Terminal" is only an
+// escape hatch (osascript hand-off), never the primary path — still one click,
+// no copy-paste.
+function LoginPanel({
+  account,
+  onDone,
+  onClose,
+}: {
+  account: AccountWithHealth;
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const provider = account.provider ?? "claude";
+  const [lines, setLines] = useState<string[]>([]);
+  const [url, setUrl] = useState<string | null>(null);
+  const [code, setCode] = useState<string | null>(null);
+  const [needCode, setNeedCode] = useState(false);
+  const [paste, setPaste] = useState("");
+  const [status, setStatus] = useState<"running" | "done" | "failed">("running");
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const base = `/api/accounts/${encodeURIComponent(account.name)}/login`;
+
+  useEffect(() => {
+    const ac = new AbortController();
+    abortRef.current = ac;
+    (async () => {
+      let res: Response;
+      try {
+        res = await fetch(base, { signal: ac.signal });
+      } catch {
+        if (!ac.signal.aborted) {
+          setStatus("failed");
+          setError("Could not reach the login driver.");
+        }
+        return;
+      }
+      if (!res.ok || !res.body) {
+        const d = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          // Already logged in — nothing to drive.
+          setStatus("done");
+          onDone();
+        } else {
+          setStatus("failed");
+          setError(d.error ?? "Login is unavailable.");
+        }
+        return;
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i: number;
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const frame = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            const data = frame.split("\n").find((l) => l.startsWith("data:"));
+            if (!data) continue;
+            const evt = JSON.parse(data.slice(5).trim()) as LoginEvent;
+            switch (evt.type) {
+              case "line":
+                setLines((l) => [...l, evt.text].slice(-200));
+                break;
+              case "url":
+                setUrl(evt.url);
+                break;
+              case "code":
+                setCode(evt.code);
+                break;
+              case "needCode":
+                setNeedCode(true);
+                break;
+              case "done":
+                setStatus("done");
+                onDone();
+                break;
+              case "failed":
+                setStatus("failed");
+                setError(evt.error);
+                break;
+            }
+          }
+        }
+      } catch {
+        if (!ac.signal.aborted) {
+          setStatus("failed");
+          setError("Login stream interrupted.");
+        }
+      }
+    })();
+    return () => ac.abort();
+    // Start exactly once per mount; account.name keys the whole panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const submitPaste = async () => {
+    const c = paste.trim();
+    if (!c) return;
+    setNeedCode(false);
+    setPaste("");
+    await fetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: c }),
+    }).catch(() => {});
+  };
+
+  const openInTerminal = async () => {
+    await fetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ terminal: true }),
+    }).catch(() => {});
+  };
+
+  const cancel = () => {
+    abortRef.current?.abort();
+    fetch(base, { method: "DELETE" }).catch(() => {});
+    onClose();
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-xs">
+      <div className="flex items-center gap-2">
+        {status === "running" && <Loader2Icon className="size-3.5 animate-spin" />}
+        {status === "done" && <CheckIcon className="size-3.5 text-emerald-500" />}
+        <span className="font-medium">
+          {status === "running" && `Signing in to ${provider}…`}
+          {status === "done" && "Login complete."}
+          {status === "failed" && "Login didn't finish."}
+        </span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="ml-auto"
+          onClick={status === "running" ? cancel : onClose}
+          aria-label="Close login"
+        >
+          <XIcon className="size-3.5" />
+        </Button>
+      </div>
+
+      {url && status === "running" && (
+        <div className="space-y-2 rounded border bg-background/60 p-2">
+          <p className="text-muted-foreground">
+            {provider === "codex"
+              ? "Open this URL and enter the code below to authorize."
+              : "Finish signing in at this URL (your browser may have opened it already)."}
+          </p>
+          <Button size="sm" onClick={() => window.open(url, "_blank", "noopener")}>
+            <ExternalLinkIcon className="size-3.5" /> Open sign-in page
+          </Button>
+          {code && (
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Code:</span>
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm tracking-wider">
+                {code}
+              </code>
+            </div>
+          )}
+        </div>
+      )}
+
+      {needCode && status === "running" && (
+        <div className="space-y-1">
+          <p className="text-muted-foreground">
+            Paste the authorization code from your browser:
+          </p>
+          <div className="flex items-center gap-2">
+            <Input
+              value={paste}
+              onChange={(e) => setPaste(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitPaste()}
+              placeholder="authorization code"
+              className="h-7 flex-1 font-mono text-xs"
+              autoFocus
+            />
+            <Button size="sm" onClick={submitPaste} disabled={!paste.trim()}>
+              Submit
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {lines.length > 0 && (
+        <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
+          {lines.join("\n")}
+        </pre>
+      )}
+
+      {status === "failed" && (
+        <div className="space-y-2">
+          {error && <p className="text-destructive">{error}</p>}
+          <p className="text-muted-foreground">
+            You can retry, or run the login in a Terminal window instead.
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        {status === "failed" && (
+          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
+            <RotateCwIcon className="size-3.5" /> Retry
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={openInTerminal}>
+          <TerminalIcon className="size-3.5" /> Open in Terminal
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function AccountCard({
@@ -227,14 +452,7 @@ function AccountCard({
         </div>
 
         {showLogin && (
-          <div className="rounded-md border bg-muted/40 p-2">
-            <p className="mb-1 text-xs text-muted-foreground">
-              Run this in your terminal, then finish the login in your browser:
-            </p>
-            <code className="block overflow-x-auto whitespace-pre font-mono text-xs">
-              {loginCommand(account)}
-            </code>
-          </div>
+          <LoginPanel account={account} onDone={onChanged} onClose={() => setShowLogin(false)} />
         )}
       </CardContent>
     </Card>
@@ -320,6 +538,7 @@ const SECTIONS: SettingsSection[] = [
   { id: "notifications", label: "Notifications", icon: BellIcon, group: "Preferences" },
   { id: "accounts", label: "Accounts", icon: KeyRoundIcon, group: "Provider" },
   { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
+  { id: "doctor", label: "Doctor", icon: StethoscopeIcon, group: "Machine" },
 ];
 
 // The top-level Settings surface. Two families of section: device-local UI
@@ -330,6 +549,14 @@ const SECTIONS: SettingsSection[] = [
 // behavior (nothing here writes telar.yaml / .telar or an engine env).
 export function GeneralSettings() {
   const [active, setActive] = useState("appearance");
+
+  // Open a specific section when linked with a hash (e.g. /settings#doctor from
+  // the dashboard first-run card). Done in an effect (not the initializer) so
+  // the SSR and first client render agree — no hydration mismatch.
+  useEffect(() => {
+    const h = window.location.hash.slice(1);
+    if (SECTIONS.some((s) => s.id === h)) setActive(h);
+  }, []);
   const [accounts, setAccounts] = useState<AccountWithHealth[]>([]);
   const [defaultAccount, setDefaultAccount] = useState("personal");
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
@@ -387,6 +614,8 @@ export function GeneralSettings() {
       {active === "agent" && <AgentDefaultsSettings />}
 
       {active === "notifications" && <NotificationsSettings />}
+
+      {active === "doctor" && <DoctorSettings />}
 
       {active === "accounts" && (
         <div className="flex flex-col gap-3">
