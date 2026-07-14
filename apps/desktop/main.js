@@ -95,6 +95,19 @@ function windowTitle() {
   return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
 }
 
+// --- Bundled @playwright/mcp CLI --------------------------------------------
+// build-web.sh materializes a self-contained, symlink-dereferenced @playwright/
+// mcp closure (cli.js + playwright/playwright-core) that electron-builder copies
+// to <Resources>/playwright-mcp. Packaged: point at that. Dev-repo: the same
+// closure lives under .next-desktop (build:web writes it there too) — used only
+// by --smoke's existence check; the running dev-repo Verifier resolves via the
+// core resolver's walk-up, so we never force the env there.
+function bundledPlaywrightMcpCli() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
+    : path.join(__dirname, "..", "web", ".next-desktop", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
+}
+
 // --- Resolve the standalone server.js ---------------------------------------
 // Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
 // Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
@@ -130,6 +143,14 @@ function startServer(port) {
       PORT: String(port),
       HOSTNAME: "127.0.0.1",
       NODE_ENV: "production",
+      // Packaged only: @playwright/mcp isn't traced into the standalone bundle
+      // nor on PATH, so the core resolver (explicit -> ENV -> walk-up -> PATH)
+      // would find nothing. Point it at the bundled cli.js unless the user
+      // already set the env (their choice wins). Dev-repo mode is left untouched
+      // — the walk-up resolves the repo's install there.
+      ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
+        ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
+        : {}),
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
@@ -234,6 +255,23 @@ async function runSmoke() {
     await waitForServer(port);
     console.log(`BUILD ${windowTitle()}`);
     console.log("SMOKE_OK");
+    // Verify the bundled @playwright/mcp cli.js the packaged Verifier depends on
+    // actually shipped. Packaged: a hard failure (the Verifier can't drive a
+    // browser without it). Dev-repo: best-effort — the walk-up resolver, not the
+    // bundle, is the real path there.
+    const fs = require("node:fs");
+    const cli = bundledPlaywrightMcpCli();
+    if (fs.existsSync(cli)) {
+      console.log("PLAYWRIGHT_MCP_BUNDLED_OK");
+    } else {
+      console.error("PLAYWRIGHT_MCP_BUNDLED_MISSING:", cli);
+      if (app.isPackaged) {
+        app.isQuitting = true;
+        killServer();
+        app.exit(1);
+        return;
+      }
+    }
     app.isQuitting = true;
     killServer();
     app.exit(0);

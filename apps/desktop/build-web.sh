@@ -24,5 +24,23 @@ rm -rf "$STANDALONE_WEB/.next-desktop/static" "$STANDALONE_WEB/public"
 cp -R "$DIST/static" "$STANDALONE_WEB/.next-desktop/static"
 [ -d "$WEB_DIR/public" ] && cp -R "$WEB_DIR/public" "$STANDALONE_WEB/public"
 
+echo "==> materialize @playwright/mcp for the packaged Verifier"
+# @playwright/mcp is a devDependency: Next's output tracing never pulls it into
+# the standalone bundle and it isn't on a Finder-launched app's PATH, so the
+# packaged Verifier's TELAR_PLAYWRIGHT_MCP_BIN walk-up/PATH resolution finds
+# nothing. Copy a SELF-CONTAINED, symlink-dereferenced closure (cli.js + its
+# runtime deps playwright/playwright-core) next to the standalone tree; main.js
+# points the packaged server child at this cli.js. `cp -RL` collapses bun's
+# .bun-store symlink indirection into real files so nothing dangles in the .app.
+MCP_REAL="$(node -e 'process.stdout.write(require("fs").realpathSync(require("path").dirname(require.resolve("@playwright/mcp/package.json"))))')"
+MCP_NM="$(cd "$MCP_REAL/../.." && pwd)"   # bun store's node_modules: mcp + deps as peers
+PW_BUNDLE="$DIST/playwright-mcp"
+rm -rf "$PW_BUNDLE"
+mkdir -p "$PW_BUNDLE"
+cp -RL "$MCP_NM" "$PW_BUNDLE/node_modules"
+test -f "$PW_BUNDLE/node_modules/@playwright/mcp/cli.js" \
+  || { echo "!! playwright-mcp bundle missing cli.js after copy" >&2; exit 1; }
+
 echo "==> standalone ready at: $STANDALONE_WEB/server.js"
 du -sh "$DIST/standalone" 2>/dev/null || true
+du -sh "$PW_BUNDLE" 2>/dev/null || true

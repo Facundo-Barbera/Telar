@@ -29,6 +29,10 @@
       {
         "from": "../web/.next-desktop/standalone/node_modules/.bun",
         "to": "standalone/node_modules/.bun"
+      },
+      {
+        "from": "../web/.next-desktop/playwright-mcp/node_modules",
+        "to": "playwright-mcp/node_modules"
       }
     ],
     "directories": {
