@@ -26,6 +26,5 @@ existing code.** The short form:
   `NODE_OPTIONS= bunx tsc -p packages/core/tsconfig.json --noEmit`,
   `NODE_OPTIONS= bunx tsc -p apps/web/tsconfig.json --noEmit`.
 - Never touch `.env*`, `bun.lock` (package-manager only), secrets.
-- `/gallery` (apps/web/app/gallery + apps/web/lib/gallery-fixtures) is a
-  temporary design-review surface — real components + fixtures; delete guide
-  in `docs/view-gallery.md`. Don't ship product code that imports from it.
+- `/demo-gallery` is the temporary design-review surface pending final cleanup.
+  Don't ship product code that imports from it.

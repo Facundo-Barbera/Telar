@@ -217,6 +217,9 @@ Format per entry:
   NOT mixed (separate tabs); NO right-side preview pane (context too hard to
   gather); SETTINGS becomes a tab on the project page (fold the concern-4
   project-settings side-nav design in). A/B marked retired.
+  Round 19 landed 93e8844 (project-hub-c owner-selected; session rows with a
+  loom jump to the Looms tab and highlight it; settings side-nav embedded;
+  awaiting final owner OK, then the project-page apply round).
 
 - **view:** MINI-CHAT DOCK (owner idea): Facebook-style docked session chats
 - **verdict:** new mockup (round 18)
@@ -229,16 +232,22 @@ Format per entry:
   w/ unread + working ring + parked tint, ~340x480 compact panels capped at
   2, queue-capable composer, fake-nav proves persistence across routes).
   OWNER: "I like the mini dock" + heads should TOGGLE (click open head =
-  minimize) — round 20 in flight. Wiring to the app shell pends the apply
-  round settling.
+  minimize) — round 20 landed 349034a.
+  OWNER FINAL: "I like both the mini chats and the hybrid view, let's apply
+  those too" — both go to production in apply round 2 (with the CTX overlay
+  clamp from the polish queue).
 
 ## Post-apply polish queue (found live on the applied UI, round 19)
 
 - **view:** session bar CTX overlay (applied, production)
-- **verdict:** fix
-- **items:** the /context hover overlay goes OUT OF BOUNDS at the right
-  viewport edge (spills past the window / under the sub-agent rail). Apply
-  the round-4 pattern: fixed-position measured from the anchor,
-  viewport-clamped with margin, flip side on overflow — for BOTH the CTX and
-  cost overlays (any pill overlay in the bar).
-- **round:** post-apply polish (queued behind ui-v2-apply)
+- **verdict:** fix + content rework
+- **items:** (a) the /context hover overlay goes OUT OF BOUNDS at the right
+  viewport edge — round-4 pattern: fixed-position from anchor, viewport-
+  clamped, flip on overflow (both bar overlays). (b) OWNER reference
+  screenshot (Claude Code /context): header "Context window" + used/window
+  (pct), slim segmented bar, swatch legend rows (Messages / System tools /
+  Skills / System prompt / Memory files / Free space muted / deferred rows
+  with — / expandable rows with counts), tokens + pct right-aligned.
+  Categories computed from Telar's OWN session assembly (system prompt, MCP
+  tool defs, message usage); ~ estimates ok; omit sourceless categories.
+- **round:** apply round 2 (queued behind ui-v2-apply)

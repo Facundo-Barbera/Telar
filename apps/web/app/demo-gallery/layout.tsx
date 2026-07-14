@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
-// Reuse the /gallery fetch seam so demo redesigns that mirror app views hit
-// fixture data, never a real backend/registry. Read-only import.
-import { GalleryFetchInterceptor } from "../gallery/gallery-fetch-interceptor";
+// Reuse the fetch seam so demo redesigns that mirror app views hit fixture
+// data, never a real backend/registry. (Moved from the now-deleted /gallery
+// route into demo-gallery, its only remaining consumer.)
+import { GalleryFetchInterceptor } from "./gallery-fetch-interceptor";
 import { DemoNav } from "./demo-nav";
 
 export const metadata: Metadata = {
