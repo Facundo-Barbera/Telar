@@ -51,6 +51,10 @@ output (`BUILD Telar <shortSha>`).
 `TELAR_DESKTOP_URL=http://127.0.0.1:3001 bunx electron apps/desktop` points the
 window at an already-running server and skips the child boot entirely.
 
+`bun run dev` (web) defaults `TELAR_HOME` to `~/.telar-dev` so dev runs never
+touch the real `~/.telar`; set `TELAR_HOME` explicitly to override. The packaged
+app and `next start` keep `~/.telar`.
+
 ## Quarantine note (unsigned app)
 
 macOS Gatekeeper blocks unsigned apps. After copying `Telar.app` somewhere,
@@ -59,12 +63,19 @@ clear the quarantine flag once:
 
 ## Known gaps
 
-- **Verifier / @playwright/mcp**: it is a devDependency and is *not* traced into
-  the standalone bundle, and it is not on the global PATH. In the fully packaged
-  `.app` the Verifier's browser-driving will not resolve it. The login-shell env
-  capture fixes git/gh/claude/bun (the make-or-break) but not this — set
-  `TELAR_PLAYWRIGHT_MCP_BIN` in your shell profile (it gets picked up) or install
-  playwright-mcp globally. Unpackaged/dev-repo runs resolve it fine.
-- **Shared data**: sessions write to the same `~/.telar` as the dev servers
-  (intended). Don't run the desktop app and a dev server against the same loom.
+- **Verifier / Playwright browsers**: `@playwright/mcp` itself now ships inside
+  the `.app`. `build-web.sh` materializes a self-contained, symlink-dereferenced
+  copy (cli.js + `playwright`/`playwright-core`, ~17 MB) that electron-builder
+  copies to `<Resources>/playwright-mcp`; when packaged, `main.js` exports
+  `TELAR_PLAYWRIGHT_MCP_BIN` (unless you already set it) so the core resolver
+  points the Verifier's browser at the bundled cli. `--smoke` asserts that cli is
+  present and prints `PLAYWRIGHT_MCP_BUNDLED_OK`. The one honest remaining
+  requirement is the Playwright **browser binaries** themselves
+  (`~/Library/Caches/ms-playwright`), which are a machine-level cache, not part
+  of any npm package — install them once with `bunx playwright install chromium`.
+  This belongs in the onboarding doctor as a checked precondition (present /
+  absent), the same way it checks for git/gh/claude/bun.
+- **Separate dev data**: the desktop app writes to `~/.telar`, while `bun run
+  dev` servers default to `~/.telar-dev`. Point both at the same `TELAR_HOME` if
+  you deliberately want them to share a loom.
 - **No remembered window bounds, no icon, no menu** — viable tier, by design.
