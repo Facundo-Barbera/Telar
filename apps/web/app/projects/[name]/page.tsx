@@ -1,37 +1,58 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+// The project hub — variant-c "Hybrid" (owner-selected; spec in
+// lib/demo-gallery/project/variant-c.tsx). A compact identity header over tabs
+// Sessions | Looms | Settings. Sessions is a dense, grouped, search-first list
+// (sessions only, no preview pane); Looms is state-toned data-light cards;
+// Settings folds the standalone project-settings view in as the tab body. Tab
+// lives in the URL (?tab=looms) so it's shareable. All @telar/core imports are
+// type-only — nothing here reaches server-only modules (client-bundle rule).
+import {
+  Suspense,
+  use,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ActivityIcon,
   ArrowLeftIcon,
-  BanIcon,
+  CalendarClockIcon,
+  CheckCheckIcon,
+  CircleCheckIcon,
   ChevronRightIcon,
-  FileCogIcon,
-  HistoryIcon,
+  FolderGit2Icon,
   FolderXIcon,
-  GlobeIcon,
-  LinkIcon,
+  HistoryIcon,
   MessagesSquareIcon,
   PlayIcon,
+  PlusIcon,
   RotateCwIcon,
-  ServerIcon,
-  SettingsIcon,
-  ShieldIcon,
+  SearchXIcon,
+  SlidersHorizontalIcon,
   SparklesIcon,
+  SunriseIcon,
   Trash2Icon,
   TriangleAlertIcon,
+  WorkflowIcon,
+  type LucideIcon,
 } from "lucide-react";
-import type { ProjectManifest, RegistryEntry, Loom } from "@telar/core";
+import type {
+  Loom,
+  ProjectManifest,
+  RegistryEntry,
+  WorkUnitState,
+} from "@telar/core";
 import type { ChatSummary } from "@/lib/store";
 import { fmtAgo, fmtCost } from "@/lib/format";
 import { modelById } from "@/lib/models";
 import { cn } from "@/lib/utils";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
@@ -47,23 +68,18 @@ import {
 } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  HealthDot,
-  normalizeStatus,
-  type HttpStatus,
-} from "@/components/settings/mcp-health";
-import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
 import {
+  Chip,
   GroupHeader,
+  SearchField,
   WeaveChip,
-  isLoomNeedsYou,
-  isLoomRecent,
   isLoomRunning,
 } from "@/components/common/list-controls";
 import { ArchiveButton } from "@/components/session/archive-button";
 import { isTerminal, stateRailClass, sumCost } from "@/components/looms/utils";
+import { ProjectSettings } from "@/components/projects/settings-view";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -72,14 +88,69 @@ type ProjectEntry = {
 };
 
 type ChatMeta = ChatSummary;
-
 type Status = "loading" | "ready" | "missing" | "error";
+type Tab = "sessions" | "looms" | "settings";
+type StateFilter = "any" | "active" | "needs-you" | "done";
+
+/* -------------------------------------------------------------- state vocab */
+
+// A four-way partition of every WorkUnitState for the Looms tab groups
+// (Running / Needs you / Ready / Done). isLoomRunning (list-controls) owns the
+// in-flight set; the rest split needs-you / ready / closed.
+const isNeedsYou = (s: WorkUnitState) =>
+  s === "charter-review" ||
+  s === "needs-review" ||
+  s === "blocked" ||
+  s === "failed";
+const isReady = (s: WorkUnitState) => s === "ready";
+const isDoneish = (s: WorkUnitState) =>
+  s === "done" || s === "halted" || s === "skipped";
+
+/* ---------------------------------------------------------------- age helpers */
+
+const DAY = 24 * 60 * 60 * 1000;
+type AgeBucket = "today" | "week" | "older";
+function ageBucket(ts: number): AgeBucket {
+  const age = Date.now() - ts;
+  if (age < DAY) return "today";
+  if (age < 7 * DAY) return "week";
+  return "older";
+}
+
+const AGE_BUCKETS: { key: AgeBucket; label: string; icon: LucideIcon }[] = [
+  { key: "today", label: "Today", icon: SunriseIcon },
+  { key: "week", label: "This week", icon: CalendarClockIcon },
+  { key: "older", label: "Older", icon: HistoryIcon },
+];
+
+function matchSession(c: ChatMeta, needle: string): boolean {
+  if (!needle) return true;
+  const n = needle.toLowerCase();
+  const model = modelById(c.model)?.name ?? c.model;
+  return (
+    (c.title ?? "").toLowerCase().includes(n) ||
+    (c.preview ?? "").toLowerCase().includes(n) ||
+    model.toLowerCase().includes(n)
+  );
+}
+
+function matchLoom(l: Loom, needle: string): boolean {
+  if (!needle) return true;
+  const n = needle.toLowerCase();
+  return (
+    l.title.toLowerCase().includes(n) ||
+    l.kind.toLowerCase().includes(n) ||
+    l.state.toLowerCase().includes(n)
+  );
+}
+
+/* --------------------------------------------------------------- chrome bits */
 
 function BackLink() {
   return (
     <Link
       href="/projects"
-      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       aria-label="Back to projects"
     >
       <ArrowLeftIcon className="size-4" />
@@ -88,8 +159,7 @@ function BackLink() {
 }
 
 // Two-click confirm: opening the popover is the first click, "Unregister" the
-// second. Mirrors the card's control so the destructive path reads the same
-// everywhere — only the destination (back to the list) differs.
+// second. Navigates back to the projects list on success.
 function UnregisterButton({ name }: { name: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -150,32 +220,29 @@ function UnregisterButton({ name }: { name: string }) {
   );
 }
 
-function SectionLabel({
-  children,
-  count,
+function EmptyFilter({
+  onReset,
+  label = "Nothing matches your filters.",
 }: {
-  children: React.ReactNode;
-  count?: number;
+  onReset: () => void;
+  label?: string;
 }) {
   return (
-    <div className="flex items-center gap-2 px-1">
-      <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        {children}
-      </h2>
-      {count !== undefined && count > 0 && (
-        <Badge variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
-          {count}
-        </Badge>
-      )}
+    <div className="flex flex-col items-center gap-3 px-4 py-16 text-center">
+      <SearchXIcon className="size-6 text-muted-foreground/50" />
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <Button variant="outline" size="sm" onClick={onReset}>
+        Reset
+      </Button>
     </div>
   );
 }
 
 function ListSkeleton({ rows = 3 }: { rows?: number }) {
   return (
-    <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+    <div className="divide-y divide-border">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-3 py-3">
+        <div key={i} className="flex items-center gap-3 px-4 py-3">
           <div className="flex-1 space-y-1.5">
             <Skeleton className="h-4 w-1/2" />
             <Skeleton className="h-3 w-1/3" />
@@ -199,7 +266,9 @@ function SectionError({
       icon={TriangleAlertIcon}
       iconClassName="text-destructive/60"
       title="Couldn't load this section"
-      description={<span className="font-mono text-xs break-words">{message}</span>}
+      description={
+        <span className="font-mono text-xs break-words">{message}</span>
+      }
       action={
         <Button variant="outline" size="sm" onClick={onRetry}>
           <RotateCwIcon />
@@ -210,303 +279,37 @@ function SectionError({
   );
 }
 
-// A muted uppercase section heading inside the Manifest rail, with an optional
-// leading icon — the shared look for Gates / Guardrails / URLs / MCP servers.
-function RailHeading({
-  icon: Icon,
-  children,
-}: {
-  icon?: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-muted-foreground/70 uppercase">
-      {Icon && <Icon className="size-3" />}
-      {children}
-    </div>
-  );
-}
+/* -------------------------------------------------------------- sessions tab */
 
-// Read-only summary of a project's telar.yaml: gates, guardrails, configured
-// URLs, and MCP servers with their live connection health. Editing lives on the
-// settings page (the header gear); this rail is a glance, not a control panel —
-// the one exception being a Connect shortcut for a server that needs sign-in.
-function ManifestCard({
+// One dense session row. The body links to the session deep link (preserved);
+// a session that wove a loom carries a state-toned rail + a loom pill that
+// jumps to the Looms tab and highlights that loom (never opens the session).
+function SessionRow({
   name,
-  manifest,
+  chat,
+  loom,
+  onOpenLoom,
 }: {
   name: string;
-  manifest: ProjectManifest;
+  chat: ChatMeta;
+  loom: Loom | undefined;
+  onOpenLoom: (loomId: string) => void;
 }) {
-  const { gates, guardrails, urls, mcpServers } = manifest;
-  const noGuards =
-    guardrails.protectedPaths.length === 0 &&
-    guardrails.disallowedTools.length === 0;
-
-  const urlEntries = (["dev", "preview", "prod"] as const)
-    .map((k) => [k, urls?.[k]] as const)
-    .filter((e): e is [(typeof e)[0], string] => !!e[1]);
-  const serverEntries = Object.entries(mcpServers);
-  const hasHttp = serverEntries.some(([, c]) => c.transport === "http");
-
-  // Live per-server health, from the same status route the settings page uses.
-  // Only fetched when there's an http server to probe; stdio shows as "Local".
-  const [status, setStatus] = useState<Record<string, HttpStatus>>({});
-  const [connecting, setConnecting] = useState<string | null>(null);
-
-  const loadStatus = useCallback(async () => {
-    if (!hasHttp) return;
-    try {
-      const res = await fetch(
-        `/api/mcp/oauth/status?project=${encodeURIComponent(name)}`,
-      );
-      if (!res.ok) return;
-      setStatus(normalizeStatus(await res.json()));
-    } catch {
-      // status unknown — dots stay on "checking"
-    }
-  }, [name, hasHttp]);
-
-  useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
-
-  // Inline Connect shortcut for a needs-sign-in server: the same OAuth popup the
-  // settings page opens. That popup lands on the settings page, which posts to
-  // its opener and closes itself — we just poll for the close, then re-pull
-  // status so the dot flips green. Full connect/reconnect/disconnect stays in
-  // settings; this is the one action worth taking the instant you spot amber.
-  const connect = async (server: string) => {
-    setConnecting(server);
-    try {
-      const res = await fetch("/api/mcp/oauth/connect", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ project: name, server }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        url?: string;
-        error?: string;
-      };
-      if (!res.ok || !data.url) {
-        throw new Error(data.error ?? `Couldn't start OAuth (${res.status}).`);
-      }
-      const popup = window.open(
-        data.url,
-        "telar-mcp-oauth",
-        "popup,width=520,height=720",
-      );
-      if (!popup) {
-        window.location.href = data.url;
-        return;
-      }
-      const poll = window.setInterval(() => {
-        if (popup.closed) {
-          window.clearInterval(poll);
-          setConnecting((c) => (c === server ? null : c));
-          void loadStatus();
-        }
-      }, 800);
-    } catch {
-      // Popup blocked or the connect route errored — clear busy; the settings
-      // page (header gear) carries the full flow with proper error surfacing.
-      setConnecting((c) => (c === server ? null : c));
-    }
-  };
-
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-1.5">
-          <FileCogIcon className="size-4 text-muted-foreground" />
-          Manifest
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-1.5">
-          <RailHeading>Gates</RailHeading>
-          {gates.length === 0 ? (
-            <p className="text-xs text-muted-foreground/60">
-              No gates — looms pass on the agent&apos;s verdict alone.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {gates.map((gate, i) => (
-                <div
-                  key={`${gate.name}-${i}`}
-                  className="flex items-baseline justify-between gap-3 rounded-md bg-muted/40 px-2 py-1"
-                >
-                  <span className="shrink-0 text-xs font-medium">
-                    {gate.name}
-                  </span>
-                  <code
-                    className="truncate font-mono text-[11px] text-muted-foreground"
-                    title={gate.run}
-                  >
-                    {gate.run}
-                  </code>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1.5">
-          <RailHeading icon={ShieldIcon}>Guardrails</RailHeading>
-          {noGuards ? (
-            <p className="text-xs text-muted-foreground/60">
-              No guardrails — nothing fenced off.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {guardrails.protectedPaths.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-[10px] text-muted-foreground/60">
-                    Protected paths
-                  </div>
-                  <div className="space-y-1">
-                    {guardrails.protectedPaths.map((p) => (
-                      <code
-                        key={p}
-                        className="block truncate rounded-md bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground"
-                        title={p}
-                      >
-                        {p}
-                      </code>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {guardrails.disallowedTools.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-[10px] text-muted-foreground/60">
-                    Disallowed tools
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {guardrails.disallowedTools.map((t) => (
-                      <Badge
-                        key={t}
-                        variant="outline"
-                        className="font-mono text-[10px]"
-                      >
-                        {t}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1.5">
-          <RailHeading icon={GlobeIcon}>URLs</RailHeading>
-          {urlEntries.length === 0 ? (
-            <p className="text-xs text-muted-foreground/60">
-              No URLs configured.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {urlEntries.map(([label, url]) => (
-                <div
-                  key={label}
-                  className="flex items-baseline justify-between gap-3 rounded-md bg-muted/40 px-2 py-1"
-                >
-                  <span className="shrink-0 text-xs font-medium capitalize">
-                    {label}
-                  </span>
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="truncate font-mono text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-                    title={url}
-                  >
-                    {url}
-                  </a>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1.5">
-          <RailHeading icon={ServerIcon}>MCP servers</RailHeading>
-          {serverEntries.length === 0 ? (
-            <p className="text-xs text-muted-foreground/60">
-              No MCP servers configured.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {serverEntries.map(([sName, cfg]) => {
-                const st =
-                  cfg.transport === "http" ? status[sName] : undefined;
-                const enabled = cfg.enabled !== false;
-                const needsAuth =
-                  cfg.transport === "http" && st?.health === "needs-auth";
-                return (
-                  <div
-                    key={sName}
-                    className={cn(
-                      "flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1",
-                      !enabled && "opacity-60",
-                    )}
-                  >
-                    <HealthDot transport={cfg.transport} status={st} />
-                    <span
-                      className="min-w-0 flex-1 truncate text-xs font-medium"
-                      title={sName}
-                    >
-                      {sName}
-                    </span>
-                    {!enabled ? (
-                      <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground/70 uppercase">
-                        off
-                      </span>
-                    ) : needsAuth ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 shrink-0 gap-1 px-2 text-[11px]"
-                        onClick={() => void connect(sName)}
-                        disabled={connecting === sName}
-                      >
-                        {connecting === sName ? (
-                          <Spinner />
-                        ) : (
-                          <LinkIcon className="size-3" />
-                        )}
-                        Connect
-                      </Button>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <Link
-          href={`/projects/${encodeURIComponent(name)}/settings`}
-          className="block text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
-        >
-          Edit configuration in settings →
-        </Link>
-      </CardContent>
-    </Card>
-  );
-}
-
-// The archive control sits beside the row link (never nested inside the
-// anchor) and reveals on hover. Archiving broadcasts telar:refresh, which the
-// page listens for and reloads — the row drops out (default exclude).
-function SessionRow({ name, chat }: { name: string; chat: ChatMeta }) {
   const model = modelById(chat.model)?.name ?? chat.model;
   return (
-    <div className="group flex items-center transition-colors hover:bg-muted/40">
+    <div className="group relative flex items-center transition-colors hover:bg-muted/40">
+      {loom && (
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full",
+            stateRailClass(loom.state),
+          )}
+        />
+      )}
       <Link
         href={`/projects/${encodeURIComponent(name)}/sessions/${chat.id}`}
-        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3"
+        className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-2 pl-4"
       >
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">
@@ -525,14 +328,27 @@ function SessionRow({ name, chat }: { name: string; chat: ChatMeta }) {
             </span>
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-0.5">
-          <span className="font-mono text-xs">{fmtCost(chat.costUsd)}</span>
+      </Link>
+      <div className="flex shrink-0 items-center gap-2 pr-2 pl-1">
+        {loom && (
+          <button
+            type="button"
+            onClick={() => onOpenLoom(loom.id)}
+            className="rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            aria-label={`Show the loom this session wove (${loom.state})`}
+            title="Show in Looms"
+          >
+            <StateBadge state={loom.state} className="shrink-0" />
+          </button>
+        )}
+        <div className="flex flex-col items-end gap-0.5">
+          <span className="font-mono text-xs tabular-nums">
+            {fmtCost(chat.costUsd)}
+          </span>
           <span className="text-xs text-muted-foreground">
             {fmtAgo(chat.updatedAt)}
           </span>
         </div>
-      </Link>
-      <div className="shrink-0 pr-2 pl-1">
         <ArchiveButton
           id={chat.id}
           className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
@@ -542,10 +358,202 @@ function SessionRow({ name, chat }: { name: string; chat: ChatMeta }) {
   );
 }
 
-// A subtle, collapsed-by-default drawer of this project's archived sessions.
-// Expanding it lazily fetches archived=only (never eagerly) and lists each with
-// a restore control; telar:refresh (fired by any archive/restore) keeps an open
-// drawer fresh and invalidates a closed one so reopening refetches.
+function SessionBucket({
+  label,
+  icon,
+  name,
+  chats,
+  loomById,
+  onOpenLoom,
+  defaultOpen,
+}: {
+  label: string;
+  icon: LucideIcon;
+  name: string;
+  chats: ChatMeta[];
+  loomById: Map<string, Loom>;
+  onOpenLoom: (loomId: string) => void;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (chats.length === 0) return null;
+  return (
+    <section className="overflow-hidden">
+      <GroupHeader
+        icon={icon}
+        label={label}
+        count={chats.length}
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+      />
+      {open && (
+        <div className="divide-y divide-border">
+          {chats.map((c) => (
+            <SessionRow
+              key={c.id}
+              name={name}
+              chat={c}
+              loom={c.loomId ? loomById.get(c.loomId) : undefined}
+              onOpenLoom={onOpenLoom}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// A session passes the state filter on the state of the loom it wove; a session
+// with no loom only survives "any".
+function sessionPassesState(
+  loom: Loom | undefined,
+  f: StateFilter,
+): boolean {
+  if (f === "any") return true;
+  if (!loom) return false;
+  if (f === "active") return isLoomRunning(loom.state);
+  if (f === "needs-you") return isNeedsYou(loom.state);
+  return isReady(loom.state) || isDoneish(loom.state);
+}
+
+function SessionsTab({
+  name,
+  chats,
+  chatsError,
+  loomById,
+  onOpenLoom,
+  onRetry,
+  newSessionHref,
+}: {
+  name: string;
+  chats: ChatMeta[] | null;
+  chatsError: string | null;
+  loomById: Map<string, Loom>;
+  onOpenLoom: (loomId: string) => void;
+  onRetry: () => void;
+  newSessionHref: string;
+}) {
+  const [q, setQ] = useState("");
+  const [stateF, setStateF] = useState<StateFilter>("any");
+
+  const filtered = useMemo(() => {
+    if (!chats) return [];
+    return chats
+      .filter(
+        (c) =>
+          matchSession(c, q) &&
+          sessionPassesState(
+            c.loomId ? loomById.get(c.loomId) : undefined,
+            stateF,
+          ),
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [chats, q, stateF, loomById]);
+
+  const byBucket = useMemo(() => {
+    const map: Record<AgeBucket, ChatMeta[]> = { today: [], week: [], older: [] };
+    for (const c of filtered) map[ageBucket(c.updatedAt)].push(c);
+    return map;
+  }, [filtered]);
+
+  const needsYouCount = useMemo(() => {
+    if (!chats) return 0;
+    return chats.filter((c) => {
+      const l = c.loomId ? loomById.get(c.loomId) : undefined;
+      return l && isNeedsYou(l.state);
+    }).length;
+  }, [chats, loomById]);
+
+  const stateChips: { value: StateFilter; label: string }[] = [
+    { value: "any", label: "Any state" },
+    { value: "active", label: "Active" },
+    { value: "needs-you", label: "Needs you" },
+    { value: "done", label: "Done" },
+  ];
+
+  if (chats === null) {
+    return chatsError ? (
+      <div className="p-4">
+        <SectionError message={chatsError} onRetry={onRetry} />
+      </div>
+    ) : (
+      <ListSkeleton rows={4} />
+    );
+  }
+
+  if (chats.length === 0) {
+    return (
+      <div className="p-4">
+        <EmptyState
+          icon={MessagesSquareIcon}
+          title="No sessions yet"
+          description="Sessions explore and prepare; looms execute."
+          action={
+            <Button variant="outline" render={<Link href={newSessionHref} />}>
+              <MessagesSquareIcon />
+              New session
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 space-y-2 border-b border-border px-4 py-2.5">
+        <SearchField value={q} onChange={setQ} placeholder="Search sessions…" />
+        <div className="flex flex-wrap items-center gap-1.5">
+          {stateChips.map((c) => (
+            <Chip
+              key={c.value}
+              active={stateF === c.value}
+              onClick={() => setStateF(c.value)}
+            >
+              {c.label}
+              {c.value === "needs-you" && needsYouCount > 0 ? (
+                <span className="font-mono tabular-nums text-amber-300">
+                  {needsYouCount}
+                </span>
+              ) : null}
+            </Chip>
+          ))}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <EmptyFilter
+            onReset={() => {
+              setQ("");
+              setStateF("any");
+            }}
+          />
+        ) : (
+          AGE_BUCKETS.map((b) => (
+            <SessionBucket
+              key={b.key}
+              label={b.label}
+              icon={b.icon}
+              name={name}
+              chats={byBucket[b.key]}
+              loomById={loomById}
+              onOpenLoom={onOpenLoom}
+              defaultOpen={b.key !== "older"}
+            />
+          ))
+        )}
+        <div className="px-4 py-3">
+          <ArchivedSessions name={name} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// A collapsed-by-default drawer of this project's archived sessions. Lazily
+// fetches archived=only on first expand; telar:refresh keeps an open drawer
+// fresh and invalidates a closed one so reopening refetches.
 function ArchivedSessions({ name }: { name: string }) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<ChatMeta[] | null>(null);
@@ -559,7 +567,8 @@ function ArchivedSessions({ name }: { name: string }) {
       const res = await fetch(
         `/api/chats?project=${encodeURIComponent(name)}&archived=only`,
       );
-      if (!res.ok) throw new Error(`Couldn't load archived sessions (${res.status}).`);
+      if (!res.ok)
+        throw new Error(`Couldn't load archived sessions (${res.status}).`);
       const d = (await res.json()) as { chats?: ChatMeta[] };
       setRows(d.chats ?? []);
     } catch (e) {
@@ -576,7 +585,7 @@ function ArchivedSessions({ name }: { name: string }) {
   useEffect(() => {
     const onRefresh = () => {
       if (open) void fetchArchived();
-      else setRows(null); // invalidate so the next expand refetches
+      else setRows(null);
     };
     window.addEventListener("telar:refresh", onRefresh);
     return () => window.removeEventListener("telar:refresh", onRefresh);
@@ -585,13 +594,14 @@ function ArchivedSessions({ name }: { name: string }) {
   const count = rows?.length ?? 0;
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2">
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="flex flex-col gap-2"
+    >
       <CollapsibleTrigger className="group/arch flex w-fit items-center gap-1.5 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground">
         <ChevronRightIcon
-          className={cn(
-            "size-3.5 transition-transform",
-            open && "rotate-90",
-          )}
+          className={cn("size-3.5 transition-transform", open && "rotate-90")}
         />
         Archived
         {rows !== null && count > 0 && (
@@ -610,10 +620,7 @@ function ArchivedSessions({ name }: { name: string }) {
         ) : (
           <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
             {rows?.map((chat) => (
-              <div
-                key={chat.id}
-                className="flex items-center gap-3 px-3 py-2.5"
-              >
+              <div key={chat.id} className="flex items-center gap-3 px-3 py-2.5">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm text-foreground/80">
                     {chat.title || "Untitled session"}
@@ -636,88 +643,296 @@ function ArchivedSessions({ name }: { name: string }) {
   );
 }
 
-function LoomRow({ loom }: { loom: Loom }) {
+/* ----------------------------------------------------------------- looms tab */
+
+type LoomGroupKey = "running" | "needs-you" | "ready" | "done";
+const LOOM_GROUPS: {
+  key: LoomGroupKey;
+  label: string;
+  icon: LucideIcon;
+  tint: string;
+  match: (s: WorkUnitState) => boolean;
+}[] = [
+  {
+    key: "running",
+    label: "Running",
+    icon: ActivityIcon,
+    tint: "text-sky-400",
+    match: isLoomRunning,
+  },
+  {
+    key: "needs-you",
+    label: "Needs you",
+    icon: TriangleAlertIcon,
+    tint: "text-amber-400",
+    match: isNeedsYou,
+  },
+  {
+    key: "ready",
+    label: "Ready",
+    icon: CircleCheckIcon,
+    tint: "text-emerald-400",
+    match: isReady,
+  },
+  {
+    key: "done",
+    label: "Done",
+    icon: CheckCheckIcon,
+    tint: "text-muted-foreground",
+    match: isDoneish,
+  },
+];
+
+// A state-toned, data-light loom card — a left state rail, StateBadge, title +
+// weave chip, quiet kind/attempts, cost/age. The whole card links to the loom.
+function LoomCard({
+  loom,
+  highlighted,
+}: {
+  loom: Loom;
+  highlighted: boolean;
+}) {
   const attempts = loom.attempts.length;
   return (
-    <Link
-      href={`/looms/${loom.id}`}
-      className="relative flex items-center gap-3 py-2.5 pr-3 pl-4 transition-colors hover:bg-muted/40"
+    <div
+      className={cn(
+        "rounded-xl transition-shadow",
+        highlighted &&
+          "ring-2 ring-primary ring-offset-2 ring-offset-background",
+      )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full",
-          stateRailClass(loom.state),
-        )}
-      />
-      <StateBadge state={loom.state} className="shrink-0" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            {loom.title}
-          </span>
-          <WeaveChip loom={loom} />
+      <Link
+        href={`/looms/${loom.id}`}
+        className="relative block overflow-hidden rounded-xl border border-border bg-card p-3 transition-colors hover:border-foreground/25"
+      >
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-0 bottom-0 left-0 w-[3px]",
+            stateRailClass(loom.state),
+          )}
+        />
+        <div className="flex items-start gap-2 pl-1.5">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {loom.title}
+              </span>
+              <WeaveChip loom={loom} />
+            </div>
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <StateBadge state={loom.state} className="shrink-0" />
+              <span className="font-mono">{loom.kind}</span>
+              {attempts > 1 && (
+                <>
+                  <span className="text-border">·</span>
+                  <span>{attempts} attempts</span>
+                </>
+              )}
+            </div>
+            {loom.error && (
+              <p
+                className={cn(
+                  "mt-1.5 truncate text-xs",
+                  loom.state === "failed"
+                    ? "text-destructive/80"
+                    : "text-amber-300/80",
+                )}
+                title={loom.error}
+              >
+                {loom.error}
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-0.5">
+            <span className="font-mono text-xs tabular-nums">
+              {fmtCost(sumCost(loom.attempts))}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {fmtAgo(loom.updatedAt)}
+            </span>
+          </div>
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-mono">{loom.kind}</span>
-          <span className="text-border">·</span>
-          <span>
-            {attempts} {attempts === 1 ? "attempt" : "attempts"}
-          </span>
-        </div>
-      </div>
-      <div className="flex shrink-0 flex-col items-end gap-0.5">
-        <span className="font-mono text-xs tabular-nums">
-          {fmtCost(sumCost(loom.attempts))}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {fmtAgo(loom.updatedAt)}
-        </span>
-      </div>
-    </Link>
+      </Link>
+    </div>
   );
 }
 
-// A collapsible loom group for the project-detail looms section — same grouping
-// vocabulary (Running / Needs you / Recent) as the global looms index.
-function LoomGroup({
-  icon,
+function LoomGroupSection({
   label,
+  icon,
   tint,
   looms,
+  highlightId,
   defaultOpen,
 }: {
-  icon: typeof ActivityIcon;
   label: string;
-  tint?: string;
+  icon: LucideIcon;
+  tint: string;
   looms: Loom[];
+  highlightId: string | null;
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   if (looms.length === 0) return null;
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card">
+    <section className="overflow-hidden">
       <GroupHeader
         icon={icon}
+        tint={tint}
         label={label}
         count={looms.length}
         open={open}
         onToggle={() => setOpen((o) => !o)}
-        tint={tint}
       />
-      <div className="divide-y divide-border">
-        {open && looms.map((l) => <LoomRow key={l.id} loom={l} />)}
-      </div>
+      {open && (
+        <div className="space-y-2 p-3">
+          {looms.map((l) => (
+            <LoomCard key={l.id} loom={l} highlighted={highlightId === l.id} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }
 
-export default function ProjectDetailPage({
-  params,
+function LoomsTab({
+  looms,
+  loomsError,
+  highlightId,
+  onClearHighlight,
+  onRetry,
+  newLoomHref,
 }: {
-  params: Promise<{ name: string }>;
+  looms: Loom[] | null;
+  loomsError: string | null;
+  highlightId: string | null;
+  onClearHighlight: () => void;
+  onRetry: () => void;
+  newLoomHref: string;
 }) {
+  const [q, setQ] = useState("");
+
+  const grouped = useMemo(() => {
+    const matched = (looms ?? [])
+      .filter((l) => matchLoom(l, q))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return LOOM_GROUPS.map((g) => ({
+      ...g,
+      looms: matched.filter((l) => g.match(l.state)),
+    }));
+  }, [looms, q]);
+
+  const total = grouped.reduce((n, g) => n + g.looms.length, 0);
+
+  if (looms === null) {
+    return loomsError ? (
+      <div className="p-4">
+        <SectionError message={loomsError} onRetry={onRetry} />
+      </div>
+    ) : (
+      <ListSkeleton rows={4} />
+    );
+  }
+
+  if (looms.length === 0) {
+    return (
+      <div className="p-4">
+        <EmptyState
+          icon={SparklesIcon}
+          title="No looms yet"
+          description="Weave a loom to let Telar make the change and prove it through the gates."
+          action={
+            <Button variant="outline" render={<Link href={newLoomHref} />}>
+              <PlayIcon />
+              New loom session
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <SearchField
+          value={q}
+          onChange={(v) => {
+            setQ(v);
+            onClearHighlight();
+          }}
+          placeholder="Search looms…"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          render={<Link href={newLoomHref} />}
+        >
+          <PlayIcon />
+          New loom
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {total === 0 ? (
+          <EmptyFilter
+            onReset={() => setQ("")}
+            label="No looms match your search."
+          />
+        ) : (
+          grouped.map((g) => (
+            <LoomGroupSection
+              key={g.key}
+              label={g.label}
+              icon={g.icon}
+              tint={g.tint}
+              looms={g.looms}
+              highlightId={highlightId}
+              defaultOpen
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------- edge UI */
+
+function EdgeShell({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex h-dvh flex-col">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
+        <BackLink />
+        <h1 className="font-heading text-sm font-semibold tracking-tight">
+          {title}
+        </h1>
+      </div>
+      <div className="flex flex-1 items-center justify-center p-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------- hub */
+
+function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const tabParam = searchParams.get("tab");
+  const tab: Tab =
+    tabParam === "looms" || tabParam === "settings" ? tabParam : "sessions";
 
   const [project, setProject] = useState<ProjectEntry | null>(null);
   const [status, setStatus] = useState<Status>("loading");
@@ -726,10 +941,34 @@ export default function ProjectDetailPage({
   const [looms, setLooms] = useState<Loom[] | null>(null);
   const [chatsError, setChatsError] = useState<string | null>(null);
   const [loomsError, setLoomsError] = useState<string | null>(null);
-  const [showAllSessions, setShowAllSessions] = useState(false);
+  const [highlightLoom, setHighlightLoom] = useState<string | null>(null);
 
-  const sessionsHref = `/projects/${encodeURIComponent(name)}/sessions/new`;
+  const newSessionHref = `/projects/${encodeURIComponent(name)}/sessions/new`;
   const newLoomHref = `/looms?new=1&project=${encodeURIComponent(name)}`;
+
+  const setTab = useCallback(
+    (t: Tab) => {
+      const p = new URLSearchParams(searchParams.toString());
+      if (t === "sessions") p.delete("tab");
+      else p.set("tab", t);
+      const qs = p.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  const openLoom = useCallback(
+    (loomId: string) => {
+      setHighlightLoom(loomId);
+      setTab("looms");
+    },
+    [setTab],
+  );
+
+  const loomById = useMemo(
+    () => new Map((looms ?? []).map((l) => [l.id, l] as const)),
+    [looms],
+  );
 
   const load = useCallback(async () => {
     let projectsRes: Response;
@@ -747,7 +986,6 @@ export default function ProjectDetailPage({
       return;
     }
 
-    // Registry entry governs whether the page renders at all.
     try {
       if (!projectsRes.ok)
         throw new Error(`Couldn't reach the registry (${projectsRes.status})`);
@@ -767,9 +1005,6 @@ export default function ProjectDetailPage({
       return;
     }
 
-    // Sessions + looms are section-scoped — a failure degrades a section, not
-    // the page. An HTTP-level failure surfaces a retryable error in the section
-    // instead of leaving it stuck on the loading skeleton forever.
     if (chatsRes.ok) {
       try {
         const d = (await chatsRes.json()) as { chats?: ChatMeta[] };
@@ -798,7 +1033,6 @@ export default function ProjectDetailPage({
     void load();
   }, [load]);
 
-  // Sibling mutations broadcast telar:refresh — refetch on it.
   useEffect(() => {
     const onRefresh = () => void load();
     window.addEventListener("telar:refresh", onRefresh);
@@ -814,274 +1048,229 @@ export default function ProjectDetailPage({
     return () => clearInterval(t);
   }, [looms, load]);
 
-  // Unknown project — designed error state.
   if (status === "missing") {
     return (
-      <div className="flex h-dvh flex-col">
-        <PageHeader title="Project" leading={<BackLink />} />
-        <div className="flex flex-1 items-center justify-center p-6">
-          <EmptyState
-            className="border-none"
-            icon={FolderXIcon}
-            title="Project not found"
-            description={
-              <>
-                No project named{" "}
-                <code className="font-mono text-foreground">{name}</code> is
-                registered on the loom.
-              </>
-            }
-            action={
-              <Button variant="outline" render={<Link href="/projects" />}>
-                Back to projects
-              </Button>
-            }
-          />
-        </div>
-      </div>
+      <EdgeShell title="Project">
+        <EmptyState
+          className="border-none"
+          icon={FolderXIcon}
+          title="Project not found"
+          description={
+            <>
+              No project named{" "}
+              <code className="font-mono text-foreground">{name}</code> is
+              registered on the loom.
+            </>
+          }
+          action={
+            <Button variant="outline" render={<Link href="/projects" />}>
+              Back to projects
+            </Button>
+          }
+        />
+      </EdgeShell>
     );
   }
 
-  // First-load registry failure.
   if (status === "error") {
     return (
-      <div className="flex h-dvh flex-col">
-        <PageHeader title="Project" leading={<BackLink />} />
-        <div className="flex flex-1 items-center justify-center p-6">
-          <EmptyState
-            className="border-none"
-            icon={TriangleAlertIcon}
-            iconClassName="text-destructive/60"
-            title="Couldn't load this project"
-            description={
-              <span className="font-mono text-xs break-words">
-                {loadError}
-              </span>
-            }
-            action={
-              <Button variant="outline" size="sm" onClick={() => void load()}>
-                <RotateCwIcon />
-                Retry
-              </Button>
-            }
-          />
-        </div>
-      </div>
+      <EdgeShell title="Project">
+        <EmptyState
+          className="border-none"
+          icon={TriangleAlertIcon}
+          iconClassName="text-destructive/60"
+          title="Couldn't load this project"
+          description={
+            <span className="font-mono text-xs break-words">{loadError}</span>
+          }
+          action={
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              <RotateCwIcon />
+              Retry
+            </Button>
+          }
+        />
+      </EdgeShell>
     );
   }
 
-  // Loading.
   if (status === "loading" || !project) {
     return (
       <div className="flex h-dvh flex-col">
-        <PageHeader
-          leading={<BackLink />}
-          title={<Skeleton className="h-5 w-40" />}
-          actions={<Skeleton className="h-7 w-28 rounded-lg" />}
-        />
-        <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <div className="space-y-6">
-            <ListSkeleton />
-            <ListSkeleton />
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
+          <BackLink />
+          <Skeleton className="h-5 w-40" />
+          <div className="ml-auto">
+            <Skeleton className="h-8 w-28 rounded-lg" />
           </div>
-          <Skeleton className="h-56 w-full rounded-xl" />
         </div>
+        <ListSkeleton rows={6} />
       </div>
     );
   }
 
-  const { entry, manifest, error: manifestError } = project;
+  const { entry, manifest } = project;
   const title = manifest?.name ?? entry.name;
-  const root = manifest?.root ?? entry.root;
+
+  const runningCount = (looms ?? []).filter((l) => isLoomRunning(l.state))
+    .length;
+  const needsYouCount = (looms ?? []).filter((l) => isNeedsYou(l.state)).length;
+
+  const tabs: { key: Tab; label: string; icon: LucideIcon; count?: number }[] =
+    [
+      {
+        key: "sessions",
+        label: "Sessions",
+        icon: MessagesSquareIcon,
+        count: chats?.length,
+      },
+      {
+        key: "looms",
+        label: "Looms",
+        icon: WorkflowIcon,
+        count: looms?.length,
+      },
+      { key: "settings", label: "Settings", icon: SlidersHorizontalIcon },
+    ];
 
   return (
     <div className="flex h-dvh flex-col">
-      <PageHeader
-        className="flex-wrap"
-        leading={<BackLink />}
-        title={title}
-        description={
-          <div className="flex flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-1.5">
+      {/* COMPACT header — identity + primary action, then tabs. */}
+      <div className="shrink-0 border-b border-border bg-background/60 px-4 pt-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <BackLink />
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
+            <FolderGit2Icon className="size-4.5 text-muted-foreground" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate font-heading text-sm font-semibold tracking-tight">
+                {title}
+              </h1>
               {manifest ? (
                 <>
-                  <Badge variant="secondary" className="font-mono text-[10px]">
-                    {manifest.adapter}
-                  </Badge>
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 px-1.5 py-0 text-[10px] text-muted-foreground"
+                  >
                     {manifest.account}
                   </Badge>
-                  <Badge variant="outline" className="font-mono text-[10px]">
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+                  >
                     {manifest.baseBranch}
                   </Badge>
                 </>
               ) : (
-                <Badge variant="destructive" className="text-[10px]">
+                <Badge variant="destructive" className="shrink-0 text-[10px]">
                   manifest error
                 </Badge>
               )}
             </div>
-            <code
-              className="truncate font-mono text-[11px] text-muted-foreground/80"
-              title={root}
-            >
-              {root}
-            </code>
-          </div>
-        }
-        actions={
-          <>
-            <Button size="sm" render={<Link href={sessionsHref} />}>
-              <MessagesSquareIcon />
-              New session
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              render={<Link href={newLoomHref} />}
-            >
-              <PlayIcon />
-              New loom session
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground hover:text-foreground"
-              aria-label="Project settings"
-              render={
-                <Link
-                  href={`/projects/${encodeURIComponent(entry.name)}/settings`}
-                />
-              }
-            >
-              <SettingsIcon />
-            </Button>
-            <UnregisterButton name={entry.name} />
-          </>
-        }
-      />
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-          <div className="flex min-w-0 flex-col gap-6">
-            {/* Sessions */}
-            <section className="flex flex-col gap-2">
-              <SectionLabel count={chats?.length}>Sessions</SectionLabel>
-              {chats !== null ? (
-                chats.length === 0 ? (
-                  <EmptyState
-                    icon={MessagesSquareIcon}
-                    title="No sessions yet"
-                    description="Sessions explore and prepare; looms execute."
-                    action={
-                      <Button
-                        variant="outline"
-                        render={<Link href={sessionsHref} />}
-                      >
-                        <MessagesSquareIcon />
-                        New session
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {(showAllSessions ? chats : chats.slice(0, 6)).map((chat) => (
-                      <SessionRow key={chat.id} name={entry.name} chat={chat} />
-                    ))}
-                  </div>
-                )
-              ) : chatsError ? (
-                <SectionError message={chatsError} onRetry={() => void load()} />
-              ) : (
-                <ListSkeleton rows={2} />
+            <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+              {runningCount > 0 && (
+                <span className="text-sky-300">{runningCount} running</span>
               )}
-              {chats !== null && chats.length > 6 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="w-full text-muted-foreground hover:text-foreground"
-                  onClick={() => setShowAllSessions((v) => !v)}
-                >
-                  {showAllSessions
-                    ? "Show fewer"
-                    : `Show all ${chats.length} sessions`}
-                </Button>
+              {runningCount > 0 && needsYouCount > 0 && (
+                <span className="text-border">·</span>
               )}
-              {chats !== null && <ArchivedSessions name={entry.name} />}
-            </section>
-
-            {/* Looms */}
-            <section className="flex flex-col gap-2">
-              <SectionLabel count={looms?.length}>Looms</SectionLabel>
-              {looms !== null ? (
-                looms.length === 0 ? (
-                  <EmptyState
-                    icon={SparklesIcon}
-                    title="No looms yet"
-                    description="Weave a loom to let Telar make the change and prove it through the gates."
-                    action={
-                      <Button
-                        variant="outline"
-                        render={<Link href={newLoomHref} />}
-                      >
-                        <PlayIcon />
-                        New loom session
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <div className="space-y-3">
-                    <LoomGroup
-                      icon={ActivityIcon}
-                      label="Running now"
-                      tint="text-sky-400"
-                      looms={looms.filter((l) => isLoomRunning(l.state))}
-                      defaultOpen
-                    />
-                    <LoomGroup
-                      icon={TriangleAlertIcon}
-                      label="Needs you"
-                      tint="text-amber-400"
-                      looms={looms.filter((l) => isLoomNeedsYou(l.state))}
-                      defaultOpen
-                    />
-                    <LoomGroup
-                      icon={HistoryIcon}
-                      label="Recent"
-                      looms={looms.filter((l) => isLoomRecent(l.state))}
-                      defaultOpen={
-                        looms.filter(
-                          (l) =>
-                            isLoomRunning(l.state) || isLoomNeedsYou(l.state),
-                        ).length === 0
-                      }
-                    />
-                  </div>
-                )
-              ) : loomsError ? (
-                <SectionError message={loomsError} onRetry={() => void load()} />
-              ) : (
-                <ListSkeleton rows={2} />
+              {needsYouCount > 0 && (
+                <span className="text-amber-300">{needsYouCount} need you</span>
               )}
-            </section>
+              {runningCount === 0 && needsYouCount === 0 && (
+                <span>All quiet</span>
+              )}
+            </p>
           </div>
+          <Button size="sm" render={<Link href={newSessionHref} />}>
+            <PlusIcon />
+            New session
+          </Button>
+          <UnregisterButton name={entry.name} />
+        </div>
 
-          {/* Manifest / reference rail */}
-          <div className="lg:sticky lg:top-4 lg:self-start">
-            {manifest ? (
-              <ManifestCard name={entry.name} manifest={manifest} />
-            ) : (
-              <Alert variant="destructive">
-                <BanIcon />
-                <AlertTitle>Invalid telar.yaml</AlertTitle>
-                <AlertDescription className="font-mono text-xs break-words">
-                  {manifestError ?? "The manifest could not be read."}
-                </AlertDescription>
-              </Alert>
-            )}
-          </div>
+        {/* tabs */}
+        <div className="mt-3 flex items-center gap-1">
+          {tabs.map((t) => {
+            const on = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-2 text-xs font-medium transition-colors",
+                  on
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <t.icon className="size-3.5" />
+                {t.label}
+                {t.count != null && (
+                  <span
+                    className={cn(
+                      "font-mono text-[10px] tabular-nums",
+                      on ? "text-muted-foreground" : "text-muted-foreground/60",
+                    )}
+                  >
+                    {t.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
+
+      {/* BODY — one tab at a time */}
+      <div className="min-h-0 flex-1">
+        {tab === "sessions" && (
+          <SessionsTab
+            name={entry.name}
+            chats={chats}
+            chatsError={chatsError}
+            loomById={loomById}
+            onOpenLoom={openLoom}
+            onRetry={() => void load()}
+            newSessionHref={newSessionHref}
+          />
+        )}
+        {tab === "looms" && (
+          <LoomsTab
+            looms={looms}
+            loomsError={loomsError}
+            highlightId={highlightLoom}
+            onClearHighlight={() => setHighlightLoom(null)}
+            onRetry={() => void load()}
+            newLoomHref={newLoomHref}
+          />
+        )}
+        {tab === "settings" && <ProjectSettings name={entry.name} embedded />}
+      </div>
     </div>
+  );
+}
+
+export default function ProjectDetailPage({
+  params,
+}: {
+  params: Promise<{ name: string }>;
+}) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-dvh flex-col">
+          <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
+            <BackLink />
+            <Skeleton className="h-5 w-40" />
+          </div>
+          <ListSkeleton rows={6} />
+        </div>
+      }
+    >
+      <ProjectHub params={params} />
+    </Suspense>
   );
 }

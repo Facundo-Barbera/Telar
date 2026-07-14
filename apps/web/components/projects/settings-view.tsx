@@ -18,6 +18,7 @@ import {
   XIcon,
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
+import { cn } from "@/lib/utils";
 import { useAccounts } from "@/lib/use-accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -196,8 +197,19 @@ function BackLink({ href }: { href: string }) {
   );
 }
 
-export function ProjectSettings({ name }: { name: string }) {
+export function ProjectSettings({
+  name,
+  embedded = false,
+}: {
+  name: string;
+  // When embedded (project-hub Settings tab), fill the parent instead of the
+  // viewport and drop the standalone back-link — the hub owns the chrome.
+  embedded?: boolean;
+}) {
   const projectHref = `/projects/${encodeURIComponent(name)}`;
+  // h-dvh as a standalone page; h-full to fill the hub tab body.
+  const frameClass = embedded ? "h-full min-h-0" : "h-dvh";
+  const backHref = embedded ? undefined : projectHref;
   const { accounts } = useAccounts();
   const accountNames = accounts.map((a) => a.name);
 
@@ -307,7 +319,7 @@ export function ProjectSettings({ name }: { name: string }) {
   // Unknown project.
   if (status === "missing") {
     return (
-      <div className="flex h-dvh flex-col">
+      <div className={cn("flex flex-col", frameClass)}>
         <PageHeader title="Settings" leading={<BackLink href="/projects" />} />
         <div className="flex flex-1 items-center justify-center p-6">
           <EmptyState
@@ -335,7 +347,7 @@ export function ProjectSettings({ name }: { name: string }) {
   // First-load registry failure.
   if (status === "error") {
     return (
-      <div className="flex h-dvh flex-col">
+      <div className={cn("flex flex-col", frameClass)}>
         <PageHeader title="Settings" leading={<BackLink href={projectHref} />} />
         <div className="flex flex-1 items-center justify-center p-6">
           <EmptyState
@@ -361,7 +373,7 @@ export function ProjectSettings({ name }: { name: string }) {
   // Loading.
   if (status === "loading" || !entry) {
     return (
-      <div className="flex h-dvh flex-col">
+      <div className={cn("flex flex-col", frameClass)}>
         <PageHeader
           leading={<BackLink href={projectHref} />}
           title={<Skeleton className="h-5 w-32" />}
@@ -417,7 +429,7 @@ export function ProjectSettings({ name }: { name: string }) {
   );
 
   return (
-    <div className="h-dvh">
+    <div className={frameClass}>
       <SettingsShell
         title={<span className="font-mono">{name}</span>}
         subtitle={
@@ -428,7 +440,7 @@ export function ProjectSettings({ name }: { name: string }) {
         sections={sections}
         active={active}
         onSelect={setActive}
-        backHref={projectHref}
+        backHref={backHref}
         dirty={dirty}
         saving={saving}
         onSave={form ? () => void save() : undefined}
