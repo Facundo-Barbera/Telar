@@ -308,12 +308,12 @@ function HeadTooltip({ session, children }: { session: Session; children: React.
 function Head({
   session,
   active,
-  onOpen,
+  onToggle,
   onDismiss,
 }: {
   session: Session;
   active: boolean;
-  onOpen: () => void;
+  onToggle: () => void;
   onDismiss: () => void;
 }) {
   // A rotating conic gradient = a light sweeping around the rim (shimmer ring),
@@ -334,8 +334,8 @@ function Head({
         )}
         <button
           type="button"
-          onClick={onOpen}
-          aria-label={`Open ${session.title}`}
+          onClick={onToggle}
+          aria-label={`${active ? "Minimize" : "Open"} ${session.title}`}
           className={cn(
             "absolute inset-0 flex items-center justify-center rounded-full border text-sm font-semibold shadow-md transition-colors",
             parked
@@ -629,6 +629,20 @@ function DockStage() {
     });
   }, []);
 
+  // Minimize an expanded panel back to its head — shared by the head-click
+  // toggle (Facebook behavior) and the panel chrome's minimize button.
+  const minimizePanel = useCallback((id: string) => {
+    setOpen((prev) => prev.filter((x) => x !== id));
+  }, []);
+
+  const toggleHead = useCallback(
+    (id: string) => {
+      if (open.includes(id)) minimizePanel(id);
+      else openPanel(id);
+    },
+    [open, openPanel, minimizePanel],
+  );
+
   const onSubmit = useCallback(
     (id: string, text: string) => {
       const s = sessions.find((x) => x.id === id);
@@ -707,7 +721,7 @@ function DockStage() {
                 <DockPanel
                   key={s.id}
                   session={s}
-                  onMinimize={() => setOpen((p) => p.filter((x) => x !== s.id))}
+                  onMinimize={() => minimizePanel(s.id)}
                   onClose={() => {
                     setOpen((p) => p.filter((x) => x !== s.id));
                     dispatch({ type: "dismiss", id: s.id });
@@ -725,7 +739,7 @@ function DockStage() {
                 key={s.id}
                 session={s}
                 active={open.includes(s.id)}
-                onOpen={() => openPanel(s.id)}
+                onToggle={() => toggleHead(s.id)}
                 onDismiss={() => {
                   setOpen((p) => p.filter((x) => x !== s.id));
                   dispatch({ type: "dismiss", id: s.id });
@@ -744,7 +758,7 @@ export function ChatMiniDockDemo() {
     <DemoShell className="max-w-none">
       <Section
         title="Mini-chat dock — sessions that follow you"
-        note="Switch routes with the fake nav: the backdrop changes, the dock stays. Watch Replay: a head shimmer-beats + shows unread on a reply, expands to the compact 1.7 surface, another head starts its working ring, and a queued message dispatches into the transcript. Panels are out-of-flow — nothing reflows the page."
+        note="Switch routes with the fake nav: the backdrop changes, the dock stays. Watch Replay: a head shimmer-beats + shows unread on a reply, expands to the compact 1.7 surface, another head starts its working ring, and a queued message dispatches into the transcript. Panels are out-of-flow — nothing reflows the page. Click a head to expand it, click it again (or use the panel's minimize button) to dock it back down."
       >
         <div className="space-y-4">
           <div>
