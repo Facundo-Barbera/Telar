@@ -117,10 +117,20 @@ function recencyRank(p: DemoProject): number {
   return 4;
 }
 
-export const PLAN = {
-  account: "personal",
-  subscription: "max",
-  tier: "20x",
-  fiveHour: 42,
-  weekly: 68,
+// One authenticated Claude account = one "wheel" in the footer. Mirrors the
+// per-account PlanBlock/PlanRing list the production AppSidebar renders (outer
+// ring = 5h session utilization, inner ring = weekly). Several accounts so the
+// reorderable, compact-by-default wheel strip has something to arrange.
+export type DemoAccount = {
+  name: string;
+  subscription: string; // plan label, e.g. "max"
+  tier?: string; // cosmetic multiplier label, e.g. "20x" (omitted for some)
+  fiveHour: number; // 5-hour session utilization %
+  weekly: number; // weekly utilization %
 };
+
+export const ACCOUNTS: DemoAccount[] = [
+  { name: "personal", subscription: "max", tier: "20x", fiveHour: 42, weekly: 68 },
+  { name: "ozom", subscription: "team", tier: "5x", fiveHour: 88, weekly: 54 },
+  { name: "labs", subscription: "pro", fiveHour: 12, weekly: 31 },
+];

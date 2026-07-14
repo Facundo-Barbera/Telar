@@ -56,6 +56,8 @@ function VerificationHero() {
   const criticsCleared = critics.filter((a) => a.status === "passed").length;
   const repairs = DEMO_THREADS.reduce((n, t) => n + t.mediation.length, 0);
   const totalCost = DEMO_THREADS.reduce((n, t) => n + t.costUsd, 0);
+  const needsYou = DEMO_THREADS.filter((t) => t.statusKind === "block").length;
+  const deadEnded = DEMO_THREADS.filter((t) => t.state === "failed").length;
 
   return (
     <div className="rounded-xl border border-amber-500/40 bg-amber-500/[0.04] p-4">
@@ -67,7 +69,7 @@ function VerificationHero() {
           <div className="flex flex-col gap-0.5">
             <span className="text-base font-semibold">Awaiting your review</span>
             <span className="text-sm text-muted-foreground">
-              {verdicted} of {total} threads reached a verdict · 1 needs you · 1 dead-ended
+              {verdicted} of {total} threads reached a verdict · {needsYou} needs you · {deadEnded} dead-ended
             </span>
           </div>
         </div>

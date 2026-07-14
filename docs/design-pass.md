@@ -15,4 +15,27 @@ Format per entry:
 
 ---
 
-_(entries appended as the walkthrough proceeds)_
+## Round: /demo-gallery walkthrough (UI v2 proposals, 2026-07-13)
+
+- **view:** chat-working-indicator (1.4)
+- **verdict:** polish
+- **items:** light-theme panel — shimmer labels ("Starting turn", "Thinking",
+  "Running Bash") wash out to near-invisible; production Shimmer gradient is
+  dark-tuned, not token-driven. Lane-local theme-aware shimmer dispatched;
+  production Shimmer needs the same tokenization when the design ships.
+- **round:** demo-gallery polish (in flight)
+
+- **view:** chat-session-cost (1.6)
+- **verdict:** rework
+- **items:** (a) breakdown must open on HOVER as a floating anchored overlay —
+  click-to-expand inline reflows the whole bar/UI, rejected; click may pin.
+  (b) same light-panel washout on the breakdown rows as 1.4 — fix legibility.
+- **round:** demo-gallery polish (in flight)
+
+- **view:** sidebar-full / account wheels (3)
+- **verdict:** keep + polish ("love it, great UI" — owner)
+- **items:** account wheels: (a) grab-and-drop reorder so the owner chooses
+  display order (real persistence = settings fact when it ships); (b) COMPACT
+  mode as DEFAULT — only the wheels, horizontal row; expand reveals per-account
+  detail; reorder works in compact too.
+- **round:** demo-gallery polish (in flight)

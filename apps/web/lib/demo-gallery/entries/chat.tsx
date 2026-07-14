@@ -50,7 +50,7 @@ export const chatEntries: DemoEntry[] = [
     title: "Session cost — whole-weave total",
     concern: "1.6",
     summary:
-      "The heartbeat pill today counts only the main agent's spend. Here it shows the aggregate of main + every sub-agent and expands to a per-agent breakdown (cost, share bar, token split), with a callout of exactly how much sub-agent spend the old number was hiding.",
+      "The heartbeat pill today counts only the main agent's spend. Here it shows the aggregate of main + every sub-agent; hovering the pill floats a per-agent breakdown (cost, share bar, token split) as an anchored overlay that never reflows the bar — click to pin it open — with a callout of exactly how much sub-agent spend the old number was hiding.",
     Component: SessionCostDemo,
   },
   {

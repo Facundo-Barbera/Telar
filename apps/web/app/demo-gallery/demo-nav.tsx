@@ -43,7 +43,13 @@ export function DemoNav() {
     setCursor((c) => Math.min(c, Math.max(0, flat.length - 1)));
   }, [flat.length]);
 
+  // Keyboard nav belongs to the index route only. On a stage page the sidebar
+  // is still visible, but j/k/↵ there drive DemoStageHeader's prev/next pager —
+  // binding them here too would double-fire. Scope this handler to the index.
+  const onIndex = pathname === "/demo-gallery";
+
   useEffect(() => {
+    if (!onIndex) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
@@ -77,7 +83,7 @@ export function DemoNav() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [flat, cursor, router]);
+  }, [flat, cursor, router, onIndex]);
 
   return (
     <nav className="hidden w-72 shrink-0 flex-col overflow-hidden border-r border-border bg-muted/20 md:flex">

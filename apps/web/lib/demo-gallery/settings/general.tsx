@@ -128,9 +128,10 @@ export function GeneralSettingsDemo() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="claude-fable-5">Claude Fable 5</SelectItem>
                     <SelectItem value="claude-opus-4-8">Claude Opus 4.8</SelectItem>
-                    <SelectItem value="claude-sonnet-4-6">Claude Sonnet 4.6</SelectItem>
-                    <SelectItem value="claude-haiku-4-2">Claude Haiku 4.2</SelectItem>
+                    <SelectItem value="claude-sonnet-5">Claude Sonnet 5</SelectItem>
+                    <SelectItem value="claude-haiku-4-5">Claude Haiku 4.5</SelectItem>
                   </SelectContent>
                 </Select>
               }

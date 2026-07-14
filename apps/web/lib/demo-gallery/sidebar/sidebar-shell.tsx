@@ -16,16 +16,15 @@ import {
   PanelLeftIcon,
   PinIcon,
   PinOffIcon,
-  RefreshCwIcon,
   SettingsIcon,
 } from "lucide-react";
 import { StateBadge } from "@/components/common/state-badge";
 import type { WorkUnitState } from "@telar/core";
+import { AccountWheels } from "./account-wheels";
 import {
   activeFirst,
   activeLoomCount,
   PINNED,
-  PLAN,
   RECENTS,
   type DemoProject,
 } from "./fixtures";
@@ -64,59 +63,6 @@ function loomTone(state: WorkUnitState): string {
   if (state === "failed") return "bg-destructive";
   if (state === "ready") return "bg-emerald-400";
   return "bg-primary";
-}
-
-// ── plan usage (compact, footer) ─────────────────────────────────────────
-
-function PlanRings({ five, week }: { five: number; week: number }) {
-  const size = 30,
-    cxy = 15,
-    sw = 3;
-  const ring = (r: number, p: number, cls: string) => {
-    const circ = 2 * Math.PI * r;
-    return (
-      <>
-        <circle cx={cxy} cy={cxy} r={r} fill="none" strokeWidth={sw} className="stroke-sidebar-foreground/10" />
-        <circle
-          cx={cxy}
-          cy={cxy}
-          r={r}
-          fill="none"
-          strokeWidth={sw}
-          strokeLinecap="round"
-          strokeDasharray={circ}
-          strokeDashoffset={circ * (1 - Math.min(100, p) / 100)}
-          className={cls}
-        />
-      </>
-    );
-  };
-  const tone = (p: number) => (p >= 90 ? "stroke-destructive" : p >= 70 ? "stroke-amber-500" : "stroke-primary");
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90 shrink-0">
-      {ring(12, five, tone(five))}
-      {ring(7, week, tone(week))}
-    </svg>
-  );
-}
-
-function PlanBlock() {
-  return (
-    <div className="flex items-center gap-2 px-1">
-      <PlanRings five={PLAN.fiveHour} week={PLAN.weekly} />
-      <div className="flex min-w-0 flex-col">
-        <span className="flex items-center gap-1.5">
-          <span className="truncate font-mono text-xs text-sidebar-foreground/70">{PLAN.account}</span>
-          <span className="shrink-0 rounded bg-sidebar-accent px-1 font-mono text-[9px] uppercase text-sidebar-accent-foreground">
-            {PLAN.subscription}
-          </span>
-        </span>
-        <span className="font-mono text-[10px] text-sidebar-foreground/45">
-          {PLAN.fiveHour}% · 5h &nbsp; {PLAN.weekly}% · wk
-        </span>
-      </div>
-    </div>
-  );
 }
 
 // ── project row with nested today (chats + active looms) ─────────────────
@@ -360,27 +306,11 @@ export function SidebarRedesign({ startCollapsed = false }: { startCollapsed?: b
         )}
       </div>
 
-      {/* footer: plan usage + settings pinned to BOTTOM */}
+      {/* footer: account wheels (compact + reorderable) + settings at BOTTOM */}
       <div className="border-t border-sidebar-border p-2">
-        {!collapsed ? (
-          <div className="mb-2 space-y-2">
-            <div className="flex items-center justify-between px-1">
-              <span className="text-xs font-medium text-sidebar-foreground/60">Plan usage</span>
-              <button
-                type="button"
-                className="flex size-6 items-center justify-center rounded text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                aria-label="Refresh"
-              >
-                <RefreshCwIcon className="size-3.5" />
-              </button>
-            </div>
-            <PlanBlock />
-          </div>
-        ) : (
-          <div className="mb-2 flex justify-center">
-            <PlanRings five={PLAN.fiveHour} week={PLAN.weekly} />
-          </div>
-        )}
+        <div className="mb-2">
+          <AccountWheels collapsed={collapsed} />
+        </div>
         <button
           type="button"
           title="Settings"

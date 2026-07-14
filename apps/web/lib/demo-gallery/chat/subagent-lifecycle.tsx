@@ -16,7 +16,9 @@ import {
   ChevronRightIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+// Lane-local shimmer: the production one washes out on light panels (see note
+// in ./shimmer). Swap back to @/components/ai-elements/shimmer once that ships.
+import { Shimmer } from "./shimmer";
 import { cn } from "@/lib/utils";
 import { Caption, DemoShell, Section, ThemePair } from "./_shared";
 
