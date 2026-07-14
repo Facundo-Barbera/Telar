@@ -15,29 +15,29 @@ import { ChatSurfaceVariantsDemo } from "../chat/chat-surface";
 export const chatEntries: DemoEntry[] = [
   {
     id: "chat-subagent-lifecycle",
-    title: "Sub-agent task lifecycle",
+    title: "Sub-agent tabs — graceful dismiss",
     concern: "1.1",
     variant: "Variant A: graceful dismiss",
     summary:
-      "Today agent-tabs.tsx keeps a chip/tab per spawn forever, so finished sub-agents crowd the live one. Here a chip exists only while alive: on completion it collapses out of the active row and folds into a single “N done” pill you can expand for full history — the row only ever shows what is running.",
+      "Today agent-tabs.tsx keeps a TAB per spawn forever, so finished sub-agents crowd the strip (“Main | Verify P3 Track A | Verify P3 Track B | Reconcile PD-scope | …”). Here a completed tab collapses out of the strip and folds into an expandable “N done” pill at the strip end — every completed transcript stays one click away, so tabs stay navigation, not clutter. Running sub-agents are live switchable tabs; failed ones stay pinned (failure needs eyes).",
     Component: SubagentLifecycleDemo,
   },
   {
     id: "chat-subagent-tray",
-    title: "Sub-agent tasks — docked tray",
+    title: "Sub-agent tabs — overflow tray",
     concern: "1.1",
-    variant: "Variant B: relocate",
+    variant: "Variant B: overflow tray",
     summary:
-      "The alternative the user weighed: chips leave the transcript entirely and live behind a header affordance with a live count. Cleanest flow but hides running work one click deep — shown so the tradeoff against graceful-dismiss is visible.",
+      "The same de-cluttered strip with the alternative strip-end treatment: completed tabs collect into an overflow tray with a live count instead of a labelled pill — the popover re-lists them as clickable navigation. Running sub-agents stay live tabs, failed ones stay pinned. Shown so the tradeoff against the graceful-dismiss “N done” pill is visible.",
     Component: SubagentTrayVariantDemo,
   },
   {
     id: "chat-session-block",
     title: "Session block — 1.1 in context",
     concern: "1.1",
-    variant: "Both treatments, in a real turn",
+    variant: "Both treatments, in a real session",
     summary:
-      "The two 1.1 sub-agent treatments judged in context, not as isolated widgets: a production-anatomy session excerpt — user bubble, then a full agent turn with streamed thinking (1.3), tool steps, and sub-agents that spawn mid-turn, run alongside the tools, and complete one by one — each dismissing per the chosen treatment — closing with final assistant text and the aggregate cost pill (1.6). Replay restarts the scripted timeline; a variant switch swaps A (graceful dismiss into the folded pill) and B (docked tray) in place so both are compared within the same conversation. Reuses the exact chips/pill/tray, thinking block, and cost bits from the isolated demos.",
+      "The two 1.1 sub-agent-tab treatments judged in context, not as isolated widgets: a production-anatomy session — header, the agent-tab strip, then a full agent turn with streamed thinking (1.3), tool steps, and sub-agents that spawn mid-turn as live tabs and complete one by one, each dismissing from the strip per the chosen treatment — closing with final assistant text and the aggregate cost pill (1.6). Replay restarts the scripted timeline; a variant switch swaps A (graceful dismiss into the “N done” pill) and B (overflow tray) on the strip in place. Reuses the exact strip, thinking block, and cost bits from the isolated demos.",
     Component: SessionBlockDemo,
   },
   {

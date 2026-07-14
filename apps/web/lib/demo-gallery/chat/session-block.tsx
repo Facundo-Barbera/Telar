@@ -1,32 +1,31 @@
 "use client";
 
-// 1.1 IN CONTEXT — a production-anatomy session excerpt.
-// The two 1.1 sub-agent treatments (graceful-dismiss chips + folded pill, and
-// the docked tray) were previously judged as isolated widgets. Here they run
-// inside a REAL agent turn: a user bubble, streamed thinking (1.3), a run of
-// tool steps (TOOL_ICONS), sub-agents that spawn MID-TURN and complete one by
-// one — each dismissing per the chosen treatment — then the turn closes with
-// final assistant text + the aggregate cost pill (1.6). A replay button
-// restarts the scripted timeline; a variant switch swaps the treatment in
-// place so A and B are compared within the same conversation.
+// 1.1 IN CONTEXT — a production-anatomy session.
+// The two 1.1 sub-agent-tab treatments (graceful dismiss into the "N done"
+// pill, and the overflow tray) were previously judged as isolated widgets.
+// Here they run on the real agent-tab STRIP, atop a REAL agent turn: a session
+// header, the strip, then a user bubble, streamed thinking (1.3), a run of tool
+// steps (TOOL_ICONS), and sub-agents that spawn MID-TURN as LIVE TABS and
+// complete one by one — each dismissing from the strip per the chosen treatment
+// — closing with final assistant text + the aggregate cost pill (1.6). A replay
+// button restarts the scripted timeline; a variant switch swaps the strip-end
+// treatment in place so A and B are compared within the same session.
 //
-// Reuse-first: the chips/pill/tray come straight from subagent-lifecycle, the
-// thinking block from thinking-stream, the cost pill from session-cost — this
-// file only orchestrates the scripted timeline and lays the pieces out with
-// real session-view spacing (Message/MessageContent grammar: user bubble
+// Reuse-first: the strip comes straight from subagent-lifecycle, the thinking
+// block from thinking-stream, the cost pill from session-cost — this file only
+// orchestrates the scripted timeline and lays the pieces out with real
+// session-view spacing (Message/MessageContent grammar: user bubble
 // right-aligned in bg-secondary, assistant full-width plain text).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RotateCcwIcon, UserRoundIcon, WrenchIcon } from "lucide-react";
+import { RotateCcwIcon, UserRoundIcon, WorkflowIcon, WrenchIcon } from "lucide-react";
 import { TOOL_ICONS } from "@/components/session/tool-step";
 import { fmtCost } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Shimmer } from "./shimmer";
 import {
-  CompletedPill,
-  DockedTray,
   StatusMark,
-  TaskChip,
+  SubagentTabStrip,
   fmtDur,
   type Task,
 } from "./subagent-lifecycle";
@@ -42,11 +41,6 @@ type ToolStep = {
   startedAt: number;
   finishedAt?: number;
 };
-
-// Local extension: `dismissed` marks a task whose leaving animation has settled,
-// so the graceful-dismiss render can keep a leaving chip in the active row
-// (collapsing) until the transition ends, then fold it into the pill.
-type TurnTask = Task & { dismissed?: boolean };
 
 type Phase = "idle" | "thinking" | "working" | "done";
 
@@ -124,7 +118,8 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
   const [phase, setPhase] = useState<Phase>("idle");
   const [thinking, setThinking] = useState<Thinking>({ text: "", done: false });
   const [steps, setSteps] = useState<ToolStep[]>([]);
-  const [tasks, setTasks] = useState<TurnTask[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [activeTab, setActiveTab] = useState("main");
   const [finalText, setFinalText] = useState(false);
   const [showCost, setShowCost] = useState(false);
 
@@ -182,6 +177,7 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
     setThinking({ text: "", done: false });
     setSteps([]);
     setTasks([]);
+    setActiveTab("main");
     setFinalText(false);
     setShowCost(false);
 
@@ -236,74 +232,94 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKey]);
 
-  // graceful-dismiss split: a task stays in the active row (running, or resolved
-  // and animating out) until its collapse settles (dismissed), then it belongs
-  // to the folded history pill.
-  const activeRow = tasks.filter((t) => !t.dismissed);
-  const history = tasks.filter((t) => t.dismissed);
-  const runningCount = tasks.filter((t) => t.status === "running").length;
+  const activeTask = tasks.find((t) => t.id === activeTab);
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      {/* Docked tray lives in the session header (variant B only) */}
-      {variant === "tray" && (
-        <DockedTray items={tasks} headerLabel="Session" now={now} />
-      )}
-
-      {/* User message — right-aligned bubble (Message/MessageContent grammar) */}
-      <div className="flex flex-col gap-1">
-        <div className="ml-auto max-w-[80%] rounded-lg bg-secondary px-4 py-3 text-sm text-foreground">
-          Fix the failing cost test — the session total is dropping every sub-agent&apos;s spend.
-        </div>
+    <div className="overflow-hidden rounded-lg border border-border bg-background">
+      {/* Session header + the agent-tab strip — production anatomy: the strip
+          sits between the session header and the transcript, driven by the same
+          task timeline. The A/B switch swaps the strip-end treatment. */}
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+        <WorkflowIcon className="size-3.5 shrink-0" />
+        <span className="font-medium text-foreground">Fix cost test</span>
+        <span className="text-muted-foreground/50">·</span>
+        <span>session</span>
       </div>
+      <SubagentTabStrip
+        tasks={tasks}
+        activeId={activeTab}
+        onSelect={setActiveTab}
+        treatment={variant}
+      />
 
-      {/* Assistant turn — full width, plain text, stacked parts */}
-      <div className="flex flex-col gap-2 text-sm text-foreground">
-        {/* thinking (1.3) */}
-        {phase !== "idle" && thinking.text.trim() !== "" && (
-          <ThinkingBlock part={thinking} />
-        )}
-        {phase === "thinking" && thinking.text.trim() === "" && (
-          <Shimmer className="text-sm">Thinking…</Shimmer>
-        )}
+      {/* Transcript */}
+      <div className="p-4">
+        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+          {activeTab === "main" ? (
+            <>
+              {/* User message — right-aligned bubble (Message/MessageContent grammar) */}
+              <div className="flex flex-col gap-1">
+                <div className="ml-auto max-w-[80%] rounded-lg bg-secondary px-4 py-3 text-sm text-foreground">
+                  Fix the failing cost test — the session total is dropping every sub-agent&apos;s spend.
+                </div>
+              </div>
 
-        {/* tool steps */}
-        {steps.map((s) => (
-          <ToolStepRow key={s.id} step={s} now={now} />
-        ))}
+              {/* Assistant turn — full width, plain text, stacked parts */}
+              <div className="flex flex-col gap-2 text-sm text-foreground">
+                {/* thinking (1.3) */}
+                {phase !== "idle" && thinking.text.trim() !== "" && (
+                  <ThinkingBlock part={thinking} />
+                )}
+                {phase === "thinking" && thinking.text.trim() === "" && (
+                  <Shimmer className="text-sm">Thinking…</Shimmer>
+                )}
 
-        {/* sub-agent tasks — graceful-dismiss treatment (variant A), inline in
-            the turn beside the tool steps: a live chip while running, collapsing
-            into the folded "N done" pill on completion */}
-        {variant === "dismiss" && (activeRow.length > 0 || history.length > 0) && (
-          <div className="flex min-h-9 flex-wrap items-center gap-2">
-            {activeRow.map((t) => (
-              <TaskChip key={t.id} task={t} now={now} />
-            ))}
-            <CompletedPill history={history} />
-          </div>
-        )}
+                {/* tool steps */}
+                {steps.map((s) => (
+                  <ToolStepRow key={s.id} step={s} now={now} />
+                ))}
 
-        {/* final assistant text */}
-        {finalText && (
-          <p className="leading-relaxed">
-            Fixed. The total now folds every sub-agent&apos;s usage into the sum before formatting —
-            the {runningCount === 0 ? "three" : runningCount} spawned audits confirmed the buckets, and{" "}
-            <span className="font-mono text-xs">bun test packages/core</span> is green.
-          </p>
-        )}
+                {/* final assistant text */}
+                {finalText && (
+                  <p className="leading-relaxed">
+                    Fixed. The total now folds every sub-agent&apos;s usage into the sum before
+                    formatting — the three spawned verifications confirmed the buckets, and{" "}
+                    <span className="font-mono text-xs">bun test packages/core</span> is green.
+                  </p>
+                )}
 
-        {/* cost pill (1.6) — the aggregate, main + every sub-agent */}
-        {showCost && (
-          <div className="mt-1 flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground">
-              <UserRoundIcon className="size-3 text-muted-foreground" />
-              {fmtCost(0.536)}
-              <span className="text-[10px] text-muted-foreground/70">main + 3</span>
-            </span>
-            <span className="text-[10px] text-muted-foreground/60">turn complete</span>
-          </div>
-        )}
+                {/* cost pill (1.6) — the aggregate, main + every sub-agent */}
+                {showCost && (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground">
+                      <UserRoundIcon className="size-3 text-muted-foreground" />
+                      {fmtCost(0.536)}
+                      <span className="text-[10px] text-muted-foreground/70">main + 3</span>
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/60">turn complete</span>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : activeTask ? (
+            // A sub-agent tab's own transcript stub — switching here proves the
+            // strip is real navigation, and that a dismissed sub-agent is still
+            // reachable from the strip-end pill/tray.
+            <div className="flex flex-col gap-2 text-sm text-foreground">
+              <div className="inline-flex items-center gap-1.5 text-xs font-medium">
+                <StatusMark status={activeTask.status} />
+                {activeTask.label}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {activeTask.status === "running"
+                  ? "Sub-agent transcript — still working, switchable live from the strip."
+                  : activeTask.status === "error"
+                    ? "Sub-agent failed — its tab stays pinned in the strip so the failure keeps your eyes."
+                    : "Sub-agent completed — reached from the strip-end affordance, transcript intact."}
+              </p>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

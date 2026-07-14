@@ -134,7 +134,10 @@ Format per entry:
   (same height/baseline in the bar); (b) both breakdowns are hover-triggered
   now, so the expand chevron (down arrow) on the pill(s) is a stale
   affordance — remove it wherever it appears on the CTX/cost pills.
-- **round:** demo-gallery round 10 (queued behind round 9 — same lane files)
+- **round:** rounds 10+12 — chevron removed 9f0cd3d; alignment fixed bb74aa5
+  (round 10 audited badge classes and missed it — the offset lived in the
+  WRAPPERS' cross-axis alignment; round 12 fixed from probe measurements,
+  re-probe confirms both badges at identical top/height).
 
 - **view:** 1.1 REFRAME (owner): target is the AGENT TAB STRIP, not chips
 - **verdict:** rework (re-purpose, don't rebuild)
