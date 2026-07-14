@@ -48,6 +48,10 @@ export function DiscussEscalation({ loom }: { loom: Loom }) {
             // Minimal seed — SessionView hydrates the full registry via useAccounts().
             accounts={[{ name: loom.account }]}
             escalation
+            // Suppress standalone chrome (back button, identity header,
+            // account/usage bar, dock-minimize) — the escalation surface
+            // (ParkExplanation above) already carries identity/context.
+            embedded
             loomId={loom.id}
           />
         </div>
