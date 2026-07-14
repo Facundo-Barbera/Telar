@@ -7,17 +7,17 @@ import type { DemoEntry } from "../registry";
 import { ProjectHubHybrid } from "../project/variant-c";
 import { ProjectHubWorkFirst } from "../project/variant-a";
 import { ProjectHubCommandView } from "../project/variant-b";
-import { GitUnifiedDemo } from "../project/git-unified";
+import { ProjectGithubTab } from "../project/github-tab";
 
 export const projectEntries: DemoEntry[] = [
   {
-    id: "project-git-unified",
-    title: "Project · Git tab (unified)",
+    id: "project-github-tab",
+    title: "Project hub — GitHub tab",
     concern: "extra",
-    variant: "RECOMMENDED · one dense Git tab, one section at a time",
+    variant: "RECOMMENDED · avatar-first, constrained, For-you default",
     summary:
-      "One Git tab whose body shows ONE dense section at a time via a slim switcher (Worktrees | Branches | Remote | Files) under a persistent header that carries the reclaimable-GB headline — no long scroll, no stacked sections. Worktrees leads (reclaimable logic, bulk clean-up confirm, typed force); branches sit beside the activity log, Remote is read-only gh, Files is a git-aware tree. Hit 'Finish running loom' from any sub-view: a hidden section that changes gets an attention dot.",
-    Component: GitUnifiedDemo,
+      "The project hub reframed around GitHub at the app-standard content width (matching the dashboard column — the hub was the one full-width surface). Tab strip is Sessions | Looms | GitHub | Settings (Git renamed, Files cut). The GitHub tab is avatar-first with four sub-views: FOR YOU (review requested, assigned, mentions, your failing checks — one glance = what needs me), ISSUES and PRS as master-detail (list left with search + Open/Mine/Review-requested chips + j/k, detail right) at full GitHub fidelity (real github.com avatars w/ initials fallback, colored label pills, state glyphs, checks clusters, review chips, head→base mono, rendered markdown + threads), and REPO (worktrees w/ reclaimable + the new conflict-radar chip per branch from a dry git merge-tree, compact branches, cleanup). Bridge actions make it Telar not a mirror: issue → Work-on-this (pre-seeded session sheet) + Weave-loom (charter seed); PR → Check-out (local worktree) + Land (guarded gates→ff-merge→push→delete/reclaim pipeline). Replay: re-running #146's checks flips its red check green so it leaves For-you's failing list. Both themes; retires project-git-unified.",
+    Component: ProjectGithubTab,
   },
   {
     id: "project-hub-c",

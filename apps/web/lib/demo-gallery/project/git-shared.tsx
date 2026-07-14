@@ -1,137 +1,16 @@
 "use client";
 
-// LANE: project (NEW) — shared shell + primitives for the project Git tab demos
-// (project-git-* entries). The Git tab lives INSIDE the hub-c anatomy, so this
-// reproduces that anatomy exactly: the compact project header + the tab strip
-// Sessions | Looms | Git | Settings, with Git active. Non-git tabs are stubs
-// that point back at project-hub-c (this lane owns the Git tab only). Theming
-// rides on the shared StageFrame token wrapper — no `dark:` utilities, both
-// themes render in-page.
-import { useState, type ReactNode } from "react";
-import {
-  FolderGit2Icon,
-  GitBranchIcon,
-  MessagesSquareIcon,
-  PlusIcon,
-  SlidersHorizontalIcon,
-  WorkflowIcon,
-  type LucideIcon,
-} from "lucide-react";
+// LANE: project (NEW) — shared primitives for the project GitHub tab demo
+// (project-github-tab): avatars, state chips, section bands, the ~size
+// formatter. The hub shell itself now lives in github-tab.tsx (the reframed,
+// constrained hub owns its own anatomy). Colors via class utilities — no `dark:`
+// utilities, both themes render in-page under the StageFrame token wrapper.
+import { type ReactNode } from "react";
+import { Avatar as AvatarPrimitive } from "@base-ui/react/avatar";
+import { type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { DEMO_PROJECT } from "./fixtures";
-import { StageFrame, type Theme } from "./shared";
-
-type HubTab = "sessions" | "looms" | "git" | "settings";
-
-const HUB_TABS: { key: HubTab; label: string; icon: LucideIcon }[] = [
-  { key: "sessions", label: "Sessions", icon: MessagesSquareIcon },
-  { key: "looms", label: "Looms", icon: WorkflowIcon },
-  { key: "git", label: "Git", icon: GitBranchIcon },
-  { key: "settings", label: "Settings", icon: SlidersHorizontalIcon },
-];
-
-// The hub anatomy around a Git-tab body. Git is the standing active tab; the
-// other three are live but render a stub (they're project-hub-c's job).
-export function HubShell({
-  controls,
-  children,
-}: {
-  controls?: (theme: Theme) => ReactNode;
-  children: (theme: Theme) => ReactNode;
-}) {
-  return (
-    <StageFrame controls={controls}>
-      {(theme) => <HubBody theme={theme}>{children(theme)}</HubBody>}
-    </StageFrame>
-  );
-}
-
-function HubBody({ theme, children }: { theme: Theme; children: ReactNode }) {
-  const [tab, setTab] = useState<HubTab>("git");
-  return (
-    <div className="flex h-full flex-col">
-      {/* COMPACT header — identity + primary action (hub-c verbatim register). */}
-      <div className="shrink-0 border-b border-border bg-background/60 px-4 pt-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
-            <FolderGit2Icon className="size-4.5 text-muted-foreground" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate font-heading text-sm font-semibold tracking-tight">
-                {DEMO_PROJECT.name}
-              </h1>
-              <Badge
-                variant="outline"
-                className="shrink-0 border-sky-500/25 bg-sky-500/5 px-1.5 py-0 text-[10px] text-sky-300"
-              >
-                {DEMO_PROJECT.account}
-              </Badge>
-              <Badge
-                variant="outline"
-                className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
-              >
-                {DEMO_PROJECT.branch}
-              </Badge>
-            </div>
-            <p className="truncate text-xs text-muted-foreground">
-              {DEMO_PROJECT.root}
-            </p>
-          </div>
-          <Button size="sm">
-            <PlusIcon />
-            New session
-          </Button>
-        </div>
-
-        <div className="mt-3 flex items-center gap-1">
-          {HUB_TABS.map((tItem) => {
-            const on = tab === tItem.key;
-            return (
-              <button
-                key={tItem.key}
-                type="button"
-                onClick={() => setTab(tItem.key)}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-2 text-xs font-medium transition-colors",
-                  on
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <tItem.icon className="size-3.5" />
-                {tItem.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* BODY */}
-      <div className="min-h-0 flex-1">
-        {tab === "git" ? children : <TabStub tab={tab} />}
-      </div>
-    </div>
-  );
-}
-
-function TabStub({ tab }: { tab: Exclude<HubTab, "git"> }) {
-  const label = HUB_TABS.find((t) => t.key === tab)!.label;
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-      <p className="text-sm text-muted-foreground">
-        The <span className="font-medium text-foreground">{label}</span> tab is
-        specified in{" "}
-        <span className="font-mono text-xs text-foreground">project-hub-c</span>.
-      </p>
-      <p className="max-w-sm text-xs text-muted-foreground/70">
-        This demo focuses the Git tab. Switch back to Git to see it.
-      </p>
-    </div>
-  );
-}
+import { avatarUrl, ghUser, initials } from "./git-fixtures";
 
 /* --------------------------------------------------------- git primitives */
 
@@ -171,6 +50,95 @@ export function GitChip({
     >
       {children}
     </Badge>
+  );
+}
+
+/* -------------------------------------------------------------- avatars */
+
+// Deterministic initials-circle tone, hashed off the login so a given user
+// always falls back to the same color. Class utilities → both themes render.
+const FALLBACK_TONES = [
+  "bg-sky-500/20 text-sky-300",
+  "bg-violet-500/20 text-violet-300",
+  "bg-emerald-500/20 text-emerald-300",
+  "bg-amber-500/20 text-amber-300",
+  "bg-rose-500/20 text-rose-300",
+  "bg-indigo-500/20 text-indigo-300",
+  "bg-teal-500/20 text-teal-300",
+];
+function toneFor(login: string): string {
+  let h = 0;
+  for (let i = 0; i < login.length; i++) h = (h * 31 + login.charCodeAt(i)) >>> 0;
+  return FALLBACK_TONES[h % FALLBACK_TONES.length];
+}
+
+// A GitHub avatar: the real profile picture from github.com/<login>.png, with a
+// deterministic initials circle when the login is unknown or the image 404s
+// (base-ui swaps to Fallback on image error). `size` is px.
+export function GhAvatar({
+  login,
+  size = 20,
+  className,
+}: {
+  login: string;
+  size?: number;
+  className?: string;
+}) {
+  const u = ghUser(login);
+  return (
+    <AvatarPrimitive.Root
+      style={{ width: size, height: size }}
+      title={`${u.name} · @${u.login}`}
+      className={cn(
+        "relative inline-flex shrink-0 select-none overflow-hidden rounded-full ring-1 ring-border/70",
+        className,
+      )}
+    >
+      <AvatarPrimitive.Image
+        src={avatarUrl(login)}
+        alt=""
+        className="size-full rounded-full object-cover"
+      />
+      <AvatarPrimitive.Fallback
+        style={{ fontSize: Math.max(8, Math.round(size * 0.4)) }}
+        className={cn(
+          "flex size-full items-center justify-center rounded-full font-semibold leading-none",
+          toneFor(login),
+        )}
+      >
+        {initials(u.name)}
+      </AvatarPrimitive.Fallback>
+    </AvatarPrimitive.Root>
+  );
+}
+
+// Overlapping avatar stack (reviewers, assignees) with a +N overflow chip.
+export function AvatarStack({
+  logins,
+  size = 18,
+  max = 4,
+}: {
+  logins: string[];
+  size?: number;
+  max?: number;
+}) {
+  if (logins.length === 0) return null;
+  const shown = logins.slice(0, max);
+  const extra = logins.length - shown.length;
+  return (
+    <div className="flex items-center -space-x-1.5">
+      {shown.map((l) => (
+        <GhAvatar key={l} login={l} size={size} className="ring-2 ring-background" />
+      ))}
+      {extra > 0 && (
+        <span
+          style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}
+          className="z-10 flex items-center justify-center rounded-full bg-muted font-mono font-medium text-muted-foreground ring-2 ring-background"
+        >
+          +{extra}
+        </span>
+      )}
+    </div>
   );
 }
 
