@@ -16,7 +16,7 @@
 // Order lives in component state — a fixture demo. When this ships, the chosen
 // order becomes a settings FACT (persisted per user), not engine behavior.
 // Token classes only (no `dark:`) so the lane's ThemeSurface controls the look.
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   GripVerticalIcon,
@@ -108,48 +108,122 @@ function TipStat({ label, pct }: { label: string; pct: number }) {
   );
 }
 
-// Anchored hover overlay for a wheel — restores the detail the production
-// PlanRing shows on hover (account · plan · tier, then the 5h + weekly split
-// with tone dots and mini bars). Absolutely positioned and out of flow so the
-// strip/list/rail never reflows, pointer-events off so it never intercepts the
-// drag. Opens on `group/wheel` hover; forced shut while any drag is in progress
-// so the grab gesture owns the pointer and the tip doesn't trail the cursor.
+// SSR-safe layout effect (no server warning; the tip only renders client-side).
+const useIsoLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+// Hover overlay for a wheel — restores the detail the production PlanRing shows
+// on hover (account · plan · tier, then the 5h + weekly split with tone dots and
+// mini bars). Reproduces the production Radix tooltip's intent: a collision-aware
+// floating layer that ESCAPES the sidebar/frame clip instead of being trapped in
+// it. It wraps the wheel as its own anchor and renders the tip with
+// `position: fixed` at coordinates measured from the anchor's rect on hover, so
+// it never reflows layout and never clips at the sidebar boundary. Placement:
+//   • side="top"  — floats ABOVE the wheel with a real gap, horizontally centred
+//     on the wheel and clamped into the viewport (so it clears the hovered wheel,
+//     its siblings, and the strip); flips BELOW if it would hit the frame top.
+//   • side="right" — floats to the RIGHT of the wheel, OUTSIDE the collapsed rail
+//     edge with a gap; flips left only if it would overflow the viewport.
+// pointer-events are off so it never intercepts the drag, and it's held shut
+// while any drag is in progress so the grab gesture owns the pointer.
 function WheelTip({
   account,
   dragActive,
-  side = "right",
+  side = "top",
+  children,
 }: {
   account: DemoAccount;
   dragActive: boolean;
   side?: "right" | "top";
+  children: React.ReactNode;
 }) {
-  const anchor =
-    side === "right"
-      ? "left-full top-1/2 ml-2 -translate-y-1/2"
-      : "bottom-full left-0 mb-2";
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ left: number; top: number } | null>(
+    null,
+  );
+  const show = open && !dragActive;
+
+  useIsoLayoutEffect(() => {
+    if (!show) {
+      setCoords(null);
+      return;
+    }
+    const measure = () => {
+      const anchor = anchorRef.current;
+      const tip = tipRef.current;
+      if (!anchor || !tip) return;
+      const a = anchor.getBoundingClientRect();
+      const t = tip.getBoundingClientRect();
+      const GAP = 8;
+      const M = 8; // viewport margin so the tip never touches an edge
+      let left: number;
+      let top: number;
+      if (side === "right") {
+        left = a.right + GAP;
+        // flip to the left of the wheel if it would overflow the viewport
+        if (left + t.width > window.innerWidth - M) left = a.left - t.width - GAP;
+        top = a.top + a.height / 2 - t.height / 2;
+      } else {
+        left = a.left + a.width / 2 - t.width / 2;
+        top = a.top - t.height - GAP;
+        if (top < M) top = a.bottom + GAP; // flip below when hitting the top
+      }
+      left = Math.min(Math.max(left, M), window.innerWidth - t.width - M);
+      top = Math.min(Math.max(top, M), window.innerHeight - t.height - M);
+      setCoords({ left, top });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [show, side]);
+
   return (
-    <div
-      aria-hidden
-      className={`pointer-events-none absolute z-30 ${anchor} transition-opacity duration-100 ${
-        dragActive ? "opacity-0" : "opacity-0 group-hover/wheel:opacity-100"
-      }`}
+    <span
+      ref={anchorRef}
+      className="inline-flex shrink-0"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
     >
-      <div className="w-max rounded-md border border-border bg-popover px-2.5 py-2 text-popover-foreground shadow-md">
-        <div className="mb-1 flex items-center gap-1.5 font-mono text-xs font-medium">
-          {account.name}
-          <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
-            {account.subscription}
-          </span>
-          {account.tier && (
-            <span className="text-[9px] text-muted-foreground">{account.tier}</span>
-          )}
+      {children}
+      {show && (
+        <div
+          ref={tipRef}
+          aria-hidden
+          style={{
+            position: "fixed",
+            left: coords ? coords.left : -9999,
+            top: coords ? coords.top : -9999,
+          }}
+          className={`pointer-events-none z-50 transition-opacity duration-100 ${
+            coords ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <div className="w-max rounded-md border border-border bg-popover px-2.5 py-2 text-popover-foreground shadow-md">
+            <div className="mb-1 flex items-center gap-1.5 font-mono text-xs font-medium">
+              {account.name}
+              <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
+                {account.subscription}
+              </span>
+              {account.tier && (
+                <span className="text-[9px] text-muted-foreground">
+                  {account.tier}
+                </span>
+              )}
+            </div>
+            <div className="space-y-1 text-[11px] text-muted-foreground">
+              <TipStat label="5-hour session" pct={account.fiveHour} />
+              <TipStat label="Weekly · all" pct={account.weekly} />
+            </div>
+          </div>
         </div>
-        <div className="space-y-1 text-[11px] text-muted-foreground">
-          <TipStat label="5-hour session" pct={account.fiveHour} />
-          <TipStat label="Weekly · all" pct={account.weekly} />
-        </div>
-      </div>
-    </div>
+      )}
+    </span>
   );
 }
 
@@ -250,10 +324,13 @@ function CompactStrip({
                   dragging ? "opacity-40" : ""
                 }`}
               >
-                <AccountWheel five={a.fiveHour} week={a.weekly} />
+                {/* wheel is its own hover anchor so the tip floats above the
+                    strip (clear of every wheel), not on top of it */}
+                <WheelTip account={a} dragActive={drag.drag != null} side="top">
+                  <AccountWheel five={a.fiveHour} week={a.weekly} />
+                </WheelTip>
                 {/* subtle grab affordance on hover — coexists with the tip */}
                 <GripVerticalIcon className="pointer-events-none absolute -top-0.5 left-1/2 size-3 -translate-x-1/2 text-sidebar-foreground/50 opacity-0 transition-opacity group-hover/wheel:opacity-100" />
-                <WheelTip account={a} dragActive={drag.drag != null} side="right" />
               </div>
             </div>
           );
@@ -299,10 +376,9 @@ function ExpandedRow({
       >
         <GripVerticalIcon className="size-3.5 shrink-0 text-sidebar-foreground/30 transition-colors group-hover/row:text-sidebar-foreground/60" />
         {/* wheel is its own hover anchor so the tip floats above it, not the row */}
-        <span className="group/wheel relative inline-flex shrink-0">
+        <WheelTip account={account} dragActive={dragActive} side="top">
           <AccountWheel five={account.fiveHour} week={account.weekly} />
-          <WheelTip account={account} dragActive={dragActive} side="top" />
-        </span>
+        </WheelTip>
         <div className="flex min-w-0 flex-col">
           <span className="flex items-center gap-1.5">
             <span className="truncate font-mono text-xs text-sidebar-foreground/70">
@@ -405,8 +481,10 @@ function RailWheels({
                 dragging ? "opacity-40" : ""
               }`}
             >
-              <AccountWheel five={a.fiveHour} week={a.weekly} />
-              <WheelTip account={a} dragActive={drag.drag != null} side="right" />
+              {/* tip floats to the right, outside the collapsed rail edge */}
+              <WheelTip account={a} dragActive={drag.drag != null} side="right">
+                <AccountWheel five={a.fiveHour} week={a.weekly} />
+              </WheelTip>
             </div>
           </div>
         );

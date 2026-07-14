@@ -48,11 +48,34 @@ Format per entry:
   pins, zero reflow) showing context-window composition: system prompt, tools/
   MCP, memory files, messages, free space, autocompact threshold — token
   counts + percentages + segmented usage bar.
-- **round:** demo-gallery round 2 (in flight)
+- **round:** demo-gallery round 2 — landed ae3c97d (new entry:
+  chat-context-breakdown; CTX pill in the session-bar demo now carries the
+  hover)
 
 - **view:** sidebar-account-wheels (compact row)
 - **verdict:** polish
 - **items:** keep the production hover effects on the wheels — per-wheel hover
   detail (account · plan, 5h/weekly usage) in ALL modes (compact row, expanded
   list, collapsed rail); must coexist with the grab/drag affordance.
-- **round:** demo-gallery round 3 (queued behind round 2)
+- **round:** demo-gallery round 3 — landed 84c6671 (WheelTip in all three
+  modes, hidden while dragging; mirrors production PlanRing tooltip content)
+
+- **view:** sidebar-account-wheels — WheelTip placement ("not ideal", owner)
+- **verdict:** polish
+- **items:** compact-row tooltip renders ON TOP of the wheel strip and
+  collides with the sidebar row above; must float clear of the anchor (above
+  the strip with a gap, or outside the sidebar edge), never covering the
+  hovered wheel, its siblings, or adjacent sidebar items; no clipping at the
+  sidebar boundary.
+- **round:** demo-gallery round 4 (in flight)
+
+- **view:** chat-working-indicator light panel — REGRESSION ("white mode",
+  owner, 2nd report)
+- **verdict:** rework (fix must be structural this time)
+- **items:** round-1 theme-aware shimmer did NOT hold: light panel still shows
+  washed-out shimmer labels while plain text flips fine. The shimmer must
+  derive color from the same mechanism as normal text (class-based/
+  currentColor; e.g. solid class-colored text + animated mask sweep), never
+  from vars resolved outside the panel scope. Legible at every animation
+  phase in both panels; audit every chat-lane shimmer usage.
+- **round:** demo-gallery round 5 (in flight)
