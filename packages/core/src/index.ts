@@ -36,6 +36,7 @@ export * from "./weave-contracts";
 // the M11.1 synthesizeContract derivation).
 export * from "./deliverable-signal";
 export * from "./scoping";
+export * from "./requirements";
 export * from "./proof-templates";
 export * from "./dispatcher";
 export * from "./distill";

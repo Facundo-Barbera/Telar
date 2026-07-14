@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fanoutSize, prioritize, type BudgetState } from "../src/budget";
-import { readySubGoals, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";
+import { MEDIATION_BUDGET, readySubGoals, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";
 import { runWeave } from "../src/weave";
 import type { Charter, SubGoal } from "../src/schemas";
 import type { Loom } from "../src/looms";
@@ -197,16 +197,18 @@ describe("tick (pure scheduler) — scenario table", () => {
     expect(decide(v)).toEqual({ action: "hold" });
   });
 
-  test("no ready subgoals and none in flight -> escalate (blocked)", () => {
+  test("a settled failed required thread (attempts 0) -> repair (B2: MEDIATE before any human park)", () => {
     const decomposition = [subGoal({ id: "a" }), subGoal({ id: "b", dependsOn: ["missing"] })];
     const v = view({
       charter: charter(decomposition),
       threads: [thread({ subGoalId: "a", state: "failed" })],
     });
-    // "a" is a required thread in a terminal failed state -> escalate for that,
-    // exercising the distinct "failed required" branch instead.
+    // B2: "a" is a required thread settled failed with no mediation spent yet ->
+    // the orchestrator re-derives it (repair) rather than escalating straight to
+    // the human. Only exhausted mediation parks (covered below + in b2-*.test.ts).
     const d = decide(v);
-    expect(d.action).toBe("escalate");
+    expect(d.action).toBe("repair");
+    if (d.action === "repair") expect(d.threadId).toBe("t1");
   });
 
   test("wall-clock exceeded -> escalate regardless of ready work", () => {
@@ -223,21 +225,35 @@ describe("tick (pure scheduler) — scenario table", () => {
     expect(decide(v)).toEqual({ action: "escalate", reason: "no ready threads and none in flight (blocked)" });
   });
 
-  test("terminally-failed required subgoal (runnerInFlight false) -> escalate with reason", () => {
+  test("terminally-failed required subgoal (runnerInFlight false), attempts 0 -> repair (mediate)", () => {
     const v = view({
       threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done" })],
       inFlight: 0,
     });
-    expect(decide(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(v)).toEqual({ action: "repair", threadId: "t1" });
   });
 
-  test("terminally-failed required subgoal (field absent) -> escalate (back-compat)", () => {
-    // No runnerInFlight field at all: reads as terminal, byte-identical to today.
+  test("terminally-failed required subgoal (field absent), attempts 0 -> repair (mediate, back-compat)", () => {
+    // No runnerInFlight field: reads as terminal. B2: a terminal non-done required
+    // thread with no mediation spent is re-derived, not escalated.
     const v = view({
       threads: [thread({ subGoalId: "s1", state: "failed" }), thread({ subGoalId: "s2", state: "done" })],
       inFlight: 0,
     });
-    expect(decide(v)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(v)).toEqual({ action: "repair", threadId: "t1" });
+  });
+
+  test("terminally-failed required subgoal whose mediation is EXHAUSTED -> escalate 's1 failed' (the park is the final valve)", () => {
+    // mediationAttempts has reached MEDIATION_BUDGET: no more re-derivation is
+    // owed, so the human-first escalate fires with the byte-identical reason.
+    const v = view({
+      threads: [
+        thread({ subGoalId: "s1", state: "failed", runnerInFlight: false, mediationAttempts: MEDIATION_BUDGET }),
+        thread({ subGoalId: "s2", state: "done" }),
+      ],
+      inFlight: 0,
+    });
+    expect(decide(v)).toEqual({ action: "escalate", threadId: "t1", reason: "s1 failed" });
   });
 
   test("transiently-failed required subgoal (runnerInFlight true) -> hold, NOT escalate", () => {
@@ -264,7 +280,7 @@ describe("tick (pure scheduler) — scenario table", () => {
     if (d.action === "schedule") expect(d.subGoalIds).toEqual(["s2"]);
   });
 
-  test("hang guard: a transient failure that becomes terminal escalates on the next tick", () => {
+  test("hang guard: a transient failure that becomes terminal is MEDIATED on the next tick (then parks once exhausted)", () => {
     // Tick 1: runner still in flight -> transient -> hold (keep sampling).
     const transient = view({
       threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: true }), thread({ subGoalId: "s2", state: "running", runnerInFlight: true })],
@@ -273,12 +289,23 @@ describe("tick (pure scheduler) — scenario table", () => {
     });
     expect(decide(transient).action).toBe("hold");
 
-    // Tick 2: runner settled (retries exhausted) -> runnerInFlight false -> TERMINAL -> escalate.
+    // Tick 2: runner settled (retries exhausted) -> runnerInFlight false -> TERMINAL.
+    // B2: with mediation budget remaining this re-derives (repair), not escalate.
     const terminal = view({
       threads: [thread({ subGoalId: "s1", state: "failed", runnerInFlight: false }), thread({ subGoalId: "s2", state: "done", runnerInFlight: false })],
       inFlight: 0,
     });
-    expect(decide(terminal)).toEqual({ action: "escalate", reason: "s1 failed" });
+    expect(decide(terminal)).toEqual({ action: "repair", threadId: "t1" });
+
+    // Tick N: once mediation is spent, the terminal failure escalates to the human.
+    const exhausted = view({
+      threads: [
+        thread({ subGoalId: "s1", state: "failed", runnerInFlight: false, mediationAttempts: MEDIATION_BUDGET }),
+        thread({ subGoalId: "s2", state: "done", runnerInFlight: false }),
+      ],
+      inFlight: 0,
+    });
+    expect(decide(exhausted)).toEqual({ action: "escalate", threadId: "t1", reason: "s1 failed" });
   });
 });
 

@@ -33,6 +33,14 @@ import { frozenLaneVerify, type IvResult, runAutoRepair } from "./verify-thread"
 import { finalizeConsolidation } from "./consolidate";
 import { runWeave } from "./weave";
 import { draftCharter as draftCharterDefault, needsScoping, planWeaveFromBundle, validateCharter } from "./scoping";
+import {
+  buildRequirementsOffer,
+  detectRequirements,
+  persistRequirementAnswers,
+  requirementsForLane,
+  type RequirementAnswer,
+} from "./requirements";
+import { runSetupAgent } from "./setup/setup-agent";
 import { CONTRACT_FILE, appendSteering, readBundleFile, readContract, snapshotBundle, writeContract, writeProvenance } from "./bundle";
 import { contractErrorsRepairable, synthesizeContract, tightenAuthoredContract, wireChildBundle } from "./weave-contracts";
 import { reconcileState, type RecoverAction } from "./runner/recover";
@@ -63,6 +71,10 @@ export type DispatcherDeps = {
   draftCharterFn?: typeof draftCharterDefault;
   planWeaveFn?: typeof planWeaveFromBundle;
   runLoomFn?: (loom: Loom, manifest: ProjectManifest, opts: ExecuteOpts) => Promise<Loom>;
+  // D3.4 — the WRITE-capable lane bring-up the orchestrator-mediation rung
+  // invokes when repairing a `blocked` (lane-unviable) thread with unsatisfied
+  // lane requirements. Injectable so hermetic tests never spawn a real agent.
+  runSetupFn?: typeof runSetupAgent;
 };
 
 const active = new Map<string, AbortController>();
@@ -169,6 +181,10 @@ function ensureWoven(loom: Loom): void {
       // planner charter's hints vanished at ensureWoven and the derivation saw
       // nothing.
       ...(base?.proofHints ? { proofHints: base.proofHints } : {}),
+      // D3 — carry the eager-detection requirements FACT record through the
+      // weave-of-one rebuild so the OFFER stays answerable (answerRequirements)
+      // and the mediation rung can still consume it (requirementsForLane).
+      ...(base?.requirements ? { requirements: base.requirements } : {}),
     };
     return;
   }
@@ -420,8 +436,7 @@ function runWeaveWiring(
     loom.consolidationBranch = undefined;
   }
 
-  const woven = runWeave(loom, decomposition, {
-    spawnChild: (sg) => {
+  const spawnChild = (sg: SubGoal): Loom => {
       const existing = listChildLooms(loom.id).find((c) => c.subGoalId === sg.id);
       if (existing) {
         // Blocker #3: REUSE the child so its persisted attempts[].sessionId
@@ -468,8 +483,8 @@ function runWeaveWiring(
       wireChildBundle(loom.id, child, sg, rootAssertions, rootSynthesized);
       saveLoom(child);
       return child;
-    },
-    runChild: async (child) => {
+  };
+  const runChild = async (child: Loom): Promise<Loom> => {
       const runFn = deps.runLoomFn ?? executeLoom;
       const base: ExecuteOpts = {
         policy,
@@ -481,6 +496,33 @@ function runWeaveWiring(
         ...(opts.maxAttempts != null ? { maxAttempts: opts.maxAttempts } : {}),
       };
       return runFn(child, manifest, base);
+  };
+
+  const woven = runWeave(loom, decomposition, {
+    spawnChild,
+    runChild,
+    // D3.4 (APPROVED DECISION D3) — THE ORCHESTRATOR-MEDIATION LEG consuming the
+    // requirements record. When tick chooses to `repair` a settled non-done
+    // thread, first CONSUME the eager-detection record: if it mapped unsatisfied
+    // LANE requirements (dev-server / database / port — never a secret, which the
+    // rung cannot resolve), run the setup agent (the callable WRITE-capable
+    // comprehension half) to bring the lane up before re-attempting. No lane
+    // requirement ⇒ byte-identical to step 1's default reassignment (a fresh
+    // runChild(spawnChild(sg))). Bounded by the tick kernel (MEDIATION_BUDGET);
+    // a genuine dead-end still parks to the human (the final valve).
+    mediateThread: async (child: Loom, sg: SubGoal): Promise<Loom> => {
+      // Only a `blocked` park is a LANE problem the setup agent can repair; a
+      // failed/needs-review thread is a BUILD problem — re-attempt it directly.
+      const laneReqs = child.state === "blocked" ? requirementsForLane(loom.charter) : [];
+      if (laneReqs.length) {
+        await (deps.runSetupFn ?? runSetupAgent)(loom, manifest, {
+          account: deps.accounts?.[manifest.account],
+          model: policy?.dev,
+          cwd: child.worktree ?? manifest.root,
+          onEvent: (ev) => appendEvent(loom.id, ev),
+        }).catch(() => {}); // best-effort — a failed bring-up still re-attempts + can still park
+      }
+      return runChild(spawnChild(sg));
     },
     onState: saveLoom,
     onEvent: (ev) => appendEvent(loom.id, ev),
@@ -690,6 +732,28 @@ export function startLoom(input: StartLoomInput, deps: DispatcherDeps): Loom {
     }
 
     loom.charter = charter;
+
+    // D3 (APPROVED DECISION D3) — EAGER DETECTION. While the orchestrator has
+    // JUST read the project to draft the charter, map what VERIFICATION will need
+    // (dev server, env vars, database, credentials) into a FACT record on the
+    // charter. Bounded synchronous fs reads only — never a gate. Then the
+    // HEURISTIC-ASKING rail: batch the human-only (secret) requirements as an
+    // OFFER onto the loom for the charter-review surface. The OFFER NEVER gates
+    // dispatch — proceed is always valid; the build starts regardless below.
+    try {
+      const record = detectRequirements(manifest, charter);
+      if (record.requirements.length) {
+        charter.requirements = record;
+        const offer = buildRequirementsOffer(record);
+        if (offer) {
+          loom.requirementsOffer = offer;
+          appendEvent(loom.id, { type: "requirements-offer", items: offer.items.map((i) => i.name) });
+        }
+      }
+    } catch {
+      // Detection is best-effort comprehension — a probe failure never blocks the
+      // build (the mediation rung still resolves lane needs at verify time).
+    }
     saveLoom(loom);
 
     const requiresHuman =
@@ -852,6 +916,40 @@ export async function answerBlocked(
       if (active.get(loom.id) === abort) active.delete(loom.id);
     });
 
+  return true;
+}
+
+// D3 (APPROVED DECISION D3) — answer the eager-detection OFFER. The human
+// supplies values for the human-only (secret) requirements batched at scoping.
+// Persistence routes by classification via persistRequirementAnswers: SECRETS
+// land ONLY in the gitignored ~/.telar/credentials.json tier (never telar.yaml);
+// a non-secret fact promotes to the committable manifest. Every answered
+// requirement is stamped `satisfied` on the charter record so it is NEVER
+// re-offered/re-asked (never-ask-twice, across future looms). This is an OFFER
+// answer, NOT a gate release: it sets NO loom.state and does NOT dispatch —
+// the build already started (or is running); a persisted secret simply unblocks
+// the verify step at need. Returns false if the loom/offer is absent or `by` is
+// blank (a human touch is required to write a secret). Idempotent: clearing the
+// offer once all its items are satisfied.
+export function answerRequirements(
+  id: string,
+  by: string,
+  answers: RequirementAnswer[],
+): boolean {
+  const loom = getLoom(id);
+  if (!loom || !loom.charter?.requirements) return false;
+  if (!by?.trim()) throw new Error("answerRequirements requires a non-blank `by`");
+  if (!answers.length) return false;
+
+  const { manifest } = getProject(loom.project);
+  persistRequirementAnswers(manifest, loom.charter.requirements, answers);
+
+  // Re-derive the offer from the now-updated record: drop the satisfied items
+  // (never re-offer). An empty offer clears the field entirely.
+  const offer = buildRequirementsOffer(loom.charter.requirements);
+  loom.requirementsOffer = offer;
+  saveLoom(loom);
+  appendEvent(loom.id, { type: "requirements-answered", by, names: answers.map((a) => a.name) });
   return true;
 }
 

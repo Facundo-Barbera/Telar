@@ -502,3 +502,12 @@ method the orchestrator *derived* — no false dev-server escalation, fail-close
 
 _These are **design intent**; where they disagree with shipped behavior, this
 roadmap and the code win. Reconcile opportunistically as each milestone touches them._
+
+---
+
+## De-flag cut — COMPLETE (2026-07-13)
+
+Rounds A1-A4, B1, B2, D landed. One engine, no behavior flags, doctrine-conformant.
+B3 deferred by D7. B2 (this cut) gives the orchestrator a mediation rung before the
+human: tick emits repair/reassign, human parks behind exhausted bounded mediation,
+and eager env-comprehension (requirements detection) with offer-never-gates rails.

@@ -9,7 +9,7 @@
 // branch that returns "ready"/"done" here.
 import type { Loom } from "./looms";
 import type { Charter, PanelReport, SubGoal, WorkUnitState } from "./schemas";
-import { readySubGoals, tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
+import { MEDIATION_BUDGET, readySubGoals, tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
 import type { BudgetState } from "./budget";
 import type { GateResult } from "./gates";
 
@@ -107,6 +107,16 @@ export type RunWeaveDeps = {
   // transition is byte-identical to today. On { ready:false } the weave does
   // NOT proceed to spawn children: the root lands needs-review (never done).
   runSetup?: (loom: Loom) => Promise<{ ready: boolean; wroteServersYaml?: boolean; error?: string }>;
+  // B2 (§22-24,§62) — THE ORCHESTRATOR-MEDIATION LEG. Given a settled non-done
+  // required child (failed / blocked / needs-review) that tick chose to `repair`,
+  // produce a REMEDIATED child: re-derive / reassign / repair the thread. The
+  // per-thread budget is enforced by the tick kernel (MEDIATION_BUDGET) — this
+  // dep performs ONE bounded correction attempt and returns the new child state.
+  // Absent (not injected, e.g. in a test) ⇒ mediation degrades to a fresh
+  // REASSIGNMENT via the existing spawnChild/runChild seam: a clean re-attempt of
+  // the subgoal (its own inner loop re-plans/re-verifies). Production (B2 step 2)
+  // wires the richer runRepairThread / spawnChild-reuse / re-plan path here.
+  mediateThread?: (child: Loom, sg: SubGoal) => Promise<Loom>;
 };
 
 function childCostUsd(child: Loom): number {
@@ -179,6 +189,11 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     const finished = new Map<string, Loom>(); // subGoalId -> done/terminal child
     const runningThread = new Map<string, ThreadView>(); // subGoalId -> in-flight summary
     const running = new Map<string, Promise<void>>(); // subGoalId -> settlement tracker
+    // B2 — orchestrator-mediation attempts spent per subgoal. Feeds the tick
+    // kernel (via currentThreads) so it emits `repair` only while a thread's
+    // count is < MEDIATION_BUDGET, then escalates (the human park). Strictly
+    // increments on each mediation ⇒ the rung is provably terminating.
+    const mediationAttempts = new Map<string, number>(); // subGoalId -> mediations spent
     // M4: in-flight best-effort checkpoint verifies (never awaited inline so
     // they don't block the weave; drained before rollup so none detaches).
     const checkpoints: Promise<void>[] = [];
@@ -194,6 +209,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         subGoalId,
         state: child.state,
         runnerInFlight: false, // settled: its runChild promise resolved → terminal
+        mediationAttempts: mediationAttempts.get(subGoalId) ?? 0, // B2: mediations spent
       })),
       ...[...runningThread.values()].map((t) => ({ ...t, runnerInFlight: true })),
     ];
@@ -266,7 +282,12 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
       running.set(sg.id, settle);
     };
 
-    const maxIterations = decomposition.length * 4 + 8;
+    // Base scheduling headroom (4 ticks/subgoal + slack) PLUS the B2 mediation
+    // budget: each subgoal may be re-derived up to MEDIATION_BUDGET times, and
+    // every mediation costs one repair-tick plus one re-observe tick — 2 per
+    // attempt. Without this the safety bound would trip mid-mediation (still
+    // safe — it escalates — but this keeps the bound honest w.r.t. the rung).
+    const maxIterations = decomposition.length * (4 + 2 * MEDIATION_BUDGET) + 8;
     let iterations = 0;
 
     while (true) {
@@ -340,10 +361,61 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         break;
       }
 
-      // "repair" is a directive-path/thread-level action (§9); tick() never
-      // emits it for the weaver's own control loop. Escalate defensively
-      // rather than loop forever on an unhandled action.
-      loom.error = d.action === "repair" ? `unexpected repair decision for thread ${d.threadId}` : "unhandled decision";
+      // B2 (§22-24,§62) — THE ORCHESTRATOR-MEDIATION HANDLER. tick emits `repair`
+      // for a settled non-done required thread while its per-thread budget
+      // remains (see tick.ts). MEDIATE FIRST: re-derive / reassign the thread and
+      // fold the remediated child back in, then re-tick. The tick kernel bounds
+      // the loop — it stops emitting `repair` and escalates once mediationAttempts
+      // reaches MEDIATION_BUDGET — so this can never spin. On exhaustion the
+      // human parks stay the final valve (§73-74): the rollup below lifts a
+      // still-blocked child's question up to the root.
+      if (d.action === "repair") {
+        // Resolve the settled child this directive targets (tick only emits
+        // `repair` for a finished thread, so it lives in `finished`).
+        let targetSubGoalId: string | undefined;
+        let targetChild: Loom | undefined;
+        for (const [sgId, c] of finished.entries()) {
+          if (c.id === d.threadId) {
+            targetSubGoalId = sgId;
+            targetChild = c;
+            break;
+          }
+        }
+        const sg = targetSubGoalId ? decomposition.find((s) => s.id === targetSubGoalId) : undefined;
+        if (!sg || !targetChild) {
+          // Defensive: an unknown/absent mediation target — do not spin.
+          loom.error = `mediation target ${d.threadId} not found`;
+          break;
+        }
+        const attempt = (mediationAttempts.get(sg.id) ?? 0) + 1;
+        mediationAttempts.set(sg.id, attempt);
+        emit({
+          type: "mediate",
+          subGoalId: sg.id,
+          childId: targetChild.id,
+          attempt,
+          priorState: targetChild.state,
+        });
+        // ONE bounded correction attempt: the richer re-derive/repair when
+        // wired, else a fresh reassignment via the spawnChild/runChild seam.
+        const remediated = deps.mediateThread
+          ? await deps.mediateThread(targetChild, sg)
+          : await deps.runChild(deps.spawnChild(sg));
+        if (isAborted()) return halt();
+        finished.set(sg.id, remediated);
+        spentUsd += childCostUsd(remediated); // account the remediation's spend
+        emit({
+          type: "mediate-result",
+          subGoalId: sg.id,
+          childId: remediated.id,
+          state: remediated.state,
+          attempt,
+        });
+        continue; // re-tick: converged ⇒ progress, still non-done ⇒ mediate again or park
+      }
+
+      // Any other unexpected action — escalate defensively rather than loop.
+      loom.error = "unhandled decision";
       break;
     }
 

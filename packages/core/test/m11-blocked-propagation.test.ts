@@ -21,7 +21,7 @@ import type { LedgerView, ThreadView } from "../src/tick";
 
 const { runThreadWorkflow } = await import("../src/executor");
 const { rollupWeave, runWeave } = await import("../src/weave");
-const { tick } = await import("../src/tick");
+const { tick, MEDIATION_BUDGET } = await import("../src/tick");
 const { sweep, reconcileState } = await import("../src/runner/recover");
 
 // ── shared fakes (mirror m9-thread-workflow / weave test builders) ──────────────
@@ -187,8 +187,11 @@ describe("(C) runWeave: a blocked child lifts blockedReason/Question onto the ro
   });
 });
 
-// ── (D) tick — a settled blocked required thread → honest parking escalate ───────
-describe("(D) tick: a required blocked thread parks with an awaiting-human escalate", () => {
+// ── (D) tick — a settled blocked required thread is MEDIATED, then parks ─────────
+// B2 (§22-24,§62): a blocked required thread is no longer an IMMEDIATE
+// human-park escalate — the orchestrator re-derives it first, and only escalates
+// the awaiting-human park once mediation is exhausted (the final valve, §73-74).
+describe("(D) tick: a required blocked thread mediates first, then parks awaiting-human", () => {
   function view(threads: ThreadView[], decomposition: SubGoal[]): LedgerView {
     const charter: Charter = {
       objective: "o",
@@ -208,24 +211,35 @@ describe("(D) tick: a required blocked thread parks with an awaiting-human escal
     };
   }
 
-  test("settled blocked required thread (runnerInFlight false) → escalate '… awaiting human — parking'", () => {
+  test("settled blocked required thread (attempts 0) → repair (mediate before any park)", () => {
     const decomposition = [subGoal({ id: "s1" })];
     const threads: ThreadView[] = [{ id: "c1", subGoalId: "s1", state: "blocked", runnerInFlight: false }];
+    const { decision, rationale } = tick(view(threads, decomposition));
+    expect(decision.action).toBe("repair");
+    expect((decision as { threadId: string }).threadId).toBe("c1");
+    expect(rationale.summary).toContain("mediating s1 (blocked)");
+  });
+
+  test("settled blocked required thread whose mediation is EXHAUSTED → escalate '… awaiting human — parking'", () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const threads: ThreadView[] = [
+      { id: "c1", subGoalId: "s1", state: "blocked", runnerInFlight: false, mediationAttempts: MEDIATION_BUDGET },
+    ];
     const { decision, rationale } = tick(view(threads, decomposition));
     expect(decision.action).toBe("escalate");
     expect((decision as { reason: string }).reason).toBe("s1 awaiting human — parking");
     expect(rationale.summary).toContain("parked blocked");
   });
 
-  test("failed still dominates blocked in tick (a terminal failed required thread escalates as failed)", () => {
+  test("failed is surfaced before blocked in tick (a failed required thread mediates first)", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const threads: ThreadView[] = [
       { id: "c1", subGoalId: "s1", state: "failed", runnerInFlight: false },
       { id: "c2", subGoalId: "s2", state: "blocked", runnerInFlight: false },
     ];
     const { decision } = tick(view(threads, decomposition));
-    expect(decision.action).toBe("escalate");
-    expect((decision as { reason: string }).reason).toBe("s1 failed");
+    expect(decision.action).toBe("repair");
+    expect((decision as { threadId: string }).threadId).toBe("c1"); // the failed thread first
   });
 });
 

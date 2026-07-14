@@ -386,6 +386,44 @@ export const SubGoal = z.object({
 });
 export type SubGoal = z.infer<typeof SubGoal>;
 
+// D3 (docs/deflag-cut-plan.md APPROVED DECISION D3; docs/PRINCIPLES.md §20-32,§62)
+// — the orchestrator's ENVIRONMENT-COMPREHENSION FACT record. At scoping, while
+// the orchestrator already reads the project, it maps what VERIFICATION will
+// need (a dev server, env vars, a database, credentials) into this record on the
+// Charter. It is a FACT, never a gate: the build starts regardless of what is
+// missing; a missing requirement blocks ONLY the verify step (mediated at need).
+// The deterministic RAILS (requirements.ts) key off `classification`.
+export const RequirementKind = z.enum(["env-var", "secret", "dev-server", "database", "port"]);
+export type RequirementKind = z.infer<typeof RequirementKind>;
+
+// The heuristic-asking rail (D3): `human-only` requirements (secrets/credentials
+// = certain dead-ends) MAY be offered up-front for optional answering;
+// `maybe-resolvable` (ports/stubs/ephemeral) are NEVER asked — the orchestrator
+// mediates them at need; `greenfield-unknown` requirements proceed-and-defer.
+export const RequirementClass = z.enum(["human-only", "maybe-resolvable", "greenfield-unknown"]);
+export type RequirementClass = z.infer<typeof RequirementClass>;
+
+export const EnvRequirement = z.object({
+  // Stable key — an env-var NAME (DATABASE_URL, STRIPE_KEY), a service label
+  // ("dev-server"), etc. Drives never-ask-twice de-dup + persistence routing.
+  name: z.string(),
+  kind: RequirementKind,
+  classification: RequirementClass,
+  detail: z.string().optional(), // human-facing "why verification needs this"
+  // True once the fact is already resolvable from a persisted tier (a secret in
+  // ~/.telar/credentials.json, or a fact in telar.yaml / the project env). A
+  // satisfied requirement is NEVER re-offered — the never-ask-twice guarantee.
+  satisfied: z.boolean().default(false),
+  source: z.string().optional(), // where detection saw it (.env.example, servers.yaml, …)
+});
+export type EnvRequirement = z.infer<typeof EnvRequirement>;
+
+export const RequirementsRecord = z.object({
+  requirements: z.array(EnvRequirement).default([]),
+  detectedAt: z.number().optional(),
+});
+export type RequirementsRecord = z.infer<typeof RequirementsRecord>;
+
 export const Charter = z.object({
   objective: z.string(),
   proofStrategy: ProofStrategy,
@@ -403,6 +441,10 @@ export const Charter = z.object({
   // own acceptanceCriteria / a non-decomposing charter). Additive; consumed
   // by the modality derivation. Per-SubGoal hints live on SubGoal.
   proofHints: z.array(ProofHint).optional(),
+  // D3 — the eager-detection ENVIRONMENT-COMPREHENSION fact record
+  // (requirements.ts). Additive; absent on a charter scoped before D3 or with
+  // nothing detected. Consumed by the mediation rung when repairing the lane.
+  requirements: RequirementsRecord.optional(),
 });
 export type Charter = z.infer<typeof Charter>;
 

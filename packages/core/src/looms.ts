@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Charter, ContractAssertion, PanelReport, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
+import type { Charter, ContractAssertion, EnvRequirement, PanelReport, ThreadWorkflow, Verdict, VerifierReport, WorkUnitState } from "./schemas";
 import type { GateResult } from "./gates";
 import type { RepairRound } from "./repair-guard";
 import { getProject } from "./manifest";
@@ -170,6 +170,14 @@ export type Loom = {
   // promoting green, so there is no coverage to re-prove. Absent on a thread that
   // relaxed nothing.
   relaxedCoverage?: RelaxedCoverage[];
+  // D3 (docs/deflag-cut-plan.md APPROVED DECISION D3) — the EAGER-DETECTION
+  // heuristic-asking OFFER: the human-only (secret/credential) requirements
+  // detection mapped at scoping, batched for OPTIONAL up-front answering on the
+  // charter-review surface. An OFFER, NEVER a gate — dispatch proceeds
+  // regardless (proceed is always valid, the build starts, a missing one blocks
+  // ONLY the verify step). Absent when nothing human-only was detected or all
+  // are already satisfied. Answered via answerRequirements (dispatcher).
+  requirementsOffer?: { items: EnvRequirement[] };
 };
 
 // B1 — one relaxation a thread made: the criteria it stopped gating and why.

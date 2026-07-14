@@ -25,10 +25,19 @@ export type ThreadView = {
   // with runnerInFlight === true is mid-retry (transient), not a dead loom.
   // Absent ⟹ terminal (back-compat: reads identical to today).
   runnerInFlight?: boolean;
+  // B2 (§22-24,§62) — orchestrator-mediation attempts ALREADY spent re-deriving
+  // this settled thread. tick emits `repair` (mediation) while this is <
+  // MEDIATION_BUDGET, then escalates to the human park (the final valve, §73-74).
+  // Absent ⟹ 0 (an unmediated thread; back-compat reads identical to today).
+  mediationAttempts?: number;
 };
 
 export type Decision =
   | { action: "schedule"; subGoalIds: string[]; agents: number }
+  // B2 (§22-24,§62) — the orchestrator-mediation directive: re-derive / reassign
+  // a settled non-done required thread. tick emits this while the thread's
+  // mediationAttempts < MEDIATION_BUDGET (runWeave handles it, then escalates
+  // once the budget is spent — the human park is the final valve).
   | { action: "repair"; threadId: string }
   | { action: "escalate"; threadId?: string; reason: string }
   | { action: "finish-loom" }
@@ -71,7 +80,22 @@ export type Rationale = {
   rejected?: string; // (d) validateDecision reason, folded in by runWeave on downgrade
 };
 
-const REPAIRABLE_STATES: WorkUnitState[] = ["needs-review", "failed"];
+// B2 — the settled non-done required-thread states the orchestrator may MEDIATE
+// (re-derive / reassign) before parking to the human (§62). `blocked` is
+// included (B2): a lane-unviable / breaker park first earns a bounded
+// reassign/re-derive attempt rather than going straight to the human. Shared by
+// validateDecision (repair validity) and tick (the mediate-vs-park choice).
+const REPAIRABLE_STATES: WorkUnitState[] = ["needs-review", "failed", "blocked"];
+
+// B2 — the per-thread orchestrator-mediation budget: how many times the weaver
+// re-derives/reassigns a settled non-done required thread BEFORE it parks to the
+// human. Small + bounded (mirrors the builder maxAttempts) so a genuine
+// dead-end converges to the human park instead of looping forever (§73-74).
+// DISTINCT from the root ALL-verify repair-guard budget (repair-guard.ts): that
+// bounds the integration-repair loop over assertion ids; this bounds thread
+// reassignment. Each mediation strictly increments a thread's mediationAttempts,
+// so termination is a bare integer bound.
+export const MEDIATION_BUDGET = 2;
 
 // PURE kernel: ids not yet started, whose every dependsOn is completed. Both the
 // loom weaver (readySubGoals) and the thread-workflow runner call this ONE
@@ -175,42 +199,60 @@ export function tick(view: LedgerView): TickResult {
     };
   }
 
-  // Escalate only on TERMINAL failure: a required subgoal whose thread failed
-  // AND has no live runner in flight. A mid-retry failure (runnerInFlight true)
-  // falls through — it already owns a thread, so it routes to hold/schedule
-  // ("keep sampling") rather than a dead-loom escalate.
-  const failedRequired = required.find((sg) => {
-    const t = threadBySubGoal.get(sg.id);
-    return t?.state === "failed" && t.runnerInFlight !== true;
-  });
-  if (failedRequired) {
+  // B2 (§22-24,§62) — THE ORCHESTRATOR-MEDIATION RUNG. A required subgoal whose
+  // thread SETTLED (no live runner) in a non-done state — `failed`, `blocked`
+  // (breaker / pre-flight lane-unviable park), or `needs-review` — is a
+  // CORRECTION OPPORTUNITY, not an automatic human escalate. While the thread's
+  // per-thread mediation budget remains, emit a `repair` directive: runWeave
+  // re-derives / reassigns the thread (a fresh bounded attempt at the subgoal).
+  // Only once mediation is GENUINELY EXHAUSTED (mediationAttempts reached
+  // MEDIATION_BUDGET) does the human-first park fire — and it still fires (the
+  // parks stay the final valve, §73-74). BOUNDED BY CONSTRUCTION: runWeave
+  // increments mediationAttempts on every repair, so this can iterate at most
+  // MEDIATION_BUDGET times per thread before the escalate below is forced. A
+  // mid-retry failure (runnerInFlight true) is excluded — it still owns a runner,
+  // so it falls through to hold/schedule ("keep sampling"), unchanged.
+  //
+  // Ordering: `failed` is checked before `blocked`/`needs-review` so a genuinely
+  // failed required thread is the one surfaced first (mirrors the pre-B2
+  // failedRequired preemption). The escalate REASON is preserved verbatim per
+  // state so the decision stream / rollup read exactly as before once mediation
+  // is spent (`… failed`, `… awaiting human — parking`).
+  const mediable =
+    required.find((sg) => {
+      const t = threadBySubGoal.get(sg.id);
+      return t?.state === "failed" && t.runnerInFlight !== true;
+    }) ??
+    required.find((sg) => {
+      const t = threadBySubGoal.get(sg.id);
+      return t !== undefined && t.runnerInFlight !== true && REPAIRABLE_STATES.includes(t.state);
+    });
+  if (mediable) {
+    const t = threadBySubGoal.get(mediable.id)!;
+    const attempts = t.mediationAttempts ?? 0;
+    if (attempts < MEDIATION_BUDGET) {
+      return {
+        decision: { action: "repair", threadId: t.id },
+        rationale: {
+          summary: `mediating ${mediable.id} (${t.state}) — attempt ${attempts + 1}/${MEDIATION_BUDGET} before any human park`,
+          budget: snapshot,
+        },
+      };
+    }
+    // Mediation EXHAUSTED — the human-first park now fires (the final valve). The
+    // reason is state-specific and byte-identical to the pre-B2 escalate strings:
+    // a `blocked` thread parks awaiting a human answer; anything else escalates as
+    // failed. runWeave breaks on escalate, then rollupWeave is authoritative and
+    // lifts a blocked child's answerable question up to the root.
+    const reason =
+      t.state === "blocked" ? `${mediable.id} awaiting human — parking` : `${mediable.id} failed`;
+    const summary =
+      t.state === "blocked"
+        ? `required subgoal ${mediable.id} parked blocked — mediation exhausted, awaiting human`
+        : `required subgoal ${mediable.id} ${t.state} — mediation exhausted, escalating`;
     return {
-      decision: { action: "escalate", reason: `${failedRequired.id} failed` },
-      rationale: { summary: `required subgoal ${failedRequired.id} failed terminally — escalating`, budget: snapshot },
-    };
-  }
-
-  // FINDING 8 — a required subgoal whose thread PARKED `blocked` with no live
-  // runner is AWAITING A HUMAN: not schedulable, not failed, not done. Emit an
-  // honest parking escalate (a NON-schedule, NON-finish decision — finish-loom
-  // stays illegal here per validateDecision since not every required is done) so
-  // the decision stream reads "awaiting human — parking" instead of the generic
-  // "no ready threads … (blocked)" the bottom fallthrough would otherwise log for
-  // a settled blocked child. Mirrors the failedRequired preemption exactly (a
-  // terminal required child stops the weave): runWeave breaks on escalate, then
-  // rollupWeave is authoritative and lifts the child's answerable question. The
-  // runnerInFlight guard matches failedRequired's — a blocked park is always
-  // settled (the breaker returns), so this never fires on a mid-flight thread.
-  // A thread reaches `blocked` when its verification lane is unviable (pre-flight
-  // park); this lifts that settled block up to the root.
-  const blockedRequired = required.find((sg) => {
-    const t = threadBySubGoal.get(sg.id);
-    return t?.state === "blocked" && t.runnerInFlight !== true;
-  });
-  if (blockedRequired) {
-    return {
-      decision: { action: "escalate", reason: `${blockedRequired.id} awaiting human — parking` },
-      rationale: { summary: `required subgoal ${blockedRequired.id} parked blocked — awaiting human`, budget: snapshot },
+      decision: { action: "escalate", threadId: t.id, reason },
+      rationale: { summary, budget: snapshot },
     };
   }
 
