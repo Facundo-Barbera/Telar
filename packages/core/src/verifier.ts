@@ -122,18 +122,21 @@ if you never emit, Telar records the verification as failed.`;
 function walkUpForPlaywrightMcpBin(startDir: string | undefined): string | null {
   let dir = startDir;
   for (let i = 0; i < 8 && typeof dir === "string" && dir !== "" && dir !== path.dirname(dir); i++) {
+    // turbopackIgnore: this is a runtime probe for an installed CLI binary —
+    // Next's output tracing must not try to follow it (it would pull the whole
+    // project into the server bundle).
     const candidates = [
-      path.join(dir, "apps/web/node_modules/@playwright/mcp/cli.js"),
-      path.join(dir, "node_modules/@playwright/mcp/cli.js"),
-      path.join(dir, "node_modules/.bin/playwright-mcp"),
+      path.join(/* turbopackIgnore: true */ dir, "apps/web/node_modules/@playwright/mcp/cli.js"),
+      path.join(/* turbopackIgnore: true */ dir, "node_modules/@playwright/mcp/cli.js"),
+      path.join(/* turbopackIgnore: true */ dir, "node_modules/.bin/playwright-mcp"),
     ];
-    for (const c of candidates) if (fs.existsSync(c)) return c;
+    for (const c of candidates) if (fs.existsSync(/* turbopackIgnore: true */ c)) return c;
     // bun's hoisted store: node_modules/.bun/@playwright+mcp@<ver>/node_modules/@playwright/mcp/cli.js
-    const store = path.join(dir, "node_modules", ".bun");
+    const store = path.join(/* turbopackIgnore: true */ dir, "node_modules", ".bun");
     try {
       const hit = fs.readdirSync(store).find((n) => n.startsWith("@playwright+mcp@"));
       if (hit) {
-        const cli = path.join(store, hit, "node_modules/@playwright/mcp/cli.js");
+        const cli = path.join(/* turbopackIgnore: true */ store, hit, "node_modules/@playwright/mcp/cli.js");
         if (fs.existsSync(cli)) return cli;
       }
     } catch {

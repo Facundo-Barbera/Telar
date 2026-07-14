@@ -62,7 +62,9 @@ function parseEnvNames(text: string): string[] {
 function readEnvExampleNames(root: string): { name: string; source: string }[] {
   for (const file of [".env.example", ".env.sample", ".env.template"]) {
     try {
-      const text = fs.readFileSync(path.join(root, file), "utf8");
+      // turbopackIgnore: runtime probe of the target project's .env examples —
+      // must not widen Next's output tracing to the whole workspace.
+      const text = fs.readFileSync(/* turbopackIgnore: true */ path.join(/* turbopackIgnore: true */ root, file), "utf8");
       return parseEnvNames(text).map((name) => ({ name, source: file }));
     } catch {
       // ENOENT — try the next candidate.

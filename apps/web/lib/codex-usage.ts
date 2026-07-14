@@ -41,12 +41,14 @@ function newestDayRollouts(sessionsDir: string): string[] {
   for (let i = 0; i < 3 && dir; i++) dir = newestChild(dir); // Y -> M -> D
   if (!dir) return [];
   try {
+    // turbopackIgnore: runtime scan of ~/.codex session logs — outside the
+    // project; Next's output tracing must not follow it.
     return fs
-      .readdirSync(dir)
+      .readdirSync(/* turbopackIgnore: true */ dir)
       .filter((f) => f.startsWith("rollout-") && f.endsWith(".jsonl"))
       .sort()
       .reverse()
-      .map((f) => path.join(dir as string, f));
+      .map((f) => path.join(/* turbopackIgnore: true */ dir as string, f));
   } catch {
     return [];
   }
