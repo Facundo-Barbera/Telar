@@ -377,3 +377,21 @@ Format per entry:
   doctrine wants anyway). GAPS: connected:true detail unproven against
   telar's own repo (it has no issues/PRs yet); huge text diffs labeled
   binary (gh omits patch for both); >100-file PR pagination untested.
+
+## Session liveness + auto-dock (prod bug, owner-reported)
+
+- **verdict:** shipped — 21419a1 (server) + b6ade49 (client).
+- **items:** root cause was persistence timing, not caching (all chat
+  routes ƒ-dynamic; list API provably live). Fix: register-at-create
+  (upsertChatStub at both init sites + early "saved" emit — session
+  visible w/ running row from turn START; end-of-turn upserts, title can
+  only improve, rename always wins) + live delta ring (bounded in-memory
+  current-block ring; /events replays file skeleton then drains ring —
+  re-entered views and dock panels now stream tokens; single-process
+  assumption documented). AUTO-DOCK (owner spec): leaving a standalone
+  active session docks a working head; embedded loom surfaces never
+  auto-dock; re-entering removes only auto-docked heads; turn-finish
+  keeps head + unread badge; pop-out cannot re-dock. Known edges: rare
+  subagent-interleave can degrade one block to pop-at-finalize (content
+  never lost); unread baseline misses if a turn finishes before first
+  host load.
