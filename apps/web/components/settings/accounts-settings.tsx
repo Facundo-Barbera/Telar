@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { LogInIcon, PlusIcon, RotateCwIcon, StarIcon, Trash2Icon } from "lucide-react";
+import {
+  GaugeIcon,
+  KeyRoundIcon,
+  LogInIcon,
+  PlusIcon,
+  RotateCwIcon,
+  StarIcon,
+  Trash2Icon,
+} from "lucide-react";
 import type { AccountProfile } from "@telar/core";
 import type { PlanSnapshot, PlanWindow } from "@/lib/store";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +24,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { EmptyState } from "@/components/common/empty-state";
+import {
+  SettingsShell,
+  SettingsGroup,
+  type SettingsSection,
+} from "@/components/settings/settings-shell";
 
 type Provider = "claude" | "codex";
 type AuthMode = "subscription" | "oauth-token" | "api-key";
@@ -30,15 +44,16 @@ const fmtReset = (iso: string | null | undefined): string => {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 };
 
+const meterBar = (pct: number) =>
+  pct >= 90
+    ? "[&>[data-slot=progress-indicator]]:bg-destructive"
+    : pct >= 70
+      ? "[&>[data-slot=progress-indicator]]:bg-amber-500"
+      : "";
+
 function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
   if (!w || w.utilization == null) return null;
   const pct = w.utilization;
-  const bar =
-    pct >= 90
-      ? "[&>[data-slot=progress-indicator]]:bg-destructive"
-      : pct >= 70
-        ? "[&>[data-slot=progress-indicator]]:bg-amber-500"
-        : "";
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
@@ -50,9 +65,20 @@ function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
           )}
         </span>
       </div>
-      <Progress value={Math.min(100, pct)} className={`h-1.5 ${bar}`} />
+      <Progress value={Math.min(100, pct)} className={`h-1.5 ${meterBar(pct)}`} />
     </div>
   );
+}
+
+// One-line utilization hint for the Accounts tab (bars live on the Usage tab).
+function usageHint(snap?: PlanSnapshot): string | null {
+  const five = snap?.fiveHour?.utilization;
+  const week = snap?.sevenDay?.utilization;
+  if (five == null && week == null) return null;
+  const parts: string[] = [];
+  if (five != null) parts.push(`5-hour ${five}%`);
+  if (week != null) parts.push(`weekly ${week}%`);
+  return parts.join(" · ");
 }
 
 // The exact terminal command to log this account in. Interactive OAuth needs a
@@ -80,6 +106,7 @@ function AccountCard({
   const [tier, setTier] = useState(account.displayTier ?? "");
   const [showLogin, setShowLogin] = useState(false);
   const provider = account.provider ?? "claude";
+  const hint = usageHint(snap);
 
   const save = async (patch: Partial<AccountProfile>) => {
     await fetch("/api/accounts", {
@@ -140,16 +167,21 @@ function AccountCard({
           </div>
         </div>
 
-        {snap?.fiveHour || snap?.sevenDay ? (
-          <div className="space-y-2">
-            <LimitMeter label="5-hour" w={snap?.fiveHour} />
-            <LimitMeter label="Weekly" w={snap?.sevenDay} />
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            No usage captured yet — refresh to fetch it.
-          </p>
-        )}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          {hint ? (
+            <span className="font-mono text-muted-foreground">{hint}</span>
+          ) : (
+            <span className="text-muted-foreground">No usage captured yet — refresh to fetch it.</span>
+          )}
+          {account.configDir && (
+            <span
+              className="ml-auto truncate font-mono text-[10px] text-muted-foreground/70"
+              title={account.configDir}
+            >
+              {account.configDir}
+            </span>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <label className="text-xs text-muted-foreground">Plan label</label>
@@ -162,14 +194,6 @@ function AccountCard({
             placeholder="e.g. 20x"
             className="h-7 w-24 text-xs"
           />
-          {account.configDir && (
-            <span
-              className="ml-auto truncate font-mono text-[10px] text-muted-foreground"
-              title={account.configDir}
-            >
-              {account.configDir}
-            </span>
-          )}
         </div>
 
         {showLogin && (
@@ -260,7 +284,19 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-export function AccountsSettings() {
+const SECTIONS: SettingsSection[] = [
+  { id: "accounts", label: "Accounts", icon: KeyRoundIcon },
+  { id: "usage", label: "Usage", icon: GaugeIcon },
+];
+
+// The top-level Settings surface. Today the loom's real global config is
+// accounts + plan usage — so those are the only sections here. There is no
+// persisted store for per-agent defaults (Auto Mode, model, effort) or theme,
+// and the Loom Doctrine forbids turning UI preferences into engine behavior
+// flags — so those demo sections are intentionally omitted rather than shipped
+// as placebo controls. New sections appear here only when they gain real backing.
+export function GeneralSettings() {
+  const [active, setActive] = useState("accounts");
   const [accounts, setAccounts] = useState<AccountProfile[]>([]);
   const [defaultAccount, setDefaultAccount] = useState("personal");
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
@@ -290,30 +326,84 @@ export function AccountsSettings() {
     window.dispatchEvent(new Event("telar:refresh"));
   };
 
+  const sections = SECTIONS.map((s) =>
+    s.id === "accounts" ? { ...s, count: accounts.length || undefined } : s,
+  );
+
+  const metered = accounts.filter(
+    (a) => plan[a.name]?.fiveHour?.utilization != null || plan[a.name]?.sevenDay?.utilization != null,
+  );
+
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold">Accounts</h2>
-          <p className="text-xs text-muted-foreground">
-            Provider logins, plan limits, and the default account. Tokens stay on disk — never in
-            the registry.
-          </p>
-        </div>
+    <SettingsShell
+      title="Settings"
+      subtitle="Provider logins & plan usage"
+      sections={sections}
+      active={active}
+      onSelect={setActive}
+      headerActions={
         <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
-          <RotateCwIcon className={`size-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh usage
+          <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
         </Button>
-      </div>
-      {accounts.map((a) => (
-        <AccountCard
-          key={a.name}
-          account={a}
-          snap={plan[a.name]}
-          isDefault={a.name === defaultAccount}
-          onChanged={load}
-        />
-      ))}
-      <AddAccount onAdded={load} />
-    </div>
+      }
+    >
+      {active === "accounts" && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            Provider logins and the default account. Tokens stay on disk — never in the registry.
+          </p>
+          {accounts.map((a) => (
+            <AccountCard
+              key={a.name}
+              account={a}
+              snap={plan[a.name]}
+              isDefault={a.name === defaultAccount}
+              onChanged={load}
+            />
+          ))}
+          <AddAccount onAdded={load} />
+        </div>
+      )}
+
+      {active === "usage" && (
+        <SettingsGroup
+          title="Plan limits"
+          description="Live utilization per account. Refresh to fetch the latest windows."
+        >
+          {metered.length === 0 ? (
+            <EmptyState
+              className="border-none py-10"
+              icon={GaugeIcon}
+              title="No usage captured yet"
+              description="Refresh usage to fetch the 5-hour and weekly windows for each account."
+            />
+          ) : (
+            metered.map((a) => {
+              const snap = plan[a.name];
+              return (
+                <div key={a.name} className="space-y-2 px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-mono">{a.name}</span>
+                    {a.displayTier && (
+                      <Badge variant="outline" className="text-[10px]">{a.displayTier}</Badge>
+                    )}
+                    {a.name === defaultAccount && (
+                      <Badge className="gap-1 text-[10px]">
+                        <StarIcon className="size-3" /> default
+                      </Badge>
+                    )}
+                  </div>
+                  <LimitMeter label="5-hour" w={snap?.fiveHour} />
+                  <LimitMeter label="Weekly" w={snap?.sevenDay} />
+                </div>
+              );
+            })
+          )}
+        </SettingsGroup>
+      )}
+    </SettingsShell>
   );
 }
+
+// Back-compat alias — the settings page renders the full sectioned surface.
+export const AccountsSettings = GeneralSettings;

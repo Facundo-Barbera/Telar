@@ -6,12 +6,12 @@ import {
   ArrowLeftIcon,
   BanIcon,
   CheckCircle2Icon,
-  FileCogIcon,
   FolderXIcon,
-  LinkIcon,
+  KeyRoundIcon,
+  PlugIcon,
   PlusIcon,
   RotateCwIcon,
-  SaveIcon,
+  ServerIcon,
   ShieldIcon,
   SlidersHorizontalIcon,
   TriangleAlertIcon,
@@ -21,13 +21,6 @@ import type { ProjectManifest, RegistryEntry } from "@telar/core";
 import { useAccounts } from "@/lib/use-accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -37,12 +30,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { SettingsPermissions } from "@/components/projects/settings-permissions";
 import { SettingsDanger } from "@/components/projects/settings-danger";
 import { McpSettings } from "@/components/settings/mcp-settings";
+import {
+  SettingsShell,
+  SettingsGroup,
+  Row,
+  type SettingsSection,
+} from "@/components/settings/settings-shell";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -124,65 +122,6 @@ function buildBody(form: Form, orig: Form): Record<string, unknown> {
   return body;
 }
 
-function BackLink({ href }: { href: string }) {
-  return (
-    <Link
-      href={href}
-      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Back to project"
-    >
-      <ArrowLeftIcon className="size-4" />
-    </Link>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  htmlFor?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-foreground">
-        {label}
-      </label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
-
-function SectionCard({
-  icon: Icon,
-  title,
-  description,
-  children,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-1.5">
-          <Icon className="size-4 text-muted-foreground" />
-          {title}
-        </CardTitle>
-        {description && <CardDescription>{description}</CardDescription>}
-      </CardHeader>
-      <CardContent className="space-y-4">{children}</CardContent>
-    </Card>
-  );
-}
-
 // A trimmed-down list editor shared by protected paths and disallowed tools:
 // each value is a single mono input with a remove control, plus an add button.
 function StringListEditor({
@@ -245,11 +184,24 @@ function StringListEditor({
   );
 }
 
+function BackLink({ href }: { href: string }) {
+  return (
+    <Link
+      href={href}
+      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      aria-label="Back to project"
+    >
+      <ArrowLeftIcon className="size-4" />
+    </Link>
+  );
+}
+
 export function ProjectSettings({ name }: { name: string }) {
   const projectHref = `/projects/${encodeURIComponent(name)}`;
   const { accounts } = useAccounts();
   const accountNames = accounts.map((a) => a.name);
 
+  const [active, setActive] = useState("general");
   const [status, setStatus] = useState<Status>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entry, setEntry] = useState<RegistryEntry | null>(null);
@@ -426,201 +378,267 @@ export function ProjectSettings({ name }: { name: string }) {
 
   const root = manifest?.root ?? entry.root;
 
-  const header = (
-    <PageHeader
-      leading={<BackLink href={projectHref} />}
-      title="Settings"
-      description={
-        <div className="flex flex-col gap-0.5">
-          <span className="font-mono text-[11px] text-foreground/80">{name}</span>
-          <code
-            className="truncate font-mono text-[11px] text-muted-foreground/70"
-            title={root}
-          >
-            {root}
-          </code>
-        </div>
-      }
-      actions={
-        form ? (
-          <Button size="sm" onClick={() => void save()} disabled={!dirty || saving}>
-            {saving ? <Spinner /> : <SaveIcon />}
-            Save
-          </Button>
-        ) : undefined
-      }
-    />
+  const sections: SettingsSection[] = [
+    { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Project" },
+    {
+      id: "gates",
+      label: "Gates",
+      icon: CheckCircle2Icon,
+      count: form?.gates.length,
+      group: "Project",
+    },
+    { id: "servers", label: "Servers", icon: ServerIcon, group: "Project" },
+    { id: "guardrails", label: "Guardrails", icon: ShieldIcon, group: "Project" },
+    { id: "mcp", label: "MCP", icon: PlugIcon, group: "Integrations" },
+    { id: "permissions", label: "Permissions", icon: KeyRoundIcon, group: "Integrations" },
+    { id: "danger", label: "Danger zone", icon: TriangleAlertIcon, group: "Integrations" },
+  ];
+
+  // The manifest-form sections can't render if telar.yaml failed to parse; the
+  // registry-scoped sections (MCP / permissions / danger) still work.
+  const manifestBroken = !form;
+  const manifestErrorBlock = (
+    <SettingsGroup title="Invalid telar.yaml">
+      <div className="space-y-3 p-4">
+        <Alert variant="destructive">
+          <BanIcon />
+          <AlertTitle>Manifest couldn&apos;t be read</AlertTitle>
+          <AlertDescription className="font-mono text-xs break-words">
+            {manifestError ?? "The manifest could not be read."}
+          </AlertDescription>
+        </Alert>
+        <p className="text-xs text-muted-foreground">
+          Fix the manifest at{" "}
+          <code className="font-mono">{root}</code>, then reload to edit these
+          settings. MCP, permissions and the danger zone still work below.
+        </p>
+      </div>
+    </SettingsGroup>
   );
 
   return (
-    <div className="flex h-dvh flex-col">
-      {header}
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-4">
-          {saved && (
-            <Alert>
-              <CheckCircle2Icon />
-              <AlertTitle>Settings saved</AlertTitle>
-              <AlertDescription>
-                telar.yaml at{" "}
-                <code className="font-mono text-xs">{root}</code> was updated.
-              </AlertDescription>
-            </Alert>
-          )}
-          {saveError && (
-            <Alert variant="destructive">
-              <XIcon />
-              <AlertTitle>Couldn&apos;t save</AlertTitle>
-              <AlertDescription className="font-mono text-xs break-words">
-                {saveError}
-              </AlertDescription>
-            </Alert>
-          )}
+    <div className="h-dvh">
+      <SettingsShell
+        title={<span className="font-mono">{name}</span>}
+        subtitle={
+          <code className="block truncate font-mono text-[11px]" title={root}>
+            {root}
+          </code>
+        }
+        sections={sections}
+        active={active}
+        onSelect={setActive}
+        backHref={projectHref}
+        dirty={dirty}
+        saving={saving}
+        onSave={form ? () => void save() : undefined}
+      >
+        {/* Save feedback — global, shown above whichever section is open. */}
+        {saved && (
+          <Alert className="mb-4">
+            <CheckCircle2Icon />
+            <AlertTitle>Settings saved</AlertTitle>
+            <AlertDescription>
+              telar.yaml at <code className="font-mono text-xs">{root}</code> was updated.
+            </AlertDescription>
+          </Alert>
+        )}
+        {saveError && (
+          <Alert variant="destructive" className="mb-4">
+            <XIcon />
+            <AlertTitle>Couldn&apos;t save</AlertTitle>
+            <AlertDescription className="font-mono text-xs break-words">
+              {saveError}
+            </AlertDescription>
+          </Alert>
+        )}
 
-          {form ? (
-            <>
-              {/* General */}
-              <SectionCard icon={SlidersHorizontalIcon} title="General">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    label="Account"
-                    hint="Default account for new sessions and looms in this project."
+        {active === "general" &&
+          (form ? (
+            <SettingsGroup description="Identity and where looms cut their work from.">
+              <Row
+                label="Account"
+                hint="Default account for new sessions and looms in this project."
+                control={
+                  <Select
+                    value={form.account}
+                    onValueChange={(v) => v && patch({ account: String(v) })}
                   >
-                    <Select
-                      value={form.account}
-                      onValueChange={(v) => v && patch({ account: String(v) })}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {accountNames.map((a) => (
-                          <SelectItem key={a} value={a}>
-                            {a}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Adapter" hint="Workflow flavor for looms.">
-                    <Select
-                      value={form.adapter}
-                      onValueChange={(v) =>
-                        v &&
-                        patch({ adapter: String(v) as "plain" | "bmad" })
-                      }
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ADAPTERS.map((a) => (
-                          <SelectItem key={a} value={a}>
-                            {a}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-                <Field
-                  htmlFor="base-branch"
-                  label="Base branch"
-                  hint="Branch looms cut their work from and target."
-                >
+                    <SelectTrigger className="h-8 w-40 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accountNames.map((a) => (
+                        <SelectItem key={a} value={a}>
+                          {a}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                }
+              />
+              <Row
+                label="Adapter"
+                hint="Workflow flavor for looms."
+                control={
+                  <Select
+                    value={form.adapter}
+                    onValueChange={(v) =>
+                      v && patch({ adapter: String(v) as "plain" | "bmad" })
+                    }
+                  >
+                    <SelectTrigger className="h-8 w-28 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ADAPTERS.map((a) => (
+                        <SelectItem key={a} value={a}>
+                          {a}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                }
+              />
+              <Row
+                label="Base branch"
+                hint="Branch looms cut their work from and target."
+                control={
                   <Input
-                    id="base-branch"
                     value={form.baseBranch}
                     onChange={(e) => patch({ baseBranch: e.target.value })}
                     placeholder="main"
-                    className="font-mono text-xs sm:max-w-64"
+                    className="h-8 w-40 font-mono text-xs"
                     autoComplete="off"
                     spellCheck={false}
+                    aria-label="Base branch"
                   />
-                </Field>
-              </SectionCard>
+                }
+              />
+            </SettingsGroup>
+          ) : (
+            manifestErrorBlock
+          ))}
 
-              {/* Gates */}
-              <SectionCard
-                icon={CheckCircle2Icon}
-                title="Gates"
-                description="Commands whose exit code decides whether a loom passes."
-              >
-                <div className="space-y-2">
-                  {form.gates.length === 0 && (
-                    <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
-                      No gates — looms pass on the agent&apos;s verdict alone.
-                    </p>
-                  )}
-                  {form.gates.map((gate, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <Input
-                        value={gate.name}
-                        onChange={(e) =>
-                          patch({
-                            gates: form.gates.map((g, idx) =>
-                              idx === i ? { ...g, name: e.target.value } : g,
-                            ),
-                          })
-                        }
-                        placeholder="name"
-                        className="h-8 w-28 shrink-0 text-xs"
-                        autoComplete="off"
-                        spellCheck={false}
-                        aria-label={`Gate ${i + 1} name`}
-                      />
-                      <Input
-                        value={gate.run}
-                        onChange={(e) =>
-                          patch({
-                            gates: form.gates.map((g, idx) =>
-                              idx === i ? { ...g, run: e.target.value } : g,
-                            ),
-                          })
-                        }
-                        placeholder="command"
-                        className="h-8 flex-1 font-mono text-xs"
-                        autoComplete="off"
-                        spellCheck={false}
-                        aria-label={`Gate ${i + 1} command`}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() =>
-                          patch({
-                            gates: form.gates.filter((_, idx) => idx !== i),
-                          })
-                        }
-                        aria-label={`Remove gate ${i + 1}`}
-                      >
-                        <XIcon />
-                      </Button>
-                    </div>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      patch({ gates: [...form.gates, { name: "", run: "" }] })
-                    }
-                  >
-                    <PlusIcon />
-                    Add gate
-                  </Button>
-                </div>
-              </SectionCard>
+        {active === "gates" &&
+          (form ? (
+            <SettingsGroup
+              title="Gates"
+              description="Commands whose exit code decides whether a loom passes verification."
+            >
+              <div className="space-y-2 p-4">
+                {form.gates.length === 0 && (
+                  <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-xs text-muted-foreground">
+                    No gates — looms pass on the agent&apos;s verdict alone.
+                  </p>
+                )}
+                {form.gates.map((gate, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={gate.name}
+                      onChange={(e) =>
+                        patch({
+                          gates: form.gates.map((g, idx) =>
+                            idx === i ? { ...g, name: e.target.value } : g,
+                          ),
+                        })
+                      }
+                      placeholder="name"
+                      className="h-8 w-28 shrink-0 text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label={`Gate ${i + 1} name`}
+                    />
+                    <Input
+                      value={gate.run}
+                      onChange={(e) =>
+                        patch({
+                          gates: form.gates.map((g, idx) =>
+                            idx === i ? { ...g, run: e.target.value } : g,
+                          ),
+                        })
+                      }
+                      placeholder="command"
+                      className="h-8 flex-1 font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label={`Gate ${i + 1} command`}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                      onClick={() =>
+                        patch({ gates: form.gates.filter((_, idx) => idx !== i) })
+                      }
+                      aria-label={`Remove gate ${i + 1}`}
+                    >
+                      <XIcon />
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    patch({ gates: [...form.gates, { name: "", run: "" }] })
+                  }
+                >
+                  <PlusIcon />
+                  Add gate
+                </Button>
+              </div>
+            </SettingsGroup>
+          ) : (
+            manifestErrorBlock
+          ))}
 
-              {/* Guardrails */}
-              <SectionCard
-                icon={ShieldIcon}
-                title="Guardrails"
-                description="Paths and tools looms are fenced off from."
+        {active === "servers" &&
+          (form ? (
+            <SettingsGroup
+              title="Deployment targets"
+              description="URLs the Verifier can drive after a loom lands."
+            >
+              {(["dev", "preview", "prod"] as const).map((k) => (
+                <Row
+                  key={k}
+                  label={k[0].toUpperCase() + k.slice(1)}
+                  control={
+                    <Input
+                      value={form.urls[k]}
+                      onChange={(e) =>
+                        patch({ urls: { ...form.urls, [k]: e.target.value } })
+                      }
+                      placeholder={
+                        k === "dev"
+                          ? "http://localhost:3131"
+                          : k === "preview"
+                            ? "https://preview.example.com"
+                            : "https://example.com"
+                      }
+                      className="h-8 w-64 font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label={`${k} URL`}
+                    />
+                  }
+                />
+              ))}
+            </SettingsGroup>
+          ) : (
+            manifestErrorBlock
+          ))}
+
+        {active === "guardrails" &&
+          (form ? (
+            <>
+              <SettingsGroup
+                title="Protected paths"
+                description="Files looms are absolutely fenced off from."
               >
-                <Field label="Protected paths">
+                <div className="p-4">
                   <StringListEditor
                     values={form.protectedPaths}
                     onChange={(protectedPaths) => patch({ protectedPaths })}
@@ -629,8 +647,13 @@ export function ProjectSettings({ name }: { name: string }) {
                     emptyLabel="No protected paths — nothing fenced off."
                     ariaPrefix="Protected path"
                   />
-                </Field>
-                <Field label="Disallowed tools">
+                </div>
+              </SettingsGroup>
+              <SettingsGroup
+                title="Disallowed tools"
+                description="Tools looms may never invoke."
+              >
+                <div className="p-4">
                   <StringListEditor
                     values={form.disallowedTools}
                     onChange={(disallowedTools) => patch({ disallowedTools })}
@@ -639,90 +662,19 @@ export function ProjectSettings({ name }: { name: string }) {
                     emptyLabel="No disallowed tools — every tool is available."
                     ariaPrefix="Disallowed tool"
                   />
-                </Field>
-              </SectionCard>
-
-              {/* URLs */}
-              <SectionCard
-                icon={LinkIcon}
-                title="URLs"
-                description="Deployment targets the Verifier can drive after a loom."
-              >
-                <div className="space-y-4">
-                  <Field htmlFor="url-dev" label="Dev">
-                    <Input
-                      id="url-dev"
-                      value={form.urls.dev}
-                      onChange={(e) =>
-                        patch({ urls: { ...form.urls, dev: e.target.value } })
-                      }
-                      placeholder="http://localhost:3131"
-                      className="font-mono text-xs"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field htmlFor="url-preview" label="Preview">
-                    <Input
-                      id="url-preview"
-                      value={form.urls.preview}
-                      onChange={(e) =>
-                        patch({
-                          urls: { ...form.urls, preview: e.target.value },
-                        })
-                      }
-                      placeholder="https://preview.example.com"
-                      className="font-mono text-xs"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field htmlFor="url-prod" label="Prod">
-                    <Input
-                      id="url-prod"
-                      value={form.urls.prod}
-                      onChange={(e) =>
-                        patch({ urls: { ...form.urls, prod: e.target.value } })
-                      }
-                      placeholder="https://example.com"
-                      className="font-mono text-xs"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
                 </div>
-              </SectionCard>
+              </SettingsGroup>
             </>
           ) : (
-            // Manifest failed to parse — the editable form can't render, but the
-            // registry-scoped sections below still work.
-            <SectionCard icon={FileCogIcon} title="Manifest">
-              <Alert variant="destructive">
-                <BanIcon />
-                <AlertTitle>Invalid telar.yaml</AlertTitle>
-                <AlertDescription className="font-mono text-xs break-words">
-                  {manifestError ?? "The manifest could not be read."}
-                </AlertDescription>
-              </Alert>
-              <p className="text-xs text-muted-foreground">
-                Fix the manifest at{" "}
-                <code className="font-mono">{root}</code>, then reload to edit
-                these settings.
-              </p>
-            </SectionCard>
-          )}
+            manifestErrorBlock
+          ))}
 
-          {/* MCP servers — manifest-backed, but self-loading & independent so a
-              broken form above doesn't block token management. */}
-          <McpSettings name={name} />
+        {active === "mcp" && <McpSettings name={name} />}
 
-          {/* Permissions — registry-scoped, independent of the manifest. */}
-          <SettingsPermissions project={name} />
+        {active === "permissions" && <SettingsPermissions project={name} />}
 
-          {/* Danger */}
-          <SettingsDanger name={name} />
-        </div>
-      </div>
+        {active === "danger" && <SettingsDanger name={name} />}
+      </SettingsShell>
     </div>
   );
 }
