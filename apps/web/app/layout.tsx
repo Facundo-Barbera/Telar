@@ -6,6 +6,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { DockProvider } from "@/components/dock/dock-provider";
 import { Dock } from "@/components/dock/dock";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/settings/theme-provider";
+import { LoomNotifications } from "@/components/common/loom-notifications";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,6 +41,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <ThemeProvider />
+        <LoomNotifications />
         <DockProvider>
           <SidebarProvider>
             <AppSidebar />

@@ -9,12 +9,11 @@
 // loom UI settles). Tone is a fixed-hue ACCENT only (dot/tint/border/ring);
 // every WORD is a theme token so it re-themes in the dark shell.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { ExternalLinkIcon, WorkflowIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { notifyLoom } from "@/lib/notify";
 
 export type LoomTone = "weaving" | "blocked" | "ready";
 
@@ -154,47 +153,15 @@ function LoomOverlay({ looms }: { looms: PillLoom[] }) {
   );
 }
 
-// Fire a browser notification when a loom TRANSITIONS into a human touch-point —
-// parked (needs you) or ready to accept — and only while this tab is hidden or
-// unfocused (never notify about a loom the user is actively watching). The
-// notify helper itself gates on the user's prefs + OS permission, so this only
-// decides "did the state just change, and is the tab in the background". We seed
-// the previous tone on first observation so an already-parked/ready loom present
-// at mount doesn't fire; only a real change from a known prior tone does.
-function useLoomTransitionNotifications(looms: PillLoom[]) {
-  const prevTones = useRef<Map<string, LoomTone>>(new Map());
-  useEffect(() => {
-    const prev = prevTones.current;
-    const backgrounded =
-      typeof document !== "undefined" &&
-      (document.visibilityState === "hidden" || !document.hasFocus());
-    for (const l of looms) {
-      const before = prev.get(l.key);
-      if (before === l.tone) continue;
-      prev.set(l.key, l.tone);
-      if (before === undefined || !backgrounded) continue; // first sight / watching
-      if (l.tone === "blocked") {
-        notifyLoom("loom-parked", {
-          title: "Loom needs you",
-          body: `${l.title} · ${l.stateWord}`,
-          url: l.url,
-        });
-      } else if (l.tone === "ready") {
-        notifyLoom("loom-ready", { title: "Loom ready to accept", body: l.title, url: l.url });
-      }
-    }
-    // Drop looms that are gone so a later reuse of the key re-seeds cleanly.
-    const live = new Set(looms.map((l) => l.key));
-    for (const k of [...prev.keys()]) if (!live.has(k)) prev.delete(k);
-  }, [looms]);
-}
-
 // The aggregate pill as it sits in the session heartbeat bar. Hover previews the
 // overlay; click pins. ONE looms pill, never one per loom.
+//
+// Browser notifications for loom transitions are NOT fired here — the app-wide
+// LoomNotifications provider (mounted in the root layout) is the single firing
+// site, so a notification never double-fires when this session view is open.
 export function LoomsPill({ looms }: { looms: PillLoom[] }) {
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
-  useLoomTransitionNotifications(looms);
   if (looms.length === 0) return null;
   const open = hovered || pinned;
   const r = rollup(looms);
