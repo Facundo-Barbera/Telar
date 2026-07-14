@@ -310,3 +310,18 @@ Format per entry:
   state). GAPS: notifications need a mounted session view (global loom
   subscription = follow-up); charter/dead-end/gate events have no client
   source yet — toggles omitted, not faked.
+
+## Round 23 — Git tab sub-views + loom follow-ups
+
+- **view:** project Git tab (demo) + blocked-page chat + notifications
+- **verdict:** owner rejected round-22's single scroll ("too much data
+  inside a single view") but keeps ONE Git tab; approved the loom fix.
+- **items:** fd66b55 reworks project-git-unified in place: internal
+  switcher Worktrees | Branches | Remote | Files, one dense section at a
+  time, persistent header strip w/ reclaimable headline, replay flips in
+  hidden sections get an attention dot. AWAITING OWNER VERDICT; production
+  Git tab HELD until then. 65d13cd: escalation-discussion chat now passes
+  `embedded` (chrome-light, matches loom Chat tab). 64f31c6: global loom
+  notifications — app-wide provider is the ONLY firing site (stripped from
+  session-loom; single-point beats dedupe windows), ~30s poll of root
+  looms, transition-only, no storm on load, zero work when prefs disabled.
