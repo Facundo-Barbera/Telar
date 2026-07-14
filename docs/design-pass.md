@@ -80,4 +80,18 @@ Format per entry:
   currentColor; e.g. solid class-colored text + animated mask sweep), never
   from vars resolved outside the panel scope. Legible at every animation
   phase in both panels; audit every chat-lane shimmer usage.
-- **round:** demo-gallery round 5 (in flight)
+- **round:** demo-gallery round 5 — landed 4c6aec0. TRUE root cause:
+  background-clip:text + color:transparent ignores element color AND WebKit
+  does not re-resolve inherited inline var overrides inside the clipped
+  gradient — mechanism failure, unfixable by token swaps. New shimmer = solid
+  class-colored base text + aria-hidden foreground copy revealed by a moving
+  mask (additive only; every failure mode legible). Production Shimmer needs
+  the same rework at product-wiring time.
+  3rd report + live-DOM probe (getComputedStyle): the masked shimmer VERIFIES
+  correct; the still-washed elements are un-classed tool-name spans
+  ("shrink-0 font-medium") computing lab(98.26) inside the light panel —
+  inherited computed white from the dark shell, because theme-panel wrappers
+  inject vars but never re-declare `color`. Round 6 = structural: every
+  theme wrapper (all lanes) sets text-foreground; probe re-run to confirm.
+  LESSON for walkthrough rounds: visual/DOM verification, not tsc, closes
+  display bugs.

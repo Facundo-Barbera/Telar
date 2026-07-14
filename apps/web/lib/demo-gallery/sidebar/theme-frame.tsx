@@ -86,9 +86,12 @@ export function ThemeSurface({
   children: ReactNode;
 }) {
   const vars = theme === "dark" ? DARK : LIGHT;
+  // Establish `color` on the wrapper itself: injected vars don't re-declare the
+  // `color` property, so un-classed descendants would otherwise inherit the
+  // shell's color across this boundary. `text-foreground` binds it to the panel.
   return (
     <div
-      className={className}
+      className={["text-foreground", className].filter(Boolean).join(" ")}
       style={{ ...(vars as CSSProperties), ...style }}
     >
       {children}

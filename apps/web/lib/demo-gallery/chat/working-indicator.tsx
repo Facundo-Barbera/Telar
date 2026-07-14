@@ -67,7 +67,7 @@ function WorkingIndicator({ state }: { state: WorkState }) {
       )}
     >
       <Icon className={cn("size-3.5 shrink-0", silent ? "text-amber-500" : "text-muted-foreground")} />
-      <span className="shrink-0 font-medium">
+      <span className="shrink-0 font-medium text-foreground">
         {state.tool === "Bash" ? "Running" : "Using"} {state.tool}
       </span>
       <span className="min-w-0 flex-1 truncate">

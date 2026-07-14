@@ -85,12 +85,12 @@ export function ThemePair({
     <div className={cn("grid gap-4 md:grid-cols-2", className)}>
       <div>
         <Caption>Dark</Caption>
-        <div className="rounded-xl border border-border bg-background p-4">{children}</div>
+        <div className="rounded-xl border border-border bg-background p-4 text-foreground">{children}</div>
       </div>
       <div>
         <Caption>Light</Caption>
         <div
-          className="rounded-xl border border-border bg-background p-4"
+          className="rounded-xl border border-border bg-background p-4 text-foreground"
           style={LIGHT_VARS}
         >
           {children}
@@ -104,7 +104,7 @@ export function ThemePair({
 // in light without a paired dark copy).
 export function LightIsland({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <div className={cn("rounded-xl border border-border bg-background", className)} style={LIGHT_VARS}>
+    <div className={cn("rounded-xl border border-border bg-background text-foreground", className)} style={LIGHT_VARS}>
       {children}
     </div>
   );
