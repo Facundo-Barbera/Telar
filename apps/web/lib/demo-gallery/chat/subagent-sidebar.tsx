@@ -19,9 +19,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ChevronLeftIcon,
   ChevronRightIcon,
   CompassIcon,
   ListChecksIcon,
+  MessagesSquareIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   SparklesIcon,
@@ -219,22 +221,109 @@ function EdgeDots({ running, failed, done }: { running: number; failed: number; 
   );
 }
 
+// The pinned anchor row at the very top of the rail — always the one click back
+// to the main conversation. Mirrors the strip's "Main tab first" rule: it never
+// scrolls away and never dismisses. Highlighted (ring + "Here") when the main
+// thread is the active view; a return affordance (chevron) when a sub-agent is.
+function MainRow({
+  active,
+  onSelect,
+  label,
+}: {
+  active: boolean;
+  onSelect: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={active ? "true" : undefined}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors",
+        active
+          ? "border-ring bg-muted/60 text-foreground"
+          : "border-border bg-card text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+      )}
+    >
+      <MessagesSquareIcon
+        className={cn("size-4 shrink-0", active ? "text-primary" : "text-muted-foreground")}
+      />
+      <span className="min-w-0 flex-1 truncate text-xs font-semibold">{label}</span>
+      {active ? (
+        <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-primary">
+          Here
+        </span>
+      ) : (
+        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+      )}
+    </button>
+  );
+}
+
+// A slim breadcrumb pinned above a sub-agent transcript: it names the agent you
+// are viewing and makes the exit visible without a glance at the rail. Three
+// ways back to main — the "Main" crumb, and Escape (bound while mounted). It is
+// a persistent bar (production-toned), never a toast.
+export function SubagentBanner({
+  label,
+  status,
+  onBack,
+}: {
+  label: string;
+  status: TaskStatus;
+  onBack: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onBack();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onBack]);
+
+  return (
+    <div className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-xs">
+      <button
+        type="button"
+        onClick={onBack}
+        aria-label="Back to main conversation"
+        className="-mx-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <ChevronLeftIcon className="size-3.5" />
+        Main
+      </button>
+      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40" />
+      <StatusMark status={status} />
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+        Viewing {label}
+      </span>
+      <kbd className="hidden shrink-0 rounded border border-border px-1 font-mono text-[10px] text-muted-foreground/60 sm:inline">
+        Esc
+      </kbd>
+    </div>
+  );
+}
+
 // The whole rail. Owns one live clock (so every card's elapsed counts up in
-// lock-step) and a collapse toggle. Live section: running + failed(pinned)
-// cards. History section: archived completions as compact rows. Collapsed: a
-// narrow icon edge with the count + status dots.
+// lock-step) and a collapse toggle. A pinned Main anchor at the very top;
+// live section: running + failed(pinned) cards; history section: archived
+// completions as compact rows. Collapsed: a narrow icon edge with a Main button
+// plus the count + status dots.
 export function SubagentRail({
   cards,
   activeId,
   onSelect,
   collapsed,
   onToggle,
+  sessionLabel = "Main conversation",
 }: {
   cards: AgentCard[];
   activeId: string;
   onSelect: (id: string) => void;
   collapsed: boolean;
   onToggle: () => void;
+  sessionLabel?: string;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -249,6 +338,7 @@ export function SubagentRail({
   const done = history.length;
 
   if (collapsed) {
+    const mainActive = activeId === "main";
     return (
       <div className="flex w-11 shrink-0 flex-col items-center gap-3 border-l border-border py-3">
         <button
@@ -258,6 +348,21 @@ export function SubagentRail({
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <PanelRightOpenIcon className="size-4" />
+        </button>
+        {/* Main anchor stays reachable even folded — mirrors the pinned row */}
+        <button
+          type="button"
+          onClick={() => onSelect("main")}
+          aria-label="Back to main conversation"
+          aria-current={mainActive ? "true" : undefined}
+          className={cn(
+            "rounded-md p-1 transition-colors",
+            mainActive
+              ? "bg-muted text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          <MessagesSquareIcon className="size-4" />
         </button>
         <EdgeDots running={running} failed={failed} done={done} />
       </div>
@@ -291,6 +396,15 @@ export function SubagentRail({
         >
           <PanelRightCloseIcon className="size-4" />
         </button>
+      </div>
+
+      {/* pinned Main anchor — always visible, never scrolls with the cards */}
+      <div className="border-b border-border p-2">
+        <MainRow
+          active={activeId === "main"}
+          onSelect={() => onSelect("main")}
+          label={sessionLabel}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -488,25 +602,26 @@ function RailSim() {
               transcript here.
             </p>
           ) : activeCard ? (
-            <p>
-              <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-                <StatusMark status={activeCard.status} />
-                {activeCard.label}
-              </span>{" "}
-              —{" "}
-              {activeCard.status === "running"
-                ? "still working; watch it live in the rail."
-                : activeCard.status === "error"
-                  ? "failed — pinned in the rail so it keeps your eyes."
-                  : "completed; reached in one click from the Done section, transcript intact."}{" "}
-              <button
-                type="button"
-                onClick={() => setActiveId("main")}
-                className="text-primary underline-offset-2 hover:underline"
-              >
-                Back to conversation
-              </button>
-            </p>
+            <div className="flex flex-col gap-3">
+              {/* breadcrumb makes the exit visible without a glance at the rail */}
+              <SubagentBanner
+                label={activeCard.label}
+                status={activeCard.status}
+                onBack={() => setActiveId("main")}
+              />
+              <p>
+                <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+                  <StatusMark status={activeCard.status} />
+                  {activeCard.label}
+                </span>{" "}
+                —{" "}
+                {activeCard.status === "running"
+                  ? "still working; watch it live in the rail. You're off the main chat — the banner above and the highlighted Main anchor lead back."
+                  : activeCard.status === "error"
+                    ? "failed — pinned in the rail so it keeps your eyes. Main is one click away above."
+                    : "completed; reached in one click from the Done section, transcript intact."}
+              </p>
+            </div>
           ) : (
             <p>select a card</p>
           )}

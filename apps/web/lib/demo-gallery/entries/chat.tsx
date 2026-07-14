@@ -18,27 +18,27 @@ export const chatEntries: DemoEntry[] = [
     id: "chat-subagent-lifecycle",
     title: "Sub-agent tabs — graceful dismiss",
     concern: "1.1",
-    variant: "Variant A: graceful dismiss",
+    variant: "Variant A: graceful dismiss (retired)",
     summary:
-      "Today agent-tabs.tsx keeps a TAB per spawn forever, so finished sub-agents crowd the strip (“Main | Verify P3 Track A | Verify P3 Track B | Reconcile PD-scope | …”). Here a completed tab collapses out of the strip and folds into an expandable “N done” pill at the strip end — every completed transcript stays one click away, so tabs stay navigation, not clutter. Running sub-agents are live switchable tabs; failed ones stay pinned (failure needs eyes).",
+      "RETIRED CANDIDATE — the owner picked Variant C (the session sidebar rail). Kept for the record. Today agent-tabs.tsx keeps a TAB per spawn forever, so finished sub-agents crowd the strip (“Main | Verify P3 Track A | Verify P3 Track B | Reconcile PD-scope | …”). Here a completed tab collapses out of the strip and folds into an expandable “N done” pill at the strip end — every completed transcript stays one click away, so tabs stay navigation, not clutter. Running sub-agents are live switchable tabs; failed ones stay pinned (failure needs eyes).",
     Component: SubagentLifecycleDemo,
   },
   {
     id: "chat-subagent-tray",
     title: "Sub-agent tabs — overflow tray",
     concern: "1.1",
-    variant: "Variant B: overflow tray",
+    variant: "Variant B: overflow tray (retired)",
     summary:
-      "The same de-cluttered strip with the alternative strip-end treatment: completed tabs collect into an overflow tray with a live count instead of a labelled pill — the popover re-lists them as clickable navigation. Running sub-agents stay live tabs, failed ones stay pinned. Shown so the tradeoff against the graceful-dismiss “N done” pill is visible.",
+      "RETIRED CANDIDATE — the owner picked Variant C (the session sidebar rail). Kept for the record. The same de-cluttered strip with the alternative strip-end treatment: completed tabs collect into an overflow tray with a live count instead of a labelled pill — the popover re-lists them as clickable navigation. Running sub-agents stay live tabs, failed ones stay pinned. Shown so the tradeoff against the graceful-dismiss “N done” pill is visible.",
     Component: SubagentTrayVariantDemo,
   },
   {
     id: "chat-subagent-sidebar",
     title: "Sub-agent sidebar rail",
     concern: "1.1",
-    variant: "Variant C: session sidebar",
+    variant: "Variant C: session sidebar (owner-selected)",
     summary:
-      "A third take on the crowded strip: instead of tabs at the top, a right-hand rail beside the conversation lists sub-agents as rich animated cards. Running cards sit up top with the full chip vocabulary — spawn-in, a shimmering current-activity line, live elapsed counting up; failed cards demand attention in destructive; completed cards settle into a compact Done section lower in the rail, one click from their transcript, with cost. The rail collapses to an icon edge carrying a count + status dots. Same scripted timeline as A/B, replayable.",
+      "OWNER-SELECTED DIRECTION for 1.1 (“Love the sidebar actually. We better stick with that one.”). Instead of tabs at the top, a right-hand rail beside the conversation lists sub-agents as rich animated cards. Running cards sit up top with the full chip vocabulary — spawn-in, a shimmering current-activity line, live elapsed counting up; failed cards demand attention in destructive; completed cards settle into a compact Done section lower in the rail, one click from their transcript, with cost. The rail collapses to an icon edge carrying a count + status dots. The return path to main is built in: a pinned Main anchor at the very top of the rail (always visible, mirrors the strip's “Main tab first” rule, reachable even when collapsed), and — on any sub-agent transcript — a slim breadcrumb banner (“Main › Viewing <agent>”) that exits via click, chevron, or Escape, so it's unmistakable when you're off the main chat. Same scripted timeline as A/B, replayable.",
     Component: SubagentSidebarDemo,
   },
   {

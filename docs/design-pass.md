@@ -173,3 +173,15 @@ Format per entry:
   highlighted when active) + a back affordance on the transcript view itself
   (banner/breadcrumb "viewing <agent> — back to main", Esc returns).
 - **round:** demo-gallery round 14 (queued behind round 13 — same lane)
+
+- **view:** loom-started notification banner (session view) — owner request
+- **verdict:** rework (proposals wanted)
+- **items:** the persistent "Loom started … View god-view [×]" banner solves a
+  momentary event with permanent chrome and never reflects the loom's actual
+  state. Variants to judge: A) live loom PILL in the session bar (hover =
+  status overlay w/ threads/gates + god-view link; tone follows state —
+  amber on park, green on ready = doctrine touchpoints surfaced); B) inline
+  event row in-stream at the start turn (scrolls away); C) docked live card,
+  collapsible to the pill, re-expands highlighted on escalation/ready.
+  Recommendation: A (+B as the historical record).
+- **round:** demo-gallery round 15 (queued behind round 14 — same lane)

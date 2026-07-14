@@ -29,7 +29,7 @@ import {
   fmtDur,
   type Task,
 } from "./subagent-lifecycle";
-import { SubagentRail, type AgentCard } from "./subagent-sidebar";
+import { SubagentBanner, SubagentRail, type AgentCard } from "./subagent-sidebar";
 import { ThinkingBlock, type Thinking } from "./thinking-stream";
 import { DemoShell, LIGHT_VARS, Section } from "./_shared";
 
@@ -314,7 +314,17 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
         </div>
       </>
     ) : activeTask ? (
-      <div className="flex flex-col gap-2 text-sm text-foreground">
+      <div className="flex flex-col gap-3 text-sm text-foreground">
+        {/* C · a pinned breadcrumb makes it unmistakable you're off the main
+            chat, with the exit visible (click, chevron, or Escape). A/B return
+            via the Main tab in the strip, so the banner is sidebar-only. */}
+        {isSidebar && (
+          <SubagentBanner
+            label={activeTask.label}
+            status={activeTask.status}
+            onBack={() => setActiveTab("main")}
+          />
+        )}
         <div className="inline-flex items-center gap-1.5 text-xs font-medium">
           <StatusMark status={activeTask.status} />
           {activeTask.label}
@@ -326,15 +336,6 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
               ? `Sub-agent failed — its card stays pinned in the ${nav} so the failure keeps your eyes.`
               : `Sub-agent completed — reached from the ${nav}, transcript intact.`}
         </p>
-        {isSidebar && (
-          <button
-            type="button"
-            onClick={() => setActiveTab("main")}
-            className="self-start text-xs text-primary underline-offset-2 hover:underline"
-          >
-            ← Back to conversation
-          </button>
-        )}
       </div>
     ) : null;
 
@@ -362,6 +363,7 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
             onSelect={setActiveTab}
             collapsed={railCollapsed}
             onToggle={() => setRailCollapsed((v) => !v)}
+            sessionLabel="Fix cost test"
           />
         </div>
       ) : (
