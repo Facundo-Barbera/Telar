@@ -5,6 +5,7 @@ import {
   SubagentLifecycleDemo,
   SubagentTrayVariantDemo,
 } from "../chat/subagent-lifecycle";
+import { SubagentSidebarDemo } from "../chat/subagent-sidebar";
 import { SessionBlockDemo } from "../chat/session-block";
 import { ThinkingStreamDemo } from "../chat/thinking-stream";
 import { WorkingIndicatorDemo } from "../chat/working-indicator";
@@ -32,12 +33,21 @@ export const chatEntries: DemoEntry[] = [
     Component: SubagentTrayVariantDemo,
   },
   {
+    id: "chat-subagent-sidebar",
+    title: "Sub-agent sidebar rail",
+    concern: "1.1",
+    variant: "Variant C: session sidebar",
+    summary:
+      "A third take on the crowded strip: instead of tabs at the top, a right-hand rail beside the conversation lists sub-agents as rich animated cards. Running cards sit up top with the full chip vocabulary — spawn-in, a shimmering current-activity line, live elapsed counting up; failed cards demand attention in destructive; completed cards settle into a compact Done section lower in the rail, one click from their transcript, with cost. The rail collapses to an icon edge carrying a count + status dots. Same scripted timeline as A/B, replayable.",
+    Component: SubagentSidebarDemo,
+  },
+  {
     id: "chat-session-block",
     title: "Session block — 1.1 in context",
     concern: "1.1",
-    variant: "Both treatments, in a real session",
+    variant: "A / B / C, in a real session",
     summary:
-      "The two 1.1 sub-agent-tab treatments judged in context, not as isolated widgets: a production-anatomy session — header, the agent-tab strip, then a full agent turn with streamed thinking (1.3), tool steps, and sub-agents that spawn mid-turn as live tabs and complete one by one, each dismissing from the strip per the chosen treatment — closing with final assistant text and the aggregate cost pill (1.6). Replay restarts the scripted timeline; a variant switch swaps A (graceful dismiss into the “N done” pill) and B (overflow tray) on the strip in place. Reuses the exact strip, thinking block, and cost bits from the isolated demos.",
+      "All three 1.1 sub-agent treatments judged in context, not as isolated widgets: a production-anatomy session — header, then a full agent turn with streamed thinking (1.3), tool steps, and sub-agents that spawn mid-turn and complete one by one — closing with final assistant text and the aggregate cost pill (1.6). A variant switch swaps A (strip → “N done” pill), B (strip → overflow tray) and C (right-hand sidebar rail beside the conversation) in place, all on the same scripted timeline. Replay restarts it. Reuses the exact strip, rail, thinking block, and cost bits from the isolated demos.",
     Component: SessionBlockDemo,
   },
   {

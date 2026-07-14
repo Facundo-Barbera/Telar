@@ -29,10 +29,23 @@ import {
   fmtDur,
   type Task,
 } from "./subagent-lifecycle";
+import { SubagentRail, type AgentCard } from "./subagent-sidebar";
 import { ThinkingBlock, type Thinking } from "./thinking-stream";
 import { DemoShell, LIGHT_VARS, Section } from "./_shared";
 
-type Variant = "dismiss" | "tray";
+// A · graceful dismiss into the "N done" pill · B · overflow tray · C · the
+// right-hand sub-agents sidebar rail. A/B render the top tab strip; C swaps it
+// for the rail beside the conversation.
+type Variant = "dismiss" | "tray" | "sidebar";
+
+// Roomier per-sub-agent facts the rail (variant C) shows that a tab can't — a
+// current-activity line and the cost once done. Keyed by TASK_SEED id (spawn
+// keeps the seed id), so tasks map cleanly to AgentCards for the rail.
+const SEED_META: Record<string, { activity: string; costUsd: number }> = {
+  s1: { activity: "Reading auth/middleware.ts…", costUsd: 0.031 },
+  s2: { activity: "Rewriting suite/session.test…", costUsd: 0.052 },
+  s3: { activity: "Sketching the cut sequence…", costUsd: 0.024 },
+};
 
 type ToolStep = {
   id: string;
@@ -233,94 +246,138 @@ function SessionExcerpt({ variant, runKey }: { variant: Variant; runKey: number 
   }, [runKey]);
 
   const activeTask = tasks.find((t) => t.id === activeTab);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const isSidebar = variant === "sidebar";
+  const nav = isSidebar ? "rail" : "strip";
+
+  // Variant C reads the same task timeline as A/B, mapped to the roomier
+  // AgentCard shape the rail renders (activity line + cost; dismissed→archived).
+  const cards: AgentCard[] = tasks.map((t) => ({
+    id: t.id,
+    label: t.label,
+    tool: t.tool,
+    status: t.status,
+    startedAt: t.startedAt,
+    finishedAt: t.finishedAt,
+    leaving: t.leaving,
+    archived: t.dismissed,
+    activity: SEED_META[t.id]?.activity,
+    costUsd: t.status !== "running" ? SEED_META[t.id]?.costUsd : undefined,
+  }));
+
+  // The transcript column — shared by every variant. Main shows the full agent
+  // turn; a selected sub-agent shows its stub (proving the strip/rail is real
+  // navigation and a settled sub-agent is one click away).
+  const transcript =
+    activeTab === "main" ? (
+      <>
+        {/* User message — right-aligned bubble (Message/MessageContent grammar) */}
+        <div className="flex flex-col gap-1">
+          <div className="ml-auto max-w-[80%] rounded-lg bg-secondary px-4 py-3 text-sm text-foreground">
+            Fix the failing cost test — the session total is dropping every sub-agent&apos;s spend.
+          </div>
+        </div>
+
+        {/* Assistant turn — full width, plain text, stacked parts */}
+        <div className="flex flex-col gap-2 text-sm text-foreground">
+          {/* thinking (1.3) */}
+          {phase !== "idle" && thinking.text.trim() !== "" && <ThinkingBlock part={thinking} />}
+          {phase === "thinking" && thinking.text.trim() === "" && (
+            <Shimmer className="text-sm">Thinking…</Shimmer>
+          )}
+
+          {/* tool steps */}
+          {steps.map((s) => (
+            <ToolStepRow key={s.id} step={s} now={now} />
+          ))}
+
+          {/* final assistant text */}
+          {finalText && (
+            <p className="leading-relaxed">
+              Fixed. The total now folds every sub-agent&apos;s usage into the sum before
+              formatting — the three spawned verifications confirmed the buckets, and{" "}
+              <span className="font-mono text-xs">bun test packages/core</span> is green.
+            </p>
+          )}
+
+          {/* cost pill (1.6) — the aggregate, main + every sub-agent */}
+          {showCost && (
+            <div className="mt-1 flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground">
+                <UserRoundIcon className="size-3 text-muted-foreground" />
+                {fmtCost(0.536)}
+                <span className="text-[10px] text-muted-foreground/70">main + 3</span>
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">turn complete</span>
+            </div>
+          )}
+        </div>
+      </>
+    ) : activeTask ? (
+      <div className="flex flex-col gap-2 text-sm text-foreground">
+        <div className="inline-flex items-center gap-1.5 text-xs font-medium">
+          <StatusMark status={activeTask.status} />
+          {activeTask.label}
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {activeTask.status === "running"
+            ? `Sub-agent transcript — still working, switchable live from the ${nav}.`
+            : activeTask.status === "error"
+              ? `Sub-agent failed — its card stays pinned in the ${nav} so the failure keeps your eyes.`
+              : `Sub-agent completed — reached from the ${nav}, transcript intact.`}
+        </p>
+        {isSidebar && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("main")}
+            className="self-start text-xs text-primary underline-offset-2 hover:underline"
+          >
+            ← Back to conversation
+          </button>
+        )}
+      </div>
+    ) : null;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-background">
-      {/* Session header + the agent-tab strip — production anatomy: the strip
-          sits between the session header and the transcript, driven by the same
-          task timeline. The A/B switch swaps the strip-end treatment. */}
+      {/* Session header — production anatomy: header, then either the agent-tab
+          strip (A/B) or, for C, the conversation with the sub-agents rail
+          beside it. All three read the same task timeline. */}
       <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground">
         <WorkflowIcon className="size-3.5 shrink-0" />
         <span className="font-medium text-foreground">Fix cost test</span>
         <span className="text-muted-foreground/50">·</span>
         <span>session</span>
       </div>
-      <SubagentTabStrip
-        tasks={tasks}
-        activeId={activeTab}
-        onSelect={setActiveTab}
-        treatment={variant}
-      />
 
-      {/* Transcript */}
-      <div className="p-4">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
-          {activeTab === "main" ? (
-            <>
-              {/* User message — right-aligned bubble (Message/MessageContent grammar) */}
-              <div className="flex flex-col gap-1">
-                <div className="ml-auto max-w-[80%] rounded-lg bg-secondary px-4 py-3 text-sm text-foreground">
-                  Fix the failing cost test — the session total is dropping every sub-agent&apos;s spend.
-                </div>
-              </div>
-
-              {/* Assistant turn — full width, plain text, stacked parts */}
-              <div className="flex flex-col gap-2 text-sm text-foreground">
-                {/* thinking (1.3) */}
-                {phase !== "idle" && thinking.text.trim() !== "" && (
-                  <ThinkingBlock part={thinking} />
-                )}
-                {phase === "thinking" && thinking.text.trim() === "" && (
-                  <Shimmer className="text-sm">Thinking…</Shimmer>
-                )}
-
-                {/* tool steps */}
-                {steps.map((s) => (
-                  <ToolStepRow key={s.id} step={s} now={now} />
-                ))}
-
-                {/* final assistant text */}
-                {finalText && (
-                  <p className="leading-relaxed">
-                    Fixed. The total now folds every sub-agent&apos;s usage into the sum before
-                    formatting — the three spawned verifications confirmed the buckets, and{" "}
-                    <span className="font-mono text-xs">bun test packages/core</span> is green.
-                  </p>
-                )}
-
-                {/* cost pill (1.6) — the aggregate, main + every sub-agent */}
-                {showCost && (
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground">
-                      <UserRoundIcon className="size-3 text-muted-foreground" />
-                      {fmtCost(0.536)}
-                      <span className="text-[10px] text-muted-foreground/70">main + 3</span>
-                    </span>
-                    <span className="text-[10px] text-muted-foreground/60">turn complete</span>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : activeTask ? (
-            // A sub-agent tab's own transcript stub — switching here proves the
-            // strip is real navigation, and that a dismissed sub-agent is still
-            // reachable from the strip-end pill/tray.
-            <div className="flex flex-col gap-2 text-sm text-foreground">
-              <div className="inline-flex items-center gap-1.5 text-xs font-medium">
-                <StatusMark status={activeTask.status} />
-                {activeTask.label}
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {activeTask.status === "running"
-                  ? "Sub-agent transcript — still working, switchable live from the strip."
-                  : activeTask.status === "error"
-                    ? "Sub-agent failed — its tab stays pinned in the strip so the failure keeps your eyes."
-                    : "Sub-agent completed — reached from the strip-end affordance, transcript intact."}
-              </p>
-            </div>
-          ) : null}
+      {isSidebar ? (
+        // C · the rail beside the conversation column
+        <div className="flex items-stretch">
+          <div className="min-w-0 flex-1 p-4">
+            <div className="flex flex-col gap-4">{transcript}</div>
+          </div>
+          <SubagentRail
+            cards={cards}
+            activeId={activeTab}
+            onSelect={setActiveTab}
+            collapsed={railCollapsed}
+            onToggle={() => setRailCollapsed((v) => !v)}
+          />
         </div>
-      </div>
+      ) : (
+        // A / B · the top tab strip, treatment swapped by the switch
+        <>
+          <SubagentTabStrip
+            tasks={tasks}
+            activeId={activeTab}
+            onSelect={setActiveTab}
+            treatment={variant === "tray" ? "tray" : "dismiss"}
+          />
+          <div className="p-4">
+            <div className="mx-auto flex max-w-3xl flex-col gap-4">{transcript}</div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -334,35 +391,32 @@ export function SessionBlockDemo() {
     <DemoShell>
       <Section
         title="1.1 in a real session"
-        note="The two sub-agent treatments, judged in context: a full agent turn — streamed thinking, tool steps, and sub-agents spawning mid-turn that complete and dismiss per the treatment — then final text and the aggregate cost pill. Replay restarts the timeline; switch the treatment to compare A and B in the same conversation."
+        note="The three sub-agent treatments, judged in context: a full agent turn — streamed thinking, tool steps, and sub-agents spawning mid-turn that complete per the treatment — then final text and the aggregate cost pill. Replay restarts the timeline; switch the treatment to compare A (strip → “N done” pill), B (strip → overflow tray) and C (right-hand sidebar rail) in the same conversation."
       >
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          {/* variant switch: A graceful dismiss / B docked tray */}
+          {/* variant switch: A strip+pill / B strip+tray / C sidebar rail */}
           <div className="inline-flex rounded-lg border border-border p-0.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setVariant("dismiss")}
-              className={cn(
-                "rounded-md px-2.5 py-1 transition-colors",
-                variant === "dismiss"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              A · graceful dismiss
-            </button>
-            <button
-              type="button"
-              onClick={() => setVariant("tray")}
-              className={cn(
-                "rounded-md px-2.5 py-1 transition-colors",
-                variant === "tray"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              B · docked tray
-            </button>
+            {(
+              [
+                ["dismiss", "A · strip + pill"],
+                ["tray", "B · strip + tray"],
+                ["sidebar", "C · sidebar rail"],
+              ] as const
+            ).map(([v, label]) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setVariant(v)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 transition-colors",
+                  variant === v
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {/* replay */}

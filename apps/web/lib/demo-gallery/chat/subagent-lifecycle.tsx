@@ -71,24 +71,45 @@ export function StatusMark({ status }: { status: TaskStatus }) {
   return <CheckIcon className="size-3 text-primary" />;
 }
 
-// One tab in the strip. Anatomy mirrors production agent-tabs.tsx exactly —
-// status glyph + truncated task title, `bg-muted text-foreground` when active,
-// muted with a hover wash otherwise, `role="tab"` + roving `tabIndex` for
-// arrow-key switching. The only addition is `leaving`: a pure CSS collapse
-// (max-width + translate + opacity, never a keyframe fade of a positioned
-// layer) so a completed tab folds out of the strip before it rehomes into the
-// strip-end affordance. A failed tab is tinted destructive and never leaves.
+// One tab in the strip — now carrying the SOUL of the round-9 in-stream chips.
+// Anatomy still mirrors production agent-tabs.tsx (status glyph + truncated
+// task title, `bg-muted text-foreground` when active, roving `tabIndex`), but
+// the chip choreography is restored INSIDE the tab:
+//   · spawn-in — mounts collapsed (max-w-0/opacity-0), then a rAF flip expands
+//     it in, so a new sub-agent grows into the strip instead of popping.
+//   · live elapsed — a tabular-nums clock counting up while it runs (fed by the
+//     strip's `now` tick), frozen at the final duration through the done beat.
+//   · done beat — on completion the tab flashes a primary check + tint for one
+//     settle beat (status flips to `done`) BEFORE it leaves, so the success
+//     registers rather than vanishing silently.
+//   · graceful dismiss — `leaving` then collapses it out (max-width + translate
+//     + opacity, never a keyframe fade of a positioned layer) to rehome into the
+//     strip-end affordance.
+// A failed tab is tinted destructive and never leaves.
 export function SubagentTab({
   task,
   active,
+  now,
   onSelect,
   onKeyDown,
 }: {
   task: Task;
   active: boolean;
+  now: number;
   onSelect: () => void;
   onKeyDown?: (e: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }) {
+  // Mount collapsed, then expand on the next frame — the chip spawn-in.
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    const r = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(r);
+  }, []);
+
+  const running = task.status === "running";
+  const justDone = task.status === "done"; // the settle beat before it leaves
+  const elapsed = (task.finishedAt ?? now) - task.startedAt;
+
   return (
     <button
       type="button"
@@ -103,11 +124,21 @@ export function SubagentTab({
           ? "bg-muted text-foreground"
           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
         task.status === "error" && !active && "text-destructive",
-        task.leaving && "pointer-events-none max-w-0 -translate-y-1 gap-0 px-0 opacity-0",
+        // done beat: brief primary tint + wash as the check lands
+        justDone && "bg-primary/10 text-primary",
+        // spawn-in / dismiss collapse both use the same collapsed geometry
+        (!entered || task.leaving) &&
+          "pointer-events-none max-w-0 -translate-y-1 gap-0 px-0 opacity-0",
+        entered && !task.leaving && "max-w-64 opacity-100",
       )}
     >
       <StatusMark status={task.status} />
       <span className="max-w-40 truncate">{task.label}</span>
+      {(running || justDone) && (
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/60">
+          {fmtDur(elapsed)}
+        </span>
+      )}
     </button>
   );
 }
@@ -286,6 +317,15 @@ export function SubagentTabStrip({
   const history = tasks.filter((t) => t.dismissed);
   const order = ["main", ...stripTabs.filter((t) => !t.leaving).map((t) => t.id)];
 
+  // The strip owns one live clock so every tab's elapsed counts up in lock-step
+  // (and no caller has to thread a tick through). 500ms is plenty for a
+  // seconds-granularity duration.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+
   // Arrow-left/right moves the SELECTED tab (activeId), never DOM focus —
   // WebKit 26.x crashes on programmatic .focus(); browsers focus a clicked tab
   // on their own. Derived from activeId (not the button the key landed on) so
@@ -313,6 +353,7 @@ export function SubagentTabStrip({
             key={t.id}
             task={t}
             active={activeId === t.id}
+            now={now}
             onSelect={() => onSelect(t.id)}
             onKeyDown={handleKeyDown}
           />

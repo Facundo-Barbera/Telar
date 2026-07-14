@@ -149,4 +149,27 @@ Format per entry:
   tray (variant B). Transcripts stay reachable via the pill/tray — tabs are
   navigation, not ephemera. Session block gets the strip in its header so
   the in-context judgment targets the right surface.
-- **round:** demo-gallery round 11 (queued behind round 10 — same lane)
+- **round:** demo-gallery round 11 — landed c9d3b65. SubagentTabStrip mirrors
+  production agent-tabs.tsx anatomy (Main first, truncated titles, roving
+  tabIndex); running tabs live/switchable, done tabs collapse into the
+  strip-end pill (A) or overflow tray (B), FAILED tabs stay pinned; session
+  block header now carries the strip, A/B switch swaps strip treatment.
+
+- **view:** 1.1 tab strip (post-round-11) — owner feedback
+- **verdict:** polish + new variant
+- **items:** (a) the strip lost the previous chips' informative animations —
+  a regression in feel ("not bad, but could be a bit better"): bring the chip
+  choreography into the tabs (spawn animation, pulsing status mark, live
+  elapsed, settle→collapse dismiss into the pill); (b) NEW VARIANT C: a
+  session SIDEBAR for sub-agents — right rail with rich animated cards
+  (status, title, elapsed, activity), completed settle into a history
+  section, click → transcript; add to session block switch as A/B/C.
+- **round:** demo-gallery round 13 (in flight)
+
+- **view:** 1.1 DECISION (owner): variant C — SESSION SIDEBAR wins
+- **verdict:** keep (C chosen; strip variants A/B retired for 1.1)
+- **items:** one gap: no simple way back to the MAIN chat from a sub-agent
+  transcript. Add a pinned "Main" row at the top of the rail (always visible,
+  highlighted when active) + a back affordance on the transcript view itself
+  (banner/breadcrumb "viewing <agent> — back to main", Esc returns).
+- **round:** demo-gallery round 14 (queued behind round 13 — same lane)
