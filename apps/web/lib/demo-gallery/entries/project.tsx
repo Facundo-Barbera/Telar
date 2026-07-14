@@ -14,9 +14,9 @@ export const projectEntries: DemoEntry[] = [
     id: "project-git-unified",
     title: "Project · Git tab (unified)",
     concern: "extra",
-    variant: "RECOMMENDED · one dense Git tab inside the hub-c tab strip",
+    variant: "RECOMMENDED · one dense Git tab, one section at a time",
     summary:
-      "One Git tab in the project hub: worktrees front and center (loom-owned trees auto-flag reclaimable, bulk clean-up behind a confirm, dirty rows need a typed force), branches + activity beside it, Issues/PRs read-only (gh CLI, auth-gated — honest not-connected state), files as a collapsed git-aware tree. Hit 'Finish running loom' to see the live timeline; data-source notes are inline per section.",
+      "One Git tab whose body shows ONE dense section at a time via a slim switcher (Worktrees | Branches | Remote | Files) under a persistent header that carries the reclaimable-GB headline — no long scroll, no stacked sections. Worktrees leads (reclaimable logic, bulk clean-up confirm, typed force); branches sit beside the activity log, Remote is read-only gh, Files is a git-aware tree. Hit 'Finish running loom' from any sub-view: a hidden section that changes gets an attention dot.",
     Component: GitUnifiedDemo,
   },
   {

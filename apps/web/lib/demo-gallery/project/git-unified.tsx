@@ -1,21 +1,30 @@
 "use client";
 
 // LANE: project (NEW) — project-git-unified. ONE dense Git tab inside the hub-c
-// tab strip, composed from the round-21 pieces (worktrees / remote / files) the
-// owner wanted merged into a single view rather than three separate entries.
+// tab strip. The owner rejected both three separate entries (round 21) and one
+// long scrollable screen (round 22): the sweet spot is ONE tab whose body shows
+// ONE dense section at a time via a slim INTERNAL switcher — no stacked sections,
+// no long scroll.
 //
-// Layout, top → bottom, minimal scroll:
-//  • HEADER STRIP     — branch, ahead/behind, dirty count, last commit.
-//  • SECTION-JUMP     — slim row under the header (view is >2 viewports).
-//  • WORKTREES        — the centerpiece: loom-owner chips, reclaimable logic,
-//                       bulk clean-up confirm modal, per-row typed force.
-//  • BRANCHES+ACTIVITY— a side-by-side two-column band (both are compact).
-//  • REMOTE           — Issues | PRs, with the first-class "gh not connected"
-//                       empty state; read-only preview framing kept in-section.
-//  • FILES            — collapsible (collapsed by default); git-aware tree.
+// Layout, top → bottom:
+//  • HEADER STRIP  — PERSISTENT: branch, ahead/behind, dirty count, last commit,
+//                    and the "~N GB reclaimable across M worktrees" headline,
+//                    which doubles as a jump-to-Worktrees affordance.
+//  • SWITCHER      — slim row: Worktrees | Branches | Remote | Files. One active.
+//  • BODY (one of):
+//     WORKTREES (default) — loom-owner chips, reclaimable logic, bulk clean-up
+//                    confirm modal, per-row typed force.
+//     BRANCHES    — branches beside the activity/commit mini-log (two-column).
+//     REMOTE      — Issues | PRs, first-class "gh not connected" state, future/
+//                    read-only tag.
+//     FILES       — git-aware tree, M/A/? badges, heat dots, last-touched-by
+//                    toggle with its inline data-gap caveat (owns its sub-view,
+//                    no longer collapsed).
 //
 // ONE replay timeline drives the whole view: finishing the running loom flips
 // its worktree to reclaimable AND flips a PR's checks green in the same tick.
+// The trigger is visible from any sub-view; if a flip lands in a hidden sub-view
+// its switcher item gets a subtle attention dot until visited.
 //
 // DATA HONESTY (carried from the round-21 entries):
 //  • worktrees = `git worktree list --porcelain` (vcs.ts) joined to the loom
@@ -27,7 +36,7 @@
 //    touched by" is a GAP: the store records filesTouched as a COUNT, not the
 //    paths a session changed (executor.ts), so attribution needs a schema that
 //    records paths. Toggleable + flagged inline as design intent, not fact.
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -81,10 +90,18 @@ import type { Theme } from "./shared";
 
 /* -------------------------------------------------------------- header */
 
-function GitHeaderStrip() {
+function GitHeaderStrip({
+  reclaimMb,
+  reclaimCount,
+  onJumpWorktrees,
+}: {
+  reclaimMb: number;
+  reclaimCount: number;
+  onJumpWorktrees: () => void;
+}) {
   const c = GIT_HEAD.lastCommit;
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background/40 px-4 py-2.5">
+    <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background/40 px-4 py-2.5">
       <div className="flex items-center gap-1.5">
         <GitBranchIcon className="size-4 text-muted-foreground" />
         <span className="font-mono text-sm font-medium">{GIT_HEAD.branch}</span>
@@ -101,6 +118,29 @@ function GitHeaderStrip() {
         <span className="text-border">·</span>
         <span className="text-amber-300">{GIT_HEAD.dirtyFiles} dirty</span>
       </div>
+
+      {/* reclaimable headline — the glanceable payoff, doubles as jump-to-Worktrees */}
+      {reclaimCount > 0 && (
+        <button
+          type="button"
+          onClick={onJumpWorktrees}
+          title="Jump to Worktrees"
+          className="flex min-w-0 items-center gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/5 px-2 py-1 text-xs transition-colors hover:bg-emerald-500/10"
+        >
+          <Trash2Icon className="size-3.5 shrink-0 text-emerald-400" />
+          <span className="truncate text-foreground">
+            <span className="font-mono font-medium tabular-nums text-emerald-300">
+              {fmtSize(reclaimMb)}
+            </span>{" "}
+            reclaimable
+            <span className="text-muted-foreground">
+              {" "}
+              · {reclaimCount} worktree{reclaimCount === 1 ? "" : "s"}
+            </span>
+          </span>
+        </button>
+      )}
+
       <div className="ml-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
         <GitCommitHorizontalIcon className="size-3.5 shrink-0" />
         <span className="shrink-0 font-mono text-foreground">{c.sha}</span>
@@ -112,34 +152,57 @@ function GitHeaderStrip() {
   );
 }
 
-/* --------------------------------------------------- section-jump row */
+/* ------------------------------------------------ internal view switcher */
 
-type JumpKey = "worktrees" | "branches" | "remote" | "files";
+type ViewKey = "worktrees" | "branches" | "remote" | "files";
 
-const JUMP_ITEMS: { key: JumpKey; label: string; icon: LucideIcon }[] = [
+const VIEW_ITEMS: { key: ViewKey; label: string; icon: LucideIcon }[] = [
   { key: "worktrees", label: "Worktrees", icon: GitBranchIcon },
   { key: "branches", label: "Branches", icon: HistoryIcon },
   { key: "remote", label: "Remote", icon: GitPullRequestIcon },
   { key: "files", label: "Files", icon: FolderIcon },
 ];
 
-function SectionJump({ onJump }: { onJump: (k: JumpKey) => void }) {
+// Slim switcher — exactly one sub-view is live at a time (no stacked sections).
+// A hidden sub-view that changed under a replay carries a subtle attention dot.
+function SectionSwitcher({
+  active,
+  attention,
+  onSelect,
+}: {
+  active: ViewKey;
+  attention: Set<ViewKey>;
+  onSelect: (k: ViewKey) => void;
+}) {
   return (
-    <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background/60 px-3 py-1">
-      <span className="mr-1 text-[10px] font-medium tracking-wide text-muted-foreground/70 uppercase">
-        Jump
-      </span>
-      {JUMP_ITEMS.map((it) => (
-        <button
-          key={it.key}
-          type="button"
-          onClick={() => onJump(it.key)}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-        >
-          <it.icon className="size-3.5" />
-          {it.label}
-        </button>
-      ))}
+    <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background/60 px-3 py-1.5">
+      {VIEW_ITEMS.map((it) => {
+        const on = active === it.key;
+        const dot = !on && attention.has(it.key);
+        return (
+          <button
+            key={it.key}
+            type="button"
+            onClick={() => onSelect(it.key)}
+            aria-current={on ? "page" : undefined}
+            className={cn(
+              "relative flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              on
+                ? "bg-primary/10 text-foreground"
+                : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
+            )}
+          >
+            <it.icon className="size-3.5" />
+            {it.label}
+            {dot && (
+              <span
+                aria-label="updated"
+                className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-emerald-400 ring-2 ring-background"
+              />
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -481,15 +544,6 @@ function WorktreesSection({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteBranches, setDeleteBranches] = useState(true);
 
-  const reclaimable = useMemo(
-    () => worktrees.filter(isReclaimable),
-    [worktrees],
-  );
-  const headline = useMemo(() => {
-    const mb = reclaimable.reduce((n, w) => n + w.sizeMb, 0);
-    return { mb, count: reclaimable.length };
-  }, [reclaimable]);
-
   const toRemove = useMemo(
     () => worktrees.filter((w) => selected.has(w.id) || forced.has(w.id)),
     [worktrees, selected, forced],
@@ -531,22 +585,11 @@ function WorktreesSection({
         }
       />
 
-      {/* aggregate reclaimable headline — the glanceable payoff */}
-      <div className="mx-4 mb-1 flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2">
-        <Trash2Icon className="size-4 text-emerald-400" />
-        <p className="text-xs text-foreground">
-          <span className="font-mono font-medium tabular-nums text-emerald-300">
-            {fmtSize(headline.mb)}
-          </span>{" "}
-          reclaimable across{" "}
-          <span className="font-medium">{headline.count}</span> worktree
-          {headline.count === 1 ? "" : "s"}
-          <span className="text-muted-foreground">
-            {" "}
-            — merged, clean, no active loom.
-          </span>
-        </p>
-      </div>
+      {/* one-line rationale — the aggregate GB headline now lives in the header */}
+      <p className="px-4 pb-1 text-[11px] text-muted-foreground">
+        Reclaimable = merged, clean, and not backing an active loom — Telar proves
+        it, so you never reverse-engineer safety.
+      </p>
 
       <div className="divide-y divide-border">
         {worktrees.map((w) => (
@@ -1031,85 +1074,62 @@ function fileCounts(nodes: DemoFileNode[]): { files: number; dirty: number } {
 }
 
 function FilesSection() {
-  // collapsed by default — the header row alone earns its place; expand to browse
-  const [open, setOpen] = useState(false);
+  // owns its sub-view now — always expanded, no collapse chrome.
   const [showTouched, setShowTouched] = useState(true);
   const counts = useMemo(() => fileCounts(DEMO_FILE_TREE), []);
 
   return (
     <div>
-      <div className="flex items-center gap-2 px-4 py-2">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          aria-expanded={open}
-        >
-          <ChevronRightIcon
-            className={cn(
-              "size-4 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-90",
-            )}
-          />
-          <FolderIcon className="size-4 text-muted-foreground" />
-          <span className="text-xs font-semibold tracking-wide text-foreground uppercase">
-            Files
-          </span>
-          <Badge
-            variant="outline"
-            className="px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
-          >
-            {counts.files}
-          </Badge>
-          <span className="text-xs text-amber-300">{counts.dirty} dirty</span>
-        </button>
-        {open && (
-          <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-            <button
-              type="button"
-              onClick={() => setShowTouched((s) => !s)}
-              aria-label="Toggle last-touched-by"
-              className={cn(
-                "flex h-4 w-7 items-center rounded-full border px-0.5 transition-colors",
-                showTouched ? "border-primary bg-primary/30" : "border-border",
-              )}
-            >
-              <span
+      <SectionBand
+        icon={FolderIcon}
+        label="Files"
+        count={counts.files}
+        right={
+          <>
+            <span className="text-xs text-amber-300">{counts.dirty} dirty</span>
+            <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => setShowTouched((s) => !s)}
+                aria-label="Toggle last-touched-by"
                 className={cn(
-                  "size-3 rounded-full bg-foreground transition-transform",
-                  showTouched && "translate-x-3",
+                  "flex h-4 w-7 items-center rounded-full border px-0.5 transition-colors",
+                  showTouched ? "border-primary bg-primary/30" : "border-border",
                 )}
-              />
-            </button>
-            Last touched by
-          </label>
-        )}
-      </div>
+              >
+                <span
+                  className={cn(
+                    "size-3 rounded-full bg-foreground transition-transform",
+                    showTouched && "translate-x-3",
+                  )}
+                />
+              </button>
+              Last touched by
+            </label>
+          </>
+        }
+      />
 
-      {open && (
-        <div>
-          {/* honesty caveat — the attribution is aspirational, not a fact yet */}
-          {showTouched && (
-            <div className="flex items-start gap-2 border-y border-border bg-amber-500/5 px-4 py-2">
-              <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-amber-400" />
-              <p className="text-[11px] text-muted-foreground">
-                <span className="font-medium text-foreground">
-                  Last-touched-by is a proposal.
-                </span>{" "}
-                The tree + status are real (fs walk + git status), but the store
-                records how many files a session changed, not{" "}
-                <span className="italic">which</span> — this attribution needs a
-                schema that records paths.
-              </p>
-            </div>
-          )}
-          <div className="py-1">
-            {DEMO_FILE_TREE.map((n) => (
-              <TreeNode key={n.name} node={n} showTouched={showTouched} />
-            ))}
-          </div>
+      {/* honesty caveat — the attribution is aspirational, not a fact yet */}
+      {showTouched && (
+        <div className="flex items-start gap-2 border-y border-border bg-amber-500/5 px-4 py-2">
+          <InfoIcon className="mt-0.5 size-3.5 shrink-0 text-amber-400" />
+          <p className="text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Last-touched-by is a proposal.
+            </span>{" "}
+            The tree + status are real (fs walk + git status), but the store
+            records how many files a session changed, not{" "}
+            <span className="italic">which</span> — this attribution needs a
+            schema that records paths.
+          </p>
         </div>
       )}
+      <div className="py-1">
+        {DEMO_FILE_TREE.map((n) => (
+          <TreeNode key={n.name} node={n} showTouched={showTouched} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1144,11 +1164,15 @@ function ReplayBar({
 
 /* -------------------------------------------------------------- demo */
 
+// sub-views the ONE replay timeline touches: a worktree flips (worktrees) and a
+// PR check flips (remote). Any of these that is HIDDEN at flip time gets a dot.
+const REPLAY_TOUCHES: ViewKey[] = ["worktrees", "remote"];
+
 export function GitUnifiedDemo() {
   const [worktrees, setWorktrees] = useState<DemoWorktree[]>(DEMO_WORKTREES);
   const [replayed, setReplayed] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const sectionRefs = useRef<Partial<Record<JumpKey, HTMLDivElement | null>>>({});
+  const [active, setActive] = useState<ViewKey>("worktrees");
+  const [attention, setAttention] = useState<Set<ViewKey>>(new Set());
 
   // ONE timeline: the running loom (l-01, wt-l01) finishes → its worktree merges
   // clean → FLIPS to reclaimable; in the SAME tick a pending PR check flips green
@@ -1170,13 +1194,27 @@ export function GitUnifiedDemo() {
           : w,
       ),
     );
+    // dot the sub-views that changed but aren't the one you're looking at
+    setAttention(new Set(REPLAY_TOUCHES.filter((k) => k !== active)));
   };
   const reset = () => {
     setReplayed(false);
     setWorktrees(DEMO_WORKTREES);
+    setAttention(new Set());
   };
   const remove = (ids: string[]) =>
     setWorktrees((ws) => ws.filter((w) => !ids.includes(w.id)));
+
+  // selecting a sub-view clears its attention dot
+  const select = (k: ViewKey) => {
+    setActive(k);
+    setAttention((a) => {
+      if (!a.has(k)) return a;
+      const next = new Set(a);
+      next.delete(k);
+      return next;
+    });
+  };
 
   // same-tick PR liveness: pending → pass on the linked PR when the loom lands
   const prs = useMemo(
@@ -1189,8 +1227,11 @@ export function GitUnifiedDemo() {
     [replayed],
   );
 
-  const jump = (k: JumpKey) =>
-    sectionRefs.current[k]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  // reclaimable aggregate for the persistent header (re-derives on flip/remove)
+  const reclaim = useMemo(() => {
+    const r = worktrees.filter(isReclaimable);
+    return { mb: r.reduce((n, w) => n + w.sizeMb, 0), count: r.length };
+  }, [worktrees]);
 
   const controls = (_theme: Theme) => (
     <ReplayBar replayed={replayed} onFinish={finishLoom} onReset={reset} />
@@ -1200,45 +1241,40 @@ export function GitUnifiedDemo() {
     <HubShell controls={controls}>
       {() => (
         <div className="flex h-full flex-col">
-          <GitHeaderStrip />
-          <SectionJump onJump={jump} />
-          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-            {/* WORKTREES — the centerpiece, full width. keyed so finishing the
-                loom re-derives the default selection. */}
-            <div ref={(el) => { sectionRefs.current.worktrees = el; }}>
+          <GitHeaderStrip
+            reclaimMb={reclaim.mb}
+            reclaimCount={reclaim.count}
+            onJumpWorktrees={() => select("worktrees")}
+          />
+          <SectionSwitcher
+            active={active}
+            attention={attention}
+            onSelect={select}
+          />
+          {/* BODY — exactly one sub-view, its own scroll. No stacked sections. */}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {active === "worktrees" && (
+              // keyed so finishing the loom re-derives the default selection
               <WorktreesSection
                 key={replayed ? "post" : "pre"}
                 worktrees={worktrees}
                 onRemove={remove}
               />
-            </div>
+            )}
 
-            {/* BRANCHES + ACTIVITY — side-by-side two-column band */}
-            <div
-              ref={(el) => { sectionRefs.current.branches = el; }}
-              className="grid grid-cols-1 border-t border-border md:grid-cols-2 md:divide-x md:divide-border"
-            >
-              <BranchesSection />
-              <div className="border-t border-border md:border-t-0">
-                <ActivitySection />
+            {active === "branches" && (
+              // branches beside the activity mini-log — two-column if it fits
+              <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x lg:divide-border">
+                <BranchesSection />
+                <div className="border-t border-border lg:border-t-0">
+                  <ActivitySection />
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* REMOTE — Issues | PRs + first-class not-connected state */}
-            <div
-              ref={(el) => { sectionRefs.current.remote = el; }}
-              className="border-t border-border"
-            >
-              <RemoteSection prs={prs} />
-            </div>
+            {active === "remote" && <RemoteSection prs={prs} />}
 
-            {/* FILES — collapsible, collapsed by default */}
-            <div
-              ref={(el) => { sectionRefs.current.files = el; }}
-              className="border-t border-border"
-            >
-              <FilesSection />
-            </div>
+            {active === "files" && <FilesSection />}
           </div>
         </div>
       )}
