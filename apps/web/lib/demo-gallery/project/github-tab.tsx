@@ -77,7 +77,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo } from "../now";
 import { DEMO_PROJECT } from "./fixtures";
 import {
   AvatarStack,

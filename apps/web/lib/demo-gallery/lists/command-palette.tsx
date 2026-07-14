@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { StateBadge } from "@/components/common/state-badge";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo } from "../now";
 import { DEMO_LOOMS, DEMO_PROJECTS, DEMO_SESSIONS } from "./fixtures";
 import { railClass } from "./shared";
 

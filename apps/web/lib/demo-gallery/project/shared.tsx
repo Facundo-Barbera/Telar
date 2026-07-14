@@ -25,7 +25,7 @@ import type { WorkUnitState } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { StateBadge } from "@/components/common/state-badge";
-import { fmtAgo, fmtCost } from "@/lib/format";
+import { fmtAgo, fmtCost, DEMO_NOW } from "../now";
 import type { DemoLoom, DemoSession } from "./fixtures";
 
 /* ------------------------------------------------------------------ theming */
@@ -470,7 +470,8 @@ const DAY = 24 * 60 * 60 * 1000;
 export type AgeBucket = "today" | "week" | "older";
 
 export function ageBucket(ts: number): AgeBucket {
-  const age = Date.now() - ts;
+  // DEMO_NOW, not Date.now(): grouping runs during SSR and must match the client.
+  const age = DEMO_NOW - ts;
   if (age < DAY) return "today";
   if (age < 7 * DAY) return "week";
   return "older";

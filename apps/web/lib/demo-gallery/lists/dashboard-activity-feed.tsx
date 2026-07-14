@@ -23,7 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/common/state-badge";
-import { fmtAgo, fmtCost } from "@/lib/format";
+import { fmtAgo, fmtCost, DEMO_NOW } from "../now";
 import {
   DEMO_LOOMS,
   DEMO_SESSIONS,
@@ -138,7 +138,8 @@ function buildFeed(): FeedEvent[] {
 }
 
 function bucketOf(ts: number): string {
-  const age = Date.now() - ts;
+  // DEMO_NOW, not Date.now(): this grouping runs during SSR and must match the client.
+  const age = DEMO_NOW - ts;
   if (age < 10 * 60_000) return "Just now";
   if (age < 3 * 3_600_000) return "Earlier today";
   if (age < 24 * 3_600_000) return "Today";

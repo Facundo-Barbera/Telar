@@ -5,8 +5,11 @@
 // WorkUnitState string-literal type — so nothing drags the Node-only engine
 // barrel into the browser bundle.
 import type { WorkUnitState } from "@telar/core";
+import { DEMO_NOW } from "../now";
 
-const now = Date.now();
+// One frozen demo clock (see ../now) — never Date.now() at module load, or SSR
+// and the client disagree on every relative time and hydration kills the stage.
+const now = DEMO_NOW;
 const mins = (n: number) => now - n * 60_000;
 const hrs = (n: number) => now - n * 3_600_000;
 const days = (n: number) => now - n * 86_400_000;

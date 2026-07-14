@@ -14,11 +14,14 @@
 //    COUNT only (executor.ts:687 persists `.length`), NOT paths. So the
 //    last-touched annotation is aspirational until that schema grows. Flagged.
 import type { WorkUnitState } from "@telar/core";
+import { DEMO_NOW } from "../now";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
-const NOW = Date.now();
+// One frozen demo clock (see ../now) — Date.now() at module load drifts vs the
+// client and mismatches every relative time, failing hydration.
+const NOW = DEMO_NOW;
 const ago = (ms: number) => NOW - ms;
 
 /* ------------------------------------------------------------- gh users */

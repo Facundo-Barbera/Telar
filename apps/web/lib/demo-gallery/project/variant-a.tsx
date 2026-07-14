@@ -25,7 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/common/state-badge";
-import { fmtAgo, fmtCost } from "@/lib/format";
+import { fmtAgo, fmtCost } from "../now";
 import {
   DEMO_LOOMS,
   DEMO_PROJECT,

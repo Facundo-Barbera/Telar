@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { fmtAgo } from "@/lib/format";
+import { fmtAgo } from "../now";
 import { DEMO_PROJECTS, type Account, type DemoProject } from "./fixtures";
 import {
   AccountBadge,

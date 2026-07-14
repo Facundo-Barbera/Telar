@@ -4,12 +4,14 @@
 // filtering, and the loom vocabulary all have something to bite on. No engine
 // imports beyond the WorkUnitState *type* (matches the other lanes' discipline).
 import type { WorkUnitState } from "@telar/core";
+import { DEMO_NOW } from "../now";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
-// A fixed "now" per module load keeps relative times stable within a render.
-const NOW = Date.now();
+// One frozen demo clock (see ../now) — a wall-clock Date.now() here drifts out of
+// sync with the client's and the age text mismatches, killing hydration.
+const NOW = DEMO_NOW;
 const ago = (ms: number) => NOW - ms;
 
 // A loom that sprang from a session, shown as a pill on that session's row.
