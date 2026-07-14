@@ -172,7 +172,9 @@ Format per entry:
   transcript. Add a pinned "Main" row at the top of the rail (always visible,
   highlighted when active) + a back affordance on the transcript view itself
   (banner/breadcrumb "viewing <agent> — back to main", Esc returns).
-- **round:** demo-gallery round 14 (queued behind round 13 — same lane)
+- **round:** demo-gallery round 14 — landed d1dc600 (pinned MainRow anchor,
+  SubagentBanner breadcrumb w/ Esc, Main reachable from collapsed edge; A/B
+  entries marked retired).
 
 - **view:** loom-started notification banner (session view) — owner request
 - **verdict:** rework (proposals wanted)
@@ -184,4 +186,9 @@ Format per entry:
   event row in-stream at the start turn (scrolls away); C) docked live card,
   collapsible to the pill, re-expands highlighted on escalation/ready.
   Recommendation: A (+B as the historical record).
+  MULTI-LOOM addendum (owner): design for N looms per session from the start.
+  A = ONE aggregate pill (count + most-urgent rollup, tone = max urgency,
+  hover lists each loom as a row); B = rows carry loom short-ids, N is
+  natural; C = cards stack into a tray, only the escalating loom re-expands.
+  Demo timelines spawn a 2nd loom mid-run to show the rollup.
 - **round:** demo-gallery round 15 (queued behind round 14 — same lane)
