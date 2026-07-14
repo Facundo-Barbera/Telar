@@ -1,33 +1,34 @@
 "use client";
 
-import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ActivityIcon,
-  CircleDashedIcon,
+  ClockIcon,
   FolderGit2Icon,
   GaugeIcon,
-  HistoryIcon,
-  type LucideIcon,
+  LayersIcon,
   MessagesSquareIcon,
   PlusIcon,
   RotateCwIcon,
-  ShieldIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import type { ProjectManifest, RegistryEntry, Loom } from "@telar/core";
+import type { Loom, ProjectManifest, RegistryEntry } from "@telar/core";
 import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
-import { LoomCard } from "@/components/looms/loom-card";
-import { isTerminal } from "@/components/looms/utils";
-import { fmtAgo } from "@/lib/format";
+import { StateBadge } from "@/components/common/state-badge";
+import {
+  SearchField,
+  StatTile,
+  WeaveChip,
+  isLoomNeedsYou,
+  isLoomRunning,
+} from "@/components/common/list-controls";
+import { loomRole, stateRailClass, sumCost, threadCount } from "@/components/looms/utils";
+import { fmtAgo, fmtCost } from "@/lib/format";
 
 // Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
 // dashboard (a client component) never pulls the fs-backed store into the bundle.
@@ -39,11 +40,6 @@ type PlanSnapshot = {
   sevenDay?: PlanWindow | null;
   sevenDayOpus?: PlanWindow | null;
   sevenDaySonnet?: PlanWindow | null;
-  modelScoped?: {
-    display_name: string;
-    utilization: number | null;
-    resets_at: string | null;
-  }[];
 };
 
 type ProjectEntry = {
@@ -53,8 +49,7 @@ type ProjectEntry = {
 };
 
 // The chat-list shape GET /api/chats returns — a message-less Chat plus a
-// last-message preview. Declared locally (client component) and `preview` is
-// optional so an older API that predates it degrades to no preview line.
+// last-message preview. `preview` optional so an older API degrades gracefully.
 type SessionMeta = {
   id: string;
   title: string;
@@ -63,130 +58,117 @@ type SessionMeta = {
   preview?: string;
 };
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
 
-function SectionHeading({
-  icon: Icon,
-  children,
-  count,
-  action,
-}: {
-  icon: LucideIcon;
-  children: ReactNode;
-  count?: number;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="mb-2 flex items-center gap-2 px-1">
-      <Icon className="size-4 text-muted-foreground" />
-      <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        {children}
-      </h2>
-      {count != null && (
-        <Badge variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
-          {count}
-        </Badge>
-      )}
-      {action && <div className="ml-auto">{action}</div>}
-    </div>
-  );
-}
-
-function ViewAll({ href }: { href: string }) {
+// Running loom row — rail + state + title/weave, project, and running cost.
+function RunningRow({ loom }: { loom: Loom }) {
   return (
     <Link
-      href={href}
-      className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+      href={`/looms/${loom.id}`}
+      className="relative flex items-center gap-3 py-2 pr-2 pl-3.5 transition-colors hover:bg-muted/40"
     >
-      View all
+      <span
+        aria-hidden
+        className={cn(
+          "absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full",
+          stateRailClass(loom.state),
+        )}
+      />
+      <StateBadge state={loom.state} className="shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{loom.title}</span>
+          <WeaveChip loom={loom} />
+        </div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <FolderGit2Icon className="size-3 shrink-0" />
+          <span className="truncate">{loom.project}</span>
+        </div>
+      </div>
+      <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+        {fmtCost(sumCost(loom.attempts))}
+      </span>
     </Link>
   );
 }
 
-// A compact planning-session row — title over its last-reply preview, with the
-// anchoring project and relative time on the right. Links into the session page.
-function SessionRow({ session }: { session: SessionMeta }) {
-  const href = `/projects/${encodeURIComponent(session.project ?? "")}/sessions/${session.id}`;
+// Needs-you loom row — rail + state, title, and either its blocking error
+// (failed/needs-review) or its project, with the age on the right.
+function AttentionRow({ loom }: { loom: Loom }) {
+  const showError =
+    !!loom.error &&
+    (loom.state === "failed" || loom.state === "needs-review");
   return (
     <Link
-      href={href}
-      className="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40"
+      href={`/looms/${loom.id}`}
+      className="relative flex items-start gap-3 py-2 pr-2 pl-3.5 transition-colors hover:bg-muted/40"
     >
-      <MessagesSquareIcon className="size-4 shrink-0 text-muted-foreground" />
+      <span
+        aria-hidden
+        className={cn(
+          "absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full",
+          stateRailClass(loom.state),
+        )}
+      />
+      <StateBadge state={loom.state} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">
-          {session.title || "Untitled session"}
-        </span>
-        {session.preview && (
+        <span className="block truncate text-sm font-medium">{loom.title}</span>
+        {showError ? (
+          <p
+            className={cn(
+              "mt-0.5 line-clamp-1 text-xs",
+              loom.state === "failed"
+                ? "text-destructive/80"
+                : "text-amber-300/80",
+            )}
+          >
+            {loom.error}
+          </p>
+        ) : (
           <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-            {session.preview}
+            {loom.project}
           </span>
         )}
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-0.5">
-        <Badge variant="outline" className="max-w-[10rem] truncate text-[10px]">
-          {session.project}
-        </Badge>
-        <span className="text-xs text-muted-foreground">
-          {fmtAgo(session.updatedAt)}
-        </span>
+      <span className="shrink-0 text-[11px] text-muted-foreground">
+        {fmtAgo(loom.updatedAt)}
+      </span>
+    </Link>
+  );
+}
+
+function Panel({
+  icon: Icon,
+  title,
+  count,
+  tint,
+  children,
+}: {
+  icon: typeof ActivityIcon;
+  title: string;
+  count?: number;
+  tint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <Icon className={cn("size-4", tint ?? "text-muted-foreground")} />
+        <h2 className="text-xs font-semibold tracking-wide text-foreground uppercase">
+          {title}
+        </h2>
+        {count != null && (
+          <span className="rounded bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+            {count}
+          </span>
+        )}
       </div>
-    </Link>
-  );
-}
-
-function ProjectMiniCard({ entry, manifest, error }: ProjectEntry) {
-  const href = `/projects/${encodeURIComponent(entry.name)}`;
-  if (!manifest || error) {
-    return (
-      <Link href={href} className="block">
-        <Card
-          size="sm"
-          className="h-full bg-destructive/5 ring-destructive/25 transition-shadow hover:ring-destructive/40"
-        >
-          <CardContent className="flex flex-col gap-2">
-            <div className="flex items-center gap-1.5">
-              <TriangleAlertIcon className="size-4 shrink-0 text-destructive" />
-              <span className="truncate text-sm font-medium">{entry.name}</span>
-            </div>
-            <Badge variant="destructive" className="w-fit text-[10px]">
-              manifest error
-            </Badge>
-          </CardContent>
-        </Card>
-      </Link>
-    );
-  }
-  const gates = manifest.gates.length;
-  return (
-    <Link href={href} className="block">
-      <Card size="sm" className="h-full transition-shadow hover:ring-foreground/20">
-        <CardContent className="flex flex-col gap-2">
-          <span className="truncate text-sm font-medium">{manifest.name}</span>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="text-[10px]">
-              {manifest.account}
-            </Badge>
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <ShieldIcon className="size-3.5" />
-              {gates === 0 ? "no gates" : plural(gates, "gate")}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
-  );
-}
-
-function RegisterCard() {
-  return (
-    <Link
-      href="/projects"
-      className="flex min-h-[76px] flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-    >
-      <PlusIcon className="size-4" />
-      <span className="text-xs font-medium">Register a project</span>
-    </Link>
+      {children}
+    </section>
   );
 }
 
@@ -200,49 +182,34 @@ function UsageMeter({ label, window }: { label: string; window: PlanWindow }) {
           {window.utilization != null ? `${Math.round(pct)}%` : "—"}
         </span>
       </div>
-      <Progress
-        value={Math.min(100, pct)}
-        className={cn(
-          "h-1",
-          pct >= 90 && "[&>[data-slot=progress-indicator]]:bg-destructive",
-        )}
-      />
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            "h-full rounded-full",
+            pct >= 90 ? "bg-destructive" : pct >= 70 ? "bg-amber-400" : "bg-primary",
+          )}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
     </div>
   );
 }
 
-function AccountUsage({ account, snap }: { account: string; snap: PlanSnapshot }) {
+function EmptyPanelRow({ children }: { children: React.ReactNode }) {
   return (
-    <Card size="sm" className="min-w-0">
-      <CardContent className="flex flex-col gap-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium">
-            Plan · <span className="font-mono">{account}</span>
-          </span>
-          {snap.subscriptionType && (
-            <Badge variant="secondary" className="font-mono text-[10px] uppercase">
-              {snap.subscriptionType}
-            </Badge>
-          )}
-        </div>
-        {snap.fiveHour && <UsageMeter label="Session · 5h" window={snap.fiveHour} />}
-        {snap.sevenDay && <UsageMeter label="Weekly" window={snap.sevenDay} />}
-        {snap.sevenDayOpus && (
-          <UsageMeter label="Weekly · Opus" window={snap.sevenDayOpus} />
-        )}
-      </CardContent>
-    </Card>
+    <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+      {children}
+    </div>
   );
 }
 
 export default function DashboardPage() {
   const [looms, setLooms] = useState<Loom[] | null>(null);
   const [loomsError, setLoomsError] = useState<string | null>(null);
-  const [projects, setProjects] = useState<ProjectEntry[] | null>(null);
-  const [projectsError, setProjectsError] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<SessionMeta[] | null>(null);
+  const [projects, setProjects] = useState<ProjectEntry[]>([]);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
-  const [nowTs, setNowTs] = useState(() => Date.now());
+  const [q, setQ] = useState("");
 
   const load = useCallback(() => {
     fetch("/api/looms")
@@ -257,25 +224,16 @@ export default function DashboardPage() {
       .catch((e) => setLoomsError(e instanceof Error ? e.message : String(e)));
 
     fetch("/api/projects")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => {
-        setProjects(Array.isArray(d.projects) ? d.projects : []);
-        setProjectsError(null);
-      })
-      .catch((e) => setProjectsError(e instanceof Error ? e.message : String(e)));
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setProjects(Array.isArray(d.projects) ? d.projects : []))
+      .catch(() => {});
 
-    // Sessions are best-effort — a failure just leaves the section on its
-    // skeleton rather than gating the dashboard. Chats arrive newest-first;
-    // keep the most recent that anchor to a project (only those are linkable).
     fetch("/api/chats")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!d) return;
         const chats: SessionMeta[] = Array.isArray(d.chats) ? d.chats : [];
-        setSessions(chats.filter((c) => c.project).slice(0, 6));
+        setSessions(chats.filter((c) => c.project));
       })
       .catch(() => {});
 
@@ -292,249 +250,336 @@ export default function DashboardPage() {
     return () => window.removeEventListener("telar:refresh", load);
   }, [load]);
 
-  const activeLooms = useMemo(
-    () => (looms ? looms.filter((r) => !isTerminal(r.state)) : []),
+  const runningLooms = useMemo(
+    () => (looms ? looms.filter((l) => isLoomRunning(l.state)) : []),
     [looms],
   );
-  const hasActive = activeLooms.length > 0;
+  const hasActive = runningLooms.length > 0;
 
-  // While work is in flight, poll (5s) and tick the elapsed clocks (1s).
+  // While work is in flight, poll (5s).
   useEffect(() => {
     if (!hasActive) return;
     const poll = setInterval(load, 5000);
-    const tick = setInterval(() => setNowTs(Date.now()), 1000);
-    return () => {
-      clearInterval(poll);
-      clearInterval(tick);
-    };
+    return () => clearInterval(poll);
   }, [hasActive, load]);
 
-  const attention = looms
-    ? looms
-        .filter((r) => r.state === "needs-review" || r.state === "failed")
-        .slice(0, 5)
-    : [];
-  const recent = looms ? looms.filter((r) => isTerminal(r.state)).slice(0, 8) : [];
+  const needsYouLooms = useMemo(
+    () => (looms ? looms.filter((l) => isLoomNeedsYou(l.state)) : []),
+    [looms],
+  );
+
+  // Threads across active woven looms (total, not remaining — per-thread
+  // completion isn't carried on the list route; see gaps).
+  const threadsWeaving = runningLooms
+    .filter((l) => loomRole(l) === "woven")
+    .reduce((s, l) => s + (threadCount(l) ?? 0), 0);
+
+  // Spend across looms touched today — sums each loom's attempt cost.
+  const spendToday = useMemo(() => {
+    if (!looms) return 0;
+    const today = startOfToday();
+    return looms
+      .filter((l) => l.updatedAt >= today)
+      .reduce((s, l) => s + sumCost(l.attempts), 0);
+  }, [looms]);
+
+  const needle = q.trim().toLowerCase();
+  const matchLoom = (l: Loom) =>
+    !needle ||
+    l.title.toLowerCase().includes(needle) ||
+    l.project.toLowerCase().includes(needle);
+
+  const runningShown = runningLooms.filter(matchLoom);
+  const needsYouShown = needsYouLooms.filter(matchLoom).slice(0, 6);
+
+  const liveSessions = useMemo(
+    () =>
+      [...sessions]
+        .filter(
+          (s) =>
+            !needle ||
+            s.title.toLowerCase().includes(needle) ||
+            (s.project ?? "").toLowerCase().includes(needle),
+        )
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 6),
+    [sessions, needle],
+  );
+
+  // Hot projects — busiest repos by derived running + open looms.
+  const hotProjects = useMemo(() => {
+    if (!looms) return [];
+    const stat = new Map<string, { running: number; open: number }>();
+    for (const l of looms) {
+      const s = stat.get(l.project) ?? { running: 0, open: 0 };
+      if (isLoomRunning(l.state)) {
+        s.running += 1;
+        s.open += 1;
+      } else if (isLoomNeedsYou(l.state)) {
+        s.open += 1;
+      }
+      stat.set(l.project, s);
+    }
+    return projects
+      .map((p) => ({
+        name: p.entry.name,
+        running: stat.get(p.entry.name)?.running ?? 0,
+        open: stat.get(p.entry.name)?.open ?? 0,
+      }))
+      .filter(
+        (p) =>
+          (p.running > 0 || p.open > 0) &&
+          (!needle || p.name.toLowerCase().includes(needle)),
+      )
+      .sort((a, b) => b.running + b.open - (a.running + a.open))
+      .slice(0, 5);
+  }, [looms, projects, needle]);
+
+  // Primary plan snapshot for the hero usage tile — personal first.
   const planEntries = Object.entries(plan).sort(([a], [b]) =>
     a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
+  const primaryPlan = planEntries[0]?.[1];
+  const weeklyWindow = primaryPlan?.sevenDayOpus ?? primaryPlan?.sevenDay;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <PageHeader
         title="telar"
-        description="What's weaving now, what needs attention, and every project on the loom."
+        description="Command center — what's weaving now, what needs you."
         actions={
-          <Button render={<Link href="/looms?new=1" />}>
+          <Button size="sm" render={<Link href="/looms?new=1" />}>
             <PlusIcon />
             New loom session
           </Button>
         }
       />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-6xl space-y-8 px-6 py-6">
-          {/* Looms area: active, needs-attention, recent — one loading/error gate. */}
-          {looms === null ? (
-            loomsError ? (
-              <EmptyState
-                icon={TriangleAlertIcon}
-                iconClassName="text-destructive/60"
-                title="Couldn't load looms"
-                description={
-                  <span className="font-mono text-xs break-words">
-                    {loomsError}
-                  </span>
-                }
-                action={
-                  <Button variant="outline" size="sm" onClick={load}>
-                    <RotateCwIcon />
-                    Retry
-                  </Button>
-                }
-              />
-            ) : (
-              <section>
-                <SectionHeading icon={ActivityIcon}>Active now</SectionHeading>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Skeleton className="h-24 rounded-xl" />
-                  <Skeleton className="h-24 rounded-xl" />
-                </div>
-              </section>
-            )
+      {/* Search-first toolbar */}
+      <div className="shrink-0 border-b border-border">
+        <div className="mx-auto flex w-full max-w-6xl items-center gap-2 px-4 py-2.5">
+          <SearchField
+            value={q}
+            onChange={setQ}
+            placeholder="Filter looms, sessions, and projects…"
+          />
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-6xl space-y-4 px-4 py-4">
+          {looms === null && loomsError ? (
+            <EmptyState
+              icon={TriangleAlertIcon}
+              iconClassName="text-destructive/60"
+              title="Couldn't load looms"
+              description={
+                <span className="font-mono text-xs break-words">
+                  {loomsError}
+                </span>
+              }
+              action={
+                <Button variant="outline" size="sm" onClick={load}>
+                  <RotateCwIcon />
+                  Retry
+                </Button>
+              }
+            />
+          ) : looms === null ? (
+            <>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-20 rounded-xl" />
+                ))}
+              </div>
+              <div className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
+                <Skeleton className="h-64 rounded-xl" />
+                <Skeleton className="h-64 rounded-xl" />
+              </div>
+            </>
           ) : (
             <>
-              <section>
-                <SectionHeading
+              {/* KPI hero — above-the-fold triage */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                <StatTile
                   icon={ActivityIcon}
-                  count={activeLooms.length || undefined}
-                >
-                  Active now
-                </SectionHeading>
-                {activeLooms.length === 0 ? (
-                  <EmptyState
-                    className="py-10"
-                    icon={CircleDashedIcon}
-                    title="The loom is idle"
-                    description="No looms in flight. Start one and watch it weave."
-                    action={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        render={<Link href="/looms?new=1" />}
-                      >
-                        <PlusIcon />
-                        New loom session
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {activeLooms.map((loom) => (
-                      <LoomCard key={loom.id} loom={loom} layout="tile" now={nowTs} />
-                    ))}
-                  </div>
-                )}
-              </section>
+                  label="Running now"
+                  value={runningLooms.length}
+                  sub="looms in flight"
+                  tint="text-sky-400"
+                />
+                <StatTile
+                  icon={TriangleAlertIcon}
+                  label="Needs you"
+                  value={needsYouLooms.length}
+                  sub="waiting on a decision"
+                  tint="text-amber-400"
+                />
+                <StatTile
+                  icon={LayersIcon}
+                  label="Threads weaving"
+                  value={threadsWeaving}
+                  sub="across woven looms"
+                  tint="text-indigo-300"
+                />
+                <StatTile
+                  icon={GaugeIcon}
+                  label="Spend today"
+                  value={fmtCost(spendToday)}
+                  sub="across today's looms"
+                  tint="text-muted-foreground"
+                />
+                <div className="col-span-2 flex flex-col justify-center gap-2 rounded-xl border border-border bg-card px-3.5 py-3 text-card-foreground sm:col-span-1">
+                  {primaryPlan ? (
+                    <>
+                      {primaryPlan.fiveHour && (
+                        <UsageMeter
+                          label="Session · 5h"
+                          window={primaryPlan.fiveHour}
+                        />
+                      )}
+                      {weeklyWindow && (
+                        <UsageMeter label="Weekly" window={weeklyWindow} />
+                      )}
+                      {!primaryPlan.fiveHour && !weeklyWindow && (
+                        <p className="text-xs text-muted-foreground">
+                          Plan usage appears after your first turn.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Plan usage appears after your first turn.
+                    </p>
+                  )}
+                </div>
+              </div>
 
-              {attention.length > 0 && (
-                <section>
-                  <SectionHeading icon={TriangleAlertIcon} count={attention.length}>
-                    Needs attention
-                  </SectionHeading>
-                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {attention.map((loom) => (
-                      <LoomCard key={loom.id} loom={loom} layout="row" showError />
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {recent.length > 0 && (
-                <section>
-                  <SectionHeading
-                    icon={HistoryIcon}
-                    action={<ViewAll href="/looms" />}
+              {/* Two-column command deck */}
+              <div className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
+                <div className="space-y-4">
+                  <Panel
+                    icon={ActivityIcon}
+                    title="Running now"
+                    count={runningShown.length}
+                    tint="text-sky-400"
                   >
-                    Recent looms
-                  </SectionHeading>
-                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {recent.map((loom) => (
-                      <LoomCard key={loom.id} loom={loom} layout="row" />
-                    ))}
-                  </div>
-                </section>
-              )}
+                    {runningShown.length === 0 ? (
+                      <EmptyPanelRow>
+                        {needle
+                          ? "No running looms match your filter."
+                          : "Nothing weaving. Start a loom and watch it run."}
+                      </EmptyPanelRow>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {runningShown.map((l) => (
+                          <RunningRow key={l.id} loom={l} />
+                        ))}
+                      </div>
+                    )}
+                  </Panel>
+
+                  <Panel
+                    icon={TriangleAlertIcon}
+                    title="Needs you"
+                    count={needsYouShown.length}
+                    tint="text-amber-400"
+                  >
+                    {needsYouShown.length === 0 ? (
+                      <EmptyPanelRow>
+                        Nothing waiting on a decision.
+                      </EmptyPanelRow>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {needsYouShown.map((l) => (
+                          <AttentionRow key={l.id} loom={l} />
+                        ))}
+                      </div>
+                    )}
+                  </Panel>
+                </div>
+
+                <div className="space-y-4">
+                  <Panel
+                    icon={MessagesSquareIcon}
+                    title="Recent sessions"
+                    count={liveSessions.length}
+                  >
+                    {liveSessions.length === 0 ? (
+                      <EmptyPanelRow>
+                        <Link
+                          href="/projects"
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          Start a session from a project →
+                        </Link>
+                      </EmptyPanelRow>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {liveSessions.map((s) => (
+                          <Link
+                            key={s.id}
+                            href={`/projects/${encodeURIComponent(s.project ?? "")}/sessions/${s.id}`}
+                            className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/40"
+                          >
+                            <MessagesSquareIcon className="size-4 shrink-0 text-muted-foreground" />
+                            <div className="min-w-0 flex-1">
+                              <span className="block truncate text-sm">
+                                {s.title || "Untitled session"}
+                              </span>
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {s.project}
+                              </span>
+                            </div>
+                            <span className="shrink-0 text-[11px] text-muted-foreground">
+                              {fmtAgo(s.updatedAt)}
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </Panel>
+
+                  <Panel icon={FolderGit2Icon} title="Hot projects">
+                    {hotProjects.length === 0 ? (
+                      <EmptyPanelRow>
+                        <Link
+                          href="/projects"
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          Browse all projects →
+                        </Link>
+                      </EmptyPanelRow>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {hotProjects.map((p) => (
+                          <Link
+                            key={p.name}
+                            href={`/projects/${encodeURIComponent(p.name)}`}
+                            className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/40"
+                          >
+                            <FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 flex-1 truncate text-sm">
+                              {p.name}
+                            </span>
+                            {p.running > 0 && (
+                              <span className="flex items-center gap-1 font-mono text-[11px] text-sky-400 tabular-nums">
+                                <ClockIcon className="size-3" />
+                                {p.running}
+                              </span>
+                            )}
+                            <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+                              {p.open} open
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </Panel>
+                </div>
+              </div>
             </>
           )}
-
-          {/* Recent sessions — the planning surface, back-to-back with looms. */}
-          <section>
-            <SectionHeading
-              icon={MessagesSquareIcon}
-              count={sessions?.length || undefined}
-            >
-              Recent sessions
-            </SectionHeading>
-            {sessions === null ? (
-              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                {Array.from({ length: 2 }).map((_, i) => (
-                  <div key={i} className="flex items-center gap-3 px-3 py-2.5">
-                    <Skeleton className="size-4 rounded" />
-                    <div className="flex-1 space-y-1.5">
-                      <Skeleton className="h-4 w-1/3" />
-                      <Skeleton className="h-3 w-1/2" />
-                    </div>
-                    <Skeleton className="h-4 w-14" />
-                  </div>
-                ))}
-              </div>
-            ) : sessions.length === 0 ? (
-              <EmptyState
-                className="py-10"
-                icon={MessagesSquareIcon}
-                title="Plan something"
-                description="Start a session from a project — sessions explore and prepare a change before a loom writes it."
-                action={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    render={<Link href="/projects" />}
-                  >
-                    <FolderGit2Icon />
-                    Browse projects
-                  </Button>
-                }
-              />
-            ) : (
-              <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                {sessions.map((session) => (
-                  <SessionRow key={session.id} session={session} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Projects */}
-          <section>
-            <SectionHeading
-              icon={FolderGit2Icon}
-              count={projects?.length || undefined}
-              action={<ViewAll href="/projects" />}
-            >
-              Projects
-            </SectionHeading>
-            {projects === null ? (
-              projectsError ? (
-                <EmptyState
-                  className="py-10"
-                  icon={TriangleAlertIcon}
-                  iconClassName="text-destructive/60"
-                  title="Couldn't load projects"
-                  description={
-                    <span className="font-mono text-xs break-words">
-                      {projectsError}
-                    </span>
-                  }
-                  action={
-                    <Button variant="outline" size="sm" onClick={load}>
-                      <RotateCwIcon />
-                      Retry
-                    </Button>
-                  }
-                />
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {Array.from({ length: 3 }).map((_, i) => (
-                    <Skeleton key={i} className="h-20 rounded-xl" />
-                  ))}
-                </div>
-              )
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {projects.map((p) => (
-                  <ProjectMiniCard key={p.entry.name} {...p} />
-                ))}
-                <RegisterCard />
-              </div>
-            )}
-          </section>
-
-          {/* Usage */}
-          <section>
-            <SectionHeading icon={GaugeIcon}>Plan usage</SectionHeading>
-            {planEntries.length === 0 ? (
-              <p className="px-1 text-sm text-muted-foreground">
-                Plan usage appears after your first turn.
-              </p>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {planEntries.map(([account, snap]) => (
-                  <AccountUsage key={account} account={account} snap={snap} />
-                ))}
-              </div>
-            )}
-          </section>
         </div>
       </div>
     </div>

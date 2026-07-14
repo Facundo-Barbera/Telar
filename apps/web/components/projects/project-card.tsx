@@ -12,6 +12,7 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
+import { cn } from "@/lib/utils";
 import { fmtAgo } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,12 +35,14 @@ import {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-function UnregisterButton({
+export function UnregisterButton({
   name,
   onDone,
+  className,
 }: {
   name: string;
   onDone: () => void;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -67,7 +70,10 @@ function UnregisterButton({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="text-muted-foreground hover:text-destructive"
+            className={cn(
+              "text-muted-foreground hover:text-destructive",
+              className,
+            )}
             aria-label={`Unregister ${name}`}
           />
         }

@@ -4,10 +4,12 @@ import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  ActivityIcon,
   ArrowLeftIcon,
   BanIcon,
   ChevronRightIcon,
   FileCogIcon,
+  HistoryIcon,
   FolderXIcon,
   GlobeIcon,
   LinkIcon,
@@ -53,8 +55,15 @@ import {
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { StateBadge } from "@/components/common/state-badge";
+import {
+  GroupHeader,
+  WeaveChip,
+  isLoomNeedsYou,
+  isLoomRecent,
+  isLoomRunning,
+} from "@/components/common/list-controls";
 import { ArchiveButton } from "@/components/session/archive-button";
-import { isTerminal, sumCost } from "@/components/looms/utils";
+import { isTerminal, stateRailClass, sumCost } from "@/components/looms/utils";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -632,11 +641,23 @@ function LoomRow({ loom }: { loom: Loom }) {
   return (
     <Link
       href={`/looms/${loom.id}`}
-      className="flex items-center gap-3 px-3 py-3 transition-colors hover:bg-muted/40"
+      className="relative flex items-center gap-3 py-2.5 pr-3 pl-4 transition-colors hover:bg-muted/40"
     >
+      <span
+        aria-hidden
+        className={cn(
+          "absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-full",
+          stateRailClass(loom.state),
+        )}
+      />
       <StateBadge state={loom.state} className="shrink-0" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{loom.title}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {loom.title}
+          </span>
+          <WeaveChip loom={loom} />
+        </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="font-mono">{loom.kind}</span>
           <span className="text-border">·</span>
@@ -646,7 +667,7 @@ function LoomRow({ loom }: { loom: Loom }) {
         </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5">
-        <span className="font-mono text-xs">
+        <span className="font-mono text-xs tabular-nums">
           {fmtCost(sumCost(loom.attempts))}
         </span>
         <span className="text-xs text-muted-foreground">
@@ -654,6 +675,40 @@ function LoomRow({ loom }: { loom: Loom }) {
         </span>
       </div>
     </Link>
+  );
+}
+
+// A collapsible loom group for the project-detail looms section — same grouping
+// vocabulary (Running / Needs you / Recent) as the global looms index.
+function LoomGroup({
+  icon,
+  label,
+  tint,
+  looms,
+  defaultOpen,
+}: {
+  icon: typeof ActivityIcon;
+  label: string;
+  tint?: string;
+  looms: Loom[];
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (looms.length === 0) return null;
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card">
+      <GroupHeader
+        icon={icon}
+        label={label}
+        count={looms.length}
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+        tint={tint}
+      />
+      <div className="divide-y divide-border">
+        {open && looms.map((l) => <LoomRow key={l.id} loom={l} />)}
+      </div>
+    </section>
   );
 }
 
@@ -975,10 +1030,32 @@ export default function ProjectDetailPage({
                     }
                   />
                 ) : (
-                  <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
-                    {looms.map((loom) => (
-                      <LoomRow key={loom.id} loom={loom} />
-                    ))}
+                  <div className="space-y-3">
+                    <LoomGroup
+                      icon={ActivityIcon}
+                      label="Running now"
+                      tint="text-sky-400"
+                      looms={looms.filter((l) => isLoomRunning(l.state))}
+                      defaultOpen
+                    />
+                    <LoomGroup
+                      icon={TriangleAlertIcon}
+                      label="Needs you"
+                      tint="text-amber-400"
+                      looms={looms.filter((l) => isLoomNeedsYou(l.state))}
+                      defaultOpen
+                    />
+                    <LoomGroup
+                      icon={HistoryIcon}
+                      label="Recent"
+                      looms={looms.filter((l) => isLoomRecent(l.state))}
+                      defaultOpen={
+                        looms.filter(
+                          (l) =>
+                            isLoomRunning(l.state) || isLoomNeedsYou(l.state),
+                        ).length === 0
+                      }
+                    />
                   </div>
                 )
               ) : loomsError ? (
