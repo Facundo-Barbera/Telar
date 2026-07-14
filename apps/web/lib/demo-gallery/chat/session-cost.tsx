@@ -9,7 +9,7 @@
 // the total (click pins it open).
 
 import { useState } from "react";
-import { BotIcon, ChevronDownIcon, UserRoundIcon } from "lucide-react";
+import { BotIcon, UserRoundIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtCost, fmtTokens } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -125,7 +125,6 @@ function CostPanel({ agents }: { agents: AgentCost[] }) {
           <span className="text-[10px] text-muted-foreground/70">
             main + {subCount}
           </span>
-          <ChevronDownIcon className={cn("size-3 transition-transform", open && "rotate-180")} />
         </Badge>
       </button>
 

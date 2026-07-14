@@ -135,3 +135,15 @@ Format per entry:
   now, so the expand chevron (down arrow) on the pill(s) is a stale
   affordance — remove it wherever it appears on the CTX/cost pills.
 - **round:** demo-gallery round 10 (queued behind round 9 — same lane files)
+
+- **view:** 1.1 REFRAME (owner): target is the AGENT TAB STRIP, not chips
+- **verdict:** rework (re-purpose, don't rebuild)
+- **items:** 1.1's "lingering sub-agent tasks" = the top bar of agent tabs
+  (Main | <task> | <task> …) that stays cluttered after sub-agents complete.
+  Re-purpose the built treatments onto that strip: running sub-agents appear
+  as tabs (switchable, live); on completion a tab gracefully dismisses into
+  an expandable "N done" pill at the strip end (variant A) or an overflow
+  tray (variant B). Transcripts stay reachable via the pill/tray — tabs are
+  navigation, not ephemera. Session block gets the strip in its header so
+  the in-context judgment targets the right surface.
+- **round:** demo-gallery round 11 (queued behind round 10 — same lane)
