@@ -182,11 +182,28 @@ function startServer(port) {
         path.join(require("node:os").tmpdir(), "telar-smoke-"),
       )
     : null;
+  // In packaged Electron there is no separate node binary — run an Electron
+  // binary as node via ELECTRON_RUN_AS_NODE. On macOS the MAIN binary still
+  // registers with LaunchServices as a Foreground app even under RUN_AS_NODE,
+  // putting a second, dead "Telar" (the next-server child) in the Dock. The
+  // Helper binary is LSUIElement in its Info.plist — same runtime, no Dock
+  // entry — so prefer it when packaged.
+  let nodeExecPath = process.execPath;
+  if (app.isPackaged && process.platform === "darwin") {
+    const helper = path.join(
+      path.dirname(process.execPath),
+      "..",
+      "Frameworks",
+      "Telar Helper.app",
+      "Contents",
+      "MacOS",
+      "Telar Helper",
+    );
+    if (require("node:fs").existsSync(helper)) nodeExecPath = helper;
+  }
   serverChild = fork(serverJs, [], {
     cwd: path.dirname(serverJs),
-    // In packaged Electron there is no separate node binary — run the Electron
-    // binary as node via ELECTRON_RUN_AS_NODE.
-    execPath: process.execPath,
+    execPath: nodeExecPath,
     // Tie the child's lifetime to ours: the preload self-exits when our IPC
     // channel closes, so a SIGKILL / native crash of this main process (which
     // runs none of the cleanup handlers below) can't orphan the Next server.
