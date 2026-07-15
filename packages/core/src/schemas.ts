@@ -198,6 +198,18 @@ export const WorkUnitState = z.enum([
 ]);
 export type WorkUnitState = z.infer<typeof WorkUnitState>;
 
+// The states a loom cannot leave on its own — resume/re-draft are the only
+// ways forward. Single source of truth for every "is it over?" check
+// (dispatcher cancel/boot-sweep, the MCP layer's session-slot logic).
+export const TERMINAL_WORK_UNIT_STATES: ReadonlySet<WorkUnitState> = new Set([
+  "done",
+  "halted",
+  "failed",
+  "skipped",
+]);
+export const isTerminalWorkUnitState = (s: WorkUnitState): boolean =>
+  TERMINAL_WORK_UNIT_STATES.has(s);
+
 export const WorkUnit = z.object({
   id: z.string(),
   kind: z.enum(["quickfix", "story", "custom", "verify"]),

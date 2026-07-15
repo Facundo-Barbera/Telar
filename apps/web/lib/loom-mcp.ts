@@ -20,6 +20,7 @@ import {
   createDraftLoom,
   getLoom,
   isListableLoom,
+  isTerminalWorkUnitState,
   listAccounts,
   listBundleFiles,
   listLooms,
@@ -201,6 +202,21 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
         "Write (or overwrite) one file into this session's draft Spec Bundle — the working directory the loom will weave from. Creates the draft loom on first use. Path is relative to the bundle root (e.g. 'objective.md', 'contract.json').",
         { path: z.string(), contents: z.string() },
         async ({ path, contents }) => {
+          // A terminal loom (done/halted/failed/skipped) — or one deleted from
+          // the god-view — no longer occupies the session's slot: drafting
+          // again mints a FRESH loom with a freshly-resolved base instead of
+          // writing into the dead one. Without this a session whose loom went
+          // terminal was glued to it forever (stale baseSha baked in, no way
+          // to mint loom #2). Steerer links are exempt — they intentionally
+          // bind to an existing loom and never draft new ones.
+          let remintedFrom: string | null = null;
+          if (opts.link.loomId && opts.link.role !== "steerer") {
+            const bound = getLoom(opts.link.loomId);
+            if (!bound || isTerminalWorkUnitState(bound.state)) {
+              remintedFrom = opts.link.loomId;
+              opts.link.loomId = undefined;
+            }
+          }
           if (!opts.link.loomId) {
             const title = opts.objectiveSeed.trim().slice(0, 60) || "Untitled loom";
             const draft = createDraftLoom({
@@ -221,7 +237,11 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           // objective — keep the loom's prompt/title tracking it LIVE, so the
           // god-view never diverges from the bundle (docs/loom-model.md §5).
           if (path === "objective.md") updateDraftObjectiveFromBundle(opts.link.loomId);
-          return okResult(`Wrote "${path}" to the draft bundle (loom ${opts.link.loomId}).`);
+          return okResult(
+            remintedFrom
+              ? `Previous loom ${remintedFrom} is terminal — minted FRESH draft loom ${opts.link.loomId} (base resolved at start, not inherited). Wrote "${path}" to its bundle. Re-draft the full bundle: the new loom starts empty.`
+              : `Wrote "${path}" to the draft bundle (loom ${opts.link.loomId}).`,
+          );
         },
       ),
       tool(
@@ -232,6 +252,17 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           const loomId = requireLoomId();
           if (!loomId) {
             return errResult("No draft loom yet — call draft_bundle_file first to start one.");
+          }
+          // Same slot rule as draft_bundle_file, fail-closed: never write a
+          // contract into a terminal/deleted loom — the draft flow (objective
+          // first) remints and rebinds.
+          if (opts.link.role !== "steerer") {
+            const bound = getLoom(loomId);
+            if (!bound || isTerminalWorkUnitState(bound.state)) {
+              return errResult(
+                `Loom ${loomId} is terminal — write objective.md via draft_bundle_file first; that mints a fresh draft loom for this session.`,
+              );
+            }
           }
           try {
             writeContract(loomId, { version: 1, assertions });

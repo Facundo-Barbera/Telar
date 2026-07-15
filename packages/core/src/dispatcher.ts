@@ -50,7 +50,7 @@ import type { Lane, StartLaneOpts } from "./run-server";
 import { writeAcceptedServersConfig, writeAcceptedRunbook } from "./servers";
 import { blockedStrategyQuestion, deriveDeliverableSignal } from "./deliverable-signal";
 import type { ContractAssertion } from "./schemas";
-import { VerificationContract } from "./schemas";
+import { VerificationContract, TERMINAL_WORK_UNIT_STATES as TERMINAL_STATES } from "./schemas";
 
 export type StartLoomInput = {
   project: string;
@@ -1159,7 +1159,6 @@ export async function startLoomFromBundle(
   return loom;
 }
 
-const TERMINAL_STATES: ReadonlySet<Loom["state"]> = new Set(["done", "halted", "failed", "skipped"]);
 
 // "Cancel" always means "stop this loom" — a live loom is aborted (the
 // running executor handles its own transition to "halted"); a paused loom

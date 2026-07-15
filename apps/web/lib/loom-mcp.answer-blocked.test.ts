@@ -41,6 +41,7 @@ mock.module("@telar/core", () => ({
   readContract: () => ({ contract: null, errors: [] }),
   listLooms: () => [],
   isListableLoom: () => true,
+  isTerminalWorkUnitState: (s: string) => ["done", "halted", "failed", "skipped"].includes(s),
   startLoomFromBundle: async () => ({ id: "L" }),
   saveLoom: () => {},
   steerLoom: async () => ({}),
