@@ -745,11 +745,52 @@ function RationaleDetail({ r }: { r: RationaleView }) {
 // override-Accept is suppressed.
 function WovenAcceptanceGate({
   unresolved,
+  unbuiltRequired = [],
   onGoToThreads,
 }: {
   unresolved: Loom[];
+  unbuiltRequired?: PlanNode[];
   onGoToThreads?: () => void;
 }) {
+  // L1 (contract mandate 4) — REQUIRED subgoals the charter declared but that never
+  // spawned a thread (or whose thread hasn't landed done/ready/skipped) are invisible
+  // to the threads-only partition below (`threads` is simply shorter than the
+  // decomposition). Fail closed FIRST — a root missing required work can never present
+  // an accept affordance, no matter how few threads are outstanding.
+  if (unbuiltRequired.length > 0) {
+    return (
+      <Card className="border-l-2 border-l-amber-500/60 bg-amber-500/[0.04]">
+        <CardContent className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
+              The weave can&apos;t be accepted yet
+            </span>
+          </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {unbuiltRequired.length} required subgoal{unbuiltRequired.length === 1 ? "" : "s"} not yet built
+            {unresolved.length > 0
+              ? `, plus ${unresolved.length} outstanding Thread${unresolved.length === 1 ? "" : "s"}`
+              : ""}
+            : {unbuiltRequired.map((n) => n.title || n.id).join(", ")}. The root becomes
+            acceptable only once every REQUIRED subgoal is built and every Thread lands —
+            accepting here can never blanket-override missing required work.
+          </p>
+          {onGoToThreads && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onGoToThreads}
+              className="h-auto self-start px-2 py-1 text-xs"
+            >
+              Go to Threads
+              <ChevronRight />
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
   // Partition the outstanding children by what they actually need from the
   // owner, so the panel's tone matches reality instead of flagging a weave that
   // is merely still building.
@@ -913,6 +954,7 @@ function RightRail({
   loom,
   threads,
   woven,
+  plan,
   acceptedBy,
   onIntervened,
   onGoToThreads,
@@ -920,6 +962,7 @@ function RightRail({
   loom: Loom;
   threads: Loom[];
   woven: boolean;
+  plan: Plan;
   acceptedBy?: string;
   onIntervened?: (loom: Loom) => void;
   onGoToThreads?: () => void;
@@ -939,21 +982,44 @@ function RightRail({
     [woven, threads],
   );
 
+  // L1 (contract mandate 4) — fail the accept gate closed against the CHARTER's
+  // declared required decomposition, not just the live `threads` array. A required
+  // subgoal that never spawned a thread is ABSENT from `threads`, so a threads-only
+  // gate lets `unresolved` be empty and offers accept on a root that is in reality
+  // missing required work (run #3: 4/6 subgoals never spawned). A required plan node
+  // whose state is not settled-good (done/ready/skipped) — including the never-spawned
+  // "pending" — suppresses accept.
+  const unbuiltRequired = useMemo(
+    () =>
+      woven
+        ? plan.nodes.filter(
+            (n) => n.required && n.state !== "done" && n.state !== "ready" && n.state !== "skipped",
+          )
+        : [],
+    [woven, plan],
+  );
+  const blockAccept = unresolved.length > 0 || unbuiltRequired.length > 0;
+
   return (
     <aside className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
       {/* Primary panel: the owner's move. Both self-gate by loom.state, so
           mounting them unconditionally is safe — AcceptancePanel renders for
           ready/needs-review/blocked/failed, DoneConfirmation only for done.
-          `allowAccept` is false while a woven root has unresolved Threads, so
-          the override-Accept can't blanket-promote the weave; steer/reject/
-          resume stay, and the gate note above says what's outstanding. */}
-      {unresolved.length > 0 && (
-        <WovenAcceptanceGate unresolved={unresolved} onGoToThreads={onGoToThreads} />
+          `allowAccept` is false while a woven root has unresolved Threads or
+          unbuilt required subgoals, so the override-Accept can't blanket-promote
+          the weave; steer/reject/resume stay, and the gate note above says
+          what's outstanding. */}
+      {blockAccept && (
+        <WovenAcceptanceGate
+          unresolved={unresolved}
+          unbuiltRequired={unbuiltRequired}
+          onGoToThreads={onGoToThreads}
+        />
       )}
       <AcceptancePanel
         loom={loom}
         onAccepted={onIntervened}
-        allowAccept={unresolved.length === 0}
+        allowAccept={!blockAccept}
       />
       <DoneConfirmation loom={loom} by={acceptedBy} />
 
@@ -1804,6 +1870,7 @@ export function LoomGodView({
           loom={loom}
           threads={threads}
           woven={view.woven}
+          plan={view.orchestrator.plan}
           acceptedBy={acceptedBy}
           onIntervened={onIntervened}
           onGoToThreads={() => setTab("threads")}
