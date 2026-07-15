@@ -52,6 +52,7 @@ import {
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
+import { createUltraMcpServer, ULTRA_AUTO_TOOLS } from "@/lib/ultra-mcp";
 import {
   createPending,
   resolvePending,
@@ -298,6 +299,15 @@ export async function POST(req: Request) {
     // session's first turn. Older clients omit it → we mint one (Stop-by-runId
     // just won't be reachable for them, which matches the old behavior).
     runId: rawRunId,
+    // The composer Ultra chip's annotation for THIS turn only (docs/plans/
+    // ultra-harness.md §4 "Opt-in is a REQUEST, not a behavior flag" — a
+    // per-message user request, never a stored/session-level flag). Anything
+    // but a literal `true` collapses to false, same fail-safe idiom as
+    // `role` above — a stray value can never be mistaken for the user's
+    // explicit ask. See `ultraAnnotated` below for where this reaches the
+    // agent (a system-prompt note the `ultra` tool's own description tells
+    // it to look for).
+    ultra: rawUltra,
   } = await req.json();
   const role: "planner" | "steerer" | "escalation" | undefined =
     rawRole === "planner"
@@ -309,6 +319,7 @@ export async function POST(req: Request) {
           : undefined;
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
+  const ultraAnnotated: boolean = rawUltra === true;
 
   // M11 finding-1: the escalation surface auto-fires a HIDDEN first turn whose
   // wire message is the kickoff sentinel (see @/lib/escalation-kickoff). On a
@@ -1129,6 +1140,34 @@ export async function POST(req: Request) {
           link: loomLink,
           getSessionId: () => capturedSession,
         });
+        // The "ultra" in-process MCP server (docs/plans/ultra-harness.md §4) —
+        // ultra/ultra_status/ultra_stop, auto-run like the loom read/draft
+        // tools (see ULTRA_AUTO_TOOLS's own comment for why this differs from
+        // start_loom's human-gated moat). `account`/`project` are this chat's
+        // own server-resolved values, never anything the model supplies (same
+        // rule as loomMcpServer above). `getMessageId` threads the per-turn
+        // `runId` (declared at the top of this POST) as Ultra's own
+        // "messageId" link — the finest-grained id a chat turn has in this
+        // app (see ultra-mcp.ts's UltraMcpOpts doc). Not offered to an
+        // escalation session (excluded from mcpServers/allowedTools below,
+        // same as LOOM_AUTO_TOOLS) — that surface stays a narrow read-only
+        // discuss wall.
+        const ultraMcpServer = createUltraMcpServer({
+          project,
+          account: profile,
+          getSessionId: () => capturedSession,
+          getMessageId: () => runId,
+        });
+        // Composer-annotation half of doc §4's opt-in contract: a PER-TURN
+        // note (never persisted, never a session-level flag) telling the
+        // agent this specific message is the user's explicit Ultra request —
+        // the `ultra` tool's own description tells it to look for exactly
+        // this. Empty string (no-op) on every ordinary turn. Omitted for an
+        // escalation session, which never gets the ultra tools either.
+        const ultraAnnotationNote =
+          ultraAnnotated && !isEscalationSession
+            ? "\n\n--- ULTRA REQUEST (this turn only) ---\nThe user's message below is Ultra-annotated: they explicitly asked for a large orchestrated/parallel run via the composer's Ultra chip. You may call the `ultra` tool THIS turn to author and launch a script. Do not call it on a later turn unless the user says \"ultra\" again or re-annotates."
+            : "";
         const q = query({
           prompt: message,
           options: {
@@ -1141,6 +1180,9 @@ export async function POST(req: Request) {
             // preset's own `append` — a normal session's systemPrompt is
             // byte-for-byte unchanged; only isPlannerSession turns get the
             // extra paragraph tacked on after Claude Code's default prompt.
+            // Every non-escalation branch also gets ultraAnnotationNote
+            // tacked on (empty string -> no-op) for the SAME reason ultra's
+            // tools are only ever offered there (see allowedTools below).
             systemPrompt: isEscalationSession
               ? {
                   type: "preset",
@@ -1159,10 +1201,12 @@ export async function POST(req: Request) {
                   // latest steering recomputed every turn). loomLink.loomId is
                   // non-null whenever isSteererSession (role === "steerer" is
                   // only set alongside a resolved loomId, above).
-                  append: STEERER_SYSTEM_PROMPT + buildSteererContext(loomLink.loomId!),
+                  append: STEERER_SYSTEM_PROMPT + buildSteererContext(loomLink.loomId!) + ultraAnnotationNote,
                 }
               : isPlannerSession
-              ? { type: "preset", preset: "claude_code", append: PLANNER_SYSTEM_PROMPT }
+              ? { type: "preset", preset: "claude_code", append: PLANNER_SYSTEM_PROMPT + ultraAnnotationNote }
+              : ultraAnnotationNote
+              ? { type: "preset", preset: "claude_code", append: ultraAnnotationNote }
               : { type: "preset", preset: "claude_code" },
             permissionMode,
             // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
@@ -1217,6 +1261,12 @@ export async function POST(req: Request) {
                   // hard-route above and canUseTool's own always-allow-rule
                   // exclusion for it).
                   ...LOOM_AUTO_TOOLS,
+                  // Ultra's three tools (docs/plans/ultra-harness.md §4) —
+                  // all auto-run, none human-gated (see ULTRA_AUTO_TOOLS's
+                  // own comment for why this differs from start_loom).
+                  // Excluded from the escalation branch above on purpose:
+                  // that surface stays a narrow read-only discuss wall.
+                  ...ULTRA_AUTO_TOOLS,
                 ],
             // AskUserQuestion (and any sibling structured-question tool the
             // SDK exposes) is hard-disallowed here: the chat UI has no
@@ -1224,24 +1274,35 @@ export async function POST(req: Request) {
             // clarifying questions as plain chat messages instead (see
             // PLANNER_SYSTEM_PROMPT above). For an escalation session, ADD the
             // state-changing loom tools (steer/reject/answer_loom/resume/cancel/
-            // watch/draft/propose/start) to the disallow set: the SDK guarantees
-            // a disallow beats any allow, so those tools — registered on the loom
-            // MCP server for other sessions — are truly uncallable here, even
-            // interactively. answer_blocked is deliberately NOT disallowed (it
-            // stays callable-but-human-gated — the ONLY escalation write path).
+            // watch/draft/propose/start) — PLUS all three ultra tools, same
+            // reasoning — to the disallow set: the SDK guarantees a disallow
+            // beats any allow, so those tools — registered on the loom/ultra
+            // MCP servers for other sessions — are truly uncallable here, even
+            // interactively (never just falling through to canUseTool's card).
+            // answer_blocked is deliberately NOT disallowed (it stays
+            // callable-but-human-gated — the ONLY escalation write path).
             disallowedTools: [
               ...manifest.guardrails.disallowedTools,
               "AskUserQuestion",
-              ...(isEscalationSession ? LOOM_ESCALATION_DISALLOWED_TOOLS : []),
+              ...(isEscalationSession ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS] : []),
             ],
             // The loom MCP server (see loomMcpServer above) — its tools
             // surface as mcp__loom__*, gated the same way every other tool
             // is: allowedTools for the safe read/draft ones, canUseTool +
-            // the PreToolUse hook for start_loom.
-            // Per-project MCP servers (docs/runtime-architecture.md §B) with
-            // their OWN token-injected env/headers — resolved decoupled from
-            // accountEnv above, so account-switching can't rotate MCP auth.
-            mcpServers: { loom: loomMcpServer, ...(project ? resolveProjectMcpServers(project) : {}) },
+            // the PreToolUse hook for start_loom. The ultra MCP server
+            // (ultraMcpServer above) surfaces as mcp__ultra__* — Claude-only
+            // for now (doc §7/Open-Q3: ships Claude-first; this whole branch
+            // is already the non-Codex path, see the `if (provider ===
+            // "codex")` split above, so no extra provider check is needed
+            // here). Per-project MCP servers (docs/runtime-architecture.md
+            // §B) with their OWN token-injected env/headers — resolved
+            // decoupled from accountEnv above, so account-switching can't
+            // rotate MCP auth.
+            mcpServers: {
+              loom: loomMcpServer,
+              ultra: ultraMcpServer,
+              ...(project ? resolveProjectMcpServers(project) : {}),
+            },
             // Telar OWNS the MCP surface: use ONLY the servers above (loom +
             // the project's telar.yaml servers). settingSources ["project",
             // "local"] would otherwise pull in the repo's .mcp.json / the

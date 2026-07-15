@@ -8,6 +8,11 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { z } from "zod";
 import * as realCore from "@telar/core";
+// SNAPSHOT the real exports NOW, before mock.module runs. `realCore` is a live
+// ES-module namespace: once mocked, its own bindings reflect the MOCK, so
+// restoring `() => realCore` would re-install the mock and leak it into every
+// later test file. Spreading here copies the genuine functions by value.
+const realCoreSnapshot = { ...realCore };
 
 let getLoomReturn: { state?: string } | null = null;
 let draftCount = 0;
@@ -41,7 +46,7 @@ mock.module("@telar/core", () => ({
 }));
 
 afterAll(() => {
-  mock.module("@telar/core", () => realCore);
+  mock.module("@telar/core", () => realCoreSnapshot);
 });
 
 const { createLoomMcpServer } = await import("./loom-mcp");

@@ -14,6 +14,11 @@ import { z } from "zod";
 // mock.module is process-global and would otherwise leak into sibling test
 // files (e.g. titles.test.ts imports accountEnv). afterAll re-installs it.
 import * as realCore from "@telar/core";
+// SNAPSHOT the real exports NOW, before mock.module runs. `realCore` is a live
+// ES-module namespace: once mocked, its own bindings reflect the MOCK, so
+// restoring `() => realCore` would re-install the mock and leak it into every
+// later test file. Spreading here copies the genuine functions by value.
+const realCoreSnapshot = { ...realCore };
 
 // Record every answerBlocked call so we can assert the `by` is the SERVER-
 // resolved account, never tool input (§M.6 human-by moat).
@@ -55,7 +60,7 @@ mock.module("@telar/core", () => ({
 
 // Restore the real module so the mock never bleeds into sibling test files.
 afterAll(() => {
-  mock.module("@telar/core", () => realCore);
+  mock.module("@telar/core", () => realCoreSnapshot);
 });
 
 const {
