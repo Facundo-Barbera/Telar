@@ -1,0 +1,215 @@
+#!/usr/bin/env bun
+// telar — launcher for the stable Telar cockpit. Starts it detached, opens the
+// browser, and exits; never lingers. Idempotent: a second `telar open` just
+// re-opens the browser. State lives in ~/.telar/launcher/.
+
+import { spawn, execSync } from "node:child_process";
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const launcherDir = path.join(os.homedir(), ".telar", "launcher");
+const configFile = path.join(launcherDir, "config.json");
+const pidFile = path.join(launcherDir, "cockpit.pid");
+const logFile = path.join(launcherDir, "cockpit.log");
+const builtFile = path.join(launcherDir, "built-commit");
+
+const defaults = {
+  appDir: path.join(os.homedir(), "Projects", "personal", "telar-stable"),
+  port: 3100,
+};
+
+function loadConfig(): typeof defaults {
+  mkdirSync(launcherDir, { recursive: true });
+  if (!existsSync(configFile)) {
+    writeFileSync(configFile, JSON.stringify(defaults, null, 2) + "\n");
+    return { ...defaults };
+  }
+  return { ...defaults, ...JSON.parse(readFileSync(configFile, "utf8")) };
+}
+
+const cfg = loadConfig();
+const url = `http://localhost:${cfg.port}`;
+
+function readPid(): number | null {
+  if (!existsSync(pidFile)) return null;
+  const pid = Number(readFileSync(pidFile, "utf8").trim());
+  if (!Number.isInteger(pid) || pid <= 1) return null;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    rmSync(pidFile, { force: true });
+    return null;
+  }
+}
+
+async function portResponds(timeoutMs = 1500): Promise<boolean> {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function portOwners(): number[] {
+  try {
+    // -sTCP:LISTEN: only the server, never browser/client connections on the port
+    const out = execSync(`lsof -ti tcp:${cfg.port} -sTCP:LISTEN`, { stdio: ["ignore", "pipe", "ignore"] });
+    return out.toString().trim().split("\n").filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+function openBrowser() {
+  execSync(`open ${url}`);
+}
+
+function headCommit(): string {
+  return execSync("git rev-parse HEAD", { cwd: cfg.appDir }).toString().trim();
+}
+
+function ensureBuilt(force = false) {
+  const webDir = path.join(cfg.appDir, "apps", "web");
+  const head = headCommit();
+  const built = existsSync(builtFile) ? readFileSync(builtFile, "utf8").trim() : null;
+  const hasBuild = existsSync(path.join(webDir, ".next", "BUILD_ID"));
+  if (!force && hasBuild && built === head) return;
+  console.log(`building cockpit at ${head.slice(0, 7)}...`);
+  execSync("bun run build", { cwd: webDir, stdio: "inherit" });
+  writeFileSync(builtFile, head + "\n");
+}
+
+async function start() {
+  if (!existsSync(cfg.appDir)) {
+    console.error(`app dir not found: ${cfg.appDir} (edit ${configFile})`);
+    process.exit(1);
+  }
+  if (!existsSync(path.join(cfg.appDir, "node_modules"))) {
+    console.log("node_modules missing — running bun install...");
+    execSync("bun install", { cwd: cfg.appDir, stdio: "inherit" });
+  }
+  ensureBuilt();
+
+  if (existsSync(logFile)) renameSync(logFile, logFile + ".old");
+  const log = openSync(logFile, "a");
+  const child = spawn("bun", ["run", "start"], {
+    cwd: path.join(cfg.appDir, "apps", "web"),
+    env: { ...process.env, PORT: String(cfg.port) },
+    detached: true,
+    stdio: ["ignore", log, log],
+  });
+  child.unref();
+  writeFileSync(pidFile, `${child.pid}\n`);
+
+  process.stdout.write(`starting cockpit (pid ${child.pid}, port ${cfg.port}) `);
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await portResponds()) {
+      console.log("— up");
+      return;
+    }
+    try {
+      process.kill(child.pid!, 0);
+    } catch {
+      console.log("\ncockpit died on startup — last log lines:");
+      console.log(readFileSync(logFile, "utf8").split("\n").slice(-15).join("\n"));
+      rmSync(pidFile, { force: true });
+      process.exit(1);
+    }
+    process.stdout.write(".");
+    await Bun.sleep(500);
+  }
+  console.log(`\ntimed out waiting for ${url} — check ${logFile}`);
+  process.exit(1);
+}
+
+async function cmdOpen() {
+  if (readPid() && (await portResponds())) {
+    console.log(`already running at ${url}`);
+  } else if (await portResponds()) {
+    console.log(`something already serves ${url} (not started by this CLI) — opening it`);
+  } else {
+    await start();
+  }
+  openBrowser();
+}
+
+async function cmdStop() {
+  let pids = [readPid()].filter((p): p is number => p !== null);
+  if (pids.length === 0) pids = portOwners();
+  if (pids.length === 0) {
+    console.log("not running");
+    return;
+  }
+  for (const pid of pids) {
+    // detached start makes the pid a group leader; -pid signals the whole tree
+    try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch {} }
+  }
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && (await portResponds(500))) await Bun.sleep(300);
+  if (await portResponds(500)) {
+    for (const pid of pids) {
+      try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+    }
+    console.log("force-killed");
+  } else {
+    console.log("stopped");
+  }
+  rmSync(pidFile, { force: true });
+}
+
+async function cmdStatus() {
+  const pid = readPid();
+  const up = await portResponds();
+  const commit = existsSync(cfg.appDir)
+    ? execSync("git log --oneline -1", { cwd: cfg.appDir }).toString().trim()
+    : "(app dir missing)";
+  const built = existsSync(builtFile) ? readFileSync(builtFile, "utf8").trim() : null;
+  const buildInfo = !built ? "none" : built === headCommit() ? "current" : `stale (built at ${built.slice(0, 7)})`;
+  console.log(`app:    ${cfg.appDir}`);
+  console.log(`commit: ${commit}`);
+  console.log(`build:  ${buildInfo}`);
+  console.log(`state:  ${up ? `running at ${url}` : "stopped"}${pid ? ` (pid ${pid})` : ""}`);
+}
+
+async function cmdUpdate() {
+  const wasRunning = readPid() !== null && (await portResponds());
+  execSync("git pull --ff-only", { cwd: cfg.appDir, stdio: "inherit" });
+  execSync("bun install", { cwd: cfg.appDir, stdio: "inherit" });
+  ensureBuilt();
+  if (wasRunning) {
+    console.log("restarting...");
+    await cmdStop();
+    await start();
+  }
+  console.log("updated");
+}
+
+function cmdLogs(follow: boolean) {
+  if (!existsSync(logFile)) {
+    console.log("no log yet");
+    return;
+  }
+  if (follow) {
+    // the one command that intentionally lingers
+    spawn("tail", ["-f", logFile], { stdio: "inherit" });
+  } else {
+    console.log(readFileSync(logFile, "utf8").split("\n").slice(-40).join("\n"));
+  }
+}
+
+const cmd = process.argv[2] ?? "open";
+switch (cmd) {
+  case "open":    await cmdOpen(); break;
+  case "stop":    await cmdStop(); break;
+  case "restart": await cmdStop(); await start(); openBrowser(); break;
+  case "status":  await cmdStatus(); break;
+  case "update":  await cmdUpdate(); break;
+  case "logs":    cmdLogs(process.argv[3] === "-f"); break;
+  default:
+    console.log("usage: telar [open|stop|restart|status|update|logs [-f]]");
+    process.exit(cmd === "help" || cmd === "--help" ? 0 : 1);
+}

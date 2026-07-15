@@ -65,3 +65,5 @@ export * from "./runner/lease";
 export * from "./runner/liveness";
 export * from "./runner/recover";
 export * from "./setup/setup-agent";
+// Ultra — deterministic script harness (docs/plans/ultra-harness.md). Additive.
+export * from "./ultra";
