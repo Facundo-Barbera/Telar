@@ -151,8 +151,9 @@ export function formatEscalationContext(args: {
 // Mutated in place by draft_bundle_file (first-use lazy create) and read back
 // by route.ts after the turn ends to persist onto the chat record via the
 // same appendTurn(loomId, role) path used for every other captured session
-// state — see store.ts's Chat.loomId/role.
-export type LoomSessionLink = { loomId?: string; role?: "planner" | "steerer" };
+// state — see store.ts's Chat.loomId/role. "escalation" (M11.3) persists the
+// same way "steerer" does, so the blocked-loom discuss surface can reattach.
+export type LoomSessionLink = { loomId?: string; role?: "planner" | "steerer" | "escalation" };
 
 export type LoomMcpOpts = {
   project: string;

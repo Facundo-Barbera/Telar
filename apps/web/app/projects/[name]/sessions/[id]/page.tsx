@@ -108,7 +108,13 @@ export default async function SessionPage({
   // server-rendered from the store: a freshly-minted session (URL rewritten
   // mid-stream, first turn not yet persisted) simply isn't in the list until it
   // saves — no highlight, which is correct for a thread that doesn't exist yet.
-  const sessions = listChats(name);
+  // Loom-born sessions (role "steerer"/"escalation") are excluded — same rule
+  // as GET /api/chats — they're scoped to their loom's own UI, not this rail.
+  // A direct link to one (e.g. from the loom page) still opens it via the pane
+  // on the right; it just never appears in this list.
+  const sessions = listChats(name).filter(
+    (c) => c.role !== "steerer" && c.role !== "escalation",
+  );
 
   // Display-only account metadata for the client picker — passed as plain
   // data so the client component never imports the server-only registry.

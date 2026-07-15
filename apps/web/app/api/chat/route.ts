@@ -32,7 +32,7 @@ import {
   type CodexSandbox,
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
-import { resolveEscalationMessage } from "@/lib/escalation-kickoff";
+import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
@@ -318,6 +318,15 @@ export async function POST(req: Request) {
   // other turn (planner/steerer/plain/real escalation replies), so nothing else
   // changes. Substituted HERE, before generateTitle/query/log all read it.
   const message: string = resolveEscalationMessage(role, sessionId, rawMessage);
+  // Bug-B fix — the kickoff's resolved instruction ("The human just opened
+  // this escalation...") is machinery fed to the model, never something the
+  // human said. `message` above (the resolved prompt) still drives the SDK
+  // turn unchanged — the seeded first response is untouched — but `isKickoff`
+  // marks this turn so persistence/logging (below) never writes that
+  // instruction text anywhere it could render as a "user" bubble, and title
+  // generation (further below) skips it entirely.
+  const isKickoff = isEscalationKickoff(role, sessionId, rawMessage);
+  const displayText: string = isKickoff ? "Discuss verification" : message;
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.
@@ -470,10 +479,13 @@ export async function POST(req: Request) {
   // CREATING the chat, so generating one for an existing session's turn
   // would just be wasted inference). Forwarding `abort.signal` means a
   // client disconnect/Stop click cancels this subprocess too, same as the
-  // main turn's.
-  const titlePromise: Promise<string | null> | null = sessionId
-    ? null
-    : generateTitle(message, profile, abort.signal);
+  // main turn's. Also skipped for the escalation kickoff — `message` there is
+  // the server-authored instruction paragraph, not human intent to summarize,
+  // and upsertChatStub's own displayText fallback ("Discuss verification",
+  // below) is already the right title; wasting an LLM call to re-derive it
+  // from machinery text would be pure overhead.
+  const titlePromise: Promise<string | null> | null =
+    sessionId || isKickoff ? null : generateTitle(message, profile, abort.signal);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -562,12 +574,20 @@ export async function POST(req: Request) {
       }
       const loomLink: LoomSessionLink = {
         loomId: existingChat?.loomId ?? wireLoomId,
-        // Only steerer is PERSISTED as a link role (store.ts's Chat.role union is
-        // planner|steerer). An escalation session is deliberately EPHEMERAL — it
-        // must never auto-reattach (the surface is behind an explicit click), so
-        // it persists no role: isEscalationSession is derived from the wire `role`
-        // (sent every turn) below, not from a stored link.
-        role: existingChat?.role ?? (wireLoomId && role === "steerer" ? "steerer" : undefined),
+        // Both steerer AND escalation are PERSISTED as a link role (store.ts's
+        // Chat.role union is planner|steerer|escalation) — M11.3's discuss-
+        // escalation.tsx fetches the most-recent persisted escalation chat for
+        // a loom (GET /api/looms/[id]/chat?role=escalation) and reattaches it
+        // on mount, so navigating away and back finds the SAME conversation,
+        // not a blank one. This is not an auto-start: the surface only ever
+        // reattaches a discussion the human already opened with an explicit
+        // click; it never opens a fresh one on its own. Loom-born sessions
+        // (steerer/escalation) are filtered out of the regular project
+        // session list (GET /api/chats) — reachable only from the loom's own
+        // UI (the Chat tab / the blocked-state Discuss surface).
+        role:
+          existingChat?.role ??
+          (wireLoomId && (role === "steerer" || role === "escalation") ? role : undefined),
       };
       // Whether this turn is part of a Loom Session (docs/loom-model.md §5's
       // "planner" role) — the body's own `role` (authoritative for turn 1,
@@ -582,11 +602,13 @@ export async function POST(req: Request) {
       // never loom tool access/gating (which stays exactly as wired).
       const isSteererSession = loomLink.role === "steerer";
       // M11.3 escalation session (the blocked-loom "Discuss with the
-      // orchestrator" chat). Derived from the WIRE `role` (sent every turn — the
-      // link is never persisted as escalation, above) AND a resolved loomId; a
-      // bad/foreign loomId fails safe to a plain session (loomLink.loomId stayed
-      // undefined), exactly like the steerer seed does. Drives the read-only
-      // escalation toolset + the answer_blocked-only write path + its system
+      // orchestrator" chat). Derived from the WIRE `role` (sent every turn —
+      // the client sends it on every turn including reattached ones, so this
+      // stays true across the session even though loomLink.role is ALSO now
+      // persisted, above) AND a resolved loomId; a bad/foreign loomId fails
+      // safe to a plain session (loomLink.loomId stayed undefined), exactly
+      // like the steerer seed does. Drives the read-only escalation toolset +
+      // the answer_blocked-only write path + its system
       // prompt/context below — mutually exclusive with planner/steerer (role is
       // "escalation", and loomLink.role is never "steerer" for it).
       const isEscalationSession = role === "escalation" && !!loomLink.loomId;
@@ -913,7 +935,13 @@ export async function POST(req: Request) {
                 // Open the live log (truncate + write the `user` header) BEFORE
                 // the first send() so the session event is the log's second line
                 // and a reconnecting client can tail this turn (Phase 1b).
-                startSessionLog(capturedSession, message);
+                // displayText (not the resolved kickoff instruction) so a
+                // mid-turn reconnect's synthetic "user" event can never leak
+                // the machinery prompt into a rendered bubble either. isKickoff
+                // also suppresses the line entirely (hidden) — the kickoff's
+                // local POST path never renders a user bubble either, so a
+                // mid-turn reconnect must not manufacture one.
+                startSessionLog(capturedSession, displayText, isKickoff);
                 send("session", {
                   sessionId: capturedSession,
                   slashCommands: [],
@@ -933,7 +961,7 @@ export async function POST(req: Request) {
                   permissionMode,
                   loomId: loomLink.loomId,
                   role: loomLink.role,
-                  userText: message,
+                  userText: displayText,
                 });
                 send("saved", { chatId: capturedSession });
                 break;
@@ -1246,8 +1274,13 @@ export async function POST(req: Request) {
             setChatRunSession(runId, capturedSession);
             // Open the live log (truncate + write the `user` header) BEFORE the
             // first send() so the session event is the log's second line and a
-            // reconnecting client can tail this turn (Phase 1b).
-            startSessionLog(capturedSession, message);
+            // reconnecting client can tail this turn (Phase 1b). displayText
+            // (not the resolved kickoff instruction) so a mid-turn reconnect's
+            // synthetic "user" event can never leak the machinery prompt.
+            // isKickoff also suppresses the line entirely (hidden) — the
+            // kickoff's local POST path never renders a user bubble either, so
+            // a mid-turn reconnect must not manufacture one (M11.3 finding).
+            startSessionLog(capturedSession, displayText, isKickoff);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -1277,7 +1310,7 @@ export async function POST(req: Request) {
               // establishes during the turn.
               loomId: loomLink.loomId,
               role: loomLink.role,
-              userText: message,
+              userText: displayText,
             });
             send("saved", { chatId: capturedSession });
             // Fire the plan-usage control call now — the subprocess must still
@@ -1744,7 +1777,13 @@ export async function POST(req: Request) {
               // turn that never called a loom tool.
               loomId: loomLink.loomId,
               role: loomLink.role,
-              userMessage: { role: "user", parts: [{ type: "text", text: message }] },
+              userMessage: { role: "user", parts: [{ type: "text", text: displayText }] },
+              // Bug-B fix: the escalation kickoff's "user" turn is the
+              // server-authored instruction, not something the human said —
+              // never persist it into the visible transcript (userMessage
+              // above is only a fallback-title source for a would-be fresh
+              // chat; appendTurn skips pushing it when this is set).
+              hideUserMessage: isKickoff,
               assistantMessage: { role: "assistant", parts },
               costUsd,
               title,

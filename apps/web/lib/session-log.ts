@@ -23,7 +23,13 @@ export type SessionLogEvent = { event: string; data: unknown };
 // `user` header event so a reconnecting client can render the user bubble. The
 // POST path never emits a "user" SSE event (the client adds it optimistically),
 // so the reconnect log must carry it as its first line.
-export function startSessionLog(sessionId: string, userText: string): void {
+//
+// `hidden` mirrors store.ts's `hideUserMessage` (route.ts's isKickoff): the
+// escalation kickoff's local POST path never adds a user bubble optimistically
+// (session-view.tsx's send(), `opts.hidden`), so a reconnect tailing this log
+// mid-turn must not manufacture one either — skip the synthetic "user" line
+// entirely so applyServerEvent's "user" branch never fires for this turn.
+export function startSessionLog(sessionId: string, userText: string, hidden = false): void {
   // A brand-new turn: drop any stale current-block deltas a crashed prior turn
   // may have left in the ring (endSessionDeltas normally clears them at
   // teardown, but a crash before the finally can skip that).
@@ -33,7 +39,7 @@ export function startSessionLog(sessionId: string, userText: string): void {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       logFile(sessionId),
-      JSON.stringify({ event: "user", data: { text: userText } }) + "\n",
+      hidden ? "" : JSON.stringify({ event: "user", data: { text: userText } }) + "\n",
     );
   } catch {
     // logging is best-effort — never let it break the turn

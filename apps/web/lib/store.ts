@@ -72,13 +72,17 @@ export type Chat = {
   // behavior).
   permissionMode?: ClientPermissionMode;
   // Session<->Loom link (docs/loom-model.md §5): the loom this session is
-  // planning/steering, and which of the two roles it holds. Optional: most
-  // chats are plain sessions with no loom attached. Once set, persisted via
-  // appendTurn's undefined-guarded assignment below (see contextTokens for
-  // the same pattern) — an unrelated turn that omits these must never clobber
-  // a link a prior turn/route established.
+  // planning/steering/discussing, and which of the three roles it holds.
+  // Optional: most chats are plain sessions with no loom attached. Once set,
+  // persisted via appendTurn's undefined-guarded assignment below (see
+  // contextTokens for the same pattern) — an unrelated turn that omits these
+  // must never clobber a link a prior turn/route established. "escalation"
+  // (M11.3's blocked-loom "Discuss with the orchestrator" chat) is persisted
+  // like "steerer" so the surface can reattach across navigation/reload —
+  // both are loom-born and filtered out of the regular project session list
+  // (GET /api/chats), reachable only from the loom's own UI instead.
   loomId?: string;
-  role?: "planner" | "steerer";
+  role?: "planner" | "steerer" | "escalation";
   createdAt: number;
   updatedAt: number;
   costUsd: number;
@@ -300,7 +304,7 @@ export function upsertChatStub(opts: {
   project?: string;
   permissionMode?: ClientPermissionMode;
   loomId?: string;
-  role?: "planner" | "steerer";
+  role?: "planner" | "steerer" | "escalation";
   title?: string;
   userText: string;
 }): void {
@@ -342,9 +346,17 @@ export function appendTurn(opts: {
   // Chat.loomId/role). Undefined means "no change"; only ever narrows a
   // link in, never clears one (see the guarded assignment below).
   loomId?: string;
-  role?: "planner" | "steerer";
+  role?: "planner" | "steerer" | "escalation";
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
+  // M11.3 fix — the escalation kickoff's userMessage carries the server-
+  // authored instruction prompt (route.ts's ESCALATION_KICKOFF_PROMPT), not
+  // anything the human typed. It's machinery, not conversation: when true,
+  // userMessage is used ONLY for the fresh-chat fallback title below and is
+  // never pushed into the persisted transcript, so it can never render as a
+  // human "said this" bubble on reattach. Absent/false for every other turn
+  // (unchanged behavior).
+  hideUserMessage?: boolean;
   costUsd: number;
   // Only consulted when this call CREATES the chat (fresh session) — an
   // existing chat keeps whatever title it already has, custom or derived.
@@ -394,7 +406,11 @@ export function appendTurn(opts: {
     // titlePromise is null once a sessionId exists).
     chat.title = opts.title.trim();
   }
-  chat.messages.push(opts.userMessage, opts.assistantMessage);
+  if (opts.hideUserMessage) {
+    chat.messages.push(opts.assistantMessage);
+  } else {
+    chat.messages.push(opts.userMessage, opts.assistantMessage);
+  }
   chat.costUsd += opts.costUsd;
   chat.turns += 1;
   chat.model = opts.model;
