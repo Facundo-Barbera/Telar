@@ -220,4 +220,46 @@ describe("worktree isolation (unconditional)", () => {
     reconcileStuckLooms(() => false);
     expect(git(repo, ["rev-parse", "--verify", branch]).trim()).toBeTruthy();
   });
+
+  test("REMOVE FAILURE is not silently swallowed: a genuinely-stuck worktree (e.g. a lingering held handle) flags worktreeRetained instead of being reported as reclaimed", async () => {
+    // A LOCKED worktree is a real, realistic trigger: `git worktree remove
+    // --force` (single force) refuses to remove a locked worktree — exactly
+    // the shape of failure a lingering process/background command holding a
+    // file handle inside the worktree would cause. defaultGitRunner never
+    // throws on this (it returns a non-zero-status GitRunResult), so before
+    // the fix this failure was completely unobserved.
+    const { child } = makeRootAndChild();
+    let wtPath: string | undefined;
+    builderImpl = async (cwd) => {
+      wtPath = cwd;
+      fs.writeFileSync(path.join(cwd, "out.txt"), "built\n");
+      execFileSync("git", ["worktree", "lock", cwd], { cwd: repo });
+      return { ok: true, summary: "done", files_touched: ["out.txt"], blocker: null };
+    };
+    try {
+      const res = await executeLoom(child, manifestFor(), runOpts());
+
+      // The build/fold itself is unaffected — only cleanup fails.
+      expect(res.state).toBe("done");
+      // The genuinely-failed remove MUST be flagged, not silently swallowed.
+      expect((res as typeof res & { worktreeRetained?: boolean }).worktreeRetained).toBe(true);
+      // loom.worktree stays pointed at the surviving dir (never cleared on a
+      // failed remove) so the boot reaper can find and preserve it.
+      expect(res.worktree).toBe(wtPath);
+      expect(fs.existsSync(wtPath!)).toBe(true);
+      expect(worktreeCount()).toBe(2); // main + the stuck worktree, still registered
+
+      // The boot reaper must PRESERVE (never reap) a dir flagged worktreeRetained.
+      reconcileStuckLooms(() => false);
+      expect(fs.existsSync(wtPath!)).toBe(true);
+      expect(worktreeCount()).toBe(2);
+    } finally {
+      // Unlock so afterEach's own force-remove sweep can actually clear it.
+      if (wtPath) {
+        try {
+          execFileSync("git", ["worktree", "unlock", wtPath], { cwd: repo });
+        } catch {}
+      }
+    }
+  });
 });

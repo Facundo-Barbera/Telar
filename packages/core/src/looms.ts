@@ -46,6 +46,14 @@ export type AttemptRecord = {
   startedAt: number;
   endedAt?: number;
   sessionId?: string;
+  // The cwd this attempt's SDK session was born in (buildCwd at attempt-create
+  // time). The SDK keys a resumable conversation by the cwd it started in, not
+  // the sessionId alone — a retry that resumes `sessionId` from a DIFFERENT
+  // cwd (e.g. a freshly re-minted per-thread worktree) gets "No conversation
+  // found ..." from the SDK. executor.ts compares this against the NEXT
+  // attempt's cwd before ever passing `resume`. Absent on pre-fix records
+  // (legacy attempts safely never match, falling back to a fresh session).
+  cwd?: string;
   verdict?: Verdict | null;
   verifierReport?: VerifierReport | null;
   // §4 Layer 2 (docs/loom-model.md): the Critic Panel's aggregated report,

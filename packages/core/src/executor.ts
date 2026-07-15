@@ -1,6 +1,23 @@
 // Executor: the L1 stage loop — attempt, verify with gates, decide, retry.
 // Pure w.r.t. persistence: mutates the loom object and emits events; the caller
 // persists via onState/onEvent. Retries resume the previous attempt's session.
+//
+// RESUME/CWD: the Claude Agent SDK stores a resumable conversation keyed by
+// the cwd it was launched from, not the sessionId alone. A CHILD thread's
+// worktree isolation mints a FRESH tmpdir on every executeLoom() call
+// (vcs.ts addWorktree, its counter increments each call), so a thread retry
+// (dispatcher resumeLoom/rejectLoom, or spawnChild reusing an existing child
+// — dispatcher.ts "Blocker #3") that resumed loom.attempts[last].sessionId
+// from that new worktree ran the resume from a DIFFERENT cwd than the
+// session was born in, and the SDK threw "No conversation found with
+// session ID: ...". Fixed three ways, all below: (1) AttemptRecord.cwd
+// (looms.ts) records the cwd a session was actually born in; (2) before
+// minting a worktree, executeLoom reuses the previous attempt's recorded cwd
+// when that directory still exists instead of minting a new one; (3) the
+// attempt loop only ever passes `resume` when the previous attempt's
+// recorded cwd matches THIS attempt's cwd, and isSessionNotFoundError is a
+// last-resort runtime catch that drops `resume` and retries fresh in the
+// same cwd — the raw SDK error never becomes the thread's result.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -104,6 +121,16 @@ const MAX_TURNS: Record<LoomKind, number> = { quickfix: 50, story: 150, custom: 
 const BASE_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"];
 
 const tail = (s: string, n: number) => (s.length > n ? s.slice(-n) : s);
+
+// The Claude Agent SDK's exact resume-miss error text ("No conversation found
+// with session ID: <id>", exit 1) — thrown out of the query() generator
+// inside engine.ts's agent() when a resume's sessionId doesn't resolve to a
+// session in the cwd it was launched from. See the file header: this is the
+// bug the cwd-tracking/reuse logic below exists to prevent; this predicate is
+// the LAST-RESORT catch for when that prevention still wasn't enough.
+export function isSessionNotFoundError(err: unknown): boolean {
+  return err instanceof Error && /no conversation found/i.test(err.message);
+}
 
 // Conservative "is file under any of these path patterns" check — the same
 // literal-prefix approximation build-fanout.ts uses for allowedPaths overlap
@@ -1716,8 +1743,39 @@ export async function executeLoom(
     const baseSha = getLoom(loom.parentLoomId)?.baseSha;
     if (baseSha) {
       ownWorktreeBaseSha = baseSha;
-      ownWorktree = await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id));
+      // RESUME FIX (see file header): the SDK keys a resumable conversation by
+      // the cwd it was born in, not the sessionId alone. Minting a FRESH
+      // worktree here (a new tmpdir every executeLoom() call — vcs.ts's
+      // counter) while the loop below still resumes the previous attempt's
+      // sessionId is exactly the "No conversation found" bug. When the most
+      // recent attempt recorded a resumable session AND its cwd still exists
+      // on disk, reuse that SAME directory instead of minting a new one, so
+      // the resume below actually lands in the cwd the session remembers.
+      // Usually impossible: the finally block below reclaims (snapshots +
+      // removes) the worktree on every normal completion, so this only fires
+      // when that reclaim itself failed and retained the dir
+      // (loom.worktreeRetained) — the common case mints fresh, same as
+      // before, and the loop's own cwd-vs-attempt.cwd check (below) then
+      // correctly withholds `resume` rather than pass a stale session id.
+      const prior = loom.attempts[loom.attempts.length - 1];
+      // Gate reuse on the EXPLICIT, positively-set worktreeRetained flag, not
+      // bare directory existence: fs.existsSync alone can't distinguish "the
+      // finally block retained this dir because reclaim genuinely failed"
+      // from "some other unrelated tmpdir happens to still be there" (or,
+      // worse, one still on disk but no longer a registered git worktree,
+      // e.g. from a race with an external prune). worktreeRetained is set
+      // ONLY by this loom's own finally block (snapshot-throw, or a swallowed
+      // `git worktree remove --force` failure) and cleared the moment a dir
+      // is reused live (below) or genuinely removed — so it is proof the dir
+      // is still the SAME worktree this loom left behind, not just a lookalike.
+      const reusableCwd =
+        loom.worktreeRetained === true && prior?.sessionId && prior.cwd && fs.existsSync(prior.cwd)
+          ? prior.cwd
+          : null;
+      ownWorktree =
+        reusableCwd ?? (await withWorktreeLock(() => addWorktree(defaultGitRunner, manifest.root, baseSha, loom.id)));
       loom.worktree = ownWorktree;
+      if (reusableCwd) loom.worktreeRetained = undefined; // reclaimed as LIVE again, not an orphan-shielded dir
       opts.onState?.(loom); // persist BEFORE the build so a crash leaves a reclaimable record
     }
   }
@@ -1793,11 +1851,21 @@ export async function executeLoom(
 
       const role = n === maxAttempts ? "careful" : "dev";
       const model = policy[role];
-      const resume = loom.attempts[loom.attempts.length - 1]?.sessionId;
+      // RESUME FIX (file header): only resume the previous attempt's session
+      // when it was born in THIS SAME cwd. Within one executeLoom() call
+      // ownWorktree never changes, so a within-call retry (n>1) always
+      // matches and resumes exactly as before. Across executeLoom() calls
+      // (a thread retry) the cwd differs whenever the worktree-reuse above
+      // couldn't reuse the old directory — withholding `resume` there is
+      // what stops the SDK's "No conversation found" from ever reaching the
+      // agent() call in the first place.
+      const attemptCwd = buildCwd(loom, manifest);
+      const prevAttempt = loom.attempts[loom.attempts.length - 1];
+      const resume = prevAttempt?.sessionId && prevAttempt.cwd === attemptCwd ? prevAttempt.sessionId : undefined;
 
       setState("running");
       emit({ type: "attempt", n, role, model });
-      const attempt: AttemptRecord = { n, role, model, startedAt: Date.now() };
+      const attempt: AttemptRecord = { n, role, model, startedAt: Date.now(), cwd: attemptCwd };
       loom.attempts.push(attempt);
       opts.onState?.(loom);
 
@@ -1805,7 +1873,26 @@ export async function executeLoom(
         n === 1
           ? firstPrompt(loom, manifest)
           : retryPrompt(failing, lastVerdict, verdictWasNull, verifierRepair || undefined);
-      const verdict: Verdict | null = await runAttemptBuild(prompt, { model, resume, attempt });
+      let verdict: Verdict | null;
+      try {
+        verdict = await runAttemptBuild(prompt, { model, resume, attempt });
+      } catch (err) {
+        // Defensive fallback for the residual case: the cwd check above said
+        // resume SHOULD be safe, but the SDK still couldn't find the
+        // conversation (e.g. its session store was cleared out from under
+        // us). Fail OPEN to a brand-new session in the SAME cwd — the
+        // retryPrompt/firstPrompt above already carries the recap this
+        // attempt needs — rather than let the SDK's raw error become the
+        // thread's terminal result. Any OTHER error is a real failure and
+        // still propagates to the existing outer catch unchanged.
+        if (resume && isSessionNotFoundError(err)) {
+          emit({ type: "resume-fallback", n, reason: err instanceof Error ? err.message : String(err) });
+          attempt.sessionId = undefined;
+          verdict = await runAttemptBuild(prompt, { model, resume: undefined, attempt });
+        } else {
+          throw err;
+        }
+      }
 
       if (isAborted()) {
         attempt.endedAt = Date.now();
@@ -2161,8 +2248,22 @@ export async function executeLoom(
       }
       if (!retained) {
         try {
-          await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
-          loom.worktree = undefined;
+          const removed = await withWorktreeLock(() => removeWorktree(defaultGitRunner, manifest.root, wt));
+          if (removed) {
+            loom.worktree = undefined;
+          } else {
+            // `git worktree remove --force` genuinely failed (the dir is still
+            // on disk) but removeWorktree swallows that as best-effort, so its
+            // boolean return is the ONLY signal. Flag it exactly like the
+            // snapshot-throw branch above: leave `loom.worktree` pointed at the
+            // surviving dir so the boot reaper (dispatcher.ts) preserves rather
+            // than reaps it, AND so the next executeLoom's reuse check (above,
+            // "prior") requires this SAME flag before treating the dir as safe
+            // to reuse — bare fs.existsSync is not proof it's still a valid,
+            // unconsolidated worktree (it may already carry a committed
+            // recovery snapshot from snapshotWorktreeToBranch above).
+            loom.worktreeRetained = true;
+          }
           try {
             opts.onState?.(loom);
           } catch {}
