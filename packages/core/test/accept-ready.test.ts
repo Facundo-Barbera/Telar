@@ -106,59 +106,62 @@ describe("acceptLoom (real TELAR_HOME)", () => {
     expect(acceptedEvents[0]!.override).toBeUndefined();
   });
 
-  // #55 Fix 1: EVERY non-`ready`/non-`done` state is now an AUDITED OWNER
-  // OVERRIDE the server-derived `by` may close — no co-sign gate. `failed` and
-  // `queued` (the reported bug) both reach `done` with the audited flag/event.
+  // L3 (contract v0.8) — override is not accept: a bare acceptLoom on a
+  // non-ready loom must THROW, never silently override. Replaces the old
+  // "audited override with no opts" permissive behavior.
   for (const from of ["failed", "queued"] as const) {
-    test(`accept from '${from}' with no opts is an audited override -> done (no co-sign gate)`, () => {
+    test(`bare accept from '${from}' (non-ready) THROWS — override is not accept (L3)`, () => {
       const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
       loom.state = from;
       saveLoom(loom);
 
-      const accepted = acceptLoom(loom.id, "alice"); // no override/cosign opts
-      expect(accepted.state).toBe("done");
-      expect(accepted.acceptedOverride).toBe(true);
-      expect(getLoom(loom.id)!.state).toBe("done");
-
-      const { events } = readEvents(loom.id);
-      const acceptedEvents = events.filter((e) => e.type === "accepted");
-      expect(acceptedEvents.length).toBe(1);
-      expect(acceptedEvents[0]!.by).toBe("alice");
-      expect(acceptedEvents[0]!.override).toBe(true);
-      expect(acceptedEvents[0]!.fromState).toBe(from);
+      expect(() => acceptLoom(loom.id, "alice")).toThrow(/without override/);
+      expect(getLoom(loom.id)!.state).toBe(from); // never flipped
     });
   }
 
-  test("accepting a `failed` loom succeeds with {override:true, cosignedBy}", () => {
+  test("override accept of 'failed' with {override:true, missing, cosignedBy} -> done, records missing + cosign", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
     loom.state = "failed";
     saveLoom(loom);
 
-    const accepted = acceptLoom(loom.id, "alice", { override: true, cosignedBy: "bob" });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "no verifier ran", cosignedBy: "bob" });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
+    expect(accepted.acceptedOverrideMissing).toBe("no verifier ran");
 
     const { events } = readEvents(loom.id);
     const acceptedEvents = events.filter((e) => e.type === "accepted");
     expect(acceptedEvents.length).toBe(1);
     expect(acceptedEvents[0]!.override).toBe(true);
+    expect(acceptedEvents[0]!.missing).toBe("no verifier ran");
     expect(acceptedEvents[0]!.cosignedBy).toBe("bob");
   });
 
-  // P5 (docs/loom-model.md §A/§M): the owner may close a `needs-review` or
-  // `blocked` loom directly — NOT independently verified, so it is an AUDITED
-  // OVERRIDE (override:true event + acceptedOverride flag), never a clean
-  // accept, and the server-derived `by` is the human touch (no cosign needed).
+  // P5 (docs/loom-model.md §A/§M) + L3 (contract v0.8): the owner may close a
+  // `needs-review` or `blocked` loom directly, but ONLY as a distinct,
+  // deliberate override that names what is missing — a bare accept throws.
   for (const from of ["needs-review", "blocked"] as const) {
-    test(`accept from '${from}' is an audited override: override:true + flag, no cosign, -> done`, () => {
+    test(`bare accept from '${from}' (non-ready) THROWS — override is not accept (L3)`, () => {
       const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
       loom.state = from;
       saveLoom(loom);
 
-      const accepted = acceptLoom(loom.id, "alice"); // no override/cosign opts
+      expect(() => acceptLoom(loom.id, "alice")).toThrow(/without override/);
+      expect(getLoom(loom.id)!.state).toBe(from); // never flipped
+    });
+
+    test(`override accept from '${from}' with {override:true, missing} -> done, records acceptedOverrideMissing`, () => {
+      const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+      loom.state = from;
+      saveLoom(loom);
+
+      const accepted = acceptLoom(loom.id, "alice", { override: true, missing: `${from}: named gap` });
       expect(accepted.state).toBe("done");
       expect(accepted.acceptedOverride).toBe(true);
+      expect(accepted.acceptedOverrideMissing).toBe(`${from}: named gap`);
       expect(getLoom(loom.id)!.state).toBe("done");
+      expect(getLoom(loom.id)!.acceptedOverrideMissing).toBe(`${from}: named gap`);
 
       const { events } = readEvents(loom.id);
       const acceptedEvents = events.filter((e) => e.type === "accepted");
@@ -166,8 +169,35 @@ describe("acceptLoom (real TELAR_HOME)", () => {
       expect(acceptedEvents[0]!.by).toBe("alice");
       expect(acceptedEvents[0]!.override).toBe(true);
       expect(acceptedEvents[0]!.fromState).toBe(from);
+      expect(acceptedEvents[0]!.missing).toBe(`${from}: named gap`);
     });
   }
+
+  test("override:true with a blank missing throws (L3)", () => {
+    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+    loom.state = "needs-review";
+    saveLoom(loom);
+
+    expect(() => acceptLoom(loom.id, "alice", { override: true, missing: "   " })).toThrow(/non-blank .missing./);
+    expect(getLoom(loom.id)!.state).toBe("needs-review"); // never flipped
+  });
+
+  // L5 accept-lock corollary (mandate 8): a child is consumed by the weave
+  // rollup, never human-accepted directly.
+  test("accepting a child loom (parentLoomId set) is refused", () => {
+    const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });
+    loom.parentLoomId = "root_x";
+    loom.state = "ready";
+    saveLoom(loom);
+
+    expect(() => acceptLoom(loom.id, "alice")).toThrow(/child loom/);
+    expect(getLoom(loom.id)!.state).toBe("ready"); // never flipped
+
+    loom.state = "needs-review";
+    saveLoom(loom);
+    expect(() => acceptLoom(loom.id, "alice", { override: true, missing: "x" })).toThrow(/child loom/);
+    expect(getLoom(loom.id)!.state).toBe("needs-review"); // never flipped
+  });
 
   test("accepting an already-'done' loom throws", () => {
     const loom = createLoom({ project: "p", kind: "custom", title: "t", prompt: "x", account: "personal" });

@@ -105,9 +105,10 @@ export type Loom = {
   contractRequired?: boolean;
   // docs/loom-model.md §A — the git sha of the commit acceptLoom LANDED into
   // the project working tree when the owner closed the loom (ready->done).
-  // Absent when the project isn't a git repo, the tree was clean at accept
-  // time, or the commit failed (a commit failure is recorded as a
-  // "commit-failed" event and NEVER thrown out of accept).
+  // Absent when the project isn't a git repo or the tree was clean at accept
+  // time (no build output to land). NEVER set on a void accept: contract v0.8
+  // L2 aborts (throws, no state change) instead of reaching `done` when the
+  // loom produced build output but landing committed nothing.
   commit?: string;
   // docs/loom-model.md §A/§M (P5) — set true when the owner closed this loom
   // via an AUDITED OVERRIDE instead of a clean accept: it reached `done` from
@@ -116,6 +117,11 @@ export type Loom = {
   // matching `accepted` event carries `override:true`. Absent/false = a clean
   // accept of green.
   acceptedOverride?: boolean;
+  // L3 (contract v0.8) — the owner's acknowledgment naming what was missing/
+  // unverified at an AUDITED OVERRIDE accept. Required (non-blank) whenever a
+  // non-`ready` loom is accepted; absent on a clean accept of green. The
+  // matching `accepted` event carries the same string as `missing`.
+  acceptedOverrideMissing?: string;
   // Unit 6 (docs §8 MVP) — the string Verification of the end-of-orchestration
   // ALL-scope integration verify, recorded on a WOVEN root after its children
   // fold up to "ready". Mirrors ThreadView.latestVerdict (tick.ts). Purely
@@ -381,10 +387,13 @@ function producedBuildOutput(loom: Loom, seen: Set<string> = new Set()): boolean
 
 // docs/loom-model.md §A — "acceptance LANDS the work." Commit the loom's
 // changes in the project working tree on accept. Pure of process exit: every
-// failure mode is returned, never thrown, so accept can transition to `done`
-// regardless. Skips gracefully when the loom produced no build output (a
-// stranded/verify-only loom — never runs git add -A on unrelated files), when
-// the root is not a git repo, or when the tree is already clean.
+// failure mode is returned, never thrown. Contract v0.8 L2 overturns the old
+// "so accept can transition to `done` regardless" — acceptLoom now aborts the
+// accept (throws, no state change) when work was produced but nothing landed;
+// landWorkingTree itself stays total, it only reports the outcome. Skips
+// gracefully when the loom produced no build output (a stranded/verify-only
+// loom — never runs git add -A on unrelated files), when the root is not a
+// git repo, or when the tree is already clean.
 function landWorkingTree(loom: Loom, by: string, git: GitRunner, land: boolean): LandResult {
   // No-sweep guard (FIRST, before any git call): only land when the caller
   // determined there is work to land (a real builder attempt, or a state whose
@@ -416,6 +425,22 @@ function landWorkingTree(loom: Loom, by: string, git: GitRunner, land: boolean):
   // (Conflicts against a moved baseBranch / a dirty shared tree are the §10
   // live-validation gap; until then it rides the same default-OFF flag.)
   if (loom.consolidationBranch) {
+    // L2 — deterministic re-derivation of landing evidence at accept time: the
+    // deliverable is the consolidation branch, so count the commits it
+    // actually carries over the pinned base BEFORE merging. Fail-closed: a git
+    // failure is "no evidence", an empty branch is "nothing to land" — both
+    // surface as an error LandResult (the caller, acceptLoom, aborts the
+    // accept when work was produced). Without this, `git merge --no-ff` on an
+    // empty branch reports "Already up to date" (status 0, no commit created)
+    // and would have looked like a successful landing.
+    const range = loom.baseSha ? `${loom.baseSha}..${loom.consolidationBranch}` : `HEAD..${loom.consolidationBranch}`;
+    const count = git(root, ["rev-list", "--count", range]);
+    if (count.status !== 0) {
+      return { committed: false, error: `git rev-list failed re-deriving consolidation evidence: ${count.stderr.trim() || count.stdout.trim()}` };
+    }
+    if ((parseInt(count.stdout.trim() || "0", 10) || 0) === 0) {
+      return { committed: false, error: `consolidation branch ${loom.consolidationBranch} carries 0 commits over base — nothing to land` };
+    }
     const message = `feat(loom): ${loom.title}\n\nLoom: ${loom.id}\nReview-branch: ${loom.consolidationBranch}\nAccepted-by: ${by}`;
     const merge = git(root, ["merge", "--no-ff", "-m", message, loom.consolidationBranch]);
     if (merge.status !== 0) {
@@ -455,60 +480,48 @@ function landWorkingTree(loom: Loom, by: string, git: GitRunner, land: boolean):
   return { committed: true, sha: head.stdout.trim() };
 }
 
-// docs/loom-model.md §A — on the accept transition to `done`, LAND the work
-// and record the outcome on the loom (commit sha + event) without ever
-// letting a git failure escape accept. Mutates `loom` in place; the caller
-// saves it.
-function recordLanding(loom: Loom, by: string, git: GitRunner, land: boolean): void {
-  let res: LandResult;
+// L2 (contract v0.8) — land the diff and RETURN the outcome (no loom
+// mutation, no event) so acceptLoom can decide BEFORE recording anything: a
+// void accept (work produced, nothing landed) must never flip state or write
+// a success-shaped event. Wraps landWorkingTree's total contract with the
+// same throwing-runner guard the old recordLanding carried, so an injected
+// fake git runner that throws still comes back as a LandResult, not an
+// uncaught exception mid-accept.
+function attemptLanding(loom: Loom, by: string, git: GitRunner, land: boolean): LandResult {
   try {
-    res = landWorkingTree(loom, by, git, land);
+    return landWorkingTree(loom, by, git, land);
   } catch (err) {
-    // landWorkingTree is contractually total, but a git runner throwing
-    // (e.g. an injected fake) must still never surface out of accept.
-    res = { committed: false, error: err instanceof Error ? err.message : String(err) };
-  }
-  if (res.committed) {
-    loom.commit = res.sha;
-    try {
-      appendEvent(loom.id, { type: "committed", sha: res.sha, by });
-    } catch {}
-  } else if ("error" in res) {
-    try {
-      appendEvent(loom.id, { type: "commit-failed", error: res.error, by });
-    } catch {}
-  } else {
-    try {
-      appendEvent(loom.id, { type: "commit-skipped", reason: res.skipped, by });
-    } catch {}
+    return { committed: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-// §A / §M.2 (docs/loom-model.md): the ONLY path to "done". There are exactly
-// two outcomes, keyed on state, and only the first is a "clean" accept:
-//  1. CLEAN — from `ready` (independently verified green). override:false, no
-//     flag.
-//  2. AUDITED OWNER OVERRIDE (P5) — from ANY other non-`done` state (`queued`,
-//     `scoping`, `charter-review`, `preparing`, `running`,
-//     `verifying`, `needs-review`, `blocked`, `halted`, `failed`, `skipped`).
-//     The catch-all below covers any paused state (producedBuildOutput recurses
-//     into the child subtree so accepting a root whose child built lands
-//     correctly). The loom was
-//     NOT independently verified, so the owner closing it is a distinct,
-//     AUDITED override: recorded as `accepted {override:true, fromState}` + the
-//     `acceptedOverride` flag, never a silent clean accept. The owner's
-//     server-derived `by` IS the §M.2 human touch these states require; a
-//     `cosignedBy` may still be attached but is never demanded — it is optional
-//     metadata, not a gate.
-// Both LAND the diff and reach `done`; nothing else can. Landing itself no
-// longer sweeps: a stranded/never-built loom produced no build output, so
-// recordLanding SKIPS the commit (see landWorkingTree) and the override is
-// audited (`accepted {override:true}` + `commit-skipped`) without touching
-// unrelated files in the shared tree.
+// §A / §M.2 (docs/loom-model.md), overturned/amended by contract v0.8 L2/L3/L5:
+// the ONLY path to "done". LAND FIRST, then decide — there is no state flip to
+// `done` before landing evidence exists. Three outcomes:
+//  1. CLEAN accept of `ready` (independently verified green). override:false,
+//     no flag.
+//  2. AUDITED OWNER OVERRIDE — accepting a non-`ready` loom is a distinct,
+//     deliberate act (L3): it REQUIRES `override:true` PLUS a non-blank
+//     `missing` acknowledgment naming what is unverified/incomplete. A bare
+//     acceptLoom(id, by) on a non-ready loom THROWS. Recorded as `accepted
+//     {override:true, fromState, missing}` + `acceptedOverride`/
+//     `acceptedOverrideMissing` on the record. The owner's server-derived `by`
+//     IS the human touch; `cosignedBy` may still be attached but is never
+//     demanded — optional metadata, not a gate.
+//  3. VOID accept (L2) — `producedBuildOutput(loom)` is true (work exists,
+//     attempt-existence based, recurses into a woven root's child subtree) but
+//     landing committed nothing (merge conflict, git failure, throwing runner,
+//     empty consolidation branch, or a clean-but-built shared tree). ABORTS
+//     loudly: throws, NO state change, an `accept-aborted` event records why.
+//     The sole exemption is a genuinely non-git project (`skipped:"not a git
+//     repository"`) — there is no VCS to land into.
+// L5 accept-lock corollary (mandate 8): a child loom (parentLoomId set) is
+// refused outright — children are consumed by the weave rollup, never
+// human-accepted directly.
 export function acceptLoom(
   id: string,
   by: string,
-  opts?: { override?: boolean; cosignedBy?: string; git?: GitRunner },
+  opts?: { override?: boolean; missing?: string; cosignedBy?: string; git?: GitRunner },
 ): Loom {
   // §A: "done" is reachable solely through a human (or an authenticated
   // human delegate) — a blank/missing `by` must never slip through, exactly
@@ -517,42 +530,57 @@ export function acceptLoom(
   const loom = getLoom(id);
   if (!loom) throw new Error(`loom not found: ${id}`);
   if (loom.state === "done") throw new Error("loom already accepted");
+  // L5 accept-lock corollary (mandate 8): a child is consumed by the weave
+  // rollup, never human-accepted directly.
+  if (loom.parentLoomId) {
+    throw new Error("cannot accept a child loom — children are consumed by the weave rollup, never accepted directly");
+  }
   const git = opts?.git ?? defaultGitRunner;
+  const fromState = loom.state;
+  const isClean = fromState === "ready";
 
-  // (1) CLEAN accept of green — override:false (no flag, no override on event).
-  if (loom.state === "ready") {
-    loom.state = "done";
-    appendEvent(id, { type: "accepted", by });
-    // A clean accept lands only when the loom produced build output — a "ready"
-    // single loom that built to get there, a woven root that owns a
-    // consolidationBranch (--no-ff merge), or a child thread with a worktree. A
-    // verify-only / never-built ready loom has nothing of its own in the shared
-    // tree, so landWorkingTree records commit-skipped and it still reaches
-    // "done" — the SAME producedBuildOutput predicate the override path uses below.
-    recordLanding(loom, by, git, producedBuildOutput(loom)); // §A: accept LANDS the work (never throws)
-    saveLoom(loom);
-    return loom;
+  // L3 — a non-`ready` accept is an OVERRIDE: a distinct, deliberate act that
+  // names what is missing. Require override:true AND a non-blank
+  // acknowledgment BEFORE any landing attempt.
+  let missing: string | undefined;
+  if (!isClean) {
+    if (opts?.override !== true) {
+      throw new Error(`cannot accept a non-ready loom (state: ${fromState}) without override — pass { override: true, missing } naming what is missing`);
+    }
+    missing = opts.missing?.trim();
+    if (!missing) {
+      throw new Error("an override accept requires a non-blank `missing` acknowledgment naming what is unverified or incomplete");
+    }
   }
 
-  // (2) AUDITED OWNER OVERRIDE: every remaining non-`ready`/non-`done` state is
-  // a stranded, non-green loom the OWNER may close. No co-sign gate — the
-  // server-derived `by` is the human touch; `cosignedBy` is optional metadata.
-  const fromState = loom.state;
-  loom.state = "done";
-  loom.acceptedOverride = true; // the audited-override flag (§A/§M)
-  const ev: { type: string } & Record<string, unknown> = { type: "accepted", by, override: true, fromState };
-  if (opts?.cosignedBy?.trim()) ev.cosignedBy = opts.cosignedBy;
-  appendEvent(id, ev);
-  // Land only when there's work to land — the SAME producedBuildOutput
-  // predicate as the clean path. It now recurses into a woven root's subtree,
-  // so a root demoted to "needs-review"/"blocked" whose CHILD built is already
-  // covered (its subtree produced output -> true); a single loom that built and
-  // is now "blocked" has its own builder attempt -> true. A stranded loom the
-  // owner is just closing (queued/scoping/…/verify-only demoted to needs-review)
-  // produced nothing, so we do NOT git add -A the shared tree on its behalf —
-  // that would only sweep unrelated dirty files (the #55 / CA2 footgun).
+  // L2 — re-derive landing evidence BEFORE any state flip. Land first; a git
+  // failure/empty branch/clean-but-built tree is a void accept.
+  // producedBuildOutput recurses into a woven root's child subtree (its CHILD
+  // does the building), so a root whose child built is correctly gated too.
   const land = producedBuildOutput(loom);
-  recordLanding(loom, by, git, land); // §A: accept LANDS the work (never throws)
+  const res = attemptLanding(loom, by, git, land);
+  const nonGit = !res.committed && "skipped" in res && res.skipped === "not a git repository";
+  if (land && !res.committed && !nonGit) {
+    const why = "error" in res ? res.error : (res as { skipped: string }).skipped;
+    appendEvent(id, { type: "accept-aborted", by, fromState, reason: why });
+    throw new Error(`cannot accept loom ${id}: it produced build output but landing committed nothing (${why}) — the accept is void (L2)`);
+  }
+
+  // Landing succeeded, or there was genuinely nothing to land (no build
+  // output / non-git project). NOW flip and record.
+  loom.state = "done";
+  if (res.committed) loom.commit = res.sha;
+  if (isClean) {
+    appendEvent(id, { type: "accepted", by });
+  } else {
+    loom.acceptedOverride = true; // the audited-override flag (§A/§M)
+    loom.acceptedOverrideMissing = missing;
+    const ev: { type: string } & Record<string, unknown> = { type: "accepted", by, override: true, fromState, missing };
+    if (opts?.cosignedBy?.trim()) ev.cosignedBy = opts.cosignedBy;
+    appendEvent(id, ev);
+  }
+  if (res.committed) appendEvent(id, { type: "committed", sha: res.sha, by });
+  else appendEvent(id, { type: "commit-skipped", reason: (res as { skipped: string }).skipped, by });
   saveLoom(loom);
   return loom;
 }

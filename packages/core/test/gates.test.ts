@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import os from "node:os";
+import path from "node:path";
 import { runGate, runGates } from "../src/gates";
 
 const cwd = os.tmpdir();
@@ -47,5 +48,19 @@ describe("gates", () => {
     const { ok, results } = await runGates([], cwd);
     expect(ok).toBe(true);
     expect(results).toEqual([]);
+  });
+
+  test("missing working directory fails closed with a truthful error", async () => {
+    // A cwd that was reaped out from under the gate (TELAR_HOME/tmpdir wipe)
+    // used to surface as the misleading `spawn /bin/sh ENOENT`. It must instead
+    // fail closed naming the real culprit — the absent directory — never pass.
+    const gone = path.join(cwd, `telar-missing-cwd-${process.pid}`);
+    const r = await runGate({ name: "gone", run: "echo should-not-run" }, gone);
+    expect(r.ok).toBe(false);
+    expect(r.exitCode).toBeNull();
+    expect(r.timedOut).toBe(false);
+    expect(r.output).toContain(gone);
+    expect(r.output).not.toContain("/bin/sh");
+    expect(r.output).not.toContain("should-not-run");
   });
 });

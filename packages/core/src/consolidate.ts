@@ -40,31 +40,36 @@ export async function foldChildOnDone(args: {
 }
 
 // Finalize the review branch at rollup → `ready`: count the commits that landed
-// on it (relative to the pinned base). If ZERO children folded, drop the empty
-// branch and unset root.consolidationBranch so there is no dangling empty
-// deliverable. Otherwise leave the branch (the deliverable) in place. Never
-// merges, never checks out baseBranch, never changes loom.state — the caller
-// records the `consolidated` event and persists.
+// on it (relative to the pinned base). If ZERO children folded — CONFIRMED by a
+// successful rev-list returning 0 — drop the empty branch and unset
+// root.consolidationBranch so there is no dangling empty deliverable. A git
+// command FAILURE (rev-list itself erroring) is NOT a zero: it means we could
+// not determine the count, so the branch and consolidationBranch are left
+// intact and the failure is surfaced via the optional `error` field — a
+// transient/real git error must never be collapsed into "confirmed zero" and
+// force-delete real child work. Otherwise (non-zero) leave the branch (the
+// deliverable) in place. Never merges, never checks out baseBranch, never
+// changes loom.state — the caller records the `consolidated` event and persists.
 export function finalizeConsolidation(
   root: Loom,
   repoRoot: string,
   git: GitRunner = defaultGitRunner,
-): { commits: number; dropped: boolean } {
+): { commits: number; dropped: boolean; error?: string } {
   const branch = root.consolidationBranch;
   if (!branch) return { commits: 0, dropped: false };
 
-  let commits = 0;
-  if (root.baseSha) {
-    const r = git(repoRoot, ["rev-list", "--count", `${root.baseSha}..${branch}`]);
-    if (r.status === 0) commits = parseInt(r.stdout.trim() || "0", 10) || 0;
-  } else {
-    // No pinned base to diff against — fall back to any commits reachable from
-    // the branch that aren't on the checked-out HEAD.
-    const r = git(repoRoot, ["rev-list", "--count", `HEAD..${branch}`]);
-    if (r.status === 0) commits = parseInt(r.stdout.trim() || "0", 10) || 0;
+  const range = root.baseSha ? `${root.baseSha}..${branch}` : `HEAD..${branch}`;
+  const r = git(repoRoot, ["rev-list", "--count", range]);
+  if (r.status !== 0) {
+    // COULD NOT DETERMINE the count (transient/real git failure). Do NOT
+    // collapse this into "confirmed zero" and force-delete real work — leave
+    // the branch and consolidationBranch intact so a later accept can
+    // re-derive the true count.
+    return { commits: 0, dropped: false, error: `rev-list failed: ${r.stderr.trim() || r.stdout.trim()}` };
   }
-
+  const commits = parseInt(r.stdout.trim() || "0", 10) || 0;
   if (commits === 0) {
+    // CONFIRMED empty — the branch equals base, no child folded. Safe to drop.
     git(repoRoot, ["branch", "-D", branch]);
     root.consolidationBranch = undefined;
     return { commits: 0, dropped: true };

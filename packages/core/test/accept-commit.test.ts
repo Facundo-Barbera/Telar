@@ -97,6 +97,7 @@ describe("acceptLoom lands the work (§A)", () => {
     saveLoom(loom);
     const { runner, calls } = scriptedGit({
       "rev-parse --is-inside-work-tree": { status: 0, stdout: "true\n", stderr: "" },
+      "rev-list --count": { status: 0, stdout: "2\n", stderr: "" },
       "rev-parse HEAD": { status: 0, stdout: "wovensha\n", stderr: "" },
     });
 
@@ -146,12 +147,15 @@ describe("acceptLoom lands the work (§A)", () => {
   });
 
   // E1 clean-accept guard (the clean-path mirror of the override no-sweep cases
-  // at 222 & 244): a verify-only / never-built loom that reached `ready` (a green
+  // below): a verify-only / never-built loom that reached `ready` (a green
   // verify with no builder attempt, no consolidationBranch, no worktree) produced
   // NO build output, so a CLEAN accept must land NOTHING — the git runner is never
   // invoked, so `git add -A` can't sweep the user's unrelated dirty files. It
-  // still reaches `done` with a commit-skipped record.
-  test("a verify-only/never-built ready loom lands NOTHING — git never invoked, still done + commit-skipped", () => {
+  // still reaches `done` with a commit-skipped record. L2 boundary/regression:
+  // producedBuildOutput===false means the L2 landing-evidence gate is NOT
+  // engaged at all — "zero commits where work exists" does not apply when no
+  // work exists.
+  test("a verify-only/never-built ready loom produced NO build output — L2 gate not engaged, still done + commit-skipped, git never invoked", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "x", account: "personal" });
     loom.state = "ready";
@@ -173,9 +177,13 @@ describe("acceptLoom lands the work (§A)", () => {
     expect(events.some((e) => e.type === "accepted" && !("override" in e))).toBe(true);
     expect(events.some((e) => e.type === "commit-skipped")).toBe(true);
     expect(events.some((e) => e.type === "committed")).toBe(false);
+    expect(events.some((e) => e.type === "accept-aborted")).toBe(false);
   });
 
-  test("clean tree -> skips commit gracefully, still transitions to done, no commit sha", () => {
+  // L2 — a ready loom that BUILT (producedBuildOutput true) but whose tree is
+  // clean at accept time has nothing to land: the accept is VOID, not a silent
+  // done. Reverses the old "skips commit gracefully, still done" contract.
+  test("ready loom that BUILT but whose tree is clean at accept ABORTS (L2 — nothing landed)", () => {
     const m = makeProject();
     const loom = readyLoom(m.name);
     const { runner, calls } = scriptedGit({
@@ -183,13 +191,13 @@ describe("acceptLoom lands the work (§A)", () => {
       "status --porcelain": { status: 0, stdout: "\n", stderr: "" },
     });
 
-    const accepted = acceptLoom(loom.id, "alice", { git: runner });
-    expect(accepted.state).toBe("done");
-    expect(accepted.commit).toBeUndefined();
+    expect(() => acceptLoom(loom.id, "alice", { git: runner })).toThrow(/committed nothing|void/);
+    expect(getLoom(loom.id)!.state).toBe("ready");
     expect(calls.some((c) => c.args[0] === "commit")).toBe(false);
 
     const { events } = readEvents(loom.id);
-    expect(events.some((e) => e.type === "commit-skipped")).toBe(true);
+    expect(events.some((e) => e.type === "accept-aborted")).toBe(true);
+    expect(events.some((e) => e.type === "commit")).toBe(false);
     expect(events.some((e) => e.type === "committed")).toBe(false);
   });
 
@@ -206,7 +214,10 @@ describe("acceptLoom lands the work (§A)", () => {
     expect(calls.some((c) => c.args[0] === "status")).toBe(false);
   });
 
-  test("commit failure -> recorded on the loom, NEVER thrown, still done", () => {
+  // L2 — a git COMMIT failure on a loom that produced build output means
+  // nothing landed: the accept is void. Reverses the old "recorded, never
+  // thrown, still done" contract.
+  test("a git COMMIT failure on a built loom ABORTS the accept (L2)", () => {
     const m = makeProject();
     const loom = readyLoom(m.name);
     const { runner } = scriptedGit({
@@ -215,35 +226,30 @@ describe("acceptLoom lands the work (§A)", () => {
       commit: { status: 1, stdout: "", stderr: "nothing to commit / author unknown" },
     });
 
-    let accepted: ReturnType<typeof acceptLoom> | undefined;
-    expect(() => {
-      accepted = acceptLoom(loom.id, "alice", { git: runner });
-    }).not.toThrow();
-    expect(accepted!.state).toBe("done");
-    expect(accepted!.commit).toBeUndefined();
+    expect(() => acceptLoom(loom.id, "alice", { git: runner })).toThrow(/committed nothing|void/);
+    expect(getLoom(loom.id)!.state).toBe("ready");
+    expect(getLoom(loom.id)!.commit).toBeUndefined();
 
     const { events } = readEvents(loom.id);
-    const failed = events.filter((e) => e.type === "commit-failed");
-    expect(failed.length).toBe(1);
-    expect(String(failed[0]!.error)).toContain("git commit failed");
+    expect(events.some((e) => e.type === "accept-aborted")).toBe(true);
+    expect(events.some((e) => e.type === "commit-failed")).toBe(false);
   });
 
-  test("a git runner that THROWS never escapes accept", () => {
+  // L2 — a throwing git runner is itself "no evidence a commit happened":
+  // the accept must abort, not silently swallow the throw into a done loom.
+  test("a git runner that THROWS aborts the accept (L2), state unchanged", () => {
     const m = makeProject();
     const loom = readyLoom(m.name);
     const runner: GitRunner = () => {
       throw new Error("boom");
     };
-    let accepted: ReturnType<typeof acceptLoom> | undefined;
-    expect(() => {
-      accepted = acceptLoom(loom.id, "alice", { git: runner });
-    }).not.toThrow();
-    expect(accepted!.state).toBe("done");
+    expect(() => acceptLoom(loom.id, "alice", { git: runner })).toThrow();
+    expect(getLoom(loom.id)!.state).toBe("ready");
     const { events } = readEvents(loom.id);
-    expect(events.some((e) => e.type === "commit-failed")).toBe(true);
+    expect(events.some((e) => e.type === "accept-aborted")).toBe(true);
   });
 
-  test("override accept (explicit cosign, `failed`) also lands the work", () => {
+  test("override accept of 'failed' with {override:true, missing, cosignedBy} also lands the work", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "red land", prompt: "x", account: "personal" });
     loom.state = "failed";
@@ -255,15 +261,16 @@ describe("acceptLoom lands the work (§A)", () => {
       "rev-parse HEAD": { status: 0, stdout: "deadbeef\n", stderr: "" },
     });
 
-    const accepted = acceptLoom(loom.id, "alice", { override: true, cosignedBy: "bob", git: runner });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "verify never ran", cosignedBy: "bob", git: runner });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
+    expect(accepted.acceptedOverrideMissing).toBe("verify never ran");
     expect(accepted.commit).toBe("deadbeef");
   });
 
   // P5 (docs/loom-model.md §A/§M): an OWNER OVERRIDE from needs-review still
   // LANDS the work — no cosign required — recording it as an audited override.
-  test("owner override accept from `needs-review` lands the work (no cosign)", () => {
+  test("owner override accept from `needs-review` with {override:true, missing} lands the work (no cosign)", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "review land", prompt: "x", account: "personal" });
     loom.state = "needs-review";
@@ -275,7 +282,7 @@ describe("acceptLoom lands the work (§A)", () => {
       "rev-parse HEAD": { status: 0, stdout: "cafef00d\n", stderr: "" },
     });
 
-    const accepted = acceptLoom(loom.id, "alice", { git: runner });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "no executable check", git: runner });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
     expect(accepted.commit).toBe("cafef00d");
@@ -289,15 +296,16 @@ describe("acceptLoom lands the work (§A)", () => {
   // (no builder attempt) must land NOTHING — the git runner must never see a
   // status/add/commit, so `git add -A` can't sweep the user's unrelated dirty
   // files. It still reaches `done` as an audited override.
-  test("a stranded `queued` loom (no build output) lands NOTHING — no git status/add/commit", () => {
+  test("a stranded `queued` loom (no build output), override accept, lands NOTHING — no git status/add/commit", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "x", account: "personal" });
     // state stays `queued`; attempts: [] -> produced no build output
     const { runner, calls } = scriptedGit({});
 
-    const accepted = acceptLoom(loom.id, "alice", { git: runner });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "abandoned before build", git: runner });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
+    expect(accepted.acceptedOverrideMissing).toBe("abandoned before build");
     expect(accepted.commit).toBeUndefined();
     // The git runner is NEVER invoked — the no-build-output guard short-circuits
     // before any git command, so nothing in the shared tree is touched.
@@ -311,7 +319,7 @@ describe("acceptLoom lands the work (§A)", () => {
 
   // A `failed` loom that NEVER built (verify-only / abandoned before any builder
   // attempt) is the same no-sweep case: audited override, but zero git activity.
-  test("a `failed` loom with no build output lands NOTHING and reaches done as an audited override", () => {
+  test("a `failed` loom with no build output, override accept, lands NOTHING and reaches done as an audited override", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "t", prompt: "x", account: "personal" });
     loom.state = "failed";
@@ -319,7 +327,7 @@ describe("acceptLoom lands the work (§A)", () => {
     saveLoom(loom);
     const { runner, calls } = scriptedGit({});
 
-    const accepted = acceptLoom(loom.id, "alice", { git: runner });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "verify never ran, then abandoned", git: runner });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
     expect(calls.length).toBe(0);
@@ -344,7 +352,7 @@ describe("acceptLoom lands the work (§A)", () => {
       "status --porcelain": { status: 0, stdout: " M unrelated.ts\n", stderr: "" },
     });
 
-    const accepted = acceptLoom(loom.id, "alice", { git: runner });
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "no executable check, unrelated tree dirty", git: runner });
     expect(accepted.state).toBe("done");
     expect(accepted.acceptedOverride).toBe(true);
     expect(accepted.commit).toBeUndefined();
@@ -355,5 +363,46 @@ describe("acceptLoom lands the work (§A)", () => {
     expect(events.some((e) => e.type === "accepted" && e.override === true && e.fromState === "needs-review")).toBe(true);
     expect(events.some((e) => e.type === "commit-skipped")).toBe(true);
     expect(events.some((e) => e.type === "committed")).toBe(false);
+  });
+
+  // L2 satisfied: a woven root's consolidation branch carries real commits —
+  // the override accept lands via the --no-ff merge.
+  test("override accept of a woven root with a NON-empty consolidation branch lands via merge (L2 satisfied)", () => {
+    const m = makeProject();
+    const loom = createLoom({ project: m.name, kind: "custom", title: "woven review", prompt: "x", account: "personal" });
+    loom.state = "needs-review";
+    loom.consolidationBranch = `telar/${loom.id}`;
+    saveLoom(loom);
+    const { runner, calls } = scriptedGit({
+      "rev-parse --is-inside-work-tree": { status: 0, stdout: "true\n", stderr: "" },
+      "rev-list --count": { status: 0, stdout: "3\n", stderr: "" },
+      "merge --no-ff": { status: 0, stdout: "", stderr: "" },
+      "rev-parse HEAD": { status: 0, stdout: "mergesha\n", stderr: "" },
+    });
+
+    const accepted = acceptLoom(loom.id, "alice", { override: true, missing: "panel flagged one lens", git: runner });
+    expect(accepted.state).toBe("done");
+    expect(accepted.commit).toBe("mergesha");
+    expect(calls.some((c) => c.args[0] === "merge")).toBe(true);
+  });
+
+  // L2 refused: a woven root's consolidation branch is confirmed empty
+  // (0 commits over base) — nothing to land, the override accept is void.
+  test("override accept of a woven root whose consolidation branch has 0 commits is refused (L2)", () => {
+    const m = makeProject();
+    const loom = createLoom({ project: m.name, kind: "custom", title: "woven review", prompt: "x", account: "personal" });
+    loom.state = "needs-review";
+    loom.consolidationBranch = `telar/${loom.id}`;
+    saveLoom(loom);
+    const { runner, calls } = scriptedGit({
+      "rev-parse --is-inside-work-tree": { status: 0, stdout: "true\n", stderr: "" },
+      "rev-list --count": { status: 0, stdout: "0\n", stderr: "" },
+    });
+
+    expect(() => acceptLoom(loom.id, "alice", { override: true, missing: "empty branch", git: runner })).toThrow(/0 commits over base|void/);
+    expect(getLoom(loom.id)!.state).toBe("needs-review");
+    const { events } = readEvents(loom.id);
+    expect(events.some((e) => e.type === "accept-aborted")).toBe(true);
+    expect(calls.some((c) => c.args[0] === "merge")).toBe(false);
   });
 });

@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Loom } from "../src/looms";
 import { addWorktree, createConsolidationBranch, defaultGitRunner, removeWorktree, resolveBaseSha } from "../src/vcs";
+import type { GitRunner } from "../src/vcs";
 import { finalizeConsolidation, foldChildOnDone } from "../src/consolidate";
 
 // addWorktree now mints under TELAR_HOME/worktrees (vcs.ts) — pin it to a
@@ -226,5 +227,27 @@ describe("finalizeConsolidation zero-fold case", () => {
     expect(root.consolidationBranch).toBeUndefined();
     // The branch ref is gone.
     expect(() => git(repo, ["rev-parse", "--verify", "telar/root1"])).toThrow();
+  });
+
+  // L2 (contract v0.8) honest split — a rev-list FAILURE is "could not
+  // determine", never "confirmed zero". Collapsing it into zero would
+  // force-delete a real deliverable on a transient/real git error.
+  test("a rev-list FAILURE does NOT drop the branch (honest split — no data loss)", () => {
+    const { root } = setupWeave();
+    const failCalls: { root: string; args: string[] }[] = [];
+    const failingGit: GitRunner = (r, args) => {
+      failCalls.push({ root: r, args });
+      if (args[0] === "rev-list") return { status: 128, stdout: "", stderr: "fatal: bad revision" };
+      return defaultGitRunner(r, args);
+    };
+
+    const fin = finalizeConsolidation(root, repo, failingGit);
+    expect(fin.commits).toBe(0);
+    expect(fin.dropped).toBe(false);
+    expect(fin.error).toBeTruthy();
+    expect(root.consolidationBranch).toBe("telar/root1"); // NOT unset
+    // The branch ref still resolves — nothing was deleted.
+    expect(() => git(repo, ["rev-parse", "--verify", "telar/root1"])).not.toThrow();
+    expect(failCalls.some((c) => c.args[0] === "branch" && c.args[1] === "-D")).toBe(false);
   });
 });

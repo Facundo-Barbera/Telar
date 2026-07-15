@@ -55,6 +55,7 @@ describe("landWorkingTree is branch-aware (via acceptLoom)", () => {
 
     const { runner, calls } = scriptedGit({
       "rev-parse --is-inside-work-tree": { status: 0, stdout: "true", stderr: "" },
+      "rev-list --count": { status: 0, stdout: "2", stderr: "" },
       "merge --no-ff": { status: 0, stdout: "", stderr: "" },
       "rev-parse HEAD": { status: 0, stdout: "mergesha123", stderr: "" },
     });
@@ -75,7 +76,10 @@ describe("landWorkingTree is branch-aware (via acceptLoom)", () => {
     expect(evs.some((e) => e.type === "committed" && (e as { sha?: string }).sha === "mergesha123")).toBe(true);
   });
 
-  test("a merge failure is returned as a LandResult (commit-failed event), never thrown; loom still reaches done", () => {
+  // L2 (contract v0.8) reverses the old "never thrown; loom still reaches
+  // done" contract: a merge conflict means the accept produced no landing
+  // evidence — it ABORTS loudly instead of silently reaching `done`.
+  test("a merge conflict ABORTS the accept (L2) — thrown, no state change, accept-aborted recorded", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "woven root", prompt: "x", account: "personal" });
     loom.state = "ready";
@@ -84,17 +88,16 @@ describe("landWorkingTree is branch-aware (via acceptLoom)", () => {
 
     const { runner } = scriptedGit({
       "rev-parse --is-inside-work-tree": { status: 0, stdout: "true", stderr: "" },
+      "rev-list --count": { status: 0, stdout: "2", stderr: "" },
       "merge --no-ff": { status: 1, stdout: "", stderr: "CONFLICT (content): merge conflict" },
     });
 
-    let accepted!: ReturnType<typeof acceptLoom>;
-    expect(() => {
-      accepted = acceptLoom(loom.id, "alice", { git: runner });
-    }).not.toThrow();
-    expect(accepted.state).toBe("done"); // accept still lands the state
-    expect(accepted.commit).toBeUndefined(); // no sha recorded
+    expect(() => acceptLoom(loom.id, "alice", { git: runner })).toThrow();
+    expect(getLoom(loom.id)!.state).toBe("ready");
+    expect(getLoom(loom.id)!.commit).toBeUndefined(); // no sha recorded
     const evs = readEvents(loom.id).events;
-    expect(evs.some((e) => e.type === "commit-failed")).toBe(true);
+    expect(evs.some((e) => e.type === "accept-aborted")).toBe(true);
+    expect(evs.some((e) => e.type === "commit-failed")).toBe(false);
   });
 
   test("regression: NO consolidationBranch -> the identical add -A + commit path", () => {
@@ -116,14 +119,16 @@ describe("landWorkingTree is branch-aware (via acceptLoom)", () => {
     expect(calls.some((c) => c.args[0] === "merge")).toBe(false);
   });
 
-  test("no-sweep: a stranded loom (no build output, no branch) makes NO git call", () => {
+  // L3 (contract v0.8) — a bare accept on a non-ready loom now throws; a
+  // stranded loom is closed via a deliberate override naming what's missing.
+  test("no-sweep: a stranded loom (no build output, no branch), override accept, makes NO git call", () => {
     const m = makeProject();
     const loom = createLoom({ project: m.name, kind: "custom", title: "stranded", prompt: "x", account: "personal" });
     loom.state = "queued"; // never built, no consolidationBranch
     saveLoom(loom);
 
     const { runner, calls } = scriptedGit({});
-    const accepted = acceptLoom(loom.id, "carol", { git: runner });
+    const accepted = acceptLoom(loom.id, "carol", { override: true, missing: "never built", git: runner });
     expect(accepted.state).toBe("done"); // audited override close
     expect(accepted.acceptedOverride).toBe(true);
     expect(calls.length).toBe(0); // no-sweep guard short-circuited before any git call

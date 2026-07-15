@@ -613,6 +613,7 @@ function runWeaveWiring(
           branch: fin.dropped ? null : result.consolidationBranch,
           commits: fin.commits,
           dropped: fin.dropped,
+          ...(fin.error ? { error: fin.error } : {}),
         });
         saveLoom(result);
       } catch (err) {

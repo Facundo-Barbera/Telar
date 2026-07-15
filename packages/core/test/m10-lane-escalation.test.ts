@@ -321,13 +321,23 @@ describe("answerBlocked (human gate + persist + re-dispatch)", () => {
     expect(events.find((e) => e.type === "lane-answered")!.by).toBe("you");
 
     // The moat: the re-dispatched loom re-verifies and lands `ready` at most —
-    // NEVER `done`. Only acceptLoom + a human `by` promotes.
-    await new Promise((r) => setTimeout(r, 20));
+    // NEVER `done`. This fixture has no live critic agent, so the live-critic
+    // assertion can't be proven and the root settles `needs-review` (fail-closed).
+    const deadline = Date.now() + 2000;
+    while (getLoom(loom.id)!.state !== "needs-review" && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     const settled = getLoom(loom.id)!;
-    expect(settled.state).not.toBe("done");
-    // A green verify routes the root to `ready`; accept then promotes to done.
-    const done = acceptLoom(loom.id, "you");
+    expect(settled.state).toBe("needs-review");
+    // L3 (contract v0.8): a non-`ready` accept is a distinct override act — a
+    // bare accept is refused; override:true + a named `missing` promotes.
+    expect(() => acceptLoom(loom.id, "you")).toThrow(/override/);
+    const done = acceptLoom(loom.id, "you", {
+      override: true,
+      missing: "live-critic unproven — no critic agent in this fixture",
+    });
     expect(done.state).toBe("done");
+    expect(done.acceptedOverride).toBe(true);
   });
 
   test("the persisted lane is reused by the NEXT loom without re-asking (pre-flight sees the promoted devCommand)", async () => {

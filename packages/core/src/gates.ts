@@ -1,6 +1,7 @@
 // Deterministic verification gates: shell commands whose exit codes decide
 // whether an agent's work stands. No model in the loop.
 import { spawn } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 
 export type Gate = { name: string; run: string };
@@ -33,6 +34,35 @@ export function runGate(gate: Gate, cwd: string, timeoutMs = 300_000): Promise<G
     let exitCode: number | null | undefined; // set by 'exit'; undefined = still running
     let settled = false;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // Fail CLOSED with a TRUTHFUL error when the working directory is gone.
+    // spawn(..., { shell: true, cwd }) into a non-existent cwd surfaces as
+    // `Error: spawn /bin/sh ENOENT` — the errno is the missing CWD, but Node
+    // reports it against the shell binary, so the message blames /bin/sh (which
+    // exists) and hides the real cause. That mis-attributed ENOENT reaches
+    // child.on("error") → exitCode:null, so a gate whose worktree/root was
+    // reaped out from under it (TELAR_HOME or an os.tmpdir()-rooted project can
+    // be wiped mid-run) looks like a broken shell, not a missing tree. Detect it
+    // here and settle with the actual path so the failure is diagnosable. Still
+    // fail-closed (ok:false, exit null) — no check is weakened.
+    let cwdOk = false;
+    try {
+      cwdOk = existsSync(cwd) && statSync(cwd).isDirectory();
+    } catch {
+      cwdOk = false;
+    }
+    if (!cwdOk) {
+      resolve({
+        name: gate.name,
+        ok: false,
+        exitCode: null,
+        output: `gate working directory does not exist: ${cwd}`,
+        durationMs: Date.now() - startedAt,
+        timedOut: false,
+      });
+      return;
+    }
+
     // detached => own process group, so a timeout can kill the command AND its children
     const child = spawn(gate.run, { shell: true, cwd, detached: true });
 
