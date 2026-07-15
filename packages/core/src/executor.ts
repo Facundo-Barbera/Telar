@@ -237,16 +237,16 @@ export type Decision =
   | { action: "done" }
   | { action: "needs-review"; error?: string }
   | { action: "failed"; error?: string }
-  // B1 §70-72 — the CHILD-thread escalation rung. A per-thread VERIFICATION-shaped
-  // failure (the agent-judged panel/critic said fail, or the required contract is
-  // structurally absent) that has EXHAUSTED the thread's own bounded mediation
-  // (the retry legs) is NOT a terminal per-thread demote — the doctrine forbids a
-  // thread demoting itself for a "couldn't verify" cause. It is the thread's cue
-  // to ESCALATE to the orchestrator: executeLoom parks the loom `blocked`, which
-  // the weave rollup lifts to the root (B2 re-routes that block to orchestrator
-  // mediation before any human ping). A GENUINE BUILD DEFECT — a red deterministic
-  // gate, or the builder self-reporting a blocker — is NOT verification-shaped and
-  // still fails/needs-review unchanged.
+  // L5 (contract mandate 1; doctrine §70-72 escalation ladder) — the CHILD-thread
+  // escalation rung. On a child (parentLoomId set) EVERY outcome that would demote
+  // a ROOT to the human-gated `needs-review` — a panel FAIL, a contract-miss, a
+  // builder self-reported blocker, a gates-pass-but-no-verdict, a panel-required
+  // skip, or a flaky verdict — is NOT a terminal per-thread demote: it ESCALATES.
+  // executeLoom parks the loom `blocked`; the weave rollup lifts it to the root and
+  // B2/tick re-route the block to orchestrator mediation before any human ping. A
+  // CHILD NEVER waits for a human (L5). A ROOT keeps its fail-closed needs-review. A
+  // red deterministic gate still lands terminal `failed` (legal for a child — a
+  // thread's red is evidence); only the human-gated park is banned.
   | { action: "escalate"; error?: string }
   | { action: "retry" };
 
@@ -289,22 +289,33 @@ export function decide(input: {
   // never relaxed to green (the top gate cannot re-prove a negative panel verdict
   // into a pass without the thread's mediation resolving it first).
   childAdvisory?: boolean;
-  // CHILD-scoped ESCALATE posture (doctrine §70-72, escalation ladder). True for
-  // ANY child thread (has a parent to fold up to), contract or not. When true, a
-  // VERIFICATION-shaped FAIL that survived the thread's bounded mediation (retries)
-  // — a panel FAIL, or a contract-miss (a required contract structurally absent) —
-  // ESCALATES rather than terminally demoting: executeLoom parks the loom `blocked`
-  // and the weave lifts it to the orchestrator (B2 re-routes the block to
-  // orchestrator mediation). A root keeps its fail-closed needs-review. A GENUINE
-  // BUILD DEFECT — a red deterministic gate, or the builder self-reporting a
-  // blocker — is NOT verification-shaped and still fails/needs-review unchanged.
+  // CHILD-scoped ESCALATE posture (L5; doctrine §70-72). True for ANY child thread
+  // (has a parent to fold up to), contract or not. When true, EVERY outcome that
+  // would demote a ROOT to `needs-review` ESCALATES instead (see the `escalate`
+  // Decision variant above): executeLoom parks the loom `blocked` and the weave
+  // lifts it to the orchestrator (B2/tick mediation). A CHILD NEVER waits for a
+  // human. A ROOT keeps its fail-closed needs-review. A red deterministic gate
+  // still lands terminal `failed` — only the human-gated park is banned for a child.
   childThread?: boolean;
 }): Decision {
   const { gatesConfigured, gatesOk, verdict, verification, n, maxAttempts, flakyUsed, maxFlaky, panelRequired, childAdvisory, childThread } =
     input;
   const canRetry = n < maxAttempts;
+  // L5 (contract mandate 1) — a CHILD thread (childThread) NEVER lands the
+  // human-gated `needs-review`: every "couldn't promote" outcome ESCALATES to the
+  // orchestrator (executeLoom parks it `blocked`; the weave rollup lifts it; B2/
+  // tick mediation consumes it), carrying the same cause. A ROOT keeps its
+  // fail-closed needs-review. Terminal `failed` (a red deterministic gate) and
+  // `done` are unchanged — a thread's red is evidence; only the human-gated park
+  // is banned for a child.
+  const review = (error?: string): Decision =>
+    childThread
+      ? { action: "escalate", error }
+      : error === undefined
+        ? { action: "needs-review" }
+        : { action: "needs-review", error };
   const flakyDecision = (): Decision =>
-    flakyUsed < maxFlaky && canRetry ? { action: "retry" } : { action: "needs-review", error: "verification flaky" };
+    flakyUsed < maxFlaky && canRetry ? { action: "retry" } : review("verification flaky");
 
   if (gatesConfigured && gatesOk) {
     if (verdict?.ok) {
@@ -319,7 +330,7 @@ export function decide(input: {
             if (childAdvisory) return { action: "done" };
             return canRetry
               ? { action: "retry" }
-              : { action: "needs-review", error: "panel verification required but did not run" };
+              : review("panel verification required but did not run");
           }
           return { action: "done" };
         case "pass":
@@ -332,20 +343,14 @@ export function decide(input: {
           // `blocked`, the weave lifts it to the orchestrator; B2 re-routes to
           // orchestrator mediation) instead of a terminal per-thread needs-review
           // demote. A root keeps its fail-closed needs-review.
-          return canRetry
-            ? { action: "retry" }
-            : childThread
-              ? { action: "escalate", error: "verification failed" }
-              : { action: "needs-review", error: "verification failed" };
+          return canRetry ? { action: "retry" } : review("verification failed");
         case "flaky":
           return flakyDecision();
       }
     }
-    if (verdict) return { action: "needs-review", error: verdict.blocker ?? undefined };
+    if (verdict) return review(verdict.blocker ?? undefined);
     // Gates pass but the agent never reported.
-    return canRetry
-      ? { action: "retry" }
-      : { action: "needs-review", error: "gates pass but agent never confirmed" };
+    return canRetry ? { action: "retry" } : review("gates pass but agent never confirmed");
   }
 
   if (!gatesConfigured) {
@@ -362,19 +367,15 @@ export function decide(input: {
             if (childAdvisory) return { action: "done" };
             return canRetry
               ? { action: "retry" }
-              : { action: "needs-review", error: "panel verification required but did not run" };
+              : review("panel verification required but did not run");
           }
-          return { action: "needs-review" }; // no panel required — nothing verified, unchanged
+          return review(); // no panel required — nothing verified (a child ESCALATES; a root needs-review)
         case "pass":
           return { action: "done" }; // promote
         case "fail":
           // B1 (§70-72) — symmetric to the gated branch: a CHILD thread's panel
           // FAIL escalates (blocked) once its internal mediation (retries) exhausts.
-          return canRetry
-            ? { action: "retry" }
-            : childThread
-              ? { action: "escalate", error: "verification failed" }
-              : { action: "needs-review", error: "verification failed" };
+          return canRetry ? { action: "retry" } : review("verification failed");
         case "flaky":
           return flakyDecision();
       }
@@ -1446,15 +1447,22 @@ export function decideVerifyLoom(
   v: Verification,
   loom: Pick<Loom, "parentLoomId">,
 ): { state: WorkUnitState; error?: string } {
+  // L5 (contract mandate 1) — a CHILD verify loom (parentLoomId set) NEVER lands the
+  // human-gated needs-review: a fail/flaky/skip ESCALATES (parks `blocked`), the same
+  // posture a build child takes. A ROOT keeps its fail-closed needs-review. No
+  // verify-kind child is spawned today (dispatcher.spawnChild only creates build
+  // kinds), so this is a STRUCTURAL guard, not a live path — but it closes the door.
+  const nonPass = (error: string): { state: WorkUnitState; error?: string } =>
+    loom.parentLoomId ? { state: "blocked", error } : { state: "needs-review", error };
   switch (v) {
     case "pass":
       return { state: terminalStateForCompletedLoom(loom) };
     case "fail":
-      return { state: "needs-review", error: "verification failed" };
+      return nonPass("verification failed");
     case "flaky":
-      return { state: "needs-review", error: "verification flaky" };
+      return nonPass("verification flaky");
     case "skip":
-      return { state: "needs-review", error: "nothing verified" };
+      return nonPass("nothing verified");
   }
 }
 
@@ -1518,6 +1526,17 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
 
     const d = decideVerifyLoom(verification, loom);
     if (d.error) loom.error = report?.summary ? `${d.error}: ${report.summary}` : d.error;
+    // L5 hard guard (contract mandate 1) — a CHILD verify loom NEVER parks in a
+    // human-gated state. decideVerifyLoom already maps a child's non-pass verdict to
+    // `blocked`; make it a full escalate posture (blockedReason + the lane-escalation
+    // the orchestrator/weave rollup consume), and as a STRUCTURAL backstop coerce any
+    // residual needs-review for a child to `blocked` too.
+    if (loom.parentLoomId && (d.state === "blocked" || d.state === "needs-review")) {
+      loom.blockedReason = loom.error ?? "Verify thread could not confirm the composed whole; the orchestrator should mediate.";
+      emit({ type: "lane-escalation", by: "telar", reason: "verify-thread-escalated", subGoalId: loom.subGoalId });
+      setState("blocked");
+      return loom;
+    }
     setState(d.state);
     return loom;
   } catch (err) {
@@ -2077,7 +2096,7 @@ export async function executeLoom(
       // all). childAdvisory (skip→green relaxation) still requires the contract.
       const childThread = !!loom.parentLoomId;
 
-      const decision = decide({
+      let decision = decide({
         gatesConfigured,
         gatesOk,
         verdict,
@@ -2090,6 +2109,15 @@ export async function executeLoom(
         childAdvisory,
         childThread,
       });
+
+      // L5 hard guard (contract mandate 1) — decide() already routes every child
+      // "couldn't promote" outcome to `escalate` (review() helper), so a child never
+      // returns here as needs-review; this makes the invariant STRUCTURAL: no future
+      // decide() branch can regress a CHILD into the human-gated needs-review. Coerce
+      // any residual child needs-review into the escalate posture below.
+      if (decision.action === "needs-review" && loom.parentLoomId) {
+        decision = { action: "escalate", error: decision.error };
+      }
 
       if (decision.action === "done") {
         // B1 (COVERAGE INVARIANT) — a childAdvisory child that RELAXED a
@@ -2145,21 +2173,25 @@ export async function executeLoom(
         return loom;
       }
       if (decision.action === "escalate") {
-        // B1 (§70-72, the escalation ladder) — a CHILD thread's VERIFICATION-shaped
-        // failure (a panel FAIL, or a contract-miss) that SURVIVED the thread's own
-        // bounded mediation (the retry legs above) is NOT a terminal per-thread
-        // demote: the thread ESCALATES. Park `blocked` carrying an answerable
-        // strategy question; the weave rollup lifts it to the root (FINDING-8 path),
-        // and B2 re-routes that block to ORCHESTRATOR mediation (re-plan / reassign /
-        // re-derive verification) before any human ping. NOT a green terminal — the
-        // child never promotes, so no coverage leaks (the top gate never sees a
-        // green child for this subgoal; nothing to re-prove). A genuine build defect
-        // (red gate / builder blocker) never reaches here — it fails/needs-review.
+        // L5 (contract mandate 1; doctrine §70-72) — a CHILD thread NEVER parks in a
+        // human-gated state. Any outcome that would demote a ROOT to needs-review
+        // (a panel FAIL / contract-miss, OR — coerced above — a builder blocker /
+        // gates-pass-but-no-verdict / panel-required skip / flaky verdict) that
+        // survived the thread's bounded mediation ESCALATES: park `blocked` carrying
+        // an answerable strategy question; the weave rollup lifts it to the root
+        // (FINDING-8 path) and B2/tick re-route the block to ORCHESTRATOR mediation
+        // before any human ping. NOT a green terminal — the child never promotes, so
+        // no coverage leaks. A red deterministic gate never reaches here — it lands
+        // terminal `failed` below.
         const signal = deriveDeliverableSignal(manifest.root, loom.charter);
+        const detail =
+          verification === "fail" || decision.error === "verification failed"
+            ? `Per-thread verification failed after ${maxAttempts} attempt(s) of internal mediation` +
+              `${report?.summary ? `: ${report.summary}` : verification === "fail" ? " (contract required but missing/invalid)" : ""}`
+            : `Per-thread build could not promote this thread after ${maxAttempts} attempt(s) of internal mediation` +
+              `${decision.error ? `: ${decision.error}` : ""}${report?.summary ? ` (${report.summary})` : ""}`;
         loom.blockedReason =
-          `Per-thread verification failed after ${maxAttempts} attempt(s) of internal mediation` +
-          `${report?.summary ? `: ${report.summary}` : verification === "fail" ? " (contract required but missing/invalid)" : ""}. ` +
-          `The thread exhausted its own repair legs; the orchestrator should mediate ` +
+          `${detail}. The thread exhausted its own repair legs; the orchestrator should mediate ` +
           `(re-plan, reassign, or re-derive the verification method) before escalating further. ${signal.reason}.`;
         loom.blockedQuestion = blockedStrategyQuestion(signal);
         emit({ type: "lane-escalation", by: "telar", reason: "thread-verify-exhausted", subGoalId: loom.subGoalId });
@@ -2167,6 +2199,7 @@ export async function executeLoom(
         return loom;
       }
       if (decision.action === "needs-review") {
+        // A ROOT only (a child was coerced to `escalate` above — L5).
         if (gatesConfigured && gatesOk && verdict && !verdict.ok) loom.error = verdict.blocker;
         else if (verification === "fail") loom.error = `verification failed: ${report?.summary ?? ""}`;
         else if (decision.error !== undefined) loom.error = decision.error;

@@ -26,6 +26,16 @@ describe("decideVerifyLoom", () => {
   test("skip -> needs-review 'nothing verified'", () => {
     expect(decideVerifyLoom("skip", {})).toEqual({ state: "needs-review", error: "nothing verified" });
   });
+
+  test("(L5) fail on a CHILD verify loom -> blocked (escalate), never needs-review", () => {
+    expect(decideVerifyLoom("fail", { parentLoomId: "root_1" })).toEqual({ state: "blocked", error: "verification failed" });
+  });
+  test("(L5) flaky on a CHILD verify loom -> blocked", () => {
+    expect(decideVerifyLoom("flaky", { parentLoomId: "root_1" })).toEqual({ state: "blocked", error: "verification flaky" });
+  });
+  test("(L5) skip on a CHILD verify loom -> blocked", () => {
+    expect(decideVerifyLoom("skip", { parentLoomId: "root_1" })).toEqual({ state: "blocked", error: "nothing verified" });
+  });
 });
 
 describe("verify LoomKind", () => {

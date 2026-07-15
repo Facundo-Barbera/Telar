@@ -165,12 +165,13 @@ describe("worktree isolation (unconditional)", () => {
     expect(worktreeCount()).toBe(1);
   });
 
-  test("no leak on NEEDS-REVIEW: worktree removed AND its edits recoverable as a branch", async () => {
+  test("no leak on ESCALATE (a child never parks human-gated — L5): worktree removed AND its edits recoverable as a branch", async () => {
     const { child } = makeRootAndChild();
-    // No gates -> gatesConfigured false; verify skip; child lands needs-review.
+    // No gates -> gatesConfigured false; verify skip; no contract -> the child can't
+    // promote. L5: a CHILD never lands needs-review — it ESCALATES (parks blocked).
     // The builder wrote out.txt into the worktree — that diff must survive.
     const res = await executeLoom(child, manifestFor([]), runOpts());
-    expect(res.state).toBe("needs-review");
+    expect(res.state).toBe("blocked");
     expect(res.worktree).toBeUndefined(); // dir reclaimed
     expect(worktreeCount()).toBe(1);
     // The uncommitted edits were snapshotted onto a durable recovery branch.

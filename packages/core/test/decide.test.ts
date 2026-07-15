@@ -397,3 +397,65 @@ describe("decide — regression guard: verification 'skip' == pre-M2 decision", 
     expect(cases).toBe(32);
   });
 });
+
+describe("decide — L5: a CHILD (childThread) NEVER lands needs-review, it escalates", () => {
+  test("gated + gatesOk + verdict.ok pass/skip -> done, unchanged (no escalation)", () => {
+    expect(run({ verification: "pass", childThread: true })).toEqual({ action: "done" });
+    expect(run({ verification: "skip", childThread: true })).toEqual({ action: "done" });
+  });
+
+  test("builder self-reported blocker (verdict not ok) -> escalate with the blocker (was needs-review)", () => {
+    expect(run({ verdict: badVerdict, childThread: true })).toEqual({ action: "escalate", error: "boom" });
+  });
+
+  test("gates pass but agent never confirmed, exhausted -> escalate (was needs-review)", () => {
+    expect(run({ verdict: null, n: 3, maxAttempts: 3, childThread: true })).toEqual({
+      action: "escalate",
+      error: "gates pass but agent never confirmed",
+    });
+  });
+
+  test("panelRequired skip exhausted, gated AND no-gates -> escalate (was needs-review)", () => {
+    expect(run({ verification: "skip", panelRequired: true, n: 3, maxAttempts: 3, childThread: true })).toEqual({
+      action: "escalate",
+      error: "panel verification required but did not run",
+    });
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "skip",
+        panelRequired: true,
+        n: 3,
+        maxAttempts: 3,
+        childThread: true,
+      }),
+    ).toEqual({ action: "escalate", error: "panel verification required but did not run" });
+  });
+
+  test("no-gates skip, no panel required -> escalate (undefined error), never a bare needs-review", () => {
+    expect(
+      run({
+        gatesConfigured: false,
+        gatesOk: true,
+        verdict: okVerdict,
+        verification: "skip",
+        childThread: true,
+      }),
+    ).toEqual({ action: "escalate", error: undefined });
+  });
+
+  test("flaky over budget -> escalate (was needs-review)", () => {
+    expect(run({ verification: "flaky", flakyUsed: 2, maxFlaky: 2, childThread: true })).toEqual({
+      action: "escalate",
+      error: "verification flaky",
+    });
+  });
+
+  test("a red deterministic gate on a child stays terminal `failed` (legal — a thread's red is evidence)", () => {
+    expect(run({ gatesConfigured: true, gatesOk: false, n: 3, maxAttempts: 3, childThread: true })).toEqual({
+      action: "failed",
+    });
+  });
+});

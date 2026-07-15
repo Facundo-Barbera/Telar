@@ -478,14 +478,18 @@ describe("M10.2 — thread verification advisory (child-scoped)", () => {
     expect(rollupWeave([loom], [subGoal({ id: "s1" })])).toEqual({ state: "ready" });
   });
 
-  test("(3) GENUINELY broken child is UNCHANGED: (i) builder verdict.ok===false ⇒ needs-review, no advisory; (ii) red deterministic gate ⇒ failed", async () => {
+  test("(3) GENUINELY broken child: (i) builder verdict.ok===false ESCALATES (blocked), never a human-gated needs-review (L5); (ii) red deterministic gate ⇒ failed", async () => {
     const bad = await runChildLoom({ badVerdict: true });
-    expect(bad.loom.state).toBe("needs-review"); // real breakage never relaxed
-    expect(bad.loom.error).toBe("boom");
+    // L5 (contract mandate 1) — a CHILD never parks human-gated: a builder-reported
+    // blocker escalates to the orchestrator (blocked + lane-escalation), the blocker
+    // riding the answerable ask, instead of the old per-thread needs-review.
+    expect(bad.loom.state).toBe("blocked");
+    expect(bad.loom.blockedReason).toContain("boom");
+    expect(bad.events.some((e) => e.type === "lane-escalation")).toBe(true);
     expect(bad.events.some((e) => e.type === "thread-advisory")).toBe(false);
 
     const red = await runChildLoom({ redGate: true });
-    expect(red.loom.state).toBe("failed"); // a red gate short-circuits before verify
+    expect(red.loom.state).toBe("failed"); // a red gate is terminal evidence — legal for a child
     expect(red.events.some((e) => e.type === "thread-advisory")).toBe(false);
   });
 

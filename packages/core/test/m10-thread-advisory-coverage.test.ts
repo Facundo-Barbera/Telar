@@ -114,15 +114,17 @@ async function runChild(o: { withContract: boolean; asRoot?: boolean; onState?: 
 }
 
 describe("M10.2 coverage invariant — advisory relaxation is CONTRACT-BACKED only (fail-open hole closed)", () => {
-  test("(HOLE CLOSED) a LEGACY no-contract CHILD reaching the {skip,panelRequired:true} triple stays fail-closed needs-review — its PROSE criterion is not in the root contract the top gate re-proves", async () => {
+  test("(HOLE CLOSED, L5) a LEGACY no-contract CHILD reaching {skip,panelRequired:true} ESCALATES (blocked), not the old fail-closed needs-review — a CHILD never waits for a human, and its prose criterion is still not relaxed to green", async () => {
     const { loom, events, verifySummary } = await runChild({ withContract: false });
     // Same decide() triple as the relaxed mainline: skip + panelRequired, verdict ok.
     expect(verifySummary?.verification).toBe("skip");
     expect(verifySummary?.panelRequired).toBe(true);
-    // ...yet NOT relaxed: the legacy prose criterion is invisible to the top gate,
-    // so the thread MUST keep gating it (fail-closed).
-    expect(loom.state).toBe("needs-review");
-    expect(loom.error).toBe("panel verification required but did not run");
+    // L5 (contract mandate 1) — NOT relaxed to green (no contract for the top gate to
+    // re-prove) AND NOT parked human-gated: the child ESCALATES to the orchestrator
+    // (blocked + lane-escalation), carrying the couldn't-verify cause.
+    expect(loom.state).toBe("blocked");
+    expect(loom.blockedReason).toContain("panel verification required but did not run");
+    expect(events.some((e) => e.type === "lane-escalation")).toBe(true);
     expect(events.some((e) => e.type === "thread-advisory")).toBe(false);
   });
 
