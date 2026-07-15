@@ -9,10 +9,17 @@
 // so the mutex mostly guards async ORDERING (and makes the path correct if the
 // runner is ever made async), but it also serializes the .git/worktrees/ index
 // lock that N parallel `git worktree add/remove` calls would otherwise contend.
+//
+// addWorktree mints worktree DIRECTORIES under manifest.ts's telarDir()
+// (~/.telar/worktrees, or TELAR_HOME/worktrees when that env var is set) —
+// never os.tmpdir(), which macOS periodically wipes and can destroy an
+// in-flight loom's working copy out from under it. Tests that call addWorktree
+// must set TELAR_HOME to a throwaway dir (the same pattern every other suite
+// uses) so they never mint under a real ~/.telar.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { telarDir } from "./manifest";
 
 // An injectable git runner (docs/loom-model.md §A — landing the work): given
 // the project root and argv, run git and report its exit status + output. The
@@ -80,11 +87,16 @@ function sanitizeId(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
-// `git worktree add [--detach] <os.tmpdir()/telar-wt-<id>-<counter>> <ref>`.
-// Detached by default (a base SHA); pass { detach: false } to check a branch
-// OUT into the worktree (the transient fold worktree). Throws on failure so the
-// caller's Promise.allSettled / try-catch sees it, mirroring the pre-M3
-// execFileSync behavior.
+// `git worktree add [--detach] <TELAR_HOME>/worktrees/telar-wt-<id>-<counter> <ref>`,
+// where TELAR_HOME is manifest.ts's telarDir() (defaults to ~/.telar, overridable
+// via the TELAR_HOME env var — tests/smoke set it to a throwaway dir so nothing
+// mints under the real ~/.telar). Minted under the durable engine home, never
+// os.tmpdir(): macOS periodically wipes /tmp, which used to destroy an in-flight
+// loom's working copy AND the resumability of every per-worktree session out
+// from under it. Detached by default (a base SHA); pass { detach: false } to
+// check a branch OUT into the worktree (the transient fold worktree). Throws on
+// failure so the caller's Promise.allSettled / try-catch sees it, mirroring the
+// pre-M3 execFileSync behavior.
 export function addWorktree(
   git: GitRunner,
   repoRoot: string,
@@ -93,7 +105,9 @@ export function addWorktree(
   opts?: { detach?: boolean },
 ): string {
   worktreeCounter++;
-  const wt = path.join(os.tmpdir(), `telar-wt-${sanitizeId(id)}-${worktreeCounter}`);
+  const root = path.join(telarDir(), "worktrees");
+  fs.mkdirSync(root, { recursive: true });
+  const wt = path.join(root, `telar-wt-${sanitizeId(id)}-${worktreeCounter}`);
   const detach = opts?.detach !== false;
   const args = detach ? ["worktree", "add", "--detach", wt, ref] : ["worktree", "add", wt, ref];
   const r = git(repoRoot, args);
@@ -105,10 +119,18 @@ export function addWorktree(
 
 // Best-effort `git worktree remove --force`, then `git worktree prune`. A
 // failed remove must never break the caller (a leaked *directory* is bounded
-// under os.tmpdir(), never inside the user's repo), and the trailing prune
+// under <TELAR_HOME>/worktrees/, never inside the user's repo), and the trailing prune
 // clears a registration a failed remove would otherwise leak. Double-remove is
 // a no-op.
-export function removeWorktree(git: GitRunner, repoRoot: string, wt: string): void {
+//
+// Returns true iff `wt` is actually gone from disk afterward. This is the
+// caller's ONLY reliable success signal: `defaultGitRunner` never throws (a
+// failed `git worktree remove` comes back as a non-zero-status GitRunResult,
+// not an exception) and this function's own try/catch (guarding a fake runner
+// that might throw) silently discards that too. Without this return value a
+// genuinely-failed remove was indistinguishable from a successful one to
+// every caller.
+export function removeWorktree(git: GitRunner, repoRoot: string, wt: string): boolean {
   try {
     git(repoRoot, ["worktree", "remove", "--force", wt]);
   } catch {
@@ -117,6 +139,7 @@ export function removeWorktree(git: GitRunner, repoRoot: string, wt: string): vo
   try {
     git(repoRoot, ["worktree", "prune"]);
   } catch {}
+  return !fs.existsSync(wt);
 }
 
 // Commit a worktree's uncommitted WIP onto a DURABLE recovery branch so the

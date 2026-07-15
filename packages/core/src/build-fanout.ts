@@ -15,9 +15,9 @@
 // last-writer-wins clobber during merge.
 //
 // SAFETY: every git worktree created here is removed in a finally, even when
-// a piece builder throws. Worktrees live under os.tmpdir() and are only ever
-// added/removed via `git worktree` — never an rm -rf of anything git doesn't
-// manage.
+// a piece builder throws. Worktrees live under vcs.ts's addWorktree mint root
+// (TELAR_HOME/worktrees) and are only ever added/removed via `git worktree` —
+// never an rm -rf of anything git doesn't manage.
 import { z } from "zod";
 import { agent } from "./engine";
 import { fanoutSize } from "./budget";

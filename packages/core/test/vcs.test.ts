@@ -1,7 +1,7 @@
 // M3 — the promoted VCS/worktree substrate. Every test drives a REAL throwaway
 // tmp git repo (git init + a commit), operates, asserts, and fs-removes the tmp
 // dir in a finally — never the telar repo or ~/.telar.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -23,9 +23,17 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd }).toString();
 }
 
+// addWorktree mints worktree DIRECTORIES under manifest.ts's telarDir(), never
+// os.tmpdir() (see vcs.ts header) — so, like every other suite, pin TELAR_HOME
+// to a throwaway dir up front and never let a test mint under a real ~/.telar.
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vcs-home-"));
+process.env.TELAR_HOME = home;
+
 let repo: string;
 
 beforeEach(() => {
+  // bun test runs all files in one process — re-pin before every test.
+  process.env.TELAR_HOME = home;
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vcs-"));
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "t@t.com"]);
@@ -34,6 +42,10 @@ beforeEach(() => {
   fs.writeFileSync(path.join(repo, "b.txt"), "orig b\n");
   git(repo, ["add", "-A"]);
   git(repo, ["commit", "-m", "initial"]);
+});
+
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 afterEach(() => {
@@ -82,6 +94,35 @@ describe("addWorktree", () => {
       removeWorktree(defaultGitRunner, repo, w2);
     }
   });
+
+  test("mints under TELAR_HOME/worktrees (the durable engine home), never bare os.tmpdir() — macOS wipes /tmp and would destroy an in-flight loom's worktree + session resumability", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "durable1");
+    try {
+      expect(path.dirname(wt)).toBe(path.join(home, "worktrees"));
+      expect(wt.startsWith(home)).toBe(true);
+    } finally {
+      removeWorktree(defaultGitRunner, repo, wt);
+    }
+  });
+
+  test("honors a TELAR_HOME override at call time (mint root is not cached)", () => {
+    const otherHome = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vcs-other-home-"));
+    const prev = process.env.TELAR_HOME;
+    try {
+      process.env.TELAR_HOME = otherHome;
+      const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+      const wt = addWorktree(defaultGitRunner, repo, sha, "override1");
+      try {
+        expect(path.dirname(wt)).toBe(path.join(otherHome, "worktrees"));
+      } finally {
+        removeWorktree(defaultGitRunner, repo, wt);
+      }
+    } finally {
+      process.env.TELAR_HOME = prev;
+      fs.rmSync(otherHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("removeWorktree", () => {
@@ -100,6 +141,32 @@ describe("removeWorktree", () => {
     removeWorktree(defaultGitRunner, repo, wt);
     expect(() => removeWorktree(defaultGitRunner, repo, wt)).not.toThrow();
     expect(worktreeCount()).toBe(1);
+  });
+
+  test("returns true iff the dir is actually gone afterward — a genuinely-successful removal", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "l2b");
+    expect(removeWorktree(defaultGitRunner, repo, wt)).toBe(true);
+  });
+
+  test("returns false when the underlying remove genuinely fails (dir survives on disk) — the caller's ONLY failure signal, since defaultGitRunner never throws", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    const wt = addWorktree(defaultGitRunner, repo, sha, "l2c");
+    // A fake runner that reports failure (non-zero status, like a real `git
+    // worktree remove --force` failure) for the remove/prune calls but never
+    // throws — exactly what defaultGitRunner does on a real git failure. The
+    // dir is deliberately left on disk (nothing deletes it) to simulate the
+    // stuck-worktree case (e.g. a lingering process still holding a handle).
+    const failingRunner = (root: string, args: string[]) => {
+      if (args[0] === "worktree" && (args[1] === "remove" || args[1] === "prune")) {
+        return { status: 1, stdout: "", stderr: "fatal: unable to remove" };
+      }
+      return defaultGitRunner(root, args);
+    };
+    expect(removeWorktree(failingRunner, repo, wt)).toBe(false);
+    expect(fs.existsSync(wt)).toBe(true);
+    // Cleanup for real so afterEach's sweep doesn't need to.
+    removeWorktree(defaultGitRunner, repo, wt);
   });
 });
 
@@ -308,5 +375,20 @@ describe("reapOrphanWorktrees reclaims unrecorded frozen/fold orphans", () => {
     expect(worktreeCount()).toBe(2); // main + live only
     // The consolidation branch survives — branch GC is the human's call.
     expect(git(repo, ["rev-parse", "--verify", "telar/root"]).trim()).toBeTruthy();
+  });
+
+  test("reaps a legacy telar-wt-* orphan registered OUTSIDE the new mint root (a pre-migration loom's os.tmpdir() worktree still reclaims fine)", () => {
+    const sha = git(repo, ["rev-parse", "HEAD"]).trim();
+    // Simulate a worktree minted before the TELAR_HOME/worktrees migration:
+    // registered straight under os.tmpdir(), not under the new mint root.
+    const legacyDir = path.join(os.tmpdir(), "telar-wt-legacy-orphan-1");
+    defaultGitRunner(repo, ["worktree", "add", "--detach", legacyDir, sha]);
+    try {
+      expect(fs.existsSync(legacyDir)).toBe(true);
+      reapOrphanWorktrees(defaultGitRunner, repo, []); // nothing live
+      expect(fs.existsSync(legacyDir)).toBe(false);
+    } finally {
+      fs.rmSync(legacyDir, { recursive: true, force: true });
+    }
   });
 });

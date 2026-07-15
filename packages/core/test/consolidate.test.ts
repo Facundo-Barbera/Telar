@@ -2,7 +2,7 @@
 // their own worktrees fold onto the review branch; asserts gather-all, the
 // moat (baseBranch untouched, no state change, no accept), stray protection,
 // and the zero-fold drop. fs-removes the tmp dir in finally.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,6 +10,15 @@ import path from "node:path";
 import type { Loom } from "../src/looms";
 import { addWorktree, createConsolidationBranch, defaultGitRunner, removeWorktree, resolveBaseSha } from "../src/vcs";
 import { finalizeConsolidation, foldChildOnDone } from "../src/consolidate";
+
+// addWorktree now mints under TELAR_HOME/worktrees (vcs.ts) — pin it to a
+// throwaway dir so this suite never mints under a real ~/.telar.
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-consol-home-"));
+process.env.TELAR_HOME = home;
+
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd }).toString();
@@ -55,6 +64,7 @@ function makeChild(id: string, worktree: string, overrides: Partial<Loom> = {}):
 }
 
 beforeEach(() => {
+  process.env.TELAR_HOME = home; // bun test runs all files in one process — re-pin
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "telar-consol-"));
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "t@t.com"]);

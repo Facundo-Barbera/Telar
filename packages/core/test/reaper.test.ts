@@ -2,7 +2,7 @@
 // registered worktree leaks. reapOrphanWorktrees prunes stale registrations and
 // force-removes any telar-wt-* worktree not in the live set, while PRESERVING a
 // live loom's worktree and NEVER deleting the consolidation branch.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,9 +13,19 @@ function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd }).toString();
 }
 
+// addWorktree now mints under TELAR_HOME/worktrees (vcs.ts) — pin it to a
+// throwaway dir so this suite never mints under a real ~/.telar.
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-reaper-home-"));
+process.env.TELAR_HOME = home;
+
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 let repo: string;
 
 beforeEach(() => {
+  process.env.TELAR_HOME = home; // bun test runs all files in one process — re-pin
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "telar-reaper-"));
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "t@t.com"]);
