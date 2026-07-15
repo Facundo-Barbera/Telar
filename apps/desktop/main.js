@@ -69,6 +69,60 @@ function findFreePort() {
   });
 }
 
+// Probe whether a specific port is free by binding a throwaway server to it.
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.once("error", () => resolve(false));
+    srv.listen(port, "127.0.0.1", () => {
+      srv.close(() => resolve(true));
+    });
+  });
+}
+
+// --- Stable port (localStorage origin stability) ----------------------------
+// The window loads http://127.0.0.1:<port>/, and everything the renderer keeps
+// in localStorage (sidebar pins, wheel order, dock state, ui prefs, theme) is
+// scoped to that origin. Picking a fresh port every launch silently resets all
+// of it, so we persist the chosen port in userData and reuse it as long as it's
+// still free; only fall back to a new one (and persist that) on first run, a
+// busy port, or a corrupt/unreadable file. Smoke mode never reads or writes
+// this — it's isolated by design.
+function portFilePath() {
+  return path.join(app.getPath("userData"), "server-port.json");
+}
+
+function readPersistedPort() {
+  const fs = require("node:fs");
+  try {
+    const data = JSON.parse(fs.readFileSync(portFilePath(), "utf8"));
+    const port = Number(data.port);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+  } catch {
+    // Missing / corrupt / unreadable — treat as first run, never a crash.
+    return null;
+  }
+}
+
+function persistPort(port) {
+  const fs = require("node:fs");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(portFilePath(), JSON.stringify({ port }), "utf8");
+  } catch (err) {
+    console.error("[telar-desktop] failed to persist port:", err.message);
+  }
+}
+
+async function getStablePort() {
+  const stored = readPersistedPort();
+  if (stored !== null && (await isPortFree(stored))) return stored;
+  const fresh = await findFreePort();
+  persistPort(fresh);
+  return fresh;
+}
+
 // --- Build stamp -------------------------------------------------------------
 // build-desktop.sh writes build-info.json into the standalone tree, which
 // electron-builder copies to <Resources>/standalone/build-info.json. When it is
@@ -402,7 +456,7 @@ if (SMOKE) {
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
-          const port = await findFreePort();
+          const port = await getStablePort();
           startServer(port);
           await waitForServer(port);
           url = `http://127.0.0.1:${port}/`;
