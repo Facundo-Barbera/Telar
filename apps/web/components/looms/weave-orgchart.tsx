@@ -143,7 +143,7 @@ function ThreadNode({
       type="button"
       onClick={onOpen}
       className={cn(
-        "flex flex-col gap-2 rounded-xl border bg-card p-3 text-left transition-colors",
+        "flex w-full min-w-0 flex-col gap-2 rounded-xl border bg-card p-3 text-left transition-colors",
         "border-border hover:border-primary/40 hover:bg-muted/30",
         waitsOn.length > 0 && "border-l-2 border-l-border",
       )}
