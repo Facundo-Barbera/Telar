@@ -324,11 +324,32 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
+// Streamdown renders ul/ol with `list-inside` (marker drawn in-flow, not in
+// the outside margin) but ZERO left padding on the top-level list — the
+// marker sits flush at the box's own left edge. Every chat surface wraps this
+// output in an `overflow-hidden` ancestor (MessageContent, MessageBranchContent,
+// the dock panel), and assistant bubbles specifically get no horizontal
+// padding at all (only `.is-user` bubbles get px-4). With no padding on the
+// list itself, that flush-left marker has no safety margin before the clipped
+// edge. pl-5 gives every list breathing room without touching
+// list-style-position (switching to `list-outside` would need padding too,
+// and switching TO `list-inside` — already the default here — is what wrecks
+// wrapped-line hanging indent, so we leave position alone and only pad).
+// Streamdown's own `list-inside`/`list-disc`/`list-decimal` classes live
+// inside node_modules, which Tailwind's content scan never sees (gitignored,
+// no `@source` re-include), so those utilities never compile into real CSS
+// here — Preflight's `ol,ul,menu{list-style:none}` wins by default. Re-declare
+// list-disc/list-decimal explicitly so markers actually render (mirrors
+// spec-bundle.tsx's PROSE_SPACING).
+const STREAMDOWN_LIST_SPACING =
+  "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5";
+
 export const MessageResponse = memo(
   ({ className, components, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
         "w-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        STREAMDOWN_LIST_SPACING,
         className
       )}
       plugins={streamdownPlugins}
