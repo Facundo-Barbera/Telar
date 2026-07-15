@@ -11,7 +11,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ExternalLinkIcon, WorkflowIcon } from "lucide-react";
+import { ExternalLinkIcon, WorkflowIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -215,7 +215,13 @@ export type LoomEventRow = {
   url: string;
 };
 
-export function InlineLoomRow({ row }: { row: LoomEventRow }) {
+export function InlineLoomRow({
+  row,
+  onDismiss,
+}: {
+  row: LoomEventRow;
+  onDismiss?: () => void;
+}) {
   const t = TONE[row.tone];
   return (
     <div
@@ -233,6 +239,16 @@ export function InlineLoomRow({ row }: { row: LoomEventRow }) {
       {t.pulse && <Pulse />}
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">{row.loomId}</span>
       <GodViewLink url={row.url} compact />
+      {onDismiss && (
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+        >
+          <XIcon className="size-3" />
+        </button>
+      )}
     </div>
   );
 }

@@ -309,6 +309,14 @@ function agentStatus(spawn: ToolPart): AgentTab["status"] {
     // folds into the destructive tint rather than adding a fourth.
     return spawn.interrupted ? "error" : "running";
   }
+  // A background spawn's near-instant tool_result is only the launch ack
+  // (isAsyncLaunchAck below) — the subagent is still working until its
+  // task_notification sets taskStatus. Without this, every background spawn
+  // reads "done" seconds after launch. `interrupted` keeps a Stopped turn's
+  // acked-but-unfinished spawn out of the forever-shimmer case.
+  if (isAsyncLaunchAck(spawn.output)) {
+    return spawn.interrupted ? "error" : "running";
+  }
   return spawn.isError ? "error" : "done";
 }
 
@@ -2984,7 +2992,13 @@ function SessionViewInner({
           {!activeBucket && loomEvents.length > 0 && (
             <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 pt-3">
               {loomEvents.map((r) => (
-                <InlineLoomRow key={r.id} row={r} />
+                <InlineLoomRow
+                  key={r.id}
+                  row={r}
+                  onDismiss={() =>
+                    setLoomEvents((prev) => prev.filter((x) => x.id !== r.id))
+                  }
+                />
               ))}
             </div>
           )}
