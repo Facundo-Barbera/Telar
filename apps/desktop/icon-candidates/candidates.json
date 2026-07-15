@@ -1,0 +1,196 @@
+{
+ "candidates": [
+  {
+   "name": "Telar",
+   "tagline": "Where autonomous threads become fabric.",
+   "rationale": "Three bold warp strands and three bold weft strands interlock in a true over/under plain weave \u2014 the exact moment separate threads resolve into one fabric, which is the whole idea of a loom orchestrating parallel autonomous runs into a single verified whole. Thin plate-colored seams between every crossing (rather than strokes or shadows) keep each thread visually distinct, so the checkerboard structure survives intact down to a 16px favicon and reads as an instantly recognizable, non-generic silhouette at 64px. The palette is just indigo plate, cream warp, and amber weft \u2014 a calm, craft-material pairing (dyed thread on indigo cloth) with strong blue/orange contrast that holds up on both light and dark Dock backgrounds without tipping into cute or corporate.",
+   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n  <defs>\n    <linearGradient id=\"plate\" x1=\"256\" y1=\"32\" x2=\"256\" y2=\"480\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#2B3158\"/>\n      <stop offset=\"1\" stop-color=\"#161A33\"/>\n    </linearGradient>\n    <linearGradient id=\"warp\" x1=\"256\" y1=\"32\" x2=\"256\" y2=\"480\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#F6F1E4\"/>\n      <stop offset=\"1\" stop-color=\"#DED5BE\"/>\n    </linearGradient>\n    <linearGradient id=\"weft\" x1=\"32\" y1=\"256\" x2=\"480\" y2=\"256\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#EFB44E\"/>\n      <stop offset=\"1\" stop-color=\"#DA8A29\"/>\n    </linearGradient>\n    <radialGradient id=\"vign\" cx=\"256\" cy=\"215\" r=\"330\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0.55\" stop-color=\"#0B0E1E\" stop-opacity=\"0\"/>\n      <stop offset=\"1\" stop-color=\"#0B0E1E\" stop-opacity=\"0.14\"/>\n    </radialGradient>\n    <linearGradient id=\"rim\" x1=\"256\" y1=\"32\" x2=\"256\" y2=\"480\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#FFFFFF\" stop-opacity=\"0.28\"/>\n      <stop offset=\"0.25\" stop-color=\"#FFFFFF\" stop-opacity=\"0.06\"/>\n      <stop offset=\"1\" stop-color=\"#FFFFFF\" stop-opacity=\"0\"/>\n    </linearGradient>\n    <clipPath id=\"plateClip\">\n      <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\"/>\n    </clipPath>\n  </defs>\n  <g clip-path=\"url(#plateClip)\">\n    <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" fill=\"url(#plate)\"/>\n    <!-- warp: three vertical strands, full bleed -->\n    <rect x=\"110\" y=\"32\" width=\"76\" height=\"448\" fill=\"url(#warp)\"/>\n    <rect x=\"218\" y=\"32\" width=\"76\" height=\"448\" fill=\"url(#warp)\"/>\n    <rect x=\"326\" y=\"32\" width=\"76\" height=\"448\" fill=\"url(#warp)\"/>\n    <!-- gap shadows where weft passes over warp -->\n    <rect x=\"218\" y=\"99\" width=\"76\" height=\"98\" fill=\"url(#plate)\"/>\n    <rect x=\"110\" y=\"207\" width=\"76\" height=\"98\" fill=\"url(#plate)\"/>\n    <rect x=\"326\" y=\"207\" width=\"76\" height=\"98\" fill=\"url(#plate)\"/>\n    <rect x=\"218\" y=\"315\" width=\"76\" height=\"98\" fill=\"url(#plate)\"/>\n    <!-- weft: three horizontal strands, full bleed -->\n    <rect x=\"32\" y=\"110\" width=\"448\" height=\"76\" fill=\"url(#weft)\"/>\n    <rect x=\"32\" y=\"218\" width=\"448\" height=\"76\" fill=\"url(#weft)\"/>\n    <rect x=\"32\" y=\"326\" width=\"448\" height=\"76\" fill=\"url(#weft)\"/>\n    <!-- warp passes back over weft: gap shadow + patch (plain weave) -->\n    <rect x=\"99\" y=\"110\" width=\"98\" height=\"76\" fill=\"url(#plate)\"/>\n    <rect x=\"110\" y=\"110\" width=\"76\" height=\"76\" fill=\"url(#warp)\"/>\n    <rect x=\"315\" y=\"110\" width=\"98\" height=\"76\" fill=\"url(#plate)\"/>\n    <rect x=\"326\" y=\"110\" width=\"76\" height=\"76\" fill=\"url(#warp)\"/>\n    <rect x=\"207\" y=\"218\" width=\"98\" height=\"76\" fill=\"url(#plate)\"/>\n    <rect x=\"218\" y=\"218\" width=\"76\" height=\"76\" fill=\"url(#warp)\"/>\n    <rect x=\"99\" y=\"326\" width=\"98\" height=\"76\" fill=\"url(#plate)\"/>\n    <rect x=\"110\" y=\"326\" width=\"76\" height=\"76\" fill=\"url(#warp)\"/>\n    <rect x=\"315\" y=\"326\" width=\"98\" height=\"76\" fill=\"url(#plate)\"/>\n    <rect x=\"326\" y=\"326\" width=\"76\" height=\"76\" fill=\"url(#warp)\"/>\n    <!-- depth + rim light -->\n    <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" fill=\"url(#vign)\"/>\n    <rect x=\"34\" y=\"34\" width=\"444\" height=\"444\" rx=\"102\" fill=\"none\" stroke=\"url(#rim)\" stroke-width=\"3\"/>\n  </g>\n</svg>\n"
+  },
+  {
+   "name": "The Shuttle",
+   "tagline": "One pass, every thread accounted for.",
+   "rationale": "A single bold copper lens \u2014 the weaver's shuttle \u2014 crosses a field of narrow vertical warp threads on a deep indigo plate; the sharp taper reads instantly as \"gliding tool in motion\" while the perpendicular relationship (horizontal mark against vertical grid) tells the whole loom story without needing literal thread-and-needle detail. Reduced to two color families (indigo neutral + single copper accent) with a crisp dark contour on the shuttle, the silhouette survives collapse: at 64px it's unmistakably a lens crossing stripes, and at true 16px it resolves to a bright horizontal bar on a dark textured square \u2014 still distinct from a flat dot or blob, and legible on both light and dark Dock backgrounds as verified by direct rendering.",
+   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n  <defs>\n    <linearGradient id=\"plate\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">\n      <stop offset=\"0\" stop-color=\"#2A3157\"/>\n      <stop offset=\"1\" stop-color=\"#14162C\"/>\n    </linearGradient>\n    <linearGradient id=\"shuttle\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">\n      <stop offset=\"0\" stop-color=\"#F6C27A\"/>\n      <stop offset=\"1\" stop-color=\"#B5651D\"/>\n    </linearGradient>\n    <clipPath id=\"plateClip\">\n      <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\"/>\n    </clipPath>\n  </defs>\n\n  <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\" fill=\"url(#plate)\"/>\n\n  <g clip-path=\"url(#plateClip)\">\n    <g stroke=\"#525C93\" stroke-width=\"14\" opacity=\"0.85\">\n      <line x1=\"88\" y1=\"8\" x2=\"88\" y2=\"504\"/>\n      <line x1=\"144\" y1=\"8\" x2=\"144\" y2=\"504\"/>\n      <line x1=\"200\" y1=\"8\" x2=\"200\" y2=\"504\"/>\n      <line x1=\"256\" y1=\"8\" x2=\"256\" y2=\"504\"/>\n      <line x1=\"312\" y1=\"8\" x2=\"312\" y2=\"504\"/>\n      <line x1=\"368\" y1=\"8\" x2=\"368\" y2=\"504\"/>\n      <line x1=\"424\" y1=\"8\" x2=\"424\" y2=\"504\"/>\n    </g>\n\n    <path d=\"M95 240 C60 243 38 249 28 256 C38 263 60 269 95 272 Z\" fill=\"#F0AE72\" opacity=\"0.95\"/>\n\n    <path d=\"M70 256 C170 183 342 183 442 256 C342 329 170 329 70 256 Z\" fill=\"url(#shuttle)\" stroke=\"#14162C\" stroke-width=\"5\"/>\n\n    <path d=\"M140 225 C200 200 312 200 372 225\" fill=\"none\" stroke=\"#FBE0B0\" stroke-width=\"6\" stroke-linecap=\"round\" opacity=\"0.5\"/>\n  </g>\n\n  <rect x=\"36\" y=\"36\" width=\"440\" height=\"440\" rx=\"100\" fill=\"none\" stroke=\"#A9B1E0\" stroke-opacity=\"0.14\" stroke-width=\"2\"/>\n</svg>\n"
+  },
+  {
+   "name": "Telar Monogram \u2014 Woven T",
+   "tagline": "The letterform is the weave.",
+   "rationale": "At 16px the piece resolves to one unambiguous silhouette \u2014 a bold, geometric gold T on a deep indigo plate \u2014 because the crossbar and stem are solid, thick, uniform-weight strokes with no fine detail competing for pixels. At Dock scale (64\u2013128px) a genuine over/under joint becomes visible where the stem visibly threads behind the crossbar on the left and re-emerges on top of it on the right (a real woven crossing, not a texture overlay), reinforced by a crisp seam line and sparse twill-ply strokes on each strand. Two tonal golds (lighter weft, deeper copper warp) read as one warm thread family so the shape never fragments, while the indigo-to-near-black plate gradient gives the fixed contrast needed to hold up on both light and dark Dock backgrounds. The palette (indigo + two golds) stays craft and precise \u2014 dye-and-thread, not toy yarn, not SaaS-gradient generic.",
+   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n  <defs>\n    <linearGradient id=\"plate\" x1=\"32\" y1=\"32\" x2=\"480\" y2=\"480\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#302B78\"/>\n      <stop offset=\"1\" stop-color=\"#121030\"/>\n    </linearGradient>\n    <radialGradient id=\"sheen\" cx=\"180\" cy=\"140\" r=\"320\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#FFFFFF\" stop-opacity=\"0.12\"/>\n      <stop offset=\"0.6\" stop-color=\"#FFFFFF\" stop-opacity=\"0.03\"/>\n      <stop offset=\"1\" stop-color=\"#FFFFFF\" stop-opacity=\"0\"/>\n    </radialGradient>\n    <linearGradient id=\"weft\" x1=\"0\" y1=\"152\" x2=\"0\" y2=\"226\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#F7CE7C\"/>\n      <stop offset=\"1\" stop-color=\"#D69538\"/>\n    </linearGradient>\n    <linearGradient id=\"warp\" x1=\"219\" y1=\"0\" x2=\"293\" y2=\"0\" gradientUnits=\"userSpaceOnUse\">\n      <stop offset=\"0\" stop-color=\"#EAAC57\"/>\n      <stop offset=\"1\" stop-color=\"#A9662A\"/>\n    </linearGradient>\n  </defs>\n\n  <!-- plate -->\n  <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\" fill=\"url(#plate)\"/>\n  <rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\" fill=\"url(#sheen)\"/>\n\n  <!-- stem (warp thread) \u2014 bottom layer -->\n  <rect x=\"219\" y=\"152\" width=\"74\" height=\"232\" rx=\"22\" fill=\"url(#warp)\"/>\n  <line x1=\"244\" y1=\"184\" x2=\"244\" y2=\"352\" stroke=\"#7C4A22\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n  <line x1=\"268\" y1=\"184\" x2=\"268\" y2=\"352\" stroke=\"#7C4A22\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n\n  <!-- crossbar (weft thread) \u2014 over the stem -->\n  <rect x=\"130\" y=\"152\" width=\"252\" height=\"74\" rx=\"22\" fill=\"url(#weft)\"/>\n  <line x1=\"160\" y1=\"177\" x2=\"209\" y2=\"177\" stroke=\"#B87F3B\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n  <line x1=\"303\" y1=\"177\" x2=\"352\" y2=\"177\" stroke=\"#B87F3B\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n  <line x1=\"160\" y1=\"201\" x2=\"209\" y2=\"201\" stroke=\"#B87F3B\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n  <line x1=\"303\" y1=\"201\" x2=\"352\" y2=\"201\" stroke=\"#B87F3B\" stroke-width=\"8\" stroke-linecap=\"round\" opacity=\"0.4\"/>\n\n  <!-- weave joint: stem re-emerges over the crossbar on the right half of the crossing -->\n  <path d=\"M256,152 L271,152 A22,22 0 0 1 293,174 L293,226 L256,226 Z\" fill=\"url(#warp)\"/>\n\n  <!-- seam: crisp the over/under boundary at the crossing -->\n  <line x1=\"256\" y1=\"152\" x2=\"256\" y2=\"226\" stroke=\"#5E3416\" stroke-width=\"5\" opacity=\"0.55\" stroke-linecap=\"round\"/>\n</svg>\n"
+  },
+  {
+   "name": "Direction D \u2014 The Knot",
+   "tagline": "One thread, three passes, holds itself together.",
+   "rationale": "A single continuous thread ties itself into a closed, self-supporting knot with exactly 3 alternating over/under crossings (each drawn as a true woven gap, not a flat overlap) \u2014 a literal picture of \"the system that weaves itself\" and of autonomous passes composing into one finished piece. The warm ecru-to-brass thread against a deep charcoal-indigo plate reads as craft (linen/rope on dark loom wood) rather than corporate gradient-logo or yarn-ball cute, and because the plate is fully opaque it holds identical contrast on both light and dark Docks. At 64px the three-lobed weave is clearly legible with visible over/under structure; collapsed further to a 16px favicon it still resolves to one unmistakable rounded-triangular loop silhouette in two color families (warm accent + dark neutral), satisfying the small-size legibility bar without hatching or fine detail.",
+   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n<defs>\n<linearGradient id=\"plate\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#232A3D\"/><stop offset=\"1\" stop-color=\"#171B27\"/></linearGradient>\n<linearGradient id=\"thread\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#F5ECDA\"/><stop offset=\"1\" stop-color=\"#D8B98B\"/></linearGradient>\n</defs>\n<rect x=\"32\" y=\"32\" width=\"448\" height=\"448\" rx=\"104\" fill=\"url(#plate)\"/>\n<path d=\"M 339.36,237.82 C 344.38,240.39 360.27,247.45 369.49,253.26 C 378.71,259.07 387.28,265.73 394.69,272.69 C 402.10,279.65 408.63,287.31 413.92,295.01 C 419.21,302.71 423.45,310.92 426.43,318.91 C 429.41,326.91 431.21,335.17 431.79,342.98 C 432.38,350.79 431.72,358.62 429.94,365.78 C 428.16,372.93 425.12,379.86 421.13,385.91 C 417.14,391.96 411.94,397.54 405.98,402.09 C 400.02,406.64 392.97,410.50 385.39,413.23 C 377.81,415.97 369.30,417.82 360.52,418.50 C 351.74,419.18 342.23,418.83 332.71,417.33 C 323.19,415.83 313.18,413.21 303.42,409.52 C 293.66,405.83 279.05,397.57 274.17,395.18\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<path d=\"M 239.45,368.37 C 238.12,367.03 234.07,363.09 231.48,360.34 C 228.88,357.58 226.35,354.75 223.88,351.84 C 221.41,348.93 219.00,345.95 216.67,342.90 C 214.34,339.85 212.08,336.73 209.90,333.56 C 207.72,330.39 205.61,327.14 203.59,323.86 C 201.57,320.58 199.62,317.23 197.77,313.85 C 195.92,310.47 194.15,307.03 192.47,303.56 C 190.79,300.09 189.19,296.59 187.70,293.05 C 186.20,289.51 184.81,285.94 183.50,282.35 C 182.19,278.76 180.98,275.15 179.87,271.53 C 178.76,267.91 177.74,264.26 176.83,260.62 C 175.92,256.98 175.10,253.33 174.39,249.69 C 173.68,246.05 172.86,240.58 172.55,238.76\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<path d=\"M 172.55,238.76 C 172.25,233.11 170.35,215.79 170.74,204.86 C 171.13,193.93 172.59,183.13 174.90,173.20 C 177.21,163.27 180.56,153.74 184.57,145.27 C 188.58,136.80 193.56,128.99 198.99,122.38 C 204.42,115.77 210.68,110.05 217.16,105.61 C 223.64,101.17 230.77,97.81 237.87,95.75 C 244.97,93.69 252.50,92.85 259.75,93.27 C 267.00,93.69 274.44,95.41 281.38,98.29 C 288.32,101.17 295.20,105.36 301.37,110.57 C 307.54,115.78 313.40,122.25 318.39,129.53 C 323.38,136.81 327.84,145.26 331.30,154.28 C 334.76,163.30 337.49,173.31 339.16,183.63 C 340.83,193.95 340.96,210.80 341.32,216.23\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<path d=\"M 335.4,259.69 C 334.90,261.51 333.50,266.98 332.41,270.60 C 331.32,274.23 330.12,277.85 328.83,281.44 C 327.54,285.03 326.16,288.60 324.68,292.14 C 323.20,295.68 321.62,299.20 319.96,302.67 C 318.30,306.14 316.54,309.59 314.70,312.98 C 312.86,316.37 310.93,319.72 308.92,323.02 C 306.91,326.31 304.82,329.57 302.65,332.75 C 300.48,335.93 298.24,339.06 295.92,342.12 C 293.60,345.18 291.21,348.18 288.75,351.10 C 286.29,354.02 283.76,356.87 281.18,359.64 C 278.60,362.41 275.94,365.10 273.24,367.71 C 270.54,370.32 267.78,372.84 264.98,375.28 C 262.18,377.71 257.86,381.15 256.43,382.32\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<path d=\"M 256.43,382.32 C 251.69,385.39 237.66,395.65 228.02,400.75 C 218.38,405.85 208.32,409.96 198.59,412.91 C 188.86,415.86 178.95,417.72 169.63,418.47 C 160.31,419.22 151.08,418.81 142.66,417.41 C 134.24,416.01 126.16,413.46 119.09,410.08 C 112.02,406.70 105.56,402.22 100.23,397.12 C 94.91,392.02 90.41,385.94 87.14,379.47 C 83.88,373.00 81.63,365.72 80.64,358.29 C 79.65,350.86 79.81,342.83 81.21,334.90 C 82.61,326.97 85.24,318.68 89.02,310.73 C 92.80,302.78 97.84,294.71 103.87,287.21 C 109.90,279.71 117.16,272.34 125.22,265.73 C 133.28,259.12 147.72,250.56 152.22,247.53\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n<path d=\"M 192.77,230.8 C 194.60,230.31 200.06,228.77 203.77,227.89 C 207.48,227.01 211.23,226.22 215.01,225.53 C 218.79,224.84 222.60,224.24 226.43,223.74 C 230.26,223.24 234.12,222.84 237.98,222.53 C 241.84,222.22 245.73,222.02 249.61,221.91 C 253.49,221.80 257.39,221.79 261.27,221.88 C 265.15,221.97 269.04,222.16 272.91,222.45 C 276.78,222.74 280.64,223.12 284.47,223.60 C 288.30,224.08 292.12,224.66 295.90,225.33 C 299.68,226.00 303.45,226.77 307.16,227.63 C 310.87,228.49 314.55,229.44 318.18,230.49 C 321.81,231.54 325.40,232.68 328.93,233.90 C 332.46,235.12 337.62,237.17 339.36,237.82\" fill=\"none\" stroke=\"url(#thread)\" stroke-width=\"40\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n</svg>"
+  }
+ ],
+ "votes": [
+  {
+   "scores": [
+    {
+     "id": "A",
+     "legibility16": 6,
+     "dock": 6,
+     "brand": 8,
+     "craft": 7.5,
+     "note": "Literal plain-weave motif with correct over/under logic and fiber-matched gradients (cream warp graded top-to-bottom, gold weft graded left-to-right); reads clearly as textile from 512 down to 64px. At 16px (verified via actual-pixel raster, not just CSS-scaled vector) it degrades to a generic plaid/checkerboard grid \u2014 legible as *a* pattern but no longer distinctly 'loom,' and risks reading as a settings/table-grid utility icon. It's a repeating swatch with no single focal hierarchy, so next to sharper single-mark dock neighbors it reads as background texture rather than a logotype."
+    },
+    {
+     "id": "B",
+     "legibility16": 3,
+     "dock": 5,
+     "brand": 5.5,
+     "craft": 5.5,
+     "note": "Best concept-to-brief match on paper (literal shuttle crossing warp threads, explicitly called out in the brand brief) but the weakest execution of the four. The shuttle silhouette is a plain stretched vesica/football rather than a boat-pointed shuttle, so it reads as an eye, lens, or surfboard, undercutting the metaphor it's trying to deliver. It also collapses hardest at small sizes: by 16px actual pixels it is just a flat orange bar over blue stripes with none of the shuttle concept surviving, and the little bobbin-peek triangle is illegible noise below 64px."
+    },
+    {
+     "id": "C",
+     "legibility16": 9,
+     "dock": 9,
+     "brand": 8.5,
+     "craft": 9,
+     "note": "Strongest all-around candidate. Bold single T-monogram stays crisp and unambiguous from 512px down to 16px (confirmed on actual-pixel raster) \u2014 it never turns to mush, the rarest quality among the four. Directional warp/weft gradients and the over/under joint seam at the crossbar crossing are a genuine craft flourish that reward close inspection without cluttering the silhouette at small sizes. Reads instantly as a professional macOS app icon (bold-glyph-on-gradient-plate, in the Pages/Keynote/Notes lineage) and doubles as a wordmark tie to the product name itself."
+    },
+    {
+     "id": "D",
+     "legibility16": 2,
+     "dock": 7,
+     "brand": 5.5,
+     "craft": 7.5,
+     "note": "The most technically impressive single continuous bezier at 512px \u2014 genuine premium vector craft, tasteful ivory-on-charcoal palette, holds up reasonably well at dock sizes (64-128px) where the trefoil silhouette still reads as an interlace. But there is no actual over/under weave logic (real interlacing needs visible gaps at each crossing; this is flat overlapping strokes with none), so the concept reads as a generic trinity/Celtic knot rather than a loom or fabric \u2014 closer to a wellness/jewelry mark than a build-and-verify dev tool. Collapses completely at 16px into an indistinct pale smudge with zero legible structure, the worst small-size failure of the set."
+    }
+   ]
+  },
+  {
+   "scores": [
+    {
+     "id": "A",
+     "legibility16": 6,
+     "dock": 6,
+     "brand": 8,
+     "craft": 8,
+     "note": "Actual plain-weave construction (true over/under interlace) \u2014 the most literal hit on 'warp/weft' and 'many strands into one fabric.' Rasterized at 16px it holds up better than expected: the blocky rects downsample into a clean, legible plaid/gingham swatch rather than mud. But it's a texture, not a mark \u2014 no focal point, so in a dock row of glyph-icons it reads as a nice fabric sample rather than a logo. Best-in-class technical polish (vignette, rim light, real interlace shadows)."
+    },
+    {
+     "id": "B",
+     "legibility16": 4,
+     "dock": 7,
+     "brand": 7,
+     "craft": 7,
+     "note": "At 512/64px this is the most conceptually literal 'shuttle moving across threads' \u2014 genuinely handsome, warm amber lens on cool navy pinstripes. But it doesn't survive to 16px: rendered and pixel-inspected, the pointed shuttle silhouette collapses into a plain horizontal amber bar and the pinstripes vanish entirely, so all shuttle-specific identity is lost \u2014 you're left with an anonymous stripe on a dark square. Good dock presence, good idea, but the mark's meaning depends on a size it won't always be seen at."
+    },
+    {
+     "id": "C",
+     "legibility16": 9,
+     "dock": 9,
+     "brand": 6,
+     "craft": 8,
+     "note": "Rendered and pixel-checked at 16px: unambiguous, high-contrast T, no competitor comes close \u2014 this is the only candidate that behaves like a real macOS app icon at every size (bold single glyph, generous padding, classic monogram convention). Craft is excellent (sheen, considered interlace joint at the crossbar). Weakest on brand-specificity though: the weave joint is a nice detail but reads to most viewers as 'a T logo,' not 'a loom' \u2014 it leans on the name more than the metaphor."
+    },
+    {
+     "id": "D",
+     "legibility16": 6,
+     "dock": 7,
+     "brand": 5,
+     "craft": 6,
+     "note": "Elegant continuous-ribbon triquetra/trinity-knot, technically the most sophisticated bezier work of the four. Surprisingly legible at 16px (pixel-checked) \u2014 high thread/ground contrast lets three interlocking loops still read clearly, better than a naive read of 'six overlapping curves' would suggest. But conceptually it's the weakest fit: no warp/weft grid, no parallel strands, no shuttle \u2014 a single strand tied in a loop reads as generic Celtic-knot/rope-logo rather than 'loom,' and edges closer to the yarn/craft clich\u00e9 the brief explicitly wants to avoid. Also the plate lacks the depth treatment (vignette/sheen) the other three have."
+    }
+   ]
+  },
+  {
+   "scores": [
+    {
+     "id": "A",
+     "legibility16": 6,
+     "dock": 7,
+     "brand": 9,
+     "craft": 8,
+     "note": "Rasterized check: the plain-weave grid keeps its bold color blocks down to 16px, but the over/under shadow rectangles at each crossing dissolve into grey moir\u00e9 murk under magnification, so it reads as a textile swatch/plaid pattern rather than a single confident glyph. In the dock-row simulation it's colorful and holds contrast fine on both light and dark bars, but next to bolder single-shape icons it looks busier/more decorative \u2014 more 'fabric sample' than 'app.' Most literal and correct depiction of warp/weft plain weave of the four; precise, calm, unmistakably loom-related."
+    },
+    {
+     "id": "B",
+     "legibility16": 8,
+     "dock": 8,
+     "brand": 9,
+     "craft": 7.5,
+     "note": "The lens/boat shuttle shape is a single warm, high-contrast silhouette that survives 16px cleanly \u2014 it's the kind of bold negative-space mark that reads at a glance. The vertical pinstripe field behind it gets a bit noisy/hazy at small sizes (visible in the 16px crop) but doesn't compete much since it's low-contrast against the shuttle's warm hue. Pops well on both simulated light and dark dock bars. Conceptually the most precise brand fit \u2014 literally a shuttle moving across threads, calm purposeful motion, zero yarn-cute risk. Construction is clean but simpler than A or C (fewer distinct techniques on display)."
+    },
+    {
+     "id": "C",
+     "legibility16": 9,
+     "dock": 9,
+     "brand": 7,
+     "craft": 8.5,
+     "note": "Best performer under actual rasterization: an isolated, bold, high-contrast T-letterform on a smooth gradient field with zero competing texture. In the dock-row simulation at both 32px and 64px it has the strongest 'pop' of the set \u2014 nothing else in the frame to dilute attention. The tradeoff is brand specificity: the woven-joint detail (the actual over/under crossing logic, technically the most sophisticated construction here) is precisely what disappears first at small sizes, so at 16px it reads as a well-made monogram 'T,' not distinctly a loom/weaving mark \u2014 a competent generic-app move dressed up with a clever detail most users will never resolve at icon size."
+    },
+    {
+     "id": "D",
+     "legibility16": 3.5,
+     "dock": 4.5,
+     "brand": 5,
+     "craft": 6.5,
+     "note": "Weakest by a clear margin once actually rendered small: the trinity-knot interlace has too much internal dark negative space, so at 16px the 'ink' shrinks to a soft, low-contrast blob/smudge rather than a crisp mark \u2014 visibly the dimmest, least-resolved icon in the 32px dock-row simulation next to the other three. The six paths are simply stacked in z-order with no gap/under-crossing cut, so even at full size it reads as a tangled ribbon rather than a true precise weave \u2014 undercutting the 'craft' the brief asks for. Also risks generic Celtic-knot/wellness-logo association rather than warp-weft/shuttle specificity, and its soft closed-loop roundness edges toward the yarn-ball cute the brief explicitly rules out."
+    }
+   ]
+  }
+ ],
+ "totals": {
+  "A": {
+   "sum": 85.5,
+   "notes": [
+    "Literal plain-weave motif with correct over/under logic and fiber-matched gradients (cream warp graded top-to-bottom, gold weft graded left-to-right); reads clearly as textile from 512 down to 64px. At 16px (verified via actual-pixel raster, not just CSS-scaled vector) it degrades to a generic plaid/checkerboard grid \u2014 legible as *a* pattern but no longer distinctly 'loom,' and risks reading as a settings/table-grid utility icon. It's a repeating swatch with no single focal hierarchy, so next to sharper single-mark dock neighbors it reads as background texture rather than a logotype.",
+    "Actual plain-weave construction (true over/under interlace) \u2014 the most literal hit on 'warp/weft' and 'many strands into one fabric.' Rasterized at 16px it holds up better than expected: the blocky rects downsample into a clean, legible plaid/gingham swatch rather than mud. But it's a texture, not a mark \u2014 no focal point, so in a dock row of glyph-icons it reads as a nice fabric sample rather than a logo. Best-in-class technical polish (vignette, rim light, real interlace shadows).",
+    "Rasterized check: the plain-weave grid keeps its bold color blocks down to 16px, but the over/under shadow rectangles at each crossing dissolve into grey moir\u00e9 murk under magnification, so it reads as a textile swatch/plaid pattern rather than a single confident glyph. In the dock-row simulation it's colorful and holds contrast fine on both light and dark bars, but next to bolder single-shape icons it looks busier/more decorative \u2014 more 'fabric sample' than 'app.' Most literal and correct depiction of warp/weft plain weave of the four; precise, calm, unmistakably loom-related."
+   ],
+   "dims": {
+    "legibility16": 18,
+    "dock": 19,
+    "brand": 25,
+    "craft": 23.5
+   }
+  },
+  "B": {
+   "sum": 76.5,
+   "notes": [
+    "Best concept-to-brief match on paper (literal shuttle crossing warp threads, explicitly called out in the brand brief) but the weakest execution of the four. The shuttle silhouette is a plain stretched vesica/football rather than a boat-pointed shuttle, so it reads as an eye, lens, or surfboard, undercutting the metaphor it's trying to deliver. It also collapses hardest at small sizes: by 16px actual pixels it is just a flat orange bar over blue stripes with none of the shuttle concept surviving, and the little bobbin-peek triangle is illegible noise below 64px.",
+    "At 512/64px this is the most conceptually literal 'shuttle moving across threads' \u2014 genuinely handsome, warm amber lens on cool navy pinstripes. But it doesn't survive to 16px: rendered and pixel-inspected, the pointed shuttle silhouette collapses into a plain horizontal amber bar and the pinstripes vanish entirely, so all shuttle-specific identity is lost \u2014 you're left with an anonymous stripe on a dark square. Good dock presence, good idea, but the mark's meaning depends on a size it won't always be seen at.",
+    "The lens/boat shuttle shape is a single warm, high-contrast silhouette that survives 16px cleanly \u2014 it's the kind of bold negative-space mark that reads at a glance. The vertical pinstripe field behind it gets a bit noisy/hazy at small sizes (visible in the 16px crop) but doesn't compete much since it's low-contrast against the shuttle's warm hue. Pops well on both simulated light and dark dock bars. Conceptually the most precise brand fit \u2014 literally a shuttle moving across threads, calm purposeful motion, zero yarn-cute risk. Construction is clean but simpler than A or C (fewer distinct techniques on display)."
+   ],
+   "dims": {
+    "legibility16": 15,
+    "dock": 20,
+    "brand": 21.5,
+    "craft": 20.0
+   }
+  },
+  "C": {
+   "sum": 101.0,
+   "notes": [
+    "Strongest all-around candidate. Bold single T-monogram stays crisp and unambiguous from 512px down to 16px (confirmed on actual-pixel raster) \u2014 it never turns to mush, the rarest quality among the four. Directional warp/weft gradients and the over/under joint seam at the crossbar crossing are a genuine craft flourish that reward close inspection without cluttering the silhouette at small sizes. Reads instantly as a professional macOS app icon (bold-glyph-on-gradient-plate, in the Pages/Keynote/Notes lineage) and doubles as a wordmark tie to the product name itself.",
+    "Rendered and pixel-checked at 16px: unambiguous, high-contrast T, no competitor comes close \u2014 this is the only candidate that behaves like a real macOS app icon at every size (bold single glyph, generous padding, classic monogram convention). Craft is excellent (sheen, considered interlace joint at the crossbar). Weakest on brand-specificity though: the weave joint is a nice detail but reads to most viewers as 'a T logo,' not 'a loom' \u2014 it leans on the name more than the metaphor.",
+    "Best performer under actual rasterization: an isolated, bold, high-contrast T-letterform on a smooth gradient field with zero competing texture. In the dock-row simulation at both 32px and 64px it has the strongest 'pop' of the set \u2014 nothing else in the frame to dilute attention. The tradeoff is brand specificity: the woven-joint detail (the actual over/under crossing logic, technically the most sophisticated construction here) is precisely what disappears first at small sizes, so at 16px it reads as a well-made monogram 'T,' not distinctly a loom/weaving mark \u2014 a competent generic-app move dressed up with a clever detail most users will never resolve at icon size."
+   ],
+   "dims": {
+    "legibility16": 27,
+    "dock": 27,
+    "brand": 21.5,
+    "craft": 25.5
+   }
+  },
+  "D": {
+   "sum": 65.5,
+   "notes": [
+    "The most technically impressive single continuous bezier at 512px \u2014 genuine premium vector craft, tasteful ivory-on-charcoal palette, holds up reasonably well at dock sizes (64-128px) where the trefoil silhouette still reads as an interlace. But there is no actual over/under weave logic (real interlacing needs visible gaps at each crossing; this is flat overlapping strokes with none), so the concept reads as a generic trinity/Celtic knot rather than a loom or fabric \u2014 closer to a wellness/jewelry mark than a build-and-verify dev tool. Collapses completely at 16px into an indistinct pale smudge with zero legible structure, the worst small-size failure of the set.",
+    "Elegant continuous-ribbon triquetra/trinity-knot, technically the most sophisticated bezier work of the four. Surprisingly legible at 16px (pixel-checked) \u2014 high thread/ground contrast lets three interlocking loops still read clearly, better than a naive read of 'six overlapping curves' would suggest. But conceptually it's the weakest fit: no warp/weft grid, no parallel strands, no shuttle \u2014 a single strand tied in a loop reads as generic Celtic-knot/rope-logo rather than 'loom,' and edges closer to the yarn/craft clich\u00e9 the brief explicitly wants to avoid. Also the plate lacks the depth treatment (vignette/sheen) the other three have.",
+    "Weakest by a clear margin once actually rendered small: the trinity-knot interlace has too much internal dark negative space, so at 16px the 'ink' shrinks to a soft, low-contrast blob/smudge rather than a crisp mark \u2014 visibly the dimmest, least-resolved icon in the 32px dock-row simulation next to the other three. The six paths are simply stacked in z-order with no gap/under-crossing cut, so even at full size it reads as a tangled ribbon rather than a true precise weave \u2014 undercutting the 'craft' the brief asks for. Also risks generic Celtic-knot/wellness-logo association rather than warp-weft/shuttle specificity, and its soft closed-loop roundness edges toward the yarn-ball cute the brief explicitly rules out."
+   ],
+   "dims": {
+    "legibility16": 11.5,
+    "dock": 18.5,
+    "brand": 15.5,
+    "craft": 20.0
+   }
+  }
+ }
+}
