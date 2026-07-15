@@ -25,17 +25,22 @@ import { cn } from "@/lib/utils";
 // the owner's intervention surface for the states where the loop hands back to
 // a human — each renders a distinct posture, but they share the same
 // server-provenanced moves ("you"):
-//   • Accept  → POST /accept  (no body)         → lands + commits → done
+//   • Accept  → POST /accept  (no body for `ready`; {override:true, missing}
+//               for an override) → lands + commits → done
 //   • Steer   → POST /steer   { directive }      → re-enters the verified loop
 //   • Reject  → POST /reject  { feedback }        → re-enters the loop
 //   • Resume  → POST /resume  (no body)          → no-feedback retry of the loop
 // Accept auto-detects its kind server-side from loom.state: a clean accept of
-// `ready`, or an AUDITED OWNER OVERRIDE of `needs-review`/`blocked` (the human
-// touch stands in for a passing gate; the response carries acceptedOverride).
-// Steer/Reject/Resume reveal (or fire) but all re-verify and can only land back
-// in `ready`, never self-promote to done — the moat stays intact. `failed` is a
-// dead-ended attempt: no Accept at all (the moat forbids blessing failure) —
-// only Send back (reject with feedback) or Resume (retry as-is).
+// `ready` fires with no body, or an AUDITED OWNER OVERRIDE of `needs-review`
+// (the only other state with an Accept — `blocked`/`failed` don't show one)
+// opens the note field to collect a required, non-blank "what's missing"
+// acknowledgment (L3, contract v0.8) before POSTing {override:true, missing}
+// — the human touch stands in for a passing gate; the response carries
+// acceptedOverride. Steer/Reject/Resume reveal (or fire) but all re-verify and
+// can only land back in `ready`, never self-promote to done — the moat stays
+// intact. `failed` is a dead-ended attempt: no Accept at all (the moat forbids
+// blessing failure) — only Send back (reject with feedback) or Resume (retry
+// as-is).
 
 type Variant = "ready" | "needs-review" | "blocked" | "failed";
 
@@ -202,22 +207,34 @@ export function AcceptancePanel({
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Which inline note field is open, and the pending network op. Only one of
-  // steer/reject can be open at a time; opening one closes the other.
-  const [mode, setMode] = useState<"steer" | "reject" | null>(null);
+  // steer/reject/override can be open at a time; opening one closes the
+  // others. `override` reuses this same note machinery to collect the
+  // required "what's missing" acknowledgment (L3) before an Accept on a
+  // non-`ready` loom.
+  const [mode, setMode] = useState<"steer" | "reject" | "override" | null>(null);
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
 
   const busy = accepting || resuming || sending;
 
-  const accept = useCallback(async () => {
+  // A clean accept of `ready` calls with no body; an override accept passes
+  // {override:true, missing} (collected via the note field below). Clears
+  // `mode` on success so the note closes along with the panel's re-render.
+  const accept = useCallback(async (body?: { override: true; missing: string }) => {
     setAccepting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/looms/${loom.id}/accept`, { method: "POST" });
+      const res = await fetch(`/api/looms/${loom.id}/accept`, {
+        method: "POST",
+        ...(body
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+          : {}),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error ?? "Couldn't accept the loom.");
       }
+      setMode(null);
       onAccepted?.((data as { loom: Loom }).loom);
       window.dispatchEvent(new Event("telar:refresh"));
     } catch (err) {
@@ -246,7 +263,7 @@ export function AcceptancePanel({
     }
   }, [loom.id, onAccepted]);
 
-  const openMode = useCallback((next: "steer" | "reject") => {
+  const openMode = useCallback((next: "steer" | "reject" | "override") => {
     setError(null);
     setMode((cur) => (cur === next ? null : next));
     setNote("");
@@ -453,12 +470,16 @@ export function AcceptancePanel({
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Accept keeps the muted-emerald tint in every variant; the label
-              (and the server's acceptedOverride flag) marks the override.
-              `allowAccept` gates it off for a woven root with unresolved
-              Threads — the moat forbids a blanket override of the weave. */}
+              (and the server's acceptedOverride flag) marks the override. A
+              clean `ready` accept fires immediately; an override opens the
+              note field instead so the owner names what's missing (L3) before
+              it POSTs. `allowAccept` gates it off for a woven root with
+              unresolved Threads — the moat forbids a blanket override of the
+              weave. */}
           {v.showAccept && allowAccept && (
             <Button
-              onClick={accept}
+              onClick={loom.state === "ready" ? () => void accept() : () => openMode("override")}
+              aria-pressed={loom.state === "ready" ? undefined : mode === "override"}
               disabled={busy}
               className="border border-emerald-500/30 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 focus-visible:ring-emerald-500/50"
             >
@@ -499,24 +520,29 @@ export function AcceptancePanel({
         {mode && (
           <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
             <label className="text-xs text-muted-foreground">
-              {mode === "steer"
-                ? v.noteLabel
-                : "What needs to change? The loop reworks it and re-verifies."}
+              {mode === "override"
+                ? "Name what's missing or unverified — recorded with your override."
+                : mode === "steer"
+                  ? v.noteLabel
+                  : "What needs to change? The loop reworks it and re-verifies."}
             </label>
             <Textarea
               autoFocus
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              disabled={sending}
+              disabled={busy}
               placeholder={
-                mode === "steer"
-                  ? v.notePlaceholder
-                  : "e.g. 'The empty state still flashes on first load — fix that.'"
+                mode === "override"
+                  ? "e.g. 'No executable check proved the checkout flow — accepting on visual review.'"
+                  : mode === "steer"
+                    ? v.notePlaceholder
+                    : "e.g. 'The empty state still flashes on first load — fix that.'"
               }
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                   e.preventDefault();
-                  void submitNote();
+                  if (mode === "override") void accept({ override: true, missing: note.trim() });
+                  else void submitNote();
                 }
               }}
             />
@@ -524,11 +550,17 @@ export function AcceptancePanel({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void submitNote()}
-                disabled={sending || !note.trim()}
+                onClick={() =>
+                  mode === "override"
+                    ? void accept({ override: true, missing: note.trim() })
+                    : void submitNote()
+                }
+                disabled={busy || !note.trim()}
               >
-                {sending && <Loader2Icon className="animate-spin" />}
-                {mode === "steer" ? v.sendLabel : "Send feedback"}
+                {(mode === "override" ? accepting : sending) && (
+                  <Loader2Icon className="animate-spin" />
+                )}
+                {mode === "override" ? "Accept (override)" : mode === "steer" ? v.sendLabel : "Send feedback"}
               </Button>
               <span className="text-[11px] text-muted-foreground/70">
                 ⌘↵ to send

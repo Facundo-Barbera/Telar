@@ -734,8 +734,11 @@ function Overview({
       )}
 
       {/* The owner's move on THIS thread — self-gates on loom.state, renders
-          only in an owner-actionable state (ready/needs-review/blocked/failed). */}
-      {loom && <AcceptancePanel loom={loom} onAccepted={onIntervened} />}
+          only in an owner-actionable state (ready/needs-review/blocked/failed).
+          Only a ROOT is human-accepted; a child Thread (parentLoomId set) is
+          consumed by the weave rollup (L5 accept-lock corollary), never
+          accepted here. */}
+      {loom && !loom.parentLoomId && <AcceptancePanel loom={loom} onAccepted={onIntervened} />}
 
       {/* Agent roster — each opens its focused L2 lane. */}
       {op.roster.length > 0 && (
