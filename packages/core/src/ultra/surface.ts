@@ -28,7 +28,9 @@ export type UltraSurface = {
   // Concurrent-with-a-barrier fan-out. An agent-failure thunk → null; Stop /
   // MissingModel / lifetime backstop propagate (control-signal carve-out).
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<(T | null)[]>;
-  // Per-item pipeline (doc §3). Stubbed until cut U3; shape fixed now.
+  // Per-item pipeline (doc §3): each item flows all stages independently, no
+  // inter-stage barrier; a throwing stage drops that item to `null` and skips
+  // its remaining stages (same control-signal carve-out as parallel).
   pipeline: (items: unknown[], ...stages: unknown[]) => Promise<unknown>;
   // Progress grouping + narrator lines into the run's event stream.
   phase: (title: string) => void;

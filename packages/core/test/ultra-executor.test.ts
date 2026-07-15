@@ -1,6 +1,31 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { AgentOpts, EngineEvent } from "../src/engine";
-import { startUltra, RUN_CONCURRENCY, LIFETIME_BACKSTOP } from "../src/ultra/executor";
+import {
+  startUltra,
+  resumeUltra,
+  RUN_CONCURRENCY,
+  LIFETIME_BACKSTOP,
+  VALIDATE_RETRY_K,
+  type UltraEvent,
+} from "../src/ultra/executor";
+import { readJournal } from "../src/ultra/journal";
+
+// Never the real ~/.telar: every successful agent() call now journals through
+// telarDir() (manifest.ts:17) — appendJournal on a live call, readJournalMap
+// on every startUltra() (executor.ts). Same temp-TELAR_HOME idiom as
+// ultra-resume.test.ts / looms.test.ts, re-pinned in beforeEach since bun test
+// runs all files in one process.
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-ultra-executor-"));
+process.env.TELAR_HOME = home;
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+});
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 
 // A fake matching `typeof agent` — the DI seam (executor.ts ExecuteOpts.run idiom).
 type Fake = (prompt: string, opts: AgentOpts<any>) => Promise<any>;
@@ -125,9 +150,14 @@ describe("Ultra executor — abort → stopped", () => {
 describe("Ultra executor — lifetime backstop", () => {
   test(`the ${LIFETIME_BACKSTOP + 1}th agent() throws and ends the run failed`, async () => {
     let calls = 0;
+    // Must return a schema-VALID result (passthrough {text}) so each
+    // script-level call succeeds on its first attempt — otherwise the U3
+    // validate-and-retry loop would call the fake up to VALIDATE_RETRY_K times
+    // per call, decoupling `calls` from the number of agent() invocations this
+    // test means to count.
     const fake: Fake = async () => {
       calls++;
-      return null;
+      return { text: "ok" };
     };
     const run = startUltra(
       `${META}\nexport default async function ({ agent }) { for (let i = 0; i < ${LIFETIME_BACKSTOP + 1}; i++) await agent("p", { model: "sonnet" }); return "unreached"; }`,
@@ -151,18 +181,214 @@ describe("Ultra executor — compile reject returns a failed run (non-blocking)"
 });
 
 describe("Ultra executor — per-ordinal transcript tap", () => {
-  test("onAgentEvent receives the engine EngineEvent stream keyed by ordinal", async () => {
-    const taps: Array<{ ordinal: number; e: EngineEvent }> = [];
+  test("onAgentEvent receives the engine EngineEvent stream keyed by ordinal, tagged with attempt 1", async () => {
+    const taps: Array<{ ordinal: number; e: EngineEvent; attempt: number }> = [];
     const fake: Fake = async (_p, o) => {
       o.onEvent?.({ type: "text", text: "hi" });
       return { text: "ok" };
     };
     const run = startUltra(
       `${META}\nexport default async function ({ agent }) { await agent("a", { model: "sonnet" }); return agent("b", { model: "sonnet" }); }`,
-      { agent: fake as any, onAgentEvent: (ordinal, e) => taps.push({ ordinal, e }) },
+      { agent: fake as any, onAgentEvent: (ordinal, e, attempt) => taps.push({ ordinal, e, attempt }) },
     );
     await run.finished;
     expect(taps.map((t) => t.ordinal)).toEqual([0, 1]);
     expect(taps[0]!.e).toEqual({ type: "text", text: "hi" });
+    expect(taps.map((t) => t.attempt)).toEqual([1, 1]);
+  });
+
+  // Regression: before the `attempt` tag, a retried ordinal's attempt-1 and
+  // attempt-2 event streams (each with its own `result` event) landed in the
+  // same ordinal bucket with no marker of where one attempt ends and the next
+  // begins — a consumer treating the first `result` as terminal would render
+  // the discarded, invalid attempt as the final transcript.
+  test("a retried ordinal tags each attempt's events distinctly, with the surviving attempt last", async () => {
+    const taps: Array<{ ordinal: number; e: EngineEvent; attempt: number }> = [];
+    let calls = 0;
+    const fake: Fake = async (_p, o) => {
+      calls++;
+      if (calls === 1) {
+        o.onEvent?.({ type: "text", text: "attempt 1 text" });
+        o.onEvent?.({ type: "result", subtype: "success" });
+        return { text: 123 }; // wrong shape — fails schema, triggers retry
+      }
+      o.onEvent?.({ type: "text", text: "attempt 2 text" });
+      o.onEvent?.({ type: "result", subtype: "success" });
+      return { text: "ok" };
+    };
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`,
+      { agent: fake as any, onAgentEvent: (ordinal, e, attempt) => taps.push({ ordinal, e, attempt }) },
+    );
+    const res = await run.finished;
+    expect(res.result).toEqual({ text: "ok" });
+    expect(taps.every((t) => t.ordinal === 0)).toBe(true);
+    expect(taps.map((t) => t.attempt)).toEqual([1, 1, 2, 2]);
+    // Two distinct `result` events, unambiguously attributable by `attempt` —
+    // the last one (attempt 2) is the one that decided the ordinal's outcome.
+    const resultTaps = taps.filter((t) => t.e.type === "result");
+    expect(resultTaps.map((t) => t.attempt)).toEqual([1, 2]);
+  });
+});
+
+describe("Ultra executor — validate-and-retry (U3, doc §3/§7-U3)", () => {
+  test("an invalid-shape result retries with the validation error appended to the original prompt, then succeeds", async () => {
+    let calls = 0;
+    const seenPrompts: string[] = [];
+    const fake: Fake = async (p) => {
+      calls++;
+      seenPrompts.push(p);
+      if (calls === 1) return { text: 123 }; // wrong type — fails the passthrough {text: string} schema
+      return { text: "ok" };
+    };
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`,
+      { agent: fake as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toEqual({ text: "ok" });
+    expect(calls).toBe(2);
+    expect(seenPrompts[0]).toBe("p");
+    // The retry appends to the ORIGINAL prompt (never chains) and names the attempt.
+    expect(seenPrompts[1]!.startsWith("p\n\n")).toBe(true);
+    expect(seenPrompts[1]).toContain("retry 1/2");
+  });
+
+  test(`a result that never validates settles to null after ${VALIDATE_RETRY_K} attempts — an ordinary dead agent, not a run failure`, async () => {
+    let calls = 0;
+    const fake: Fake = async () => {
+      calls++;
+      return null; // engine's own "no emit = null" contract
+    };
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { const r = await agent("p", { model: "sonnet" }); return { r }; }`,
+      { agent: fake as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done"); // exhausted retries never end the run — same as any dead agent
+    expect(res.result).toEqual({ r: null });
+    expect(calls).toBe(VALIDATE_RETRY_K);
+  });
+
+  test("a result that validates on the first attempt is never retried", async () => {
+    let calls = 0;
+    const fake: Fake = async () => {
+      calls++;
+      return { text: "ok" };
+    };
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`,
+      { agent: fake as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("Ultra executor — phase()/log() event emission", () => {
+  test("phase/log narrator calls emit onEvent in script order, followed by the terminal state event", async () => {
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ phase, log }) { phase("Phase 1"); log("hello"); phase("Phase 2"); log("world"); return "done"; }`,
+      { agent: (async () => ({ text: "ok" })) as any, onEvent: (e) => events.push(e) },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(events).toEqual([
+      { type: "phase", title: "Phase 1" },
+      { type: "log", msg: "hello" },
+      { type: "phase", title: "Phase 2" },
+      { type: "log", msg: "world" },
+      { type: "state", state: "done" },
+    ]);
+  });
+});
+
+describe("Ultra executor — pipeline() no inter-stage barrier", () => {
+  test("item A can finish stage 3 while item B is still stuck in stage 1", async () => {
+    const completionOrder: string[] = [];
+    const fake: Fake = async (p) => {
+      const isSlow = p === "B-1";
+      await delay(isSlow ? 30 : 0);
+      completionOrder.push(p);
+      return { text: p };
+    };
+    const script = `${META}\nexport default async function ({ agent, pipeline }) {
+      const stage1 = async (prev, item) => { await agent(item + "-1", { model: "sonnet" }); return item; };
+      const stage2 = async (prev, item) => { await agent(item + "-2", { model: "sonnet" }); return item; };
+      const stage3 = async (prev, item) => { await agent(item + "-3", { model: "sonnet" }); return item; };
+      return pipeline(["A", "B"], stage1, stage2, stage3);
+    }`;
+    const run = startUltra(script, { agent: fake as any });
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toEqual(["A", "B"]);
+    // A races all the way through stage 3 before B's slow stage 1 even settles
+    // — proof nothing is barriering A on B clearing stage 1 first.
+    expect(completionOrder.indexOf("A-3")).toBeLessThan(completionOrder.indexOf("B-1"));
+  });
+});
+
+describe("Ultra executor — pipeline() drop-to-null", () => {
+  test("a throwing stage drops that item to null and skips its remaining stages; other items are unaffected", async () => {
+    const seenPrompts: string[] = [];
+    const fake: Fake = async (p) => {
+      seenPrompts.push(p);
+      return { text: p };
+    };
+    const script = `${META}\nexport default async function ({ agent, pipeline }) {
+      const stage1 = async (prev, item) => { if (item === "bad") throw new Error("boom"); return item; };
+      const stage2 = async (prev, item) => { const r = await agent(item + "-stage2", { model: "sonnet" }); return r.text; };
+      return pipeline(["good", "bad"], stage1, stage2);
+    }`;
+    const run = startUltra(script, { agent: fake as any });
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toEqual(["good-stage2", null]);
+    // stage2 was never called for the dropped "bad" item.
+    expect(seenPrompts).toEqual(["good-stage2"]);
+  });
+
+  test("a control signal (MissingModel) inside a stage propagates past pipeline, ending the run failed", async () => {
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent, pipeline }) {
+        const stage1 = async (prev, item) => agent(item, {});
+        return pipeline(["a"], stage1);
+      }`,
+      { agent: (async () => ({ text: "ok" })) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(res.error).toContain("model");
+  });
+});
+
+describe("Ultra executor — pipeline() journal interplay (doc §3/§7-U2+U3)", () => {
+  test("every stage's agent() call journals by ordinal and replays from a full cache on resume", async () => {
+    const echoFake: Fake = async (p) => ({ text: p });
+    const script = `${META}\nexport default async function ({ agent, pipeline }) {
+      const stage1 = async (prev, item) => { const r = await agent(item + "-1", { model: "sonnet" }); return r.text; };
+      const stage2 = async (prev, item) => { const r = await agent(prev + "-2", { model: "sonnet" }); return r.text; };
+      return pipeline(["x", "y"], stage1, stage2);
+    }`;
+    const run = startUltra(script, { agent: echoFake });
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toEqual(["x-1-2", "y-1-2"]);
+    // 2 items * 2 stages = 4 script-level agent() calls, one journal record each.
+    expect(readJournal(run.runId).length).toBe(4);
+
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — full prefix should be cache-served");
+    };
+    const resumed = resumeUltra(run.runId, script, { agent: throwingFake });
+    const res2 = await resumed.finished;
+    expect(res2.state).toBe("done");
+    expect(res2.result).toEqual(["x-1-2", "y-1-2"]);
+    expect(liveCalls).toBe(0);
   });
 });

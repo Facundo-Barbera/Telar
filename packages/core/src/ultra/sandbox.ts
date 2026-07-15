@@ -114,6 +114,133 @@ function lint(code: string): SandboxReject | null {
   return null;
 }
 
+// ── Static "explicit model" lint (doc §4) ───────────────────────────────────
+// A BEST-EFFORT PRE-RUN static check that every `agent(...)` call site in the
+// script literally passes an opts object carrying a `model:` key — doc §4's
+// "static lint on the agent() call sites catches a model-less call before
+// runId is returned... a fast, synchronous reject." This is NOT the
+// enforcement boundary: the RUNTIME check inside the injected agent() itself
+// (MissingModel, signals.ts, executor.ts) is what actually holds even against
+// a call this lint cannot see through (opts built from a variable/spread, or
+// a `model` that evaluates to "" at runtime) — same "hygiene aid, not a
+// security control" caveat the banned-identifier lint above carries, applied
+// to the explicit-model contract instead of determinism. Deliberately
+// conservative: when the opts argument isn't a literal object (a variable, a
+// spread, a computed expression) we CANNOT tell statically, so we skip rather
+// than false-positive-reject legitimate code — the runtime check is the
+// backstop either way.
+//
+// Only a BARE `agent(` call is considered (never `x.agent(` — a property
+// access could be any object, not necessarily the injected surface); this
+// mirrors the script format's own destructured-surface convention (doc §3).
+const AGENT_CALL_RE = /\bagent\s*\(/g;
+
+// Split a call's argument-list text on TOP-LEVEL commas only (depth 0)
+// — same manual bracket-depth idiom as extractMetaLiteral below, applied to
+// an already comment/string-blanked slice so no quote/bracket inside a
+// string can confuse the count.
+function splitTopLevelArgs(text: string): string[] {
+  if (text.trim() === "") return [];
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "(" || c === "{" || c === "[") depth++;
+    else if (c === ")" || c === "}" || c === "]") depth--;
+    else if (c === "," && depth === 0) {
+      args.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  args.push(text.slice(start));
+  return args;
+}
+
+// Blank out anything nested inside a further {}/[]/() within an object
+// literal's own text, so a NESTED object's key (e.g. a zod schema literal's
+// field happening to be named "model") can never masquerade as a top-level
+// opts key — only text at the object's own top level (depth 1, just inside
+// its outer braces) survives for the `model:` search below.
+function topLevelOnly(objText: string): string {
+  let out = "";
+  let depth = 0;
+  for (let i = 0; i < objText.length; i++) {
+    const c = objText[i]!;
+    if (c === "{" || c === "[" || c === "(") {
+      out += depth <= 1 ? c : " ";
+      depth++;
+      continue;
+    }
+    if (c === "}" || c === "]" || c === ")") {
+      depth--;
+      out += depth <= 1 ? c : " ";
+      continue;
+    }
+    out += depth <= 1 ? c : " ";
+  }
+  return out;
+}
+
+// Matches an explicit `model:` key OR an ES6 shorthand `{ model }` property
+// (bare `model` bounded by `{`/`,` on the left and `,`/`}`/end on the right)
+// — both are legitimate ways to set opts.model at the object's top level.
+const MODEL_KEY_RE = /\bmodel\s*:|[{,]\s*model\b\s*(?:[,}]|$)/;
+
+function lintMissingModel(code: string): SandboxReject | null {
+  const s = stripCommentsAndStrings(code);
+  AGENT_CALL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = AGENT_CALL_RE.exec(s))) {
+    const matchStart = m.index;
+    const openParen = matchStart + m[0].length - 1;
+    // Skip a property-access call (`surface.agent(...)`/`this.agent(...)`) —
+    // best-effort blind spot, not the destructured-surface convention.
+    let j = matchStart - 1;
+    while (j >= 0 && /\s/.test(s[j]!)) j--;
+    if (j >= 0 && s[j] === ".") continue;
+
+    let depth = 0;
+    let i = openParen;
+    for (; i < s.length; i++) {
+      if (s[i] === "(") depth++;
+      else if (s[i] === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) continue; // unbalanced — some other stage will reject this script
+
+    const args = splitTopLevelArgs(s.slice(openParen + 1, i));
+    const line = code.slice(0, matchStart).split("\n").length;
+    const snippet = code.slice(matchStart, Math.min(code.length, i + 1)).trim().replace(/\s+/g, " ");
+
+    const optsArg = args[1]?.trim();
+    if (args.length < 2 || !optsArg) {
+      return {
+        ok: false,
+        error: `agent() call at line ${line} has no options argument — every agent() call must pass { model: ... } explicitly (doc §4): ${snippet}`,
+        kind: "missing-model",
+        detail: snippet,
+        line,
+      };
+    }
+    if (optsArg[0] === "{" && !MODEL_KEY_RE.test(topLevelOnly(optsArg))) {
+      return {
+        ok: false,
+        error: `agent() call at line ${line} is missing opts.model — every agent() call must name its model explicitly (doc §4): ${snippet}`,
+        kind: "missing-model",
+        detail: snippet,
+        line,
+      };
+    }
+    // optsArg isn't a literal object (a variable/spread/computed expression)
+    // — cannot tell statically whether it carries a model; skip (best-effort,
+    // the runtime MissingModel check is the real backstop for this case).
+  }
+  return null;
+}
+
 // ── meta: a PURE literal, statically read before any body execution ──────────
 // We locate `export const meta = { … }` and brace-match the object literal, then
 // evaluate JUST that literal in a capability-free deterministic context. A meta
@@ -184,6 +311,12 @@ function wrap(code: string): string {
 export function compileScript(code: string): CompileResult {
   const linted = lint(code);
   if (linted) return linted;
+
+  // PRE-RUN, before any spend (doc §4): a model-less agent() call site is
+  // rejected here, synchronously, alongside the hygiene lint above — never
+  // discovered only after an earlier call in the same script already ran.
+  const modelLinted = lintMissingModel(code);
+  if (modelLinted) return modelLinted;
 
   const metaSrc = extractMetaLiteral(code);
   if (!metaSrc) {

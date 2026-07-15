@@ -1,16 +1,34 @@
-// Ultra executor core (doc §3 / §7-U1). Compiles a script (sandbox.ts), builds
-// the frozen injected surface, and runs the default export as an in-process
-// detached task. Owns the runaway brakes: a run-local concurrency semaphore
-// (cap 3, SEPARATE from the engine's shared MAX_CONCURRENT=4 gate which every
-// agent() self-acquires), a 1000-agent lifetime backstop, and one
-// AbortController shared into every agent() call. Journal + ordinal resume land
-// in cut U2; this cut assigns ordinals but does not persist them.
+// Ultra executor core (doc §3 / §7-U1/U2/U3/U4). Compiles a script
+// (sandbox.ts), builds the frozen injected surface, and runs the default
+// export as an in-process detached task. Owns the runaway brakes: a run-local
+// concurrency semaphore (cap 3, SEPARATE from the engine's shared
+// MAX_CONCURRENT=4 gate which every schema'd agent() call joins by way of the
+// real runner delegating to engine.agent() — see runner.ts's header), a
+// 1000-agent lifetime backstop, and one AbortController shared into every
+// agent() call. Journal + ordinal resume (cut U2): every LIVE agent() call
+// appends a journal record keyed by its issue-time ordinal; a re-run of the
+// same runId (resumeUltra) replays the matching (prompt,opts) prefix from
+// that journal with zero live calls, and runs live from the first ordinal
+// whose hash misses (or whose ordinal simply isn't journaled yet) — the
+// standard Stop → edit → resume surgery (doc §3). Cut U3: the
+// validate-and-retry loop over agent()'s schema (K=2, then null, never a
+// control signal) and a real pipeline() (per-item, no inter-stage barrier; a
+// throwing stage drops that item to null). Cut U4: the DI default is the REAL
+// runner (runner.ts — schema'd calls delegate to engine.agent() itself,
+// schema-less calls keep their own SDK query() loop, see runner.ts's header)
+// and every settled call's cost/turns are surfaced both into the journal
+// record (a resume-time readout, doc §5) and as a new "agent" UltraEvent on
+// the run's own event stream (doc §5's events.ndjson taxonomy:
+// phase/log/agent/result — "result" is this file's existing "state" event).
 import crypto from "node:crypto";
 import { z } from "zod";
-import { agent as engineAgent, type AgentOpts, type EngineEvent } from "../engine";
+import type { EngineEvent } from "../engine";
+import type { AccountProfile } from "../schemas";
 import { compileScript, type ScriptMeta } from "./sandbox";
 import type { UltraAgentOpts, UltraSurface } from "./surface";
 import { MissingModel, LifetimeExceeded, isAbortError, isControlSignal } from "./signals";
+import { appendJournal, readJournalMap, hashCall, type JournalRecord } from "./journal";
+import { runUltraAgent, type EngineAgentFn, type UltraRunnerOpts } from "./runner";
 
 // Per-run in-flight cap: no single run holds more than 3 agent() calls at once,
 // so a burst of 100 parallel thunks can never starve sibling runs / looms
@@ -18,14 +36,22 @@ import { MissingModel, LifetimeExceeded, isAbortError, isControlSignal } from ".
 export const RUN_CONCURRENCY = 3;
 // Lifetime backstop: an unbounded loop can't spawn forever (doc §3).
 export const LIFETIME_BACKSTOP = 1000;
+// Validate-and-retry cap for schema'd agent() calls (doc §3/§7-U3): K TOTAL
+// attempts (the first try plus one retry) before an unparseable/never-emitted
+// result settles to `null` — an ordinary dead agent, never a control signal.
+// One loop for both providers: engine.agent()'s own contract is already "no
+// emit = null" (engine.ts:222); this adds the shape check on top so a
+// wrong-shaped emit is treated identically to a never-emitted one.
+export const VALIDATE_RETRY_K = 2;
 
-// The engine agent() signature, injectable so tests drive fakes (no live SDK) —
-// mirrors executor.ts's ExecuteOpts.run?: typeof engineAgent DI seam.
-export type EngineAgentFn = typeof engineAgent;
-
-// A passthrough schema for the schema-less agent() case: the engine ALWAYS
-// forces a typed emit (recon reality-check #6), so "raw final text" is a
-// { text } object, not an omitted schema.
+// A passthrough schema for the schema-less agent() case. This predates cut
+// U4's runner (which now genuinely supports "no schema -> final text", doc
+// §3): kept as-is so every already-tested script call site here still gets a
+// STRUCTURED { text } result via the forced emit_result path (recon
+// reality-check #6, from when this executor only had engine.agent() — which
+// always forces a typed emit — to bind to). Not a limitation of the runner
+// itself (runner.ts's schema-less branch is real and directly tested there);
+// changing this executor-level default is out of scope for U4.
 const PASSTHROUGH_SCHEMA = z.object({ text: z.string() });
 
 // A minimal counting semaphore (same acquire/waiters idiom as engine.ts:92, but
@@ -46,12 +72,27 @@ class Semaphore {
 
 export type UltraState = "running" | "done" | "failed" | "stopped";
 
-// Narrator + lifecycle events for the run stream (phase/log now; richer agent
-// lifecycle in U3/U4).
+// Narrator + lifecycle events for the run stream — doc §5's events.ndjson
+// taxonomy is "phase/log/agent/result"; this union's "state" IS that doc's
+// "result" (the run's own terminal-lifecycle event, named "state" since cut
+// U3 and left as-is here — a naming, not a behavior, gap). "agent" is new in
+// cut U4: emitted once per ORDINAL as it settles (cache-hit replay on a
+// resume re-emits it too, same as phase/log re-emitting from the cheap
+// re-run, doc §3) — the storage layer (U4-B) taps this to roll up
+// manifest.json's live `spend` without re-reading every agent transcript.
 export type UltraEvent =
   | { type: "phase"; title: string }
   | { type: "log"; msg: string }
-  | { type: "state"; state: UltraState };
+  | { type: "state"; state: UltraState }
+  | {
+      type: "agent";
+      ordinal: number;
+      label?: string;
+      model: string;
+      ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
+      costUsd?: number;
+      turns?: number;
+    };
 
 export type UltraRunResult = {
   runId: string;
@@ -72,26 +113,55 @@ export type UltraRun = {
 export type StartUltraOpts = {
   runId?: string;
   args?: unknown;
-  // DI seam — defaults to the engine agent(); tests pass a canned fn.
+  // DI seam — defaults to the REAL runner (runner.ts's runUltraAgent, cut
+  // U4); tests pass a canned fn instead (no live SDK).
   agent?: EngineAgentFn;
-  // Narrator/lifecycle sink (phase/log/state).
+  // The project root every child agent() call runs in (doc §3: writes
+  // confined to the project root, or the opts.isolation worktree — the
+  // latter not yet wired, surface.ts). Falls back to the runner's own
+  // process.cwd() default when omitted (tests / a script with no real
+  // project).
+  project?: string;
+  // Routes every child agent() call's env exactly like a loom's agent()
+  // (doc §2 — Ultra inherits accountEnv dispatch "for free"). Absent = the
+  // provider's base login (engine.ts's accountEnv semantics).
+  account?: AccountProfile;
+  // Narrator/lifecycle sink (phase/log/state/agent).
   onEvent?: (e: UltraEvent) => void;
   // Per-ordinal transcript tap — the engine EngineEvent stream for agent
-  // `ordinal`. Wired to agents/<ordinal>.ndjson in cut U4.
-  onAgentEvent?: (ordinal: number, e: EngineEvent) => void;
+  // `ordinal`, tagged with `attempt` (1-based, doc §3/§7-U3 validate-and-retry)
+  // so a retried call's events never blur into one ambiguous stream: each
+  // event carries the attempt that produced it, and the highest `attempt`
+  // seen is the terminal one for that ordinal (its `result` event is the one
+  // that decided the ordinal's outcome). Wired to agents/<ordinal>.ndjson in
+  // cut U4.
+  onAgentEvent?: (ordinal: number, e: EngineEvent, attempt: number) => void;
 };
 
 const RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
-const newRunId = () => `u-${crypto.randomBytes(6).toString("hex")}`;
+// Exported (cut U4) so storage.ts's launchUltra can mint a runId BEFORE
+// calling startUltra — it needs the id up front to build the manifest/event
+// persistence closures that startUltra's own onEvent/onAgentEvent callbacks
+// close over, so the id can't be discovered only after the fact.
+export const newUltraRunId = () => `u-${crypto.randomBytes(6).toString("hex")}`;
 
 const errText = (e: unknown): string =>
   e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 
 // Per-run mutable control state.
 type RunControl = {
+  readonly runId: string;
   readonly abort: AbortController;
   readonly sem: Semaphore;
   issued: number; // monotonic ordinal + lifetime counter (issued at call time)
+  // Resume cache (doc §3): records already on disk for this runId, keyed by
+  // ordinal. `cacheValid` is a one-way latch — true until the first ordinal
+  // whose hash misses (script edited there, or this ordinal was never
+  // journaled), after which EVERY later ordinal runs live even if its old
+  // record would still hash-match by coincidence. This is what makes resume a
+  // PREFIX replay, not an independent per-call cache.
+  readonly journal: Map<number, JournalRecord>;
+  cacheValid: boolean;
 };
 
 // Build the frozen surface for one run. The agent()/parallel() wrappers are
@@ -106,24 +176,122 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     // Lifetime backstop, checked at ISSUE time (deterministic ordinal order).
     if (ctl.issued >= LIFETIME_BACKSTOP) throw new LifetimeExceeded(LIFETIME_BACKSTOP);
     const ordinal = ctl.issued++;
+    // The cache-validity check (doc §3) — hashed over the SCRIPT-FACING
+    // (prompt, opts) only, before engine-internal fields (abort, onEvent) are
+    // added below, so it is stable across re-runs with a fresh AbortController.
+    const hash = hashCall(prompt, uOpts);
+
+    if (ctl.cacheValid) {
+      const cached = ctl.journal.get(ordinal);
+      if (cached && cached.hash === hash) {
+        // Cache-hit replay still narrates (doc §3: "phase/log re-emit from
+        // the cheap re-run") — the rail's agent roster must look the same on
+        // a resume as it did live, cost/turns included.
+        opts.onEvent?.({
+          type: "agent",
+          ordinal,
+          ...(uOpts.label ? { label: uOpts.label } : {}),
+          model: uOpts.model,
+          ok: cached.result !== null,
+          ...(cached.costUsd !== undefined ? { costUsd: cached.costUsd } : {}),
+          ...(cached.turns !== undefined ? { turns: cached.turns } : {}),
+        });
+        return cached.result; // served from the journal — no spawn (doc §3)
+      }
+      ctl.cacheValid = false; // first miss invalidates this AND every later ordinal
+    }
 
     // Only the doc's allowed opts reach the engine. effort/phase are journaled
     // display metadata (no SDK field); isolation → worktree in a later cut.
-    const engineOpts: AgentOpts<z.ZodRawShape> = {
-      schema: uOpts.schema ?? PASSTHROUGH_SCHEMA,
+    const schema = uOpts.schema ?? PASSTHROUGH_SCHEMA;
+    // Mutable — set at the top of each retry-loop iteration below, before
+    // `runOnce` fires the engine call, so the SAME `engineOpts.onEvent` closure
+    // (reused verbatim across every attempt) can still tag each forwarded
+    // event with the attempt that produced it. Without this, attempt 1's and
+    // attempt 2's full event streams — including each one's own `result`
+    // event — land in the same ordinal bucket with no marker of where one
+    // attempt ends and the next begins.
+    let attempt = 1;
+    // The LAST attempt's settled cost/turns (doc §3 "cost visibility" / §5
+    // journal record) — a retry's earlier attempts are discarded work, so
+    // only the surviving attempt's spend is what actually happened from the
+    // run's point of view; overwritten every time a "result" event lands.
+    let lastCostUsd: number | undefined;
+    let lastTurns: number | undefined;
+    const engineOpts: UltraRunnerOpts = {
+      schema,
       model: uOpts.model,
       ...(uOpts.label ? { label: uOpts.label } : {}),
+      ...(opts.project ? { cwd: opts.project } : {}),
+      ...(opts.account ? { account: opts.account } : {}),
       abort: ctl.abort,
-      ...(opts.onAgentEvent ? { onEvent: (e: EngineEvent) => opts.onAgentEvent!(ordinal, e) } : {}),
+      onEvent: (e: EngineEvent) => {
+        if (e.type === "result") {
+          lastCostUsd = e.costUsd;
+          lastTurns = e.turns;
+        }
+        opts.onAgentEvent?.(ordinal, e, attempt);
+      },
     };
 
-    await ctl.sem.acquire();
-    try {
-      // The engine agent() self-acquires the shared MAX_CONCURRENT=4 gate.
-      return await (opts.agent ?? engineAgent)(prompt, engineOpts);
-    } finally {
-      ctl.sem.release();
+    // One live engine call. The semaphore is acquired/released PER ATTEMPT (not
+    // held across a retry) so a retry contends for a fresh slot like any other
+    // call — a schema'd call (the only kind this executor ever issues, via
+    // PASSTHROUGH_SCHEMA above) is routed by the real runner (runner.ts)
+    // through engine.agent() itself, which self-acquires the shared
+    // MAX_CONCURRENT=4 gate (engine.ts:89) on top of this run-local cap.
+    const runOnce = async (p: string): Promise<unknown> => {
+      await ctl.sem.acquire();
+      try {
+        return await (opts.agent ?? runUltraAgent)(p, engineOpts);
+      } finally {
+        ctl.sem.release();
+      }
+    };
+
+    // Validate-and-retry (doc §3/§7-U3): a call that never emits (engine
+    // contract: null) and a call that emits the WRONG SHAPE are the same
+    // failure from Ultra's view — both retry, appending the validation error to
+    // the ORIGINAL prompt (never chained, so a K=2 run never grows the prompt
+    // more than once) up to VALIDATE_RETRY_K total attempts, then settle to
+    // `null` — an ordinary dead agent, never a control signal (never ends the
+    // run).
+    let result: unknown = null;
+    let attemptPrompt = prompt;
+    for (attempt = 1; attempt <= VALIDATE_RETRY_K; attempt++) {
+      result = await runOnce(attemptPrompt);
+      const parsed = schema.safeParse(result);
+      if (parsed.success) break;
+      if (attempt < VALIDATE_RETRY_K) {
+        const detail =
+          result === null
+            ? "no structured result was ever emitted (emit_result was not called)"
+            : parsed.error.message;
+        attemptPrompt = `${prompt}\n\n[Ultra retry ${attempt}/${VALIDATE_RETRY_K}] Your previous attempt failed schema validation: ${detail}. Call emit_result again with a result matching the required schema.`;
+      } else {
+        result = null; // exhausted — dead agent, per the engine's own null contract
+      }
     }
+    // Only a LIVE call ever appends — a cache hit above already returned. A
+    // thrown call (ordinary failure, abort, control signal) never reaches here,
+    // so it is simply never cached and re-runs live on the next resume.
+    appendJournal(ctl.runId, {
+      ordinal,
+      hash,
+      result,
+      ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
+      ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+    });
+    opts.onEvent?.({
+      type: "agent",
+      ordinal,
+      ...(uOpts.label ? { label: uOpts.label } : {}),
+      model: uOpts.model,
+      ok: result !== null,
+      ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
+      ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+    });
+    return result;
   };
 
   // Our OWN parallel — engine.parallel (engine.ts:228) swallows AbortError /
@@ -139,10 +307,29 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ),
     );
 
-  // pipeline is implemented in cut U3; the surface shape is fixed now.
-  const pipelineFn = async (): Promise<unknown> => {
-    throw new Error("pipeline() is implemented in cut U3");
-  };
+  // Per-item pipeline (doc §3/§7-U3): each item flows ALL stages independently
+  // — no inter-stage barrier, so item A can be in stage 3 while item B is still
+  // in stage 1. A stage callback gets (prev, originalItem, index). A throwing
+  // stage drops that item to `null` and skips its remaining stages (same
+  // control-signal carve-out as parallelFn above — Stop/MissingModel/lifetime
+  // backstop propagate past a stage, never coerced to null). Every stage's own
+  // agent() calls flow through agentFn above, so they get the same per-run
+  // concurrency cap, journal/resume, and validate-and-retry as any other call.
+  const pipelineFn = (items: unknown[], ...stages: unknown[]): Promise<unknown> =>
+    Promise.all(
+      items.map(async (originalItem, index) => {
+        let prev: unknown = originalItem;
+        for (const stage of stages) {
+          try {
+            prev = await (stage as (p: unknown, item: unknown, i: number) => unknown)(prev, originalItem, index);
+          } catch (e) {
+            if (isControlSignal(e)) throw e;
+            return null; // a throwing stage drops the item to null, skips remaining stages
+          }
+        }
+        return prev;
+      }),
+    );
 
   return Object.freeze({
     agent: agentFn,
@@ -163,7 +350,7 @@ function terminalRun(runId: string, meta: ScriptMeta, result: UltraRunResult): U
 // callers await `finished` for the terminal result. A compile reject returns a
 // run already `failed` — the validation-error return path (fleshed out in U5).
 export function startUltra(code: string, opts: StartUltraOpts = {}): UltraRun {
-  const runId = opts.runId ?? newRunId();
+  const runId = opts.runId ?? newUltraRunId();
   if (!RUN_ID_RE.test(runId)) throw new Error(`invalid ultra runId: ${JSON.stringify(runId)}`);
 
   const compiled = compileScript(code);
@@ -171,7 +358,18 @@ export function startUltra(code: string, opts: StartUltraOpts = {}): UltraRun {
     return terminalRun(runId, {}, { runId, state: "failed", meta: {}, error: compiled.error });
   }
 
-  const ctl: RunControl = { abort: new AbortController(), sem: new Semaphore(RUN_CONCURRENCY), issued: 0 };
+  const ctl: RunControl = {
+    runId,
+    abort: new AbortController(),
+    sem: new Semaphore(RUN_CONCURRENCY),
+    issued: 0,
+    // Empty on a genuinely fresh runId — the cache-check above then misses on
+    // ordinal 0 and every call simply runs live, appending as it goes. A
+    // runId that already has a journal on disk (this IS what resume means,
+    // §3) preloads it here — start and resume are the same code path.
+    journal: readJournalMap(runId),
+    cacheValid: true,
+  };
   const surface = buildSurface(ctl, opts);
 
   let state: UltraState = "running";
@@ -194,4 +392,19 @@ export function startUltra(code: string, opts: StartUltraOpts = {}): UltraRun {
   })();
 
   return { runId, meta: compiled.meta, state: () => state, stop: () => ctl.abort.abort(), finished };
+}
+
+// Resume: re-run a (possibly edited) script under a runId that already has a
+// journal on disk. Ordinal `i` is served from the journal instantly iff its
+// stored hash still matches call `i` of THIS re-executed script; the first
+// mismatch (or an ordinal simply missing from the journal — e.g. a crash
+// mid-append) invalidates it and every later ordinal, which then run live
+// (doc §3). Concretely the same code path as startUltra with a pinned runId —
+// "resume" IS "start again with the same id" once a journal exists; the
+// separate name matches the doc's `resume(runId)` verb and the future
+// `/api/ultra/[id]/resume` route (U4, which will also persist+recall the
+// script text itself so a bare id round-trips without the caller re-supplying
+// `code`).
+export function resumeUltra(runId: string, code: string, opts: Omit<StartUltraOpts, "runId"> = {}): UltraRun {
+  return startUltra(code, { ...opts, runId });
 }
