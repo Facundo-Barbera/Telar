@@ -91,6 +91,19 @@ type SidebarProject = {
   todayChats: ChatMeta[];
 };
 
+// Parse a raw localStorage value into a string[], dropping anything that
+// isn't one (wrong shape, e.g. `false`/`{}` from a stale or hand-edited key)
+// instead of blindly casting it — callers must always get a real array.
+function parseStoredList(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : [];
+  } catch {
+    return [];
+  }
+}
+
 // ── localStorage-backed ordered list (hydration-safe) ──────────────────────
 // First render always yields `null` (server + first client paint agree), then
 // an effect reads the stored value — so no SSR hydration mismatch. Writers
@@ -101,11 +114,18 @@ function useStoredList(
   const [value, setValue] = useState<string[] | null>(null);
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(key);
-      setValue(raw ? (JSON.parse(raw) as string[]) : []);
+      setValue(parseStoredList(localStorage.getItem(key)));
     } catch {
       setValue([]);
     }
+    // Cross-tab sync: another tab's write to this key updates our snapshot too
+    // (same convention as ui-prefs.ts), so two tabs writing in succession merge
+    // instead of the second clobbering the first with a stale in-memory value.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === key) setValue(parseStoredList(e.newValue));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, [key]);
   const set = useCallback(
     (v: string[]) => {
