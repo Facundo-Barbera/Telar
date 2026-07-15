@@ -1,0 +1,5 @@
+[test]
+# Build outputs (electron-builder `release/`, Next standalone `.next-desktop/`)
+# copy web source — including *.test.ts — into packaged bundles. Never run those
+# stale copies as part of the source test gate.
+pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]

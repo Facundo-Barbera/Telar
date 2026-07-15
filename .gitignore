@@ -10,3 +10,7 @@ node_modules/
 .playwright-mcp/
 test-results/
 playwright-report/
+
+# Desktop build outputs (electron-builder output + standalone web build)
+apps/desktop/release/
+.next-desktop/
