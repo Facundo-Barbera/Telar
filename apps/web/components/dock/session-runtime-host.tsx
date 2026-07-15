@@ -6,19 +6,33 @@
 // docked id by <Dock> — never on its own.
 //
 // DATA SOURCES (all the app's existing HTTP surface — no server-only import):
-//   · GET /api/chats/[id]            → the persisted tail + title/project/model/cost
-//   · GET /api/chat/[id]/events (SSE) → live "working" detection; on close, refetch
-//   · GET /api/looms/[id]            → park state (loom.state === "blocked")
+//   · GET /api/chats/[id]             → the persisted tail + title/project/model/cost
+//   · GET /api/chat/[id]/events (SSE) → the SAME §1b reconnect tail session-view.tsx
+//                                        uses to watch a running turn — reused here
+//                                        verbatim (same endpoint, same consumeSSE
+//                                        parser from @/lib/sse), not a second protocol
+//   · POST /api/chat/stop             → stop an active turn (session-view parity)
+//   · GET /api/looms/[id]             → park state (loom.state === "blocked")
 //
-// LIVE-STREAM FIDELITY (flagged): there is no shared in-memory session store to
-// read the page's own streaming state from. Rather than re-implement the session
-// page's ~1k-line SSE transcript reconstruction, this host uses the SSE tail to
-// know WHEN a turn is running (working ring) and refetches the persisted tail on
-// completion. So the dock panel updates a beat after a turn finishes rather than
-// token-by-token — correct content, coarser cadence. Full live streaming into
-// the panel would reuse the session view's applyServerEvent switch.
+// LIVE CONTENT: applyLiveEvent below is a reduced version of session-view's
+// applyServerEvent, scoped to what the compact CompactMsg grammar renders
+// (user / assistant text / grouped tool steps, main thread only — sub-agent
+// parts are skipped exactly like toCompact already does for the persisted
+// tail). Thinking blocks, permission cards, plan/loom events etc. have no
+// compact shape and are ignored live; they still land once the turn
+// completes and the persisted tail is refetched. The live overlay
+// (liveMsgsRef) is layered on top of the last persisted fetch and reset once
+// a turn's tail closes and the fresh persisted tail is pulled in.
+//
+// EACH RECONNECT REPLAYS FROM THE TURN'S START: the /events route hands a
+// fresh reader the whole current in-flight block from its own line 0, so
+// resetLive() at the top of every openTail() attempt is correct — a
+// reconnect rebuilds the same content, it doesn't duplicate it. Within one
+// connection's lifetime the server only ever sends NEW events (its own
+// cursor advances), so no dedupe is needed there.
 
 import { useCallback, useEffect, useRef } from "react";
+import { consumeSSE } from "@/lib/sse";
 import { useDock, type CompactMsg } from "./dock-provider";
 
 const newRunId = () =>
@@ -100,33 +114,135 @@ const countAssistant = (messages: StoreMessage[]): number =>
   messages.filter((m) => m.role === "assistant").length;
 
 export function SessionRuntimeHost({ id }: { id: string }) {
-  const { setRuntime, runtime, dequeue } = useDock();
+  const { setRuntime, runtime, dequeue, registerStopHandler } = useDock();
   // Keep the latest chat detail so the composer can send with the right
-  // model/account/project without re-fetching.
+  // model/account/project without re-fetching, and so the live overlay below
+  // has something to layer on top of.
   const detailRef = useRef<ChatDetail | null>(null);
   // In-flight guard so the queue-drain effect fires exactly one POST per turn.
   const sendingRef = useRef(false);
-  // Latest runtime, read inside sendTurn's stable closure without widening deps
-  // (so an optimistic user bubble appends to the current tail).
-  const runtimeRef = useRef(runtime);
-  runtimeRef.current = runtime;
+
+  // ── live overlay: the in-flight turn's CompactMsg entries, rebuilt from
+  // SSE events and rendered on top of the last persisted fetch. `messages` in
+  // the store is always `[...persisted, ...live]` (see commitLive). ──
+  const liveMsgsRef = useRef<CompactMsg[]>([]);
+  const pendingToolsRef = useRef<{ tool: string; target: string }[]>([]);
+  // The turn's own POST fetch (self-initiated sends) and the live tail's own
+  // fetch — Stop aborts both as its local teardown, mirroring session-view's
+  // abortRef.current?.abort().
+  const sendAbortRef = useRef<AbortController | null>(null);
+  const tailAbortRef = useRef<AbortController | null>(null);
+  // The current self-initiated turn's runId (session-view.tsx parity): set the
+  // instant sendTurn fires, cleared when it settles. Stop below prefers this
+  // over sessionId so it resolves from t=0 — sessionId isn't attachable to the
+  // run server-side until the SDK confirms init/resume (chat-runs.ts), a window
+  // during which a sessionId-only stop silently finds nothing.
+  const runIdRef = useRef<string | null>(null);
+
+  const flushLiveTools = () => {
+    if (pendingToolsRef.current.length) {
+      liveMsgsRef.current = [...liveMsgsRef.current, { role: "tools", steps: pendingToolsRef.current }];
+      pendingToolsRef.current = [];
+    }
+  };
+  const resetLive = () => {
+    liveMsgsRef.current = [];
+    pendingToolsRef.current = [];
+  };
+  const commitLive = () => {
+    const persisted = detailRef.current ? toCompact(detailRef.current.messages) : [];
+    setRuntime(id, { messages: [...persisted, ...liveMsgsRef.current] });
+  };
+  const trailingMessage = (): CompactMsg | undefined => {
+    if (liveMsgsRef.current.length) return liveMsgsRef.current[liveMsgsRef.current.length - 1];
+    const persisted = detailRef.current ? toCompact(detailRef.current.messages) : [];
+    return persisted[persisted.length - 1];
+  };
+
+  // Reduced applyServerEvent (session-view.tsx §1b) for the compact grammar —
+  // see the file header for what's intentionally dropped.
+  const applyLiveEvent = (event: string, payload: any) => {
+    if (payload?.parent) return; // sub-agent stream — main thread only
+    switch (event) {
+      case "user": {
+        const text = String(payload?.text ?? "").trim();
+        if (!text) break;
+        const last = trailingMessage();
+        // Self-initiated sends already show this bubble optimistically
+        // (sendTurn) — the tail's replay of the same "user" line is a dedupe,
+        // not a second copy.
+        if (last?.role === "user" && last.text === text) break;
+        flushLiveTools();
+        liveMsgsRef.current = [...liveMsgsRef.current, { role: "user", text }];
+        break;
+      }
+      case "delta": {
+        const chunk = String(payload?.text ?? "");
+        const last = liveMsgsRef.current[liveMsgsRef.current.length - 1];
+        if (last?.role === "assistant") {
+          liveMsgsRef.current = [
+            ...liveMsgsRef.current.slice(0, -1),
+            { role: "assistant", text: last.text + chunk },
+          ];
+        } else {
+          flushLiveTools();
+          liveMsgsRef.current = [...liveMsgsRef.current, { role: "assistant", text: chunk }];
+        }
+        break;
+      }
+      case "text": {
+        // Block finalize — authoritative full text, replacing whatever the
+        // deltas above accumulated (mirrors applyServerEvent's "text" case).
+        const text = String(payload?.text ?? "");
+        const last = liveMsgsRef.current[liveMsgsRef.current.length - 1];
+        if (last?.role === "assistant") {
+          liveMsgsRef.current = [...liveMsgsRef.current.slice(0, -1), { role: "assistant", text }];
+        } else {
+          flushLiveTools();
+          liveMsgsRef.current = [...liveMsgsRef.current, { role: "assistant", text }];
+        }
+        break;
+      }
+      case "tool": {
+        pendingToolsRef.current = [
+          ...pendingToolsRef.current,
+          { tool: (payload?.name as string) ?? "Tool", target: toolTarget(payload?.input) },
+        ];
+        break;
+      }
+      case "interrupted":
+      case "done":
+      case "error":
+        flushLiveTools();
+        break;
+      default:
+        // thinking/thinking_delta/tool_result/task_status/permission*/plan/
+        // title/session/saved — no compact-grammar shape, skip the commit.
+        return;
+    }
+    commitLive();
+  };
 
   // Fire ONE queued message as a real turn on the same server surface the full
-  // session page uses (POST /api/chat). Optimistically shows the user bubble +
-  // working ring, drains the returned SSE stream to know when the turn ends,
-  // then pulls the fresh persisted tail. Client-bundle-safe: plain HTTP only.
+  // session page uses (POST /api/chat). Shows the user bubble + working ring
+  // at once via the live overlay; the tail below (a second, independent
+  // connection to the same session's event log) streams the assistant's
+  // reply as it's written. This response is only drained for lifecycle
+  // (error surfacing, knowing when to settle) — not a second content path.
   const sendTurn = useCallback(
     async (text: string) => {
       const d = detailRef.current;
       if (!d || sendingRef.current) return;
       sendingRef.current = true;
-      setRuntime(id, {
-        working: true,
-        messages: [
-          ...(runtimeRef.current[id]?.messages ?? []),
-          { role: "user", text },
-        ],
-      });
+      resetLive();
+      liveMsgsRef.current = [{ role: "user", text }];
+      setRuntime(id, { working: true });
+      commitLive();
+
+      const sendAbort = new AbortController();
+      sendAbortRef.current = sendAbort;
+      const runId = newRunId();
+      runIdRef.current = runId;
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
@@ -134,15 +250,14 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           body: JSON.stringify({
             message: text,
             sessionId: id,
-            runId: newRunId(),
+            runId,
             model: d.model,
             project: d.project,
             account: d.account,
             ...(d.permissionMode ? { permissionMode: d.permissionMode } : {}),
           }),
+          signal: sendAbort.signal,
         });
-        // Drain the SSE stream to completion (content is refetched from the
-        // store below — we only need to know WHEN the turn is done).
         if (res.ok && res.body) {
           const reader = res.body.getReader();
           for (;;) {
@@ -151,9 +266,11 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           }
         }
       } catch {
-        /* network drop — the tail refetch below still reconciles */
+        /* network drop / stopped — the tail + refetch below still reconcile */
       } finally {
+        sendAbortRef.current = null;
         sendingRef.current = false;
+        if (runIdRef.current === runId) runIdRef.current = null;
         setRuntime(id, { working: false });
         window.dispatchEvent(new CustomEvent("telar:dock-refetch", { detail: id }));
       }
@@ -173,6 +290,27 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     if (next !== undefined) void sendTurn(next);
   }, [id, working, queuedLen, dequeue, sendTurn]);
 
+  // Stop an active turn — session-view parity (POST /api/chat/stop + local
+  // teardown). Prefers the in-flight runId (resolvable from t=0, see
+  // runIdRef above); falls back to sessionId (chat-runs.ts's fallback
+  // lookup) for a turn this host didn't itself send — e.g. one already past
+  // init that started from the full session view.
+  useEffect(() => {
+    const stop = () => {
+      sendAbortRef.current?.abort();
+      tailAbortRef.current?.abort();
+      setRuntime(id, { working: false });
+      const runId = runIdRef.current;
+      void fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(runId ? { runId, sessionId: id } : { sessionId: id }),
+      }).catch(() => {});
+    };
+    registerStopHandler(id, stop);
+    return () => registerStopHandler(id, null);
+  }, [id, registerStopHandler, setRuntime]);
+
   // ── persisted tail + park state, refetched on demand and after each run ──
   useEffect(() => {
     let alive = true;
@@ -185,7 +323,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         setRuntime(id, {
           title: chat.title,
           project: chat.project ?? "",
-          messages: toCompact(chat.messages),
+          messages: [...toCompact(chat.messages), ...liveMsgsRef.current],
           assistantCount: countAssistant(chat.messages),
           cost: chat.costUsd,
           model: chat.model,
@@ -224,7 +362,12 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     };
   }, [id, setRuntime]);
 
-  // ── live "working" detection: tail the SSE, re-opening to catch new runs ──
+  // ── live tail: the SAME /events endpoint + consumeSSE parser session-view's
+  // §1b reconnect uses, re-opened to catch new runs. While a turn streams,
+  // this connection stays open (the route only closes it on "closed"/drain),
+  // so content lands as it's written; once it closes, drop the live overlay
+  // (the persisted store already has the finished turn — route.ts saves
+  // before emitting "closed") and pull the fresh tail. ──
   useEffect(() => {
     let alive = true;
     let abort: AbortController | null = null;
@@ -233,36 +376,33 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     const openTail = async () => {
       if (!alive) return;
       abort = new AbortController();
+      tailAbortRef.current = abort;
+      resetLive();
       let sawEvent = false;
       try {
         const res = await fetch(`/api/chat/${encodeURIComponent(id)}/events`, {
           signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error("no stream");
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const chunks = buffer.split("\n\n");
-          buffer = chunks.pop() ?? "";
-          for (const chunk of chunks) {
-            if (!chunk.includes("event:")) continue;
-            if (!sawEvent) {
-              sawEvent = true;
-              if (alive) setRuntime(id, { working: true });
-            }
+        await consumeSSE(res.body.getReader(), (event, payload) => {
+          if (!alive) return;
+          if (!sawEvent) {
+            sawEvent = true;
+            setRuntime(id, { working: true });
           }
-        }
+          applyLiveEvent(event, payload);
+        });
       } catch {
-        /* not live / aborted / dropped — fall through to reschedule */
+        /* not live / aborted (incl. an explicit Stop) / dropped — reschedule */
       } finally {
+        if (tailAbortRef.current === abort) tailAbortRef.current = null;
         if (alive) {
           if (sawEvent) {
-            // A turn just ran to completion — settle + pull the fresh tail.
+            // A turn just ran to completion (or was stopped) — settle + pull
+            // the now-authoritative persisted tail.
             setRuntime(id, { working: false });
+            resetLive();
+            commitLive();
             window.dispatchEvent(new CustomEvent("telar:dock-refetch", { detail: id }));
           }
           // Re-arm: a live run reconnects fast, an idle one polls lazily.

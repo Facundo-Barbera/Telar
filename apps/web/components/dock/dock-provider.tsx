@@ -96,6 +96,11 @@ interface DockCtx {
   // Pop the head of the queue for sending — returns it and removes it atomically
   // so the runtime host never double-sends. Undefined when the queue is empty.
   dequeue: (id: string) => string | undefined;
+  // Stop an active turn (session view parity: POST /api/chat/stop + local
+  // teardown). The runtime host registers the actual handler (it owns the
+  // fetch/abort refs); this is a no-op if no host is mounted for the id.
+  registerStopHandler: (id: string, fn: (() => void) | null) => void;
+  requestStop: (id: string) => void;
 }
 
 const Ctx = createContext<DockCtx | null>(null);
@@ -269,6 +274,20 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
     return head;
   }, []);
 
+  // Imperative side-channel (mirrors the chat-runs.ts registry pattern
+  // server-side): the runtime host is the only thing holding the live
+  // AbortControllers, so it registers a stop closure here; the panel's Stop
+  // button calls it by id without reaching into the host directly. A plain
+  // ref (not state) — invoking it is a side effect, not a render input.
+  const stopHandlersRef = useRef<Record<string, () => void>>({});
+  const registerStopHandler = useCallback((id: string, fn: (() => void) | null) => {
+    if (fn) stopHandlersRef.current[id] = fn;
+    else delete stopHandlersRef.current[id];
+  }, []);
+  const requestStop = useCallback((id: string) => {
+    stopHandlersRef.current[id]?.();
+  }, []);
+
   // Auto-docked heads get their unread baseline the moment the runtime host
   // finishes its first load: viewed := the assistant-count already persisted at
   // that point (the turns the user had seen before leaving). The current, still
@@ -311,8 +330,10 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
       markViewed: markViewedNow,
       enqueue,
       dequeue,
+      registerStopHandler,
+      requestStop,
     }),
-    [entries, expanded, runtime, viewed, dockSession, autoDock, clearAutoDock, undock, toggleExpand, minimize, isDocked, setRuntime, markViewedNow, enqueue, dequeue],
+    [entries, expanded, runtime, viewed, dockSession, autoDock, clearAutoDock, undock, toggleExpand, minimize, isDocked, setRuntime, markViewedNow, enqueue, dequeue, registerStopHandler, requestStop],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

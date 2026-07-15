@@ -19,6 +19,7 @@ import {
   MinusIcon,
   PencilIcon,
   SearchIcon,
+  SquareIcon,
   XIcon,
 } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -298,7 +299,7 @@ function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
 
 // ── an expanded docked panel (compact ChatSurface grammar) ──────────────────
 function DockPanel({ entry }: { entry: DockEntry }) {
-  const { runtime, minimize, undock, markViewed } = useDock();
+  const { runtime, minimize, undock, markViewed, requestStop } = useDock();
   const router = useRouter();
   const rt = runtime[entry.id];
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -326,9 +327,14 @@ function DockPanel({ entry }: { entry: DockEntry }) {
           <div className="truncate font-mono text-[11px] text-muted-foreground">{rt?.project || entry.project}</div>
         </div>
         {rt?.working && (
-          <Shimmer as="span" className="shrink-0 text-[11px] font-medium">
-            working
-          </Shimmer>
+          <>
+            <Shimmer as="span" className="shrink-0 text-[11px] font-medium">
+              working
+            </Shimmer>
+            <IconBtn onClick={() => requestStop(entry.id)} label="Stop">
+              <SquareIcon className="size-3.5 fill-current" />
+            </IconBtn>
+          </>
         )}
         <IconBtn
           onClick={() =>

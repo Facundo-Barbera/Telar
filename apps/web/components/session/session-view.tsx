@@ -76,6 +76,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { fmtCost, fmtTokens, shortId } from "@/lib/format";
+import { consumeSSE } from "@/lib/sse";
 import { UsagePill } from "@/components/session/usage-pill";
 import type { PlanSnapshot } from "@/lib/store";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
@@ -366,40 +367,15 @@ export type InitialChat = {
   // — set once this session's loom MCP tools have drafted/started a bundle.
   // Seeds the header's persistent "Planning loom" chip on reload.
   loomId?: string;
-  role?: "planner" | "steerer";
+  role?: "planner" | "steerer" | "escalation";
 };
 
 const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
 
-// Reads an SSE stream frame-by-frame: accumulate decoded chunks, split on the
-// blank-line record separator, parse each record's `event:`/`data:` lines, and
-// hand (event, payload) to `onEvent`. Shared by the POST send() path and the
-// §1b reconnect subscriber; resolves when the reader is exhausted.
-async function consumeSSE(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  onEvent: (event: string, payload: any) => void,
-): Promise<void> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      let event = "";
-      let data = "";
-      for (const line of chunk.split("\n")) {
-        if (line.startsWith("event: ")) event = line.slice(7);
-        if (line.startsWith("data: ")) data = line.slice(6);
-      }
-      if (!event || !data) continue;
-      const payload = JSON.parse(data);
-      onEvent(event, payload);
-    }
-  }
-}
+// consumeSSE (the frame-by-frame `event:`/`data:` reader shared by the POST
+// send() path and the §1b reconnect subscriber) now lives in @/lib/sse — the
+// dock's own live tail (session-runtime-host.tsx) reuses the exact same
+// parser rather than a second implementation of the wire format.
 
 function BackLink({ href, label }: { href: string; label: string }) {
   return (
@@ -1605,8 +1581,9 @@ function SessionViewInner({
                   // An embedded steerer session (loom Chat tab) OR escalation
                   // session (blocked-loom discuss surface) keeps the /looms/[id]
                   // URL — never rewrite the address bar out from under the
-                  // cockpit. (An escalation session is ephemeral and reattaches
-                  // only via an explicit re-click, so it has no seed to restore.)
+                  // cockpit. Both now persist with a role (store.ts's
+                  // Chat.role) and reattach via initialChat on remount — see
+                  // discuss-escalation.tsx's own seed fetch.
                   if (!steerer && !escalation) {
                     window.history.replaceState(
                       null,
@@ -3321,13 +3298,20 @@ function SessionViewInner({
               status={status === "ready" ? undefined : status}
               onStop={() => {
                 // Stop the DETACHED server run — a mere disconnect no longer
-                // stops it (§A.4) — then close the local reader.
+                // stops it (§A.4) — then close the local reader. A turn
+                // resumed via the §1b reconnect tail never sets runIdRef
+                // (this mount never started it, and the reconnect SSE never
+                // echoes the server-side runId back) — fall back to
+                // sessionId, which stopChatRun (lib/chat-runs.ts) already
+                // accepts as an alternate lookup key for exactly this case.
+                // The reconnect tail's own reader then unwinds on its own
+                // once the aborted run's "closed" event reaches it.
                 const rid = runIdRef.current;
-                if (rid) {
+                if (rid || sessionId) {
                   void fetch("/api/chat/stop", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ runId: rid }),
+                    body: JSON.stringify(rid ? { runId: rid } : { sessionId }),
                   }).catch(() => {});
                 }
                 abortRef.current?.abort();
