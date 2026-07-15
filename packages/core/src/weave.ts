@@ -33,7 +33,15 @@ export function rollupWeave(
     if (c.subGoalId) childBySubGoal.set(c.subGoalId, c);
   }
 
-  const allRequiredDone = required.every((sg) => childBySubGoal.get(sg.id)?.state === "done");
+  // A required child is "met" at "done" (terminalStateForCompletedLoom always
+  // returns "done" for a loom with parentLoomId set — §A). "ready" is included
+  // too: it is the SAME "verified" terminal per the WorkUnitState enum
+  // ("ready, // verified, awaiting owner acceptance") — a child never lands
+  // there in production (only a root/verify-root does), so this widens nothing
+  // reachable from executeLoom; it only keeps rollupWeave honest for callers
+  // (fakes/harnesses) that hand it an already-verified child stamped "ready".
+  const isMet = (state: WorkUnitState | undefined) => state === "done" || state === "ready";
+  const allRequiredDone = required.every((sg) => isMet(childBySubGoal.get(sg.id)?.state));
   // §A: the woven root is the thing the owner accepts — it lands "ready",
   // never "done", even though the gate is still every required child === "done".
   if (allRequiredDone) return { state: "ready" };
@@ -53,11 +61,25 @@ export function rollupWeave(
   const blockedChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "blocked");
   if (blockedChild) return { state: "blocked", error: `${blockedChild.id}: blocked` };
 
-  const notDoneRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state !== "done");
-  if (notDoneRequired) return { state: "needs-review", error: `${notDoneRequired.id}: not done` };
-
-  // Unreachable given the branches above, but keeps the function total.
-  return { state: "needs-review", error: "unresolved" };
+  // L1/L6 (contract mandate 4) — the remaining required subgoals are unmet for a
+  // reason OTHER than a failed/blocked child: they were either NEVER SPAWNED (the
+  // weave loop exhausted — wall-clock / pool / iteration bound — before scheduling
+  // them) or spawned and settled in a non-done, non-failed, non-blocked state. A root
+  // with unbuilt/unproven required work NEVER settles into a state that presents an
+  // accept affordance: it lands `blocked` (root escalation to the human) carrying a
+  // COMPLETE reason that enumerates EVERY unmet required subgoal and distinguishes
+  // `unspawned` from `spawned-but-not-done` — never the old single-id `${id}: not
+  // done` needs-review (run #3's "F: not done" while 4/6 subgoals were never spawned).
+  // `needs-review` for a ROOT is reserved for the composed-proof demote (a fully-built
+  // weave whose ALL verify is in question — runWeave's integration-verify block below),
+  // never for missing work.
+  const unmet = required.filter((sg) => !isMet(childBySubGoal.get(sg.id)?.state));
+  const detail = unmet
+    .map((sg) =>
+      childBySubGoal.has(sg.id) ? `${sg.id}: not done (${childBySubGoal.get(sg.id)!.state})` : `${sg.id}: unspawned`,
+    )
+    .join("; ");
+  return { state: "blocked", error: `required subgoals unmet — ${detail}` };
 }
 
 export type RunWeaveDeps = {
@@ -123,6 +145,26 @@ function childCostUsd(child: Loom): number {
   return child.attempts.reduce((sum, a) => sum + (a.costUsd ?? 0), 0);
 }
 
+// L13 (contract mandate 5) — the minimal honest projection of a settled child's
+// WorkUnitState onto the SubGoal.status enum (pending/ready/active/done/blocked/
+// failed). done⇒done, a terminal failure⇒failed, an awaiting-orchestrator park⇒
+// blocked, anything still moving⇒active. NOT authoritative — a sync of child state
+// for the record/UI (tick.ts derives scheduling from live child state, never this).
+function subGoalStatusFor(childState: WorkUnitState): SubGoal["status"] {
+  switch (childState) {
+    case "done":
+      return "done";
+    case "failed":
+    case "halted":
+      return "failed";
+    case "blocked":
+    case "needs-review":
+      return "blocked";
+    default:
+      return "active";
+  }
+}
+
 // Pure w.r.t. persistence — all side effects (spawning/running children,
 // persisting the woven root) come through injected deps, mirroring
 // executeLoom. INTERNALS ONLY changed from the naive wave scheduler to the
@@ -141,6 +183,16 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     return loom;
   };
   const now = deps.now ?? (() => Date.now());
+  // L13 (contract mandate 5) — persist SubGoal.status at the REAL transition so
+  // loom.json reads truthfully WITHOUT cross-joining every child loom. A SYNC of
+  // authoritative child state onto the charter record: saveLoom (via deps.onState)
+  // writes the whole loom, charter included. `sg` is an element of `decomposition`
+  // (= loom.charter.decomposition), so the mutation reaches disk.
+  const syncSubGoalStatus = (sg: SubGoal, status: SubGoal["status"]) => {
+    if (sg.status === status) return;
+    sg.status = status;
+    deps.onState?.(loom);
+  };
 
   try {
     if (isAborted()) return halt();
@@ -245,6 +297,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     const spawn = (sg: SubGoal) => {
       const child = deps.spawnChild(sg);
       emit({ type: "weave-child-spawned", subGoalId: sg.id, childId: child.id });
+      syncSubGoalStatus(sg, "active"); // L13 — the subgoal is now being built
       runningThread.set(sg.id, { id: child.id, subGoalId: sg.id, state: "running" });
       // Attach the recording .then BEFORE this promise is placed into
       // `running` — since it always runs strictly before the wrapper
@@ -255,6 +308,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         // Ready set BEFORE recording the settle (child still counts as running).
         const readyBefore = new Set(readyIdsNow());
         finished.set(sg.id, result);
+        syncSubGoalStatus(sg, subGoalStatusFor(result.state)); // L13 — settled: done/failed/blocked
         spentUsd += childCostUsd(result);
         runningThread.delete(sg.id);
         running.delete(sg.id);
@@ -398,11 +452,13 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         });
         // ONE bounded correction attempt: the richer re-derive/repair when
         // wired, else a fresh reassignment via the spawnChild/runChild seam.
+        syncSubGoalStatus(sg, "active"); // L13 — the subgoal is being re-attempted (mediation re-dispatch)
         const remediated = deps.mediateThread
           ? await deps.mediateThread(targetChild, sg)
           : await deps.runChild(deps.spawnChild(sg));
         if (isAborted()) return halt();
         finished.set(sg.id, remediated);
+        syncSubGoalStatus(sg, subGoalStatusFor(remediated.state)); // L13 — remediated child resettled
         spentUsd += childCostUsd(remediated); // account the remediation's spend
         emit({
           type: "mediate-result",
@@ -450,15 +506,46 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // integration-verify block below is gated r.state === "ready", so blocked
     // correctly skips it (nothing to verify on an awaiting-human park).
     if (r.state === "blocked") {
-      const bChild = children.find((c) => c.state === "blocked");
+      // Scoped to REQUIRED subgoals to match rollupWeave's own blocked branch
+      // (branch 4, above): that branch fires ONLY when a required child parked
+      // blocked, and is mutually exclusive with the enumerate branch (unmet
+      // required work that never spawned/settled). An unscoped find() here would
+      // wrongly pick up an OPTIONAL child's blocked state — and its unrelated
+      // question — while the else-branch's complete enumerated reason (r.error)
+      // for the missing required work gets silently discarded.
+      const requiredIds = new Set(decomposition.filter((sg) => sg.required).map((sg) => sg.id));
+      const bChild = children.find((c) => c.state === "blocked" && !!c.subGoalId && requiredIds.has(c.subGoalId));
       if (bChild) {
+        // A required child PARKED blocked — lift its answerable question to the root.
         loom.blockedReason = bChild.blockedReason;
         loom.blockedQuestion = bChild.blockedQuestion;
         emit({ type: "lane-escalation", by: "telar", childId: bChild.id, subGoalId: bChild.subGoalId });
+      } else {
+        // L1/L6 (contract mandate 4) — the root parks blocked because required work
+        // is UNBUILT/UNPROVEN (unspawned or spawned-but-not-done), not because a child
+        // asked a question. Surface the COMPLETE enumerated reason (rollupWeave's
+        // r.error) as the root's human-facing ask so the cockpit shows exactly which
+        // required subgoals are missing — never a bare accept affordance.
+        loom.blockedReason = r.error ?? "required subgoals unmet";
+        loom.blockedQuestion =
+          "Required subgoals are unbuilt or unproven. Re-plan or reassign the missing threads, or override with a named justification.";
+        emit({ type: "lane-escalation", by: "telar", reason: "required-subgoals-unmet", subGoalId: loom.subGoalId });
       }
     }
     setState(r.state);
-    emit({ type: "weave-rollup", state: r.state });
+    // L6 (contract mandate 4) — account for EVERY spawned child (required AND
+    // non-required) in the record so a failed optional child never silently vanishes:
+    // the rollup event carries each subgoal's final child state and whether it was
+    // required. `children` is one settled child per subgoal (finished, drained above).
+    emit({
+      type: "weave-rollup",
+      state: r.state,
+      children: children.map((c) => ({
+        subGoalId: c.subGoalId,
+        state: c.state,
+        required: decomposition.find((sg) => sg.id === c.subGoalId)?.required ?? false,
+      })),
+    });
 
     // Unit 6 (docs §8 MVP): integration verify PRODUCER. Runs strictly AFTER
     // setState(r.state) so the rollup state still wins — this is INFORMATIONAL,

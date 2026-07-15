@@ -76,7 +76,7 @@ describe("rollupWeave (§A retarget)", () => {
     expect(rollupWeave(children, decomposition)).toEqual({ state: "ready" });
   });
 
-  test("a required child not done -> not 'ready' (needs-review)", () => {
+  test("a required child spawned-but-not-done -> blocked (escalation), never 'ready' or a bare accept (L1/L6)", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "done" }),
@@ -84,7 +84,8 @@ describe("rollupWeave (§A retarget)", () => {
     ];
     const r = rollupWeave(children, decomposition);
     expect(r.state).not.toBe("ready");
-    expect(r.state).toBe("needs-review");
+    expect(r.state).toBe("blocked");
+    expect(r.error).toContain("s2");
   });
 });
 
