@@ -7,7 +7,8 @@
   "scripts": {
     "build:web": "bash ./build-web.sh",
     "smoke": "electron . --smoke",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "install:app": "bash ./install-app.sh"
   },
   "trustedDependencies": [
     "electron"

@@ -108,6 +108,51 @@ function bundledPlaywrightMcpCli() {
     : path.join(__dirname, "..", "web", ".next-desktop", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
 }
 
+// --- Bundled claude-agent-sdk native CLI binary -----------------------------
+// The SDK loads its platform binary (@anthropic-ai/claude-agent-sdk-<os>-<arch>/claude) via
+// createRequire(sdk.mjs).resolve at runtime — never a static import — so build-web.sh
+// materializes a dereferenced real copy into the standalone .bun store, the exact slot that
+// resolution checks. This resolves it the SAME way the SDK will, so --smoke proves the bundle
+// from the SDK's own vantage point. Returns null if the SDK entry can't be located.
+function resolveBundledClaudeBinary() {
+  const fs = require("node:fs");
+  const { createRequire } = require("node:module");
+  let sdkMjs = null;
+  if (app.isPackaged) {
+    // The traced SDK lives under one version-hash dir in the standalone .bun store.
+    const bun = path.join(process.resourcesPath, "standalone", "node_modules", ".bun");
+    try {
+      for (const d of fs.readdirSync(bun)) {
+        if (!d.startsWith("@anthropic-ai+claude-agent-sdk@")) continue;
+        const cand = path.join(bun, d, "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
+        if (fs.existsSync(cand)) {
+          sdkMjs = cand;
+          break;
+        }
+      }
+    } catch {
+      /* .bun missing — treated as unresolved below */
+    }
+  } else {
+    // Dev-repo: resolve the SDK from the web app's install, exactly as the server does.
+    try {
+      sdkMjs = require.resolve("@anthropic-ai/claude-agent-sdk", {
+        paths: [path.join(__dirname, "..", "web")],
+      });
+    } catch {
+      /* not installed — unresolved */
+    }
+  }
+  if (!sdkMjs) return null;
+  try {
+    return createRequire(sdkMjs).resolve(
+      `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
+    );
+  } catch {
+    return null;
+  }
+}
+
 // --- Resolve the standalone server.js ---------------------------------------
 // Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
 // Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
@@ -271,6 +316,30 @@ async function runSmoke() {
         app.exit(1);
         return;
       }
+    }
+    // Verify the claude-agent-sdk native CLI binary shipped and actually runs. Resolve it the
+    // same way the SDK will (createRequire(sdk.mjs)) and execute --version (zero-quota, no agent
+    // turn). Packaged: fail-closed — a Claude session can't start without it. Dev-repo:
+    // best-effort, the repo install is the real path there.
+    const claudeBin = resolveBundledClaudeBinary();
+    let claudeOk = false;
+    if (claudeBin && fs.existsSync(claudeBin)) {
+      try {
+        execFileSync(claudeBin, ["--version"], { stdio: "ignore", timeout: 20_000 });
+        claudeOk = true;
+      } catch (e) {
+        console.error("CLAUDE_BIN_EXEC_FAIL:", claudeBin, e && e.message ? e.message : e);
+      }
+    } else {
+      console.error("CLAUDE_BIN_MISSING:", claudeBin || "(unresolved)");
+    }
+    if (claudeOk) {
+      console.log("CLAUDE_BIN_OK");
+    } else if (app.isPackaged) {
+      app.isQuitting = true;
+      killServer();
+      app.exit(1);
+      return;
     }
     app.isQuitting = true;
     killServer();
