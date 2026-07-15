@@ -173,6 +173,15 @@ function resolveServerJs() {
 // --- (c) Boot the standalone server as a child ------------------------------
 function startServer(port) {
   const serverJs = resolveServerJs();
+  // A smoke boot is a REAL server, and the engine's boot reconciliation marks
+  // any in-flight loom it doesn't own as failed — so a verification boot
+  // against the user's ~/.telar kills their live looms. Smoke always gets a
+  // throwaway store: it proves the bundle, never touches real state.
+  const smokeHome = SMOKE
+    ? require("node:fs").mkdtempSync(
+        path.join(require("node:os").tmpdir(), "telar-smoke-"),
+      )
+    : null;
   serverChild = fork(serverJs, [], {
     cwd: path.dirname(serverJs),
     // In packaged Electron there is no separate node binary — run the Electron
@@ -196,6 +205,7 @@ function startServer(port) {
       ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
         ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
         : {}),
+      ...(smokeHome ? { TELAR_HOME: smokeHome } : {}),
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
