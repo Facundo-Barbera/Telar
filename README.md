@@ -33,7 +33,7 @@ A green verify only moves a loom to `ready` — the human always accepts.
 | --- | --- |
 | `apps/web` | Next.js cockpit — create looms, watch orchestration, inspect verification, accept / steer / reject. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
-| `docs/` | Design docs and the living [`ROADMAP`](docs/ROADMAP.md). |
+| `docs/` | Fresh project documentation is being regenerated here; legacy design docs are archived in `.cleanup-archives/docs-legacy-2026-07-17/`. |
 
 ## Getting started
 
@@ -46,15 +46,13 @@ cd apps/web && bun run dev   # the web cockpit
 
 ## Design docs
 
-- [`ROADMAP`](docs/ROADMAP.md) — the living work tracker and current frontier
-- [`loom-model`](docs/loom-model.md) · [`loom-orchestrator`](docs/loom-orchestrator.md) — the execution model
-- [`verifier-agent`](docs/verifier-agent.md) · [`verification-environments`](docs/verification-environments.md) — the moat
-- [`runtime-architecture`](docs/runtime-architecture.md) · [`mcp-oauth-design`](docs/mcp-oauth-design.md) · [`watchers-design`](docs/watchers-design.md)
+Legacy design docs (outdated; kept for reference only) are archived in
+`.cleanup-archives/docs-legacy-2026-07-17/`. Do not treat them as current —
+fresh documentation is being regenerated from the codebase.
 
 ## Status
 
-Active development — solo project, moving fast. See the [`ROADMAP`](docs/ROADMAP.md)
-for what's shipped and what's next.
+Active development — solo project, moving fast.
 
 ## License
 

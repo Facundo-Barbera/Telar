@@ -14,3 +14,9 @@ playwright-report/
 # Desktop build outputs (electron-builder output + standalone web build)
 apps/desktop/release/
 .next-desktop/
+
+# BMAD And others
+_bmad/
+.claude/
+.agents/
+.cleanup-archives/
