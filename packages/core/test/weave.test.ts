@@ -412,6 +412,18 @@ describe("rollupWeave — L1/L6: enumerate ALL unmet required, distinguish unspa
     const children = [fakeLoom({ subGoalId: "s1", state: "done" }), fakeLoom({ subGoalId: "s2", state: "failed" })];
     expect(rollupWeave(children, decomposition)).toEqual({ state: "failed", error: "s2: failed" });
   });
+
+  // Cut 0 mustFix FIX 1 — TESTS (a): a failed required child no longer
+  // short-circuits with a single-id "s1: failed" before the never-spawned
+  // siblings are enumerated. The reason ALWAYS carries the complete
+  // unmet-required enumeration, in decomposition order.
+  test("FIX 1: a failed required child + never-spawned required siblings -> failed, error enumerates the failed one AND every unspawned sibling", () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" }), subGoal({ id: "s3" })];
+    const children = [fakeLoom({ subGoalId: "s1", state: "failed" })]; // s2, s3 never spawned
+    const r = rollupWeave(children, decomposition);
+    expect(r.state).toBe("failed");
+    expect(r.error).toBe("s1: failed; s2: unspawned; s3: unspawned");
+  });
 });
 
 describe("runWeave — L1: required work never spawned lands the ROOT blocked, never a needs-review accept affordance", () => {
@@ -493,6 +505,50 @@ describe("runWeave — FINDING 1: the root's blocked-child lift is scoped to REQ
   });
 });
 
+describe("runWeave — Cut 0 mustFix FIX 2: blocked-child attribution is unified (never diverges by settle order)", () => {
+  // Two required children (s1, s2) both settle `blocked`, but s2 SETTLES FIRST
+  // (finishes and lands in the `finished` map before s1) — the reverse of
+  // decomposition order. The old code picked the root's blockedReason/
+  // blockedQuestion via SETTLE order (children = [...finished.values()]) while
+  // rollupWeave picked the rollup error via DECOMPOSITION order — so the two
+  // could name DIFFERENT subgoals. The fix: ONE rule (decomposition-first) used
+  // by both. loom.error, loom.blockedQuestion, and the lane-escalation
+  // subGoalId must all attribute the SAME (s1, decomposition-first) primary,
+  // and blockedReason must name BOTH blocked children so nothing is hidden.
+  test("settle order reversed: root.error, blockedReason, blockedQuestion, and lane-escalation ALL attribute the decomposition-first primary (s1)", async () => {
+    const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
+    const root = fakeLoom();
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        // s2 settles well before s1 — settle order is the REVERSE of
+        // decomposition order (s1, s2).
+        const delayMs = child.subGoalId === "s1" ? 60 : 4;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        child.state = "blocked";
+        child.blockedReason = `${child.subGoalId} reason`;
+        child.blockedQuestion = `${child.subGoalId} question?`;
+        return child;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    expect(result.state).toBe("blocked");
+    // loom.error is the FIX 1 enumeration, decomposition-ordered: s1 leads.
+    expect(result.error).toBe("s1: blocked; s2: blocked");
+    // The primary is s1 (decomposition-first), NOT s2 (settle-first).
+    expect(result.blockedQuestion).toBe("s1 question?");
+    expect(result.blockedReason).toContain("s1 reason");
+    // blockedReason names the OTHER blocked required child too — nothing hidden.
+    expect(result.blockedReason).toContain("s2");
+    // The lane-escalation event attributes the same (s1) primary.
+    const esc = events.find((e) => e.type === "lane-escalation");
+    expect(esc).toBeTruthy();
+    expect(esc!.subGoalId).toBe("s1");
+  });
+});
+
 describe("runWeave — L13: SubGoal.status is synced at real transitions (record reads truthfully)", () => {
   test("spawn -> active, settle done -> done; a never-scheduled dependent stays pending until it runs", async () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2", dependsOn: ["s1"] })];
@@ -519,6 +575,24 @@ describe("runWeave — L13: SubGoal.status is synced at real transitions (record
       runChild: async (child) => ((child.state = "failed"), child),
     });
     expect(decomposition[0].status).toBe("failed");
+  });
+
+  // Cut 0 mustFix FIX 1 — TESTS (a) at the runWeave level: s2/s3 dependsOn the
+  // always-failing s1, so they never become ready and never spawn. The root's
+  // error must enumerate the failed s1 AND every unspawned sibling, not just s1.
+  test("FIX 1: a failed required child's never-spawned dependents are enumerated in the root's error, not swallowed", async () => {
+    const decomposition = [
+      subGoal({ id: "s1" }),
+      subGoal({ id: "s2", dependsOn: ["s1"] }),
+      subGoal({ id: "s3", dependsOn: ["s1"] }),
+    ];
+    const root = fakeLoom();
+    const result = await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => ((child.state = "failed"), child), // s1 always fails
+    });
+    expect(result.state).toBe("failed");
+    expect(result.error).toBe("s1: failed; s2: unspawned; s3: unspawned");
   });
 
   test("a child recovered failed->done via mediation ends the subgoal 'done', not stuck 'failed'", async () => {

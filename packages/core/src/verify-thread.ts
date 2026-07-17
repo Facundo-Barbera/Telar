@@ -335,6 +335,22 @@ export type AutoRepairDeps = {
 // The loop NEVER promotes to "done" and NEVER spins: every exit is one of the
 // two above, decided by decideRepairContinuation (pure). Records each round on
 // loom.repairHistory.
+// An EVIDENCE-GAP fail: the whole-verify verdict is "fail" but NO evidence a
+// builder can act on was produced — every deterministic gate is GREEN (gatesOk)
+// and the required panel produced NO report (it could not run: no reachable
+// live target / no critic agent). This is the M10.1 fail-closed coercion of a
+// required-but-unrun panel to "fail", NOT a falsified check. Repairing code
+// cannot close it (the next re-verify hits the same no-target wall), so the
+// auto-repair loop must escalate rather than spend futile rounds. A red gate
+// (gatesOk false) or a panel that RAN and failed (panelReport present) is a
+// genuine, repairable signal and is explicitly excluded. Pure.
+function isEvidenceGapFail(iv: IvResult): boolean {
+  if (iv.verification !== "fail" && iv.verification !== "flaky") return false;
+  if (!iv.gatesOk) return false; // a red deterministic gate IS a repairable signal
+  if (iv.panelReport) return false; // a panel that ran and failed IS a repairable signal
+  return true;
+}
+
 export async function runAutoRepair(loom: Loom, deps: AutoRepairDeps): Promise<IvResult | null> {
   const now = deps.now ?? (() => Date.now());
   const emit = deps.emit ?? (() => {});
@@ -372,7 +388,26 @@ export async function runAutoRepair(loom: Loom, deps: AutoRepairDeps): Promise<I
       emit({ type: "repair-decision", action: "escalate", reason: decision.reason });
       return lastIv; // fail/flaky → weave demotes ready→needs-review with loom.error
     }
-    // action === "repair": dispatch one bounded repair, then re-verify.
+    // action === "repair": dispatch one bounded repair, then re-verify — BUT
+    // only when the fail carries a signal a builder can act on. An EVIDENCE-GAP
+    // fail (verification "fail" with every deterministic gate GREEN — gatesOk —
+    // and NO panel report) is a required panel that obtained NO evidence: no
+    // reachable live target / no critic could run, so the whole-verify coerced a
+    // required-but-unrun panel to "fail" fail-closed (executor.ts M10.1). A code
+    // repair cannot conjure a live target or critic, and the next re-verify would
+    // hit the identical no-evidence wall — the loop would dispatch a futile,
+    // EMPTY-brief repair every round until the iteration cap, never demoting. The
+    // deterministic-gate guards (repair-guard.ts) can't see this: they reason over
+    // failing-id SETS/signatures, and an agent-judged id carries no gate signature.
+    // So escalate HERE, fail-closed: return the fail so the weave settles the root
+    // `needs-review` (never `done`), the honest terminal for an unprovable whole.
+    // A RED gate (gatesOk false) or a panel that RAN and failed (panelReport set)
+    // both carry a real repair signal and take the normal repair path below.
+    if (isEvidenceGapFail(lastIv)) {
+      loom.error = lastIv.error ?? "verification produced no repairable evidence (required panel did not run)";
+      emit({ type: "repair-decision", action: "escalate", reason: loom.error });
+      return lastIv;
+    }
     emit({ type: "repair-decision", action: "repair" });
     const brief = deps.buildBrief?.(loom, lastIv) ?? "";
     const { costUsd } = await deps.repair(loom, brief);

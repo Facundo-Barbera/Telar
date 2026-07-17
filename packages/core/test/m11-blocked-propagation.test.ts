@@ -120,7 +120,7 @@ describe("(B) rollupWeave: blocked propagates, failed dominates, blocked beats n
     expect(r.error).toBe("s2: blocked");
   });
 
-  test("failed + blocked siblings → failed WINS (a genuinely failed child still fails the weave)", () => {
+  test("failed + blocked siblings → failed WINS (a genuinely failed child still fails the weave), error enumerates BOTH (Cut 0 FIX 1: never a single-id short-circuit)", () => {
     const decomposition = [subGoal({ id: "s1" }), subGoal({ id: "s2" })];
     const children = [
       fakeLoom({ subGoalId: "s1", state: "failed" }),
@@ -128,7 +128,7 @@ describe("(B) rollupWeave: blocked propagates, failed dominates, blocked beats n
     ];
     const r = rollupWeave(children, decomposition);
     expect(r.state).toBe("failed");
-    expect(r.error).toBe("s1: failed");
+    expect(r.error).toBe("s1: failed; s2: blocked");
   });
 
   test("done + blocked → blocked (NOT ready): a parked required child is not complete", () => {

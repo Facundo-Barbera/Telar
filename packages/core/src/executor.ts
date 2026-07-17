@@ -1321,6 +1321,7 @@ export async function runIntegrationVerify(
   }
 
   attempt.endedAt = Date.now();
+  if (process.env.TELAR_DEBUG_IV) console.error("[IV-RESULT] verification=", verification, "gatesOk=", gatesOk, "ivError=", ivError);
   emit({ type: "integration-verify", verification, gatesOk });
   // M1 (D2): terminal summary for the integration verify (source derived like
   // runVerification's — a panel ran ⇒ "panel", else the gate result ⇒ "gates").

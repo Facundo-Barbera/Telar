@@ -46,40 +46,34 @@ export function rollupWeave(
   // never "done", even though the gate is still every required child === "done".
   if (allRequiredDone) return { state: "ready" };
 
-  const failedRequired = required.find((sg) => childBySubGoal.get(sg.id)?.state === "failed");
-  if (failedRequired) return { state: "failed", error: `${failedRequired.id}: failed` };
-
-  // FINDING 8 — a required child that PARKED `blocked` (the breaker fired on an
-  // unfixable gate, or the pre-flight lane-viability floor) is AWAITING A HUMAN,
-  // not failed. Lift it as `blocked` so the root parks carrying the child's
-  // answerable question (runWeave lifts blockedReason/blockedQuestion below) —
-  // rather than the generic needs-review fallthrough burying the ask (run #3's
-  // swallow). Ordered AFTER failedRequired (a genuinely failed child STILL fails
-  // the weave), BEFORE the needs-review fallthrough. A child reaches `blocked`
-  // when its verification lane is unviable (the pre-flight park); surfacing it
-  // here lifts that block up to the root instead of masking it as needs-review.
-  const blockedChild = required.find((sg) => childBySubGoal.get(sg.id)?.state === "blocked");
-  if (blockedChild) return { state: "blocked", error: `${blockedChild.id}: blocked` };
-
-  // L1/L6 (contract mandate 4) — the remaining required subgoals are unmet for a
-  // reason OTHER than a failed/blocked child: they were either NEVER SPAWNED (the
-  // weave loop exhausted — wall-clock / pool / iteration bound — before scheduling
-  // them) or spawned and settled in a non-done, non-failed, non-blocked state. A root
-  // with unbuilt/unproven required work NEVER settles into a state that presents an
-  // accept affordance: it lands `blocked` (root escalation to the human) carrying a
-  // COMPLETE reason that enumerates EVERY unmet required subgoal and distinguishes
-  // `unspawned` from `spawned-but-not-done` — never the old single-id `${id}: not
-  // done` needs-review (run #3's "F: not done" while 4/6 subgoals were never spawned).
-  // `needs-review` for a ROOT is reserved for the composed-proof demote (a fully-built
-  // weave whose ALL verify is in question — runWeave's integration-verify block below),
-  // never for missing work.
+  // Cut 0 mustFix FIX 1 — compute the COMPLETE unmet-required enumeration ONCE
+  // and use it as the reason for EVERY non-ready outcome (failed AND blocked).
+  // The old code short-circuited on the first failed (or first blocked) required
+  // child with a single-id message (`${id}: failed` / `${id}: blocked`) BEFORE
+  // this enumeration ever ran — hiding every other unmet required subgoal,
+  // including ones that never spawned at all. State selection is unchanged: any
+  // required child failed => `failed` (decisive red, a genuinely failed child
+  // still fails the weave); else any required child blocked OR any unmet
+  // required => `blocked` (L1/L6, contract mandate 4 — a root with
+  // unbuilt/unproven required work never settles into a state that presents an
+  // accept affordance, and `needs-review` for a ROOT stays reserved for the
+  // composed-proof demote — runWeave's integration-verify block below — never
+  // for missing work). Only the REASON's shape changed: it is always the
+  // complete enumeration, one label per unmet required subgoal in decomposition
+  // order, joined "; " — never the old single-id shape (run #3's "F: not done"
+  // while 4/6 subgoals were never spawned, or the failed/blocked short-circuits
+  // burying siblings).
   const unmet = required.filter((sg) => !isMet(childBySubGoal.get(sg.id)?.state));
-  const detail = unmet
-    .map((sg) =>
-      childBySubGoal.has(sg.id) ? `${sg.id}: not done (${childBySubGoal.get(sg.id)!.state})` : `${sg.id}: unspawned`,
-    )
-    .join("; ");
-  return { state: "blocked", error: `required subgoals unmet — ${detail}` };
+  const label = (sg: SubGoal): string => {
+    const child = childBySubGoal.get(sg.id);
+    if (!child) return `${sg.id}: unspawned`;
+    if (child.state === "failed") return `${sg.id}: failed`;
+    if (child.state === "blocked") return `${sg.id}: blocked`;
+    return `${sg.id}: not done (${child.state})`;
+  };
+  const detail = unmet.map(label).join("; ");
+  const anyFailed = unmet.some((sg) => childBySubGoal.get(sg.id)?.state === "failed");
+  return { state: anyFailed ? "failed" : "blocked", error: detail };
 }
 
 export type RunWeaveDeps = {
@@ -506,18 +500,46 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // integration-verify block below is gated r.state === "ready", so blocked
     // correctly skips it (nothing to verify on an awaiting-human park).
     if (r.state === "blocked") {
-      // Scoped to REQUIRED subgoals to match rollupWeave's own blocked branch
-      // (branch 4, above): that branch fires ONLY when a required child parked
-      // blocked, and is mutually exclusive with the enumerate branch (unmet
-      // required work that never spawned/settled). An unscoped find() here would
-      // wrongly pick up an OPTIONAL child's blocked state — and its unrelated
-      // question — while the else-branch's complete enumerated reason (r.error)
-      // for the missing required work gets silently discarded.
-      const requiredIds = new Set(decomposition.filter((sg) => sg.required).map((sg) => sg.id));
-      const bChild = children.find((c) => c.state === "blocked" && !!c.subGoalId && requiredIds.has(c.subGoalId));
-      if (bChild) {
-        // A required child PARKED blocked — lift its answerable question to the root.
-        loom.blockedReason = bChild.blockedReason;
+      // Cut 0 mustFix FIX 2 — ONE deterministic primary-attribution rule shared
+      // with rollupWeave: the primary blocked child is the FIRST required
+      // subgoal in DECOMPOSITION order whose child is blocked. The old code
+      // picked here via SETTLE order (`children` = [...finished.values()])
+      // while rollupWeave's own (now-folded-in) selection walked decomposition
+      // order — with two simultaneously blocked required children the two could
+      // name DIFFERENT subgoals, so loom.error (the rollup enumeration) and
+      // loom.blockedQuestion/blockedReason could disagree, and the blocked-root
+      // page renders ONLY blockedQuestion/blockedReason (acceptance-panel.tsx,
+      // the M10.4 "never diverge" invariant) — silently hiding the other blocked
+      // child. Deriving `primarySg` from `decomposition` (not from `children`'s
+      // settle order) makes this agree with rollupWeave's own blockedChild pick
+      // by construction: both walk the same `required` sequence over the same
+      // settled child states.
+      const childBySubGoal = new Map<string, Loom>();
+      for (const c of children) {
+        if (c.subGoalId) childBySubGoal.set(c.subGoalId, c);
+      }
+      const primarySg = decomposition.find(
+        (sg) => sg.required && childBySubGoal.get(sg.id)?.state === "blocked",
+      );
+      const bChild = primarySg ? childBySubGoal.get(primarySg.id) : undefined;
+      if (bChild && primarySg) {
+        // A required child PARKED blocked — lift its answerable question to the
+        // root verbatim (blockedQuestion is the at-a-glance headline — it must
+        // name exactly the subgoal loom.error's enumeration leads with). When
+        // ANOTHER required child is simultaneously blocked, blockedReason (the
+        // full BlockedEscalation panel copy) names it too and carries the
+        // complete FIX 1 enumeration, so nothing is hidden behind the headline
+        // — the single-blocked-child case (the overwhelming common path) stays
+        // byte-identical: just the child's own reason, nothing appended.
+        const otherBlocked = decomposition.filter(
+          (sg) => sg.required && sg.id !== primarySg.id && childBySubGoal.get(sg.id)?.state === "blocked",
+        );
+        loom.blockedReason =
+          otherBlocked.length > 0
+            ? `${bChild.blockedReason ?? "blocked"} (also blocked: ${otherBlocked
+                .map((sg) => sg.id)
+                .join(", ")}; full: ${r.error})`
+            : bChild.blockedReason;
         loom.blockedQuestion = bChild.blockedQuestion;
         emit({ type: "lane-escalation", by: "telar", childId: bChild.id, subGoalId: bChild.subGoalId });
       } else {
