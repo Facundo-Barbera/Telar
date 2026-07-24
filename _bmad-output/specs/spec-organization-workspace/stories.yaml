@@ -1,0 +1,183 @@
+- id: "1"
+  title: Item store — lanes, packets, and the shapes everything inherits
+  description: >-
+    Build the on-disk store under TELAR_HOME/workspace: lanes.yaml holding lane
+    definitions and ordered id stacks, packets/<id>/packet.yaml for every item,
+    with attachments as siblings. Schemas and CRUD only — no UI, no agents.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    item-model.md is the shape contract — implement its fields exactly, including
+    promotedFrom and tracking. Zod schemas for persisted entities are owned by
+    @telar/core and reused from apps/web, never redefined there. All writes are
+    atomic (.tmp then fs.renameSync), per manifest.ts atomicWrite. One shape for
+    all items: a bare todo is a packet.yaml with no attachments, so there is no
+    migration when an item grows and no second code path for rich items.
+
+- id: "2"
+  title: Workspace MCP server
+  description: >-
+    An in-process MCP server over the store exposing list, create, and modify,
+    mounted in the chat route alongside loom and ultra. This is the only access
+    path to items — SPEC.md CAP-12.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Follow the lib/loom-mcp.ts and lib/ultra-mcp.ts pattern — in-process, no
+    separate transport. Mount it in the chat route's mcpServers map so it
+    inherits strictMcpConfig: true and the existing PreToolUse guardrail path.
+    Do not add a filesystem path to the store for sessions: Codex's sandbox
+    write boundary is working-root plus --add-dir, so a project session cannot
+    reach TELAR_HOME/workspace by file tools at all. See brownfield.md.
+
+- id: "3"
+  title: Queue surface — lanes, stacks, rows, sub-tasks
+  description: >-
+    The dense grouped list with user-defined lanes, ordered stacks, sub-tasks
+    inside items, and human-only promotion — SPEC.md CAP-4 and CAP-5.
+  done_checkpoint: true
+  invoke_dev_with: >-
+    The chip grammar in ui-contract.md is frozen and shared with every other
+    surface — deadline, verdict, project, provenance must render identically
+    here and in-session. Quiet-color law: hue on the icon only, chips stay
+    neutral outlines. No clock anywhere — order is stack position, deadlines are
+    data. Only the human may promote a sub-task; do not add an agent path,
+    proposed or otherwise. The footer's conservation numbers are live, not copy.
+
+- id: "4"
+  title: Packet detail — the ripening work packet
+  description: >-
+    The packet view: original raw fragment, the expert-written fixed brief with
+    acceptance criteria, attachments gathered over time, and the ripening
+    timeline attributing each event — SPEC.md CAP-6.
+  invoke_dev_with: >-
+    raw and rawSource are never overwritten — keeping them beside fixed is what
+    lets the user check the expert did not drift from what they meant. Agent
+    output awaiting a human look renders dashed with a proposal badge. At
+    handoff the packet IS the briefing (premise = fixed + acceptance, context =
+    attachments); nothing is re-authored for it.
+
+- id: "5"
+  title: Loom and session handoff
+  description: >-
+    Both handoffs — a ripened packet, and a selected batch woven as one loom —
+    plus the detach receipt and tracking rows, per SPEC.md CAP-11.
+  invoke_dev_with: >-
+    The detach receipt grammar is universal: one mono line, identical to the one
+    a birth session emits. Member rows STAY in the queue marked as tracking the
+    loom and leave only when it lands AND the human accepts — never at weave
+    time. weave_batch is approval-gated and renders as the shared ApprovalCard.
+    This module stops at the detach boundary: never write loom state and never
+    done a loom from here. Tracking-row edits are rendering-only in this story:
+    the row shows its sent-to-loom mark; the steering-channel endpoint an edit
+    posts to belongs to the loom spec (its story 11).
+
+- id: "6"
+  title: Project-less master session
+  description: >-
+    Lift the chat route's project gate so a session can run with no project,
+    with the fixed master session shape. Backend only — no briefing intelligence
+    and no chat UI in this story.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    The gate is route.ts's getProject(project).manifest, which 400s on a missing
+    project and whose manifest.root then feeds cwd, guardrails and
+    settingSources. Master shape is fixed: cwd = the dedicated empty subdir
+    TELAR_HOME/workspace/home (the store above it stays outside the master's
+    write boundary), settingSources: [], default guardrails, MCP injected
+    programmatically, synthetic '__master__' permissions key. NEVER use
+    /Users/facundo as cwd — trust never persists there. Sub-agent scope is
+    inverted here: the master has no project while each expert it calls is
+    scoped to its own, so any plumbing assuming a sub-agent inherits the
+    caller's project will break it. See brownfield.md.
+
+- id: "7"
+  title: Master chat surface and Desk rail
+  description: >-
+    The project-less chat surface with its right-rail Desk of agent-filed items
+    — SPEC.md CAP-3, and the shell the briefing and receipt render into.
+  invoke_dev_with: >-
+    PREREQUISITE: the shared Conversation component extraction, owned by the
+    loom-UX track (see conversation-component.md). Master chat is an owner
+    adapter on that shell — if the shell is not there yet, STOP and say so; do
+    not hand-rebuild another chat window. Desk cards are edited in place by
+    talking about them and must not move; dismiss drains to the queue and there
+    is no delete path anywhere. The surface never notifies.
+
+- id: "8"
+  title: Ephemeral per-project expert agents
+  description: >-
+    Experts spawned per call and rehydrated from an on-disk project digest, doing
+    the deferred enrichment pass and issuing the session-or-loom triage verdict —
+    SPEC.md CAP-9.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Ephemeral by construction — no expert process persists between calls; a cold
+    expert must work from the on-disk digest alone. Experts write durable digests
+    to disk and the master only reads them; keep that direction. The verdict is
+    advisory: record its reasoning as a timeline event, and a human override is
+    durable and must not be re-flipped by a later pass. Mining time-commitments
+    from captures (for story 10's gap detection) belongs to this enrichment pass.
+
+- id: "9"
+  title: Brain dump to receipt
+  description: >-
+    The master parses one unstructured multi-project dump, splits and routes each
+    fragment, and returns a receipt naming what it could not place — SPEC.md
+    CAP-2.
+  invoke_dev_with: >-
+    The receipt's count must equal the input's count — that is the conservation
+    law on screen and should be assertable, not display copy. Nothing is
+    invented: an unplaceable fragment is quoted verbatim and asked about, never
+    guessed into a project. Filed items land on the Desk, not straight into the
+    queue.
+
+- id: "10"
+  title: Morning briefing, with the deadline witness and gap detection
+  description: >-
+    The sit-down overview across its four bands, plus the slipped-self-deadline
+    witness and the expectation gap card — SPEC.md CAP-1, CAP-7 and CAP-8.
+  invoke_dev_with: >-
+    Pull-based: this surface answers when arrived at and never notifies, badges,
+    or alarms — including for deadlines that have passed. The witness is a
+    question (keep / move / drop), never an alarm, and reads the durable slips
+    count. Gap detection in v1 runs ONLY on commitments mined from the user's own
+    captures — there is no external calendar, so do not build a calendar reader;
+    the mockup's "was on your calendar" example is out of scope. See the v1
+    deviation note in ui-contract.md.
+
+- id: "11"
+  title: Bed mode
+  description: >-
+    The unattended overnight organization pass within its fixed scope, reporting
+    as a bounded morning digest — SPEC.md CAP-10.
+  invoke_dev_with: >-
+    Scope is exactly four actions: route captures, fix raw fragments into briefs,
+    draft attachments, and pull foreign issue state inbound. It creates no queue
+    item, and mirror sync is READ-ONLY — no agent writes back to a foreign
+    tracker at any time. Every artifact it produces is marked a proposal. The
+    "0 started" report is a real invariant to assert against, not display copy.
+
+- id: "12"
+  title: External MCP roster
+  description: >-
+    Workspace-scoped external MCP servers the master reads as reference material
+    — SPEC.md CAP-13. Distinct from story 2's internal workspace tool server.
+  invoke_dev_with: >-
+    Reference, not inventory: the master answers from these sources and states
+    plainly that the results are not tracked in Telar. An external record becomes
+    an item only on explicit human say-so — never automatically, never as a
+    background sync.
+
+- id: "13"
+  title: Codex MCP injection
+  description: >-
+    Close the pre-existing gap so Codex sessions receive MCP servers, which a
+    Codex-backed master needs. Optional for v1 — a Claude-backed master is
+    unblocked without it.
+  invoke_dev_with: >-
+    runCodexTurn today takes prompt, cwd, env, model, reasoningEffort, sandbox,
+    resume, signal, approvalPolicy and onApproval — no MCP parameter at all; the
+    driver only renders inbound mcpToolCall events. Inject per-invocation with
+    -c mcp_servers.<name>.<field> dotted overrides (SDK: config object to
+    repeated --config flags), with no global config written. The workspace home
+    is an empty non-git dir, so skipGitRepoCheck is required. See brownfield.md.
