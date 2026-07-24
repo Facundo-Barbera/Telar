@@ -1,0 +1,434 @@
+# ==============================================================================
+# telar — verification recipe (DRAFT for spec discussion, not an implementation)
+# ==============================================================================
+# Source: .memlog.md (canonical decisions) + schema-grid.md (16-parameter grid,
+# validated against research-1..6). This file is the recipe schema's first
+# on-disk draft — clarity over completeness, comments over ceremony.
+#
+# What a "recipe" IS (open cell C, schema-grid.md): conceptually, the recipe is
+# a MAP REGION — the source of truth an author/agent edits. This YAML is its
+# on-disk projection: what the map region compiles TO, and what the lane
+# actually consumes (prepare + carry + services/grades + data + verify +
+# requirements + ownership). Today's `servers.yaml` (packages/core/src/schemas.ts
+# ServersConfig/ServiceConfig) is a narrower ancestor of `services[]` below —
+# this draft is deliberately broader (more readiness kinds, scope tiers, grades,
+# carry) because a verification recipe answers a bigger question than "how do I
+# start dev".
+#
+# Two parts, separated by `---`:
+#   1. SCHEMA   — every field, annotated: type, options, default, why it exists.
+#   2. EXAMPLE  — the real, complete recipe for ozom-gv (research-6, the gold
+#                 standard project), values taken from its kickstart.ts/package.json.
+
+# project — string. Human identifier; matches the loom's repo/checkout.
+project: <string>
+
+# ------------------------------------------------------------------------------
+# strategy — list<enum>, composable, must declare at least one (no silent default
+# — same "no silent strategy" precedent as portStrategy in the existing lane code).
+# ------------------------------------------------------------------------------
+# What kind(s) of verification this project supports. A project can combine more
+# than one — e.g. server-lane AND test-gate (schema-grid untried-combo: "test-gate
+# + tenant-db" was orchestrator's CI pytest-against-real-Postgres pattern).
+# options: server-lane | test-gate | cli-harness | sandbox-eval | artifact-assert
+strategy: [server-lane]
+
+# ------------------------------------------------------------------------------
+# prepare — object. Run-once standup steps: install, generate, migrate, seed.
+# ------------------------------------------------------------------------------
+# Each step is optional (a happy-path project like estudioSam has none) but when
+# present carries its own `requires:` — pointers into `requirements` — so a
+# missing GITHUB_TOKEN fails loudly at INSTALL, not three steps later at seed
+# (research-5: "install-phase gates fail before boot" is its own class).
+prepare:
+  install:
+    # tool — enum, the package manager actually DETECTED/declared, never guessed
+    # from a README (research-4/6: docs lie repeatedly; derive from lockfiles).
+    # options: bun | npm | uv | maven | mixed | none
+    tool: bun
+    run: bun install                # string — literal command, direct/wrapper-free
+    requires: []                    # list<ref> — keys into requirements.tools/credentials/secrets
+
+  generate:
+    # kind — enum. Some migrate steps run stale/broken without a generate pass
+    # first (ozom-gv's `db:compose` must run before `supabase db reset` or the
+    # reset uses an out-of-date migration set).
+    # options: none | migration-compose | codegen
+    kind: none
+    run: null                       # string|null — required when kind != none
+    requires: []
+
+  migrate:
+    # options: none | alembic | supabase-reset | liquibase | raw-sql
+    kind: none
+    run: null
+    requires: []
+
+  seed:
+    # options: none | script | synthetic-fixtures | real-ingest | template-stamp
+    kind: none
+    run: null
+    requires: []
+    # degraded — optional. Declares the graceful fallback when a secret this
+    # step wants is absent, so the contract narrows EXPLICITLY instead of the
+    # step hanging or half-completing (research-6: orchestrator's seed.py raises
+    # mid-seed with no such declaration → partially-seeded DB).
+    degraded:
+      without: null                # ref — a requirements.secrets/credentials name
+      mode: null                   # enum: synthetic | partial | skip
+      consequence: null            # string — one-line, user-facing narrowing
+
+# ------------------------------------------------------------------------------
+# carry — list<string>.  *** THE NOVEL FIELD (research-6) ***
+# ------------------------------------------------------------------------------
+# Gitignored-but-REQUIRED files/dirs a fresh worktree/lab checkout needs copied
+# in before standup can succeed. Absent from every prior-art schema surveyed
+# (research-1 covered docker-compose, process-compose, systemd, k8s, devenv,
+# pitchfork, Tilt...) — telar-specific because telar builds verification in
+# worktrees, and secrets can't live in git. Discovered empirically: ozom-gv's
+# `supabase/.env.keys` (a dotenvx private key) is missing from every one of 20+
+# existing worktrees; standup silently fails at `supabase start`.
+# This is a LAB-CHECKOUT property, not a loom property — schema-grid's
+# "ephemeral + carry" untried-combo note: even a throwaway "preview this thread"
+# lane needs the same carry set.
+carry:
+  - .env.local
+
+# ------------------------------------------------------------------------------
+# services — map<name, Service>. One entry per process the lane supervises.
+# ------------------------------------------------------------------------------
+# Commands are DIRECT and WRAPPER-FREE. A project's human-facing `bun run dev`
+# may route through portless/sudo/turbo wrappers (orchestrator does, for every
+# workspace); the recipe declares the underlying uvicorn/vite/next invocation
+# the lane actually spawns (research-6: "lab commands ≠ human commands" — the
+# setup agent derives the runnable equivalent, never parrots package.json).
+services:
+  <service-name>:
+    command: <string>              # required — dev-grade run command
+
+    # release — optional build+serve pair. A service with no `release` falls
+    # back to `command` at release grade (fine for infra like a DB); an app
+    # server almost always needs one (`next dev` vs `next build` + `next start`).
+    release:
+      build: <string|null>         # runs once, must exit 0, before `serve` starts
+      serve: <string|null>
+
+    cwd: <string>                  # default: recipe root
+
+    # env — map<string,string>, templated. `{port}` = THIS service's assigned
+    # port; `{peer.<name>.port}` / `{peer.<name>.url}` = an already-resolved
+    # dependsOn peer's port/url. Mirrors the existing lane primitive's template
+    # tokens (packages/core/src/run-server.ts resolveTemplate: {port}, {peer.*}).
+    env:
+      EXAMPLE_VAR: "{port}"
+
+    # portInject — discriminated union: how the OS-assigned dynamic port
+    # reaches the app. No universal convention across ecosystems (research-1 §D)
+    # — mirrors the existing PortInject union in packages/core/src/schemas.ts.
+    # options: {env: <VAR_NAME>} | {arg: "<string with {port}>"} | {file: <path>, template: <string, optional>}
+    portInject:
+      env: PORT
+
+    dependsOn: []                  # list<string> — other service names; the condition is "ready", not just "spawned" (research-1 §B: ordering-only broke in practice everywhere it shipped)
+
+    # scope — enum: which lifetime tier this service belongs to.
+    # - project:  heavy/shared infra (e.g. supabase/postgres) — ONE instance per
+    #             project, refcounted across every loom of that project.
+    # - loom:     warm per-loom-branch lane — moves at landing boundaries.
+    # - ephemeral: "preview this thread" / frozen final-verify lanes, torn down after use.
+    # options: project | loom | ephemeral
+    scope: loom
+
+    # readiness — one-shot "is it up yet?" gate (NOT "any response" — the
+    # existing lane primitive's readyCheck today implements only http|command;
+    # this recipe schema is the forward-looking superset per research-1's 9
+    # surveyed mechanisms, condensed to the 6 the fleet census actually needed).
+    # options: http | tcp | exec | log-regex | delay | status-cmd
+    readiness:
+      kind: http
+      path: /
+      status: 200
+      # other kinds' shape (illustrative — one used at a time):
+      #   kind: tcp,        port: <int>
+      #   kind: exec,       run: <string>                    # exit 0 == ready
+      #   kind: log-regex,  pattern: <string>                # first stdout/stderr match == ready
+      #   kind: delay,      ms: <int>                        # weakest fallback, no real check — avoid
+      #   kind: status-cmd, run: <string>, match: <string>   # e.g. `supabase status -o env`
+
+    # update — warm-lane refresh strategy, chosen by DIFFING changed files
+    # against declared trigger paths — deterministic, no vibes.
+    # options: hmr | restart | clean-restart
+    update:
+      strategy: hmr
+      cleanRestartOn: []            # list<glob> — e.g. package.json, next.config.* — force a clean-restart when touched, even under an hmr strategy
+
+    # teardown — always signal+grace, never a bare kill (research-1 §E: the
+    # convergent "graceful signal -> grace timeout -> SIGKILL" pattern).
+    teardown:
+      signal: SIGTERM
+      graceMs: 5000
+
+# ------------------------------------------------------------------------------
+# grades — object (dev | release). Which command variant runs, and which verify
+# entrypoints count, at each grade.
+# ------------------------------------------------------------------------------
+# Decision (courtroom + grade-placement): landings verify at DEV grade for
+# speed; the accept-gating ALL-verify AND the post-accept landing re-verify
+# both run at RELEASE grade — release grade is mandatory for those, not optional.
+grades:
+  dev:
+    services: command               # every service runs its `command` (dev/hmr variant)
+    verify: []                      # list<ref> — verify.entrypoints[].name allowed at this grade
+  release:
+    services: release                # every service with a `release` pair runs build-then-serve; services without one fall back to `command` (e.g. a DB)
+    verify: []
+    mandatory: true                  # a recipe with no usable release grade cannot accept-gate — fails closed, never silently substitutes dev grade
+
+# ------------------------------------------------------------------------------
+# data — object. How verification touches state.
+# ------------------------------------------------------------------------------
+data:
+  # isolation — options: tenant-db | schema | mutex | none
+  # - tenant-db: plain-Postgres projects — a Postgres TEMPLATE-DB copy per loom
+  #   (cheap, file-level copy; manifest.templateDb precedent already exists).
+  # - schema:   a dedicated schema per verify round, same DB.
+  # - mutex:    gateway-mode stacks (supabase's auth/PostgREST/storage all point
+  #   at ONE db) can't be tenant-split — serialize verifies against the shared
+  #   stack instead.
+  # - none:     no persistent state to isolate.
+  # default: mutex — the conservative v1 default until a project is confirmed
+  # plain-Postgres and worth the tenant-db investment.
+  isolation: mutex
+
+  # class — options: disposable | shared-dev | production
+  # production => REFUSE surface verification, fail closed. (research-5:
+  # ozom-linden's documented dev path points at the LIVE PROD Supabase project —
+  # this is exactly the case this field exists to catch.)
+  class: disposable
+
+  # templateStamp — pay-the-reset-once caching: a stamped snapshot keyed by a
+  # hash of the applied migration set, reused across verify rounds until the
+  # migrations change (research-5: validated by ozom-rent's 698-migration reset).
+  templateStamp:
+    key: migration-hash
+    enabled: false
+
+# ------------------------------------------------------------------------------
+# verify — object. Entrypoints, evidence targets, and the playwright/webServer
+# ownership rule.
+# ------------------------------------------------------------------------------
+verify:
+  entrypoints:
+    # Prefer INGESTING a project's own verify command over authoring a new one
+    # — most of the fleet already has a real gate (`bun run verify`, a CI
+    # pytest job); duplicating it drifts from what the project actually trusts.
+    - name: <string>
+      source: ingest                # options: ingest | author
+      run: <string>                 # e.g. `bun run verify`
+      grade: [dev, release]         # which grades[*] this entrypoint is valid under
+      # ownsServer: false means telar's lane already owns the service(s), and
+      # this command's own test runner (e.g. Playwright) must REUSE the lane's
+      # server rather than launch a nested copy of its own.
+      ownsServer: false
+
+  # evidence — what a verify round captures and CITES. Courtroom decision: the
+  # narrative must cite these artifacts; an uncited claim is marked unverified.
+  evidence:
+    urls: []
+    api: []
+    stdout: true
+    artifacts: []
+
+  # playwright — the recurring nested-webServer conflict gets one named field
+  # rather than reappearing ad hoc per project (open cell A, resolved: the lane
+  # owns the server; the project's suite sets PORT + reuseExistingServer and reuses it).
+  playwright:
+    portAlignment: PORT             # env var the lane sets so the suite's own webServer config no-ops via reuseExistingServer
+
+# ------------------------------------------------------------------------------
+# requirements — object. Machine tools, pre-provisioned credentials, secrets,
+# and explicit degraded-mode declarations.
+# ------------------------------------------------------------------------------
+requirements:
+  tools: []                         # list<string> — machine-global CLI/binaries (docker, supabase-cli, uv, a portless proxy daemon...)
+
+  credentials:                      # things telar CANNOT provision itself — must already exist on the machine/account
+    - name: <string>
+      purpose: <string>
+      preProvisioned: true          # always true today — no auto-provisioning workstream exists yet; OAuth walls (e.g. inboxdigest's Gmail) are un-automatable by construction
+
+  secrets:                          # secret material and where the recipe expects to find it
+    - name: <string>
+      source: carry                 # options: carry | env | vault
+
+  # degradedModes — decided at PREP TIME, before the gate spends anything
+  # (decision, fork B): surfaced by the readiness node BEFORE the gate runs,
+  # never mid-run. The rare mid-run case instead follows the standing
+  # escalation ladder: ask the orchestrator (mediation) first, the user only
+  # if that's exhausted — children escalate to mediation, never straight to humans.
+  degradedModes:
+    - without: <ref>                # a tools/credentials/secrets name above
+      consequence: <string>         # one-line, user-facing: what narrows
+
+# ------------------------------------------------------------------------------
+# ownership — object. Lease and mutex notes.
+# ------------------------------------------------------------------------------
+ownership:
+  # verifyMutex — HARD RULE: only one loom verification runs per repo at a
+  # time. Thread-level review (bmad-review-style: code review + checks,
+  # serviceless) is exempt — it never touches a lab, so it isn't gated by this.
+  verifyMutex: per-repo
+
+  projectScope:
+    refcount: true                  # project-scope services (heavy infra) are shared across every loom of the same project; released only when the LAST holder's lease releases, not on any single loom's teardown
+    heavyInfraSemaphore: 2           # fleet-wide concurrent heavy-stack cap; requests beyond it queue — dissolves the RAM fear via time-sharing, not a hard refusal
+
+  fleetPortStrategy: serialize      # options: serialize | remap | refuse — v1 default for stock-port collisions, e.g. 4 fleet projects all on supabase's 54321-9 (open cell B); remap is a later optimization
+
+  # adoption — the trust wall: a SESSION may adopt a user-started foreign
+  # process for convenience; a LOOM never does — evidence must come only from
+  # a telar-owned, telar-leased lab (adoption is allowed for working, forbidden for proving).
+  adoption: session-only
+
+  # leaseFile — convention: generalizes the existing runner-lease shape found
+  # in the codebase (~/.telar/looms/<id>/.runner-lease: pid, token, ts,
+  # heartbeat, stale-reclaim) to one file per owned service.
+  leaseFile: "~/.telar/looms/<loom-id>/services/<service-name>.json"
+
+---
+# ==============================================================================
+# WORKED EXAMPLE — ozom-gv (research-6's gold standard; real values, not illustrative)
+# ==============================================================================
+# Derived from ozom-gv's own kickstart.ts + package.json: idempotent,
+# non-interactive-safe, preflights docker+supabase, writes .env.local from
+# `supabase status -o env`, seeds, creates an owner user. `bun run verify` is
+# already a real 3-layer gate (unit + pgTAP + Playwright e2e) — this recipe
+# ingests it rather than re-authoring it.
+
+project: ozom-gv
+
+strategy: [server-lane, test-gate]
+
+prepare:
+  install:
+    tool: bun
+    run: bun install
+    requires: []                    # README claims a GITHUB_TOKEN is needed; the lockfile proves modules are vendored workspace packages with zero npm.pkg.github.com entries — doc drift, disproven by evidence, not trusted
+
+  generate:
+    kind: migration-compose
+    run: bun run db:compose         # MUST run before migrate, or the reset uses a stale/missing migration set
+    requires: []
+
+  migrate:
+    kind: supabase-reset
+    run: supabase db reset          # 553xx ports (supabase start)
+    requires: [tool:docker, tool:supabase-cli]
+
+  seed:
+    kind: script
+    run: bun run db:populate        # plus vault reseed as part of the reset hooks; creates the owner user
+    requires: [tool:docker, tool:supabase-cli, secret:dotenvx-key]
+    degraded:
+      without: secret:dotenvx-key   # supabase/.env.keys is absent (e.g. a fresh worktree that hasn't received `carry` yet)
+      mode: synthetic
+      consequence: "db reset seeds synthetic GV-DEMO fixtures only — no real BigQuery/Creatio ingest. Surface verification still runs, just against synthetic data."
+
+carry:
+  - supabase/.env.keys              # gitignored dotenvx private key — non-reconstructible, missing from all 20+ existing worktrees checked (research-6 risk #1: "the worktree-secrets wall")
+  - .env.local                      # written by kickstart from `supabase status -o env`; still gitignored, still must propagate to every fresh checkout
+
+services:
+  supabase:
+    command: supabase start         # CLI-managed stack: postgres, auth, postgREST, storage, studio — 553xx ports
+    cwd: .
+    scope: project                  # heavy infra: one instance shared + refcounted across every ozom-gv loom
+    env: {}
+    dependsOn: []
+    readiness:
+      kind: status-cmd
+      run: supabase status -o env   # structured whole-stack ready signal; also the exact source kickstart reads to write .env.local
+    update:
+      strategy: restart              # infra, not app code — no hmr concept applies
+      cleanRestartOn: []
+    teardown:
+      signal: SIGTERM
+      graceMs: 5000
+      # note: `supabase stop` only actually fires on the LAST project-scope refcount release, not on every individual loom's teardown
+
+  next:
+    command: next dev                # dev grade: hmr, fast iteration
+    release:
+      build: next build
+      serve: next start              # release grade — mandatory for the accept-gating ALL-verify and post-accept landing re-verify
+    cwd: .
+    scope: loom                      # warm per-loom-branch lane; moves at landing boundaries
+    env:
+      PORT: "{port}"
+      NEXT_PUBLIC_SUPABASE_URL: "{peer.supabase.url}"   # templated from the supabase peer's resolved connection info
+    portInject:
+      env: PORT
+    dependsOn: [supabase]
+    readiness:
+      kind: http
+      path: /login                   # no /api/health in this app; Playwright polls the same endpoint
+      status: 200
+    update:
+      strategy: hmr
+      cleanRestartOn: [package.json, next.config.*]     # Next 16 preview quirks — dependency/build-config edits invalidate hmr, need a clean restart
+    teardown:
+      signal: SIGTERM
+      graceMs: 3000
+
+grades:
+  dev:
+    services: command                # supabase (already running, project-scope) + `next dev`
+    verify: [unit, pgtap]
+  release:
+    services: release                # `next build` then `next start`; supabase is infra, unaffected by app grade
+    verify: [unit, pgtap, e2e]
+    mandatory: true
+
+data:
+  isolation: mutex                   # supabase's gateway (auth/PostgREST/storage) all point at ONE db — can't tenant-split, so verifies against the shared stack serialize (v1 default, matches the fleet-wide rule)
+  class: disposable
+  templateStamp:
+    key: migration-hash
+    enabled: true
+
+verify:
+  entrypoints:
+    - name: verify
+      source: ingest                 # project already owns a real 3-layer gate — adopt it as-is
+      run: bun run verify            # = lint && typecheck && test && test:db && test:e2e
+      grade: [release]
+      ownsServer: false              # the LANE owns supabase + next; this command's Playwright suite reuses them
+  evidence:
+    urls:
+      - "http://localhost:{port}/login"   # seeded owner user visible here
+    api: []
+    stdout: true
+    artifacts: []
+  playwright:
+    portAlignment: PORT              # telar sets PORT; the suite's own webServer config no-ops via `reuseExistingServer: !CI` — lane owns the server (open cell A, resolved)
+
+requirements:
+  tools:
+    - docker
+    - supabase-cli
+  credentials: []                    # none pre-provisioned beyond the carried secret below — LLM provider keys are runtime-configured in the product DB, not boot env
+  secrets:
+    - name: dotenvx-key
+      source: carry                  # supabase/.env.keys, propagated via `carry`, not regenerable
+  degradedModes:
+    - without: dotenvx-key
+      consequence: "db reset seeds synthetic GV-DEMO fixtures only; no real BigQuery/Creatio ingest — surface verification still runs, against synthetic data"
+
+ownership:
+  verifyMutex: per-repo
+  projectScope:
+    refcount: true                   # supabase stack shared across every ozom-gv loom; `supabase stop` only on last release
+    heavyInfraSemaphore: 2
+  fleetPortStrategy: serialize        # ozom-gv is one of 4 fleet projects sitting on stock supabase ports 54321-9 — at most one such stack runs at a time (open cell B)
+  adoption: session-only
+  leaseFile: "~/.telar/looms/<loom-id>/services/supabase.json"

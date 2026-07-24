@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telar — Six Surfaces, One Correction</title>
+<style>
+  :root{
+    --bg:#08080a;
+    --bg-panel:#111114;
+    --bg-elevated:#17171b;
+    --bg-elevated2:#1d1d22;
+    --border:#2a2a30;
+    --border-soft:#1c1c21;
+    --text:#eaeaed;
+    --text-dim:#a3a3ac;
+    --text-faint:#68686f;
+    --mono:#c2c2c9;
+    --green:#39d398;
+    --amber:#e6a94a;
+    --red:#e05a52;
+    --glow: 0 0 0 1px rgba(234,234,237,.14), 0 0 24px rgba(234,234,237,.06);
+    --font-mono: ui-monospace, "SF Mono", "Menlo", "Cascadia Mono", Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);}
+  body{
+    font-family:var(--font-sans);
+    line-height:1.55;
+    font-size:16px;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;}
+  ::selection{background:#3a3a44;color:#fff;}
+
+  /* ---------- thread progress ---------- */
+  #threadWrap{
+    position:sticky; top:0; z-index:50;
+    background:linear-gradient(180deg, rgba(8,8,10,.96), rgba(8,8,10,.85));
+    backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--border-soft);
+  }
+  #threadBar{
+    position:relative; height:34px; max-width:1180px; margin:0 auto; padding:0 20px;
+    display:flex; align-items:center;
+  }
+  #threadTrack{
+    position:relative; flex:1; height:2px; background:var(--border);
+    border-radius:2px; overflow:visible;
+  }
+  #threadFill{
+    position:absolute; left:0; top:0; height:2px; width:0%;
+    background:linear-gradient(90deg, #4d4d55, var(--text));
+    border-radius:2px; transition:width .08s linear;
+  }
+  #threadShuttle{
+    position:absolute; top:50%; left:0%; width:10px; height:6px;
+    background:var(--text); border-radius:2px;
+    transform:translate(-50%,-50%);
+    box-shadow:0 0 8px rgba(255,255,255,.35);
+    transition:left .08s linear;
+  }
+  .navticks{position:absolute; inset:0; display:flex; align-items:center; pointer-events:none;}
+  .navtick{position:absolute; top:50%; transform:translate(-50%,-50%); pointer-events:auto;}
+  .navtick button{
+    all:unset; cursor:pointer; display:block; width:9px; height:9px; border-radius:50%;
+    background:var(--border); border:1px solid var(--border);
+  }
+  .navtick.correction button{
+    width:7px; height:7px; border-radius:1px; transform:rotate(45deg);
+    background:var(--amber); border-color:var(--amber);
+  }
+  .navtick button:hover{background:var(--text); border-color:var(--text);}
+
+  /* ---------- layout ---------- */
+  main{max-width:880px; margin:0 auto; padding:0 24px;}
+  section{padding:64px 0; border-bottom:1px solid var(--border-soft);}
+  section:last-of-type{border-bottom:none;}
+
+  /* ---------- hero ---------- */
+  .hero{
+    max-width:880px; margin:0 auto; padding:88px 24px 56px;
+    position:relative;
+  }
+  .hero .kicker{
+    font-family:var(--font-mono); font-size:12px; letter-spacing:.16em;
+    color:var(--text-faint); text-transform:uppercase; display:flex; align-items:center; gap:10px;
+  }
+  .hero .kicker svg{flex:none;}
+  .hero h1{
+    font-size:clamp(34px,6vw,54px); line-height:1.05; margin:18px 0 14px; font-weight:650;
+    letter-spacing:-.02em;
+  }
+  .hero h1 em{font-style:normal; color:var(--text-dim);}
+  .hero p.lede{font-size:17px; color:var(--text-dim); max-width:62ch; margin:0 0 22px;}
+  .hero .meta{
+    display:flex; flex-wrap:wrap; gap:8px 18px; font-family:var(--font-mono); font-size:12px;
+    color:var(--text-faint);
+  }
+  .hero .meta b{color:var(--mono); font-weight:500;}
+
+  /* ---------- cast strip ---------- */
+  .cast{
+    display:flex; flex-wrap:wrap; gap:1px;
+    background:var(--border-soft); border:1px solid var(--border-soft); border-radius:10px;
+    overflow:hidden; margin-top:8px;
+  }
+  .cast .loom{background:var(--bg-panel); padding:16px 18px; flex:1 1 200px;}
+  .cast .loom .name{font-family:var(--font-mono); font-size:12.5px; color:var(--text); font-weight:600;}
+  .cast .loom .role{font-size:12.5px; color:var(--text-faint); margin-top:3px;}
+  .cast .loom .dot{display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:7px;}
+  .dot-green{background:var(--green); box-shadow:0 0 6px rgba(57,211,152,.6);}
+  .dot-amber{background:var(--amber); box-shadow:0 0 6px rgba(230,169,74,.6);}
+  .dot-grey{background:var(--text-faint);}
+
+  /* ---------- act headers ---------- */
+  .act-label{
+    font-family:var(--font-mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--text-faint); display:flex; align-items:center; gap:10px; margin-bottom:10px;
+  }
+  .act-label .n{color:var(--text); font-weight:700;}
+  .act-label::after{content:""; flex:1; height:1px; background:var(--border-soft);}
+  h2.act-title{font-size:clamp(24px,4vw,32px); margin:0 0 12px; letter-spacing:-.01em;}
+  .act-intro{color:var(--text-dim); max-width:66ch; margin-bottom:28px;}
+  .surface-tag{
+    display:inline-block; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);
+    border:1px solid var(--border); border-radius:5px; padding:2px 7px; margin-bottom:14px;
+  }
+
+  /* ---------- proposal cards (node-card grammar) ---------- */
+  .props{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin:18px 0 22px;}
+  .prop{
+    background:var(--bg-panel); border:1px solid var(--border); border-radius:10px;
+    padding:15px 16px; position:relative;
+  }
+  .prop.dormant{border-style:dashed; border-color:var(--border);}
+  .prop.killed{opacity:.55;}
+  .prop.killed .prop-title{text-decoration:line-through; text-decoration-color:var(--red);}
+  .prop.final{border-color:#4a4a52; box-shadow:var(--glow);}
+  .prop-title{font-weight:600; font-size:14.5px; margin-bottom:4px;}
+  .prop-desc{font-size:13px; color:var(--text-dim); line-height:1.5;}
+  .badge{
+    font-family:var(--font-mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+    padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:5px;
+    position:absolute; top:12px; right:12px; border:1px solid var(--border);
+    color:var(--text-faint);
+  }
+  .badge.like{color:var(--green); border-color:rgba(57,211,152,.35);}
+  .badge.unconvinced{color:var(--amber); border-color:rgba(230,169,74,.3);}
+  .badge.dislike{color:var(--red); border-color:rgba(224,90,82,.3);}
+  .badge.final{color:var(--text); border-color:#4a4a52;}
+  .badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor;}
+
+  /* ---------- prose beats ---------- */
+  .beat{margin:16px 0; font-size:15px; color:var(--text-dim);}
+  .beat b{color:var(--text); font-weight:600;}
+  .beat .q{color:var(--mono); font-style:italic;}
+  ul.beats{margin:16px 0; padding-left:0; list-style:none;}
+  ul.beats li{
+    position:relative; padding-left:20px; margin-bottom:11px; font-size:14.5px; color:var(--text-dim);
+  }
+  ul.beats li::before{
+    content:""; position:absolute; left:0; top:7px; width:6px; height:6px; border-radius:50%;
+    background:var(--border);
+  }
+  ul.beats li b{color:var(--text); font-weight:600;}
+
+  /* ---------- build receipt ---------- */
+  .receipt{
+    font-family:var(--font-mono); font-size:11.5px; color:var(--text-faint);
+    border:1px solid var(--border-soft); border-radius:8px; padding:10px 14px; margin-top:16px;
+    background:var(--bg-panel);
+  }
+  .receipt .ok{color:var(--green);}
+
+  /* ---------- correction / doctrine patch ---------- */
+  .correction{
+    margin:30px 0; padding:20px 22px; border-radius:10px;
+    background:linear-gradient(180deg, rgba(230,169,74,.06), rgba(230,169,74,.02));
+    border:1px solid rgba(230,169,74,.28); border-left:3px solid var(--amber);
+    position:relative;
+  }
+  .correction .tag{
+    font-family:var(--font-mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--amber); display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  }
+  .correction h3{margin:0 0 8px; font-size:19px; letter-spacing:-.01em;}
+  .correction p{margin:0; color:var(--text-dim); font-size:14.5px;}
+  .correction .stitch{position:absolute; left:-1px; top:14px; bottom:14px; width:2px;
+    background:repeating-linear-gradient(180deg, var(--amber) 0 5px, transparent 5px 10px);}
+
+  /* ---------- interlude (the reckoning) ---------- */
+  .interlude{
+    background:radial-gradient(600px 300px at 20% 0%, rgba(224,90,82,.07), transparent),
+               var(--bg-panel);
+    border:1px solid rgba(224,90,82,.25); border-radius:14px; padding:34px 30px; margin:16px 0;
+  }
+  .interlude .tag{font-family:var(--font-mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--red);}
+  .interlude blockquote{
+    margin:14px 0 18px; font-size:19px; line-height:1.5; color:var(--text); font-style:italic;
+    border-left:2px solid var(--red); padding-left:16px;
+  }
+  .interlude .diag{font-size:14.5px; color:var(--text-dim);}
+
+  /* ---------- chat bubble motif ---------- */
+  .chat{border:1px solid var(--border); border-radius:12px; background:var(--bg-panel); padding:16px; margin:18px 0;}
+  .chat .turn{display:flex; gap:10px; margin-bottom:12px;}
+  .chat .turn:last-child{margin-bottom:0;}
+  .chat .avatar{width:20px; height:20px; border-radius:5px; flex:none; margin-top:2px;
+    background:var(--bg-elevated2); border:1px solid var(--border);
+    display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:9px; color:var(--text-faint);}
+  .chat .turn.user{flex-direction:row-reverse;}
+  .chat .turn.user .avatar{background:#26262c;}
+  .chat .bubble{font-size:13.5px; color:var(--text-dim); max-width:78%;}
+  .chat .turn.user .bubble{color:var(--text); background:var(--bg-elevated2); padding:8px 12px; border-radius:9px; border:1px solid var(--border);}
+  .chat .turn.agent .bubble{padding-top:2px;}
+  .chat .marker{
+    font-family:var(--font-mono); font-size:10.5px; color:var(--text-faint); display:flex; align-items:center; gap:6px;
+    margin:10px 0; padding-left:30px;
+  }
+  .chat .marker::before{content:""; width:16px; border-top:1px dashed var(--border);}
+  .chat .tool{
+    font-family:var(--font-mono); font-size:11px; color:var(--text-faint); border:1px dashed var(--border);
+    border-radius:6px; padding:4px 8px; display:inline-block; margin-top:6px;
+  }
+
+  /* ---------- gate room / DAG map ---------- */
+  .mapwrap{
+    border:1px solid var(--border); border-radius:14px; background:
+      linear-gradient(var(--bg-panel), var(--bg-panel)) padding-box,
+      repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 28px) padding-box,
+      repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 28px) padding-box;
+    overflow:hidden; position:relative; height:460px; margin:20px 0 8px; cursor:grab;
+    touch-action:none;
+  }
+  .mapwrap.grabbing{cursor:grabbing;}
+  .maphint{
+    position:absolute; top:12px; left:14px; z-index:5; font-family:var(--font-mono); font-size:10.5px;
+    color:var(--text-faint); display:flex; gap:14px; pointer-events:none;
+  }
+  .maphint span b{color:var(--mono);}
+  #dagInner{position:absolute; left:0; top:0; width:900px; height:640px; transform:translate(-30px,-70px);}
+  #dagSvg{position:absolute; left:0; top:0; width:900px; height:640px; overflow:visible;}
+  .edge{fill:none; stroke:var(--border); stroke-width:1.6;}
+  .edge.dormant-edge{stroke-dasharray:5 5; stroke:#3a3a41;}
+  .edge.grown{stroke:var(--amber); opacity:0; transition:opacity .5s ease;}
+  .edge.grown.on{opacity:1;}
+  .dagnode{
+    position:absolute; width:154px; transform:translate(-50%,-50%);
+    background:var(--bg-elevated); border:1px solid var(--border); border-radius:9px;
+    padding:9px 11px; transition:opacity .25s ease, box-shadow .25s ease;
+    cursor:pointer; user-select:none;
+  }
+  .dagnode.dormant{border-style:dashed; background:var(--bg-panel);}
+  .dagnode .lbl{font-size:12px; font-weight:600; color:var(--text); line-height:1.25;}
+  .dagnode .sub{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .dagnode .detail{
+    display:none; font-size:11px; color:var(--text-dim); margin-top:7px; line-height:1.45;
+    border-top:1px solid var(--border-soft); padding-top:7px;
+  }
+  .dagnode.expanded{z-index:20; box-shadow:0 8px 28px rgba(0,0,0,.5), 0 0 0 1px var(--mono); background:var(--bg-elevated2);}
+  .dagnode.expanded .detail{display:block;}
+  .dagnode.dim{opacity:.4;}
+  .dagnode .wake{
+    display:none; margin-top:6px; font-family:var(--font-mono); font-size:10px; color:var(--amber);
+    border:1px solid rgba(230,169,74,.4); border-radius:4px; padding:2px 6px; text-align:center;
+  }
+  .dagnode.dormant .wake{display:block;}
+  .dagnode.dormant.woken{border-style:solid; border-color:var(--amber);}
+  .dagnode.dormant.woken .wake{display:none;}
+  .dagnode.gatenode{border-color:#4a4a52; box-shadow:0 0 0 1px rgba(255,255,255,.06);}
+
+  /* ---------- convergence / whole cloth ---------- */
+  .swatches{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin:18px 0;}
+  .swatch{
+    border:1px solid var(--border); border-radius:10px; padding:14px 16px;
+    background:
+      repeating-linear-gradient(45deg, rgba(255,255,255,.018) 0 2px, transparent 2px 10px),
+      var(--bg-panel);
+  }
+  .swatch .ux{font-family:var(--font-mono); font-size:10.5px; color:var(--text-faint); letter-spacing:.06em;}
+  .swatch .name{font-weight:650; font-size:14.5px; margin:4px 0 5px;}
+  .swatch .note{font-size:12.5px; color:var(--text-dim);}
+
+  /* ---------- finale ---------- */
+  .finale{
+    text-align:center; padding:90px 24px 110px; position:relative;
+  }
+  .finale .converge{width:100%; max-width:520px; margin:0 auto 30px; display:block;}
+  .finale .kicker{
+    font-family:var(--font-mono); font-size:12px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--text-faint); margin-bottom:20px;
+  }
+  .finale h2{font-size:clamp(26px,5vw,40px); line-height:1.3; max-width:820px; margin:0 auto 26px; letter-spacing:-.01em;}
+  .finale h2 .em{color:var(--text-dim); font-weight:400; display:block; font-size:.55em; margin-top:14px; letter-spacing:.02em;}
+  .finale-notes{max-width:640px; margin:36px auto 0; text-align:left; display:grid; gap:14px;}
+  .finale-notes .fn{font-size:13.5px; color:var(--text-dim); border-left:2px solid var(--border); padding-left:14px;}
+  .finale-notes .fn b{color:var(--text);}
+
+  footer{
+    max-width:880px; margin:0 auto; padding:36px 24px 70px;
+    font-family:var(--font-mono); font-size:11.5px; color:var(--text-faint);
+    display:flex; flex-wrap:wrap; gap:8px 22px; justify-content:space-between;
+  }
+  footer .stat b{color:var(--mono); font-weight:600;}
+
+  @media (max-width:640px){
+    .hero{padding-top:56px;}
+    section{padding:44px 0;}
+    #dagInner{transform:translate(-10px,-40px);}
+  }
+</style>
+</head>
+<body>
+
+<div id="threadWrap">
+  <div id="threadBar">
+    <div id="threadTrack">
+      <div id="threadFill"></div>
+      <div id="threadShuttle"></div>
+      <div class="navticks" id="navticks"></div>
+    </div>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="kicker">
+    <svg width="14" height="14" viewBox="0 0 14 14"><g stroke="currentColor" stroke-width="1" fill="none" opacity=".8">
+      <path d="M0 3H14M0 7H14M0 11H14"/><path d="M3 0V14M7 0V14M11 0V14"/>
+    </g></svg>
+    Telar — Brainstorming Keepsake
+  </div>
+  <h1>Six surfaces walked in,<br><em>one correction walked out.</em></h1>
+  <p class="lede">
+    A brainstorm to turn two prior sessions — the loom system and its verification model — into concrete
+    cockpit UI. Not slides: every idea shipped live into the in-app demo gallery and got judged in the browser,
+    against one shared fictional day.
+  </p>
+  <div class="meta">
+    <span><b>mode</b> partner</span>
+    <span><b>status</b> complete</span>
+    <span><b>span</b> 23–24 Jul 2026</span>
+    <span><b>log</b> 123 entries</span>
+    <span><b>surfaces finalized</b> 6 / 6</span>
+  </div>
+</header>
+
+<main>
+
+<section id="method">
+  <div class="act-label"><span class="n">PRELUDE</span> the method</div>
+  <h2 class="act-title">Design by shipping fakes</h2>
+  <p class="act-intro">
+    No slide deck, no whiteboard photos. Every proposal became a real gallery entry — a live page, wired with
+    fixtures, sometimes interactive — added to the running product's own demo gallery. Convergence happened
+    by looking at competing entries side by side and picking, not by arguing about descriptions of them.
+    A single fictional day held everything together so that judging one surface meant judging how it felt
+    next to the others.
+  </p>
+  <div class="cast">
+    <div class="loom">
+      <div class="name"><span class="dot dot-green"></span>aurora · payments-retry</div>
+      <div class="role">delivering — the hero of the delivery card, ready at home</div>
+    </div>
+    <div class="loom">
+      <div class="name"><span class="dot dot-amber"></span>ozom · client-role-seeding (P10)</div>
+      <div class="role">mid-flight — the baseline loom-detail example</div>
+    </div>
+    <div class="loom">
+      <div class="name"><span class="dot dot-amber"></span>novarix · invoice-rounding (P12)</div>
+      <div class="role">at-scale — 11 threads, live escalation, stress-tests the cockpit</div>
+    </div>
+    <div class="loom">
+      <div class="name"><span class="dot dot-grey"></span>novarix · search-filters</div>
+      <div class="role">being born, then prepped, then run — carries UX 0 → UX 4</div>
+    </div>
+    <div class="loom">
+      <div class="name"><span class="dot dot-grey"></span>bixku · rename-button</div>
+      <div class="role">one stitch — the smallest ceremony weight has a life too</div>
+    </div>
+  </div>
+</section>
+
+<section id="act1">
+  <div class="act-label"><span class="n">ACT I</span> the fan-out</div>
+  <h2 class="act-title">Three chances, twice over</h2>
+  <p class="act-intro">
+    The brief opened with a five-surface walk. Home went first, out of habit — then got benched. Loom
+    detail opened with the same three-proposals ritual and turned out to be the session's real spine.
+  </p>
+
+  <span class="surface-tag">UX 1 · Home — first pass</span>
+  <div class="props">
+    <div class="prop dormant">
+      <span class="badge unconvinced"><span class="dot"></span>parked</span>
+      <div class="prop-title">Two-band triage</div>
+      <div class="prop-desc">Thin needs-you band — accept + question only, proudly empty — over an ambient window grid. The kill ✕ on a repairing card is the only loud thing on the page.</div>
+    </div>
+    <div class="prop dormant">
+      <span class="badge unconvinced"><span class="dot"></span>parked</span>
+      <div class="prop-title">Delivery inbox</div>
+      <div class="prop-desc">One skimmable column of judgments — accept, answer, watch-kill, resume — proof inline. Running looms demoted to a thin tile strip. Inbox zero is reachable.</div>
+    </div>
+    <div class="prop dormant">
+      <span class="badge unconvinced"><span class="dot"></span>parked</span>
+      <div class="prop-title">Map as home</div>
+      <div class="prop-desc">Projects as regions with drift state, looms as tiles inside them, needs-you as amber flags pinned to a region. A quiet region is information.</div>
+    </div>
+  </div>
+  <p class="beat">
+    <b>Pushback:</b> <span class="q">"why the dashboard? sessions are focused on looms and the new workspace."</span>
+    Home was shelved — not discarded, just out of order — and the session turned to the thing it was actually about.
+  </p>
+
+  <span class="surface-tag">UX 2 · Loom detail — first pass</span>
+  <div class="props">
+    <div class="prop">
+      <span class="badge like"><span class="dot"></span>liked</span>
+      <div class="prop-title">Three rooms</div>
+      <div class="prop-desc">Prepare / Execute / Judge as tabbed spaces. The tab label itself carries the act's state — locked, live, 5-of-9 lit.</div>
+    </div>
+    <div class="prop killed">
+      <span class="badge dislike"><span class="dot"></span>killed</span>
+      <div class="prop-title">Flight log</div>
+      <div class="prop-desc">One chronological spine, acts as margin markers, an accept card appended as the story's last line. Read well on paper. Died on contact with the browser.</div>
+    </div>
+    <div class="prop dormant">
+      <span class="badge unconvinced"><span class="dot"></span>open question</span>
+      <div class="prop-title">Mission control</div>
+      <div class="prop-desc">Prepare / Execute / Judge as three simultaneous columns; judgment accumulates as the right column lights up green.</div>
+    </div>
+  </div>
+</section>
+
+<section id="act2">
+  <div class="act-label"><span class="n">ACT II</span> the long convergence</div>
+  <h2 class="act-title">Finding the loom underneath the tabs</h2>
+  <p class="act-intro">
+    Three rooms won the first look, but a return to the full source docs found the view too shallow —
+    no thread detail, no orchestrator, no sense that a loom is a <em>team</em>. What followed was the
+    session's longest arc: two more proposals, a demand for realism, a user-caught invented layer,
+    and finally one shared component kit doing the work of both variants.
+  </p>
+
+  <ul class="beats">
+    <li><b>Gap found:</b> loom detail needed a thread drill-in (compiled flow DAG, context manifests, bounded recompiles) and an orchestrator seat (role wall, decision log, mediation ladder, a heartbeat that flatlines on trouble).</li>
+    <li><b>Realism demanded:</b> gallery entries could now be interactive — state, animation, real components — "landing the feeling that this is a loom" mattered more than static wireframes.</li>
+  </ul>
+
+  <div class="props">
+    <div class="prop">
+      <span class="badge like"><span class="dot"></span>liked</span>
+      <div class="prop-title">Thread team view</div>
+      <div class="prop-desc">One transcript per agent; flow-strip as the index into the conversation. Later grafted with live streaming and a right-drawer transcript — layout untouched.</div>
+    </div>
+    <div class="prop killed">
+      <span class="badge dislike"><span class="dot"></span>unconvinced</span>
+      <div class="prop-title">Live cockpit / orchestrator seat</div>
+      <div class="prop-desc">Expected an expansion of the team view, got a redesign instead. Kept as open questions, never shipped standalone.</div>
+    </div>
+  </div>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">course-correction — caught by the coach's own audit</div>
+    <h3>The Prepare room was showing the wrong graph</h3>
+    <p>
+      A stress-test at scale surfaced it: Prepare had been rendering the <em>execution plan</em> — flow compile's
+      output — when it should have been rendering the <em>preparation</em> graph itself: living model → opening
+      conversation → nodes spawned only where drift exists (dormant, dashed, "no drift, no node") → readiness →
+      flow compile. The execution plan got demoted to a receipt line on the flow-compile node. Two compiles were
+      named and kept apart for good: the loom's own flow compile, and each thread's separate one during execute —
+      never to be fused in the UI.
+    </p>
+  </div>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">course-correction — caught by the user</div>
+    <h3>Sub-orchestration was an invented layer</h3>
+    <p>
+      The at-scale loom had grown a fictional rung: intermediate sub-orchestrators between threads and the
+      conductor. The user didn't buy it — sub-orchestration is <em>per thread</em>, the thread's own main agent
+      already plays that part. The fix demoted the invented agents to workstream <em>labels</em>, put one
+      orchestrator over all eleven threads, and cut the ladder back to its true three rungs.
+      A related idea — grouping threads by workstream at all — got flagged honestly as unvalidated,
+      a new idea from this session rather than the source docs, and left as an open proposal.
+    </p>
+  </div>
+
+  <p class="beat">
+    A fit audit against both full source memlogs (185 entries between them) turned up real gaps: the
+    <b>window</b> (a live URL of merged-so-far state, borrowable on demand), the <b>lab</b> (a services registry
+    with scope, trust wall, lease token), loom-level <b>pause / kill</b>, and a preview escape hatch. All four
+    got built into the cockpit before it was allowed to call itself finished.
+  </p>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">final polish</div>
+    <h3>One design, not two</h3>
+    <p>
+      The two variants — baseline and at-scale — still disagreed on card shapes and sizes. <code>cockpit.tsx</code>
+      became the shared kit (ActTab, Room, ConductorCard, ThreadGroup, ContractGroups, LabRoom) so both walkables
+      draw from the same components. They now differ only in data, grouping, and the escalation path — never
+      in layout.
+    </p>
+  </div>
+
+  <div class="receipt">
+    <span class="ok">✓</span> UX 2 finalized — <b>Loom, baseline (ozom)</b> + <b>Loom, at scale (novarix)</b> ·
+    8 files, one shared kit · tsc + eslint clean
+  </div>
+</section>
+
+<section id="act3">
+  <div class="act-label"><span class="n">ACT III</span> the verdict, tasted</div>
+  <h2 class="act-title">Delivery card: three judges, one bench</h2>
+  <p class="act-intro">
+    Grounded in the verification session's courtroom rules — every claim cites into the evidence ledger or
+    wears "unverified," attempt history carries its flaky flags, the reality manifest rides along, accept
+    means land, boomerang beats bin. Three proposals argued for a different opening move.
+  </p>
+
+  <div class="props">
+    <div class="prop">
+      <div class="prop-title">A · The dossier</div>
+      <div class="prop-desc">Narrative-first. Every sentence cites into the ledger; click a cite and the artifact lights up. The one uncited claim wears "unverified" openly.</div>
+    </div>
+    <div class="prop">
+      <div class="prop-title">B · The coffee inbox</div>
+      <div class="prop-desc">Fleet-scale stack of skimmable cards — claim, proof strip, risk flags, verdict in place. Bets the skim is the job: "read 7 over coffee, accept 5, bounce 2."</div>
+    </div>
+    <div class="prop">
+      <div class="prop-title">C · See it in work</div>
+      <div class="prop-desc">Product-first. Hero is the ready app itself on its frozen final-verify lane; a filmstrip flips glass between the live lane and the ledger shots.</div>
+    </div>
+  </div>
+
+  <p class="beat">
+    The insight that unlocked it: the three weren't rivals, they were answering different questions.
+    <b>B</b> settled where deliveries arrive — the inbox is the fleet-scale accept surface. <b>C</b> settled
+    the judging posture — judge the product in work. <b>A</b> settled the forensics — courtroom rules underneath
+    everything. The only real fork left was what a card leads with when it opens.
+  </p>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">decision — the fork resolved</div>
+    <h3>Taste it first</h3>
+    <p>
+      The app goes on top. Final shape: an inbox shelf, open a card, and the <b>glass</b> — live lane plus
+      filmstrip — leads. Narrative, contract, ledger, attempts, and vision critic scroll below it. The verdict
+      bar stays fixed underneath the whole thing, one state shared between the shelf row and the open card.
+    </p>
+  </div>
+
+  <div class="receipt">
+    <span class="ok">✓</span> UX 3 finalized — <b>Delivery, final design</b> · shelf → taste-first card ·
+    ozom + novarix carry full dossiers so every shelf card opens · tsc + eslint clean
+  </div>
+</section>
+
+<div class="interlude" style="margin: 0 24px;">
+  <div class="tag">interlude — the reckoning</div>
+  <blockquote>
+    "the graph looks too solid — chat interfaces, the welcoming part of an AI app, are being stripped away.
+    automation is the goal, but control must go to the user when and where it matters."
+  </blockquote>
+  <p class="diag">
+    Four surfaces in, the worry surfaced: the UI's rigidity was hard-constraining every loom toward huge tasks
+    and inviting none of the small ones. The diagnosis landed hard — the middle and the end of the loom
+    (cockpit, delivery, gate) had been designed at maximum ceremony, and its <b>birth</b> had never been
+    designed at all. The flexibility material had been sitting in the source docs the whole time, underweighted:
+    an adaptive-ceremony dial, a simple-task boundary, sessions as the chat-first primitive.
+  </p>
+</div>
+
+<section id="act4">
+  <div class="act-label"><span class="n">ACT IV</span> the gate room</div>
+  <h2 class="act-title">From two hands to one graph</h2>
+  <p class="act-intro">
+    The pre-gate surface — the real Accept / Modify / Deny moment — opened with a direct fork: manipulate
+    the graph, or talk to a conversation that moves it for you.
+  </p>
+
+  <div class="props">
+    <div class="prop">
+      <div class="prop-title">A · The war table</div>
+      <div class="prop-desc">Graph-first, direct manipulation. Click a node to inspect; modify wakes a dormant PRD and the flow recompiles, audited. Gate rides a fixed bottom bar.</div>
+    </div>
+    <div class="prop">
+      <div class="prop-title">B · The two-handed gate</div>
+      <div class="prop-desc">Conversation on the left — chips fire real edits — a live graph on the right reacts with a recompile spinner. The verdict is the conversation's last word.</div>
+    </div>
+  </div>
+
+  <p class="beat">
+    The verdict on the first DAG draft: liked — now make the edges <b>90° rounded elbows</b>, make the graph
+    the default view where clicking a node zooms the conversation into the main attraction, and give every
+    node <b>multiple chats</b> — history, a way to add more, an approval-gated tool to advance the work.
+    Mid-build, one more requirement landed: the graph should be a <b>grabbable map</b>, click-and-drag to pan —
+    never a scrolling container.
+  </p>
+
+  <div class="mapwrap" id="mapwrap">
+    <div class="maphint"><span><b>drag</b> to pan</span><span><b>scroll</b> to zoom</span><span><b>click</b> a node</span></div>
+    <div id="dagInner">
+      <svg id="dagSvg" viewBox="0 0 900 640"></svg>
+    </div>
+  </div>
+  <p class="beat" style="font-size:13px;margin-top:6px;">
+    The preparation graph, reconstructed — try it: drag the empty space to pan, click any node to open it
+    (the rest dim to 65%, per the actual doctrine), and wake the dormant PRD to watch the graph grow a new edge live.
+  </p>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">convergence — A + B, leaning B</div>
+    <h3>The gate room</h3>
+    <p>
+      The graph lives center-stage, the stage itself. Click a node and a <b>left pane opens with its conversation</b> —
+      the zoom applies only to the map, focusing the node you're in. Scroll wheel zooms the graph, never the page.
+      Node text is never allowed to truncate. And when a session is open, the proportions invert: the conversation
+      pane dominates, the map shrinks to a side thumbnail. The gate itself is just another node — its "session"
+      is the steering chat plus the verdict controls.
+    </p>
+  </div>
+
+  <p class="beat">
+    Three more passes chased the feel: a flicker traced to measuring the viewport before layout settled
+    (fixed with a double animation-frame measure and an eased transform); an expand-on-click that first
+    overlapped its neighbor, fixed by growing only <em>downward</em> into the row gap while every other node
+    dims; and a spacing pass that widened the whole canvas so an expanded node never crowds its row.
+  </p>
+
+  <div class="receipt">
+    <span class="ok">✓</span> UX 4 shipped — <b>the gate room</b> (prep-gate-final) · grab-pan, elbow edges,
+    glide-to-select, no truncation · tsc + eslint clean
+  </div>
+</section>
+
+<section id="act5">
+  <div class="act-label"><span class="n">ACT V</span> the birth</div>
+  <h2 class="act-title">Where a loom comes from</h2>
+  <p class="act-intro">
+    The surface the reckoning demanded: chat-first entry, one design flexing across three ceremony weights —
+    tiny, medium, heavy — with the adaptive-ceremony dial made visible for the first time.
+  </p>
+
+  <div class="chat">
+    <div class="turn user"><div class="avatar">Y</div><div class="bubble">rename this button to "Continue"</div></div>
+    <div class="turn agent"><div class="avatar">A</div><div class="bubble">on it — one stitch, no loom needed<span class="tool">Edit · Button.tsx</span></div></div>
+    <div class="marker">gate: 3 buttons</div>
+    <div class="turn agent"><div class="avatar">A</div><div class="bubble">done — thumb + Land it</div></div>
+  </div>
+
+  <p class="beat">
+    The dial scales <b>ceremony</b>, never the <b>walls</b>: branch, evidence, and human accept survive at
+    every size. A first build proved the idea — one chat, one composer, three weight tabs, the heaviest of
+    which unfolded the readiness gate's own graph inline. It felt dull. The fix: rebuild directly on the
+    production chat components — real message bubbles, the real working indicator with its ticking clock and
+    tool states, a real composer — so birth felt like using Telar, not a mockup of it.
+  </p>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">doctrine correction</div>
+    <h3>Looms detach from the chat</h3>
+    <p>
+      Every loom is born from a session — a project chat, or a chat inside the loom itself — but it
+      <b>detaches</b> from that chat. It never sticks to it. The decision graph is not decoration: it must
+      <b>always exist</b> for every loom, and <b>each element of the graph is an actual session</b> that has to
+      happen, or be explicitly skipped, before the loom can start. And there is <b>one single design</b> for
+      looms — never a small / medium / large split. Size shows only in how many node-sessions run versus skip,
+      and how long they take. Never in a different UI.
+    </p>
+  </div>
+
+  <p class="beat">
+    The corollary drew the actual line: the simple-task boundary means small work simply stays a
+    <b>session</b> — no loom, no graph, sessions are for exactly that. The instant it becomes a loom, it takes
+    the full shape at once: detach, graph-of-sessions, gate, cockpit, delivery.
+  </p>
+
+  <div class="correction">
+    <span class="stitch"></span>
+    <div class="tag">doctrine correction, no. 2</div>
+    <h3>The graph is never the session's business</h3>
+    <p>
+      Showing the loom's graph inside the birth session's own UI confuses future agents about what owns what.
+      The birth session creates the premise — and maybe a little context — and that is <b>all</b>. Every
+      subsequent section of the graph gets its own separate conversation. And the graph itself had been drawn
+      too politely linear: nodes actually <b>branch</b> — one divides into two, those into others — and
+      everything converges at the end into something that closes. A growing thing, not a checklist.
+    </p>
+  </div>
+
+  <div class="receipt">
+    <span class="ok">✓</span> UX 0 finalized — <b>birth-dial</b> · session → detach marker + handoff receipt
+    → loom door (graph-of-sessions) · identical UI for a one-stitch rename and a tapestry-sized feature ·
+    tsc + eslint clean
+  </div>
+</section>
+
+<section id="act6">
+  <div class="act-label"><span class="n">ACT VI</span> whole cloth</div>
+  <h2 class="act-title">Closing the loop</h2>
+  <p class="act-intro">
+    With the birth doctrine settled, the session swept back through everything it had shelved or half-finished
+    and closed it against the new rule.
+  </p>
+
+  <div class="swatches">
+    <div class="swatch">
+      <div class="ux">UX 1 · HOME</div>
+      <div class="name">Graft, not replace</div>
+      <div class="note">The production dashboard, grafted with loom-era material — a promoted needs-you row, act chips on running looms, the birth session listed in "recent." Verdict: "a good mini upgrade."</div>
+    </div>
+    <div class="swatch">
+      <div class="ux">UX 5 · WORKSPACE</div>
+      <div class="name">A queue that births looms</div>
+      <div class="note">"Weave as one loom" now yields the actual UX 0 birth receipt in place; a packet's "Plan loom from this packet" is a literal birth handoff; the master chat wears the same session idiom as everything else.</div>
+    </div>
+    <div class="swatch">
+      <div class="ux">CONSISTENCY</div>
+      <div class="name">One frozen map</div>
+      <div class="note">Both cockpit Prepare rooms now render the exact gate-room DAG, generalized into props, with a muted "sealed" gate state for receipts. Loom verbs — park, kill — join the cockpit header.</div>
+    </div>
+    <div class="swatch">
+      <div class="ux">CODA</div>
+      <div class="name">Conversation, extracted</div>
+      <div class="note">The chat shell gets pulled out as a first-class component — primitives, a pluggable transcript shell, owner adapters — with the approval-gated tool call as doctrine everywhere. Staged for spec.</div>
+    </div>
+  </div>
+
+  <div class="receipt">
+    <span class="ok">✓</span> all six surfaces final · UX 0–5 converged · doctrine locked ·
+    <span style="color:var(--text-dim)">"loves the UIs and how they fell into place"</span>
+  </div>
+</section>
+
+<section class="finale" id="finale">
+  <svg class="converge" viewBox="0 0 520 140" fill="none">
+    <g stroke="#3a3a41" stroke-width="1.4">
+      <path d="M10 15 C 180 15, 280 65, 260 70"/>
+      <path d="M10 45 C 180 45, 260 68, 260 70"/>
+      <path d="M10 95 C 180 95, 250 72, 260 70"/>
+      <path d="M10 125 C 180 125, 250 72, 260 70"/>
+    </g>
+    <path d="M260 70 C 340 70, 420 70, 510 70" stroke="#eaeaed" stroke-width="2"/>
+    <circle cx="260" cy="70" r="4" fill="#e6a94a"/>
+  </svg>
+  <div class="kicker">synthesis</div>
+  <h2>Every correction was the same correction.
+    <span class="em">Don't let structure eat the conversation.</span>
+  </h2>
+  <div class="finale-notes">
+    <div class="fn">
+      <b>The rigidity worry became an architecture.</b> The complaint that the graph looked too solid became
+      the birth doctrine (detach, hand off premise and context); the doctrine's corollary made nodes into
+      conversations; that made the chat shell worth extracting as its own component. The session's closing idea
+      is its opening worry, resolved one layer down.
+    </div>
+    <div class="fn">
+      <b>The gate room is where the two source sessions actually meet.</b> The system session's preparation
+      graph, rendered as a map whose every node is the verification session's "session with an owner." The
+      detach receipt — premise plus context — became the one handoff grammar used everywhere: birth, the queue's
+      weave, the workspace packet. "Taste it first" and "windows, not doorbells" turned out to be one value:
+      experience before explanation, pull before push.
+    </div>
+    <div class="fn">
+      <b>The method was a finding too.</b> Shipping fakes into a live gallery, judged over one shared fictional
+      day, is what let cross-lane continuity — payments-retry recurring across four surfaces, search-filters
+      born and prepped and run across three — prove that Telar feels like <em>one thing</em>, not six demos.
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <span class="stat"><b>6 / 6</b> surfaces finalized</span>
+  <span class="stat"><b>123</b> memlog entries</span>
+  <span class="stat"><b>5</b> turning-point corrections</span>
+  <span class="stat"><b>1</b> shared fictional day</span>
+  <span class="stat">conversation-component.md staged for spec</span>
+</footer>
+
+<script>
+(function(){
+  // ---------- thread progress ----------
+  var fill = document.getElementById('threadFill');
+  var shuttle = document.getElementById('threadShuttle');
+  function onScroll(){
+    var h = document.documentElement;
+    var max = h.scrollHeight - h.clientHeight;
+    var pct = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+    fill.style.width = (pct*100) + '%';
+    shuttle.style.left = (pct*100) + '%';
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  // ---------- nav ticks ----------
+  var sectionIds = ['method','act1','act2','act3','act4','act5','act6','finale'];
+  var corrections = ['act3','act4','act5']; // acts carrying doctrine corrections
+  var ticks = document.getElementById('navticks');
+  sectionIds.forEach(function(id, i){
+    var t = document.createElement('div');
+    t.className = 'navtick' + (corrections.indexOf(id) > -1 ? ' correction' : '');
+    t.style.left = (i/(sectionIds.length-1)*100) + '%';
+    var b = document.createElement('button');
+    b.title = id;
+    b.onclick = function(){
+      var el = document.getElementById(id);
+      if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+    };
+    t.appendChild(b);
+    ticks.appendChild(t);
+  });
+
+  // ---------- the preparation DAG ----------
+  var nodes = [
+    {id:'living',    x:450, y:40,  w:154, label:'Living model',        sub:'drift regions',                 detail:'The always-present model of the codebase\'s drift. Nothing spawns until this reads a gap.'},
+    {id:'opening',   x:450, y:130, w:154, label:'Opening conversation',sub:'you + intake',                  detail:'The loom\'s front door. Drift report lands here; every node below is spawned only where drift exists.'},
+    {id:'context',   x:190, y:236, w:154, label:'Context',              sub:'no drift here',                 detail:'Read-only context gathering. No drift here means no dedicated session was needed beyond this.'},
+    {id:'searchd',   x:450, y:236, w:154, label:'Search-delta',         sub:'drift found',                   detail:'Drift detected in search behavior. Divides into two child sessions rather than one — a real branch.'},
+    {id:'prd',       x:700, y:236, w:154, label:'Dormant PRD',          sub:'dormant · no drift',            detail:'No drift found, so no session spawned — shown dashed, "fresh." Click "wake" to enter modify mode.'},
+    {id:'filtertax', x:346, y:344, w:154, label:'Filter taxonomy',      sub:'from search-delta',             detail:'One half of the search-delta split — defines the taxonomy the filters will draw from.'},
+    {id:'ranking',   x:554, y:344, w:154, label:'Ranking',              sub:'from search-delta',             detail:'The other half of the split — how results order once filters narrow them.'},
+    {id:'readiness', x:450, y:452, w:154, label:'Readiness',            sub:'branches converge',             detail:'Every open branch closes back into one readiness check before compile is allowed to run.'},
+    {id:'flowc',     x:450, y:540, w:154, label:'Flow compile',         sub:'produces the plan',             detail:'Loom-level flow compile — produces the execution plan (subgoals × lanes) that Execute runs. Not to be confused with a thread\'s own flow compile during execute.'},
+    {id:'gate',      x:450, y:606, w:154, label:'Gate',                 sub:'verdict node',                  detail:'A node like any other — its "session" is the steering chat plus the verdict controls: Accept, Modify, or Deny.', gate:true}
+  ];
+  var edges = [
+    ['living','opening'],
+    ['opening','context'],
+    ['opening','searchd'],
+    ['opening','prd', true],
+    ['searchd','filtertax'],
+    ['searchd','ranking'],
+    ['context','readiness'],
+    ['filtertax','readiness'],
+    ['ranking','readiness'],
+    ['readiness','flowc'],
+    ['flowc','gate']
+  ];
+  var grownEdge = ['prd','flowc'];
+
+  var byId = {}; nodes.forEach(function(n){ byId[n.id]=n; });
+  var svg = document.getElementById('dagSvg');
+  var inner = document.getElementById('dagInner');
+
+  function elbowPath(a,b){
+    var x1=a.x, y1=a.y+26, x2=b.x, y2=b.y-26; // exit bottom of a, enter top of b
+    if(Math.abs(x1-x2) < 2){
+      return 'M '+x1+' '+y1+' L '+x2+' '+y2;
+    }
+    var midY = y1 + (y2-y1)/2;
+    var r = 10;
+    var dir = x2 > x1 ? 1 : -1;
+    return 'M '+x1+' '+y1+
+      ' L '+x1+' '+(midY-r)+
+      ' Q '+x1+' '+midY+' '+(x1+dir*r)+' '+midY+
+      ' L '+(x2-dir*r)+' '+midY+
+      ' Q '+x2+' '+midY+' '+x2+' '+(midY+r)+
+      ' L '+x2+' '+y2;
+  }
+  function elbowPathTo(a, toX, toY){
+    // special-case edge from PRD (right column) into flow compile (center), routed further down
+    var x1=a.x, y1=a.y+26;
+    var x2=toX, y2=toY;
+    var midY = 470;
+    var r = 10;
+    var dir = x2 > x1 ? 1 : -1;
+    return 'M '+x1+' '+y1+
+      ' L '+x1+' '+(midY-r)+
+      ' Q '+x1+' '+midY+' '+(x1+dir*r)+' '+midY+
+      ' L '+(x2-dir*r)+' '+midY+
+      ' Q '+x2+' '+midY+' '+x2+' '+(midY+r)+
+      ' L '+x2+' '+y2;
+  }
+
+  var svgns = 'http://www.w3.org/2000/svg';
+  edges.forEach(function(e){
+    var a = byId[e[0]], b = byId[e[1]], dormant = e[2];
+    var p = document.createElementNS(svgns,'path');
+    p.setAttribute('d', elbowPath(a,b));
+    p.setAttribute('class', 'edge' + (dormant ? ' dormant-edge' : ''));
+    svg.appendChild(p);
+  });
+  // the edge that grows when PRD wakes
+  var ga = byId[grownEdge[0]];
+  var gb = byId[grownEdge[1]];
+  var grownPath = document.createElementNS(svgns,'path');
+  grownPath.setAttribute('d', elbowPathTo(ga, gb.x - 34, gb.y - 26));
+  grownPath.setAttribute('class', 'edge grown');
+  grownPath.id = 'grownEdge';
+  svg.appendChild(grownPath);
+
+  nodes.forEach(function(n){
+    var el = document.createElement('div');
+    el.className = 'dagnode' + (n.id==='prd' ? ' dormant' : '') + (n.gate ? ' gatenode' : '');
+    el.style.left = n.x+'px'; el.style.top = n.y+'px';
+    el.dataset.id = n.id;
+    el.innerHTML =
+      '<div class="lbl">'+n.label+'</div>'+
+      '<div class="sub">'+n.sub+'</div>'+
+      (n.id==='prd' ? '<div class="wake">wake →</div>' : '') +
+      '<div class="detail">'+n.detail+'</div>';
+    inner.appendChild(el);
+  });
+
+  // click to expand / dim siblings / wake PRD
+  inner.addEventListener('click', function(ev){
+    var card = ev.target.closest('.dagnode');
+    var allCards = inner.querySelectorAll('.dagnode');
+    if(!card){
+      allCards.forEach(function(c){ c.classList.remove('expanded','dim'); });
+      return;
+    }
+    if(card.dataset.id === 'prd' && !card.classList.contains('woken') && ev.target.classList.contains('wake')){
+      card.classList.add('woken');
+      var edge = document.getElementById('grownEdge');
+      edge.classList.add('on');
+      return;
+    }
+    var already = card.classList.contains('expanded');
+    allCards.forEach(function(c){ c.classList.remove('expanded','dim'); });
+    if(!already){
+      card.classList.add('expanded');
+      allCards.forEach(function(c){ if(c!==card) c.classList.add('dim'); });
+    }
+  });
+
+  // drag to pan
+  var wrap = document.getElementById('mapwrap');
+  var panX = -30, panY = -70, dragging = false, startX, startY, moved=false;
+  var zoom = 1;
+  function applyPan(){ inner.style.transform = 'translate('+panX+'px,'+panY+'px) scale('+zoom+')'; inner.style.transformOrigin='0 0'; }
+  function fitToWrap(){
+    var cw = wrap.clientWidth || 830, ch = wrap.clientHeight || 460;
+    var z = Math.min(cw/900, ch/640) * 0.94;
+    zoom = Math.min(1.1, Math.max(0.4, z));
+    panX = (cw - 900*zoom)/2;
+    panY = (ch - 640*zoom)/2;
+    applyPan();
+  }
+  wrap.addEventListener('pointerdown', function(ev){
+    if(ev.target.closest('.dagnode')) return;
+    dragging = true; moved=false; startX = ev.clientX - panX; startY = ev.clientY - panY;
+    wrap.classList.add('grabbing');
+    wrap.setPointerCapture(ev.pointerId);
+  });
+  wrap.addEventListener('pointermove', function(ev){
+    if(!dragging) return;
+    var nx = ev.clientX - startX, ny = ev.clientY - startY;
+    if(Math.abs(nx-panX) > 4 || Math.abs(ny-panY) > 4) moved = true;
+    panX = nx; panY = ny;
+    applyPan();
+  });
+  ['pointerup','pointerleave','pointercancel'].forEach(function(evt){
+    wrap.addEventListener(evt, function(){ dragging = false; wrap.classList.remove('grabbing'); });
+  });
+  wrap.addEventListener('wheel', function(ev){
+    ev.preventDefault();
+    var delta = ev.deltaY > 0 ? -0.08 : 0.08;
+    zoom = Math.min(1.6, Math.max(0.6, zoom + delta));
+    applyPan();
+  }, {passive:false});
+  fitToWrap();
+})();
+</script>
+
+</body>
+</html>
