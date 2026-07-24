@@ -13,12 +13,20 @@
     /api/ultra SSE — session-view, subagent-rail wiring.
   spec_checkpoint: true
   done_checkpoint: true
+  invoke_dev_with: >-
+    Sequencing (conciliation): this lands on the existing session-view/subagent-rail
+    BEFORE the loom spec's Conversation shell carve-out; build against the current
+    monolith as-is — the carve-out migrates the anchor and rail section afterward.
 - id: "3"
   title: Authoring-reference skill file
   description: >-
     CAP-3: the reference shipped with the tool and injected for Claude sessions —
     injected surface API, explicit-model rule, quality patterns, worked example;
     linked from the rail's Script tab.
+  invoke_dev_with: >-
+    Include a rule steering scripts away from standing up servers or long-lived
+    processes via Bash — nothing supervises an ultra child's processes; service
+    work belongs to sessions and looms.
 - id: "4"
   title: Composer Ultra chip
   description: >-
