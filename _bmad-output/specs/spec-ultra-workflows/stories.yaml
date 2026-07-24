@@ -1,0 +1,44 @@
+- id: "1"
+  title: Completion wake
+  description: >-
+    CAP-1: a detached run reaching any terminal state wakes the main agent —
+    synthetic completion event → fresh summarizing assistant turn; mid-conversation
+    it lands next turn. ultra_status polling stays as fallback; no deferral machinery.
+  spec_checkpoint: true
+- id: "2"
+  title: Real session UI
+  description: >-
+    CAP-2 per ui-contract.md: fixed-height run anchor in the transcript, Workflows
+    section in the existing sub-agent rail, Stop/Resume, live over the existing
+    /api/ultra SSE — session-view, subagent-rail wiring.
+  spec_checkpoint: true
+  done_checkpoint: true
+- id: "3"
+  title: Authoring-reference skill file
+  description: >-
+    CAP-3: the reference shipped with the tool and injected for Claude sessions —
+    injected surface API, explicit-model rule, quality patterns, worked example;
+    linked from the rail's Script tab.
+- id: "4"
+  title: Composer Ultra chip
+  description: >-
+    CAP-4: a composer chip arms Ultra for one message via the ultra:true
+    annotation. Arming only — no ceiling editor, no submenu.
+- id: "5"
+  title: Session-cost rollup
+  description: >-
+    CAP-5: run spend attributes to the owning chat message and folds into the
+    per-turn usage display, in the session's cost language. Readout only.
+- id: "6"
+  title: Dock run signal
+  description: >-
+    CAP-6: a session with live runs shows run status (name · state · spend) in its
+    dock bubble from anywhere in the app; tapping re-focuses the run. One signal
+    per session; concurrent runs summarize.
+- id: "7"
+  title: Prove-run
+  description: >-
+    The SPEC success signal: one real end-to-end Ultra workflow on a sandbox
+    project through the actual non-demo UI, wake included — the gate before
+    calling the feature done.
+  done_checkpoint: true
