@@ -47,9 +47,9 @@
     pre-existing bug where the gate can exceed its own ceiling when an arrival
     races a release. Default ceiling stays 4 — this story is explicitly NOT a
     throughput change. AgentOpts.admissionClass is opt-in and omitted means
-    "other", so no call-site sweep is required. A reference implementation
-    exists in the session scratchpad (admission-impl/); it is a reference, not
-    the authority — admission.md is.
+    "other", so no call-site sweep is required. A reference implementation is
+    preserved at reference/admission-impl/ in this spec folder; it is a
+    reference, not the authority — admission.md is.
   spec_checkpoint: true
   done_checkpoint: true
 

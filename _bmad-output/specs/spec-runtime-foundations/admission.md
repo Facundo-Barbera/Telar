@@ -108,10 +108,10 @@ An observability read (`admissionSnapshot()`-shaped: policy, occupancy, waiting-
 
 ## Reference implementation
 
-A complete, passing implementation of this contract was written during the 2026-07-24 architecture run and then deliberately reverted so it could land as reviewed work rather than an unrequested change. It is preserved at:
+A complete, passing implementation of this contract was written during the 2026-07-24 architecture run and then deliberately reverted so it could land as reviewed work rather than an unrequested change. It is preserved beside this spec at:
 
 ```
-<session scratchpad>/admission-impl/
+reference/admission-impl/   (in this spec folder)
   admission.ts          # the controller
   admission.test.ts     # 22 tests covering the acceptance list above
   core-changes.patch    # engine.ts / budget.ts / index.ts / verifier.ts / critic.ts / ultra-runner.ts
