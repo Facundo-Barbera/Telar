@@ -11,6 +11,7 @@ import type { Loom } from "./looms";
 import type { Charter, PanelReport, SubGoal, WorkUnitState } from "./schemas";
 import { MEDIATION_BUDGET, readySubGoals, tick, validateDecision, type Decision, type LedgerView, type ThreadView } from "./tick";
 import type { BudgetState } from "./budget";
+import { ledgerSpendUsd, logUsage } from "./usage-ledger";
 import type { GateResult } from "./gates";
 
 // Pure: no persistence, no agent calls — just fold child states up against
@@ -244,7 +245,26 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
     // they don't block the weave; drained before rollup so none detaches).
     const checkpoints: Promise<void>[] = [];
     const decisionLog: Decision[] = [];
-    let spentUsd = 0;
+    // AD-18 — a loom's spend is a PROJECTION over the one usage ledger, folded
+    // fresh at each read, never a counter this closure accumulates. Spend
+    // already recorded for this loom (a prior run, or anything else that
+    // attributed to it) is therefore visible in the very first decision's
+    // budget instead of restarting from zero.
+    const spentUsd = () => ledgerSpendUsd({ ownerKind: "loom", ownerId: loom.id });
+    // One ledger append per settled child, rolled up from its own attempts.
+    // `now` is the injected clock — never Date.now() inside the loop.
+    const recordChildSpend = (child: Loom) =>
+      logUsage({
+        ts: now(),
+        account: loom.account,
+        model: "",
+        // Loom spend belongs to no chat session; the empty value also keeps it
+        // out of the session-scoped projections.
+        sessionId: "",
+        ownerKind: "loom",
+        ownerId: loom.id,
+        costUsd: childCostUsd(child),
+      });
     let startedRunning = false;
 
     // The live thread set (finished + in-flight), in the exact shape tick reads.
@@ -266,7 +286,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         charter: charterView,
         threads: currentThreads(),
         inFlight: running.size,
-        budget: { maxAgents, inFlight: running.size, spentUsd, startedAtMs, maxCostUsd, maxWallClockHours },
+        budget: { maxAgents, inFlight: running.size, spentUsd: spentUsd(), startedAtMs, maxCostUsd, maxWallClockHours },
         decisionLogTail: [],
         nowMs: now(),
       });
@@ -303,7 +323,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         const readyBefore = new Set(readyIdsNow());
         finished.set(sg.id, result);
         syncSubGoalStatus(sg, subGoalStatusFor(result.state)); // L13 — settled: done/failed/blocked
-        spentUsd += childCostUsd(result);
+        recordChildSpend(result);
         runningThread.delete(sg.id);
         running.delete(sg.id);
         // Unit 4 — OBSERVE event: which child settled, its rollup state, and the
@@ -350,7 +370,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
       const budget: BudgetState = {
         maxAgents,
         inFlight: running.size,
-        spentUsd,
+        spentUsd: spentUsd(),
         startedAtMs,
         maxCostUsd,
         maxWallClockHours,
@@ -453,7 +473,7 @@ export async function runWeave(loom: Loom, decomposition: SubGoal[], deps: RunWe
         if (isAborted()) return halt();
         finished.set(sg.id, remediated);
         syncSubGoalStatus(sg, subGoalStatusFor(remediated.state)); // L13 — remediated child resettled
-        spentUsd += childCostUsd(remediated); // account the remediation's spend
+        recordChildSpend(remediated); // account the remediation's spend
         emit({
           type: "mediate-result",
           subGoalId: sg.id,

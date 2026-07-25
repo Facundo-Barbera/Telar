@@ -14,7 +14,23 @@
 // The pure tick decisions are asserted in orchestrator.test.ts /
 // m11-blocked-propagation.test.ts; here we drive the runWeave loop end-to-end
 // with fakes (no disk / agents), the way orchestrator.test.ts does.
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// runWeave now appends a loom-owned line to the usage ledger as each child
+// settles, so this suite MUST hold its own state root — unpinned it would
+// write into the developer's real ~/.telar (weave.test.ts idiom).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-b2-mediation-"));
+process.env.TELAR_HOME = home;
+// bun test runs all files in one process — re-pin the env before every test
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+});
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 import type { Loom } from "../src/looms";
 import type { Charter, SubGoal } from "../src/schemas";
 import { MEDIATION_BUDGET, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";

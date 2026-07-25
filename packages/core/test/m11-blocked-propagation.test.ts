@@ -13,7 +13,23 @@
 //   (F) recovery sweep — a blocked root and a blocked child are both left untouched.
 // These tests exercise the pure/seam functions directly (no flag needed), the same
 // way m9-thread-workflow.test.ts drives runThreadWorkflow with an injected runStep.
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// runWeave now appends a loom-owned line to the usage ledger as each child
+// settles, so this suite MUST hold its own state root — unpinned it would
+// write into the developer's real ~/.telar (weave.test.ts idiom).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m11-blocked-"));
+process.env.TELAR_HOME = home;
+// bun test runs all files in one process — re-pin the env before every test
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+});
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 import type { Loom } from "../src/looms";
 import type { StepResult } from "../src/executor";
 import type { Charter, ProjectManifest, Step, SubGoal } from "../src/schemas";

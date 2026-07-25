@@ -1,4 +1,20 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// runWeave now appends a loom-owned line to the usage ledger as each child
+// settles, so this suite MUST hold its own state root — unpinned it would
+// write into the developer's real ~/.telar (weave.test.ts idiom).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-orchestrator-"));
+process.env.TELAR_HOME = home;
+// bun test runs all files in one process — re-pin the env before every test
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+});
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 import { fanoutSize, prioritize, type BudgetState } from "../src/budget";
 import { MEDIATION_BUDGET, readySubGoals, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";
 import { runWeave } from "../src/weave";

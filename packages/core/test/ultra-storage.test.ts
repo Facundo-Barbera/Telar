@@ -362,3 +362,127 @@ describe("Ultra storage — sessionId/messageId/account linkage (doc §5)", () =
     expect(getUltraManifest(resumed.runId)?.account).toBe("personal");
   });
 });
+
+// ── CAP-2 / AC6(b): manifest.spend is a PROJECTION over usage.ndjson ─────────
+// Not a closure counter. Each test below moves the ledger through a path a
+// `spend +=` accumulator cannot observe, then asserts the manifest moved.
+const { ledgerSpendUsd } = await import("../src/usage-ledger");
+
+const ledgerFile = () => path.join(process.env.TELAR_HOME!, "usage.ndjson");
+const ultraLinesFor = (runId: string): Record<string, unknown>[] => {
+  let text = "";
+  try {
+    text = fs.readFileSync(ledgerFile(), "utf8");
+  } catch {
+    return [];
+  }
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.ownerKind === "ultra" && e.ownerId === runId);
+};
+
+describe("Ultra storage — manifest.spend is a projection over the usage ledger (AD-18)", () => {
+  test("manifest.spend equals ledgerSpendUsd for owner ultra/<runId>", async () => {
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "done";\n}`;
+    let call = 0;
+    const fake: Fake = async (p, o) => {
+      call++;
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: call === 1 ? 0.2 : 0.3, turns: 1 });
+      return { text: p };
+    };
+    const res = await launchUltra({ script, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+
+    const manifest = getUltraManifest(res.runId);
+    expect(manifest?.spend).toBeCloseTo(0.5);
+    expect(manifest?.spend).toBeCloseTo(ledgerSpendUsd({ ownerKind: "ultra", ownerId: res.runId }));
+    // Exactly two ultra-owned lines — one per live settle, no new ledger file.
+    expect(ultraLinesFor(res.runId)).toHaveLength(2);
+  });
+
+  test("a ledger line appended out-of-band for the run raises the next saved manifest's spend", async () => {
+    // Decisive: a `spend +=` closure cannot see a line it did not add itself.
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "done";\n}`;
+    const runId = "u-oob-projection-test";
+    let call = 0;
+    const fake: Fake = async (p, o) => {
+      call++;
+      if (call === 1) {
+        // Between the first and second settle, a third party appends spend
+        // attributed to this run.
+        fs.appendFileSync(
+          ledgerFile(),
+          JSON.stringify({
+            ts: Date.now(),
+            account: "personal",
+            model: "sonnet",
+            sessionId: "",
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreateTokens: 0,
+            costUsd: 4,
+            ownerKind: "ultra",
+            ownerId: runId,
+          }) + "\n",
+        );
+      }
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: 0.1, turns: 1 });
+      return { text: p };
+    };
+    const res = await launchUltra({ script, runId, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    // 0.1 + 0.1 from the two settles, plus the 4 nobody told the closure about.
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(4.2);
+  });
+
+  test("resuming a run with a fully cached prefix does not double-count its spend", async () => {
+    // A cache-hit replay re-emits the agent event WITH its cost but never
+    // re-makes (or re-bills) the call. Its ledger line was written on the
+    // first run and survives the stop, so the resumed total must be identical.
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a, b];\n}`;
+    const res = await launchUltra({ script, agent: costedFake(0.25) });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+
+    const firstRunSpend = getUltraManifest(res.runId)!.spend;
+    expect(firstRunSpend).toBeCloseTo(0.5);
+    const linesAfterFirstRun = ultraLinesFor(res.runId).length;
+    expect(linesAfterFirstRun).toBe(2);
+
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — full prefix should be cache-served");
+    };
+    const resumed = await resumeUltraRun(res.runId, { agent: throwingFake });
+    if (!resumed.ok) throw new Error("unreachable");
+    await getLiveUltraRun(resumed.runId)!.finished;
+
+    expect(liveCalls).toBe(0); // fully cache-served
+    // Zero new lines for the replayed ordinals, and the total is unchanged —
+    // not ~2x, which is what an unconditional append would produce.
+    expect(ultraLinesFor(res.runId)).toHaveLength(linesAfterFirstRun);
+    expect(getUltraManifest(res.runId)!.spend).toBeCloseTo(firstRunSpend);
+  });
+
+  test("a resumed run's manifest spend starts from the persisted prefix, not zero", async () => {
+    // The intended behavior change: on a FRESH launch the seeded spend is
+    // still 0 (nothing is in the ledger for a brand-new runId), but a RESUME
+    // reflects the prefix immediately, because spend is a projection.
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a, b];\n}`;
+    const res = await launchUltra({ script, agent: costedFake(0.75) });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    expect(getUltraManifest(res.runId)!.spend).toBeCloseTo(1.5);
+
+    const resumed = await resumeUltraRun(res.runId, { agent: costedFake(0.75) });
+    if (!resumed.ok) throw new Error("unreachable");
+    await getLiveUltraRun(resumed.runId)!.finished;
+    expect(getUltraManifest(res.runId)!.spend).toBeCloseTo(1.5);
+  });
+});

@@ -7,6 +7,9 @@ export * from "./accounts";
 export * from "./login";
 export * from "./engine";
 export * from "./manifest";
+// AD-18/AD-20 — the one append-only spend ledger and its sole writer. The
+// package exports only ".", so the barrel is this port's only route to apps/web.
+export * from "./usage-ledger";
 export * from "./servers";
 export * from "./watches";
 export * from "./gates";

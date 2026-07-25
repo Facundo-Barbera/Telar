@@ -1,7 +1,23 @@
 // M5 weave setup hook. Flag-off (runSetup undefined) preparing→running is
 // byte-identical — children spawn as today. Flag-on with { ready:false } the
 // weave STOPS before spawning any child and lands needs-review (never done).
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// runWeave now appends a loom-owned line to the usage ledger as each child
+// settles, so this suite MUST hold its own state root — unpinned it would
+// write into the developer's real ~/.telar (weave.test.ts idiom).
+const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-m5-weave-setup-"));
+process.env.TELAR_HOME = home;
+// bun test runs all files in one process — re-pin the env before every test
+beforeEach(() => {
+  process.env.TELAR_HOME = home;
+});
+afterAll(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+});
 import { runWeave } from "../src/weave";
 import type { Loom } from "../src/looms";
 import type { SubGoal } from "../src/schemas";

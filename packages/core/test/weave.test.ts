@@ -610,3 +610,126 @@ describe("runWeave — L13: SubGoal.status is synced at real transitions (record
     expect(decomposition[0].status).toBe("done");
   });
 });
+
+// ── CAP-2 / AC6(c): the charter's budget-left is a PROJECTION ────────────────
+// Asserted through the REAL seam: BudgetState is a runWeave local and never
+// escapes, but the Rationale attached to each emitted `decision` event carries
+// a BudgetSnapshot — that is the observable the charter's ledger view renders.
+const { ledgerSpendUsd } = await import("../src/usage-ledger");
+
+const usageLedgerFile = () => path.join(process.env.TELAR_HOME!, "usage.ndjson");
+
+function loomLinesFor(loomId: string): Record<string, unknown>[] {
+  let text = "";
+  try {
+    text = fs.readFileSync(usageLedgerFile(), "utf8");
+  } catch {
+    return [];
+  }
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.ownerKind === "loom" && e.ownerId === loomId);
+}
+
+// The spentUsd carried by the FIRST decision the weave emitted.
+function firstDecisionSpentUsd(events: { type: string }[]): number {
+  const decision = events.find((e) => e.type === "decision") as
+    | { rationale?: { budget?: { spentUsd?: number } } }
+    | undefined;
+  return decision?.rationale?.budget?.spentUsd ?? NaN;
+}
+
+describe("runWeave — the charter's budget-left is a projection over usage.ndjson (AD-18)", () => {
+  test("rationale.budget.spentUsd is a projection over the ledger for owner loom/<loomId>", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+    const events: { type: string }[] = [];
+
+    await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        child.state = "done";
+        child.attempts = [{ costUsd: 3 } as unknown as (typeof child.attempts)[number]];
+        return child;
+      },
+      onEvent: (ev) => events.push(ev as { type: string }),
+    });
+
+    // A loom-owned line was appended, and the projection agrees with it.
+    expect(loomLinesFor(root.id)).toHaveLength(1);
+    expect(ledgerSpendUsd({ ownerKind: "loom", ownerId: root.id })).toBeCloseTo(3);
+    // The last decision's snapshot reflects the settled child's spend.
+    const decisions = events.filter((e) => e.type === "decision") as {
+      rationale?: { budget?: { spentUsd?: number } };
+    }[];
+    const last = decisions[decisions.length - 1];
+    expect(last.rationale?.budget?.spentUsd).toBeCloseTo(3);
+  });
+
+  test("spend already in the ledger for this loom is visible in the FIRST decision's budget, before any child settles", async () => {
+    // Decisive: a `let spentUsd = 0` accumulator always starts at 0.
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+    fs.mkdirSync(process.env.TELAR_HOME!, { recursive: true });
+    fs.appendFileSync(
+      usageLedgerFile(),
+      JSON.stringify({
+        ts: Date.now(),
+        account: "personal",
+        model: "",
+        sessionId: "",
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+        costUsd: 2,
+        ownerKind: "loom",
+        ownerId: root.id,
+      }) + "\n",
+    );
+
+    const events: { type: string }[] = [];
+    await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        child.state = "done";
+        return child;
+      },
+      onEvent: (ev) => events.push(ev as { type: string }),
+    });
+
+    expect(firstDecisionSpentUsd(events)).toBeCloseTo(2);
+  });
+
+  test("a mediated re-attempt's spend reaches the ledger once", async () => {
+    const decomposition = [subGoal({ id: "s1" })];
+    const root = fakeLoom();
+    let mediations = 0;
+
+    await runWeave(root, decomposition, {
+      spawnChild: (sg) => fakeLoom({ subGoalId: sg.id, state: "queued" }),
+      runChild: async (child) => {
+        child.state = "failed";
+        child.attempts = [{ costUsd: 1 } as unknown as (typeof child.attempts)[number]];
+        return child;
+      },
+      mediateThread: async (child) => {
+        mediations++;
+        child.state = "done";
+        child.attempts = [{ costUsd: 5 } as unknown as (typeof child.attempts)[number]];
+        return child;
+      },
+      onEvent: () => {},
+    });
+
+    expect(mediations).toBe(1);
+    // One line for the failed settle (1), one for the mediated resettle (5) —
+    // each recorded exactly once, no double-count across the two paths.
+    const lines = loomLinesFor(root.id);
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => l.costUsd).sort()).toEqual([1, 5]);
+    expect(ledgerSpendUsd({ ownerKind: "loom", ownerId: root.id })).toBeCloseTo(6);
+  });
+});

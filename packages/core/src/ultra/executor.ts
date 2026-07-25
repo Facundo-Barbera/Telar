@@ -92,6 +92,12 @@ export type UltraEvent =
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
       costUsd?: number;
       turns?: number;
+      // True when this event is a RESUME REPLAY served from the journal — the
+      // call was not re-made and was not re-billed, so its cost must not be
+      // appended to the spend ledger a second time. Absent on a live settle.
+      // Additive optional field on an append-only narration stream; no reader
+      // keys off it.
+      cached?: true;
     };
 
 export type UltraRunResult = {
@@ -195,6 +201,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           ok: cached.result !== null,
           ...(cached.costUsd !== undefined ? { costUsd: cached.costUsd } : {}),
           ...(cached.turns !== undefined ? { turns: cached.turns } : {}),
+          cached: true, // replayed, not re-billed — the ledger must not double-count it
         });
         return cached.result; // served from the journal — no spawn (doc §3)
       }

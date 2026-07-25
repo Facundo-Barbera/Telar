@@ -888,3 +888,37 @@ export const PanelReport = z.object({
   sized: z.array(z.object({ class: CriticClass, lens: z.string(), blocker: z.boolean() })).optional(),
 });
 export type PanelReport = z.infer<typeof PanelReport>;
+
+// ── The spend ledger's record (AD-18) ───────────────────────────────────────
+// One append-only line per agent call in $TELAR_HOME/usage.ndjson. There is
+// exactly one ledger and exactly one writer (usage-ledger.ts, AD-20).
+//
+// Owner attribution (ownerKind + ownerId) is ADDITIVE: every field carries a
+// default, so a line written before attribution existed parses clean, counts
+// toward every total, and never throws (AD-7 tolerant readers — zod also
+// strips unknown keys rather than rejecting them).
+//
+// The "session" default is LOAD-BEARING, not a placeholder: it is what makes a
+// pre-attribution record still fold into the session-scoped projections, which
+// is precisely what "an un-attributed historical record still counts toward
+// totals" requires.
+//
+// NOTE: cost LANGUAGE (USD on Claude, tokens on Codex) is a property of the
+// PROJECTION, never of this record. No currency/unit field belongs here.
+export const UsageOwnerKind = z.enum(["session", "loom", "ultra"]);
+export type UsageOwnerKind = z.infer<typeof UsageOwnerKind>;
+
+export const UsageEntry = z.object({
+  ts: z.number(),
+  account: z.string().default("unknown"),
+  model: z.string().default(""),
+  sessionId: z.string().default(""),
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  cacheReadTokens: z.number().default(0),
+  cacheCreateTokens: z.number().default(0),
+  costUsd: z.number().default(0),
+  ownerKind: UsageOwnerKind.default("session"),
+  ownerId: z.string().default(""),
+});
+export type UsageEntry = z.infer<typeof UsageEntry>;

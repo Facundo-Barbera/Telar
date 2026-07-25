@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AccountProfile } from "../schemas";
 import { getAccount } from "../accounts";
+import { ledgerSpendUsd, logUsage } from "../usage-ledger";
 import { runDir, ultraDir } from "./journal";
 import {
   startUltra,
@@ -279,7 +280,6 @@ async function launch(
   },
 ): Promise<LaunchUltraResult> {
   const startedAt = Date.now();
-  let spend = 0;
   const compiled = compileScript(script);
   const meta: ScriptMeta = compiled.ok ? compiled.meta : {};
 
@@ -292,7 +292,12 @@ async function launch(
     meta,
     ...(opts.args !== undefined ? { args: opts.args } : {}),
     state,
-    spend,
+    // AD-18 — a PROJECTION over the one usage ledger, folded fresh on every
+    // manifest write, never a counter this closure accumulates. A line
+    // appended for this run by anything else is visible here too, and a
+    // resumed run picks up its own persisted prefix instead of restarting
+    // from zero.
+    spend: ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId }),
     // `result` is only ever set on a `done` terminal (executor.ts's settle()
     // only attaches `result` alongside state "done") — undefined elsewhere,
     // so the spread simply omits the key rather than writing `result: undefined`.
@@ -309,7 +314,20 @@ async function launch(
     onEvent: (e: UltraEvent) => {
       appendUltraEvent(runId, e);
       if (e.type === "agent") {
-        if (typeof e.costUsd === "number") spend += e.costUsd;
+        // `e.cached` is a resume replay served from the journal — the call was
+        // never re-made and never re-billed, and its live settle already wrote
+        // its ledger line on the first run. Appending again would double-count.
+        if (!e.cached && typeof e.costUsd === "number") {
+          logUsage({
+            ts: Date.now(),
+            account: opts.account?.name ?? "unknown",
+            model: e.model,
+            sessionId: opts.sessionId ?? "",
+            ownerKind: "ultra",
+            ownerId: runId,
+            costUsd: e.costUsd,
+          });
+        }
         saveManifest(buildManifest("running"));
       }
     },
