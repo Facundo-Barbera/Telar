@@ -1,0 +1,112 @@
+- id: "1"
+  title: TELAR_HOME honored in store.ts
+  description: >-
+    CAP-1: apps/web/lib/store.ts resolves its directory via
+    process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar"), matching
+    manifest.ts / looms.ts / session-log.ts / permissions.ts / vcs.ts. With
+    TELAR_HOME set to an empty temp dir, chats.json, usage.ndjson and
+    plan-usage.json are created there and the real ~/.telar is untouched.
+    No behavior change when the variable is unset.
+  invoke_dev_with: >-
+    Do this FIRST — story 2 must not land before it. Extending the usage ledger
+    while its store ignores TELAR_HOME would write dev spend into production
+    state. Copy the exact env expression the other five modules use; do not
+    invent a variant. Assert the isolation in a test, not by inspection.
+  spec_checkpoint: true
+
+- id: "2"
+  title: Owner attribution on the usage ledger
+  description: >-
+    CAP-2: UsageEntry carries owner-kind + owner-id alongside its existing
+    account/model/sessionId/costUsd. NO new ledger file. The per-turn usage
+    display, Ultra's manifest spend and a charter's budget-left all become
+    projections over usage.ndjson.
+  invoke_dev_with: >-
+    ~/.telar/usage.ndjson ALREADY EXISTS (logUsage/UsageEntry/usageSummary in
+    apps/web/lib/store.ts). Extend it. A new spend file would be a fourth
+    counter competing with three — the exact failure this story prevents.
+    Readers must tolerate records written before the field existed: an
+    un-attributed historical record still counts toward totals and never
+    throws (AD-7). Cost language (USD on Claude, tokens on Codex) belongs to
+    the projection, never to the record.
+  spec_checkpoint: true
+
+- id: "3"
+  title: Admission control for agent() concurrency
+  description: >-
+    CAP-4 per admission.md in full: one configurable ceiling
+    (TELAR_MAX_AGENTS, default 4), classes loom-build / loom-verify / ultra /
+    other with weights and floors, verification holding precedence rather than
+    a held-open slot, no barging, a work-conserving borrow pass, and a pure
+    policy half. Plus fanoutClamp's optional processCeiling term.
+  invoke_dev_with: >-
+    Read admission.md before writing anything — it records a design that was
+    built and REJECTED (a hard reservation for loom-verify), and re-deriving it
+    will break test/ultra-runner.test.ts's peak===4 assertion and waste 25% of
+    a 4-slot machine. Three separate defects are in scope, including a
+    pre-existing bug where the gate can exceed its own ceiling when an arrival
+    races a release. Default ceiling stays 4 — this story is explicitly NOT a
+    throughput change. AgentOpts.admissionClass is opt-in and omitted means
+    "other", so no call-site sweep is required. A reference implementation
+    exists in the session scratchpad (admission-impl/); it is a reference, not
+    the authority — admission.md is.
+  spec_checkpoint: true
+  done_checkpoint: true
+
+- id: "4"
+  title: Typed event bus with required delivery class
+  description: >-
+    CAP-3: one in-process publish path in packages/core; adapters subscribe
+    (SSE tails, session-wake injector, dock aggregator). Every event declares
+    agent-facing (may synthesize an assistant turn) or human-facing (renders on
+    arrival, never pushes). Published event names and payloads are a declared
+    contract; cross-module subscription only to declared events.
+  invoke_dev_with: >-
+    The delivery class must be a REQUIRED field, not a convention — it is what
+    keeps SPEC-ultra-workflows CAP-1's unprompted turn and
+    SPEC-organization-workspace CAP-1's "never initiates contact" from being
+    resolved inconsistently by two builders. Do not derive events by watching
+    the filesystem: that inverts the store-ownership rule and fs-watch
+    semantics differ between the dev server and the packaged Electron app.
+    Bus durability is out of scope — in-process delivery only.
+  spec_checkpoint: true
+
+- id: "5"
+  title: One lease primitive, two lifetimes
+  description: >-
+    CAP-5: generalize runner/lease.ts to serve both loom-owned and
+    session-owned services. Create TELAR_HOME/sessions/<sessionId>/ owned by
+    the session module for session-scoped runtime state. Loom-owned leases die
+    at land, session-owned at session close; record shape and stale-reclaim are
+    identical.
+  invoke_dev_with: >-
+    The new session tree holds RUNTIME state only (leases, ephemera) — it does
+    NOT absorb the existing chats.json store, which keeps its root-level home.
+    Preserve the existing invariant on both paths: a stale lease can at worst
+    produce a false-positive failed, never an auto-done. Two implementations of
+    stale-reclaim is the outcome this story exists to prevent.
+  spec_checkpoint: true
+
+- id: "6"
+  title: Executable invariant assertions
+  description: >-
+    CAP-6: bun test assertions for the non-negotiables — no MCP surface
+    exposes an accept tool; verifier/verify-thread/critic/panel are granted no
+    write or edit tools; no module reads another module's TELAR_HOME subtree by
+    path; client components import no core runtime; no module writes a shared
+    runtime service's state directly.
+  invoke_dev_with: >-
+    Each assertion fails loudly with a message naming the invariant it
+    defends — someone hitting it in six months should learn why it exists from
+    the failure alone. No CI: these run in the manual trio, so they must be
+    fast enough that running them is never the reason they get skipped.
+  done_checkpoint: true
+
+- id: "7"
+  title: Prove-run
+  description: >-
+    The SPEC success signal: full core suite green, core AND web
+    bunx tsc --noEmit clean, and a dev run under TELAR_HOME=<temp> shown to
+    leave ~/.telar untouched — the gate before the three feature SPECs build
+    on this substrate.
+  done_checkpoint: true
