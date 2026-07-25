@@ -41,10 +41,16 @@ The session's closing move: the chat window was hand-rebuilt in all six lanes wi
 
 ## Open items / flagged futures
 
+> **Reconciled 2026-07-24** against `_bmad-output/specs/spec-loom-redesign/`, which is now the contract. Items below carry their resolution inline; unmarked items still stand as the session left them.
+
 - **Workstream-grouping provenance** — grouping Execute's thread rows by workstream label (novarix scale variant) is a **new idea from this session**, not sourced from the July-18 docs (which only say interference analysis shapes decomposition width). Flagged unvalidated; open proposal for the spec. Alternatives to weigh: flat thread list, or filter chips instead of persistent grouping.
+  - **Resolved:** thread rows are *always* grouped, single group included — no flat-versus-grouped mode switch. Group identity is derived from the compiled flow's declared lanes rather than a model-authored label, so a group always denotes real interference structure. (SPEC CAP-24.)
 - **Preview-this-thread escape hatch** — identified as a cockpit gap during the mid-session fit audit and never designed. Still missing from the final UX 2 cockpit.
+  - **Resolved — not a gap.** The verification session's memlog (34–41) records the user deciding a *single server per loom branch* ("one running server per line of development"), with "want thread progress? open the loom's URL" as the explicit answer. The per-thread ephemeral lane was tagged `(idea by coach)` and never received a `(decision by user)`. Calling it a gap treated an unaccepted suggestion as an owed feature. One window per loom, never per thread; `ephemeral` scope stays what it was created for — frozen final verifies and preview lanes as infrastructure. (SPEC constraints.)
 - **Fleet landing queue + stacked looms + a map-level fleet surface** — deferred-by-design during the fit audit; UX 1's final graft covers the dashboard but does not visualize serial landing-queue state or a project/region map at the fleet level.
+  - **Partially resolved:** v1 adds a minimum landing-queue strip to Home's right column (queued count, currently landing, landed today) so an accepted-but-unlanded loom is never invisible. A full fleet surface and stacked-loom visualization remain out of scope. (SPEC CAP-23.)
 - **Batch framing is thin in the fixtures** — the loom-system doctrine that a loom may carry multiple tasks (sized by its accept moment, not intent count) is only demonstrated end-to-end in UX 5's queue-weave handoff; UX 0/UX 2/UX 4 fixtures all use a single goal sentence, so "loom ≠ one task" isn't visibly proven at the cockpit/gate altitude.
+  - **Resolved:** a loom's premise is a list of N≥1 intents. The gate renders one contract group per intent, Judge lights them per intent, and the delivery card claims N deliveries under one verdict. Accept stays a single moment — that is what sizes the loom. (SPEC CAP-1.)
 
 ## How to walk it
 

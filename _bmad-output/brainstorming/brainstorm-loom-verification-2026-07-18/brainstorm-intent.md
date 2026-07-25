@@ -120,5 +120,17 @@ Plus a schema-level decision from the same evidence-trust thread (predates the c
 
 ## Open threads deliberately left
 
+> **Reconciled 2026-07-24** against `_bmad-output/specs/spec-loom-redesign/`, which is now the contract.
+
 - **UI/UX session** runs next (per the loom-system intent's queued order) — needs this verification model as input.
+  - **Done** — ran 2026-07-23; outcomes are in the spec and in `../brainstorm-loom-ux-ui-2026-07-23/`.
 - **Final map-region taxonomy** research — still pending, per the loom-system intent; affects where the recipe region ultimately sits in the living map.
+  - **Moot as posed.** Regions are declared by the project's loaded methodology, not fixed by the engine, so there is no universal set to discover. v1 ships one built-in BMAD-derived methodology whose declared regions include `verification.md` — the recipe region. (SPEC CAP-7.)
+
+## Decided after the session (spec derivation, 2026-07-24)
+
+Three things this session left implicit or unstated, resolved during spec derivation and now binding:
+
+- **Window concurrency per project is a function of `isolation`, not a constant.** This session scoped both of its mutex statements to *verifies* ("serialize verifies against shared stack"; "only one loom verification per repo") and never ruled on how many live *windows* a project may have. Derived: `mutex` (Supabase-gateway, reset-on-acquire) permits exactly one live window per project and forbids a window coexisting with a loom verification there, since the verify's acquire resets the DB under the viewer; `tenant-db` and `schema` permit one window per loom; a DB-less project keeps always-warm windows. Requests beyond the permitted count queue and name their holder, never displacing a live window or a running verify.
+- **Worktree lifecycle and disk.** Worktrees share the git object database, so the real cost is `node_modules` — untracked, required per worktree for thread-altitude checks, and unmanaged anywhere in core today. Thread worktrees are therefore reaped **at land**, so peak disk tracks threads running now rather than threads ever run; the loom's own worktree survives until accept and landing complete, because boomerang and park both resume from it. Thread worktrees get dependencies by APFS copy-on-write clone of the loom worktree's install (telar is mac/arm64 only), falling back to `prepare.install`. A shared symlinked `node_modules` was rejected — postinstall scripts, native binaries and bun's hoisted store make shared mutable state across parallel threads a source of confusing cross-thread failures.
+- **Carried secrets and evidence retention.** `carry` plants files at mode `0600` and scrubs them at teardown, never copying them into evidence, the map, or an agent transcript. Worktree removal stays best-effort as it is in code today, with one exception: a worktree that held carry files and cannot be removed raises a dire escalation naming the path. Evidence inherits its recipe's data class — `disposable` retains freely, `shared-dev` is flagged on the reality manifest and never lands in-repo, `production` is already refused — and is reaped with its loom.

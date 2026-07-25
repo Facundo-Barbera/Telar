@@ -51,3 +51,14 @@ Intake always diffs against the map at main/default-branch head, never against a
 - Hand-edits to in-repo map files by the user are allowed and treated as GOOD (human writes are never silent) — the lazy intake diff absorbs them as drift, same as code drift.
 - This all instantiates the existing fractal pattern: **declare (delta) → validate (schema) → execute deterministically (serial land) → reconcile lazily (rebuild view)**. Storage falls out of the pattern rather than being a new decision.
 - Respects wall #4 — nobody writes the map silently — which is what makes locks unnecessary: proposals are the only write path, landing is the only commit path.
+
+## Decided after the session (spec derivation, 2026-07-24)
+
+> Reconciled against `_bmad-output/specs/spec-loom-redesign/`, which is now the contract.
+
+**Read semantics** — this session defined the write path (pin, propose, land, rebase-adapt) but never the read path. Resolved:
+
+- **The pin does not move for the loom's lifetime.** Threads read the pinned map as stable background reference; a loom's own prep decisions reach them through the contract frozen at the gate and through each node's context manifest, not by mutating the loom's view of the map. This keeps the map background truth rather than a mutable scratchpad, and makes the rebase base at land time unambiguous.
+- **Other looms' open proposals are reachable, never handed over.** A preparation agent may query the ledger for unlanded proposals touching a region it is working on; nothing is injected into its context by default. A loom plans against accepted reality, may look at what is coming, and never builds on it — so a boomeranged loom leaves nothing built on a fiction. Pull-never-push applied to cross-loom context.
+
+**Region set** — the four filenames named here (`objective.md`, `architecture.md`, `surfaces.md`, `verification.md`) were illustrating *granularity*, not fixing a taxonomy. Regions are now declared by the project's loaded methodology; v1 ships one built-in BMAD-derived methodology declaring objective, architecture, form, surfaces, verification and conventions. **Epics and stories are deliberately not a region** — they are work breakdown, already carried by the decision graph and flow DAGs as run artifacts, and making them durable would reimport the epic-sediment failure this session set out to fix.

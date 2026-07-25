@@ -59,8 +59,18 @@
 
 ## Open questions & queued work (in order)
 
+> **Reconciled 2026-07-24** against `_bmad-output/specs/spec-loom-redesign/`, which is now the contract. All four queued items below are closed.
+
 1. **Verification system** — brainstorm session (`next-session-verification.md`). Runs FIRST: its outcomes change the spec.
+   - **Done** — ran 2026-07-18 → 07-22. Also spawned a fourth session on artifact storage (2026-07-24) that this plan did not anticipate.
 2. **UI/UX rebuild** — brainstorm session (`next-session-ui-ux.md`). Runs SECOND: needs the loom spine + verification model as input.
+   - **Done** — ran 2026-07-23; six surfaces prototyped in the demo gallery.
 3. **Spec** — `bmad-spec` over this intent doc + both session outcomes. Deliberately deferred until both sessions complete.
+   - **Done** — `_bmad-output/specs/spec-loom-redesign/`: 24 capabilities, six companions, zero open questions, plus a 24-story breakdown.
 - *(anytime)* **Map-region taxonomy** — research pass over bmad and other methods: what should a living project model hold, and what does "stale" look like per region?
+   - **Moot as posed, and the seat registry generalized with it.** Regions, seats and artifacts are **declared data, not engine code** — a project's loaded methodology declares them, so there is no universal taxonomy to discover. v1 ships one built-in BMAD-derived methodology; a methodology declares the *catalog*, while drift alone decides which nodes run, and it never declares *how* anything is written (wall #4 sits below the methodology layer). The second half of the question — what "stale" means per region — resolved as: drift detection is the intake session's judgment over intent, the map and the actual repo, not a per-region rule table; the readiness gate downstream is what makes that freedom safe. (SPEC CAP-3, CAP-7.)
+
+## MoSCoW status (2026-07-24)
+
+The locked MoSCoW is partly spent. Both "Won't this time" deferrals for the verification deep design and the UI/UX rebuild are **discharged** — those sessions ran, and their outcomes are in the contract. Four "Could" items were **promoted** by the later sessions: fleet lanes + landing queue (verification made serial landing constitutional), streaming-evidence early-kill (park/kill landed in the cockpit header), adaptive ceremony templates (superseded by "ONE design at any size" plus the ceremony dial), and the vision critic (UX 3's final delivery card renders its advisory verdict). Only the graduated-autonomy dial remains a genuine non-goal.
 - Implementation note: one fractal pattern runs through all three acts — **declare → validate → execute deterministically → reconcile lazily.** Build it once, apply it everywhere.
