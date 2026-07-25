@@ -72,23 +72,31 @@
     posts to belongs to the loom spec (its story 11).
 
 - id: "6"
-  title: Project-less master session
+  title: Master session profile
   description: >-
-    Lift the chat route's project gate so a session can run with no project,
-    with the fixed master session shape. Backend only — no briefing intelligence
-    and no chat UI in this story.
+    Register the master SessionProfile so a session runs with no project — no
+    session-kind conditional in the handler. Backend only — no briefing
+    intelligence and no chat UI in this story.
   spec_checkpoint: true
   invoke_dev_with: >-
-    The gate is route.ts's getProject(project).manifest, which 400s on a missing
-    project and whose manifest.root then feeds cwd, guardrails and
-    settingSources. Master shape is fixed: cwd = the dedicated empty subdir
+    PREREQUISITE: the SessionProfile resolver is SPEC-runtime-foundations CAP-7
+    (its story 6). This story REGISTERS a profile against that resolver; it does
+    NOT add a branch to route.ts. AD-9 names this exact case: a new surface adds
+    a profile, it does not add an if. If the resolver is not there yet, STOP and
+    say so — do not lift the project gate as an interim measure, because the
+    PreToolUse guardrail that enforces the accept moat lives on that path and
+    every extra branch is another one that has to remember to wire it.
+    What the profile supplies is fixed: cwd = the dedicated empty subdir
     TELAR_HOME/workspace/home (the store above it stays outside the master's
     write boundary), settingSources: [], default guardrails, MCP injected
     programmatically, synthetic '__master__' permissions key. NEVER use
-    /Users/facundo as cwd — trust never persists there. Sub-agent scope is
-    inverted here: the master has no project while each expert it calls is
-    scoped to its own, so any plumbing assuming a sub-agent inherits the
-    caller's project will break it. See brownfield.md.
+    /Users/facundo as cwd — trust never persists there. Today the route derives
+    cwd, guardrails and settingSources from getProject(project).manifest.root,
+    which 400s on a missing project; the profile replaces that derivation for
+    this session kind rather than skipping past it. Sub-agent scope is inverted
+    here: the master has no project while each expert it calls is scoped to its
+    own, so any plumbing assuming a sub-agent inherits the caller's project will
+    break it. See brownfield.md.
 
 - id: "7"
   title: Master chat surface and Desk rail

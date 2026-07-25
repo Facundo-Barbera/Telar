@@ -8,10 +8,20 @@
     plan-usage.json are created there and the real ~/.telar is untouched.
     No behavior change when the variable is unset.
   invoke_dev_with: >-
-    Do this FIRST — story 2 must not land before it. Extending the usage ledger
-    while its store ignores TELAR_HOME would write dev spend into production
-    state. Copy the exact env expression the other five modules use; do not
-    invent a variant. Assert the isolation in a test, not by inspection.
+    Do this FIRST — story 2 must not land before it. Two consequences beyond dev
+    spend polluting production totals, both verified in the tree 2026-07-25:
+    a dev server and the packaged desktop app running at the same time BOTH
+    append to the same usage.ndjson and BOTH rewrite the same chats.json, which
+    is two processes contending for one non-concurrent store; and
+    apps/desktop/main.js sets TELAR_HOME to a throwaway home for the --smoke
+    release gate precisely to be hermetic, which store.ts defeats — so a
+    fail-closed gate currently touches the user's real chat history and ledger.
+    The dev isolation itself already works (apps/web/package.json:6 defaults
+    TELAR_HOME to $HOME/.telar-dev); store.ts:8 is the sole module that ignores
+    it. Either duplicate the expression as permissions.ts:45 and
+    session-log.ts:16 do, or import core's telarDir the way vcs.ts:22 does —
+    but do not invent a third variant. Assert the isolation in a test, not by
+    inspection.
   spec_checkpoint: true
 
 - id: "2"
@@ -85,28 +95,89 @@
     Preserve the existing invariant on both paths: a stale lease can at worst
     produce a false-positive failed, never an auto-done. Two implementations of
     stale-reclaim is the outcome this story exists to prevent.
+    This is the ONLY implementation. The loom's per-owner service-lease
+    registry composes over it and re-implements no stale-reclaim —
+    SPEC-loom-redesign story 1 currently claims to generalize runner/lease.ts
+    too, and that claim is being retired. If you find yourself writing a second
+    stale-reclaim, stop.
   spec_checkpoint: true
 
 - id: "6"
+  title: SessionProfile resolver
+  description: >-
+    CAP-7: a typed SessionProfile {cwd, guardrails, settingSources,
+    mcpServers[], toolPolicy, requiredCapabilities, systemPromptAppendix}
+    resolved before the route body, with the PreToolUse guardrail wired outside
+    it, an intersect-only toolPolicy, and requiredCapabilities failing before
+    the stream opens. Lands additively — the existing project-session path is
+    untouched here.
+  invoke_dev_with: >-
+    This is Track B; it is not blocked by stories 1-5 and may start alongside
+    them (disjoint write sets — packages/core vs the chat route). Three
+    properties are the story, not the field list: the guardrail runs for every
+    session REGARDLESS of profile, so it is wired outside and cannot be omitted
+    by a mis-authored profile; toolPolicy is intersect-only enforced BY ITS
+    TYPE — it carries deny lists and allow-narrowing only, so no field can
+    re-enable an accept path, and "we will review for it" is not the mechanism;
+    and an unmet requiredCapability is a hard error before the stream opens,
+    matching the route's existing pre-SSE 400 for an unknown project. AD-10
+    calls making session config data the move that could turn a structural
+    invariant into a configurable one — that is what these three prevent.
+    Separate routes per session kind were already rejected: a moat enforced in
+    three places has three chances to be forgotten. Do NOT migrate the existing
+    project session here; that is story 7.
+  spec_checkpoint: true
+  done_checkpoint: true
+
+- id: "7"
+  title: Retrofit the existing session kinds onto profiles
+  description: >-
+    CAP-7 follow-on: move the live chat path onto the story 6 resolver so the
+    project session, loom-node session and steerer are profiles and no
+    session-kind conditional remains in the handler.
+  invoke_dev_with: >-
+    This is the story that touches production traffic — the ~103KB handler
+    whose conditional branches the moat currently rides on. The shape was
+    settled in story 6; resist redesigning it here. Removing a conditional is
+    only safe once the profile expresses what that conditional did: the
+    manifest.root value that feeds cwd, guardrails and settingSources today
+    maps onto the profile's first three fields, so migrate by construction
+    rather than by rewriting behavior. Verify a real session still runs on both
+    providers before calling it done.
+  done_checkpoint: true
+
+- id: "8"
   title: Executable invariant assertions
   description: >-
     CAP-6: bun test assertions for the non-negotiables — no MCP surface
     exposes an accept tool; verifier/verify-thread/critic/panel are granted no
     write or edit tools; no module reads another module's TELAR_HOME subtree by
     path; client components import no core runtime; no module writes a shared
-    runtime service's state directly.
+    runtime service's state directly; and no SessionProfile field can widen a
+    tool grant.
   invoke_dev_with: >-
-    Each assertion fails loudly with a message naming the invariant it
-    defends — someone hitting it in six months should learn why it exists from
-    the failure alone. No CI: these run in the manual trio, so they must be
-    fast enough that running them is never the reason they get skipped.
+    Placed after the profile stories deliberately so the intersect-only
+    toolPolicy property (AD-10) is assertable here rather than shipped and
+    amended one story later. Each assertion fails loudly with a message naming
+    the invariant it defends — someone hitting it in six months should learn
+    why it exists from the failure alone. No CI: these run in the manual trio,
+    so they must be fast enough that running them is never the reason they get
+    skipped.
   done_checkpoint: true
 
-- id: "7"
+- id: "9"
   title: Prove-run
   description: >-
-    The SPEC success signal: full core suite green, core AND web
-    bunx tsc --noEmit clean, and a dev run under TELAR_HOME=<temp> shown to
-    leave ~/.telar untouched — the gate before the three feature SPECs build
-    on this substrate.
+    The SPEC success signal: one scripted run under TELAR_HOME=<temp> showing
+    the substrate serving a consumer on every port — bus wake vs no-push,
+    attributed spend read back through a projection, loom-verify winning a
+    freed slot with the snapshot naming why, stale lease reclaiming to failed,
+    and an unmet requiredCapability failing pre-stream — with ~/.telar
+    untouched, plus full core suite green and core AND web tsc clean.
+  invoke_dev_with: >-
+    Each leg must demonstrate the port SERVING something, not merely that the
+    module loads — a human-facing event must be shown provably not pushing, and
+    the admission leg needs real contention (queued loom-build work) for the
+    precedence result to mean anything. This is the gate before the three
+    feature SPECs build on this substrate.
   done_checkpoint: true

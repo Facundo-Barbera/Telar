@@ -9,14 +9,20 @@
   description: >-
     CAP-11: agents declare services and never spawn them; the supervisor spawns, owns,
     probes, restarts and tears down under a per-owner lease, idempotently. Unbundles
-    run-server.ts/supervisor.ts from the verify-only path and generalizes runner/lease.ts.
+    run-server.ts/supervisor.ts from the verify-only path.
   spec_checkpoint: true
   invoke_dev_with: >-
+    PREREQUISITE: the lease primitive and the sessions tree are SPEC-runtime-foundations
+    CAP-5 (its story 5). Build the per-owner SERVICE-lease registry by composing over that
+    primitive — do NOT generalize runner/lease.ts here and do NOT create
+    TELAR_HOME/sessions/<sessionId>/. Two implementations of stale-reclaim is the path by
+    which a false done gets issued, which breaches the accept moat. If the primitive is not
+    there yet, STOP and say so.
     Implementation seeds are named in verification.md: run-server.ts (startProjectServer,
-    startLane, killTree, findFreePort), supervisor.ts, runner/lease.ts. Model the agent-facing
-    tool surface on Claude Code's typed event shape (start/progress/notification, stop-by-id),
-    not raw PTY polling. There is no per-chat-session directory under TELAR_HOME yet — close
-    that gap here, since sessions and looms share this primitive.
+    startLane, killTree, findFreePort), supervisor.ts. Model the agent-facing tool surface on
+    Claude Code's typed event shape (start/progress/notification, stop-by-id), not raw PTY
+    polling. Loom-owned service leases live under the canonical per-loom root at
+    TELAR_HOME/projects/<id>/looms/<loom-id>/services/<name>.json.
 
 - id: "2"
   title: "Foundation: MapStore, region files, ledger, methodology-as-data"
