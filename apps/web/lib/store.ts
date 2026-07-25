@@ -1,14 +1,36 @@
-// File-backed persistence in ~/.telar — chats.json (chat history) and
-// usage.ndjson (append-only usage ledger). Files remember; no database.
+// File-backed persistence under TELAR_HOME (default ~/.telar) — chats.json
+// (chat history) and usage.ndjson (append-only usage ledger). Files remember;
+// no database.
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { usageCostBySession, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
 
-const DIR = path.join(os.homedir(), ".telar");
-const CHATS = path.join(DIR, "chats.json");
-const USAGE = path.join(DIR, "usage.ndjson");
-const PLAN = path.join(DIR, "plan-usage.json");
+// The spend ledger itself lives in @telar/core (usage-ledger.ts) — it is
+// shared runtime state that belongs to no module, so its owning core service
+// is its sole writer (AD-20) and the only code that opens usage.ndjson. These
+// re-exports keep every existing caller of this module unchanged; there is one
+// implementation and one file on disk.
+export { logUsage, usageSummary } from "@telar/core";
+export type { UsageEntry, UsageWindow } from "@telar/core";
+
+// The settled TELAR_HOME expression, copied verbatim from permissions.ts:45 /
+// session-log.ts:16 (and matching core's manifest.ts telarDir()). Not a variant.
+//
+// WHY lazy, and WHY exported:
+//  - Lazy: a test (or a reconfigured process) can point TELAR_HOME elsewhere,
+//    exactly as manifest.ts, looms.ts, session-log.ts and permissions.ts do. A
+//    top-level const freezes the root at first import, so a dev server, the
+//    packaged app and the --smoke gate could not hold distinct state roots —
+//    and no second test file could ever re-pin it.
+//  - Exported: os.homedir() under Bun is resolved at process start and ignores
+//    a later process.env.HOME write, so the unset-TELAR_HOME fallback can only
+//    be asserted as a STRING, never by writing into a fake home in-process.
+//    manifest.ts exports telarDir() for the same reason.
+export const stateRoot = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+const chatsFile = () => path.join(stateRoot(), "chats.json");
+const planFile = () => path.join(stateRoot(), "plan-usage.json");
 
 export type Part =
   | { type: "text"; text: string; parentId?: string }
@@ -108,25 +130,13 @@ export type Chat = {
 // dashboard) consumes.
 export type ChatSummary = Omit<Chat, "messages"> & { preview: string };
 
-export type UsageEntry = {
-  ts: number;
-  account: string;
-  model: string;
-  sessionId: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreateTokens: number;
-  costUsd: number;
-};
-
 function ensureDir() {
-  fs.mkdirSync(DIR, { recursive: true });
+  fs.mkdirSync(stateRoot(), { recursive: true });
 }
 
 function readChats(): Chat[] {
   try {
-    return JSON.parse(fs.readFileSync(CHATS, "utf8")).chats as Chat[];
+    return JSON.parse(fs.readFileSync(chatsFile(), "utf8")).chats as Chat[];
   } catch {
     return [];
   }
@@ -134,9 +144,10 @@ function readChats(): Chat[] {
 
 function writeChats(chats: Chat[]) {
   ensureDir();
-  const tmp = CHATS + ".tmp";
+  const file = chatsFile();
+  const tmp = file + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify({ chats }, null, 2));
-  fs.renameSync(tmp, CHATS);
+  fs.renameSync(tmp, file);
 }
 
 // Last assistant text, normalized to a single line and capped — the ~100-char
@@ -171,83 +182,61 @@ export function listChats(
       if (mode === "include") return true;
       return mode === "only" ? !!c.archived : !c.archived;
     })
-    .map(({ messages, ...meta }) => ({ ...meta, preview: previewOf(messages) }))
+    // costUsd is projected over the ledger (AD-18), exactly as getChat does —
+    // the two read surfaces must not be able to disagree.
+    .map(({ messages, ...meta }) => ({
+      ...meta,
+      costUsd: sessionSpendUsd(meta.id),
+      preview: previewOf(messages),
+    }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-type TokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreateTokens: number;
-};
-
-function emptyTokenTotals(): TokenTotals {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
+// A session's spend, projected over the one ledger. Session-scoped by the
+// port: a loom's or an ultra run's lines can legitimately carry the owning
+// chat's sessionId, and they are that owner's spend, not this chat's.
+//
+// Exported because the LIVE per-turn readout has to be the same projection as
+// the persisted one (AD-18 — "three counters that can disagree" is the failure
+// it exists to prevent). The chat route reads this after appending the turn's
+// ledger line and broadcasts it on "done"; the session view sets that value
+// rather than accumulating a delta of its own.
+export function sessionSpendUsd(sessionId: string): number {
+  return usageCostBySession().get(sessionId) ?? 0;
 }
 
-// Parsed usage.ndjson, indexed by sessionId — memoized across calls and
-// invalidated by the ledger's own mtime (a fresh logUsage() append changes
-// it). Without this, every GET of any chat that predates per-turn token
-// accumulation (tokensFromUsageLog's only caller) would synchronously
-// re-read and re-parse the ENTIRE append-only ledger — one line per turn
-// across every chat/project/account ever run — on every single request.
-let usageLogCache: { mtimeMs: number; bySession: Map<string, TokenTotals> } | null = null;
-
-function usageLogBySession(): Map<string, TokenTotals> {
-  let mtimeMs: number;
-  try {
-    mtimeMs = fs.statSync(USAGE).mtimeMs;
-  } catch {
-    usageLogCache = null;
-    return new Map();
-  }
-  if (usageLogCache && usageLogCache.mtimeMs === mtimeMs) return usageLogCache.bySession;
-
-  const bySession = new Map<string, TokenTotals>();
-  let lines: string[] = [];
-  try {
-    lines = fs.readFileSync(USAGE, "utf8").split("\n").filter(Boolean);
-  } catch {
-    usageLogCache = { mtimeMs, bySession };
-    return bySession;
-  }
-  for (const line of lines) {
-    let e: UsageEntry;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
+// Per-session token totals, projected over the core usage ledger — the
+// read-time fallback for chats persisted before per-turn token accumulation
+// existed on the Chat record itself (appendTurn's `usage` accumulation is the
+// primary path; this only kicks in when a chat predates it, detected by
+// getChat via inputTokens===undefined). The parse + memoization now live in
+// the ledger's own port; this is a projection, not a second reader.
+function tokensFromUsageLog(sessionId: string) {
+  return (
+    usageTokensBySession().get(sessionId) ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
     }
-    const totals = bySession.get(e.sessionId) ?? emptyTokenTotals();
-    totals.inputTokens += e.inputTokens;
-    totals.outputTokens += e.outputTokens;
-    totals.cacheReadTokens += e.cacheReadTokens;
-    totals.cacheCreateTokens += e.cacheCreateTokens;
-    bySession.set(e.sessionId, totals);
-  }
-  usageLogCache = { mtimeMs, bySession };
-  return bySession;
-}
-
-// Sums usage.ndjson entries for one session — the read-time fallback for
-// chats persisted before per-turn token accumulation existed on Chat itself
-// (appendTurn's `usage` accumulation is the primary path; this only kicks in
-// when a chat predates it, detected by getChat via inputTokens===undefined).
-function tokensFromUsageLog(sessionId: string): TokenTotals {
-  return usageLogBySession().get(sessionId) ?? emptyTokenTotals();
+  );
 }
 
 export function getChat(id: string): Chat | undefined {
   const chat = readChats().find((c) => c.id === id);
   if (!chat) return undefined;
+  // AD-18 — a session's spend is a PROJECTION over usage.ndjson, not an
+  // independent counter. Chat.id is the SDK session id, which is what the
+  // ledger's session-owned lines are keyed by. The stored chat.costUsd is a
+  // denormalized cache that nothing reads any more (see appendTurn).
+  const projected = { ...chat, costUsd: sessionSpendUsd(chat.id) };
   // Old chats predate per-turn token accumulation (inputTokens is the
   // canary — all four fields were added together) — derive their totals
   // from the usage ledger instead of silently showing zero.
   if (chat.inputTokens === undefined) {
-    return { ...chat, ...tokensFromUsageLog(chat.id) };
+    return { ...projected, ...tokensFromUsageLog(chat.id) };
   }
-  return chat;
+  return projected;
 }
 
 export function deleteChat(id: string) {
@@ -411,6 +400,10 @@ export function appendTurn(opts: {
   } else {
     chat.messages.push(opts.userMessage, opts.assistantMessage);
   }
+  // Denormalized cache only — every read surface (getChat, listChats) now
+  // projects costUsd over usage.ndjson instead (AD-18). Kept because removing
+  // it would change the Chat type, appendTurn's contract, the gallery fixtures
+  // and the session view's seed prop; deleting it is a separate change.
   chat.costUsd += opts.costUsd;
   chat.turns += 1;
   chat.model = opts.model;
@@ -475,7 +468,7 @@ export type PlanSnapshot = {
 
 export function readPlanUsage(): Record<string, PlanSnapshot> {
   try {
-    return JSON.parse(fs.readFileSync(PLAN, "utf8"));
+    return JSON.parse(fs.readFileSync(planFile(), "utf8"));
   } catch {
     return {};
   }
@@ -485,62 +478,8 @@ export function savePlanUsage(account: string, snapshot: Partial<PlanSnapshot>) 
   ensureDir();
   const all = readPlanUsage();
   all[account] = { ...all[account], ...snapshot, capturedAt: Date.now() } as PlanSnapshot;
-  const tmp = PLAN + ".tmp";
+  const file = planFile();
+  const tmp = file + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
-  fs.renameSync(tmp, PLAN);
-}
-
-export function logUsage(entry: UsageEntry) {
-  ensureDir();
-  fs.appendFileSync(USAGE, JSON.stringify(entry) + "\n");
-}
-
-export type UsageWindow = {
-  costUsd: number;
-  inputTokens: number;
-  outputTokens: number;
-  requests: number;
-};
-
-function emptyWindow(): UsageWindow {
-  return { costUsd: 0, inputTokens: 0, outputTokens: 0, requests: 0 };
-}
-
-export function usageSummary(): {
-  session: UsageWindow; // trailing 5h — approximates the subscription window
-  weekly: UsageWindow; // trailing 7d
-  byAccount: Record<string, { session: UsageWindow; weekly: UsageWindow }>;
-} {
-  const now = Date.now();
-  const H5 = 5 * 60 * 60 * 1000;
-  const D7 = 7 * 24 * 60 * 60 * 1000;
-  const session = emptyWindow();
-  const weekly = emptyWindow();
-  const byAccount: Record<string, { session: UsageWindow; weekly: UsageWindow }> = {};
-
-  let lines: string[] = [];
-  try {
-    lines = fs.readFileSync(USAGE, "utf8").split("\n").filter(Boolean);
-  } catch {
-    // no ledger yet
-  }
-  for (const line of lines) {
-    let e: UsageEntry;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (now - e.ts > D7) continue;
-    byAccount[e.account] ??= { session: emptyWindow(), weekly: emptyWindow() };
-    const targets = [weekly, byAccount[e.account].weekly];
-    if (now - e.ts <= H5) targets.push(session, byAccount[e.account].session);
-    for (const t of targets) {
-      t.costUsd += e.costUsd;
-      t.inputTokens += e.inputTokens;
-      t.outputTokens += e.outputTokens;
-      t.requests += 1;
-    }
-  }
-  return { session, weekly, byAccount };
+  fs.renameSync(tmp, file);
 }
