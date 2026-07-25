@@ -43,9 +43,11 @@
     Full plan is conversation-component.md. Its own stated danger is this story: session-view.tsx
     mixes rendering with session lifecycle. Cut only at the render seam and resist improving
     behavior mid-extraction. The shell owns scrolling and streaming; it owns no data fetching and
-    no session semantics. Sequencing (conciliation): the ultra spec's story 2 lands its run
-    anchor and rail section on the existing session-view BEFORE this carve-out; migrating those
-    onto the shell is part of this story's scope.
+    no session semantics. Sequencing (per the 2026-07-24 architecture — supersedes the earlier
+    ultra-first conciliation note): this story IS Track C, on the critical path from day one.
+    The shell contract is frozen in spine AD-12, so downstream tracks build owner adapters
+    against demo-gallery fixtures in parallel; only their final wiring waits on this
+    migration landing.
 
 # --- The lab ---
 

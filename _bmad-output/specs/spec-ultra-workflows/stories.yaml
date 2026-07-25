@@ -14,9 +14,13 @@
   spec_checkpoint: true
   done_checkpoint: true
   invoke_dev_with: >-
-    Sequencing (conciliation): this lands on the existing session-view/subagent-rail
-    BEFORE the loom spec's Conversation shell carve-out; build against the current
-    monolith as-is — the carve-out migrates the anchor and rail section afterward.
+    Sequencing (per the 2026-07-24 architecture, Track D — supersedes the earlier
+    ultra-first conciliation note): build the anchor as item kind ultra:run-anchor
+    plus a rail section against the FROZEN Conversation shell contract (spine
+    AD-12/AD-13), proven against fixtures in the demo gallery; final wiring lands
+    after Track C's session-view migration. Never edit the shell, the chat route,
+    or session-view directly — Track D extends via registered seams only
+    (WORK-SPLIT.md).
 - id: "3"
   title: Authoring-reference skill file
   description: >-
