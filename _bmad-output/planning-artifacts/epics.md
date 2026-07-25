@@ -515,6 +515,8 @@ So that a dev run can never pollute or contend with my production state, and eve
 
 **Dispatch notes:** FR-RF-1 must land before FR-RF-2 *within this story* — building the ledger on a store that ignores `TELAR_HOME` writes dev spend into production state. `store.ts:8` is the sole outlier; five modules already resolve correctly. Either duplicate the expression as `permissions.ts:45` and `session-log.ts:16` do, or import core's `telarDir` as `vcs.ts:22` does — do not invent a third variant. Cost language (USD on Claude, tokens on Codex) belongs to the projection, never to the record.
 
+> **⚠️ AC6 crosses three tracks — discovered in execution, 2026-07-25.** The per-turn usage display lives in `apps/web/app/api/chat/route.ts` (**Track B**) and `apps/web/components/session/session-view.tsx` (**Track C**), so AC6 cannot be satisfied inside Track A's write set. This is a hole in `WORK-SPLIT`'s disjoint-write-set guarantee, not an implementation error: `FR-RF-2`'s success clause and AD-18 both name all three readouts, and neither noticed the capability spans three tracks. Phase 1 runs A, B and C **concurrently**, so this is a genuine collision risk if they are ever parallelised — it did not bite only because these were run serially. Stories 2.2 and 3.1 carry the corresponding preservation notes.
+
 ### Story 1.2: The event bus, admission control, and the lease primitive
 
 As a telar module author,
@@ -669,6 +671,8 @@ So that no session-kind conditional remains in the handler and the cleanup is re
 
 **Dispatch notes:** This is the story that touches production traffic — the ~103KB handler whose conditional branches the moat currently rides on. The shape was settled in 2.1; resist redesigning it here. Removing a conditional is only safe once the profile expresses what that conditional did. Verify a real session runs on both providers before calling this done.
 
+> **⚠️ Preserve from story 1.1.** That story edited this file out of track (see its AC6 note). The `done` SSE payload now sends `costUsd: capturedSession ? sessionSpendUsd(capturedSession) : lastResult.totalCostUsd` — **the session's ledger total, not the turn's delta**. Do not restore `lastResult.totalCostUsd` while migrating onto profiles: that silently converts the readout back into an independent counter and makes story 1.1's AC6 false again. Verify the projection still holds after the migration.
+
 ## Epic 3: Conversation Shell
 
 The chat window becomes one component with a frozen four-slot contract, so the six hand-rebuilt copies stop at six. No new surfaces and no behavior change.
@@ -711,6 +715,8 @@ So that every later conversational surface is born on it rather than hand-rebuil
 **Dev-server proof:** `bun run dev`, open `/demo-gallery` — the shell renders every registered kind against fixtures; open a real project session — identical to before the extraction.
 
 **Dispatch notes:** Full plan is `conversation-component.md`. Its own stated danger **is** this story: `session-view.tsx` mixes rendering with session lifecycle. Cut only at the render seam and resist improving behavior mid-extraction. This story IS Track C, on the critical path from day one. The shell contract is frozen in AD-12, so epics 4, 5 and 6 build owner adapters against demo-gallery fixtures in parallel; only their final wiring waits on this migration landing. `ApprovalCard` is built here as a **primitive**, not a namespaced item kind — this resolves the three-way classification conflict the readiness report flagged as UX-2, and the spine's "item kind" wording is the outlier.
+
+> **⚠️ Preserve from story 1.1.** That story edited `session-view.tsx` out of track (see its AC6 note). The `done` handler is now `setSessionCost(payload.costUsd)` — a **set, not an accumulate** — because the payload carries the session's ledger total rather than a per-turn delta. This also makes an SSE reconnect that replays `done` idempotent instead of double-counting. When carving the transcript loop into `ProjectSessionView`, carry the set semantics across; reverting to `setSessionCost((c) => c + …)` restores both the counter and the double-count bug.
 
 ## Epic 4: Ultra Finish
 
