@@ -353,10 +353,10 @@ export type InitialChat = {
   permissionMode?: ClientPermissionMode;
   messages: StoreMessage[];
   // Reload seed for the heartbeat bar — a live turn's "done" events add on
-  // top of these, but without seeding from the persisted chat record a
+  // top of the token fields (costUsd is replaced outright, see the sessionCost
+  // useState below), but without seeding from the persisted chat record a
   // reload of an existing session would show $0.00 / 0 tokens despite the
-  // store already holding the true accumulated totals (see the sessionCost
-  // useState below).
+  // store already holding the true accumulated totals.
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
@@ -1123,10 +1123,12 @@ function SessionViewInner({
   // doesn't exist on disk yet, which 404s and silently reverts. Seeded true
   // for a page load that already has an existing chat (initialChat).
   const [chatPersisted, setChatPersisted] = useState(!!initialChat);
-  // Seeded from the persisted chat record (reload) — live "done" events add
-  // on top. Without this seed, reloading an existing session would show
-  // $0.00 / 0 tokens despite the store already holding the true accumulated
-  // totals (the bug this seed fixes).
+  // Seeded from the persisted chat record (reload), which is itself a
+  // projection over usage.ndjson (store.ts getChat) — and each live "done"
+  // REPLACES this with the session's freshly projected ledger total rather
+  // than adding a delta, so the number on screen is the same fold either way.
+  // Without the seed, reloading an existing session would show $0.00 despite
+  // the ledger already holding the true total (the bug this seed fixes).
   const [sessionCost, setSessionCost] = useState(initialChat?.costUsd ?? 0);
   const [tokens, setTokens] = useState({
     input: initialChat?.inputTokens ?? 0,
@@ -1872,7 +1874,13 @@ function SessionViewInner({
                 }
                 break;
               case "done":
-                setSessionCost((c) => c + (payload.costUsd ?? 0));
+                // payload.costUsd is the SESSION'S ledger total (route.ts's
+                // "done"), not this turn's delta — so SET it. The displayed
+                // spend is a projection over usage.ndjson, never a counter
+                // this component accumulates (AD-18). Setting also makes a
+                // reconnect that replays "done" from the session log
+                // idempotent, where adding would double-count the turn.
+                if (typeof payload.costUsd === "number") setSessionCost(payload.costUsd);
                 setTokens((t) => ({
                   input: t.input + (payload.usage?.input_tokens ?? 0),
                   output: t.output + (payload.usage?.output_tokens ?? 0),
