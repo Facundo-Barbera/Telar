@@ -1,18 +1,20 @@
 // Ultra's REAL agent runner (cut U4-A, doc §3/§4). Binds the injected
 // surface's agent() call to a real SDK session.
 //
-// Doc §2/§3 are explicit that Ultra "wraps engine agent()" so it inherits
-// engine.ts's process-wide MAX_CONCURRENT=4 gate (engine.ts:89-99) "for
-// free" — that gate is module-private with no separate exported hook, ONLY
-// ever entered from inside engine.agent()'s own `acquire()/release()`
-// wrapper. So for the `schema`-present path (below) this runner calls
-// engine.agent() directly — the schema'd branch was already a near-duplicate
-// of engine.agent()'s own wiring, so delegating is strictly less code and is
-// what actually joins the shared gate, no engine.ts edit required. The fixed
-// child posture (doc §3: no per-agent permission knob, ULTRA_CHILD_TOOLS
-// only, non-interactive/fail-closed) is expressed through engine.agent()'s
-// own `tools` + `restrictTools: true` opts — nothing about the posture is
-// diluted by sharing the implementation.
+// Doc §2/§3 are explicit that Ultra "wraps engine agent()" so it inherits the
+// process-wide concurrency gate "for free". That gate is now admission.ts's
+// controller (AD-17) — one visible, configurable ceiling with per-class shares
+// — and it is still only ever entered from inside engine.agent()'s own
+// acquire/release wrapper. So for the `schema`-present path (below) this runner
+// calls engine.agent() directly — the schema'd branch was already a
+// near-duplicate of engine.agent()'s own wiring, so delegating is strictly less
+// code and is what actually joins the shared gate. Those calls declare
+// `admissionClass: "ultra"`, so they take a weighted share and, once anyone is
+// queued, cede a freed slot to an entitled verification waiter ahead of them.
+// The fixed child posture (doc §3: no per-agent permission knob,
+// ULTRA_CHILD_TOOLS only, non-interactive/fail-closed) is expressed through
+// engine.agent()'s own `tools` + `restrictTools: true` opts — nothing about the
+// posture is diluted by sharing the implementation.
 //
 // The one thing engine.agent() structurally cannot do is doc §3's OTHER
 // `agent()` contract half: `schema` absent -> no tool is forced, return the
@@ -24,8 +26,8 @@
 // call today takes the gated engine.agent() path; the schema-less loop is
 // reachable only via a script/caller that invokes this runner directly
 // without a schema — and, having no engine.agent() equivalent to delegate
-// to, it does NOT join the shared gate (same "no exported hook" reason,
-// scoped to just this one narrow, currently-unused-by-executor.ts branch).
+// to, it does NOT join the shared gate (scoped to just this one narrow,
+// currently-unused-by-executor.ts branch).
 //
 // Two doctrine-mandated differences from a loom's engine.agent() call still
 // apply on both paths:
@@ -105,14 +107,18 @@ export async function runUltraAgent(promptText: string, opts: UltraRunnerOpts): 
   if (!opts.model) throw new MissingModel(opts.label); // defense-in-depth; executor.ts already gates this
 
   // schema present -> delegate to engine.agent() itself (see file header):
-  // this is what actually joins engine.ts's module-private MAX_CONCURRENT=4
-  // gate, since that gate is only ever entered from inside engine.agent()'s
-  // own acquire()/release() wrapper. `restrictTools: true` + `tools:
+  // this is what actually joins the shared admission gate (admission.ts), since
+  // that gate is only ever entered from inside engine.agent()'s own
+  // acquire/release wrapper. `restrictTools: true` + `tools:
   // ULTRA_CHILD_TOOLS` reproduce the exact fixed child posture the loop below
   // enforces by hand — no dilution from sharing the implementation.
   if (opts.schema) {
     return engineAgent(promptText, {
       schema: opts.schema,
+      // Ultra's weighted share of the process ceiling. Precedence, not a
+      // reservation: nothing is held back for verification while Ultra runs, so
+      // a pure-Ultra workload can still borrow the whole ceiling.
+      admissionClass: "ultra",
       model: opts.model,
       ...(opts.label ? { label: opts.label } : {}),
       cwd: opts.cwd ?? process.cwd(),

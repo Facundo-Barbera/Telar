@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
 import { readSecret } from "./secrets";
+import { acquireAdmission, releaseAdmission, type AdmissionClass } from "./admission";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -32,6 +33,11 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   resume?: string; // session id — continue a previous run
   abort?: AbortController;
   settingSources?: Array<"user" | "project" | "local">; // repo .claude support
+  // Which admission class this call competes in (admission.ts). OPTIONAL —
+  // omitted means "other": the lowest-weight class with no precedence, so an
+  // untagged call can never take a freed slot ahead of verification, and
+  // adopting the controller needs no sweep of every call site.
+  admissionClass?: AdmissionClass;
   onEvent?: (e: EngineEvent) => void;
 };
 
@@ -86,17 +92,17 @@ const capToolInput = (input: unknown): unknown => {
   return capped;
 };
 
-const MAX_CONCURRENT = 4;
-let active = 0;
-const waiters: (() => void)[] = [];
-const acquire = async () => {
-  if (active >= MAX_CONCURRENT) await new Promise<void>((r) => waiters.push(r));
-  active++;
-};
-const release = () => {
-  active--;
-  waiters.shift()?.();
-};
+// Concurrency is admission-controlled (admission.ts): one visible, configurable
+// ceiling (TELAR_MAX_AGENTS, default 4) divided into classes with entitlement
+// floors and a priority order. This REPLACES the module-private
+// MAX_CONCURRENT = 4 FIFO gate that used to live here, which (a) hid the real
+// ceiling from the Charter's budget.maxAgents, (b) knew nothing about who was
+// asking, so a build fan-out could starve verification, and (c) could drift
+// above its own ceiling — a woken waiter did `active++` without re-checking, so
+// an arrival slipping in between release() and that resumption over-committed
+// the pool by one. Do NOT re-add a semaphore here: a second gate is a second
+// ceiling, and the two would disagree. Call sites opt into a class via
+// AgentOpts.admissionClass; omitted means "other".
 
 const expandHome = (p: string): string =>
   p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
@@ -134,7 +140,10 @@ export async function agent<S extends z.ZodRawShape>(
   promptText: string,
   opts: AgentOpts<S>,
 ): Promise<z.infer<z.ZodObject<S>> | null> {
-  await acquire();
+  // Resolved ONCE into a local before the try, so acquire and release can never
+  // disagree about which class's slot this call is holding.
+  const admissionClass = opts.admissionClass ?? "other";
+  await acquireAdmission(admissionClass);
   try {
     let result: z.infer<z.ZodObject<S>> | null = null;
     const out = createSdkMcpServer({
@@ -221,7 +230,7 @@ export async function agent<S extends z.ZodRawShape>(
     }
     return result; // null = never emitted — caller treats as failure, never infers success
   } finally {
-    release();
+    releaseAdmission(admissionClass);
   }
 }
 

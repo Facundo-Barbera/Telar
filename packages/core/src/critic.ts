@@ -197,6 +197,10 @@ export async function runCritic(
 
   const result = await run(criticPrompt(lens, ctx), {
     schema: CriticVerdict,
+    // Same admission class as the verifier proper: the critic is verification
+    // work, so it takes the same precedence on a freed slot (admission.ts).
+    // Precedence, not a reservation — nothing is held open for it.
+    admissionClass: "loom-verify",
     tools: VERIFIER_TOOLS,
     restrictTools: true,
     disallowedTools: ["Write", "Edit", "MultiEdit", "Bash", "NotebookEdit", "Agent"],

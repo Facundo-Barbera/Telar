@@ -1,9 +1,10 @@
 // Ultra executor core (doc §3 / §7-U1/U2/U3/U4). Compiles a script
 // (sandbox.ts), builds the frozen injected surface, and runs the default
 // export as an in-process detached task. Owns the runaway brakes: a run-local
-// concurrency semaphore (cap 3, SEPARATE from the engine's shared
-// MAX_CONCURRENT=4 gate which every schema'd agent() call joins by way of the
-// real runner delegating to engine.agent() — see runner.ts's header), a
+// concurrency semaphore (cap 3, SEPARATE from the process-wide admission gate
+// — admission.ts, TELAR_MAX_AGENTS, default 4 — which every schema'd agent()
+// call joins by way of the real runner delegating to engine.agent(), see
+// runner.ts's header), a
 // 1000-agent lifetime backstop, and one AbortController shared into every
 // agent() call. Journal + ordinal resume (cut U2): every LIVE agent() call
 // appends a journal record keyed by its issue-time ordinal; a re-run of the
@@ -32,7 +33,10 @@ import { runUltraAgent, type EngineAgentFn, type UltraRunnerOpts } from "./runne
 
 // Per-run in-flight cap: no single run holds more than 3 agent() calls at once,
 // so a burst of 100 parallel thunks can never starve sibling runs / looms
-// (doc §3). Distinct from engine.ts:89's process-wide ceiling of 4.
+// (doc §3). A run-local fan-out limit STACKED ON TOP of the process-wide
+// admission ceiling (admission.ts), not a competitor to it and never to be
+// folded into it: this one bounds one run's share of the fleet, that one bounds
+// the whole process.
 export const RUN_CONCURRENCY = 3;
 // Lifetime backstop: an unbounded loop can't spawn forever (doc §3).
 export const LIFETIME_BACKSTOP = 1000;
@@ -40,7 +44,7 @@ export const LIFETIME_BACKSTOP = 1000;
 // attempts (the first try plus one retry) before an unparseable/never-emitted
 // result settles to `null` — an ordinary dead agent, never a control signal.
 // One loop for both providers: engine.agent()'s own contract is already "no
-// emit = null" (engine.ts:222); this adds the shape check on top so a
+// emit = null" (engine.ts's `agent`); this adds the shape check on top so a
 // wrong-shaped emit is treated identically to a never-emitted one.
 export const VALIDATE_RETRY_K = 2;
 
@@ -54,8 +58,9 @@ export const VALIDATE_RETRY_K = 2;
 // changing this executor-level default is out of scope for U4.
 const PASSTHROUGH_SCHEMA = z.object({ text: z.string() });
 
-// A minimal counting semaphore (same acquire/waiters idiom as engine.ts:92, but
-// run-local so it never touches the process-wide gate).
+// A minimal counting semaphore — the acquire/waiters idiom engine.ts used to
+// carry inline, kept run-local here so it never touches the process-wide gate.
+// (engine.ts no longer holds one at all: its ceiling moved to admission.ts.)
 class Semaphore {
   private inFlight = 0;
   private readonly waiters: Array<() => void> = [];
@@ -329,8 +334,8 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     // held across a retry) so a retry contends for a fresh slot like any other
     // call — a schema'd call (the only kind this executor ever issues, via
     // PASSTHROUGH_SCHEMA above) is routed by the real runner (runner.ts)
-    // through engine.agent() itself, which self-acquires the shared
-    // MAX_CONCURRENT=4 gate (engine.ts:89) on top of this run-local cap.
+    // through engine.agent() itself, which self-acquires the shared admission
+    // slot (admission.ts, class "ultra") on top of this run-local cap.
     const runOnce = async (p: string): Promise<unknown> => {
       await ctl.sem.acquire();
       try {
@@ -395,7 +400,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     return result;
   };
 
-  // Our OWN parallel — engine.parallel (engine.ts:228) swallows AbortError /
+  // Our OWN parallel — engine.ts's `parallel` swallows AbortError /
   // MissingModel to null; here the control-signal carve-out re-throws them so a
   // Stop / model-contract breach / backstop terminates the run past the barrier.
   const parallelFn = <T>(thunks: Array<() => Promise<T>>): Promise<(T | null)[]> =>

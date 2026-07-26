@@ -21,6 +21,11 @@ export type BudgetState = {
 // M9.2 step-wave clamp / CF1 in executor.ts, dispatcher.ts's rootRepairBudget)
 // reference this instead of re-deriving the literal 12. Kept in sync with the
 // Zod default by the cross-reference comment at schemas.ts:367.
+//
+// This is a PER-LOOM clamp, NOT a process ceiling. The real process-wide limit
+// on concurrent agent() calls is admission.ts's (TELAR_MAX_AGENTS, default 4),
+// so a charter asking for 12 does not get 12 in flight. Pass `processCeiling`
+// to fanoutClamp when the caller wants the clamp to say so.
 export const DEFAULT_MAX_AGENTS = 12;
 
 export function budgetLeftUsd(b: BudgetState): number {
@@ -34,34 +39,57 @@ export type FanoutClamp = {
   pieces: number; // max(1, independentPieces) — the demand side
   capByPool: number; // maxAgents - inFlight
   capByBudget: number; // floor(budgetLeftUsd / estCostPerAgent), or Infinity when uncapped
+  // The process-wide admission ceiling (admission.ts), or Infinity when the
+  // caller does not supply one. Without this term a Charter promising
+  // maxAgents: 12 reports a fan-out of 12 while the process admits far fewer —
+  // the scheduler's own rationale then misstates what will actually run.
+  capByProcess: number;
   chosen: number; // the final n actually returned
-  binding: "pieces" | "pool" | "budget" | "pool-exhausted"; // the term that set `chosen`
+  binding: "pieces" | "pool" | "budget" | "process" | "pool-exhausted"; // the term that set `chosen`
 };
 
-// agents(phase) = clamp(independentPieces, 1, min(maxAgents - inFlight, floor(budgetLeftUsd / estCostPerAgent)))
+export type FanoutArgs = {
+  maxAgents: number;
+  inFlight: number;
+  budgetLeftUsd: number;
+  estCostPerAgent: number;
+  // OPTIONAL so every existing call site keeps byte-identical behavior
+  // (NFR-RF-9); pass admissionCeiling() to make the clamp reflect what the
+  // process will actually admit.
+  processCeiling?: number;
+};
+
+// agents(phase) = clamp(independentPieces, 1, min(maxAgents - inFlight, floor(budgetLeftUsd / estCostPerAgent), processCeiling))
 // — except the pool being full (capByPool <= 0) forces 0: no room to start anything.
-export function fanoutClamp(
-  independentPieces: number,
-  args: { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number },
-): FanoutClamp {
+export function fanoutClamp(independentPieces: number, args: FanoutArgs): FanoutClamp {
   const pieces = Math.max(1, independentPieces);
   const capByPool = args.maxAgents - args.inFlight;
   const capByBudget =
     args.estCostPerAgent > 0 && isFinite(args.budgetLeftUsd)
       ? Math.floor(args.budgetLeftUsd / args.estCostPerAgent)
       : Infinity;
-  const cap = Math.min(capByPool, capByBudget);
-  if (cap <= 0) return { pieces, capByPool, capByBudget, chosen: 0, binding: "pool-exhausted" };
+  const capByProcess = args.processCeiling ?? Infinity;
+  const cap = Math.min(capByPool, capByBudget, capByProcess);
+  if (cap <= 0)
+    return { pieces, capByPool, capByBudget, capByProcess, chosen: 0, binding: "pool-exhausted" };
   const chosen = Math.min(pieces, cap);
-  // Demand (pieces) binds when it fits under both caps; otherwise the smaller cap.
-  const binding = chosen === pieces ? "pieces" : capByPool <= capByBudget ? "pool" : "budget";
-  return { pieces, capByPool, capByBudget, chosen, binding };
+  // Demand (pieces) binds when it fits under every cap; otherwise the smallest
+  // cap, tie-broken pool -> budget -> process. That order is load-bearing: with
+  // no processCeiling supplied capByProcess is Infinity and can never be the
+  // min, so a call site that passes nothing reports exactly what it reported
+  // before this term existed.
+  const binding =
+    chosen === pieces
+      ? "pieces"
+      : capByPool === cap
+        ? "pool"
+        : capByBudget === cap
+          ? "budget"
+          : "process";
+  return { pieces, capByPool, capByBudget, capByProcess, chosen, binding };
 }
 
-export function fanoutSize(
-  independentPieces: number,
-  args: { maxAgents: number; inFlight: number; budgetLeftUsd: number; estCostPerAgent: number },
-): number {
+export function fanoutSize(independentPieces: number, args: FanoutArgs): number {
   return fanoutClamp(independentPieces, args).chosen;
 }
 

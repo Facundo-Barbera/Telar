@@ -236,6 +236,11 @@ Save EVERY screenshot with an ABSOLUTE path under ${opts.evidenceDir} (e.g. ${op
 
   return agent(task, {
     schema: VerifierReport,
+    // Admission PRECEDENCE, not a held-open slot (admission.ts): a freed slot
+    // goes to entitled waiters in class-priority order, and loom-verify leads.
+    // So a verdict waits at most one in-flight call — never a whole build
+    // fan-out. Nothing is reserved; nothing sits idle.
+    admissionClass: "loom-verify",
     tools: VERIFIER_TOOLS,
     restrictTools: true, // hard wall: only VERIFIER_TOOLS' built-ins load (no Agent/Write/…)
     // Defense-in-depth denylist (redundant with restrictTools, kept for clarity

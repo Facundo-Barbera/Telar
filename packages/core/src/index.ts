@@ -6,6 +6,17 @@ export * from "./mcp-oauth";
 export * from "./accounts";
 export * from "./login";
 export * from "./engine";
+// AD-17 — the one admission controller for agent() concurrency: the single
+// visible process ceiling (TELAR_MAX_AGENTS) and its per-class shares. Exported
+// so a surface can render admissionSnapshot() instead of guessing why a fan-out
+// is queued; the package exports only ".", so the barrel is this port's only
+// route to apps/web.
+export * from "./admission";
+// AD-14/AD-21 — the one typed, in-process event bus. Every event carries a
+// delivery class as a REQUIRED field, and a published name is part of its
+// module's port contract: undeclared events are internal and nobody may
+// subscribe to them.
+export * from "./event-bus";
 export * from "./manifest";
 // AD-18/AD-20 — the one append-only spend ledger and its sole writer. The
 // package exports only ".", so the barrel is this port's only route to apps/web.
@@ -67,6 +78,11 @@ export * from "./runner/runner-json";
 export * from "./runner/lease";
 export * from "./runner/liveness";
 export * from "./runner/recover";
+// AD-5/AD-16 — the session subtree (<TELAR_HOME>/sessions/<id>/) and the
+// SESSION lifetime of the one lease primitive. Runtime state only: it does not
+// absorb chats.json, and it composes over runner/lease.ts rather than
+// reimplementing it.
+export * from "./sessions";
 export * from "./setup/setup-agent";
 // Ultra — deterministic script harness (docs/plans/ultra-harness.md). Additive.
 export * from "./ultra";
