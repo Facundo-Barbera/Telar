@@ -56,14 +56,14 @@ development_status:
   epic-1-retrospective: optional
 
   # Epic 2: Session Profiles
-  epic-2: in-progress
+  epic-2: done
   2-1-the-sessionprofile-resolver: done
-  2-2-retrofit-the-existing-session-kinds-onto-profiles: review
+  2-2-retrofit-the-existing-session-kinds-onto-profiles: done
   epic-2-retrospective: optional
 
   # Epic 3: Conversation Shell
-  epic-3: backlog
-  3-1-carve-out-the-conversation-shell-and-its-primitives: backlog
+  epic-3: in-progress
+  3-1-carve-out-the-conversation-shell-and-its-primitives: review
   epic-3-retrospective: optional
 
   # Epic 4: Ultra Finish

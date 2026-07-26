@@ -1,30 +1,61 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import Link from "next/link";
 import {
   ArrowLeftIcon,
   BellIcon,
   BotIcon,
   CheckIcon,
-  ChevronRightIcon,
   ExternalLinkIcon,
   PencilIcon,
   PictureInPicture2Icon,
-  ShieldAlertIcon,
   TriangleAlertIcon,
   UserRoundIcon,
   WorkflowIcon,
   XIcon,
 } from "lucide-react";
+// THE CONVERSATION SHELL AND ITS PRIMITIVES, through the ONE import path
+// (AD-12 / story 3.1 AC1). After the carve-out this file is the shell's first
+// OWNER ADAPTER: it keeps the route, the state and the whole API surface — every
+// request, both event streams, applyServerEvent, send — and hands the shell a
+// PROJECTION of `messages` plus the callbacks its item payloads need. The render
+// seam, and only the render seam, moved out.
 import {
+  BUILTIN_KINDS,
+  CONVERSATION_KINDS,
   Conversation,
-  ConversationContent,
   ConversationEmptyState,
-  ConversationScrollButton,
-} from "@/components/ai-elements/conversation";
-import { StatusDot, type AgentTab } from "@/components/session/agent-tabs";
+  Message,
+  MessageContent,
+  MessageResponse,
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputProvider,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+  Shimmer,
+  agentLabel,
+  agentStatus,
+  createItemKindRegistry,
+  groupParts,
+  isAsyncLaunchAck,
+  isTrailingItem,
+  parentOf,
+  toTranscriptItems,
+  usePromptInputController,
+  type AgentBucket,
+  type ChatMessage,
+  type ItemKind,
+  type PermissionPart,
+  type PromptInputMessage,
+  type StoreMessage,
+  type TranscriptItem,
+  type TurnPayload,
+} from "@/components/conversation";
 import {
   SubagentRail,
   SubagentBanner,
@@ -39,29 +70,7 @@ import {
 } from "@/components/session/session-loom";
 import { CostPill, ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
-import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputFooter,
-  PromptInputProvider,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-  usePromptInputController,
-  type PromptInputMessage,
-} from "@/components/ai-elements/prompt-input";
-import { Shimmer } from "@/components/ai-elements/shimmer";
-import {
-  ToolStepRow,
-  stepPreview,
-  type AgentInfo,
-  type ToolPart,
-} from "@/components/session/tool-step";
+import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
 import { WorkingIndicator, type WorkState } from "@/components/session/working-indicator";
 import { ComposerSettings } from "@/components/session/composer-settings";
 import { PageHeader } from "@/components/common/page-header";
@@ -174,77 +183,24 @@ const PLANNER_GREETING =
 // render), identical to the in-flight empty-assistant render, so the pre-fire →
 // streaming transition is seamless.
 
-// AgentInfo / ToolPart now live in components/session/tool-step.tsx (shared
-// with the loom agent-view transcript); imported above.
-
-// The transcript shape the store persists (see lib/store.ts). Text parts stream
-// with a `done` flag on the client; persisted parts are always finished. Tool
-// parts carry id/input/output/isError as optional so every old persisted chat
-// (name-only tool parts) still loads without a migration. `parentId`/`agent`
-// are newer still and equally optional for the same reason: an old chat's
-// parts simply lack them, which reads as "main thread, not a spawn" — exactly
-// the right default.
-type StorePart =
-  | { type: "text"; text: string; parentId?: string }
-  | {
-      type: "tool";
-      name: string;
-      id?: string;
-      input?: Record<string, unknown>;
-      output?: string;
-      isError?: boolean;
-      interrupted?: boolean;
-      parentId?: string;
-      agent?: AgentInfo;
-      taskStatus?: "completed" | "failed" | "stopped";
-      // Set when auto/acceptEdits mode hard-blocked this call without an
-      // interactive prompt (route.ts's "permission_denied" handling).
-      autoDenied?: boolean;
-    };
-type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
-
-// Permission cards are live-stream-only artifacts (resolved by "permission_result"
-// or the server's 120s timeout deny) — they never round-trip through the store,
-// so StorePart above stays exactly as persisted. They also never carry a
-// parentId: canUseTool gets no parent attribution from the SDK, so every
-// permission card — regardless of which subagent's tool call triggered it —
-// renders on the Main thread (a documented v1 limitation, not a bug).
+// THE TRANSCRIPT'S TYPES AND ITS PROJECTION MOVED OUT (story 3.1's carve-out).
+// `StorePart`, `StoreMessage`, `Part`, `ChatMessage`, `PermissionPart`,
+// `parentOf`, `AgentBucket`, `agentLabel`, `agentStatus`, `isAsyncLaunchAck`,
+// `RenderItem` and `groupParts` now live in components/conversation/items.ts —
+// verbatim, comments and all — and are imported above through the barrel. They
+// left because they describe a TRANSCRIPT, not a session: every one of them is
+// needed by surfaces that have no route, no stream and no API of their own.
 //
-// "thinking" parts are the same kind of live-only artifact: the server emits
-// "thinking"/"thinking_delta" purely as SSE (see route.ts's stream_event
-// handling), never persisting narration text into a store Part, so there's
-// nothing to seed on reload — a thinking block only ever exists while its
-// turn is actually streaming.
-type Part =
-  | { type: "text"; text: string; done: boolean; parentId?: string }
-  | { type: "thinking"; text: string; done: boolean; parentId?: string }
-  | ToolPart
-  | {
-      type: "permission";
-      id: string;
-      toolName: string;
-      input: Record<string, unknown>;
-      rule: string;
-      // Narrow -> broad rule choices offered for this call (ruleOptionsFor,
-      // server-side) — the user, not a heuristic, picks how wide an "Always
-      // allow" persists. `rule` above is always one of these (the default,
-      // prefix, option).
-      ruleOptions: Array<{ rule: string; label: string }>;
-      status: "pending" | "allowed" | "denied";
-    };
-type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };
+// `Status` stayed. It is this adapter's own turn state machine (it drives
+// `send`, the composer's submit button and the queue-drain gates) and means
+// nothing at all to a transcript.
 type Status = "ready" | "submitted" | "streaming" | "error";
 
-// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface) uses
-// this shape directly. Type-only export, zero logic change.
-export type PermissionPart = Extract<Part, { type: "permission" }>;
-
-// A part's parentId, normalized to `undefined` for the main thread (permission
-// parts don't have the field at all — they're always main). Centralizing this
-// lookup means every routing decision (grouping, streaming merge, bucketing)
-// agrees on what "main thread" means.
-const parentOf = (p: Part): string | undefined =>
-  p.type === "permission" ? undefined : p.parentId;
+// RE-EXPORTED, NOT REDECLARED. apps/web/lib/gallery-fixtures/showcase.ts imports
+// this type from THIS module, and lib/gallery-fixtures/** sits outside story
+// 3.1's write set — so the name has to keep resolving here. It is the same
+// symbol either way: one declaration, in items.ts.
+export type { PermissionPart };
 
 // A tilde estimate (chars/4, the usual rough token heuristic) of the transcript
 // actually re-sent as the next turn's prompt — real message + tool text, so the
@@ -262,79 +218,6 @@ function estimateTranscriptTokens(messages: ChatMessage[]): number {
     }
   }
   return Math.round(chars / 4);
-}
-
-// One spawned subagent's own transcript, reconstructed identically whether
-// it's arriving live (SSE events tagged with `parent`) or reconstructed from
-// persisted parts (tagged with `parentId`) — see agentBuckets below. `spawn`
-// is the enriched tool part itself (id, agent info, and — once the subagent
-// finishes — its output/isError), `parts` is everything that part spawned.
-type AgentBucket = { id: string; spawn: ToolPart; parts: Part[] };
-
-// Label priority per spec: an explicit run name, else a clipped slice of the
-// free-form description, else the agent type, else a generic fallback. The
-// description comes before the type because the type is shared across every
-// spawn of the same subagent — several concurrent "general-purpose" spawns
-// would otherwise all render the identical, useless tab label — while the
-// description is supplied fresh per spawn and is what actually distinguishes
-// them. Array.from/codePoints mirrors stepPreview's astral-safe slicing.
-function agentLabel(agent: AgentInfo): string {
-  if (agent.name) return agent.name;
-  const description = agent.description.trim();
-  if (description) {
-    const codePoints = Array.from(description);
-    return codePoints.length > 24 ? `${codePoints.slice(0, 24).join("")}…` : codePoints.join("");
-  }
-  if (agent.type) return agent.type;
-  return "subagent";
-}
-
-function agentStatus(spawn: ToolPart): AgentTab["status"] {
-  // taskStatus (from the SDK's task_notification, route.ts) is the
-  // authoritative completion signal for a backgrounded subagent and takes
-  // priority when present. Subagents run in the background by default, so
-  // spawn.output/isError below reflect only the near-instant "launched" ack
-  // — NOT the subagent's real result — and would otherwise flip this tab to
-  // "done" while the subagent is still actually working. Absent taskStatus
-  // (a synchronous subagent, or an SDK build that never sends it) falls
-  // through to the old output-based read.
-  if (spawn.taskStatus) {
-    return spawn.taskStatus === "completed" ? "done" : "error";
-  }
-  if (spawn.output === undefined) {
-    // A spawn that never got its tool_result because the whole turn ended
-    // abnormally (Stop clicked, mid-turn error, dropped connection — see
-    // route.ts's teardown) is not "still running": the turn is over, and
-    // `running`'s shimmer would otherwise animate forever for a dead tab.
-    // AgentTab's status vocabulary is only three states (spec), so this
-    // folds into the destructive tint rather than adding a fourth.
-    return spawn.interrupted ? "error" : "running";
-  }
-  // A background spawn's near-instant tool_result is only the launch ack
-  // (isAsyncLaunchAck below) — the subagent is still working until its
-  // task_notification sets taskStatus. Without this, every background spawn
-  // reads "done" seconds after launch. `interrupted` keeps a Stopped turn's
-  // acked-but-unfinished spawn out of the forever-shimmer case.
-  if (isAsyncLaunchAck(spawn.output)) {
-    return spawn.interrupted ? "error" : "running";
-  }
-  return spawn.isError ? "error" : "done";
-}
-
-// Newer Claude Code builds run subagents asynchronously: the spawn tool
-// call's tool_result lands almost instantly and is just an internal launch
-// acknowledgement ("Async agent launched successfully", plus bookkeeping —
-// agentId/output_file/"Do NOT Read or tail" — meant for the orchestrating
-// agent, not a human). It is NOT the subagent's real result. The subagent's
-// actual output already streams into its own tab as ordinary assistant
-// messages (bucket.parts), so rendering this ack text in the "Result" block
-// would just leak Claude's internal plumbing into the UI. Matched on the
-// literal launch phrase, or (in case wording drifts) the "internal
-// metadata" + "agentId" combination that's specific to this ack and not
-// something a genuine subagent result would ever contain together.
-function isAsyncLaunchAck(text: string): boolean {
-  if (text.includes("Async agent launched successfully")) return true;
-  return text.includes("internal metadata") && text.includes("agentId");
 }
 
 type ProjectCommand = {
@@ -440,191 +323,12 @@ const PERMISSION_MODE_OPTIONS: Array<{
   },
 ];
 
-// Best-effort salient preview of a tool call's input: the path/command a human
-// actually cares about, or a capped JSON dump for anything else.
-function permissionPreview(input: Record<string, unknown>): string {
-  if (typeof input.file_path === "string") return input.file_path;
-  if (typeof input.command === "string") return input.command;
-  const json = JSON.stringify(input);
-  return json.length > 200 ? `${json.slice(0, 200)}…` : json;
-}
-
-// Exported: apps/web/lib/gallery-fixtures (kept dev design-review surface)
-// renders this in isolation. Zero logic/JSX change.
-export function PermissionCard({
-  part,
-  onRespond,
-}: {
-  part: Extract<Part, { type: "permission" }>;
-  onRespond: (id: string, behavior: "allow" | "deny", always: boolean, rule?: string) => void;
-}) {
-  // The user picks how broad an "Always allow" is — never a heuristic. Plain
-  // click on "Always allow" uses the default (prefix) option, `part.rule`;
-  // the caret reveals the other offered options (narrower exact match, and
-  // — unless the command is dangerous — a broader command-wide rule) as a
-  // tiny inline list, not a new overlay/select (no programmatic .focus()
-  // anywhere here — WebKit 26.x).
-  const [showOptions, setShowOptions] = useState(false);
-  const otherOptions = part.ruleOptions.filter((o) => o.rule !== part.rule);
-
-  return (
-    <div className="flex w-full flex-col gap-2 rounded-lg border bg-muted/40 p-3 text-xs">
-      <div className="flex items-center gap-1.5 font-medium">
-        <ShieldAlertIcon className="size-3.5 text-muted-foreground" />
-        {part.toolName}
-      </div>
-      <div className="overflow-x-auto rounded-md bg-background/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-        <span className="whitespace-pre-wrap break-all">
-          {permissionPreview(part.input)}
-        </span>
-      </div>
-      <div className="text-[10px] text-muted-foreground">
-        rule <span className="font-mono text-foreground/80">{part.rule}</span>
-      </div>
-      {part.status === "pending" ? (
-        <div className="flex flex-col gap-1.5 pt-0.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Button
-              type="button"
-              size="xs"
-              variant="outline"
-              onClick={() => onRespond(part.id, "allow", false)}
-            >
-              Allow once
-            </Button>
-            <div className="flex items-stretch overflow-hidden rounded-md border">
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                className="h-auto flex-col items-start gap-0 rounded-none border-0 py-1"
-                onClick={() => onRespond(part.id, "allow", true)}
-              >
-                <span>Always allow</span>
-                <span className="font-mono text-[9px] font-normal text-muted-foreground">
-                  {part.rule}
-                </span>
-              </Button>
-              {otherOptions.length > 0 && (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="outline"
-                  className="rounded-none border-0 border-l px-1"
-                  aria-label={showOptions ? "Hide other rule choices" : "More rule choices"}
-                  onClick={() => setShowOptions((s) => !s)}
-                >
-                  <ChevronRightIcon
-                    className={cn("size-3 transition-transform", showOptions && "rotate-90")}
-                  />
-                </Button>
-              )}
-            </div>
-            <Button
-              type="button"
-              size="xs"
-              variant="destructive"
-              onClick={() => onRespond(part.id, "deny", false)}
-            >
-              Deny
-            </Button>
-          </div>
-          {showOptions && otherOptions.length > 0 && (
-            <div className="flex flex-col gap-1 rounded-md border bg-background/40 p-1.5">
-              {otherOptions.map((o) => (
-                <Button
-                  key={o.rule}
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  className="h-auto w-fit flex-col items-start gap-0 px-1.5 py-1"
-                  onClick={() => onRespond(part.id, "allow", true, o.rule)}
-                >
-                  <span>{o.label}</span>
-                  <span className="font-mono text-[9px] font-normal text-muted-foreground">
-                    {o.rule}
-                  </span>
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <Badge
-          variant={part.status === "allowed" ? "secondary" : "destructive"}
-          className="w-fit text-[10px]"
-        >
-          {part.status === "allowed" ? "Allowed" : "Denied"}
-        </Badge>
-      )}
-    </div>
-  );
-}
-
-// Interleaved narration, rendered live-only (see the Part union comment —
-// there's no persisted counterpart). While the block is still streaming
-// (`!part.done`) it's a growing muted italic block, matching the shimmer's
-// "something is happening" register without competing with real answer
-// text. Once the block ends it collapses to a single "✻ Thought" row,
-// click to expand — same disclosure idiom as ToolStepRow, just without a
-// chevron rotate on the live (never-collapsed) state. No fade-from-zero
-// keyframes anywhere here (WebKit 26.x) — only a transform transition on
-// the chevron, same as every other expand/collapse row in this file.
-function ThinkingRow({
-  part,
-  open,
-  onToggle,
-}: {
-  part: Extract<Part, { type: "thinking" }>;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  // Suppression rule (1.3): whitespace-only content renders NOTHING, so an empty
-  // "✻ Thought" collapsible is structurally impossible — this is the durable fix
-  // for the reload case where the server persists no thinking text.
-  if (!part.text.trim()) return null;
-
-  if (!part.done) {
-    // Live stream: a growing muted italic block with a ✻ + shimmering "Thinking"
-    // header and a blinking caret — the "something is happening" register.
-    return (
-      <div className="rounded-md border border-dashed bg-muted/10 px-2.5 py-2">
-        <div className="mb-1 flex items-center gap-1.5">
-          <span aria-hidden className="text-xs">
-            ✻
-          </span>
-          <Shimmer as="span" className="text-[11px] font-medium">
-            Thinking
-          </Shimmer>
-        </div>
-        <p className="text-xs italic leading-relaxed whitespace-pre-wrap text-muted-foreground">
-          {part.text}
-          <span className="ml-0.5 inline-block h-3 w-[2px] translate-y-0.5 animate-pulse bg-muted-foreground/70 align-middle" />
-        </p>
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-md">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-muted/60"
-      >
-        <span aria-hidden className="shrink-0">✻</span>
-        <span className="min-w-0 flex-1 truncate italic">Thought</span>
-        <ChevronRightIcon
-          className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")}
-        />
-      </button>
-      {open && (
-        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/10 p-2 text-[11px] whitespace-pre-wrap italic text-muted-foreground">
-          {part.text}
-        </p>
-      )}
-    </div>
-  );
-}
+// `permissionPreview` and `ThinkingRow` moved to components/conversation/kinds.tsx,
+// and `PermissionCard` became the `ApprovalCard` PRIMITIVE there — merged with the
+// gate card's mono-uppercase header so one component serves every moment a human
+// is asked to approve something (UX-DR7, and the resolution of readiness finding
+// UX-2). The exported component had zero importers, measured, so nothing outside
+// this file had to change. All three now render through the item-kind registry.
 
 // One queued message chip (1.5): a compact editable/removable row above the
 // composer. Click the text (or the pencil) to edit in place; Enter/blur commits,
@@ -705,195 +409,184 @@ function QueueChip({
   );
 }
 
-// One rendered chunk of an assistant message's parts: standalone text,
-// standalone permission card (always interactive, so it always breaks a
-// tool-step group), or a run of consecutive tool parts collapsed into one
-// group. Keys are stable across re-renders — the group key doubles as the
-// identity used to remember a user's manual expand/collapse override.
-type RenderItem =
-  | { kind: "text"; key: string; part: Extract<Part, { type: "text" }> }
-  | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
-  | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
-  | { kind: "tools"; key: string; parts: ToolPart[] };
+// `RenderItem` / `groupParts` moved to components/conversation/items.ts;
+// `AgentStepRow` and `ToolStepGroup` moved to components/conversation/kinds.tsx as
+// the tools kind's rendering. `ToolStepGroup` still takes `agentSteps`/`onSelectAgent`
+// as optional props — they now arrive through the tools item's PAYLOAD, built by this
+// adapter, rather than being read from anywhere ambient.
 
-function groupParts(messageId: string, parts: Part[]): RenderItem[] {
-  const items: RenderItem[] = [];
-  parts.forEach((part, idx) => {
-    if (part.type === "tool") {
-      const last = items[items.length - 1];
-      if (last?.kind === "tools") {
-        last.parts.push(part);
-      } else {
-        // A tool_use id is unique for the life of the id, but old persisted
-        // parts predate the id field — fall back to a message-scoped index,
-        // stable because parts only ever get appended to, never reordered.
-        items.push({ kind: "tools", key: part.id ?? `${messageId}:${idx}`, parts: [part] });
-      }
-    } else if (part.type === "text") {
-      items.push({ kind: "text", key: `${messageId}:${idx}`, part });
-    } else if (part.type === "thinking") {
-      items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
-    } else {
-      items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
-    }
-  });
-  return items;
-}
+// ── the item-kind registry this adapter composes ────────────────────────────
+// The six built-ins plus exactly ONE kind of its own. `session` is a declared
+// module in MODULE_NAMESPACES (AD-13) and this is what that vocabulary is for:
+// an owner adapter registering a kind nothing else needs, under a namespace that
+// cannot collide with `ultra:`, `loom:` or `workspace:`.
+//
+// WHY THE SUBAGENT BUCKET IS A COMPOSITE KIND AND NOT A FLAT LIST OF ITEMS. A
+// bucket's items are not direct children of the transcript's scroll column: they
+// sit inside their own `gap-3 text-sm` reading column, with the bucket's header
+// above them and the spawn's result panel below, while the scroll column itself
+// spaces its children `gap-8`. Emitting them flat would silently re-space and
+// re-size every subagent transcript in the app, and — with no DOM harness in
+// this repo — nothing would catch it until a human opened the dev server.
+// Rendering the children through `view.render` keeps that wrapper byte-identical
+// AND keeps the bucket on the SAME registry Main uses, which is the point:
+// `renderAgentBucket`'s inline switch, whose own comment admitted it "mirrors
+// Main's exhaustive RenderItem switch exactly", is gone.
+type AgentBucketPayload = {
+  banner: ReactNode;
+  header: ReactNode;
+  empty: ReactNode;
+  result: ReactNode;
+  items: readonly TranscriptItem[];
+};
 
-// A spawn step's row inside the main thread's B.3 groups — an "agent chip"
-// rather than a generic tool row. Clicking it only switches the active tab
-// (state, not focus/scroll): the raw input/output detail a normal tool row
-// would expand inline lives in the subagent's own tab instead, so there's
-// nothing to expand here.
-function AgentStepRow({
-  part,
-  stepCount,
-  onSelect,
-}: {
-  part: ToolPart & { agent: AgentInfo };
-  stepCount: number;
-  onSelect: () => void;
-}) {
-  const status = agentStatus(part);
-  const label = agentLabel(part.agent);
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/60",
-        status === "error" && "bg-destructive/10",
-      )}
-    >
-      <BotIcon
-        className={cn("size-3.5 shrink-0", status === "error" ? "text-destructive" : "text-muted-foreground")}
-      />
-      {status === "running" ? (
-        <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-          {label}
-        </Shimmer>
-      ) : (
-        <span className={cn("min-w-0 flex-1 truncate font-medium", status === "error" && "text-destructive")}>
-          {label}
-        </span>
-      )}
-      <span className="shrink-0 text-[10px] text-muted-foreground">
-        {stepCount} step{stepCount === 1 ? "" : "s"}
-      </span>
-      <StatusDot status={status} />
-      <ChevronRightIcon className="ml-0.5 size-3 shrink-0 text-muted-foreground" />
-    </button>
-  );
-}
+const SESSION_AGENT_BUCKET = "session:agent-bucket";
 
-// The group header: step count + compact tool tally, e.g.
-// "16 steps · Bash ×12 · Read ×2 · Glob ×2" — order follows first appearance.
-// `agentSteps`/`onSelectAgent` are only ever passed for main-thread groups —
-// a subagent's own tab renders its nested tool calls with plain ToolStepRows,
-// since v1 doesn't track sub-subagents (see AgentBucket).
-function ToolStepGroup({
-  toolParts,
-  open,
-  onToggle,
-  live,
-  rowOpen,
-  onToggleRow,
-  agentSteps,
-  onSelectAgent,
-}: {
-  toolParts: ToolPart[];
-  open: boolean;
-  onToggle: () => void;
-  live: boolean;
-  rowOpen: (key: string) => boolean;
-  onToggleRow: (key: string) => void;
-  agentSteps?: (id: string) => number;
-  onSelectAgent?: (id: string) => void;
-}) {
-  const tally: Array<[string, number]> = [];
-  const indexByName = new Map<string, number>();
-  for (const p of toolParts) {
-    const i = indexByName.get(p.name);
-    if (i === undefined) {
-      indexByName.set(p.name, tally.length);
-      tally.push([p.name, 1]);
-    } else {
-      tally[i][1] += 1;
-    }
-  }
-  // Surfaced even while collapsed — otherwise a group that just finished
-  // showing a failing/cancelled step visually disappears the instant the
-  // turn ends and the group auto-collapses back to its default.
-  const hasError = toolParts.some((p) => p.isError);
-  const hasInterrupted =
-    !hasError && toolParts.some((p) => p.interrupted && p.output === undefined);
-
-  return (
-    <div
-      className={cn(
-        "flex flex-col gap-0.5 rounded-lg border bg-muted/20 text-xs",
-        // Collapsed groups hug their label (a short "1 step · Bash ×1" in a
-        // full-width bar reads as empty/heavy); only expand to full width when
-        // open, so the rows inside have room.
-        open ? "w-full" : "w-fit",
-        hasError && "border-destructive/40",
-      )}
-    >
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left hover:bg-muted/40"
-      >
-        <ChevronRightIcon
-          className={cn(
-            "size-3.5 shrink-0 text-muted-foreground transition-transform",
-            open && "rotate-90",
-          )}
-        />
-        {(hasError || hasInterrupted) && (
-          <TriangleAlertIcon
-            className={cn(
-              "size-3 shrink-0",
-              hasError ? "text-destructive" : "text-muted-foreground",
-            )}
-          />
+const agentBucketKind: ItemKind<AgentBucketPayload> = {
+  id: SESSION_AGENT_BUCKET,
+  render: (payload, view) => (
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-3">
+      {payload.banner}
+      {/* Same reading column as the main transcript's <Message> wrapper, so a
+          subagent tab lines up with Main instead of spanning the whole pane. */}
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 text-sm">
+        {payload.header}
+        {payload.empty}
+        {payload.items.map((child, i) =>
+          view.render(child, { live: view.live && isTrailingItem(payload.items, i) }),
         )}
-        <span className={cn("shrink-0", hasError ? "text-destructive" : "text-muted-foreground")}>
-          {toolParts.length} step{toolParts.length === 1 ? "" : "s"}
-        </span>
-        <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="min-w-0 truncate font-mono text-muted-foreground">
-          {tally.map(([name, count]) => `${name} ×${count}`).join(" · ")}
-        </span>
-      </button>
-      {open && (
-        <div className="flex flex-col gap-0.5 px-1.5 pb-1.5">
-          {toolParts.map((p, i) => {
-            const rowKey = p.id ?? String(i);
-            if (p.agent && p.id && onSelectAgent) {
-              return (
-                <AgentStepRow
-                  key={rowKey}
-                  part={p as ToolPart & { agent: AgentInfo }}
-                  stepCount={agentSteps?.(p.id) ?? 0}
-                  onSelect={() => onSelectAgent(p.id!)}
-                />
-              );
-            }
-            return (
-              <ToolStepRow
-                key={rowKey}
-                part={p}
-                running={live && p.output === undefined && !p.isError}
-                open={rowOpen(rowKey)}
-                onToggle={() => onToggleRow(rowKey)}
-              />
-            );
-          })}
-        </div>
-      )}
+        {payload.result}
+      </div>
     </div>
-  );
+  ),
+};
+
+// Composed once, at module scope, and passed to the shell as a PROP — never read
+// by the shell from anywhere global (project-context.md forbids a global client
+// store, and a shared mutable registry would also let two surfaces on one page
+// clobber each other's registrations).
+const SESSION_KINDS = createItemKindRegistry([
+  ...BUILTIN_KINDS,
+  agentBucketKind as unknown as ItemKind<never>,
+]);
+
+// A subagent's own tab, as ONE transcript item: the same rendering path as Main
+// (groupParts → the registry), just over the bucket's parts instead of a
+// message's, plus a header (agent type + spawn description) and the spawn's own
+// tool_result rendered at the end as the run's result. Liveness mirrors Main's
+// `isCurrentMessage && isTrailing` — "the spawn hasn't produced a result yet"
+// stands in for "this is the message currently being streamed into", and the
+// per-child half is derived inside the composite renderer above.
+//
+// The bucket's items get NO `agentSteps`/`onSelectAgent`: v1 doesn't track
+// sub-subagents, so a subagent's own tab renders nested tool calls as plain tool
+// rows — exactly as the donor's bucket did by omitting those props.
+function agentBucketItem(bucket: AgentBucket, onBack: () => void): TranscriptItem {
+  const agent = bucket.spawn.agent ?? { type: null, description: "" };
+  const status = agentStatus(bucket.spawn);
+  const bucketLive = status === "running";
+  const items = toTranscriptItems(groupParts(bucket.id, bucket.parts));
+  // The prominent line is the same label the tab strip/B.3 chip show (name,
+  // else the spawn's own description, else the shared type) so this reads
+  // as "which of the N spawns of this type am I looking at" rather than
+  // repeating the type. The full description only gets its own line when
+  // it says more than the (possibly clipped) label already does — e.g. the
+  // label is the name, or the description ran past the label's clip — so a
+  // short description isn't printed twice.
+  const label = agentLabel(agent);
+  const description = agent.description.trim();
+  const showDescription = description.length > 0 && description !== label;
+
+  return {
+    kind: SESSION_AGENT_BUCKET,
+    key: `${SESSION_AGENT_BUCKET}:${bucket.id}`,
+    payload: {
+      items,
+      // Breadcrumb: names the sub-agent you're viewing and makes the exit
+      // unmistakable — the "Main" crumb, the highlighted Main anchor in the
+      // rail, and Escape all return.
+      banner: <SubagentBanner label={label} status={status} onBack={onBack} />,
+      header: (
+        <div className="flex flex-col gap-1 border-b pb-3 text-xs">
+          <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
+            <BotIcon className="size-3.5 text-muted-foreground" />
+            {label}
+            {/* Type demoted to a small secondary badge — still visible as
+                context, just no longer the headline every same-type spawn
+                shared. */}
+            <Badge variant="outline" className="px-1 py-0 text-[10px] font-normal text-muted-foreground">
+              {agent.type ?? "subagent"}
+            </Badge>
+          </div>
+          {showDescription && <p className="text-muted-foreground">{description}</p>}
+        </div>
+      ),
+      // Empty-while-starting is designed, not blank: the tab exists the
+      // instant the spawn tool call arrives, often before the subagent has
+      // produced anything yet. A zero-parts "error" bucket (interrupted or
+      // failed before it ever forwarded any activity) gets its own
+      // destructive-tinted message too — otherwise it's indistinguishable
+      // from a run that simply, genuinely finished with nothing to show,
+      // and the tab strip's small status dot is the only hint anything
+      // went wrong.
+      empty:
+        bucket.parts.length === 0
+          ? bucketLive
+            ? <Shimmer className="text-sm">Spinning up…</Shimmer>
+            : status === "error"
+              ? (
+                  <p className="flex items-center gap-1.5 text-sm text-destructive">
+                    <TriangleAlertIcon className="size-3.5 shrink-0" />
+                    {bucket.spawn.interrupted && bucket.spawn.output === undefined
+                      ? "Interrupted before this subagent produced any output."
+                      : "This subagent's run failed before producing any output."}
+                  </p>
+                )
+              : (
+                  <p className="text-sm text-muted-foreground">
+                    No subagent activity was recorded for this run.
+                  </p>
+                )
+          : null,
+      result:
+        bucket.spawn.output !== undefined
+          ? isAsyncLaunchAck(bucket.spawn.output)
+            ? (
+                // The spawn's tool_result is just the async launch ack, not the
+                // subagent's real result (see isAsyncLaunchAck) — the subagent's
+                // actual output already rendered above via bucket.parts. Swap
+                // the raw metadata dump for a one-line status instead of hiding
+                // it outright, so the bucket doesn't end on an unexplained cliff.
+                <p className="text-xs text-muted-foreground">
+                  {bucketLive ? "Running…" : status === "error" ? "Failed" : "Completed"}
+                </p>
+              )
+            : (
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 text-xs",
+                    bucket.spawn.isError ? "border-destructive/40 bg-destructive/10" : "bg-muted/20",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "mb-1.5 flex items-center gap-1.5 font-medium",
+                      bucket.spawn.isError ? "text-destructive" : "text-muted-foreground",
+                    )}
+                  >
+                    {bucket.spawn.isError ? (
+                      <TriangleAlertIcon className="size-3" />
+                    ) : (
+                      <CheckIcon className="size-3" />
+                    )}
+                    Result
+                  </div>
+                  <MessageResponse className="text-xs">{bucket.spawn.output}</MessageResponse>
+                </div>
+              )
+          : null,
+    } satisfies AgentBucketPayload,
+  };
 }
 
 // A project-anchored Claude session. cwd is fixed by the project's manifest.
@@ -1304,18 +997,14 @@ function SessionViewInner({
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Manual expand/collapse for tool-step groups, keyed by group id (see
-  // groupParts). Absent means "use the automatic default": collapsed once a
-  // turn is finished, expanded for the trailing group of a message that's
-  // still streaming.
-  const [groupOverrides, setGroupOverrides] = useState<Record<string, boolean>>({});
-  // Per-row expand state within a tool-step group, keyed by `${group key}:${tool
-  // id}` — lifted here (rather than local state in ToolStepRow) so it survives
-  // the row unmounting when its group auto-collapses (see ToolStepGroup).
-  const [rowOverrides, setRowOverrides] = useState<Record<string, boolean>>({});
-  // Expand/collapse for a finished ("✻ Thought") thinking row, keyed by its
-  // own part key — same lift-to-parent reasoning as rowOverrides above.
-  const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
+  // The three per-item disclosure maps that used to live here — groupOverrides,
+  // rowOverrides and thinkingOpen — moved INTO the shell (story 3.1's carve-out).
+  // They are transcript view state, not session state: nothing outside the
+  // transcript ever read them (grepped), and every surface that renders a
+  // transcript needs the same three. The shell now holds one opaque keyed map
+  // and hands each renderer `view.isOpen`/`view.setOpen` scoped to its own item,
+  // so it never learns what a "tool group" or a "thinking block" is.
+
   // Click-to-edit for the header title (item 5's rename affordance). Only
   // meaningful once a session exists server-side (PATCH /api/chats/[id]
   // needs a chat to already be in the store).
@@ -2495,148 +2184,11 @@ function SessionViewInner({
     [agentBuckets],
   );
 
-  // A subagent's own tab: same rendering path as Main (groupParts → text /
-  // ToolStepGroup), just over the bucket's parts instead of a message's, plus
-  // a header (agent type + spawn description) and the spawn's own tool_result
-  // rendered at the end as the run's result. `live` here mirrors Main's
-  // `isCurrentMessage && isTrailing` — "the spawn hasn't produced a result
-  // yet" stands in for "this is the message currently being streamed into".
-  function renderAgentBucket(bucket: AgentBucket) {
-    const agent = bucket.spawn.agent ?? { type: null, description: "" };
-    const status = agentStatus(bucket.spawn);
-    const bucketLive = status === "running";
-    const items = groupParts(bucket.id, bucket.parts);
-    // The prominent line is the same label the tab strip/B.3 chip show (name,
-    // else the spawn's own description, else the shared type) so this reads
-    // as "which of the N spawns of this type am I looking at" rather than
-    // repeating the type. The full description only gets its own line when
-    // it says more than the (possibly clipped) label already does — e.g. the
-    // label is the name, or the description ran past the label's clip — so a
-    // short description isn't printed twice.
-    const label = agentLabel(agent);
-    const description = agent.description.trim();
-    const showDescription = description.length > 0 && description !== label;
-    return (
-      // Same reading column as the main transcript's <Message> wrapper, so a
-      // subagent tab lines up with Main instead of spanning the whole pane.
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 text-sm">
-        <div className="flex flex-col gap-1 border-b pb-3 text-xs">
-          <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
-            <BotIcon className="size-3.5 text-muted-foreground" />
-            {label}
-            {/* Type demoted to a small secondary badge — still visible as
-                context, just no longer the headline every same-type spawn
-                shared. */}
-            <Badge variant="outline" className="px-1 py-0 text-[10px] font-normal text-muted-foreground">
-              {agent.type ?? "subagent"}
-            </Badge>
-          </div>
-          {showDescription && <p className="text-muted-foreground">{description}</p>}
-        </div>
-
-        {/* Empty-while-starting is designed, not blank: the tab exists the
-            instant the spawn tool call arrives, often before the subagent has
-            produced anything yet. A zero-parts "error" bucket (interrupted or
-            failed before it ever forwarded any activity) gets its own
-            destructive-tinted message too — otherwise it's indistinguishable
-            from a run that simply, genuinely finished with nothing to show,
-            and the tab strip's small status dot is the only hint anything
-            went wrong. */}
-        {bucket.parts.length === 0 &&
-          (bucketLive ? (
-            <Shimmer className="text-sm">Spinning up…</Shimmer>
-          ) : status === "error" ? (
-            <p className="flex items-center gap-1.5 text-sm text-destructive">
-              <TriangleAlertIcon className="size-3.5 shrink-0" />
-              {bucket.spawn.interrupted && bucket.spawn.output === undefined
-                ? "Interrupted before this subagent produced any output."
-                : "This subagent's run failed before producing any output."}
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No subagent activity was recorded for this run.
-            </p>
-          ))}
-
-        {items.map((item, i) => {
-          if (item.kind === "text") {
-            return <MessageResponse key={item.key}>{item.part.text}</MessageResponse>;
-          }
-          if (item.kind === "permission") {
-            // Unreachable in practice — permission parts never carry a
-            // parentId (see the Part union comment) — kept only so this
-            // mirrors Main's exhaustive RenderItem switch exactly.
-            return null;
-          }
-          if (item.kind === "thinking") {
-            return (
-              <ThinkingRow
-                key={item.key}
-                part={item.part}
-                open={thinkingOpen[item.key] ?? false}
-                onToggle={() =>
-                  setThinkingOpen((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
-                }
-              />
-            );
-          }
-          const isTrailing = items.slice(i + 1).every((it) => it.kind === "permission");
-          const live = bucketLive && isTrailing;
-          const open = groupOverrides[item.key] ?? live;
-          return (
-            <ToolStepGroup
-              key={item.key}
-              toolParts={item.parts}
-              open={open}
-              live={live}
-              onToggle={() => setGroupOverrides((prev) => ({ ...prev, [item.key]: !open }))}
-              rowOpen={(key) => rowOverrides[`${item.key}:${key}`] ?? false}
-              onToggleRow={(key) =>
-                setRowOverrides((prev) => {
-                  const k = `${item.key}:${key}`;
-                  return { ...prev, [k]: !(prev[k] ?? false) };
-                })
-              }
-            />
-          );
-        })}
-
-        {bucket.spawn.output !== undefined &&
-          (isAsyncLaunchAck(bucket.spawn.output) ? (
-            // The spawn's tool_result is just the async launch ack, not the
-            // subagent's real result (see isAsyncLaunchAck) — the subagent's
-            // actual output already rendered above via bucket.parts. Swap
-            // the raw metadata dump for a one-line status instead of hiding
-            // it outright, so the bucket doesn't end on an unexplained cliff.
-            <p className="text-xs text-muted-foreground">
-              {bucketLive ? "Running…" : status === "error" ? "Failed" : "Completed"}
-            </p>
-          ) : (
-            <div
-              className={cn(
-                "rounded-lg border p-3 text-xs",
-                bucket.spawn.isError ? "border-destructive/40 bg-destructive/10" : "bg-muted/20",
-              )}
-            >
-              <div
-                className={cn(
-                  "mb-1.5 flex items-center gap-1.5 font-medium",
-                  bucket.spawn.isError ? "text-destructive" : "text-muted-foreground",
-                )}
-              >
-                {bucket.spawn.isError ? (
-                  <TriangleAlertIcon className="size-3" />
-                ) : (
-                  <CheckIcon className="size-3" />
-                )}
-                Result
-              </div>
-              <MessageResponse className="text-xs">{bucket.spawn.output}</MessageResponse>
-            </div>
-          ))}
-      </div>
-    );
-  }
+  // `renderAgentBucket` is gone. Its inline switch — the SECOND copy of the
+  // RenderItem dispatch, whose own comment admitted it "mirrors Main's exhaustive
+  // RenderItem switch exactly" — was the duplication this whole extraction exists
+  // to end. The bucket now renders through `agentBucketItem` and the SAME registry
+  // Main uses, above.
 
   // The rename affordance's commit path: Enter and blur both go through
   // here (a plain, non-empty, changed value is saved via saveTitle; an
@@ -2692,6 +2244,85 @@ function SessionViewInner({
       )}
     </span>
   );
+
+  // ── the projection the shell renders ───────────────────────────────────────
+  // ONE `conversation:turn` per message carrying that message's OWN parts, or —
+  // when a subagent tab is selected — the single `session:agent-bucket`
+  // composite. Owner behaviour rides in the PAYLOADS: `respondPermission`,
+  // `agentSteps` and `onSelectAgent` are closures over this component's state,
+  // handed down rather than read from a context. That is AD-12's purity rule and
+  // it is what lets a surface with no providers at all render the same kinds.
+  //
+  // Deliberately NOT memoized: `messages` changes on essentially every SSE frame
+  // of a live turn, so a memo would recompute anyway while adding a dependency
+  // list to keep correct. The donor computed `groupParts` inline in its render
+  // loop for the same reason.
+  const transcriptItems: TranscriptItem[] = activeBucket
+    ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
+    : messages.map((m) => {
+        // Main renders only this message's OWN parts — anything a subagent
+        // produced lives in its own tab (see agentBuckets), not interleaved
+        // here even though it rode in on the same SSE stream and the same
+        // message's parts array.
+        const mainParts = m.parts.filter((p) => parentOf(p) === undefined);
+        return {
+          kind: CONVERSATION_KINDS.turn,
+          key: m.id,
+          payload: {
+            from: m.role,
+            items: toTranscriptItems(groupParts(m.id, mainParts), {
+              onRespond: respondPermission,
+              agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
+              onSelectAgent: setActiveTab,
+            }),
+            pending:
+              mainParts.length === 0 && m.role === "assistant" && busy ? (
+                <Shimmer className="text-sm">
+                  {thinking ? "Thinking…" : "Weaving…"}
+                </Shimmer>
+              ) : undefined,
+          } satisfies TurnPayload,
+        };
+      });
+
+  // The three empty states, unchanged. The shell renders whichever of these it
+  // is handed, and only while `items` is empty — which for a project session is
+  // exactly `messages.length === 0`.
+  const emptyState =
+    messages.length === 0 && planner && !sessionId ? (
+      // Agent-first greeting (feature #34): a templated assistant
+      // bubble — same Message/MessageContent/MessageResponse
+      // primitives the real transcript uses, so it reads exactly
+      // like the agent spoke first — with no model call behind it.
+      // Gone the instant a real turn starts (messages.length > 0).
+      <Message from="assistant">
+        <MessageContent>
+          <MessageResponse>{PLANNER_GREETING}</MessageResponse>
+        </MessageContent>
+      </Message>
+    ) : messages.length === 0 && escalation && !sessionId ? (
+      // M11 finding-1 — the escalation chat opens with a REAL agent turn,
+      // auto-fired on mount (escalationKickoff effect above). This branch
+      // is the transient pre-fire window (before the effect runs / before
+      // the first token lands): a shimmer that reads as the agent
+      // reviewing, mirroring the in-flight empty-assistant render so
+      // the hand-off to the streaming proposal is seamless. It never shows
+      // static copy the human is expected to answer.
+      <Message from="assistant">
+        <MessageContent>
+          <Shimmer className="text-sm">Reviewing the blocked context…</Shimmer>
+        </MessageContent>
+      </Message>
+    ) : (
+      <ConversationEmptyState
+        title={initialRole === "planner" ? "Plan a loom" : "Work in this repo"}
+        description={
+          initialRole === "planner"
+            ? "Describe what you want built. Once the spec is ready, say “make this real” and this session commits the bundle and starts the loom."
+            : "Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
+        }
+      />
+    );
 
   return (
     <>
@@ -2828,155 +2459,39 @@ function SessionViewInner({
         </div>
       ))}
 
-      {/* The conversation column with the sub-agents RAIL docked on its right
-          (replaces the old top tab strip). The rail lists spawns as rich cards —
-          running up top with a live activity line, failures pinned in
-          destructive, completions folded into a compact "Done" section — with a
-          pinned Main anchor always one click back. It only appears once at least
-          one sub-agent has spawned. The composer below stays full-width. */}
-      <div className="flex min-h-0 flex-1">
-      <Conversation className="min-w-0 flex-1">
-        {/* Full-width transcript (explicit user request — no inner padding):
-            no max-w-3xl/mx-auto centering, no horizontal padding. Vertical
-            padding (py-4) and the scroll behavior are unchanged. Individual
-            code blocks / tool detail panels still scroll horizontally within
-            themselves (overflow-x-auto — see ToolStepRow), never the page. */}
-        <ConversationContent className="px-4">
-          {activeBucket ? (
-            <div className="mx-auto flex w-full max-w-7xl flex-col gap-3">
-              {/* Breadcrumb: names the sub-agent you're viewing and makes the
-                  exit unmistakable — the "Main" crumb, the highlighted Main
-                  anchor in the rail, and Escape all return. */}
-              <SubagentBanner
-                label={agentLabel(activeBucket.spawn.agent ?? { type: null, description: "" })}
-                status={agentStatus(activeBucket.spawn)}
-                onBack={() => setActiveTab("main")}
-              />
-              {renderAgentBucket(activeBucket)}
-            </div>
-          ) : messages.length === 0 && planner && !sessionId ? (
-            // Agent-first greeting (feature #34): a templated assistant
-            // bubble — same Message/MessageContent/MessageResponse
-            // primitives the real transcript below uses, so it reads exactly
-            // like the agent spoke first — with no model call behind it.
-            // Gone the instant a real turn starts (messages.length > 0).
-            <Message from="assistant">
-              <MessageContent>
-                <MessageResponse>{PLANNER_GREETING}</MessageResponse>
-              </MessageContent>
-            </Message>
-          ) : messages.length === 0 && escalation && !sessionId ? (
-            // M11 finding-1 — the escalation chat opens with a REAL agent turn,
-            // auto-fired on mount (escalationKickoff effect above). This branch
-            // is the transient pre-fire window (before the effect runs / before
-            // the first token lands): a shimmer that reads as the agent
-            // reviewing, mirroring the in-flight empty-assistant render below so
-            // the hand-off to the streaming proposal is seamless. It never shows
-            // static copy the human is expected to answer.
-            <Message from="assistant">
-              <MessageContent>
-                <Shimmer className="text-sm">Reviewing the blocked context…</Shimmer>
-              </MessageContent>
-            </Message>
-          ) : messages.length === 0 ? (
-            <ConversationEmptyState
-              title={initialRole === "planner" ? "Plan a loom" : "Work in this repo"}
-              description={
-                initialRole === "planner"
-                  ? "Describe what you want built. Once the spec is ready, say “make this real” and this session commits the bundle and starts the loom."
-                  : "Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
-              }
-            />
-          ) : (
-            messages.map((m) => {
-              // The trailing tool-step group of the message currently being
-              // streamed into defaults open; every other group (finished
-              // turns, or a group a later text/permission part moved past)
-              // defaults collapsed. A manual toggle in groupOverrides always
-              // wins over this default.
-              const isCurrentMessage =
-                busy && m.id === messages[messages.length - 1]?.id;
-              // Main renders only this message's OWN parts — anything a
-              // subagent produced lives in its own tab (see agentBuckets), not
-              // interleaved here even though it rode in on the same SSE
-              // stream and the same message's parts array.
-              const mainParts = m.parts.filter((p) => parentOf(p) === undefined);
-              const items = groupParts(m.id, mainParts);
-              return (
-                <Message from={m.role} key={m.id}>
-                  <MessageContent>
-                    {mainParts.length === 0 && m.role === "assistant" && busy && (
-                      <Shimmer className="text-sm">
-                        {thinking ? "Thinking…" : "Weaving…"}
-                      </Shimmer>
-                    )}
-                    {items.map((item, i) => {
-                      if (item.kind === "text") {
-                        return (
-                          <MessageResponse key={item.key}>{item.part.text}</MessageResponse>
-                        );
-                      }
-                      if (item.kind === "permission") {
-                        return (
-                          <PermissionCard
-                            key={item.key}
-                            part={item.part}
-                            onRespond={respondPermission}
-                          />
-                        );
-                      }
-                      if (item.kind === "thinking") {
-                        return (
-                          <ThinkingRow
-                            key={item.key}
-                            part={item.part}
-                            open={thinkingOpen[item.key] ?? false}
-                            onToggle={() =>
-                              setThinkingOpen((prev) => ({ ...prev, [item.key]: !prev[item.key] }))
-                            }
-                          />
-                        );
-                      }
-                      // A pending/just-resolved permission card is not a new
-                      // unit of finished work — it's the same blocked tool
-                      // call waiting on the user, so a trailing run of
-                      // permission items doesn't end this group's liveness.
-                      const isTrailing = items
-                        .slice(i + 1)
-                        .every((it) => it.kind === "permission");
-                      const live = isCurrentMessage && isTrailing;
-                      const open = groupOverrides[item.key] ?? live;
-                      return (
-                        <ToolStepGroup
-                          key={item.key}
-                          toolParts={item.parts}
-                          open={open}
-                          live={live}
-                          onToggle={() =>
-                            setGroupOverrides((prev) => ({ ...prev, [item.key]: !open }))
-                          }
-                          rowOpen={(key) => rowOverrides[`${item.key}:${key}`] ?? false}
-                          onToggleRow={(key) =>
-                            setRowOverrides((prev) => {
-                              const k = `${item.key}:${key}`;
-                              return { ...prev, [k]: !(prev[k] ?? false) };
-                            })
-                          }
-                          agentSteps={(id) => agentBucketById.get(id)?.parts.length ?? 0}
-                          onSelectAgent={setActiveTab}
-                        />
-                      );
-                    })}
-                  </MessageContent>
-                </Message>
-              );
-            })
-          )}
-          {/* Durable in-stream loom record (replaces the banner): a compact row
-              per lifecycle transition — started/parked/resumed/ready — carrying
-              the title, short id, and a god-view link. Scrolls away with
-              history; the live pill in the bar is the at-a-glance status. */}
-          {!activeBucket && loomEvents.length > 0 && (
+      {/* THE SHELL (AD-12). The conversation column with the sub-agents RAIL
+          docked on its right (replaces the old top tab strip). The rail lists
+          spawns as rich cards — running up top with a live activity line,
+          failures pinned in destructive, completions folded into a compact
+          "Done" section — with a pinned Main anchor always one click back. It
+          only appears once at least one sub-agent has spawned. The composer
+          below stays full-width.
+
+          Everything here is CONFIGURATION: four slots and a projection. This
+          component still owns `messages`, every request, both event streams,
+          `applyServerEvent` and the whole turn state machine — it simply no
+          longer owns a render loop. */}
+      <Conversation
+        items={transcriptItems}
+        kinds={SESSION_KINDS}
+        // The donor's `isCurrentMessage`: the shell marks only the LAST
+        // top-level item live, and the turn renderer derives per-child
+        // `isTrailing` from there. On a subagent tab, "the spawn hasn't
+        // produced a result yet" stands in for "currently streaming" — exactly
+        // what the bucket's own `bucketLive` meant.
+        live={activeBucket ? agentStatus(activeBucket.spawn) === "running" : busy}
+        empty={emptyState}
+        // Durable in-stream loom record (replaces the banner): a compact row
+        // per lifecycle transition — started/parked/resumed/ready — carrying
+        // the title, short id, and a god-view link. Scrolls away with
+        // history; the live pill in the bar is the at-a-glance status.
+        //
+        // It rides `trailing` rather than the item list on purpose: the shell
+        // marks the LAST top-level item live, so an item appended after the
+        // streaming turn would silently steal its liveness and the trailing
+        // tool group would stop auto-opening mid-turn.
+        trailing={
+          !activeBucket && loomEvents.length > 0 ? (
             <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 pt-3">
               {loomEvents.map((r) => (
                 <InlineLoomRow
@@ -2988,348 +2503,349 @@ function SessionViewInner({
                 />
               ))}
             </div>
-          )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
-      {railAgents.length > 0 && (
-        <SubagentRail
-          agents={railAgents}
-          activeId={activeTab}
-          onSelect={setActiveTab}
-          collapsed={railCollapsed}
-          onToggle={() => setRailCollapsed((v) => !v)}
-          sessionLabel={title}
-          mainNeedsAttention={mainNeedsAttention}
-        />
-      )}
-      </div>
-
-      {/* Composer matches the transcript's reading column — same mx-auto
-          max-w-7xl the Message wrapper uses, so the input aligns with the
-          messages instead of spanning the whole pane. */}
-      <div className="relative mx-auto w-full max-w-7xl px-4 pb-4">
-        {slashMenuOpen && (
-          <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-            {filteredCommands.length === 0 ? (
-              <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                {provider === "codex"
-                  ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
-                  : "No commands — add .claude/commands/*.md or skills to this repo."}
-              </p>
-            ) : (
-              filteredCommands.map((c, i) => (
-                <button
-                  type="button"
-                  key={c.name}
-                  // preventDefault on mousedown keeps focus on the textarea — no
-                  // .focus() call, just skipping the browser's default click-to-
-                  // focus so the composer stays the active element.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => acceptCommand(c)}
-                  className={cn(
-                    "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
-                    i === selectedIndex
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-accent hover:text-accent-foreground",
-                  )}
-                >
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs">/{c.name}</span>
-                    {c.kind === "skill" && (
-                      <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                        skill
-                      </Badge>
-                    )}
+          ) : undefined
+        }
+        rail={
+          railAgents.length > 0 ? (
+            <SubagentRail
+              agents={railAgents}
+              activeId={activeTab}
+              onSelect={setActiveTab}
+              collapsed={railCollapsed}
+              onToggle={() => setRailCollapsed((v) => !v)}
+              sessionLabel={title}
+              mainNeedsAttention={mainNeedsAttention}
+            />
+          ) : undefined
+        }
+        composer={
+          /* Composer matches the transcript's reading column — same mx-auto
+              max-w-7xl the Message wrapper uses, so the input aligns with the
+              messages instead of spanning the whole pane. */
+          <div className="relative mx-auto w-full max-w-7xl px-4 pb-4">
+            {slashMenuOpen && (
+              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+                {filteredCommands.length === 0 ? (
+                  <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                    {provider === "codex"
+                      ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
+                      : "No commands — add .claude/commands/*.md or skills to this repo."}
+                  </p>
+                ) : (
+                  filteredCommands.map((c, i) => (
+                    <button
+                      type="button"
+                      key={c.name}
+                      // preventDefault on mousedown keeps focus on the textarea — no
+                      // .focus() call, just skipping the browser's default click-to-
+                      // focus so the composer stays the active element.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => acceptCommand(c)}
+                      className={cn(
+                        "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
+                        i === selectedIndex
+                          ? "bg-accent text-accent-foreground"
+                          : "hover:bg-accent hover:text-accent-foreground",
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs">/{c.name}</span>
+                        {c.kind === "skill" && (
+                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                            skill
+                          </Badge>
+                        )}
+                      </span>
+                      {c.description && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {c.description}
+                        </span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+            {messageQueue.length > 0 && (
+              <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
+                <div className="flex items-center justify-between px-1.5 pt-0.5">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Queued · sends in order
                   </span>
-                  {c.description && (
-                    <span className="text-[11px] text-muted-foreground">
-                      {c.description}
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                    {messageQueue.length}
+                  </span>
+                </div>
+                {messageQueue.map((m, i) => (
+                  <QueueChip
+                    key={m.id}
+                    index={i + 1}
+                    text={m.text}
+                    editing={editingQueueId === m.id}
+                    onEdit={() => setEditingQueueId(m.id)}
+                    onCommit={(v) => {
+                      setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
+                      setEditingQueueId(null);
+                    }}
+                    onRemove={() => setMessageQueue((q) => q.filter((x) => x.id !== m.id))}
+                  />
+                ))}
+              </div>
+            )}
+            <PromptInput onSubmit={handleSubmit}>
+              <PromptInputBody>
+                <PromptInputTextarea
+                  className="min-h-10"
+                  placeholder={
+                    busy
+                      ? "Agent is working — Enter queues a message…"
+                      : `Ask about ${project}… ("/" for commands)`
+                  }
+                  onKeyDown={handleComposerKeyDown}
+                  onChange={() => setMenuDismissed(false)}
+                />
+              </PromptInputBody>
+              <PromptInputFooter className="flex-wrap">
+                <PromptInputTools className="flex-wrap">
+                  {/* Agent selector — first in the bar, per spec: it's the thing
+                      that determines what everything to its right even means.
+                      Provider/account are choosable only pre-session (an existing
+                      chat's resume transcript is tied to one account's config
+                      dir — same rule the account picker enforced before this
+                      bar existed), so once a turn has run we swap to a static,
+                      non-interactive badge instead of hiding it outright — the
+                      bar should still read as provider-aware after the lock. */}
+                  {sessionId === null && !busy ? (
+                    <Select value={provider} onValueChange={(v) => v && selectProvider(v as Provider)}>
+                      <SelectTrigger className="h-8 w-[118px] text-xs" size="sm">
+                        <SelectValue>
+                          <span className="flex items-center gap-1.5">
+                            <ProviderIcon provider={provider} />
+                            {PROVIDER_LABEL[provider]}
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="w-[min(180px,calc(100vw-2rem))]">
+                        {(["claude", "codex"] as const).map((p) => (
+                          <SelectItem key={p} value={p} className="py-2">
+                            <span className="flex items-center gap-1.5">
+                              <ProviderIcon provider={p} />
+                              <span className="font-medium">{PROVIDER_LABEL[p]}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <span className="flex h-8 items-center gap-1.5 rounded-md border border-input px-2.5 text-xs text-muted-foreground">
+                      <ProviderIcon provider={provider} />
+                      {PROVIDER_LABEL[provider]}
                     </span>
                   )}
-                </button>
-              ))
-            )}
-          </div>
-        )}
-        {messageQueue.length > 0 && (
-          <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
-            <div className="flex items-center justify-between px-1.5 pt-0.5">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Queued · sends in order
-              </span>
-              <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                {messageQueue.length}
-              </span>
-            </div>
-            {messageQueue.map((m, i) => (
-              <QueueChip
-                key={m.id}
-                index={i + 1}
-                text={m.text}
-                editing={editingQueueId === m.id}
-                onEdit={() => setEditingQueueId(m.id)}
-                onCommit={(v) => {
-                  setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
-                  setEditingQueueId(null);
-                }}
-                onRemove={() => setMessageQueue((q) => q.filter((x) => x.id !== m.id))}
-              />
-            ))}
-          </div>
-        )}
-        <PromptInput onSubmit={handleSubmit}>
-          <PromptInputBody>
-            <PromptInputTextarea
-              className="min-h-10"
-              placeholder={
-                busy
-                  ? "Agent is working — Enter queues a message…"
-                  : `Ask about ${project}… ("/" for commands)`
-              }
-              onKeyDown={handleComposerKeyDown}
-              onChange={() => setMenuDismissed(false)}
-            />
-          </PromptInputBody>
-          <PromptInputFooter className="flex-wrap">
-            <PromptInputTools className="flex-wrap">
-              {/* Agent selector — first in the bar, per spec: it's the thing
-                  that determines what everything to its right even means.
-                  Provider/account are choosable only pre-session (an existing
-                  chat's resume transcript is tied to one account's config
-                  dir — same rule the account picker enforced before this
-                  bar existed), so once a turn has run we swap to a static,
-                  non-interactive badge instead of hiding it outright — the
-                  bar should still read as provider-aware after the lock. */}
-              {sessionId === null && !busy ? (
-                <Select value={provider} onValueChange={(v) => v && selectProvider(v as Provider)}>
-                  <SelectTrigger className="h-8 w-[118px] text-xs" size="sm">
-                    <SelectValue>
-                      <span className="flex items-center gap-1.5">
-                        <ProviderIcon provider={provider} />
-                        {PROVIDER_LABEL[provider]}
-                      </span>
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-[min(180px,calc(100vw-2rem))]">
-                    {(["claude", "codex"] as const).map((p) => (
-                      <SelectItem key={p} value={p} className="py-2">
+                  {/* Secondary account picker — only when the selected provider
+                      actually has more than one account to choose between; a
+                      single-account provider is already fully resolved by the
+                      agent selector above. */}
+                  {sessionId === null && !busy && providerAccounts.length > 1 && (
+                    <Select
+                      value={activeAccount}
+                      onValueChange={(v) => v && setActiveAccount(v)}
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs" size="sm">
+                        <SelectValue>
+                          <span className="flex items-center gap-1.5">
+                            <UserRoundIcon className="size-3" />
+                            {activeAccount}
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="w-[min(220px,calc(100vw-2rem))]">
+                        {providerAccounts.map((a) => (
+                          <SelectItem key={a.name} value={a.name}>
+                            <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-normal">
+                              <span className="truncate">{a.name}</span>
+                              {a.displayTier && (
+                                <Badge variant="outline" className="ml-auto shrink-0 px-1 py-0 text-[10px]">
+                                  {a.displayTier}
+                                </Badge>
+                              )}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {/* Permission (Claude) / approval (Codex) — same styled
+                      label+description row idiom either way. Codex's now drives
+                      an interactive approval preset (sandbox + approvalPolicy)
+                      since the app-server can prompt mid-turn. */}
+                  {provider === "codex" ? (
+                    <Select
+                      value={
+                        CODEX_APPROVAL_PRESETS.find(
+                          (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
+                        )?.id ?? DEFAULT_CODEX_APPROVAL_ID
+                      }
+                      onValueChange={(v) => {
+                        const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
+                        if (!preset) return;
+                        setSandbox(preset.sandbox);
+                        setApprovalPolicy(preset.approvalPolicy);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
+                        <SelectValue>
+                          {CODEX_APPROVAL_PRESETS.find(
+                            (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
+                          )?.label ?? "Approval"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
+                        {CODEX_APPROVAL_PRESETS.map((p) => (
+                          <SelectItem key={p.id} value={p.id} className="py-2">
+                            <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                              <span className="font-medium">{p.label}</span>
+                              <span className="text-xs text-muted-foreground">{p.blurb}</span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    /* 1.2 — the Claude config trio (permission · model · effort)
+                       collapses into one chip + settings popover. Provider and
+                       account stay as their own pre-session controls above. */
+                    <ComposerSettings
+                      project={project}
+                      open={settingsOpen}
+                      onOpenChange={setSettingsOpen}
+                      model={model}
+                      setModel={setModel}
+                      effort={effort}
+                      setEffort={setEffort}
+                      permissionMode={permissionMode}
+                      setPermissionMode={setPermissionMode}
+                      modelOptions={modelOptions}
+                      effortOptions={effortOptions}
+                      permissionOptions={PERMISSION_MODE_OPTIONS}
+                    />
+                  )}
+                  {/* Codex keeps the explicit model + effort selects — its collapse
+                      isn't part of the 1.2 redesign (the popover is Claude-shaped:
+                      a Claude badge, Claude permission language). */}
+                  {provider === "codex" && (
+                    <>
+                  <Select value={model} onValueChange={(v) => v && setModel(v)}>
+                    <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
+                      <SelectValue>
                         <span className="flex items-center gap-1.5">
-                          <ProviderIcon provider={p} />
-                          <span className="font-medium">{PROVIDER_LABEL[p]}</span>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <span className="flex h-8 items-center gap-1.5 rounded-md border border-input px-2.5 text-xs text-muted-foreground">
-                  <ProviderIcon provider={provider} />
-                  {PROVIDER_LABEL[provider]}
-                </span>
-              )}
-              {/* Secondary account picker — only when the selected provider
-                  actually has more than one account to choose between; a
-                  single-account provider is already fully resolved by the
-                  agent selector above. */}
-              {sessionId === null && !busy && providerAccounts.length > 1 && (
-                <Select
-                  value={activeAccount}
-                  onValueChange={(v) => v && setActiveAccount(v)}
-                >
-                  <SelectTrigger className="h-8 w-[140px] text-xs" size="sm">
-                    <SelectValue>
-                      <span className="flex items-center gap-1.5">
-                        <UserRoundIcon className="size-3" />
-                        {activeAccount}
-                      </span>
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-[min(220px,calc(100vw-2rem))]">
-                    {providerAccounts.map((a) => (
-                      <SelectItem key={a.name} value={a.name}>
-                        <div className="flex w-full min-w-0 items-center gap-1.5 whitespace-normal">
-                          <span className="truncate">{a.name}</span>
-                          {a.displayTier && (
-                            <Badge variant="outline" className="ml-auto shrink-0 px-1 py-0 text-[10px]">
-                              {a.displayTier}
+                          {activeModel?.name ?? model}
+                          {activeModel && (
+                            <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                              {activeModel.context}
                             </Badge>
                           )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              {/* Permission (Claude) / approval (Codex) — same styled
-                  label+description row idiom either way. Codex's now drives
-                  an interactive approval preset (sandbox + approvalPolicy)
-                  since the app-server can prompt mid-turn. */}
-              {provider === "codex" ? (
-                <Select
-                  value={
-                    CODEX_APPROVAL_PRESETS.find(
-                      (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
-                    )?.id ?? DEFAULT_CODEX_APPROVAL_ID
-                  }
-                  onValueChange={(v) => {
-                    const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
-                    if (!preset) return;
-                    setSandbox(preset.sandbox);
-                    setApprovalPolicy(preset.approvalPolicy);
-                  }}
-                >
-                  <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
-                    <SelectValue>
-                      {CODEX_APPROVAL_PRESETS.find(
-                        (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
-                      )?.label ?? "Approval"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
-                    {CODEX_APPROVAL_PRESETS.map((p) => (
-                      <SelectItem key={p.id} value={p.id} className="py-2">
+                        </span>
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="w-[min(340px,calc(100vw-2rem))]">
+                      {modelOptions.map((m) => (
+                        <SelectItem key={m.id} value={m.id} className="py-2">
+                          <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{m.name}</span>
+                              <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                                {m.context} ctx
+                              </Badge>
+                              <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                                {m.maxOutput} out
+                              </Badge>
+                              {m.inputPerMTok > 0 || m.outputPerMTok > 0 ? (
+                                <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                                  ${m.inputPerMTok}/{m.outputPerMTok} MTok
+                                </span>
+                              ) : null}
+                            </div>
+                            <span className="text-xs text-muted-foreground">{m.blurb}</span>
+                            {m.note && (
+                              <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {/* "default" omits `effort` from the POST body entirely — the
+                      model/SDK picks its own. Editable on every turn, like model
+                      above (not locked to pre-session like the account picker
+                      above): route.ts persists whatever was last sent, same as
+                      model, and restores it on resume via initialChat.effort.
+                      Option set switches with the provider — Codex's reasoning
+                      effort tiers aren't identical to Claude's (no "max", has
+                      "minimal"). */}
+                  <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
+                    <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
+                      <SelectValue>
+                        {effort === "default"
+                          ? "Effort"
+                          : (effortOptions.find((e) => e.id === effort)?.label ?? effort)}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
+                      <SelectItem value="default" className="py-2">
                         <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                          <span className="font-medium">{p.label}</span>
-                          <span className="text-xs text-muted-foreground">{p.blurb}</span>
+                          <span className="font-medium">Default</span>
+                          <span className="text-xs text-muted-foreground">
+                            Let the model choose its own effort.
+                          </span>
                         </div>
                       </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                /* 1.2 — the Claude config trio (permission · model · effort)
-                   collapses into one chip + settings popover. Provider and
-                   account stay as their own pre-session controls above. */
-                <ComposerSettings
-                  project={project}
-                  open={settingsOpen}
-                  onOpenChange={setSettingsOpen}
-                  model={model}
-                  setModel={setModel}
-                  effort={effort}
-                  setEffort={setEffort}
-                  permissionMode={permissionMode}
-                  setPermissionMode={setPermissionMode}
-                  modelOptions={modelOptions}
-                  effortOptions={effortOptions}
-                  permissionOptions={PERMISSION_MODE_OPTIONS}
+                      {effortOptions.map((e) => (
+                        <SelectItem key={e.id} value={e.id} className="py-2">
+                          <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
+                            <span className="font-medium">{e.label}</span>
+                            <span className="text-xs text-muted-foreground">{e.blurb}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                    </>
+                  )}
+                </PromptInputTools>
+                {/* ml-auto/self-end: when the tools row wraps onto multiple lines
+                    on a narrow composer, the submit button stays pinned to the
+                    bottom-right instead of drifting to wherever justify-between
+                    would otherwise place a lone wrapped item. */}
+                <PromptInputSubmit
+                  className="ml-auto shrink-0 self-end"
+                  status={status === "ready" ? undefined : status}
+                  onStop={() => {
+                    // Stop the DETACHED server run — a mere disconnect no longer
+                    // stops it (§A.4) — then close the local reader. A turn
+                    // resumed via the §1b reconnect tail never sets runIdRef
+                    // (this mount never started it, and the reconnect SSE never
+                    // echoes the server-side runId back) — fall back to
+                    // sessionId, which stopChatRun (lib/chat-runs.ts) already
+                    // accepts as an alternate lookup key for exactly this case.
+                    // The reconnect tail's own reader then unwinds on its own
+                    // once the aborted run's "closed" event reaches it.
+                    const rid = runIdRef.current;
+                    if (rid || sessionId) {
+                      void fetch("/api/chat/stop", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(rid ? { runId: rid } : { sessionId }),
+                      }).catch(() => {});
+                    }
+                    abortRef.current?.abort();
+                  }}
                 />
-              )}
-              {/* Codex keeps the explicit model + effort selects — its collapse
-                  isn't part of the 1.2 redesign (the popover is Claude-shaped:
-                  a Claude badge, Claude permission language). */}
-              {provider === "codex" && (
-                <>
-              <Select value={model} onValueChange={(v) => v && setModel(v)}>
-                <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
-                  <SelectValue>
-                    <span className="flex items-center gap-1.5">
-                      {activeModel?.name ?? model}
-                      {activeModel && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                          {activeModel.context}
-                        </Badge>
-                      )}
-                    </span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="w-[min(340px,calc(100vw-2rem))]">
-                  {modelOptions.map((m) => (
-                    <SelectItem key={m.id} value={m.id} className="py-2">
-                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{m.name}</span>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.context} ctx
-                          </Badge>
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            {m.maxOutput} out
-                          </Badge>
-                          {m.inputPerMTok > 0 || m.outputPerMTok > 0 ? (
-                            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                              ${m.inputPerMTok}/{m.outputPerMTok} MTok
-                            </span>
-                          ) : null}
-                        </div>
-                        <span className="text-xs text-muted-foreground">{m.blurb}</span>
-                        {m.note && (
-                          <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
-                        )}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {/* "default" omits `effort` from the POST body entirely — the
-                  model/SDK picks its own. Editable on every turn, like model
-                  above (not locked to pre-session like the account picker
-                  above): route.ts persists whatever was last sent, same as
-                  model, and restores it on resume via initialChat.effort.
-                  Option set switches with the provider — Codex's reasoning
-                  effort tiers aren't identical to Claude's (no "max", has
-                  "minimal"). */}
-              <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
-                <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
-                  <SelectValue>
-                    {effort === "default"
-                      ? "Effort"
-                      : (effortOptions.find((e) => e.id === effort)?.label ?? effort)}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
-                  <SelectItem value="default" className="py-2">
-                    <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                      <span className="font-medium">Default</span>
-                      <span className="text-xs text-muted-foreground">
-                        Let the model choose its own effort.
-                      </span>
-                    </div>
-                  </SelectItem>
-                  {effortOptions.map((e) => (
-                    <SelectItem key={e.id} value={e.id} className="py-2">
-                      <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                        <span className="font-medium">{e.label}</span>
-                        <span className="text-xs text-muted-foreground">{e.blurb}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-                </>
-              )}
-            </PromptInputTools>
-            {/* ml-auto/self-end: when the tools row wraps onto multiple lines
-                on a narrow composer, the submit button stays pinned to the
-                bottom-right instead of drifting to wherever justify-between
-                would otherwise place a lone wrapped item. */}
-            <PromptInputSubmit
-              className="ml-auto shrink-0 self-end"
-              status={status === "ready" ? undefined : status}
-              onStop={() => {
-                // Stop the DETACHED server run — a mere disconnect no longer
-                // stops it (§A.4) — then close the local reader. A turn
-                // resumed via the §1b reconnect tail never sets runIdRef
-                // (this mount never started it, and the reconnect SSE never
-                // echoes the server-side runId back) — fall back to
-                // sessionId, which stopChatRun (lib/chat-runs.ts) already
-                // accepts as an alternate lookup key for exactly this case.
-                // The reconnect tail's own reader then unwinds on its own
-                // once the aborted run's "closed" event reaches it.
-                const rid = runIdRef.current;
-                if (rid || sessionId) {
-                  void fetch("/api/chat/stop", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(rid ? { runId: rid } : { sessionId }),
-                  }).catch(() => {});
-                }
-                abortRef.current?.abort();
-              }}
-            />
-          </PromptInputFooter>
-        </PromptInput>
-      </div>
+              </PromptInputFooter>
+            </PromptInput>
+          </div>
+        }
+      />
     </>
   );
 }

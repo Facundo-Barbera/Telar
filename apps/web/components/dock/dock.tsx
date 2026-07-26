@@ -358,6 +358,15 @@ function DockPanel({ entry }: { entry: DockEntry }) {
         <CompactMessages messages={rt?.messages ?? []} />
       </div>
 
+      {/* A turn the route rejected before the stream opened. It sits between the
+          transcript and the composer — next to the message that did not send,
+          not inside the transcript, because it is not something anyone said. */}
+      {rt?.error && (
+        <div className="shrink-0 border-t border-destructive/30 bg-destructive/10 px-3.5 py-2 text-[11px] text-destructive">
+          Message not sent — {rt.error}
+        </div>
+      )}
+
       <DockComposer id={entry.id} rt={rt} />
     </div>
   );

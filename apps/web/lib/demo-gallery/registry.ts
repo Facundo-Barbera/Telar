@@ -5,6 +5,7 @@
 import type { ComponentType } from "react";
 
 import { birthEntries } from "./entries/birth";
+import { conversationEntries } from "./entries/conversation";
 import { deliveryEntries } from "./entries/delivery";
 import { homeEntries } from "./entries/home";
 import { loomDetailEntries } from "./entries/loom-detail";
@@ -35,6 +36,7 @@ export const allEntries: DemoEntry[] = [
   ...loomDetailEntries,
   ...deliveryEntries,
   ...prepGateEntries,
+  ...conversationEntries,
   ...listsEntries,
   ...loomEntries,
   ...projectEntries,
@@ -57,6 +59,7 @@ export const GROUP_DEFS: DemoGroupDef[] = [
   { key: "ux-delivery", label: "UX 3 · Delivery card", concerns: ["ux-delivery"] },
   { key: "ux-prep-gate", label: "UX 4 · Readiness gate", concerns: ["ux-prep-gate"] },
   { key: "ux-workspace", label: "UX 5 · Workspace", concerns: ["ux-workspace"] },
+  { key: "ux-conversation", label: "UX 6 · Conversation", concerns: ["ux-conversation"] },
   { key: "sessions-chat", label: "Sessions & Chat", concerns: ["1.1", "1.3", "1.4", "1.6", "1.7"] },
   { key: "input-queue", label: "Input Bar & Queue", concerns: ["1.2", "1.5"] },
   { key: "dashboard-lists", label: "Dashboard & Lists", concerns: ["2", "5"] },

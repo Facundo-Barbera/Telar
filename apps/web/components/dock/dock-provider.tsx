@@ -69,6 +69,14 @@ export interface Runtime {
   // 1.5 queue-capable composer: messages typed while the session is working wait
   // here in order; the runtime host drains the head the moment it goes idle.
   queued: string[];
+  // The last turn's PRE-STREAM rejection, if any — a plain JSON 4xx from
+  // POST /api/chat, before an SSE stream ever existed (see the runtime host's
+  // sendTurn). It needs a field of its own because nothing else here can carry a
+  // sentence: `messages` is CompactMsg, whose three variants are all transcript
+  // content, and pushing a rejection through as `{ role: "assistant" }` would
+  // disguise a turn that never ran as a model reply. Cleared the moment the next
+  // send starts.
+  error?: string;
 }
 
 interface DockCtx {

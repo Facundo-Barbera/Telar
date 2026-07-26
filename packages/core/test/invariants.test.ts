@@ -26,6 +26,7 @@
 // was written; it is not a ceiling on what may be made executable here.
 //   INV-6  no SessionProfile field can widen a tool grant ........... AD-10
 //   INV-7  no TEST reaches the operator's real state root ........... AD-5
+//   INV-8  the Conversation shell owns no session semantics ......... AD-12, AD-13
 // INV-6 arrived with story 2.1, whose AC6 says in as many words that "the
 // invariant suite" is where that assertion belongs — and it belongs with the
 // other five rather than beside the type it guards because it is the same KIND
@@ -33,6 +34,18 @@
 // nothing would re-check. AD-10's failure mode is the moat "degrading from
 // structural to configurable", and making session config into DATA is exactly
 // the move that could cause it.
+//
+// INV-8 arrived with story 3.1 for the reason AD-19 itself gives. AD-12 (the
+// Conversation shell's four slots, and the rule that a registered item renderer
+// reads nothing from ambient context) and AD-13 (module-namespaced kind ids)
+// are load-bearing and were checked by NOTHING. They were frozen precisely so
+// epics 4, 5 and 6 could build owner adapters in parallel without coordinating,
+// and two of story 3.1's acceptance criteria are claims about CODE SHAPE that no
+// unit test can reach: with no DOM harness here, "this renderer reads no
+// context" is provable only by a static scan. AD-19's own `Binds:` list does not
+// name AD-12 — that is the gap, not a licence to leave it. INV-8's scope is
+// deliberately narrow: components/conversation/** and session-view.tsx, never
+// the whole tree.
 //
 // INV-7 is INV-3's MIRROR and arrived for a blunter reason: a test reaching the
 // operator's real ~/.telar has now happened FOUR separate times in one run (the
@@ -3733,5 +3746,518 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
     // INV-7 entry appearing here should be an argument someone has, not a line
     // that lands quietly.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-7")).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// INV-8 — the Conversation shell's contract, made executable. AD-12 / AD-13.
+// ===========================================================================
+//
+// WHY THIS EXISTS, and why it is not gold-plating. Two of story 3.1's
+// acceptance criteria are claims about CODE SHAPE rather than behaviour: "a
+// registered renderer reads nothing from ambient context" and "kind ids carry
+// their owning module and cannot collide" — the latter being a claim about
+// EVERY FUTURE registration, not about today's six. There is no DOM harness in
+// this repository, deliberately, so neither can be proven by rendering. AC5's
+// runtime half is a unit test (components/conversation/registry.test.ts). AC4's
+// purity is provable ONLY by a static scan, because a plain function called
+// during render CAN legally call a hook: the type states the shape and nothing
+// enforces it.
+//
+// AD-19 already mandates exactly this remedy for load-bearing invariants, and
+// its own `Binds:` list — AD-1, AD-2, AD-3, AD-5, AD-20 — does not include
+// AD-12. That is the gap, not a reason to leave it. The architecture froze this
+// contract precisely so epics 4, 5 and 6 could build owner adapters IN PARALLEL
+// without coordinating; a frozen contract that nothing re-checks is the failure
+// AD-19 was written for. The readiness report's UX-8 predicted the shape:
+// "verified by none of them individually — the classic shape of a constraint
+// that passes every unit check and fails in integration."
+//
+// AND IT IS BOUNDED. INV-8 scans apps/web/components/conversation/** and
+// session-view.tsx — a small, new, wholly-owned surface — never the whole tree.
+// Pointing INV-8b at apps/web/components/** would make every legitimate
+// useSidebar/useDock call in 100+ client files a violation, and the fix would be
+// to weaken the predicate, which is how a guard becomes a decoration.
+//
+// KNOWN_VIOLATIONS: INV-8 adds none. See INV-8h.
+
+const SHELL_ROOT = "apps/web/components/conversation/";
+const SHELL_FILES = INDEX.filter((f) => f.rel.startsWith(SHELL_ROOT) && !isTestFile(f.rel));
+const SESSION_VIEW_REL = "apps/web/components/session/session-view.tsx";
+
+// THE CLOSED DENYLIST. This is the executable form of "the shell owns no data
+// fetching and no session semantics" (AD-12). If you legitimately need a term on
+// this list inside components/conversation/**, you have almost certainly put
+// session semantics in the shell — the adapter owns those and hands the shell a
+// projection. Changing this list is a decision to record, not a detail to slip
+// in.
+const SHELL_DENYLIST: ReadonlyArray<[string, string]> = [
+  ["fetch(", "data fetching"],
+  ["new EventSource", "an event stream"],
+  ["consumeSSE", "the SSE wire format"],
+  ["window.addEventListener", "a window listener"],
+  ["localStorage", "browser storage"],
+  ["/api/", "a server route"],
+  ["sessionId", "session identity"],
+  ["permissionMode", "session permission policy"],
+  ["runId", "turn identity"],
+  ["accountEnv", "account resolution"],
+];
+
+// ── the ambient-context scan (shared by INV-8b and its discriminator) ───────
+// CODE-ONLY text: comments AND string bodies are blanked, because the question
+// is "does this file CALL a context hook", not "does it mention one". Every
+// header in components/conversation/ discusses the rule at length, and a scan
+// that read prose would fire on the documentation of itself.
+// The QUALIFIED form counts. components/ui/sidebar.tsx and
+// components/ui/carousel.tsx both write `React.useContext(…)`, so a pattern
+// anchored on the bare call would miss two of the eight contexts in the tree —
+// and, worse, would leave a renderer a one-token way to evade the rule. An
+// optional `<ident>.` prefix closes it; a name that merely CONTAINS the word
+// (`useContextHelper(`, `myuseContext(`) still does not match.
+const USE_CONTEXT_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?useContext\s*\(/;
+
+function ambientContextScan(
+  rel: string,
+  text: string,
+  hooks: readonly string[],
+): string[] {
+  const code = tokenize(text, true, true);
+  const out: string[] = [];
+  if (USE_CONTEXT_CALL.test(code)) {
+    out.push(
+      `${rel} calls useContext( directly. RULE (AD-12, and the fix architecture review's ` +
+        `finding A3 made to it): a registered item kind is a PURE FUNCTION of (payload, view) ` +
+        `and reads nothing from ambient context. CONSEQUENCE: the shell can no longer render a ` +
+        `transcript containing this kind outside whichever provider supplies that context — and ` +
+        `TranscriptView, which has no providers at all, can render NONE of its items. NEXT STEP: ` +
+        `move the value into the item PAYLOAD, which the owner adapter builds; a read-only ` +
+        `surface then omits the callback and the renderer degrades to non-interactive.`,
+    );
+  }
+  for (const hook of hooks) {
+    const called = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(hook)}\\s*\\(`);
+    if (called.test(code)) {
+      out.push(
+        `${rel} calls ${hook}(), which consumes a React context. RULE: same as above — a kind ` +
+          `renderer reads nothing ambient. CONSEQUENCE: this file becomes renderable only inside ` +
+          `${hook}'s provider, and any transcript mixing it with another module's kind becomes ` +
+          `renderable nowhere. NEXT STEP: take the value through the payload instead.`,
+      );
+      continue;
+    }
+    for (const stmt of importStatements(code)) {
+      if (new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(hook)}(?![A-Za-z0-9_$])`).test(stmt)) {
+        out.push(
+          `${rel} imports ${hook}, a context-consuming hook. RULE: same as above. CONSEQUENCE: ` +
+            `importing it is the step before calling it, and nothing else here would flag the ` +
+            `call. NEXT STEP: delete the import; owner data reaches a renderer through the ` +
+            `item payload.`,
+        );
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// ── the context inventory, RE-DERIVED every run (INV-8c feeds INV-8b) ──────
+// A restated literal is a COPY of a measurement, and a copy goes stale in
+// silence — which is precisely how story 2.1's `allow: []` survived authoring,
+// review and a commit. So the denylist INV-8b uses is DERIVED from the tree on
+// every run, and INV-8c fails the moment the derivation stops matching what has
+// been classified.
+type ContextInventory = { contexts: Array<[string, string]>; hooks: Array<[string, string]> };
+
+function deriveContextInventory(): ContextInventory {
+  const contexts: Array<[string, string]> = [];
+  const hooks: Array<[string, string]> = [];
+  const CREATE = /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*(?::[^=\n]*)?=\s*(?:[A-Za-z0-9_$]+\.)?createContext\s*[<(]/g;
+  // A hook is a declaration whose NAME starts with `use` + a capital — React's
+  // own rule, and the thing that makes walking back from a `useContext(` call to
+  // its enclosing hook reliable: `const ctx = useContext(X)` and
+  // `const local = useContext(Y)` are bindings, not hooks, and are skipped.
+  const DECL = /(?:^|\n)\s*(?:export\s+)?(?:const|function)\s+(use[A-Z][A-Za-z0-9_$]*)/g;
+  for (const f of INDEX) {
+    if (!f.rel.startsWith("apps/web/") || isTestFile(f.rel)) continue;
+    const code = tokenize(f.text, true, true);
+    for (const m of code.matchAll(CREATE)) contexts.push([f.rel, m[1]!]);
+    if (!USE_CONTEXT_CALL.test(code)) continue;
+    const decls = [...code.matchAll(DECL)].map((m) => ({ at: m.index ?? 0, name: m[1]! }));
+    const consuming = new RegExp(USE_CONTEXT_CALL.source, "g");
+    for (const use of code.matchAll(consuming)) {
+      const at = use.index ?? 0;
+      let owner: string | null = null;
+      for (const d of decls) {
+        if (d.at < at) owner = d.name;
+        else break;
+      }
+      if (owner && !hooks.some(([r, n]) => r === f.rel && n === owner)) hooks.push([f.rel, owner]);
+    }
+  }
+  return { contexts, hooks };
+}
+
+const CONTEXT_INVENTORY = deriveContextInventory();
+const CONTEXT_HOOKS = [...new Set(CONTEXT_INVENTORY.hooks.map(([, n]) => n))].sort();
+
+// The classification, measured at 75d3f12 and re-checked by INV-8c on every run.
+// A context or hook that appears here and NOT in the tree is a stale pin; one
+// that appears in the tree and NOT here fails INV-8c by name. Either way the
+// denylist cannot go quietly out of date.
+const CLASSIFIED_CONTEXTS: Readonly<Record<string, readonly string[]>> = {
+  "apps/web/components/ui/sidebar.tsx": ["SidebarContext"],
+  "apps/web/components/ui/carousel.tsx": ["CarouselContext"],
+  "apps/web/components/ai-elements/message.tsx": ["MessageBranchContext"],
+  "apps/web/components/dock/dock-provider.tsx": ["Ctx"],
+  "apps/web/components/ai-elements/prompt-input.tsx": [
+    "PromptInputController",
+    "ProviderAttachmentsContext",
+    "LocalAttachmentsContext",
+    "LocalReferencedSourcesContext",
+  ],
+};
+
+const CLASSIFIED_HOOKS: readonly string[] = [
+  "useSidebar",
+  "useCarousel",
+  "useMessageBranch",
+  "useDock",
+  "useDockOptional",
+  "usePromptInputController",
+  "useOptionalPromptInputController",
+  "useProviderAttachments",
+  "useOptionalProviderAttachments",
+  "usePromptInputAttachments",
+  "usePromptInputReferencedSources",
+];
+
+line(
+  `shell: ${SHELL_FILES.length} files under components/conversation · ` +
+    `${CONTEXT_INVENTORY.contexts.length} React contexts · ${CONTEXT_HOOKS.length} consuming hooks`,
+);
+
+// ── the barrel's pinned primitive group ─────────────────────────────────────
+const BARREL_REL = `${SHELL_ROOT}index.ts`;
+const PRIMITIVE_SENTINEL_OPEN = "// ── the primitives (INV-8f pins this group as an exact set)";
+const PRIMITIVE_SENTINEL_CLOSE = "// ── the shell and its contract (deliberately NOT pinned";
+
+function barrelPrimitiveExports(text: string): string[] {
+  const open = text.indexOf(PRIMITIVE_SENTINEL_OPEN);
+  const close = text.indexOf(PRIMITIVE_SENTINEL_CLOSE);
+  if (open === -1 || close === -1 || close < open) return [];
+  const slice = text.slice(open, close);
+  const names: string[] = [];
+  for (const m of slice.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const raw of m[1]!.split(",")) {
+      const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!.trim();
+      if (name) names.push(name);
+    }
+  }
+  return names.sort();
+}
+
+const EXPECTED_PRIMITIVES = [
+  "ApprovalCard",
+  "MarkdownPre",
+  "Marker",
+  "Message",
+  "MessageContent",
+  "MessageResponse",
+  "Shimmer",
+  "ToolStepGroup",
+  "ToolStepRow",
+  "WorkingIndicator",
+].sort();
+
+const EXPECTED_BUILTIN_KIND_IDS = [
+  "conversation:turn",
+  "conversation:text",
+  "conversation:thinking",
+  "conversation:tools",
+  "conversation:permission",
+  "conversation:marker",
+].sort();
+
+function builtinKindIds(itemsSrc: string): string[] {
+  const at = itemsSrc.indexOf("CONVERSATION_KINDS");
+  if (at === -1) return [];
+  const open = itemsSrc.indexOf("{", at);
+  const close = itemsSrc.indexOf("} as const", open);
+  if (open === -1 || close === -1) return [];
+  return [...itemsSrc.slice(open, close).matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+}
+
+// ── session-view.tsx: what stayed and what left ─────────────────────────────
+// Both directions in one place, because a carve-out fails in two ways and only
+// checking one of them is how you end up with a shell that quietly learned about
+// sessions, or an adapter that quietly kept its render loop.
+const STAYED_IN_ADAPTER: ReadonlyArray<[string, string]> = [
+  ["applyServerEvent", "the SSE switch"],
+  ["consumeSSE", "the wire reader"],
+  ['fetch("/api/chat"', "the turn POST"],
+  ["new EventSource(", "the live subscribers"],
+  ["setSessionCost", "the ledger readout (story 1.1's set-not-accumulate)"],
+];
+
+const MOVED_OUT_OF_ADAPTER: ReadonlyArray<[string, string]> = [
+  ["function groupParts", "the transcript projection"],
+  ["type RenderItem", "the projection's union"],
+  ["function PermissionCard", "the approval rendering"],
+  ["function ThinkingRow", "the thinking rendering"],
+  ["function ToolStepGroup", "the tool-group rendering"],
+  ["function AgentStepRow", "the agent-chip rendering"],
+  ["function renderAgentBucket", "the SECOND copy of the kind dispatch"],
+  ["ConversationContent", "the scroll viewport's content wrapper"],
+  ["ConversationScrollButton", "the scroll button"],
+  ["item.kind", "an inline kind switch"],
+  ["setGroupOverrides", "the tool-group disclosure map"],
+  ["setRowOverrides", "the tool-row disclosure map"],
+  ["setThinkingOpen", "the thinking disclosure map"],
+];
+
+describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-13", () => {
+  test("INV-8a the shell does no data fetching and holds no session semantics", () => {
+    // ANTI-VACUITY FIRST. Deleting components/conversation/ must not be a way to
+    // make this pass, and neither must a typo in the root prefix.
+    const broken: string[] = [];
+    if (SHELL_FILES.length < 6) {
+      broken.push(
+        `only ${SHELL_FILES.length} non-test files under ${SHELL_ROOT} (floor 6, measured 8) — ` +
+          `the WALK is broken or the directory moved, not the tree. Every assertion below would ` +
+          `hold over the empty set. NEXT STEP: fix SHELL_ROOT; do not relax the floor.`,
+      );
+    }
+    expect(broken).toEqual([]);
+
+    const violations: string[] = [];
+    for (const f of SHELL_FILES) {
+      for (const [needle, what] of SHELL_DENYLIST) {
+        if (!f.code.includes(needle)) continue;
+        violations.push(
+          `${f.rel} contains "${needle}" — ${what}. RULE (AD-12): the shell owns scrolling, ` +
+            `auto-follow and streaming affordances, and owns NO data fetching and NO session ` +
+            `semantics. CONSEQUENCE: every surface that renders a transcript now inherits this, ` +
+            `and the six hand-rebuilt chat lanes epic 3 exists to end start growing back one ` +
+            `prop at a time. NEXT STEP: the OWNER ADAPTER holds session state and hands the ` +
+            `shell a projection — put it there, not here. If you believe the term is genuinely ` +
+            `needed, say so in your story's completion notes rather than editing SHELL_DENYLIST ` +
+            `quietly.`,
+        );
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  test("INV-8b no file in the shell reads ambient React context", () => {
+    // THE INVARIANT AC4 has no other possible proof for. The hook list is
+    // DERIVED (INV-8c), never restated.
+    const violations = SHELL_FILES.flatMap((f) =>
+      ambientContextScan(f.rel, f.text, CONTEXT_HOOKS),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  test("INV-8c the context inventory is RE-DERIVED, so INV-8b's denylist cannot go stale", () => {
+    const broken: string[] = [];
+    if (CONTEXT_INVENTORY.contexts.length < 8) {
+      broken.push(
+        `only ${CONTEXT_INVENTORY.contexts.length} React contexts found across apps/web ` +
+          `(floor 8, measured 8) — the derivation is broken, so INV-8b would be scanning for an ` +
+          `empty hook list and passing over nothing.`,
+      );
+    }
+    if (CONTEXT_HOOKS.length < 11) {
+      broken.push(
+        `only ${CONTEXT_HOOKS.length} context-consuming hooks derived (floor 11, measured 11) — ` +
+          `same failure, one level down. INV-8b's denylist IS this list.`,
+      );
+    }
+    expect(broken).toEqual([]);
+
+    // A NEW context or hook that nobody classified is the exact drift this test
+    // exists to catch: INV-8b would keep passing while a ninth provider quietly
+    // became reachable from a renderer.
+    const unclassifiedContexts = CONTEXT_INVENTORY.contexts
+      .filter(([rel, name]) => !(CLASSIFIED_CONTEXTS[rel] ?? []).includes(name))
+      .map(
+        ([rel, name]) =>
+          `${rel} creates React context "${name}", which is not in CLASSIFIED_CONTEXTS. RULE ` +
+            `(story 3.1's maxim 3): a guard must read the same value as the thing it guards, so ` +
+            `INV-8b's denylist is derived from this inventory rather than restated. ` +
+            `CONSEQUENCE: an unclassified context means a hook nobody has decided about, and ` +
+            `INV-8b keeps passing while a kind renderer reaches for it. NEXT STEP: add it to ` +
+            `CLASSIFIED_CONTEXTS and its consuming hook(s) to CLASSIFIED_HOOKS — and check that ` +
+            `no file under ${SHELL_ROOT} wants it.`,
+      );
+    expect(unclassifiedContexts).toEqual([]);
+
+    const unclassifiedHooks = CONTEXT_HOOKS.filter((h) => !CLASSIFIED_HOOKS.includes(h)).map(
+      (h) =>
+        `apps/web declares context-consuming hook "${h}", which is not in CLASSIFIED_HOOKS. ` +
+          `RULE and CONSEQUENCE: as above. NEXT STEP: classify it, then re-run INV-8b — it is ` +
+          `already scanning for it, since the denylist is derived.`,
+    );
+    expect(unclassifiedHooks).toEqual([]);
+
+    // …and the pin is not one-directional: a CLASSIFIED hook that no longer
+    // exists means the classification has rotted the other way.
+    const vanished = CLASSIFIED_HOOKS.filter((h) => !CONTEXT_HOOKS.includes(h)).map(
+      (h) =>
+        `CLASSIFIED_HOOKS names "${h}", which no longer exists in apps/web. CONSEQUENCE: the ` +
+          `list has drifted from the tree, and a list that is wrong in one direction is not ` +
+          `trustworthy in the other. NEXT STEP: remove it, or find where the hook moved.`,
+    );
+    expect(vanished).toEqual([]);
+  });
+
+  test("INV-8d the scans DISCRIMINATE — both directions, through the same functions", () => {
+    // MANDATORY. Without this, INV-8a and INV-8b can pass vacuously, which is
+    // this house's named failure: "a green test can assert nothing." Fixtures are
+    // assembled at RUNTIME so this file's own text cannot be picked up by the
+    // scanners it is testing.
+    const ctxCall = "use" + "Context";
+    const dockHook = "use" + "Dock";
+    const scan = (src: string) => ambientContextScan("fixture.tsx", src, CONTEXT_HOOKS);
+
+    // A bare useContext call IS reported…
+    expect(scan(`const v = ${ctxCall}(SomeCtx);`).length).toBe(1);
+    expect(scan(`const v = ${ctxCall}(SomeCtx);`)[0]).toContain("finding A3");
+    // …and so is a named context hook, called or merely imported.
+    expect(scan(`const d = ${dockHook}();`).length).toBe(1);
+    expect(
+      scan(`import { ${dockHook} } from "@/components/dock/dock-provider";\n`).length,
+    ).toBe(1);
+
+    // A MENTION IS NOT A CALL. Every header under components/conversation/
+    // discusses this rule at length; a scan that read prose would fire on the
+    // documentation of itself.
+    expect(scan(`// never call ${ctxCall}( inside a renderer\n`)).toEqual([]);
+    expect(scan(`/* ${dockHook}() is forbidden here */\n`)).toEqual([]);
+    expect(scan(`const help = "do not call ${ctxCall}() here";`)).toEqual([]);
+    // The QUALIFIED form is a call too — two of the eight contexts in this tree
+    // are consumed exactly that way, so a scan blind to it would be blind to a
+    // one-token evasion as well.
+    expect(scan(`const v = React.${ctxCall}(SomeCtx);`).length).toBe(1);
+    // …but a name that merely CONTAINS the word is not.
+    expect(scan(`const v = my${ctxCall}(SomeCtx);`)).toEqual([]);
+    expect(scan(`const v = ${ctxCall}Helper(SomeCtx);`)).toEqual([]);
+    // …and an ordinary, permitted hook must NOT be reported, or the invariant
+    // would be "no hooks at all" and would get deleted rather than fixed.
+    expect(scan(`const [a, b] = useState(0);\nconst r = useRef(null);`)).toEqual([]);
+
+    // The DENYLIST scanner, same treatment. It reads `.code` (comments blanked,
+    // strings kept), so a URL in a string is caught and a URL in prose is not.
+    const denyScan = (src: string) =>
+      SHELL_DENYLIST.filter(([needle]) => stripComments(src).includes(needle)).map(([n]) => n);
+    expect(denyScan(`const r = await fetch("/api/chat");`).sort()).toEqual(["/api/", "fetch("]);
+    expect(denyScan(`const es = new EventSource(u);`)).toEqual(["new EventSource"]);
+    expect(denyScan(`function f(sessionId: string) {}`)).toEqual(["sessionId"]);
+    expect(denyScan(`// the adapter owns the fetch( to /api/ and the sessionId\n`)).toEqual([]);
+    expect(denyScan(`const view = { live: true };`)).toEqual([]);
+  });
+
+  test("INV-8e the shell is configured by PROPS, never by inheritance", () => {
+    // "Config over inheritance" (AD-12), made mechanical. `className` is not a
+    // false positive: \b requires a non-word character after `class`.
+    const violations: string[] = [];
+    for (const f of SHELL_FILES) {
+      for (const word of ["class", "extends"]) {
+        if (new RegExp(`\\b${word}\\b`).test(f.code)) {
+          violations.push(
+            `${f.rel} uses \`${word}\`. RULE (AD-12): the shell exposes four slots configured by ` +
+              `PROPS, never by inheritance — no subclassing, no extends, no cloneElement of a ` +
+              `caller's tree. CONSEQUENCE: a surface that must SUBCLASS the shell to change it is ` +
+              `a surface that has forked it, which is exactly the six-copies outcome epic 3 ` +
+              `exists to end. NEXT STEP: add a prop, or take the value through the item payload.`,
+          );
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  test("INV-8f the barrel's PRIMITIVES and the SIX built-in kind ids are exact-set pinned", () => {
+    const barrel = byRel.get(BARREL_REL);
+    if (!barrel) {
+      throw new Error(
+        `INV-8f: ${BARREL_REL} is not in the index. It is the "one roof" AC1 requires — the ` +
+          `single import path every conversational surface uses. CONSEQUENCE: the pin below can ` +
+          `no longer be checked and a later refactor could drop a primitive silently. NEXT STEP: ` +
+          `find where the barrel moved and update BARREL_REL.`,
+      );
+    }
+    // The PRIMITIVE group only. The shell/contract group is deliberately NOT
+    // pinned: it grows as the contract grows, and pinning it would make every
+    // legitimate addition look like a violation.
+    expect(barrelPrimitiveExports(barrel.text)).toEqual(EXPECTED_PRIMITIVES);
+    // The composer kit rides a star export — ~50 vendored symbols that move
+    // together — so its presence is asserted rather than its membership.
+    expect(barrel.code).toContain('export * from "@/components/ai-elements/prompt-input"');
+
+    const items = byRel.get(`${SHELL_ROOT}items.ts`);
+    if (!items) {
+      throw new Error(
+        `INV-8f: ${SHELL_ROOT}items.ts is not in the index — the built-in kind ids live there ` +
+          `and cannot be checked. NEXT STEP: update the path.`,
+      );
+    }
+    // An exact-set equality, so a SEVENTH built-in kind cannot appear without a
+    // deliberate edit to this pin. AD-13: every id is namespaced, including the
+    // built-ins — a bare "text" would be exactly the collision the rule prevents.
+    expect(builtinKindIds(items.code)).toEqual(EXPECTED_BUILTIN_KIND_IDS);
+    const kinds = byRel.get(`${SHELL_ROOT}kinds.tsx`);
+    expect(kinds).toBeDefined();
+    for (const id of EXPECTED_BUILTIN_KIND_IDS) {
+      const key = id.split(":")[1]!;
+      expect(kinds!.code).toContain(`CONVERSATION_KINDS.${key}`);
+    }
+  });
+
+  test("INV-8g session-view.tsx kept the STAYED set and lost the MOVED set", () => {
+    const donor = byRel.get(SESSION_VIEW_REL);
+    if (!donor) {
+      throw new Error(
+        `INV-8g: ${SESSION_VIEW_REL} is not in the index. It is the file the shell was carved ` +
+          `out of and the first owner adapter. CONSEQUENCE: the behaviour-unchanged claim (AC6) ` +
+          `has no mechanical half at all. NEXT STEP: if the file was renamed — the ` +
+          `SessionView → ProjectSessionView rename is a recorded, deliberate deferral — update ` +
+          `SESSION_VIEW_REL rather than deleting this test.`,
+      );
+    }
+
+    const missing = STAYED_IN_ADAPTER.filter(([needle]) => !donor.code.includes(needle)).map(
+      ([needle, what]) =>
+        `${SESSION_VIEW_REL} NO LONGER contains "${needle}" — ${what}. RULE (AC6): the carve-out ` +
+          `moved the RENDER SEAM and nothing else; route, state and API stayed in the adapter. ` +
+          `CONSEQUENCE: session semantics have followed the transcript into the shell, which ` +
+          `INV-8a forbids from the other side — between them the two assertions mean the ` +
+          `session lifecycle has nowhere left to live. NEXT STEP: put it back in the adapter.`,
+    );
+    expect(missing).toEqual([]);
+
+    const leftBehind = MOVED_OUT_OF_ADAPTER.filter(([needle]) => donor.code.includes(needle)).map(
+      ([needle, what]) =>
+        `${SESSION_VIEW_REL} STILL contains "${needle}" — ${what}. RULE (AC6 / AD-12): the ` +
+          `transcript's projection and its per-kind rendering live in ` +
+          `components/conversation/**, and the registry's first job was collapsing the TWO ` +
+          `copies of the dispatch this file used to hold. CONSEQUENCE: if a dispatch site is ` +
+          `still here, the registry has only been ADDED, not proven — and the seventh copy is ` +
+          `already inside the donor. NEXT STEP: render it through the registry.`,
+    );
+    expect(leftBehind).toEqual([]);
+
+    // The positive half of the same claim: the adapter really does render the
+    // shell, through the one import path.
+    expect(donor.code).toContain('from "@/components/conversation"');
+    expect(donor.code).toContain("<Conversation");
+  });
+
+  test("INV-8h the quarantine did not grow — INV-8 added no KNOWN_VIOLATIONS entry", () => {
+    // KNOWN_VIOLATIONS has held at exactly ONE entry across seven stories.
+    // INV-8 did not reach for it: components/conversation/** was written to the
+    // contract rather than excused from it. A future INV-8 entry appearing here
+    // should be an argument someone has, not a line that lands quietly.
+    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-8")).toEqual([]);
   });
 });

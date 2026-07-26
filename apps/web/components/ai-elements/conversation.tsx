@@ -1,5 +1,19 @@
 "use client";
 
+// YOU ARE PROBABLY LOOKING FOR components/conversation/ — its `Conversation` is
+// the app's chat SHELL (AD-12: four slots, an item-kind registry, scroll +
+// auto-follow + streaming). This file is the shell's INTERNAL scroll layer: a
+// thin vendored wrapper around use-stick-to-bottom that owns the viewport, its
+// content wrapper and its scroll button, and nothing else.
+//
+// Two things follow from that. The shell is the only importer of the
+// `Conversation` exported here, and components/conversation/index.ts
+// deliberately does NOT re-export it — so no module ever has both meanings of
+// the name in scope. And a surface that wants a chat window should import
+// `Conversation` from "@/components/conversation", never from here.
+//
+// Nothing else in this file changed when the shell was carved out.
+
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";

@@ -33,6 +33,11 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { consumeSSE } from "@/lib/sse";
+// Imported from the MODULE rather than components/conversation's barrel on
+// purpose: this host renders null and only needs one pure helper, and the barrel
+// would drag the whole shell (and the 1465-line composer kit) into the dock's
+// graph for no benefit.
+import { readPreStreamError } from "@/components/conversation/pre-stream-error";
 import { useDock, type CompactMsg } from "./dock-provider";
 
 const newRunId = () =>
@@ -236,7 +241,9 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       sendingRef.current = true;
       resetLive();
       liveMsgsRef.current = [{ role: "user", text }];
-      setRuntime(id, { working: true });
+      // Clear any previous rejection as this attempt starts — a stale sentence
+      // sitting above a turn that is now streaming reads as a fresh failure.
+      setRuntime(id, { working: true, error: undefined });
       commitLive();
 
       const sendAbort = new AbortController();
@@ -264,6 +271,19 @@ export function SessionRuntimeHost({ id }: { id: string }) {
             const { done } = await reader.read();
             if (done) break;
           }
+        } else {
+          // THE TURN WAS REJECTED BEFORE ANY STREAM EXISTED — a plain JSON 4xx
+          // (an unknown project/account, or a profile that forbids this turn).
+          // Until this arm existed the body was never read: nothing threw, the
+          // sibling catch never fired, and the `finally` below dispatched a
+          // refetch that reloaded the PERSISTED tail — which never contained the
+          // turn, because it never ran. The user's typed message simply
+          // disappeared. Surfacing the server's own sentence is the fix, and it
+          // goes to a real field rather than being pushed into liveMsgsRef as a
+          // synthetic assistant message: disguising a rejected turn as a model
+          // reply is a worse failure than the silence it replaces.
+          const detail = await readPreStreamError(res);
+          if (detail) setRuntime(id, { error: detail });
         }
       } catch {
         /* network drop / stopped — the tail + refetch below still reconcile */
