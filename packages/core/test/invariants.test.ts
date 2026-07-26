@@ -25,6 +25,7 @@
 // because it enumerates the five rules that were load-bearing when the spine
 // was written; it is not a ceiling on what may be made executable here.
 //   INV-6  no SessionProfile field can widen a tool grant ........... AD-10
+//   INV-7  no TEST reaches the operator's real state root ........... AD-5
 // INV-6 arrived with story 2.1, whose AC6 says in as many words that "the
 // invariant suite" is where that assertion belongs — and it belongs with the
 // other five rather than beside the type it guards because it is the same KIND
@@ -32,6 +33,16 @@
 // nothing would re-check. AD-10's failure mode is the moat "degrading from
 // structural to configurable", and making session config into DATA is exactly
 // the move that could cause it.
+//
+// INV-7 is INV-3's MIRROR and arrived for a blunter reason: a test reaching the
+// operator's real ~/.telar has now happened FOUR separate times in one run (the
+// tally is in INV-7's own header). The fourth occurrence was story 2.2's code
+// review catching it in the very story that was actively watching for the
+// class, which is the argument: the rule has to stop being something people
+// remember and start being something the suite enforces. Note the SCOPE
+// INVERSION — INV-7 is the one violation scan in this file that reads *.test.ts
+// and EXCLUDES production source, because a production module reaching the real
+// reader is the product working.
 //
 // THE ANTI-VACUITY RULE, which is the most important thing in this file. Every
 // invariant here is a source scan or a pinned inventory, and the characteristic
@@ -56,6 +67,10 @@
 //   - the VIOLATION sets are computed over a per-invariant FILTERED SCOPE, and
 //     every one of those scopes excludes *.test.ts / *.test.tsx — including this
 //     file. Do not "fix" that exclusion.
+// INV-7 is the ONE exception, by construction: its subject IS the test files, so
+// it scans this file too. That is deliberate and it is why its section carries
+// its own editing rule — never write a reader-surface name immediately followed
+// by `(` anywhere in here, in prose or in a template.
 // The discriminator fixtures are passed as in-memory strings assembled at
 // runtime rather than written as literal source, for the same reason.
 //
@@ -1681,6 +1696,10 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
 //
 // And this stays STATIC. "No module reads another's subtree" is a claim about
 // path composition; tracing reads at runtime would be a different, weaker test.
+//
+// THE MIRROR QUESTION — "does a TEST reach the real subtree at all?" — is INV-7,
+// at the bottom of this file. Same AD, opposite scope: INV-3 scans production
+// source and excludes tests; INV-7 scans tests and excludes production source.
 
 // The 18 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
 // it. It is the invariant's whole content.
@@ -2953,5 +2972,766 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
             `over the assertion here and accept the cost.`,
       );
     expect(missing).toEqual([]);
+  });
+});
+
+// ── INV-7 — no TEST reaches the operator's real state root (AD-5's sibling) ──
+// INV-3 asks whether PRODUCTION code reads someone else's subtree. INV-7 asks
+// the mirror question that four separate incidents in this repo have answered
+// "yes" to: does a TEST reach the REAL subtree at all?
+//
+// THE FOUR, because a rule with a body count is not a style preference:
+//   1. story 1.1 wrote a synthetic billing line into the operator's real
+//      ~/.telar. It is still there.
+//   2. story 1.3 re-armed the same weapon as an IN-PROCESS blank-TELAR_HOME
+//      probe — the resolver falls back to os.homedir() the moment the pin is
+//      blank, so "TELAR_HOME is set" and "TELAR_HOME is sandboxed" are not the
+//      same claim. track-a-prove-run.test.ts's L5 block says so in-source and
+//      spends a CHILD to avoid it.
+//   3. story 2.2 self-reported that getLoom calls ensureMigrated, which RENAMES
+//      DIRECTORIES under the resolved root — `runs/` becomes `looms/`, a
+//      `runs -> looms` symlink is left behind, `run.json` becomes `loom.json`.
+//      A read is a WRITE here.
+//   4. story 2.2's own code review then proved apps/web/lib/session-prompts.test.ts
+//      was executing exactly that. The negative-compile claim was written as
+//      `// @ts-expect-error` above a CALL, and a ts directive is a comment to
+//      the runtime: the call ran, injected no `read`, and fell through to the
+//      real loom store. That is discipline failing on the very story that was
+//      actively watching for this class — which is the whole argument for
+//      moving the rule out of people's heads and into the suite.
+//
+// WHAT IS SCANNED, and the scope is the exact inverse of every other invariant
+// in this file: *.test.ts / *.test.tsx ONLY. Production source is EXCLUDED
+// deliberately — apps/web/lib/session-profiles.ts's buildSteererProfile reaching
+// the real reader is not a bug, it is the product. The hazard is a TEST doing it.
+//
+// A NOTE FOR WHOEVER EDITS THIS SECTION. This file is a *.test.ts, so it is
+// scanned by its own scanner. Never write a surface name immediately followed by
+// `(` anywhere in this file — not in a message template, not in prose that
+// survives into a string. The names below live in a string ARRAY (no paren
+// follows) and every discriminator fixture is assembled from fragments at
+// RUNTIME, which is the same rule the header states for INV-1..INV-6.
+//
+// WHAT INV-7 DOES NOT CATCH, stated because a scanner whose limits are unwritten
+// gets trusted for things it never checked. This is a scan for CALL SITES BY
+// NAME, so a reader reached TRANSITIVELY through a function that is not on the
+// surface is invisible to it. The live example, measured rather than imagined:
+// apps/web/lib/session-profiles.test.ts drives buildSteererProfile through the
+// registry (`row.build(ctx(…))`, `resolveSessionProfile(ctx(…))`) dozens of
+// times without ever spelling the builder as a call, and those calls are safe
+// only because that file's `ctx()` helper never sets `loomId` — the composers
+// short-circuit to "" before reaching a reader when the id is absent. That is a
+// property of a test helper, not a sandbox, and INV-7 cannot see it. The same
+// goes for looms.ts's acceptLoom / listChildLooms and bundle.ts's writeContract
+// / quickBundle / snapshotBundle, each of which reaches a reader one hop down
+// (every test file calling them today pins TELAR_HOME, checked at authoring
+// time). Widening the surface to those names is a deliberate decision someone
+// can make later; pretending the current scan already covers them is not.
+
+// THE SURFACE, in two classes, because they fail differently.
+//
+// STATE_ROOT_READERS resolve the root THEMSELVES: getLoom, listLooms,
+// readBundleFile and readContract go through looms.ts's telarDir(), and the two
+// live-context readers plus the four appendix composers reach them by default —
+// `read` is an injectable seam on the two composers, and production never passes
+// one. Calling any of these decides which ~/.telar you touch by looking at the
+// ambient environment, which is why the enclosing FILE has to have pinned it.
+const STATE_ROOT_READERS: readonly string[] = [
+  "getLoom",
+  "listLooms",
+  "readBundleFile",
+  "readContract",
+  "buildSteererContext",
+  "buildEscalationContext",
+  "steererAppendix",
+  "escalationAppendix",
+  "buildSteererProfile",
+  "buildEscalationProfile",
+];
+
+// ROOT-PARAMETERIZED readers take the root as an ARGUMENT and resolve nothing.
+// deriveDeliverableSignal is in the escalation live-read chain and belongs in
+// the inventory, but it cannot reach the state root — and that is a property of
+// its MODULE, re-checked by INV-7e rather than assumed. The day
+// deliverable-signal.ts learns to resolve TELAR_HOME, the exemption dies and
+// every call site in deliverable-signal.test.ts becomes a violation.
+const ROOT_PARAMETERIZED_READERS: readonly string[] = ["deriveDeliverableSignal"];
+
+const READER_SURFACE: readonly string[] = [...STATE_ROOT_READERS, ...ROOT_PARAMETERIZED_READERS];
+
+// The two composers that take a `read` seam. buildSteererProfile /
+// buildEscalationProfile take a resolution CONTEXT and have no seam, so they
+// are never satisfiable by injection — only by a pin or a sandboxed child.
+const INJECTABLE_COMPOSERS: readonly string[] = ["steererAppendix", "escalationAppendix"];
+
+const INJECTED_READER = /(?<![A-Za-z0-9_$.])read\s*:/;
+
+// AN IMPORT RENAME IS A ONE-TOKEN HOLE, a NAMESPACE binding is a second one, and
+// a DYNAMIC import is a third — and the third is not hypothetical: measured on
+// today's tree, track-a-prove-run.test.ts binds `const looms = await
+// import("../src/looms")` and then calls `looms.getLoom(…)`. That file is
+// correctly pinned, so it is not a violation; it was INVISIBLE, which is worse
+// than a violation because the scan reads as complete while a whole binding form
+// walks past it. moduleEdgeStatements only knows STATIC edges, so the dynamic
+// forms are collected separately here.
+//
+// The honest remaining limit: a binding laundered through a call
+// (`(await import("…")).then(m => m.getLoom)`, a destructure of a variable) is
+// not resolved. Nothing in the tree does that, and widening to it would need
+// real dataflow rather than a per-file binding set.
+type ReaderBindings = { plain: Array<{ local: string; canonical: string }>; namespaces: string[] };
+function readerBindings(source: string): ReaderBindings {
+  const plain = READER_SURFACE.map((n) => ({ local: n, canonical: n }));
+  const namespaces: string[] = [];
+  for (const stmt of moduleEdgeStatements(source)) {
+    for (const b of edgeBindings(stmt)) {
+      if (b.typeOnly) continue;
+      if (b.namespace) {
+        if (b.local !== "*") namespaces.push(b.local);
+      } else if (READER_SURFACE.includes(b.imported) && b.local !== b.imported) {
+        plain.push({ local: b.local, canonical: b.imported });
+      }
+    }
+  }
+  // `const looms = await import("…")` — a namespace binding by another spelling.
+  const dynNs = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+import\s*\(/g;
+  for (let m = dynNs.exec(source); m; m = dynNs.exec(source)) namespaces.push(m[1]!);
+  // `const { getLoom: load } = await import("…")` — the destructured form, which
+  // renames exactly as a static specifier does.
+  const dynDestructure = /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*await\s+import\s*\(/g;
+  for (let m = dynDestructure.exec(source); m; m = dynDestructure.exec(source)) {
+    for (const raw of m[1]!.split(",")) {
+      const spec = /^\s*([A-Za-z0-9_$]+)\s*(?::\s*([A-Za-z0-9_$]+)\s*)?$/.exec(raw);
+      if (!spec || !READER_SURFACE.includes(spec[1]!)) continue;
+      const local = spec[2] ?? spec[1]!;
+      if (local !== spec[1]!) plain.push({ local, canonical: spec[1]! });
+    }
+  }
+  return { plain, namespaces };
+}
+
+// The text between a call's parentheses. Depth counts () {} [] together, the
+// same compromise typeLiteralFields makes and for the same reason: `<` and `>`
+// are ambiguous in TS and mis-counting them truncates silently. Bounded, so a
+// stray unbalanced paren cannot make this read the rest of the file.
+function parenBody(source: string, openAt: number): string {
+  let depth = 0;
+  const limit = Math.min(source.length, openAt + 4000);
+  for (let i = openAt; i < limit; i++) {
+    const ch = source[i]!;
+    if (ch === "(" || ch === "{" || ch === "[") depth++;
+    else if (ch === ")" || ch === "}" || ch === "]") {
+      depth--;
+      if (depth === 0) return source.slice(openAt + 1, i);
+    }
+  }
+  return source.slice(openAt + 1, limit);
+}
+
+type ReaderCall = { at: number; name: string; local: string; args: string };
+
+// Takes a SOURCE STRING and never a file, so INV-7d's fixtures run this exact
+// function. `bindings` is passed in because the import statements live in the
+// comments-blanked text while the call sites are counted in the fully-blanked
+// text — computing them from the latter would find no module specifiers at all.
+function readerCallSites(source: string, bindings: ReaderBindings): ReaderCall[] {
+  const hits: ReaderCall[] = [];
+  const collect = (local: string, canonical: string, pattern: string) => {
+    const re = new RegExp(pattern, "g");
+    for (let m = re.exec(source); m; m = re.exec(source)) {
+      const openAt = m.index + m[0].length - 1;
+      hits.push({ at: m.index, name: canonical, local, args: parenBody(source, openAt) });
+    }
+  };
+  for (const b of bindings.plain) {
+    collect(b.local, b.canonical, `(?<![A-Za-z0-9_$.])${escapeRe(b.local)}\\s*\\(`);
+  }
+  for (const ns of bindings.namespaces) {
+    for (const canonical of READER_SURFACE) {
+      collect(
+        `${ns}.${canonical}`,
+        canonical,
+        `(?<![A-Za-z0-9_$.])${escapeRe(ns)}\\s*\\.\\s*${escapeRe(canonical)}\\s*\\(`,
+      );
+    }
+  }
+  return hits.sort((a, b) => a.at - b.at || (a.local < b.local ? -1 : 1));
+}
+
+// ── is this root a sandbox? ─────────────────────────────────────────────────
+// The question every mechanism below reduces to, and the one story 1.3 got
+// wrong: "TELAR_HOME is assigned" is NOT the claim. looms.ts resolves
+// `process.env.TELAR_HOME?.trim()` and falls back to os.homedir() the moment the
+// value is empty or whitespace, so a blank pin IS the real store with extra
+// steps. A root counts as sandboxed only if the expression reaches an
+// mkdtemp/tmpdir construction, following local bindings a bounded number of hops
+// (weave.test.ts pins `path.join(home, "not-a-dir")`, which is two).
+// NOT the dot-excluding lookbehind the call-site scans use, and the difference
+// is the whole detector: `fs.mkdtempSync(…)` and `os.tmpdir()` are MEMBER
+// ACCESSES, so excluding `.` here matches nothing at all and every file in the
+// tree reads as unpinned.
+const TEMP_ROOT_CALL = /(?<![A-Za-z0-9_$])(?:mkdtemp|mkdtempSync|tmpdir)\s*\(/;
+// `process`/`env` are property paths, not bindings; TELAR_HOME is an env KEY and
+// tracing it would let one file's sandboxed pin vouch for another expression's
+// blankness in the same file.
+const NEVER_TRACED = new Set(["process", "env", "TELAR_HOME", "path", "os", "fs", "JSON", "String"]);
+
+type RootKind = "sandboxed" | "blank" | "unknown";
+
+// From `at` to the end of the expression: the first `;`, `,` or newline at depth
+// zero. Bounded, for the same reason parenBody is.
+function statementTail(code: string, at: number): string {
+  let depth = 0;
+  const limit = Math.min(code.length, at + 400);
+  for (let i = at; i < limit; i++) {
+    const ch = code[i]!;
+    if (ch === "(" || ch === "{" || ch === "[") depth++;
+    else if (ch === ")" || ch === "}" || ch === "]") {
+      if (depth === 0) return code.slice(at, i);
+      depth--;
+    } else if ((ch === ";" || ch === "," || ch === "\n") && depth === 0) {
+      return code.slice(at, i);
+    }
+  }
+  return code.slice(at, limit);
+}
+
+// Every initializer or re-assignment of `id` in this source. Six is plenty: a
+// root pinned once at module scope and re-pinned in a beforeEach is the idiom.
+function bindingInitializers(code: string, id: string): string[] {
+  const out: string[] = [];
+  const re = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(id)}\\s*=(?![=>])`, "g");
+  for (let m = re.exec(code); m && out.length < 6; m = re.exec(code)) {
+    out.push(statementTail(code, m.index + m[0].length));
+  }
+  return out;
+}
+
+function rootExprKind(code: string, expr: string, seen: Set<string> = new Set()): RootKind {
+  const e = expr.trim().replace(/[;,]+$/, "").trim();
+  if (e === "" || e === "undefined") return "blank";
+  const literal = /^(["'`])([\s\S]*)\1$/.exec(e);
+  // A literal is the whole answer: whitespace-only is story 1.3's shape, and any
+  // other literal is a path nobody built with mkdtemp, so it is not a sandbox.
+  if (literal) return literal[2]!.trim() === "" ? "blank" : "unknown";
+  if (TEMP_ROOT_CALL.test(e)) return "sandboxed";
+  if (seen.size > 8) return "unknown";
+  let sawBlank = false;
+  for (const id of new Set(e.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? [])) {
+    if (NEVER_TRACED.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    for (const init of bindingInitializers(code, id)) {
+      const kind = rootExprKind(code, init, seen);
+      if (kind === "sandboxed") return "sandboxed";
+      if (kind === "blank") sawBlank = true;
+    }
+  }
+  return sawBlank ? "blank" : "unknown";
+}
+
+// ── the three sanctioned mechanisms ─────────────────────────────────────────
+
+const lineAt = (code: string, at: number): string => {
+  const start = code.lastIndexOf("\n", at) + 1;
+  const end = code.indexOf("\n", at);
+  return code.slice(start, end === -1 ? code.length : end);
+};
+
+// `const ORIGINAL_HOME = process.env.TELAR_HOME` — a SAVE. A `delete` or a blank
+// assignment on a line that mentions one of these is putting the caller's
+// environment back, which is hygiene (bun runs every suite in ONE process), not
+// an unpinning. A BARE `delete process.env.TELAR_HOME` in the middle of a test
+// is the other thing entirely, and stays counted.
+function savedRootNames(code: string): string[] {
+  const out: string[] = [];
+  const re = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*process\.env\.TELAR_HOME/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) out.push(m[1]!);
+  return out;
+}
+
+type PinAnalysis = { assignments: number; sandboxed: number; unpins: number };
+
+function telarHomePins(code: string): PinAnalysis {
+  const saved = savedRootNames(code);
+  const restoreShaped = (at: number): boolean =>
+    saved.some((n) =>
+      new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(n)}(?![A-Za-z0-9_$])`).test(lineAt(code, at)),
+    );
+  let assignments = 0;
+  let sandboxed = 0;
+  let unpins = 0;
+  const assign = /process\.env\.TELAR_HOME\s*=(?![=>])/g;
+  for (let m = assign.exec(code); m; m = assign.exec(code)) {
+    assignments++;
+    const kind = rootExprKind(code, statementTail(code, m.index + m[0].length));
+    if (kind === "sandboxed") sandboxed++;
+    else if (kind === "blank" && !restoreShaped(m.index)) unpins++;
+  }
+  const del = /delete\s+process\.env\.TELAR_HOME/g;
+  for (let m = del.exec(code); m; m = del.exec(code)) {
+    if (!restoreShaped(m.index)) unpins++;
+  }
+  return { assignments, sandboxed, unpins };
+}
+
+const SPAWN_CALL = /(?<![A-Za-z0-9_$])(?:spawnSync|spawn|execFileSync|execFile|execSync|fork)\s*\(/;
+
+// A child gets its own env, so it can be sandboxed TWO ways and both are in use
+// here: TELAR_HOME pointed at a throwaway (session-profiles.test.ts) or HOME
+// pointed at one so the os.homedir() FALLBACK lands in the throwaway too
+// (track-a-prove-run.test.ts, whose child sets TELAR_HOME to whitespace ON
+// PURPOSE — that is the property under test). HOME is a child-only mechanism:
+// re-pointing it in the shared bun process would move the fallback for every
+// other suite at once.
+function sandboxedChildEnv(code: string): boolean {
+  if (!SPAWN_CALL.test(code)) return false;
+  for (const key of ["TELAR_HOME", "HOME"]) {
+    const re = new RegExp(`(?<![A-Za-z0-9_$."'\`])${key}\\s*:`, "g");
+    for (let m = re.exec(code); m; m = re.exec(code)) {
+      if (rootExprKind(code, statementTail(code, m.index + m[0].length)) === "sandboxed") return true;
+    }
+  }
+  return false;
+}
+
+// ── the per-file verdict ────────────────────────────────────────────────────
+
+type ReaderScan = {
+  file: string;
+  exec: ReaderCall[]; // really executes in the shared bun process
+  probe: ReaderCall[]; // source TEXT for another process
+  pins: PinAnalysis;
+  pinned: boolean;
+  spawns: boolean;
+  child: boolean;
+  mechanisms: string[];
+  violations: string[];
+};
+
+const lineOf = (text: string, at: number): number => text.slice(0, at).split("\n").length;
+
+// A `${…}` INTERPOLATION IS CODE, and the tokenizer says otherwise. Its header
+// states the limit in as many words — "`${…}` inside a template literal is
+// treated as string content, not as code" — which is harmless for INV-2 and
+// INV-5 and is a HOLE here: `` `${looms.getLoom(id)!.state} · …` `` in
+// track-a-prove-run.test.ts really does call the reader, in this process, right
+// there. Left unhandled it would be filed as child-probe text, and a file that
+// spawns nothing would then owe nothing at all.
+//
+// Rather than change the tokenizer under INV-2 and INV-5, the classification is
+// corrected here: walking back from the hit through the RAW text, an interpolation
+// opened more recently than any backtick means the hit is inside `${…}` and
+// executes. Fixing this direction matters more than the reverse — misfiling an
+// exec site as a probe makes an invariant PASS.
+const insideInterpolation = (text: string, at: number): boolean => {
+  const before = text.slice(0, at);
+  return before.lastIndexOf("${") > before.lastIndexOf("`");
+};
+
+// EXEC vs PROBE is decided by OFFSET, which is only possible because tokenize
+// preserves length: a call site present in the comments-blanked text but absent
+// from the fully-blanked text is inside a string literal, i.e. it is source code
+// for a child process rather than code that runs here. Both classes matter and
+// they carry different obligations.
+function readerSafetyScan(rel: string, text: string, holdsExemption: boolean): ReaderScan {
+  const code = stripComments(text); // strings intact — imports and pins live here
+  const codeOnly = stripStringLiterals(text); // what actually EXECUTES
+  const bindings = readerBindings(code);
+  const everywhere = readerCallSites(code, bindings);
+  const execKeys = new Set(readerCallSites(codeOnly, bindings).map((h) => `${h.at}:${h.local}`));
+  const runsHere = (h: ReaderCall): boolean =>
+    execKeys.has(`${h.at}:${h.local}`) || insideInterpolation(text, h.at);
+  const exec = everywhere.filter(runsHere);
+  const probe = everywhere.filter((h) => !runsHere(h));
+
+  const pins = telarHomePins(code);
+  const pinned = pins.sandboxed > 0 && pins.unpins === 0;
+  const spawns = SPAWN_CALL.test(code);
+  const child = sandboxedChildEnv(code);
+
+  const violations: string[] = [];
+  const mechanisms = new Set<string>();
+  for (const call of exec) {
+    if (holdsExemption && ROOT_PARAMETERIZED_READERS.includes(call.name)) {
+      mechanisms.add("root-parameterized");
+      continue;
+    }
+    if (INJECTABLE_COMPOSERS.includes(call.name) && INJECTED_READER.test(call.args)) {
+      mechanisms.add("injected");
+      continue;
+    }
+    if (pinned) {
+      mechanisms.add("pinned");
+      continue;
+    }
+    violations.push(
+      `${rel}:${lineOf(text, call.at)} calls ${call.local} in the SHARED bun test process, and ` +
+        `this file neither pins TELAR_HOME to an mkdtemp'd root nor injects a reader` +
+        (pins.assignments > 0
+          ? ` (it assigns TELAR_HOME ${pins.assignments}x, but ${pins.sandboxed} of those reach a ` +
+            `temp dir and ${pins.unpins} blank or delete it outright — an unpinned root falls back ` +
+            `to os.homedir() plus .telar)`
+          : ` (it never assigns TELAR_HOME at all)`) +
+        `. AD-5 — one owner per state-root subtree, and a test is not one of them. CONSEQUENCE: ` +
+        `this runs against the operator's REAL ~/.telar. It is not merely a read: getLoom calls ` +
+        `ensureMigrated, which RENAMES runs/ to looms/, leaves a runs -> looms symlink behind and ` +
+        `renames run.json to loom.json. Story 1.1 put a synthetic billing line in the real store ` +
+        `this way and it is still there. NEXT STEP: pick ONE of the three sanctioned mechanisms — ` +
+        `pin process.env.TELAR_HOME to an fs.mkdtempSync root at module scope AND re-pin it in a ` +
+        `beforeEach (the core house idiom; bun runs every suite in one process), or pass an ` +
+        `injected read to the composer (the apps/web/lib/session-prompts.test.ts idiom), or move ` +
+        `the call into a child spawned with a throwaway TELAR_HOME and HOME (the ` +
+        `apps/web/lib/session-profiles.test.ts idiom). Do NOT blank TELAR_HOME in this process to ` +
+        `"disable" the read — that is story 1.3's shape and it resolves to the real store.`,
+    );
+  }
+  if (probe.length > 0 && spawns) {
+    if (child) mechanisms.add("child");
+    else {
+      violations.push(
+        `${rel}:${lineOf(text, probe[0]!.at)} writes ${probe.length} reader-reaching call site(s) ` +
+          `as SOURCE TEXT for a child process (${probe.map((p) => p.local).join(", ")}) and spawns ` +
+          `a child, but no spawn in this file hands the child a sandboxed TELAR_HOME or HOME. ` +
+          `AD-5 — a child inherits the parent's env unless told otherwise, so an unsandboxed child ` +
+          `resolves the OPERATOR's ~/.telar. CONSEQUENCE: the same directory renames as the ` +
+          `in-process case, in a process whose output nobody reads. NEXT STEP: pass ` +
+          `env: { ...process.env, HOME: <mkdtemp>, TELAR_HOME: <mkdtemp> } to the spawn.`,
+      );
+    }
+  }
+  return { file: rel, exec, probe, pins, pinned, spawns, child, mechanisms: [...mechanisms].sort(), violations };
+}
+
+// THE EXEMPTION, ASSERTED RATHER THAN ASSUMED. deriveDeliverableSignal walks the
+// PROJECT root it is handed and resolves no state root — so its call sites need
+// no sandbox. That is only true while its module stays root-parameterized, so
+// the property is measured here and re-checked by INV-7e.
+const DELIVERABLE_SIGNAL_SRC = byRel.get("packages/core/src/deliverable-signal.ts");
+const ROOT_PARAMETERIZED_HOLDS =
+  !!DELIVERABLE_SIGNAL_SRC &&
+  !DELIVERABLE_SIGNAL_SRC.code.includes("TELAR_HOME") &&
+  homeRootDerivations(DELIVERABLE_SIGNAL_SRC.code) === 0 &&
+  rootCompositionSites(
+    DELIVERABLE_SIGNAL_SRC.code,
+    resolverNamesIn(DELIVERABLE_SIGNAL_SRC.code),
+  ).length === 0 &&
+  readerCallSites(
+    DELIVERABLE_SIGNAL_SRC.code,
+    readerBindings(DELIVERABLE_SIGNAL_SRC.code),
+  ).every((c) => !STATE_ROOT_READERS.includes(c.name));
+
+// THE SCANNED SCOPE — the exact inverse of NON_TEST, and the only violation
+// scope in this file that is not filtered to production source.
+const TEST_FILES = INDEX.filter((f) => isTestFile(f.rel));
+const READER_SCANS = TEST_FILES.map((f) => readerSafetyScan(f.rel, f.text, ROOT_PARAMETERIZED_HOLDS))
+  .filter((s) => s.exec.length + s.probe.length > 0);
+const READER_EXEC_SITES = READER_SCANS.reduce((n, s) => n + s.exec.length, 0);
+const READER_PROBE_SITES = READER_SCANS.reduce((n, s) => n + s.probe.length, 0);
+
+line(
+  `readers: ${READER_SCANS.length}/${TEST_FILES.length} test files reach the reader surface · ` +
+    `${READER_EXEC_SITES} in-process call sites · ${READER_PROBE_SITES} child-probe call sites`,
+);
+if (VERBOSE) {
+  for (const s of READER_SCANS) {
+    line(
+      `  ${s.file} — ${s.exec.length} exec / ${s.probe.length} probe · ` +
+        `[${s.mechanisms.join("+") || "NONE"}]${s.violations.length ? " · VIOLATES" : ""}`,
+    );
+  }
+}
+
+describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's mirror", () => {
+  test("INV-7a the anti-vacuity floor — the scan found the surface, and all three mechanisms are in use", () => {
+    // Anti-vacuity FIRST, and with more than a count: this scan's characteristic
+    // failure is that a renamed export or an edited regex quietly matches
+    // nothing, and "no test reaches a reader" then holds forever over the empty
+    // set. So the floors below assert the SHAPE of the result as well as its
+    // size — if every safe file were safe by the same mechanism, two thirds of
+    // the predicate would be untested by today's tree and free to rot.
+    const broken: string[] = [];
+    if (TEST_FILES.length < 100) {
+      broken.push(
+        `only ${TEST_FILES.length} *.test.ts files in the index (floor 100, measured 121) — the ` +
+          `WALK is broken, not the tree. INV-7 scans exactly this set.`,
+      );
+    }
+    if (READER_SCANS.length < 25) {
+      broken.push(
+        `only ${READER_SCANS.length} test files reach the reader surface (floor 25, measured 30) — ` +
+          `readerCallSites or READER_SURFACE is broken. The violation set below would be empty ` +
+          `because nothing was scanned, not because nothing is wrong.`,
+      );
+    }
+    if (READER_EXEC_SITES < 100) {
+      broken.push(
+        `only ${READER_EXEC_SITES} in-process reader call sites found (floor 100, measured 179) — ` +
+          `the same failure, one level down.`,
+      );
+    }
+    if (READER_PROBE_SITES < 3) {
+      broken.push(
+        `only ${READER_PROBE_SITES} child-probe call sites found (floor 3, measured 13) — the ` +
+          `EXEC/PROBE split is broken. Both halves are load-bearing: if every hit landed in the ` +
+          `in-process class, the child-process mechanism below would never be exercised.`,
+      );
+    }
+    for (const mechanism of ["pinned", "injected", "child", "root-parameterized"]) {
+      const users = READER_SCANS.filter((s) => s.mechanisms.includes(mechanism)).length;
+      if (users === 0) {
+        broken.push(
+          `NO test file is safe by the "${mechanism}" mechanism, so that arm of the predicate is ` +
+            `dead code and nothing would notice if it stopped working. Either the mechanism ` +
+            `detector broke, or the last file using it changed — find out which before relaxing ` +
+            `anything.`,
+        );
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
+  test("INV-7b every test file that reaches a reader is sandboxed, injected, or child-spawned", () => {
+    // THE INVARIANT. Everything above is the machinery; this is the claim.
+    const violations = READER_SCANS.flatMap((s) => s.violations);
+    expect(violations).toEqual([]);
+  });
+
+  test("INV-7c the POSITIVE CONTROLS — the two known-good idioms are really found, and by name", () => {
+    // A scanner that silently matches nothing is worse than no scanner, so the
+    // two files that already do this correctly are pinned BY NAME and BY
+    // MECHANISM. If either stops being found, the scan has gone blind and this
+    // fails before INV-7b can pass vacuously.
+    const profiles = READER_SCANS.find((s) => s.file === "apps/web/lib/session-profiles.test.ts");
+    if (!profiles) {
+      throw new Error(
+        `INV-7: apps/web/lib/session-profiles.test.ts is NOT in the reader scan at all. It spawns ` +
+          `a child whose probe source composes a steerer and an escalation profile — the ` +
+          `canonical child-process idiom in this repo. CONSEQUENCE: if the scanner cannot see ` +
+          `THAT, it can see nothing, and INV-7b is passing over an empty set. NEXT STEP: the scan ` +
+          `is broken (READER_SURFACE, readerCallSites, or the EXEC/PROBE offset split) — do not ` +
+          `delete this assertion.`,
+      );
+    }
+    // Found as a CHILD-PROBE site specifically: the composer calls live inside
+    // the probe's template literal, so they must NOT be counted as executing
+    // here, and the file must be credited with the sandboxed child.
+    expect(profiles.probe.length).toBeGreaterThanOrEqual(2);
+    expect(profiles.probe.map((p) => p.name).sort()).toContain("buildSteererProfile");
+    expect(profiles.spawns).toBe(true);
+    expect(profiles.child).toBe(true);
+    expect(profiles.mechanisms).toContain("child");
+    expect(profiles.violations).toEqual([]);
+    // …and it is NOT quietly passing because it pins a root in-process: it does
+    // not, deliberately (its header says "Never mutate process.env.TELAR_HOME in
+    // the shared test process").
+    expect(profiles.pinned).toBe(false);
+
+    // The other idiom, and the file the whole invariant comes from. Every
+    // composer call in session-prompts.test.ts passes `read`, and the file pins
+    // NOTHING — so it is safe by injection ALONE. Before story 2.2's review it
+    // had one call that did not, and that call reached the real loom store.
+    const prompts = READER_SCANS.find((s) => s.file === "apps/web/lib/session-prompts.test.ts");
+    if (!prompts) {
+      throw new Error(
+        `INV-7: apps/web/lib/session-prompts.test.ts is NOT in the reader scan. This is the file ` +
+          `whose un-injected composer call executed against the operator's real loom store and is ` +
+          `the reason INV-7 exists. CONSEQUENCE: the scanner cannot see the exact shape it was ` +
+          `written to catch. NEXT STEP: fix readerCallSites; do not delete this assertion.`,
+      );
+    }
+    expect(prompts.exec.length).toBeGreaterThanOrEqual(5);
+    expect(prompts.pinned).toBe(false);
+    expect(prompts.child).toBe(false);
+    expect(prompts.mechanisms).toEqual(["injected"]);
+    expect(prompts.violations).toEqual([]);
+  });
+
+  test("INV-7d the scan DISCRIMINATES — an un-injected call is reported, every sanctioned shape is not", () => {
+    // Fed through the SAME function the real scan uses, from fixtures assembled
+    // at RUNTIME so this file's own text cannot be picked up by the scan it is
+    // testing (packages/core/test is one of the walked roots and *.test.ts is
+    // exactly what INV-7 scans).
+    const composer = "escalation" + "Appendix";
+    const steerer = "steerer" + "Appendix";
+    const reader = "get" + "Loom";
+    const signal = "derive" + "DeliverableSignal";
+    const temp = "fs.mkdtemp" + "Sync(path.join(os.tmpdir(), \"telar-fixture-\"))";
+    const pin = "process.env.TELAR_HOME";
+    const scan = (src: string) => readerSafetyScan("fixture.test.ts", src, ROOT_PARAMETERIZED_HOLDS);
+
+    // THE SHAPE THAT BROKE: a composer call with no `read`, in a file that pins
+    // nothing. This is session-prompts.test.ts's pre-review line, reconstructed.
+    const bare = scan(`const a = ${composer}({ loomId: "loom_1", cwd: "/repos/demo" });`);
+    expect(bare.exec.length).toBe(1);
+    expect(bare.violations.length).toBe(1);
+    expect(bare.violations[0]).toContain("neither pins TELAR_HOME");
+
+    // …and the injected form of the SAME call is clean, because an invariant
+    // that fires on correct code gets deleted rather than fixed.
+    const injected = scan(
+      `const a = ${composer}({ loomId: "loom_1", cwd: "/repos/demo", read: () => "x" });`,
+    );
+    expect(injected.exec.length).toBe(1);
+    expect(injected.violations).toEqual([]);
+    expect(injected.mechanisms).toEqual(["injected"]);
+    // The steerer composer takes the same seam, and a `read` on a DIFFERENT call
+    // must not vouch for this one — each call site is judged on its own args.
+    expect(scan(`${steerer}({ loomId: "x", ultraAnnotated: false, read: () => "y" });`).violations)
+      .toEqual([]);
+    expect(
+      scan(
+        `${steerer}({ loomId: "x", ultraAnnotated: false, read: () => "y" });\n` +
+          `${steerer}({ loomId: "x", ultraAnnotated: false });`,
+      ).violations.length,
+    ).toBe(1);
+
+    // A bare state-root reader has no seam at all, so only a pin will do.
+    expect(scan(`const l = ${reader}("loom_1");`).violations.length).toBe(1);
+    expect(scan(`${pin} = ${temp};\nconst l = ${reader}("loom_1");`).violations).toEqual([]);
+    // A `read` property cannot launder a reader that has no such parameter.
+    expect(scan(`const l = ${reader}({ read: () => "x" });`).violations.length).toBe(1);
+
+    // STORY 1.3's SHAPE, which is the one a naive "does it set TELAR_HOME" check
+    // waves through: a blank pin resolves to os.homedir() plus .telar, i.e. the
+    // real store. Whitespace and "" both.
+    expect(scan(`${pin} = "";\nconst l = ${reader}("loom_1");`).violations.length).toBe(1);
+    expect(scan(`${pin} = "   ";\nconst l = ${reader}("loom_1");`).violations.length).toBe(1);
+    // A sandboxed pin plus a BARE delete leaves the process unpinned, and the
+    // reader may run either side of it — reported.
+    expect(
+      scan(`${pin} = ${temp};\ndelete ${pin};\nconst l = ${reader}("loom_1");`).violations.length,
+    ).toBe(1);
+    // …but the GUARDED restore is hygiene, not an unpinning: bun runs every
+    // suite in one process, so putting the caller's value back is required.
+    expect(
+      scan(
+        `const ORIGINAL = ${pin};\n${pin} = ${temp};\nconst l = ${reader}("x");\n` +
+          `if (ORIGINAL === undefined) delete ${pin}; else ${pin} = ORIGINAL;`,
+      ).violations,
+    ).toEqual([]);
+    // Two hops of binding resolution, which weave.test.ts actually needs.
+    expect(
+      scan(`const box = ${temp};\nconst sub = path.join(box, "x");\n${pin} = sub;\n${reader}("i");`)
+        .violations,
+    ).toEqual([]);
+
+    // A COMMENT is not a call site — thread-templates.test.ts and
+    // m9-thread-workflow.test.ts both mention the readers in prose.
+    expect(scan(`// a contract written by one test cannot bleed into another's ${reader}()\n`).exec)
+      .toEqual([]);
+    // Nor is a member access on some unrelated object.
+    expect(scan(`const l = mock.${reader}("loom_1");`).exec).toEqual([]);
+    // …but a NAMESPACE import is, and this repo uses that form.
+    const ns =
+      `import * as looms from "../src/looms";\n` + `const l = looms.${reader}("loom_1");`;
+    expect(scan(ns).exec.length).toBe(1);
+    expect(scan(ns).violations.length).toBe(1);
+    // …and so is a RENAME, which a fixed-name list alone is blind to.
+    const renamed = `import { ${reader} as loadIt } from "@telar/core";\nconst l = loadIt("x");`;
+    expect(scan(renamed).exec.length).toBe(1);
+    expect(scan(renamed).violations.length).toBe(1);
+    // A type-only import binds nothing at runtime and must not widen the set.
+    expect(
+      scan(`import type { ${reader} as loadIt } from "@telar/core";\nconst l = loadIt("x");`).exec,
+    ).toEqual([]);
+
+    // AN INTERPOLATION IS CODE. `${…}` inside a template is string content to
+    // the tokenizer and a live call to the runtime, so it must land in `exec`
+    // and not in the child-probe class — track-a-prove-run.test.ts logs
+    // `${looms.getLoom(id)!.state}` and really does read the store there.
+    const interpolated = scan(`const msg = \`state: \${${reader}("loom_1")!.state}\`;`);
+    expect(interpolated.exec.length).toBe(1);
+    expect(interpolated.probe).toEqual([]);
+    expect(interpolated.violations.length).toBe(1);
+    // …and it is the INTERPOLATION that reclassifies it, not the backtick: the
+    // same call as plain template text stays a probe.
+    expect(scan(`const src = \`const l = ${reader}("loom_1");\`;`).probe.length).toBe(1);
+
+    // THE CHILD-PROBE SPLIT. A reader call written INSIDE a string is source for
+    // another process: it must not count as executing here, and the file's
+    // obligation moves to the spawn's env.
+    const probeSrc =
+      `const src = \`const l = ${reader}("loom_1");\`;\n` +
+      `fs.writeFileSync(p, src);\n` +
+      `spawnSync(process.execPath, [p], { env: { ...process.env, TELAR_HOME: ${temp} } });`;
+    const probed = scan(probeSrc);
+    expect(probed.exec).toEqual([]);
+    expect(probed.probe.length).toBe(1);
+    expect(probed.violations).toEqual([]);
+    expect(probed.mechanisms).toEqual(["child"]);
+    // HOME alone sandboxes a child too, because the resolver's fallback is
+    // os.homedir() plus .telar — track-a-prove-run.test.ts relies on exactly
+    // this while pinning the child's TELAR_HOME to whitespace ON PURPOSE.
+    expect(
+      scan(
+        `const src = \`const l = ${reader}("loom_1");\`;\n` +
+          `spawnSync(process.execPath, [p], { env: { HOME: ${temp}, TELAR_HOME: "   " } });`,
+      ).violations,
+    ).toEqual([]);
+    // An UNSANDBOXED child is reported: it inherits the operator's env.
+    expect(
+      scan(
+        `const src = \`const l = ${reader}("loom_1");\`;\n` +
+          `spawnSync(process.execPath, [p], { env: { ...process.env } });`,
+      ).violations.length,
+    ).toBe(1);
+
+    // THE ROOT-PARAMETERIZED EXEMPTION, exercised in both directions. It is a
+    // real exemption today, so it must be shown to be one…
+    expect(scan(`const s = ${signal}(root);`).violations).toEqual([]);
+    expect(scan(`const s = ${signal}(root);`).mechanisms).toEqual(["root-parameterized"]);
+    // …and it must be shown to be CONDITIONAL: with the module property gone,
+    // the identical call is a violation. Passing `false` here is exactly what
+    // INV-7e's assertion would produce if deliverable-signal.ts ever learned to
+    // resolve the state root.
+    expect(readerSafetyScan("fixture.test.ts", `const s = ${signal}(root);`, false).violations.length)
+      .toBe(1);
+  });
+
+  test("INV-7e the root-parameterized exemption is MEASURED, and it is load-bearing", () => {
+    // The one call in READER_SURFACE that needs no sandbox needs none because of
+    // a property of its MODULE, not because someone decided it was fine. If that
+    // property goes, the exemption has to go with it — so it is re-derived here
+    // rather than trusted.
+    if (!DELIVERABLE_SIGNAL_SRC) {
+      throw new Error(
+        `INV-7e: packages/core/src/deliverable-signal.ts is not in the index. Its call sites are ` +
+          `EXEMPT from INV-7 on the strength of it resolving no state root, and that claim can no ` +
+          `longer be checked. NEXT STEP: find where the module moved and update this path, or ` +
+          `remove deriveDeliverableSignal from ROOT_PARAMETERIZED_READERS so its call sites need ` +
+          `a sandbox like everything else.`,
+      );
+    }
+    if (!ROOT_PARAMETERIZED_HOLDS) {
+      throw new Error(
+        `INV-7e: packages/core/src/deliverable-signal.ts NOW REACHES THE STATE ROOT (it mentions ` +
+          `TELAR_HOME, derives ~/.telar, composes a path off a root resolver, or calls a ` +
+          `state-root reader). THE RULE: deriveDeliverableSignal is exempt from INV-7 only while ` +
+          `it takes its root as an ARGUMENT and resolves nothing. CONSEQUENCE: every call site in ` +
+          `packages/core/test/deliverable-signal.test.ts — which pins no TELAR_HOME, deliberately ` +
+          `— is now running against the operator's real store. NEXT STEP: move ` +
+          `deriveDeliverableSignal from ROOT_PARAMETERIZED_READERS into STATE_ROOT_READERS and ` +
+          `sandbox that suite. Do not delete this check.`,
+      );
+    }
+    // And the exemption is not decorative: the file it exempts really does call
+    // the reader, really does not pin a root, and would fail without it.
+    const ds = READER_SCANS.find((s) => s.file === "packages/core/test/deliverable-signal.test.ts");
+    expect(ds?.exec.length ?? 0).toBeGreaterThanOrEqual(10);
+    expect(ds?.pinned).toBe(false);
+    expect(ds?.violations).toEqual([]);
+    expect(
+      readerSafetyScan(ds!.file, byRel.get(ds!.file)!.text, false).violations.length,
+    ).toBeGreaterThan(0);
+  });
+
+  test("INV-7f the quarantine did not grow — INV-7 added no KNOWN_VIOLATIONS entry", () => {
+    // INV-3f pins the LENGTH of KNOWN_VIOLATIONS; this pins the fact that INV-7
+    // did not reach for it. Every reader-reaching test file in the tree turned
+    // out to be safe by one of the three mechanisms — the predicate was widened
+    // to see each of them rather than the files being excused — and a future
+    // INV-7 entry appearing here should be an argument someone has, not a line
+    // that lands quietly.
+    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-7")).toEqual([]);
   });
 });
