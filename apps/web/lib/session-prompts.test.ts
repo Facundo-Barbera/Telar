@@ -23,6 +23,19 @@
 // below drives the composers with an INJECTED reader, which is also what makes
 // the throwing case expressible at all. The real readers are exercised in a
 // sandboxed child process by session-profiles.test.ts.
+//
+// THIS CLAIM WAS FALSE ONCE, AND THE SHAPE THAT BROKE IT IS THE ONE TO WATCH
+// FOR. The first draft of the "escalation never carries the Ultra note" proof
+// was a bare `// @ts-expect-error` above a CALL. A ts directive is a comment to
+// the compiler and NOTHING to the runtime: the call ran, passed no `read`, and
+// fell through to buildEscalationContext -> getLoom -> ensureMigrated().
+// Reproduced against a throwaway TELAR_HOME holding the legacy layout — one
+// `bun test` of this file renamed `runs/` to `looms/`, left a `runs -> looms`
+// symlink behind and renamed `run.json` to `loom.json`; with no TELAR_HOME set,
+// as `bun test` runs it, that is the operator's real store. The compile claim
+// survives below as a TYPE ANNOTATION on an object, which executes nothing, and
+// the value is then fed through a call that injects `read` anyway. A negative
+// COMPILE assertion must never be written as a live CALL in this file.
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
 import {
@@ -113,7 +126,6 @@ describe("ultraNote / safeLiveContext — the pure half and the guarded half", (
     ).toBe("");
     expect(
       safeLiveContext(() => {
-        // eslint-disable-next-line no-throw-literal
         throw undefined;
       }),
     ).toBe("");
@@ -158,21 +170,30 @@ describe("composition per kind — the route's four-arm ternary, one arm per bui
   });
 
   test("escalation: static prompt then LIVE CONTEXT, and NEVER an Ultra note", () => {
-    const appendix = escalationAppendix({
-      loomId: "loom_1",
-      cwd: "/repos/demo",
-      read: () => LIVE,
-    });
-    expect(appendix).toBe(ESCALATION_SYSTEM_PROMPT + LIVE);
-    expect(appendix).not.toContain(ULTRA_ANNOTATION_NOTE);
     // …and there is no way to ASK for one. The signature has no
     // `ultraAnnotated` parameter at all, so this is enforced by the type rather
     // than remembered — a caller that tries gets a compile error, and
     // `bunx tsc --noEmit` in THIS workspace does see test files, which is what
-    // makes the line below a real proof rather than a comment. Measured from
-    // the route's own `ultraAnnotated && !isEscalationSession`.
-    // @ts-expect-error escalation never carries the Ultra note — by signature
-    escalationAppendix({ loomId: "loom_1", cwd: "/repos/demo", ultraAnnotated: true });
+    // makes the directive below a real proof rather than a comment. Measured
+    // from the route's own `ultraAnnotated && !isEscalationSession`.
+    //
+    // It is written as a TYPE ANNOTATION rather than as a call, deliberately —
+    // see this file's header: the call form executed and reached the real loom
+    // store. `Parameters<typeof escalationAppendix>[0]` re-derives the opts type
+    // from the function instead of restating it, so a signature that grew an
+    // `ultraAnnotated` would stop erroring here and the unused-directive error
+    // would fire. Nothing below runs a reader this file did not supply.
+    const optsAskingForTheNote: Parameters<typeof escalationAppendix>[0] = {
+      loomId: "loom_1",
+      cwd: "/repos/demo",
+      // @ts-expect-error escalation never carries the Ultra note — by signature
+      ultraAnnotated: true,
+    };
+    // And the runtime agrees with the type: even when the property is smuggled
+    // past the compiler, the composed appendix has no note in it.
+    const appendix = escalationAppendix({ ...optsAskingForTheNote, read: () => LIVE });
+    expect(appendix).toBe(ESCALATION_SYSTEM_PROMPT + LIVE);
+    expect(appendix).not.toContain(ULTRA_ANNOTATION_NOTE);
   });
 
   test("escalation: the reader is handed the loomId AND the cwd, in that order", () => {

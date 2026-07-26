@@ -245,9 +245,15 @@ variable; delete the *derived* ones.
    `allow: []` shipped in 2.1.
 2. **Dev-server proof** (below), on both providers, with a real tool call.
 3. **The one disclosed exception**, stated here because AC3 says *identical* and one thing is not:
-   §5.5-D12 — sharpening kind detection to match the route's own precedence means a **resumed** planner,
-   steerer or escalation chat on a **Codex** account now returns the pre-SSE 400 instead of a 200 that
-   silently drops the thing that made it that kind of session. That is the completion of story 2.1's AD-11
+   §5.5-D12 — sharpening kind detection to match the route's own precedence means a **resumed** planner
+   or steerer chat on a **Codex** account now returns the pre-SSE 400 instead of a 200 that
+   silently drops the thing that made it that kind of session.
+   _(**Corrected in the review fix round, 2026-07-26.** This line and §5.5-D12 both said "planner, steerer
+   or escalation". **Escalation cannot take the new 400**, measured: `resolveSessionKind`'s escalation rung is
+   `input.role === "escalation" && input.loomId`, which gates on the **wire** role, so a resumed escalation
+   chat whose client omits `role` still resolves to `project` exactly as it did before — the old
+   `isEscalationSession = role === "escalation" && !!loomLink.loomId` had the identical requirement. The port
+   is faithful; the disclosure was not. See §9's Review Fix Round.)_ That is the completion of story 2.1's AD-11
    gate, not a new policy: 2.1 already 400s those kinds when the client sends `role`. It fails **loudly in
    place of failing silently**, and it must be asserted, disclosed in the Completion Notes, and named in the
    commit message.
@@ -454,7 +460,15 @@ _Task ids here are `V*` (verification), not `D*` — `D1`–`D17` are the design
       constants with an anti-vacuity floor on each derived set.
 - [x] **V3. Probe every new assertion** (hard rule 7). Numbered `P1…Pn` in the Debug Log: what you broke, the
       real failure text, the restore, the empty `git diff --stat`.
-- [x] **V4. Run the dev-server proof** on both providers plus the three Claude-only kinds. Debug Log per §2.
+- [ ] **V4. Run the dev-server proof** on both providers plus the three Claude-only kinds. Debug Log per §2.
+      **DELIBERATELY NOT COMPLETE — left unticked on review, 2026-07-26.** The free half ran and is recorded
+      (Debug Log item 5): the rewritten route loads under the real bundler, and eleven live pre-stream
+      requests were driven through the real handler. The **billable** half — a real turn calling a real tool
+      on each provider, plus one turn per Claude-only kind — was never run, because it spends the operator's
+      money and this story ran unattended overnight with no human to supervise it. It is **outstanding for
+      the operator**, enumerated as three steps at the end of Debug Log item 5. It had been ticked `[x]` with
+      the qualification living only in the Debug Log, so a reader scanning Leg D saw four discharged V-items
+      and concluded AC3's proof layer 2 was met. The checkbox now says what the prose always said.
 
 ### Leg E — the gate and the record
 
@@ -469,6 +483,9 @@ _Task ids here are `V*` (verification), not `D*` — `D1`–`D17` are the design
       `approvalPolicy: "untrusted"`. Name **story 5.5** as owner. A residual written as one hole when it is
       three is the "partial fix that reads as complete" this story exists to refuse. Amend the 2-1
       `systemPromptAppendix` entry too — it is closed by Leg B and should say so rather than reading as open.
+      _(**There are FOUR, not three** — the code review found the fourth, and `deferred-work.md` now names it:
+      the approval's own `cwd` is captured and never used as the resolution root. See §5.5-D9's correction
+      block. This task's instruction is left as written, since it is what was asked at authoring time.)_
 - [x] **E3. Completion Notes** — the disclosed behaviour change (AC3 layer 3), the A2 measurement and any
       divergence from §5.5-D13, the decisions you made that this file left to you, and any cross-track finding.
 - [x] **E4. `git diff --stat -- bunfig.toml`** prints nothing (hard rule 5). `KNOWN_VIOLATIONS.length` is
@@ -664,6 +681,16 @@ So a resumed planner/steerer/escalation session whose client omits `role` curren
 you drive `query()` from that profile without sharpening detection, **you silently strip the guidance from
 every resumed loom session**. That is the exact silent degradation AD-11 exists to end, reintroduced from the
 other side.
+
+> _**Corrected by measurement — review fix round, 2026-07-26: "planner/steerer/escalation" over-states by one
+> kind here too, and this is the fourth and last place it appeared.** Only planner and steerer got their kind
+> from `existingChat`. **Escalation never did**: the removed `isEscalationSession = role === "escalation" &&
+> !!loomLink.loomId` required the **wire** role, and `resolveSessionKind` reproduces that requirement exactly
+> — `existingChat` reaches the escalation predicate only through `loomLink.loomId`, never through the role
+> half. So a resumed escalation chat with no wire `role` resolved to `project` before this story and still
+> does, which means the hoist D1 argues for was never what stood between escalation and correct detection.
+> D1's decision is unaffected — the hoist is still required for planner and steerer, which is the whole reason
+> it was made. Full reasoning at §5.5-D12's correction block._
 
 **The decision.** Hoist `resumeTarget`, `existingChat`, `wireLoomId` and `loomLink` into the pre-stream
 preamble, above the `resolveSessionProfile` call, and resolve the kind from all three inputs.
@@ -1056,6 +1083,22 @@ distinct holes remain, and all three belong in the `deferred-work.md` entry:
    precisely *because* they expect every action to be gated. Hole (1) is about the card not firing; this one is
    about the card firing and carrying nothing to check. They are different failures and the record must say so.
 
+> **CORRECTED BY MEASUREMENT — review fix round, 2026-07-26: there are FOUR, and this section's own standard
+> is the reason that matters.** A fourth hole was found by the code review and is now item 4 in
+> `deferred-work.md`'s residual list: **`onCodexApproval` captures the approval's own `cwd` and then never
+> uses it as the resolution root.** It builds `input` with `...(req.cwd ? { cwd: req.cwd } : {})` and calls
+> `makeGuardrailDecision(sessionProfile, sessionProfile.cwd, "Bash", input)` — the root argument is always the
+> **session** root. Nothing reads `input.cwd`: `permissions.ts`'s `PATH_KEYS` is
+> `["file_path", "notebook_path", "path"]`, and `bashTouchesProtectedPath` takes `root` as an explicit
+> parameter. So a relative command issued from a subdirectory (`rm -rf ../../.env` from
+> `/repos/demo/packages/app`, project root `/repos/demo`, `protectedPaths: [".env"]`) resolves to `/.env`,
+> matches nothing, and is allowed. Like hole (3) it **survives the card firing** — and unlike hole (3) it
+> survives with a real shell command, which is the case holes 1–3 all leave standing. It is neither a
+> regression nor Codex-specific: the two Claude call sites have always had it. Not fixed here because the
+> repair belongs in `apps/web/lib/permissions.ts`, which §0's write-set table scopes this story to **call and
+> not change**. This section wrote its residual as three when it was four — which is the exact shape it warns
+> against one paragraph below, and it is recorded rather than quietly renumbered for that reason.
+
 There is no universal pre-tool interception point on the Codex path today; a complete closure needs one, and
 building it is not this story. **The disclosure is the deliverable here** — this story's own standard is that
 *"a partial fix that reads as complete is worse than the gap"*, and that standard binds the record you leave
@@ -1150,6 +1193,23 @@ After D1, a **resumed** planner, steerer or escalation chat whose client omits `
 kind rather than under-detected as `project`. On a **Codex** account those kinds fail the capability gate, so
 such a session now returns the pre-SSE 400 where it previously returned 200 and silently dropped the appended
 system prompt that **is** the kind.
+
+> **CORRECTED BY MEASUREMENT — review fix round, 2026-07-26. This paragraph over-states by one kind, and the
+> shipped code is right while the sentence above is wrong.** Only **planner** and **steerer** are re-detected
+> from a resumed chat. `resolveSessionKind`'s escalation rung reads
+> `if (input.role === "escalation" && input.loomId)` — the **wire** role, not `linkRole` — so a resumed
+> escalation chat whose client omits `role` resolves to `project`, exactly as it did before this story. That
+> is a faithful port, not an omission: the removed `isEscalationSession = role === "escalation" &&
+> !!loomLink.loomId` had the identical wire-role requirement, and `resolveSessionKind` was written to
+> reproduce the route's own precedence rather than to improve on it. Two consequences follow and both are
+> recorded rather than acted on. (i) An operator reading the original sentence would believe escalation
+> resumes are now gated on Codex; they are not. (ii) Such a session receives the `project` profile — the full
+> twenty-name allow set rather than escalation's six read-only tools — which is unchanged by this story and
+> unreachable in-app, because `apps/web/components/looms/discuss-escalation.tsx` always sends
+> `role: "escalation"` together with the `loomId`. Narrowing the rung to `linkRole` would be a new,
+> undisclosed behaviour change and is deliberately **not** made here; it is recorded in `deferred-work.md`
+> under this story's review section for whichever story next owns escalation. §5.1's rule applies as written:
+> a measurement that contradicts a design note wins, and the note says so rather than being quietly deleted.
 
 This is the completion of story 2.1's AD-11 gate, not a new policy — 2.1 already 400s these kinds when the
 client **does** send `role`, and `session-profiles.test.ts` already carries
@@ -1699,6 +1759,8 @@ The compensating stack for what is untested live is §5.5-D14's, with its limits
 
 Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baseline by stashing this story's work and re-running, not quoted. All 77 are pre-existing (`no-explicit-any`, `no-unused-vars` on the deliberately-underscored `_mode`/`_isolation` destructures, and unrelated component findings); the two new files and the two edited libs contribute **zero**. `invariants.test.ts` runs in 542 ms against its own stated 2000 ms ceiling.
 
+> **THE 77 IS STALE — DO NOT INHERIT IT. Re-measured in the review fix round, 2026-07-26: both sides of this row are 165 (136 errors, 29 warnings), and the *conclusion* above survives intact.** The delta this story contributes is still exactly **zero**, and it is now proved the way it should have been in the first place: **one toolchain across two commits**, via a detached `git worktree` at this story's own baseline `cbbac0a` with `node_modules` symlinked in, rather than two numbers measured at two different times. Baseline and working tree agree on every figure including `route.ts`'s own 7 errors / 4 warnings. The 77 was real when measured and became wrong without anything in this story changing, because `apps/web/package.json` pins `"eslint": "^9"` — a floating range — and the `react-hooks` rules that account for the difference arrive through it. **The lesson is about the shape of the claim, not the arithmetic:** a story's lint evidence must be a *delta measured under one toolchain*, because a total is a fact about a dependency resolution nobody pinned. Both rows are left standing so the stale figure stays visible next to what replaced it. Full table: §9's Review Fix Round, item 7.
+
 #### 8. The two fences
 
 - `git diff --stat -- bunfig.toml` prints **nothing** (hard rule 5 — the fifth consecutive story to fence it; it remains story 1.1's unresolved `[Review][Decision]` and the human's call).
@@ -1706,9 +1768,10 @@ Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baselin
 
 #### 9. The disclosed behaviour change and the disclosed deviations
 
-- **§5.5-D12 — the one thing that is not identical.** A resumed planner/steerer/escalation chat on a **Codex** account whose client omits `role` now takes the pre-SSE 400 instead of a 200 that silently dropped the appended system prompt that *is* the kind. Asserted in unit tests, proved live (item 5), named in the commit message. It is the completion of story 2.1's AD-11 gate, not new policy: 2.1 already 400s those kinds when the client *does* send `role`. It fails **loudly in place of failing silently**.
+- **§5.5-D12 — the one thing that is not identical.** A resumed planner/steerer chat on a **Codex** account whose client omits `role` now takes the pre-SSE 400 instead of a 200 that silently dropped the appended system prompt that *is* the kind. Asserted in unit tests, proved live (item 5), named in the commit message. It is the completion of story 2.1's AD-11 gate, not new policy: 2.1 already 400s those kinds when the client *does* send `role`. It fails **loudly in place of failing silently**.
+  - **Corrected on review, 2026-07-26: this said "planner/steerer/escalation" and escalation does not belong in the list.** `resolveSessionKind`'s escalation rung gates on the **wire** role (`input.role === "escalation" && input.loomId`), so a resumed escalation chat whose client omits `role` still resolves to `project` — a faithful port of the removed `isEscalationSession`, which had the identical requirement. The two live rows in item 5 that proved this behaviour are a resumed **steerer** and a resumed **planner**; there was never an escalation row, and nothing in the record claimed one. What was wrong was the disclosure, in three places, all now corrected: §2's AC3 layer 3, §5.5-D12, and this bullet. Full reasoning and the recorded consequence: §5.5-D12's correction block and `deferred-work.md`'s 2-2 review section.
 - **§5.5-D8 — `mcpServers` stays inert (`{}`)**, disclosed rather than quietly kept. Measured: the route's set is unconditional, so AC1 never required moving it; building it is a side effect over `getSessionId: () => capturedSession`, which the SDK mutates mid-stream. Forward owner: **epic 5**.
-- **§5.5-D9 — the Codex residual**, three distinct holes, recorded in `deferred-work.md` and owned by **story 5.5**.
+- **§5.5-D9 — the Codex residual**, **four** distinct holes, recorded in `deferred-work.md` and owned by **story 5.5**. _(Three at implementation time; the review found a fourth, 2026-07-26 — `onCodexApproval` captures `req.cwd` onto `input` and then passes `sessionProfile.cwd` as the resolution root, and nothing in `makeGuardrailDecision` reads `input.cwd` (`PATH_KEYS` is `file_path`/`notebook_path`/`path`; `bashTouchesProtectedPath` takes `root` explicitly). So a relative command run from a subdirectory resolves against the wrong root and escapes `protectedPaths` — the hole that survives even when the card fires with a real shell command. Not a regression and not Codex-specific: the two Claude call sites have always had it. Named in full in `deferred-work.md`, same owner.)_
 - **§5.5-D17 — the false comment above `ultraMcpServer`, corrected.** It claimed the ultra server is *"not offered to an escalation session (excluded from mcpServers/allowedTools)"*. Measured: `mcpServers` is unconditional, so the server **is** registered; only its tools are denied. Behaviour unchanged; this is a measurement, not a bug fix.
 
 ### Completion Notes
@@ -1730,13 +1793,201 @@ Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baselin
 
 **One behaviour genuinely changes; it is disclosed and asserted.** §5.5-D12, above and in the commit message. Project sessions are untouched on both providers.
 
-**Two prose comments are knowingly stale and are NOT mine to fix** (§5.5-D6, the record-do-not-cross protocol): `apps/web/lib/escalation-kickoff.ts` and `apps/web/lib/loom-mcp.ts` both name `ESCALATION_SYSTEM_PROMPT` / `buildEscalationContext` / `buildSteererContext` in comments that read as if those symbols live in `route.ts`. **Their new home is `apps/web/lib/session-prompts.ts`.** Neither file is in this story's write set and neither comment is load-bearing — no import, no type, no test depends on it. The next story touching either file can fix it in one line. (`route.ts`'s own two references were corrected, since that file *is* in the write set.)
+**One prose comment is knowingly stale and is NOT mine to fix** (§5.5-D6, the record-do-not-cross protocol): `apps/web/lib/loom-mcp.ts` says *"parallel to **route.ts's** buildSteererContext"* and *"**route.ts** gathers the loom/contract/deliverable-signal and hands the primitives here"*, and both clauses are now false. **The new home is `apps/web/lib/session-prompts.ts`.** The file is not in this story's write set and the comment is not load-bearing — no import, no type, no test depends on it. The next story touching it can fix it in one line. (`route.ts`'s own two references were corrected, since that file *is* in the write set.)
 
-**Cross-track findings: none new.** The `mock.module("@telar/core")` leak in `apps/web/lib/loom-mcp.*.test.ts` was fenced, not fixed (hard rule 8, story 1.3's item); every filtered run in this story carried a path argument. `bunfig.toml` was fenced for the fifth consecutive story.
+_**Corrected on review, 2026-07-26: this said "two", and the second one is not stale.** `apps/web/lib/escalation-kickoff.ts` merely **names** `ESCALATION_SYSTEM_PROMPT` and `buildEscalationContext` without asserting where they live, and its surrounding claim — that `route.ts` recognizes the sentinel — is still true. Over-disclosure is a defect in the same family as under-disclosure: it sends the next engineer to edit a comment that is correct, and it inflates the count a reader uses to judge how much drift this story left behind._
+
+**One cross-track finding, recorded not fixed** — corrected on review, 2026-07-26; this line previously read *"Cross-track findings: none new."* **The dock swallows the new pre-SSE 400 and the user's typed message vanishes with no error.** `apps/web/components/dock/session-runtime-host.tsx`'s `sendTurn` drains only under `if (res.ok && res.body)`, so a 400 body is never read, nothing throws, and the `finally` refetches a tail the turn was never persisted into. It POSTs `sessionId` and never `role`, so a docked **planner** chat on a Codex account reaches the new 400 and loses the message silently — which makes this story's own claim that the change "fails **loudly** in place of failing silently" true on the session page (`session-view.tsx` reads `body.error` and surfaces it) and false in the dock. The swallow is pre-existing and shared with all nine pre-SSE 400s; what this story changed is that a resumed loom-kind chat on Codex now reaches one. `apps/web/components/**` is **Track C**, outside the write set, so it is recorded in `deferred-work.md` with its owner and a one-branch fix, per the protocol that has now run five times. The other two fences held: the `mock.module("@telar/core")` leak in `apps/web/lib/loom-mcp.*.test.ts` was fenced, not fixed (hard rule 8, story 1.3's item), with every filtered run carrying a path argument; and `bunfig.toml` was fenced for the fifth consecutive story.
 
 **One hazard found and worked around, worth carrying forward.** `getLoom` calls `ensureMigrated()`, which **renames directories** under the resolved state root — so calling the live-context readers from a test with no `TELAR_HOME` override would write into the operator's real `~/.telar`. This is the same class of failure that put a synthetic `$1` billing line there during story 1.1. No test in this story calls a real reader in the shared process: the composers are driven with injected readers, and the one assertion that needs the real arm spawns a **child** with `HOME` and `TELAR_HOME` pointed at throwaway directories (§5.4-D), importing by absolute path so the temp directory needs no `node_modules`. Probe P15 confirms that test genuinely discriminates.
 
+> **THIS PARAGRAPH WAS FALSE WHEN IT WAS WRITTEN, BY EXACTLY ONE LINE, AND THE REVIEW PROVED IT BY EXECUTION RATHER THAN BY READING.** See the Review Fix Round below: the negative-**compile** assertion at the end of `apps/web/lib/session-prompts.test.ts`'s *"escalation: static prompt then LIVE CONTEXT, and NEVER an Ultra note"* was written as a bare `// @ts-expect-error` above a **call**, and a ts directive is a comment to the compiler and nothing to the runtime. That call really ran, with no injected `read`, straight through `buildEscalationContext` → `getLoom` → `ensureMigrated()`. It is fixed, and the claim above is now true — but the shape of the failure is the thing to carry forward, not the fix: **the hazard was known, named in this very paragraph, actively watched for, and it still shipped**, because a compile-time claim does not look like an execution. It is the same lesson `cbbac0a` recorded for story 2.1 — a claim nothing can contradict is not a verified claim — arriving one story later in a new costume. The remaining half is that nothing **mechanically** stops the next instance; the review's proposal for a scanner is recorded in `deferred-work.md` rather than built, with why.
+
 **Suite health.** 1962 pass / 0 fail across 121 files, up from 1896 / 120. **No pre-existing failures were encountered**, so none are being reported as inherited.
+
+### Review Fix Round — 2026-07-26 (fix attempt 1 of at most 2)
+
+Against the code review's findings report. Verdict was **CHANGES-REQUIRED** on one blocking finding. One code
+change; everything else is record. Nothing was fixed on a reviewer's say-so: **every finding below was
+re-verified by executing or grepping it first**, and the one measurement that turned out to be more
+interesting than the finding is item 7.
+
+#### 1. B1 (BLOCKING) — a negative-**compile** assertion was executing and reaching the operator's real loom store — FIXED
+
+`apps/web/lib/session-prompts.test.ts`, the test *"escalation: static prompt then LIVE CONTEXT, and NEVER an
+Ultra note"*. The proof that escalation cannot be handed an Ultra note was written as a bare
+`// @ts-expect-error` above a **call** to `escalationAppendix`. A ts directive is a comment to the compiler
+and **nothing to the runtime**: the call ran, and it passed no `read`, so
+`(opts.read ?? buildEscalationContext)(id, opts.cwd)` fell through to the real reader → `getLoom` →
+`ensureMigrated()`, which renames directories under the resolved state root. `bunfig.toml` has no preload, so
+`bun test` sets no `TELAR_HOME` and that root is `~/.telar`.
+
+**Reproduced before fixing, against a throwaway root** — this was not taken on the review's word:
+
+```
+$ T=$(mktemp -d); mkdir -p $T/runs/loom_x; echo '{}' > $T/runs/loom_x/run.json
+$ TELAR_HOME=$T bun test apps/web/lib/session-prompts.test.ts        # 18 pass
+AFTER: looms/                       (was runs/)
+       runs -> $T/looms             (symlink planted)
+       looms/loom_x/loom.json       (was runs/loom_x/run.json)
+```
+
+Three filesystem mutations from one test file. It had not fired on this machine only because `~/.telar`
+happens to hold no legacy `runs/` — an accident of layout, not a property of the code.
+
+**The fix is structural rather than careful.** The compile claim is now a **type annotation on an object**,
+which executes nothing at all, and the object is then fed through a call that injects `read`:
+
+```ts
+const optsAskingForTheNote: Parameters<typeof escalationAppendix>[0] = {
+  loomId: "loom_1",
+  cwd: "/repos/demo",
+  // @ts-expect-error escalation never carries the Ultra note — by signature
+  ultraAnnotated: true,
+};
+const appendix = escalationAppendix({ ...optsAskingForTheNote, read: () => LIVE });
+```
+
+The claim did not weaken; it got two properties it did not have. `Parameters<typeof escalationAppendix>[0]`
+**re-derives** the opts type from the function instead of restating it (§7.2's lesson, the one `allow: []` was
+paid for), and the runtime now **agrees with the type** — the property is smuggled past the compiler and the
+composed appendix still has no note in it, which the old form could not show. The file's WHY header names the
+exact shape that broke and forbids it: *"A negative COMPILE assertion must never be written as a live CALL in
+this file."*
+
+**Probed both directions** (hard rule 7), each restored byte-exact and verified with `cmp`:
+
+| # | What was broken | Real failure |
+| --- | --- | --- |
+| P21 | deleted the `@ts-expect-error` line | `session-prompts.test.ts(189,7): error TS2353: Object literal may only specify known properties, and 'ultraAnnotated' does not exist in type '{ loomId?: string \| undefined; cwd: string; read?: ((loomId: string, root: string) => string) \| undefined; }'` |
+| P22 | added `ultraAnnotated?: boolean` to `escalationAppendix`'s signature | `session-prompts.test.ts(189,7): error TS2578: Unused '@ts-expect-error' directive.` |
+
+P22 is the half that matters and the old form did not have it: if the signature ever grows the parameter, the
+directive goes unused and `tsc` fails, so the claim cannot rot into a comment about a signature that changed.
+
+**Verified fixed by execution, not by reading.** The same throwaway-root run, now with a `find` snapshot
+before and after: **identical, zero mutations** — for `session-prompts.test.ts` alone and for
+`session-prompts.test.ts` + `session-profiles.test.ts` together (64 pass, 0 fail). The Completion Notes'
+hazard paragraph, which was false by exactly this one line, now carries the correction above it.
+
+#### 2. S1 — the dock swallows the new 400 — RECORDED, cross-track (Track C)
+
+Re-verified in `apps/web/components/dock/session-runtime-host.tsx`: `sendTurn` POSTs `sessionId` and never
+`role`, and drains only under `if (res.ok && res.body)`. Outside the write set — recorded in
+`deferred-work.md` with the reachability chain, the owner and a one-branch fix. **The Completion Notes'
+"Cross-track findings: none new" line was false and is corrected.**
+
+#### 3. S2 — the D12 disclosure over-stated by one kind — RECORD CORRECTED in three places
+
+Measured: `resolveSessionKind`'s escalation rung gates on the **wire** role, so escalation can never take the
+new 400. **Four** places said "planner, steerer or escalation" and all four now say what the code does: §2's
+AC3 layer 3, §5.5-D12, §5.5-D1's motivating paragraph, and Debug Log item 9. The fourth was missed on the
+first pass of this fix round and caught by the verification sweep over it — a fix round that corrects a
+disclosure in three of the four places it appears has the same defect as the disclosure did. The code is
+**not** changed — narrowing the rung to `linkRole` would be a new, undisclosed behaviour change made inside a
+fix pass. The consequence that follows from leaving it is recorded in `deferred-work.md` rather than buried
+here.
+
+#### 4. S3 — a fourth Codex guardrail residual — RECORDED where the gap lives
+
+`onCodexApproval` puts `req.cwd` on `input` and then passes `sessionProfile.cwd` as the resolution root.
+Verified inert: `apps/web/lib/permissions.ts`'s `PATH_KEYS` is `["file_path", "notebook_path", "path"]` and
+`bashTouchesProtectedPath` takes `root` as an explicit parameter, so nothing reads `input.cwd`. A relative
+command from a subdirectory therefore resolves against the wrong root and escapes `protectedPaths` — the hole
+that survives even when the card fires with a real shell command. Not a regression and not Codex-specific
+(both Claude call sites have always had it); fixing it means changing `apps/web/lib/permissions.ts`, which
+this story is scoped to **call and not change**. `deferred-work.md`'s residual list now reads **four holes,
+not three**, same owner (story 5.5).
+
+#### 5. S4 — task V4's checkbox claimed a proof the Debug Log calls PARTIAL — FIXED
+
+`- [x]` → `- [ ]`, with the boundary stated on the task itself instead of only in Debug Log item 5. The prose
+record was already honest; the checkbox was the defect, because a reader scanning Leg D saw four ticked
+V-items and concluded AC3's proof layer 2 was discharged. It is not, and the three outstanding operator steps
+are unchanged.
+
+#### 6. N2 (first half) — the unused `eslint-disable` — FIXED
+
+`// eslint-disable-next-line no-throw-literal` above `throw undefined` in `safeLiveContext`'s test: the rule is
+not enabled in this workspace's config, so the directive itself was the warning. Removed. The four files this
+story owns now contribute **zero** lint problems, which is what Debug Log item 7 claimed and is now true.
+
+#### 7. N2 (second half) — the lint total: the story's "77" is wrong, and this story is still responsible for **zero** of the difference
+
+The review measured 165–166 problems where Debug Log item 7 records 77 both before and after, and could not
+settle the cause without mutating the working tree. Settled here, decisively, by measuring **one toolchain
+across two commits** instead of comparing two numbers from two toolchains: a detached `git worktree` at the
+story's own baseline `cbbac0a`, with `node_modules` symlinked in so no install could move a plugin version.
+
+| Tree | eslint | errors | warnings | total | `route.ts` |
+| --- | --- | --- | --- | --- | --- |
+| `cbbac0a` (baseline) | v9.39.4 | 136 | 29 | **165** | 7 e / 4 w |
+| working tree, after this fix round | v9.39.4 | 136 | 29 | **165** | 7 e / 4 w |
+
+**Byte-identical, including `route.ts`'s own row.** So the delta this story contributes is exactly **zero**,
+which is the claim item 7 was making — but item 7's *number* was measured against a different resolved plugin
+set (`apps/web/package.json` pins `"eslint": "^9"`, a floating range, and `eslint-config-next` carries the
+`react-hooks` rules that account for the difference) and **must not be inherited as fact**. The correct
+statement is the delta, not the total: totals drift with a floating dependency, deltas do not. Item 7's row is
+annotated in place rather than rewritten, so the stale figure stays visible next to what replaced it.
+
+#### 8. N1, N3, N4 — the rest
+
+**N1** (no mechanical guard exists for "a test reaches the real state root", and B1 was that class's third
+occurrence) is **recorded in `deferred-work.md`, not built.** The review classified it nice-to-have, and it is
+a new several-hundred-line scanner over a 2800-line invariant suite whose false-positive surface is every
+legitimate reader call in every suite that already sandboxes correctly — the shape of change that breaks a
+green gate while repairing something else. The entry carries the review's full proposal, including its
+anti-vacuity floor and discriminator, so whoever builds it does not re-derive it. **N3** (a malformed Codex
+approval is guardrail-checked against the placeholder sentence `"Codex requested approval"`) is inherited from
+the pre-existing card shaping, not introduced here, and lives in the same `permissions.ts`/`codex-app-server.ts`
+territory as S3's residual — left as the review left it. **N4** is fixed: the Completion Notes said **two**
+prose comments are knowingly stale, and only `loom-mcp.ts` is. `apps/web/lib/escalation-kickoff.ts` merely
+*names* the symbols without asserting where they live, and its surrounding claim is still true — over-disclosure
+sends the next engineer to edit a correct comment.
+
+#### 9. The gate, re-run after the fix round
+
+| Command | Before this round | After |
+| --- | --- | --- |
+| `bun test` (repo root, unfiltered) | 1962 pass / 0 fail, 121 files | **1962 pass / 0 fail**, 10571 `expect()`, 121 files, 40.58 s |
+| `bunx tsc --noEmit` in `packages/core` | exit 0 | exit **0** |
+| `bunx tsc --noEmit` in `apps/web` | exit 0 | exit **0** |
+| `bun run lint` in `apps/web` | 166 problems | **165** problems (136 e / 29 w) — one fewer, the directive removed in item 6; identical to baseline `cbbac0a`, item 7 |
+| sandboxed-root mutation check (new) | 3 mutations | **0** |
+
+Test count is unchanged because no test was added or removed — B1's fix rewrites one existing assertion into a
+stronger shape. `git diff --stat -- bunfig.toml` still prints **nothing** (hard rule 5 — still this story's
+one fencing, not a new one); `KNOWN_VIOLATIONS.length` is still **1** and `INV-3a` still reports 18
+root-composition sites (hard rule 6). Exactly three files were touched this round:
+`apps/web/lib/session-prompts.test.ts` and `_bmad-output/implementation-artifacts/deferred-work.md`, both in
+the story's declared write set, plus this story file, which is where the Dev Agent Record lives. No
+production source was touched, and nothing in `apps/web/components/**` or `apps/web/lib/permissions.ts` —
+the two places the findings pointed at and the two this story is fenced from.
+
+#### 10. This round was itself verified adversarially, and the sweep found three defects in it
+
+Four independent auditors were run over the fix round — one on the B1 code fix (re-reproducing the mutation
+against a legacy-layout sandbox root and hunting for any other in-process reader call across
+`apps/web/lib/*.test.ts`), one on record consistency, one fact-checking every symbol claim in the new
+`deferred-work.md` material, and one on the fences and the gate. **The code fix and the fences/gate auditors
+each returned zero findings.** The other two found three real defects **in the fix round's own record**, all
+now repaired:
+
+- **Two dead citations, both introduced by this round, both in the file whose preamble exists to prevent
+  exactly this.** `apps/web/components/loom/discuss-escalation.tsx` — the directory is `looms/`, plural — and
+  `apps/web/components/session-view.tsx`, which lives under `components/session/`. Neither path resolved.
+  Every file path added by this round is now verified to exist, mechanically, by testing each one with
+  `[ -f ]`. The citation policy `deferred-work.md` adopted *"after the THIRD drift"* says symbols survive
+  edits and grep finds them; a path that resolves to nothing fails that on the first lookup, and writing two
+  of them inside a round whose subject is unverified claims is worth recording rather than quietly fixing.
+- **One wrong symbol on the load-bearing half of a contrast.** The dock entry attributed the `body.error`
+  read to `session-view.tsx`'s `applyServerEvent`. It is `send`: `applyServerEvent` is the SSE event switch,
+  takes `(event, payload)` rather than a `Response`, and is reached through `consumeSSE` only **after** the
+  `!res.ok` branch has thrown. The behavioural claim was true and the symbol proving it was wrong — the same
+  shape as B1, one register down.
+- **The S2 disclosure was corrected in three of the four places it appears.** §5.5-D1's motivating paragraph
+  also said "planner/steerer/escalation" and was missed. Now corrected, and item 3 above says four.
 
 ---
 
@@ -1749,11 +2000,11 @@ Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baselin
 | `packages/core/test/session-profile.test.ts` | EDIT | T-1 re-pin + the runtime union assertion; the moat property; `resolveSessionKind` precedence incl. the collision case; `sessionRoleFromWire`; the deny fold; `registerFourKinds`'s escalation mirror; `ctx()` gains `ultraAnnotated`. 37 → 55 tests |
 | `packages/core/test/invariants.test.ts` | EDIT | `INV-6e` only. `INV-1g`, `INV-3*`, `KNOWN_VIOLATIONS`, `INV-6a–d` and the `PROFILE_FIELDS`/`SPEC_FIELDS`/`GRANT_SHAPED_FIELDS` arrays untouched. 47 → 48 tests |
 | `apps/web/lib/session-prompts.ts` | **NEW** | The three prompts + the Ultra note + `tail`/`safeRead`/`buildSteererContext`/`buildEscalationContext`, moved byte-identically; `ultraNote`, `safeLiveContext`, and the four per-kind appendix composers |
-| `apps/web/lib/session-prompts.test.ts` | **NEW** | 18 tests: prompt integrity, the moved helpers, composition per kind, and the pre-stream fail-safe with its discriminator |
+| `apps/web/lib/session-prompts.test.ts` | **NEW** | 18 tests: prompt integrity, the moved helpers, composition per kind, and the pre-stream fail-safe with its discriminator. **Review fix round:** the escalation negative-compile claim rewritten from an executing call into a type annotation (B1 — it was reaching the real loom store); the unused `eslint-disable` removed; the WHY header names the shape that broke |
 | `apps/web/lib/session-profiles.ts` | EDIT | The four builders carry real `toolPolicy` and `systemPromptAppendix` values; header records what closed and what stays inert with its owner |
 | `apps/web/lib/session-profiles.test.ts` | EDIT | The fired tripwires re-derived; the core↔web anti-drift pin; the per-kind equivalence table with its anti-vacuity floor; the AC6 Codex-seam block; the sandboxed-child live-read test. 13 → 46 tests |
 | `apps/web/app/api/chat/route.ts` | **EDIT, LARGE** | Leg C in full: the pre-stream hoist, the three flags deleted, `query()` driven from the profile, three profile-driven `makeGuardrailDecision` sites (one new, AC6), Codex `cwd`, dead imports removed, §5.5-D17's comment corrected. 1985 → 1935 lines |
-| `_bmad-output/implementation-artifacts/deferred-work.md` | EDIT | §5.5-D9's decision with all three residual holes named separately and story 5.5 as owner; the 2-1 `systemPromptAppendix` entry marked closed, with `mcpServers` carried forward to epic 5 |
+| `_bmad-output/implementation-artifacts/deferred-work.md` | EDIT | §5.5-D9's decision with all three residual holes named separately and story 5.5 as owner; the 2-1 `systemPromptAppendix` entry marked closed, with `mcpServers` carried forward to epic 5. **Review fix round:** a **fourth** residual hole added to the D9 list (the approval's `cwd` is captured and never used as the resolution root); a new 2-2 review section carrying the dock's swallowed 400 (Track C), the missing mechanical guard for the B1 hazard class, and the escalation `linkRole` consequence |
 
 ---
 
@@ -1763,3 +2014,4 @@ Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baselin
 | --- | --- | --- |
 | 2026-07-26 | Story created. Ultimate context engine analysis completed — comprehensive developer guide created. Baseline `cbbac0a`. | create-story |
 | 2026-07-26 | Implemented end to end. Every session-kind conditional removed from the chat route; the four kinds now resolve through the story 2.1 resolver. `INV-6e` added. AC6 closes the Codex guardrail gap at the approval seam; the three-part residual is owned by story 5.5. One disclosed behaviour change (§5.5-D12). Gate: 1962 pass / 0 fail across 121 files, `tsc` clean in both workspaces, lint unchanged at 77. Status → ready-for-review. | dev-story (Opus 5) |
+| 2026-07-26 | **Review fix round (attempt 1 of 2), against a CHANGES-REQUIRED review.** Blocking B1 fixed: a negative-**compile** assertion in `session-prompts.test.ts` was executing and reaching the operator's real loom store through `getLoom` → `ensureMigrated()` — reproduced (3 filesystem mutations), rewritten as a type annotation that executes nothing, probed both directions (P21/P22), and verified at zero mutations against a sandboxed root. Record corrected in four places: the D12 disclosure over-stated by one kind (escalation gates on the **wire** role and can never take the new 400), "Cross-track findings: none new" was false (the dock swallows the 400 — Track C), the Codex residual is **four** holes not three, and V4's checkbox is unticked to match its own PARTIAL Debug Log entry. Lint's stale 77 re-measured decisively at 165 = baseline, delta zero. Gate re-run: 1962 pass / 0 fail, `tsc` 0 / 0, lint 165 (one fewer than before the round). Status stays ready-for-review. | dev-story review fix (Opus 5) |
