@@ -13,7 +13,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const home = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+// Trim+resolve guard, matching core's manifest.ts telarDir() (full reasoning
+// there): `??` falls back on null/undefined but NOT on "", and an
+// exported-but-empty `TELAR_HOME=` is routine in shell scripts and CI. Another
+// silent-failure case, measured rather than assumed — with root "" sessionDir()
+// is the non-empty RELATIVE path "sessions/<id>", so mkdirSync succeeds and
+// every live turn's log is written to <cwd>/sessions/<id>/live.ndjson while the
+// reconnect tail reads whatever the reader's own cwd resolves to. Lazy for the
+// usual reason: a test or a reconfigured process must be able to re-point it.
+//
+// DESIGN CALL on a RELATIVE root: path.resolve makes it absolute but still
+// lands it under the cwd, and it pins NOTHING — this resolver is lazy, so
+// path.resolve re-runs against the CURRENT cwd on every call and a process that
+// chdir's mid-run reads and writes a different root afterwards (measured: with
+// TELAR_HOME="rel-root", two calls straddling a process.chdir() returned two
+// different absolute paths). Refusing a relative root outright is stronger, but
+// it is a behavior change beyond this fix, so we resolve and document.
+const home = () => {
+  const v = process.env.TELAR_HOME?.trim();
+  return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
+};
 const sessionDir = (sessionId: string) => path.join(home(), "sessions", sessionId);
 const logFile = (sessionId: string) => path.join(sessionDir(sessionId), "live.ndjson");
 

@@ -19,6 +19,7 @@
 // last-resort runtime catch that drops `resume` and retries fresh in the
 // same cwd — the raw SDK error never becomes the thread's result.
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { agent } from "./engine";
@@ -1201,6 +1202,7 @@ export async function runIntegrationVerify(
 
   // Evidence trail on the ROOT loom — additive, never touches child verdicts.
   const attempt: AttemptRecord = {
+    id: crypto.randomUUID(), // AD-18 billing identity, minted here (looms.ts AttemptRecord.id)
     n: (loom.attempts?.length ?? 0) + 1,
     role: "integration",
     model: policy.dev,
@@ -1386,6 +1388,7 @@ export async function runRepairThread(
   const emit = opts.emit ?? (() => {});
   const tools = BASE_TOOLS.filter((t) => !manifest.guardrails.disallowedTools.includes(t));
   const attempt: AttemptRecord = {
+    id: crypto.randomUUID(), // AD-18 billing identity, minted here (looms.ts AttemptRecord.id)
     n: (loom.attempts?.length ?? 0) + 1,
     role: "repair",
     model: policy.careful,
@@ -1505,7 +1508,8 @@ async function executeVerifyLoom(loom: Loom, manifest: ProjectManifest, opts: Ex
     const url = manifest.urls?.[targetKey];
     const policy = opts.policy ?? ModelPolicy.parse({});
 
-    const attempt: AttemptRecord = { n: 1, role: "verifier", model: policy.dev, startedAt: Date.now() };
+    // `id` is the AD-18 billing identity, minted here (looms.ts AttemptRecord.id).
+    const attempt: AttemptRecord = { id: crypto.randomUUID(), n: 1, role: "verifier", model: policy.dev, startedAt: Date.now() };
     loom.attempts.push(attempt);
     opts.onState?.(loom);
 
@@ -1885,7 +1889,8 @@ export async function executeLoom(
 
       setState("running");
       emit({ type: "attempt", n, role, model });
-      const attempt: AttemptRecord = { n, role, model, startedAt: Date.now(), cwd: attemptCwd };
+      // `id` is the AD-18 billing identity, minted here (looms.ts AttemptRecord.id).
+      const attempt: AttemptRecord = { id: crypto.randomUUID(), n, role, model, startedAt: Date.now(), cwd: attemptCwd };
       loom.attempts.push(attempt);
       opts.onState?.(loom);
 

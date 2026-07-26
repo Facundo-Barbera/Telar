@@ -17,9 +17,23 @@ afterAll(() => {
 });
 import { fanoutSize, prioritize, type BudgetState } from "../src/budget";
 import { MEDIATION_BUDGET, readySubGoals, tick, validateDecision, type LedgerView, type ThreadView } from "../src/tick";
-import { runWeave } from "../src/weave";
 import type { Charter, SubGoal } from "../src/schemas";
 import type { Loom } from "../src/looms";
+// ESM HOISTS AND EVALUATES every static import BEFORE the first top-level
+// statement above it runs, so a static value import of ../src/weave would load
+// weave.ts and its whole graph BEFORE the pin at :10 — the pin would only
+// APPEAR to come first, and holds today solely because every state-root
+// resolver happens to be lazy. `await import` evaluates HERE, after the pin,
+// which makes the ordering real. weave.ts is the only import in this file that
+// reaches the usage ledger, so it is the only one deferred; the `import type`
+// lines are erased at runtime and stay static. Idiom: weave.test.ts (its two
+// deferred `await import` lines for ../src/weave and ../src/looms, both placed
+// after the same pin) and m11-blocked-propagation.test.ts (four deferred
+// imports after its pin — that suite already used this idiom and was never
+// broken). Cited by SYMBOL, not by line: the ":13" this comment used to carry
+// was already off by one, because a line number names a slot in a file and any
+// edit above it hands that slot to something else. Pinned at the source level by T30.
+const { runWeave } = await import("../src/weave");
 
 // ---- shared builders --------------------------------------------------
 
@@ -700,4 +714,41 @@ describe("readySubGoals (pure)", () => {
     const v = view({ charter: charter(decomposition), threads: [thread({ subGoalId: "a", state: "done" })] });
     expect(readySubGoals(v)).toEqual(["b"]);
   });
+});
+
+// ---- T30: the TELAR_HOME pin precedes the weave module graph ----------------
+
+// ESM hoisting is INVISIBLE at runtime here: a static value import of
+// ../src/weave still "works" today, because every state-root resolver happens
+// to be lazy, so no runtime assertion can catch the regression. The only level
+// at which the ordering is observable is the SOURCE — so that is where it is
+// pinned. For each suite that drives runWeave against its own state root, the
+// pin must appear BEFORE the dynamic import, and no static import line may name
+// ../src/weave at all. Without this, the next agent "tidying" the dynamic import
+// back into the import block silently un-pins all four suites at once, and the
+// first module that captures the root at evaluation time then writes into the
+// developer's real ~/.telar with no test failing.
+// (Same source-level-assertion idiom as m10-verify-lane.test.ts:377-386.)
+describe("TELAR_HOME is pinned before ../src/weave evaluates (T30)", () => {
+  const suites = [
+    "orchestrator.test.ts",
+    "b2-orchestrator-mediation.test.ts",
+    "flag-off.test.ts",
+    "m5-weave-setup.test.ts",
+  ];
+
+  for (const suite of suites) {
+    test(`${suite} pins TELAR_HOME above its dynamic import of ../src/weave`, () => {
+      const src = fs.readFileSync(path.join(import.meta.dir, suite), "utf8");
+      const pin = src.indexOf("process.env.TELAR_HOME = home;");
+      const dynamic = src.search(/await import\(["']\.\.\/src\/weave["']\)/);
+      expect(pin).toBeGreaterThanOrEqual(0);
+      expect(dynamic).toBeGreaterThanOrEqual(0);
+      expect(pin).toBeLessThan(dynamic);
+      // Assert on the IMPORT LINES, not on comment prose, which legitimately
+      // names the very form being forbidden.
+      const importLines = src.split("\n").filter((l) => /^\s*import\b/.test(l));
+      expect(importLines.some((l) => /["']\.\.\/src\/weave["']/.test(l))).toBe(false);
+    });
+  }
 });

@@ -30,6 +30,8 @@ const {
   readUltraAgentTranscript,
   readUltraScript,
   getLiveUltraRun,
+  readJournal,
+  hashCall,
   runDir,
 } = await import("../src/ultra");
 
@@ -383,6 +385,26 @@ const ultraLinesFor = (runId: string): Record<string, unknown>[] => {
     .filter((e) => e.ownerKind === "ultra" && e.ownerId === runId);
 };
 
+// The rows AS THE FOLD COUNTS THEM: first occurrence of each non-empty
+// entryKey, plus every un-keyed row. The ledger's write path never suppresses a
+// row (usage-ledger.ts: idempotence enforced by suppressing a write "leaves no
+// row anywhere… a duplicate row is visible and arguable; a missing row is
+// silent"), so a settle that is RE-PRESENTED — every cache replay is one —
+// appends another row carrying the SAME key. That is the audit trail, not a
+// double-count: what must not move is the TOTAL, and the fold is what holds it
+// still. Tests below assert the money through this, and assert the raw row
+// count separately where the point is that the trail was kept.
+const foldedUltraCosts = (runId: string): number[] => {
+  const byKey = new Map<string, number>();
+  const unkeyed: number[] = [];
+  for (const l of ultraLinesFor(runId)) {
+    const key = String(l.entryKey ?? "");
+    if (!key) unkeyed.push(l.costUsd as number);
+    else if (!byKey.has(key)) byKey.set(key, l.costUsd as number);
+  }
+  return [...byKey.values(), ...unkeyed];
+};
+
 describe("Ultra storage — manifest.spend is a projection over the usage ledger (AD-18)", () => {
   test("manifest.spend equals ledgerSpendUsd for owner ultra/<runId>", async () => {
     const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "done";\n}`;
@@ -442,8 +464,15 @@ describe("Ultra storage — manifest.spend is a projection over the usage ledger
 
   test("resuming a run with a fully cached prefix does not double-count its spend", async () => {
     // A cache-hit replay re-emits the agent event WITH its cost but never
-    // re-makes (or re-bills) the call. Its ledger line was written on the
-    // first run and survives the stop, so the resumed total must be identical.
+    // re-makes the call. storage.ts now RE-ATTEMPTS the ledger write on that
+    // replay (so an ordinal whose live write failed gets repaired — see the
+    // repair test below); what keeps the total identical is the entryKey
+    // `ultra:<runId>:<ordinal>:<settleId>`, which the replay re-presents
+    // VERBATIM — the id the settle it is replaying MINTED, read back off that
+    // settle's journal record, never a fresh one — and which usage-ledger.ts
+    // folds AT MOST ONCE. The write path never dedupes, so the replay DOES
+    // append one row per replayed settle (asserted below); the total is the
+    // thing that must not move.
     const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a, b];\n}`;
     const res = await launchUltra({ script, agent: costedFake(0.25) });
     if (!res.ok) throw new Error("unreachable");
@@ -464,9 +493,14 @@ describe("Ultra storage — manifest.spend is a projection over the usage ledger
     await getLiveUltraRun(resumed.runId)!.finished;
 
     expect(liveCalls).toBe(0); // fully cache-served
-    // Zero new lines for the replayed ordinals, and the total is unchanged —
-    // not ~2x, which is what an unconditional append would produce.
-    expect(ultraLinesFor(res.runId)).toHaveLength(linesAfterFirstRun);
+    // Each replayed ordinal RE-RECORDS its row — the write path suppresses
+    // nothing — so the file grows by one row per replayed settle, and every one
+    // of those rows repeats a key that is already there. The total is what must
+    // not move: not ~2x, which is what re-presenting them under FRESH keys
+    // would produce.
+    expect(ultraLinesFor(res.runId)).toHaveLength(linesAfterFirstRun * 2);
+    expect(new Set(ultraLinesFor(res.runId).map((l) => String(l.entryKey))).size).toBe(linesAfterFirstRun);
+    expect(foldedUltraCosts(res.runId)).toEqual([0.25, 0.25]);
     expect(getUltraManifest(res.runId)!.spend).toBeCloseTo(firstRunSpend);
   });
 
@@ -484,5 +518,610 @@ describe("Ultra storage — manifest.spend is a projection over the usage ledger
     if (!resumed.ok) throw new Error("unreachable");
     await getLiveUltraRun(resumed.runId)!.finished;
     expect(getUltraManifest(res.runId)!.spend).toBeCloseTo(1.5);
+  });
+});
+
+// ── The ultra spend RECOVERY contract ───────────────────────────────────────
+// The ledger row is the only record that ultra money was spent, and it is
+// written inside onEvent — AFTER executor.ts has already journaled the ordinal
+// (executor.ts:285-297). The two tests below pin both halves of what that
+// ordering buys: a write that fails never costs the run, and the next resume
+// repairs the gap without re-billing anything that already landed.
+
+// Fails ONLY the usage-ledger append whose payload carries `match`. Deliberately
+// narrow: the run's own events.ndjson / agents/<n>.ndjson writes go through the
+// SAME fs.appendFileSync, and they must stay healthy so the test reproduces the
+// finding (an accounting row lost while the run itself is fine) rather than a
+// generally broken filesystem.
+function failLedgerWrite(match: string): () => void {
+  const real = fs.appendFileSync;
+  (fs as any).appendFileSync = (file: any, data: any, ...rest: any[]) => {
+    if (String(file).endsWith("usage.ndjson") && String(data).includes(match)) {
+      throw new Error("EROFS: read-only file system, open 'usage.ndjson'");
+    }
+    return (real as any)(file, data, ...rest);
+  };
+  return () => {
+    (fs as any).appendFileSync = real;
+  };
+}
+
+const waitUntil = async (pred: () => boolean, ms = 2000): Promise<boolean> => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (pred()) return true;
+    await delay(2);
+  }
+  return pred();
+};
+
+// The failure is narrated onto events.ndjson as a `log` line (storage.ts keeps
+// executor.ts's UltraEvent union closed), so it is greppable by its prefix.
+const spendFailures = (runId: string): string[] => {
+  const out: string[] = [];
+  for (const e of readUltraEvents(runId, 0).events) {
+    if (e.type === "log" && e.msg.startsWith("spend-record-failed")) out.push(e.msg);
+  }
+  return out;
+};
+
+// Same idea, for the other two ways this leg narrates a miss. Every accounting
+// defect on the ultra leg is a `log` line with a stable prefix, so each is
+// greppable without widening executor.ts's UltraEvent union.
+const logLinesPrefixed = (runId: string, prefix: string): string[] => {
+  const out: string[] = [];
+  for (const e of readUltraEvents(runId, 0).events) {
+    if (e.type === "log" && e.msg.startsWith(prefix)) out.push(e.msg);
+  }
+  return out;
+};
+
+describe("Ultra storage — a failed ledger write never fails the run", () => {
+  test("the run still settles `done`, the manifest keeps being saved, and the miss lands in the run journal", async () => {
+    const runId = "u-ledger-write-fails";
+    // Two GATED agents, so the run is provably still live at the moment the
+    // failing write happens — a manifest read taken in that window can only
+    // have been produced by the saveManifest that sits AFTER the logUsage call.
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "ok";\n}`;
+    let releaseA = () => {};
+    let releaseB = () => {};
+    const gateA = new Promise<void>((r) => (releaseA = r));
+    const gateB = new Promise<void>((r) => (releaseB = r));
+    let call = 0;
+    const fake: Fake = async (p, o) => {
+      const n = ++call;
+      await (n === 1 ? gateA : gateB);
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: n === 1 ? 0.5 : 0.25, turns: 1 });
+      return { text: p };
+    };
+
+    const res = await launchUltra({ script, runId, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    expect(getUltraManifest(runId)?.spend).toBe(0); // both agents still gated
+
+    // An out-of-band row for this run, appended BEFORE the fs patch. This is
+    // the OBSERVABLE for "saveManifest still ran": the seeded manifest above
+    // read 0, so only a manifest write issued after the throwing logUsage can
+    // report 9.
+    fs.appendFileSync(
+      ledgerFile(),
+      JSON.stringify({
+        ts: Date.now(),
+        account: "personal",
+        model: "sonnet",
+        sessionId: "",
+        costUsd: 9,
+        ownerKind: "ultra",
+        ownerId: runId,
+      }) + "\n",
+    );
+
+    const restore = failLedgerWrite(`ultra:${runId}:0`);
+    try {
+      releaseA();
+      expect(await waitUntil(() => getUltraManifest(runId)?.spend === 9)).toBe(true);
+      // Still `running`, not `failed` — the throw never reached the script's
+      // own `await agent()`, which is what the old unguarded call would have
+      // done to a run that had already been billed.
+      expect(getUltraManifest(runId)?.state).toBe("running");
+    } finally {
+      restore();
+    }
+
+    // Not swallowed: the miss is on the run's durable event log, naming the ordinal.
+    const failures = spendFailures(runId);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("ordinal=0");
+
+    releaseB();
+    const result = await getLiveUltraRun(runId)!.finished;
+    expect(result.state).toBe("done");
+
+    // Ordinal 0's row is the only casualty: the out-of-band 9 and ordinal 1's
+    // 0.25 both landed. Repairing ordinal 0 is the next test's job.
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(9.25);
+    expect(ultraLinesFor(runId)).toHaveLength(2);
+  });
+});
+
+describe("Ultra storage — a resume REPAIRS an ordinal whose ledger write failed", () => {
+  test("the failed ordinal's row lands on the cached replay, and the ordinals that already have rows do not double", async () => {
+    const runId = "u-ledger-repair-on-resume";
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  await agent("c", { model: "sonnet" });\n  return "ok";\n}`;
+    // Distinct powers of two, so any wrong total names the wrong ordinal
+    // unambiguously rather than merely being "off".
+    const costs = [1, 2, 4];
+    let call = 0;
+    const fake: Fake = async (p, o) => {
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: costs[call++], turns: 1 });
+      return { text: p };
+    };
+
+    // Only ordinal 1's ledger row fails. appendJournal already ran, so the
+    // journal holds that ordinal WITH its cost — which is exactly what makes
+    // the gap repairable rather than lost.
+    const restore = failLedgerWrite(`ultra:${runId}:1`);
+    try {
+      const res = await launchUltra({ script, runId, agent: fake });
+      if (!res.ok) throw new Error("unreachable");
+      expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    } finally {
+      restore();
+    }
+
+    // 1 + 4. The middle $2 is real, journaled, spent — and not in the ledger.
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(5);
+    expect(ultraLinesFor(runId)).toHaveLength(2);
+    expect(spendFailures(runId).some((m) => m.includes("ordinal=1"))).toBe(true);
+
+    // Resume with a fake that throws if it is ever called: the whole prefix is
+    // cache-served, so no agent call is re-made and no NEW money is spent.
+    // Under the old `!e.cached` guard this replay wrote nothing at all and the
+    // gap was permanent — that is the finding, and this is the repair.
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — full prefix should be cache-served");
+    };
+    const resumed = await resumeUltraRun(runId, { agent: throwingFake });
+    if (!resumed.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    expect(liveCalls).toBe(0);
+
+    // All three replays re-record; only ordinal 1's row is new MONEY. Ordinals
+    // 0 and 2 come back under the entryKey they already hold and so cost
+    // nothing — the dedupe is a property of the ledger fold, not of this
+    // process's memory — while their duplicate rows stay on the file as the
+    // audit trail of the replay.
+    const lines = ultraLinesFor(runId);
+    expect(lines).toHaveLength(5); // 2 from the first run + 3 re-presented
+    expect(new Set(lines.map((l) => String(l.entryKey))).size).toBe(3);
+    expect(foldedUltraCosts(runId).sort((a, b) => a - b)).toEqual([1, 2, 4]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(7);
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(7);
+  });
+});
+
+// ── A COST THE LEDGER CANNOT ACCEPT IS REPORTED, NEVER DROPPED ──────────────
+// `typeof e.costUsd === "number"` is a TYPE check, and `typeof NaN` is
+// "number". A provider-reported NaN therefore reached logUsage, failed
+// UsageEntry's z.number() (which rejects NaN), and came back as `false` — NOT a
+// throw — so the try/catch beside the call could not fire and the settle was
+// missing from usage.ndjson, from manifest.spend AND from events.ndjson at
+// once, with a console line as its only trace. weave.ts's recordSpend has
+// guarded exactly this anomaly with `spend-record-skipped` since the patch
+// round; the asymmetry between the two legs was the finding.
+describe("Ultra storage — a non-finite settle cost is REPORTED, never silently dropped", () => {
+  test("a NaN costUsd writes no ledger row and lands a spend-record-skipped line on the run's own log", async () => {
+    const runId = "u-nan-cost";
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  return "ok";\n}`;
+    const fake: Fake = async (p, o) => {
+      // What an upstream SDK anomaly looks like from here: a settle that
+      // reports a cost field which is not a number's worth of money.
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: Number.NaN, turns: 1 });
+      return { text: p };
+    };
+
+    const res = await launchUltra({ script, runId, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // Nothing billable landed — a NaN dollar is not a dollar, and the ledger is
+    // right to refuse it.
+    expect(ultraLinesFor(runId)).toHaveLength(0);
+    // ...but the refusal is on the RUN'S OWN durable log, naming the ordinal,
+    // so a human tailing the run sees money that never reached the ledger. This
+    // is the whole difference between a defect and a silent one.
+    const skipped = logLinesPrefixed(runId, "spend-record-skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toContain("ordinal=0");
+    // The run itself is untouched: accounting is best-effort, the work is not.
+    expect(getUltraManifest(runId)?.state).toBe("done");
+  });
+});
+
+// ── AN UNREADABLE LEDGER IS NOT A $0 LEDGER ─────────────────────────────────
+// manifest.spend is a projection, and ledgerSpendUsd answers 0 both to "no line
+// was ever written for this run" (true) and to "the ledger could not be read
+// right now" (meaningless). buildManifest took that 0 at face value and wrote
+// it — on every agent settle AND on the once-only terminal save, which is what
+// makes a transient failure a PERMANENT wrong number. weave.ts's budget read
+// has consulted ledgerReadUnavailable() since the repair round; this is the
+// sibling leg getting the same rule, with the difference that ultra's spend is
+// a readout rather than a cap, so it holds the best figure it has instead of
+// failing the run.
+describe("Ultra storage — an unreadable ledger never rewrites manifest.spend to 0", () => {
+  test("a resume whose ledger read fails holds the persisted figure, and says so on the run's log", async () => {
+    const runId = "u-spend-read-unavailable";
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "ok";\n}`;
+    const res = await launchUltra({ script, runId, agent: costedFake(3.75) });
+    if (!res.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    const persisted = getUltraManifest(runId)!;
+    expect(persisted.spend).toBeCloseTo(7.5);
+
+    // Reproduce what a FRESH process meets, in-process: the port's fold cache is
+    // keyed on (file, dev, ino), so ROTATING the ledger — a rename plus a new
+    // file at the same path — leaves it holding no fold that describes the file
+    // on disk, exactly as a process that has never read it holds none. Then deny
+    // the read. Rotation rather than rm+rewrite because a rename guarantees a
+    // different inode (the old one is still occupied), where a delete may hand
+    // the same number straight back.
+    const ledger = ledgerFile();
+    const rotated = `${ledger}.rotated`;
+    fs.renameSync(ledger, rotated);
+    fs.copyFileSync(rotated, ledger);
+    fs.chmodSync(ledger, 0o000);
+    try {
+      // An assertion that stops reproducing its own condition is worthless.
+      expect(() => fs.readFileSync(ledger)).toThrow();
+      expect(fs.statSync(ledger).ino).not.toBe(fs.statSync(rotated).ino);
+
+      const resumed = await resumeUltraRun(runId, { agent: costedFake(3.75) });
+      if (!resumed.ok) throw new Error("unreachable");
+      expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+      const after = getUltraManifest(runId)!;
+      // THE ASSERTION. $7.50 is the last figure anyone could actually read; 0 is
+      // what an unread ledger looks like to a caller that does not ask whether
+      // the read happened.
+      expect(after.spend).toBeCloseTo(7.5);
+      // ...and the manifest really was REWRITTEN in that window, so this is the
+      // fallback holding rather than the file simply never being touched.
+      expect(after.updatedAt).toBeGreaterThan(persisted.updatedAt);
+      // Never silent, and one-shot per run rather than one line per settle.
+      const notes = logLinesPrefixed(runId, "spend-read-unavailable");
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain("7.5");
+    } finally {
+      fs.chmodSync(ledger, 0o600);
+      fs.rmSync(rotated, { force: true });
+    }
+
+    // With the ledger readable again the projection resumes on its own — the
+    // fallback installed no counter. The resume was fully cache-served, so the
+    // honest total is still 7.5.
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(7.5);
+  });
+});
+
+// ── A KEY MUST NAME A BILLABLE EVENT, NOT A SLOT ────────────────────────────
+// The two ways a resume RE-RUNS an ordinal LIVE — the human rewrote that call,
+// and the `cacheValid` latch re-running every ordinal after the first miss.
+// Both are genuinely re-billed by the provider, and under the (runId, ordinal)
+// key both were silently folded away: the second billing's row repeats a key
+// the fold has already consumed, which is indistinguishable from an honest
+// re-presentation of one settle, so no total moves, no `spend-record-failed`
+// event fires and no log line is written. Each test below asserts the fold
+// against the total the fake runner itself reports having billed, so the
+// number cannot drift into agreement with a wrong implementation.
+//
+// A fake that RECORDS what it bills. Only a live call ever reaches it — a
+// cache-replayed ordinal never re-enters the runner — so `billed` is, by
+// construction, the provider-billed truth the ledger has to match.
+function billingFake(costFor: (prompt: string, call: number) => number | null) {
+  const billed: number[] = [];
+  let call = 0;
+  const fake: Fake = async (p, o) => {
+    const cost = costFor(p, ++call);
+    if (cost === null) throw new Error("the provider blew up before this call settled");
+    billed.push(cost);
+    o.onEvent?.({ type: "result", subtype: "success", costUsd: cost, turns: 1 });
+    return { text: p };
+  };
+  const total = () => billed.reduce((a, b) => a + b, 0);
+  return { fake, billed, total };
+}
+
+describe("Ultra storage — an ordinal that RE-RUNS LIVE on a resume is billed again", () => {
+  test("stop → edit → resume: the discarded call and the rewritten call are BOTH on the ledger", async () => {
+    // storage.ts's own name for this is "the standard Stop → edit → resume
+    // surgery". Ordinal 0 costs $1, the human rewrites exactly that call, and
+    // the rewritten call costs $50. The provider billed $51 — the $1 bought a
+    // result that was thrown away, but the money left the account.
+    const runId = "u-key-names-the-call-edit";
+    const script = `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`;
+    const { fake, total } = billingFake((p) => (p === "p0" ? 1 : 50));
+
+    const res = await launchUltra({ script, runId, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(1);
+
+    const edited = script.replace("p0", "p0-REWRITTEN");
+    const resumed = await resumeUltraRun(runId, { script: edited, agent: fake });
+    if (!resumed.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // The journal is repaired — two records for ordinal 0, the last one the
+    // rewritten call's. The ledger must be repaired the same way: the first
+    // record's money did not un-spend itself when the record was superseded.
+    expect(readJournal(runId).filter((r) => r.ordinal === 0).map((r) => r.costUsd)).toEqual([1, 50]);
+
+    expect(total()).toBe(51); // what the provider actually billed
+    expect(ultraLinesFor(runId).map((l) => l.costUsd)).toEqual([1, 50]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(total());
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(51);
+
+    // …and the rewritten call is still billed exactly ONCE however many bare
+    // resumes replay it (property (b), now under the new key): a replay
+    // re-presents the id of the settle it replays, never a fresh one.
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — the edited prefix should be cache-served");
+    };
+    for (const _ of [1, 2]) {
+      const again = await resumeUltraRun(runId, { agent: throwingFake });
+      if (!again.ok) throw new Error("unreachable");
+      expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    }
+    expect(liveCalls).toBe(0);
+    // Two more rows (one re-presentation per bare resume), still exactly two
+    // distinct keys, still $51 — the replays re-present, they never re-bill.
+    expect(ultraLinesFor(runId)).toHaveLength(4);
+    expect(new Set(ultraLinesFor(runId).map((l) => String(l.entryKey))).size).toBe(2);
+    expect(foldedUltraCosts(runId)).toEqual([1, 50]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(51);
+  });
+
+  test("retry after a failed ordinal: the ordinals the latch re-runs live are billed again", async () => {
+    // NO EDIT ANYWHERE — the plainest resume there is. Ordinal 0 throws in run
+    // 1 (so it is never journaled) while ordinal 1 settles live at $10. On the
+    // resume ordinal 0 misses, which latches `cacheValid` false, so ordinal 1
+    // re-runs LIVE too and is really re-billed — same prompt, same opts, same
+    // hash as the $10 that already folded.
+    const runId = "u-key-names-the-call-retry";
+    const script = [
+      META,
+      `export default async function ({ agent }) {`,
+      `  try { await agent("a", { model: "sonnet" }); } catch (e) { /* dead call, the script carries on */ }`,
+      `  await agent("b", { model: "sonnet" });`,
+      `  return "ok";`,
+      `}`,
+    ].join("\n");
+    // Call 1 (ordinal 0 of run 1) throws before settling: nothing journaled,
+    // nothing billed. Then "a" is $20 and "b" is $10 wherever they run.
+    const { fake, billed, total } = billingFake((p, call) => (call === 1 ? null : p === "a" ? 20 : 10));
+
+    const res = await launchUltra({ script, runId, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    expect(readJournal(runId).map((r) => r.ordinal)).toEqual([1]); // ordinal 0 never settled
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(10);
+
+    const resumed = await resumeUltraRun(runId, { agent: fake });
+    if (!resumed.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // Three live calls actually reached the provider, in this order.
+    expect(billed).toEqual([10, 20, 10]);
+    expect(total()).toBe(40);
+    // Ordinal 1 has TWO journal records now — it really ran twice.
+    expect(readJournal(runId).map((r) => r.ordinal)).toEqual([1, 0, 1]);
+    expect(ultraLinesFor(runId).map((l) => l.costUsd)).toEqual([10, 20, 10]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(total());
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(40);
+
+    // The second run's settles dedupe on a third, fully-cached resume — the
+    // re-billing above is charged once, not once per resume.
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — the whole prefix should be cache-served");
+    };
+    const again = await resumeUltraRun(runId, { agent: throwingFake });
+    if (!again.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    expect(liveCalls).toBe(0);
+    // The two replayed ordinals re-record under the keys they already hold: two
+    // more rows, still three distinct keys, still $40.
+    expect(ultraLinesFor(runId)).toHaveLength(5);
+    expect(new Set(ultraLinesFor(runId).map((l) => String(l.entryKey))).size).toBe(3);
+    expect(foldedUltraCosts(runId).sort((a, b) => a - b)).toEqual([10, 10, 20]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(40);
+  });
+});
+
+// ── …AND THAT KEY IS MINTED, NEVER COUNTED ──────────────────────────────────
+// The obvious way to name "which live settle of this ordinal" is to number
+// them off the journal — one record per live settle, so the count IS the seq.
+// It is wrong for the same reason the ordinal was: a count is a POSITION, and a
+// position is only an identity while nothing disturbs the sequence. The two
+// probes below disturb it in the two ways this system genuinely allows — a
+// journal line skipped by the corruption tolerance journal.ts advertises, and
+// two processes resuming one runId — and a counted key silently drops a real
+// billing in both. Both are scored against the fake runner's own record of what
+// it billed, the one number that is not an artifact of the code under test.
+const singleAgentScript = (prompt: string) =>
+  `${META}\nexport default async function ({ agent }) { return agent(${JSON.stringify(prompt)}, { model: "sonnet" }); }`;
+
+describe("Ultra storage — the billing key is minted at settle time, never counted", () => {
+  test("ATTACK: a journal line lost to mid-file corruption never drops a later live settle", async () => {
+    const runId = "u-attack-journal-corruption";
+    // ONE ordinal, three LIVE settles (edit → resume, twice): $1, $10, $200.
+    // Distinct magnitudes, so a wrong total names the settle that went missing
+    // rather than merely being "off".
+    const { fake, total } = billingFake((p) => (p === "p0" ? 1 : p === "p0-B" ? 10 : 200));
+
+    const first = await launchUltra({ runId, script: singleAgentScript("p0"), agent: fake });
+    if (!first.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    const second = await resumeUltraRun(runId, { script: singleAgentScript("p0-B"), agent: fake });
+    if (!second.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    expect(ultraLinesFor(runId).map((l) => l.costUsd)).toEqual([1, 10]);
+
+    // Tear the FIRST journal line mid-file — not the tail. journal.ts skips a
+    // malformed line ON PURPOSE ("so one corrupt record doesn't blind resume to
+    // every record after it"), so ordinal 0's record COUNT drops from 2 to 1
+    // while the surviving record, and the $10 already billed against it, stay.
+    // A tally that can move backwards is not an identity.
+    const journalPath = path.join(runDir(runId), "journal.jsonl");
+    const journalLines = fs.readFileSync(journalPath, "utf8").split("\n");
+    journalLines[0] = "{ this line lost its tail to a bad sector";
+    fs.writeFileSync(journalPath, journalLines.join("\n"));
+    expect(readJournal(runId).map((r) => r.costUsd)).toEqual([10]); // the count regressed
+
+    const third = await resumeUltraRun(runId, { script: singleAgentScript("p0-C"), agent: fake });
+    if (!third.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // A COUNTED key claims `…:0:2` here — the key the $10 settle already holds
+    // — so the $200 row lands looking exactly like a re-presentation of the $10
+    // and the fold drops it, with no log line and no event. A MINTED key was
+    // never on the ledger, so its money counts.
+    expect(total()).toBe(211); // what the provider actually billed
+    expect(ultraLinesFor(runId).map((l) => l.costUsd)).toEqual([1, 10, 200]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(total());
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(211);
+  });
+
+  test("ATTACK: two resumes of one runId racing on the same journal bill all three settles", async () => {
+    // TWO PROCESSES, modeled honestly inside one. resumeUltraRun's "already
+    // running" refusal is a PER-PROCESS registry check; a second process
+    // resuming the same runId has its own registry and walks straight past it,
+    // which is precisely the race resumeUltraRun's own comment names ("two
+    // concurrent tasks against one journal.jsonl would race its appends").
+    // launchUltra with a forced runId is the SAME start/resume code path
+    // (startUltra scans whatever journal the id already has) minus that
+    // process-local guard, so two of them in flight is the cross-process race:
+    // both scan BEFORE either appends, so both read the same record count.
+    const runId = "u-attack-concurrent-resume";
+    const opened = billingFake(() => 1);
+    const first = await launchUltra({ runId, script: singleAgentScript("p0"), agent: opened.fake });
+    if (!first.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // Both racers hold at one gate until BOTH have started, so the interleaving
+    // under test is forced rather than hoped for.
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const raceBilled: number[] = [];
+    const racer = (cost: number): Fake => async (p, o) => {
+      await gate;
+      raceBilled.push(cost);
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: cost, turns: 1 });
+      return { text: p };
+    };
+
+    const edited = singleAgentScript("p0-RESUMED");
+    const a = await launchUltra({ runId, script: edited, agent: racer(50) });
+    if (!a.ok) throw new Error("unreachable");
+    const runA = getLiveUltraRun(runId)!;
+    const b = await launchUltra({ runId, script: edited, agent: racer(50) });
+    if (!b.ok) throw new Error("unreachable");
+    const runB = getLiveUltraRun(runId)!;
+    expect(runA).not.toBe(runB); // two independent tasks over one journal
+    release();
+    expect((await runA.finished).state).toBe("done");
+    expect((await runB.finished).state).toBe("done");
+
+    // Two real calls reached the provider and two were really billed. A COUNTED
+    // key gives both of them `…:0:2` — two rows the fold reads as one settle
+    // re-presented, $50 gone in silence. A MINTED key needs no coordination
+    // between the two writers to stay distinct.
+    expect(raceBilled).toEqual([50, 50]);
+    const billedTotal = opened.total() + 100;
+    expect(billedTotal).toBe(101);
+    expect(ultraLinesFor(runId).map((l) => l.costUsd)).toEqual([1, 50, 50]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(billedTotal);
+    expect(getUltraManifest(runId)?.spend).toBeCloseTo(101);
+  });
+
+  test("each live settle mints its OWN journal id, and its ledger row carries that id verbatim", async () => {
+    const runId = "u-minted-settle-id";
+    const { fake } = billingFake((p) => (p === "p0" ? 3 : 5));
+    const first = await launchUltra({ runId, script: singleAgentScript("p0"), agent: fake });
+    if (!first.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+    const second = await resumeUltraRun(runId, { script: singleAgentScript("p0-B"), agent: fake });
+    if (!second.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    // Two records for ONE ordinal, each with its own minted id — the id is a
+    // property of the settle, never of the slot it settled in.
+    const ids = readJournal(runId)
+      .filter((r) => r.ordinal === 0)
+      .map((r) => r.settleId);
+    expect(ids).toHaveLength(2);
+    expect(ids.every((id) => typeof id === "string" && /^[0-9a-f-]{36}$/.test(id!))).toBe(true);
+    expect(new Set(ids).size).toBe(2);
+    // …and the ledger keys are those ids, in settle order — nothing derives a
+    // key from the record's position in the file.
+    expect(ultraLinesFor(runId).map((l) => l.entryKey)).toEqual(ids.map((id) => `ultra:${runId}:0:${id}`));
+  });
+
+  test("a journal record from before settleId existed still parses, still replays, and still dedupes", async () => {
+    // The additive-field contract, from the only angle that matters for money:
+    // an on-disk journal written by the older code has no id to read back, so
+    // that record — and only that record — falls back to the count-derived key
+    // its live settle actually wrote, and its already-billed row is not billed
+    // twice. Built as the older code would have left it: a record with no
+    // settleId, plus its ledger row under `ultra:<runId>:<ordinal>:<count>`.
+    const runId = "u-legacy-journal-record";
+    const prompt = "p-legacy";
+    fs.mkdirSync(runDir(runId), { recursive: true });
+    fs.appendFileSync(
+      path.join(runDir(runId), "journal.jsonl"),
+      JSON.stringify({
+        ordinal: 0,
+        hash: hashCall(prompt, { model: "sonnet" }),
+        result: { text: prompt },
+        costUsd: 7,
+      }) + "\n",
+    );
+    fs.appendFileSync(
+      ledgerFile(),
+      JSON.stringify({
+        ts: Date.now(),
+        account: "personal",
+        model: "sonnet",
+        sessionId: "",
+        costUsd: 7,
+        ownerKind: "ultra",
+        ownerId: runId,
+        entryKey: `ultra:${runId}:0:1`,
+      }) + "\n",
+    );
+
+    let liveCalls = 0;
+    const throwingFake: Fake = async () => {
+      liveCalls++;
+      throw new Error("must not be called — the legacy record should be cache-served");
+    };
+    const resumed = await resumeUltraRun(runId, { script: singleAgentScript(prompt), agent: throwingFake });
+    if (!resumed.ok) throw new Error("unreachable");
+    expect((await getLiveUltraRun(runId)!.finished).state).toBe("done");
+
+    expect(liveCalls).toBe(0); // parsed, hash-matched, replayed
+    // The replay re-records, as every replay does — under the key the OLD code
+    // wrote, which is the whole point: two rows, ONE key, and the $7 is still
+    // $7 rather than $14.
+    const legacyLines = ultraLinesFor(runId);
+    expect(legacyLines).toHaveLength(2);
+    expect(new Set(legacyLines.map((l) => String(l.entryKey)))).toEqual(new Set([`ultra:${runId}:0:1`]));
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId })).toBeCloseTo(7);
   });
 });

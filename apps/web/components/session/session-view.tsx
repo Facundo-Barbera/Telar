@@ -1877,9 +1877,11 @@ function SessionViewInner({
                 // payload.costUsd is the SESSION'S ledger total (route.ts's
                 // "done"), not this turn's delta — so SET it. The displayed
                 // spend is a projection over usage.ndjson, never a counter
-                // this component accumulates (AD-18). Setting also makes a
-                // reconnect that replays "done" from the session log
-                // idempotent, where adding would double-count the turn.
+                // this component accumulates (AD-18). Adding would compound
+                // the total against itself: turn 2 would render turn 1 twice.
+                // The token deltas below are genuinely per-turn and DO
+                // accumulate — the difference is in what the payload carries,
+                // not in how this handler is written.
                 if (typeof payload.costUsd === "number") setSessionCost(payload.costUsd);
                 setTokens((t) => ({
                   input: t.input + (payload.usage?.input_tokens ?? 0),

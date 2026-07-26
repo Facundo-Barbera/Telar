@@ -18,9 +18,24 @@ beforeEach(() => {
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
-import { runWeave } from "../src/weave";
 import type { Loom } from "../src/looms";
 import type { SubGoal } from "../src/schemas";
+// ESM HOISTS AND EVALUATES every static import BEFORE the first top-level
+// statement above it runs, so a static value import of ../src/weave would load
+// weave.ts and its whole graph BEFORE the pin at :13 — the pin would only
+// APPEAR to come first, and holds today solely because every state-root
+// resolver happens to be lazy. `await import` evaluates HERE, after the pin,
+// which makes the ordering real. weave.ts is the only import in this file that
+// reaches the usage ledger, so it is the only one deferred; the `import type`
+// lines are erased at runtime and stay static. Idiom: weave.test.ts (its two
+// deferred `await import` lines for ../src/weave and ../src/looms, both placed
+// after the same pin) and m11-blocked-propagation.test.ts (four deferred
+// imports after its pin — that suite already used this idiom and was never
+// broken). Cited by SYMBOL, not by line: the ":13" this comment used to carry
+// was already off by one, because a line number names a slot in a file and any
+// edit above it hands that slot to something else. Pinned at the source level by T30
+// (orchestrator.test.ts).
+const { runWeave } = await import("../src/weave");
 
 let n = 0;
 function fakeLoom(overrides: Partial<Loom> = {}): Loom {

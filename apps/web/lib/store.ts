@@ -4,7 +4,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { usageCostBySession, usageTokensBySession } from "@telar/core";
+import { ledgerReadDegraded, usageCostBySession, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
 
 // The spend ledger itself lives in @telar/core (usage-ledger.ts) — it is
@@ -15,8 +15,15 @@ import type { ClientPermissionMode } from "./permission-modes";
 export { logUsage, usageSummary } from "@telar/core";
 export type { UsageEntry, UsageWindow } from "@telar/core";
 
-// The settled TELAR_HOME expression, copied verbatim from permissions.ts:45 /
-// session-log.ts:16 (and matching core's manifest.ts telarDir()). Not a variant.
+// The settled TELAR_HOME expression, copied verbatim from permissions.ts's
+// telarHome() and session-log.ts's home() (and matching core's manifest.ts
+// telarDir() and looms.ts's private telarDir()). Not a variant.
+//
+// Cited by SYMBOL, deliberately. This comment previously named line numbers in
+// those files; they were wrong within one editing round, because a line number
+// identifies a slot in a file and any edit above it hands that slot to
+// something else. A symbol survives edits and grep finds it — same policy as
+// _bmad-output/implementation-artifacts/deferred-work.md.
 //
 // WHY lazy, and WHY exported:
 //  - Lazy: a test (or a reconfigured process) can point TELAR_HOME elsewhere,
@@ -28,7 +35,35 @@ export type { UsageEntry, UsageWindow } from "@telar/core";
 //    a later process.env.HOME write, so the unset-TELAR_HOME fallback can only
 //    be asserted as a STRING, never by writing into a fake home in-process.
 //    manifest.ts exports telarDir() for the same reason.
-export const stateRoot = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+//
+// WHY trim-and-check rather than `??`: `??` falls back on null/undefined but
+// NOT on "", and an exported-but-empty `TELAR_HOME=` is routine in shell
+// scripts and CI. The harm is not uniform across the five modules that share
+// this expression, and this one is the lucky case — measured, not assumed:
+// with root "" this file's writes CRASH (writeChats' ensureDir() does
+// fs.mkdirSync("", { recursive: true }), which throws ENOENT) rather than
+// landing in the cwd. The siblings are not so lucky: permissions.ts silently
+// writes <cwd>/permissions.json — the rules that gate the Human-Accept Moat —
+// session-log.ts creates <cwd>/sessions/<id>/live.ndjson, and core's looms.ts
+// creates <cwd>/looms/<id>. READS are silently cwd-scoped
+// everywhere, here included: readChats() swallows its failure and returns [],
+// so an empty root reads an empty history rather than reporting anything. The
+// root expression is the one thing all five have in common, so it is the one
+// thing to guard — like-for-like in each, since collapsing the duplication is
+// separately tracked and would widen this change.
+//
+// DESIGN CALL on a RELATIVE root: path.resolve makes it absolute but still
+// lands it under the cwd, and it pins NOTHING — this resolver is lazy, so
+// path.resolve re-runs against the CURRENT cwd on every call and a process that
+// chdir's mid-run reads and writes a different root afterwards (measured: with
+// TELAR_HOME="rel-root", two calls straddling a process.chdir() returned two
+// different absolute paths). Refusing a relative root outright is the stronger
+// guarantee, but it is a behavior change beyond this fix, so we resolve and
+// document.
+export const stateRoot = () => {
+  const v = process.env.TELAR_HOME?.trim();
+  return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
+};
 const chatsFile = () => path.join(stateRoot(), "chats.json");
 const planFile = () => path.join(stateRoot(), "plan-usage.json");
 
@@ -183,10 +218,11 @@ export function listChats(
       return mode === "only" ? !!c.archived : !c.archived;
     })
     // costUsd is projected over the ledger (AD-18), exactly as getChat does —
-    // the two read surfaces must not be able to disagree.
+    // the two read surfaces must not be able to disagree, including about what
+    // an unreadable ledger means (see displayedSpendUsd).
     .map(({ messages, ...meta }) => ({
       ...meta,
-      costUsd: sessionSpendUsd(meta.id),
+      costUsd: displayedSpendUsd(meta.id, meta.costUsd),
       preview: previewOf(messages),
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -203,6 +239,42 @@ export function listChats(
 // rather than accumulating a delta of its own.
 export function sessionSpendUsd(sessionId: string): number {
   return usageCostBySession().get(sessionId) ?? 0;
+}
+
+// The spend a CHAT DISPLAYS. The same projection as sessionSpendUsd, plus the
+// one distinction a bare number cannot carry: `0` is the answer both to "this
+// session has no rows in the ledger" (true — show it) and to "the number you
+// just got did not come from reading the ledger" (meaningless). The port's
+// ledgerReadDegraded() is the predicate for the second. On a degraded read the
+// stored chat.costUsd is the last figure this chat's own turns wrote, so
+// holding it beats printing $0.00 beside a real transcript and real token
+// counts.
+//
+// WHY ledgerReadDegraded() AND NOT ledgerReadUnavailable(), which is what
+// weave.ts's budget guard and ultra's manifest spend use: `Unavailable` is
+// FILE-scoped — the read failed AND there was no fold to serve. It is FALSE in
+// the case measured to be the more likely one here: a warm process whose read
+// fails and which is therefore served its own last known good fold. That fold
+// is real and it still binds a budget, which is why the narrower predicate is
+// right for weave — but it predates every row appended since it was taken (by
+// the packaged app, or by this process before the failure), and for a row it
+// has never seen it answers 0. Reproduced: a chat whose turn really spent
+// $12.34, read while a stale fold is being served, displayed $0.00 with
+// `Unavailable` reporting false. A budget wants stale-and-high; a per-session
+// readout wants "was this row's figure actually read".
+//
+// NOT A GENERAL FALLBACK, deliberately. A ledger that READS CLEAN and simply
+// has no row for this session still displays 0 — that case (a rotated, pruned
+// or deleted usage.ndjson) is an open product decision on story 1.1, and "the
+// honest answer is $0" is a defensible position that is not this function's to
+// settle. Falling back on every zero would make the stored counter authoritative
+// again whenever the ledger disagrees, which is the exact failure AD-18 exists
+// to end. What is never defensible is a number derived from a read that did not
+// happen.
+function displayedSpendUsd(sessionId: string, stored: unknown): number {
+  const projected = sessionSpendUsd(sessionId);
+  if (projected !== 0 || !ledgerReadDegraded()) return projected;
+  return typeof stored === "number" && Number.isFinite(stored) ? stored : projected;
 }
 
 // Per-session token totals, projected over the core usage ledger — the
@@ -228,8 +300,10 @@ export function getChat(id: string): Chat | undefined {
   // AD-18 — a session's spend is a PROJECTION over usage.ndjson, not an
   // independent counter. Chat.id is the SDK session id, which is what the
   // ledger's session-owned lines are keyed by. The stored chat.costUsd is a
-  // denormalized cache that nothing reads any more (see appendTurn).
-  const projected = { ...chat, costUsd: sessionSpendUsd(chat.id) };
+  // denormalized cache that nothing reads any more (see appendTurn) — except
+  // when the ledger itself could not be read, which is the one case
+  // displayedSpendUsd keeps it for.
+  const projected = { ...chat, costUsd: displayedSpendUsd(chat.id, chat.costUsd) };
   // Old chats predate per-turn token accumulation (inputTokens is the
   // canary — all four fields were added together) — derive their totals
   // from the usage ledger instead of silently showing zero.

@@ -13,8 +13,36 @@ import { ProjectManifest } from "./schemas";
 // Optional so pre-existing projects.json entries (without it) still parse.
 export type RegistryEntry = { name: string; root: string; addedAt: number; manifest?: ProjectManifest };
 
+// The state root. Lazy (never captured at module evaluation) so a test or a
+// reconfigured process can re-point it, and exported because os.homedir() is
+// resolved at process start under Bun — the unset fallback can only be
+// asserted as a STRING, never by writing into a fake home in-process.
+//
+// WHY trim-and-check rather than `??`: `??` falls back on null/undefined but
+// NOT on "", and an exported-but-empty `TELAR_HOME=` is routine in shell
+// scripts and CI. Measured with root "": atomicWrite's
+// mkdirSync(path.dirname("projects.json")) resolves to "." and SUCCEEDS, so
+// the global registry is written to — and read back from — whatever the
+// process's cwd happens to be, with no error anywhere. This resolver is also
+// the one the spend ledger itself uses (usage-ledger.ts's usageFile()), so an
+// empty root moves the money record too.
+//
+// The same guard is a like-for-like copy in looms.ts and in apps/web's
+// store.ts, permissions.ts and session-log.ts. Five copies is deliberate here:
+// collapsing the duplication into a shared helper is separately tracked and
+// would widen this change well past the defect.
+//
+// DESIGN CALL on a RELATIVE root: path.resolve makes it absolute but still
+// lands it under the cwd, and it pins NOTHING — this resolver is lazy, so
+// path.resolve re-runs against the CURRENT cwd on every call and a process that
+// chdir's mid-run reads and writes a different root afterwards (measured: with
+// TELAR_HOME="rel-root", two calls straddling a process.chdir() returned two
+// different absolute paths). Refusing a relative root outright is the stronger
+// guarantee, but it is a behavior change beyond this fix, so we resolve and
+// document.
 export function telarDir(): string {
-  return process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+  const v = process.env.TELAR_HOME?.trim();
+  return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
 }
 
 const registryFile = () => path.join(telarDir(), "projects.json");

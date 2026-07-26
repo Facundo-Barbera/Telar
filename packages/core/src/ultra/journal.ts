@@ -38,6 +38,17 @@ export type JournalRecord = {
   // missing key, same as never provided).
   costUsd?: number;
   turns?: number;
+  // THE BILLING IDENTITY OF THE SETTLE THIS RECORD IS (executor.ts's
+  // UltraEvent.settleId): a unique id minted at the moment the money was
+  // spent, carried here so every later replay of this record re-presents the
+  // key its live settle already wrote instead of deriving a new one from the
+  // record's position, order or count — the one property that makes the spend
+  // ledger's dedupe safe under corruption and under two concurrent writers.
+  // Optional for the same reason costUsd is: a record written before the field
+  // existed still parses and still replays, and only such a record falls back
+  // to the count-derived key that older code used for it (executor.ts's
+  // `legacyCounts`).
+  settleId?: string;
 };
 
 // Deep, key-sorted canonicalization so two structurally-identical (prompt,
@@ -96,6 +107,12 @@ export function readJournal(runId: string): JournalRecord[] {
     try {
       const rec = JSON.parse(line) as Partial<JournalRecord>;
       if (typeof rec.ordinal === "number" && typeof rec.hash === "string") {
+        // `settleId` names MONEY (see the type above), so it is accepted only
+        // as a non-empty string. Anything else — a hand-edited number, null, a
+        // truncated "" — is dropped to `undefined` here, at the parse boundary,
+        // so the replay takes the documented pre-settleId fallback rather than
+        // keying a ledger row on a shape nothing ever minted.
+        if (typeof rec.settleId !== "string" || rec.settleId === "") delete rec.settleId;
         out.push(rec as JournalRecord);
       }
     } catch {

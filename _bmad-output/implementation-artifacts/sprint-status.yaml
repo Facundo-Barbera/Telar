@@ -1,0 +1,92 @@
+# generated: 2026-07-26 00:43
+# last_updated: 2026-07-26 00:43
+# project: Telar
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+generated: 2026-07-26 00:43
+last_updated: 2026-07-26 00:43
+project: Telar
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 1: Runtime Foundations
+  epic-1: in-progress
+  1-1-state-root-isolation-and-the-attributed-spend-ledger: review
+  1-2-the-event-bus-admission-control-and-the-lease-primitive: backlog
+  1-3-executable-invariants-and-the-track-a-prove-run: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Session Profiles
+  epic-2: backlog
+  2-1-the-sessionprofile-resolver: backlog
+  2-2-retrofit-the-existing-session-kinds-onto-profiles: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Conversation Shell
+  epic-3: backlog
+  3-1-carve-out-the-conversation-shell-and-its-primitives: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Ultra Finish
+  epic-4: backlog
+  4-1-completion-wake-and-session-cost-rollup: backlog
+  4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Organization Workspace
+  epic-5: backlog
+  5-1-the-item-store-and-the-workspace-mcp-server: backlog
+  5-2-the-queue-packet-detail-and-the-shared-chip-grammar: backlog
+  5-3-the-master-session-profile-chat-surface-and-desk-rail: backlog
+  5-4-experts-brain-dump-the-briefing-and-bed-mode: backlog
+  5-5-handoff-external-sources-codex-mcp-injection-and-the-workspace-prove-run: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Loom Redesign
+  epic-6: backlog
+  6-1-mapstore-region-files-the-proposal-ledger-and-methodology-as-data: backlog
+  6-2-act-1-birth-the-decision-graph-the-intake-diff-and-the-readiness-gate: backlog
+  6-3-the-lab-readiness-recipe-two-altitude-verification-evidence-and-the-critic: backlog
+  6-4-act-2-flow-compile-isolation-declared-services-park-and-liveness: backlog
+  6-5-act-3-the-delivery-card-accept-then-land-and-boomerang: backlog
+  6-6-surfaces-the-cockpit-fleet-triage-and-the-end-to-end-prove-run: backlog
+  epic-6-retrospective: optional

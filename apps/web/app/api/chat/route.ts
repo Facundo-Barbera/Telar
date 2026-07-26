@@ -1807,11 +1807,12 @@ export async function POST(req: Request) {
               // this turn's delta (AD-18: every spend readout is a projection
               // over the one ledger, never an independent counter). The line
               // for this turn is appended immediately above, so the fold
-              // already includes it. The client SETS this value, which also
-              // makes a reconnect that replays this event from the session log
-              // idempotent instead of double-counting the turn. Falls back to
-              // the turn's own figure only if no session was ever captured, in
-              // which case nothing was logged or persisted either.
+              // already includes it. Because this is a TOTAL and not a delta,
+              // the client must SET it rather than add it — adding would
+              // compound the total against itself, so the second turn of a
+              // session would render turn 1 twice. Falls back to the turn's
+              // own figure only if no session was ever captured, in which case
+              // nothing was logged or persisted either.
               costUsd: capturedSession
                 ? sessionSpendUsd(capturedSession)
                 : lastResult.totalCostUsd,

@@ -42,7 +42,27 @@ const g = globalThis as unknown as { __telarPending?: Map<string, PendingRequest
 const pending = (g.__telarPending ??= new Map());
 
 // Lazy so a test (or a reconfigured process) can point TELAR_HOME elsewhere.
-const telarHome = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+//
+// The trim+resolve guard matches core's manifest.ts telarDir() (full reasoning
+// there): `??` falls back on null/undefined but NOT on "", and an
+// exported-but-empty `TELAR_HOME=` is routine in shell scripts and CI. This is
+// the module where an empty root does the most damage, measured rather than
+// assumed — atomicWrite's mkdirSync(path.dirname("permissions.json")) resolves
+// to "." and SUCCEEDS, so the allow-rules that gate the Human-Accept Moat are
+// written to, and read back from, whatever the process's cwd happens to be. A
+// moat rule accepted in one cwd is simply absent in another, with no error.
+//
+// DESIGN CALL on a RELATIVE root: path.resolve makes it absolute but still
+// lands it under the cwd, and it pins NOTHING — this resolver is lazy, so
+// path.resolve re-runs against the CURRENT cwd on every call and a process that
+// chdir's mid-run reads and writes a different root afterwards (measured: with
+// TELAR_HOME="rel-root", two calls straddling a process.chdir() returned two
+// different absolute paths). Refusing a relative root outright is stronger, but
+// it is a behavior change beyond this fix, so we resolve and document.
+const telarHome = () => {
+  const v = process.env.TELAR_HOME?.trim();
+  return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
+};
 const rulesFile = () => path.join(telarHome(), "permissions.json");
 
 function atomicWrite(file: string, data: string) {

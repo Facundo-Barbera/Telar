@@ -126,6 +126,51 @@ describe("store TELAR_HOME isolation (CAP-1)", () => {
     }
   });
 
+  test("an empty TELAR_HOME resolves to the home default, never to the cwd", () => {
+    // `??` falls back on null/undefined but NOT on "", and an exported-but-empty
+    // `TELAR_HOME=` is routine in shell scripts and CI. Un-guarded, the root
+    // becomes "" and every path.join() lands the state file in the process cwd
+    // — i.e. in the repo. Whitespace is in the loop because the guard TRIMS: a
+    // value that is only spaces is the same mistake with an invisible payload.
+    //
+    // Asserted as a STRING and never by writing: with the guard in place the
+    // empty root resolves to the REAL ~/.telar, and nothing in this file may
+    // write there (see the header). The un-guarded root "" cannot be probed by
+    // writing either — fs.mkdirSync("", { recursive: true }) throws ENOENT, so
+    // store.ts's own writes CRASH on it rather than landing in the cwd; the
+    // silent-cwd writes are in permissions.ts / session-log.ts / looms.ts. The
+    // root expression is the one thing common to all of them, so it is the
+    // thing to pin.
+    const saved = process.env.TELAR_HOME;
+    try {
+      for (const empty of ["", "   ", "\t"]) {
+        process.env.TELAR_HOME = empty;
+        expect(store.stateRoot()).toBe(path.join(os.homedir(), ".telar"));
+        expect(store.stateRoot()).not.toBe(process.cwd());
+        expect(path.isAbsolute(store.stateRoot())).toBe(true);
+      }
+    } finally {
+      process.env.TELAR_HOME = saved;
+    }
+  });
+
+  test("a relative TELAR_HOME resolves to an absolute path", () => {
+    // A relative root is a root that every consumer re-interprets against
+    // whatever cwd it happens to be running under. Resolving it does not lift
+    // it out of the cwd — it makes it ONE absolute string, computed at the
+    // call, instead of a fragment each caller joins independently. (Whether a
+    // relative root should be REFUSED outright rather than resolved is an open
+    // call for the human; if it is taken, this becomes a toThrow.)
+    const saved = process.env.TELAR_HOME;
+    try {
+      process.env.TELAR_HOME = "telar-relative-root";
+      expect(path.isAbsolute(store.stateRoot())).toBe(true);
+      expect(store.stateRoot()).toBe(path.resolve("telar-relative-root"));
+    } finally {
+      process.env.TELAR_HOME = saved;
+    }
+  });
+
   test("with TELAR_HOME unset, a write lands under the inherited HOME", () => {
     // os.homedir() under Bun is resolved at process start and ignores an
     // in-process process.env.HOME write — only an INHERITED HOME is honored.
@@ -148,12 +193,31 @@ describe("store TELAR_HOME isolation (CAP-1)", () => {
     // with NODE_ENV=test and no TELAR_HOME (that guard is covered separately).
     const env = { ...process.env, HOME: fakeHome, NODE_ENV: "production" as const };
     delete (env as Record<string, string | undefined>).TELAR_HOME;
+    // Snapshot the parent's ledger BYTES across the spawn. This replaces an
+    // assertion that could not fail — `existsSync(path.join(TMP, ".telar"))`
+    // called itself "the parent's own root is untouched", but TMP *is* the
+    // parent's TELAR_HOME, so the parent's root is TMP and not TMP/.telar, and
+    // no code path in this repo ever creates $TELAR_HOME/.telar. The property
+    // actually worth proving is that the child's ledger line landed in the
+    // CHILD's root and nowhere else, and that is a CONTENT question for the
+    // same reason realHomeFingerprint() hashes rather than stats: the failure
+    // mode is an APPEND to a file that already exists.
+    const parentLedger = path.join(TMP, "usage.ndjson");
+    const parentLedgerBefore = fs.existsSync(parentLedger) ? fs.readFileSync(parentLedger) : null;
     const out = spawnSync(process.execPath, [probe], { env, encoding: "utf8" });
     expect(out.stderr).toBe("");
     expect(out.status).toBe(0);
     expect(fs.existsSync(path.join(fakeHome, ".telar", "usage.ndjson"))).toBe(true);
-    // The parent's own root is untouched by the child.
-    expect(fs.existsSync(path.join(TMP, ".telar"))).toBe(false);
+    // (a) Nothing of the child's reached the parent's ledger. Fails the moment
+    // TELAR_HOME leaks into the child, or root resolution stops being
+    // per-process.
+    const parentLedgerAfter = fs.existsSync(parentLedger) ? fs.readFileSync(parentLedger) : null;
+    expect(parentLedgerAfter).toEqual(parentLedgerBefore);
+    // (b) The child RESOLVED the fallback — its own stateRoot() readout, which
+    // the probe has always printed and no assertion has ever read. The file
+    // check above only proves a file appeared under fakeHome; this pins WHICH
+    // root the child computed to put it there.
+    expect(out.stdout.trim()).toBe(path.join(fakeHome, ".telar"));
     fs.rmSync(fakeHome, { recursive: true, force: true });
   });
 
@@ -382,6 +446,142 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
       expect(store.getChat("chat-1")!.costUsd).toBe(6);
       expect(store.usageSummary().weekly.costUsd).toBe(6);
       expect(store.usageSummary().weekly.requests).toBe(1);
+    } finally {
+      process.env.TELAR_HOME = TMP;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── displayedSpendUsd — the unreadable-ledger fallback ─────────────────────
+  // getChat/listChats used to project costUsd as sessionSpendUsd(id) alone,
+  // and that function returns 0 both when a session genuinely has no ledger
+  // rows AND when the ledger COULD NOT BE READ — so one transient EACCES on a
+  // cold read displayed $0.00 beside a real transcript and real token counts.
+  // These pin the fix: the stored chat.costUsd is held ONLY while the
+  // projection is 0 and ledgerReadUnavailable() says the 0 was not a real
+  // read.
+
+  test("getChat displays the stored costUsd when the ledger cannot be read, not $0.00", () => {
+    // A FRESH root (projectionRoot mints a new mkdtemp path every call) has no
+    // warm in-process fold for this file — the port's cache is keyed by file
+    // identity, so the open() below is the FIRST touch this process makes and
+    // a chmod-000 file fails it with EACCES, not ENOENT. With no cached fold
+    // for this file to fall back on, the port raises ledgerReadUnavailable()
+    // (see packages/core/test/budget-read-guard.test.ts for the same rig).
+    const root = projectionRoot("unreadable-get");
+    const ledgerFile = path.join(root, "usage.ndjson");
+    try {
+      seedChat(root, "chat-1", 12.34); // the last real figure this chat's own turns wrote
+      // A row for this exact session, so a passing test could not be mistaken
+      // for the boundary case below (a ledger with nothing for chat-1).
+      fs.writeFileSync(ledgerFile, JSON.stringify(ledgerLine({ sessionId: "chat-1", costUsd: 3 })) + "\n");
+      fs.chmodSync(ledgerFile, 0o000);
+      try {
+        // The chmod means nothing unless the read really is denied — an
+        // assertion that silently stops reproducing the condition is worthless.
+        expect(() => fs.readFileSync(ledgerFile)).toThrow();
+        expect(store.getChat("chat-1")!.costUsd).toBe(12.34);
+      } finally {
+        fs.chmodSync(ledgerFile, 0o600); // must run or the tmp dir cannot be cleaned up
+      }
+      // NOT A NEW COUNTER: the instant the ledger is readable again, its own
+      // (different, contradicting) figure wins over the held stored one.
+      expect(store.getChat("chat-1")!.costUsd).toBe(3);
+    } finally {
+      process.env.TELAR_HOME = TMP;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("listChats displays the stored costUsd when the ledger cannot be read, not $0.00", () => {
+    // Same property as getChat, immediately above — the two read surfaces
+    // must not be able to disagree about what an unreadable ledger means.
+    const root = projectionRoot("unreadable-list");
+    const ledgerFile = path.join(root, "usage.ndjson");
+    try {
+      seedChat(root, "chat-1", 12.34);
+      fs.writeFileSync(ledgerFile, JSON.stringify(ledgerLine({ sessionId: "chat-1", costUsd: 3 })) + "\n");
+      fs.chmodSync(ledgerFile, 0o000);
+      try {
+        expect(() => fs.readFileSync(ledgerFile)).toThrow();
+        expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(12.34);
+      } finally {
+        fs.chmodSync(ledgerFile, 0o600);
+      }
+      expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(3);
+    } finally {
+      process.env.TELAR_HOME = TMP;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("getChat holds the stored costUsd when a STALE fold is served — the warm failure, not just the cold one", () => {
+    // The case the two tests above CANNOT reach, and the likelier one in a real
+    // server: this process has already read the ledger successfully once, so
+    // when a later read fails the port serves that fold back (same file
+    // identity — chmod does not change the inode). That fold is real, it still
+    // binds a budget, and ledgerReadUnavailable() therefore answers FALSE on
+    // purpose (packages/core/test/usage-ledger.test.ts's "(m) a stale-but-real
+    // fold served under EACCES is NOT reported unavailable"). But it predates
+    // every row appended since it was taken — by the packaged app, or by this
+    // process before the failure — and for those rows it answers 0, which is
+    // exactly "$0.00 beside a real transcript". ledgerReadDegraded() is the
+    // wider predicate that covers both failures; this pins that the display
+    // reads THAT one.
+    const root = projectionRoot("stale-warm");
+    const ledgerFile = path.join(root, "usage.ndjson");
+    try {
+      seedChat(root, "chat-1", 12.34);
+      // A row for a DIFFERENT session, then a successful read: the fold is warm
+      // and has never seen chat-1.
+      fs.writeFileSync(ledgerFile, JSON.stringify(ledgerLine({ sessionId: "someone-else", costUsd: 5 })) + "\n");
+      expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(0); // clean read, no row: honest 0
+      // chat-1's spend really lands on the ledger, and at a figure the stored
+      // counter does NOT hold — so the two directions are distinguishable: a
+      // degraded read must show the stored 12.34, a real one the ledger's 20.
+      fs.appendFileSync(ledgerFile, JSON.stringify(ledgerLine({ sessionId: "chat-1", costUsd: 20 })) + "\n");
+      // …and the next read fails, so the warm fold — which predates that row —
+      // is served in its place.
+      fs.chmodSync(ledgerFile, 0o000);
+      try {
+        expect(() => fs.readFileSync(ledgerFile)).toThrow();
+        expect(store.getChat("chat-1")!.costUsd).toBe(12.34);
+        expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(12.34);
+      } finally {
+        fs.chmodSync(ledgerFile, 0o600);
+      }
+      // One readable moment and the projection is authoritative again — the
+      // held figure was a fallback, not a counter that took over.
+      expect(store.getChat("chat-1")!.costUsd).toBe(20);
+      expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(20);
+    } finally {
+      process.env.TELAR_HOME = TMP;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a ledger that reads CLEAN but has no row for this session still displays 0 — the fallback is not a general one", () => {
+    // THE BOUNDARY, and it must stay pinned. A ledger that opens fine and folds
+    // fine but simply has no row for THIS session (a rotated, pruned or
+    // deleted usage.ndjson) is not the same event as a read that could not
+    // happen — ledgerReadUnavailable() is false here, on a real successful
+    // read, so displayedSpendUsd has no license to reach for the stored
+    // counter. Whether "the honest answer is $0" is the right product call for
+    // this case is an OPEN DECISION on story 1.1 (see displayedSpendUsd's own
+    // comment) — this test pins only that the fix does not silently decide it
+    // by accident. Falling back on every zero would make the stored counter
+    // authoritative again whenever the ledger disagrees, which is the exact
+    // failure AD-18 (the projection-not-a-counter rule) exists to end.
+    const root = projectionRoot("clean-no-row");
+    try {
+      seedChat(root, "chat-1", 999); // poisoned counter — must NOT resurface
+      // Present, readable, and folds without error — just no line for chat-1.
+      fs.writeFileSync(
+        path.join(root, "usage.ndjson"),
+        JSON.stringify(ledgerLine({ sessionId: "some-other-session", costUsd: 7 })) + "\n",
+      );
+      expect(store.getChat("chat-1")!.costUsd).toBe(0);
+      expect(store.listChats().find((c) => c.id === "chat-1")!.costUsd).toBe(0);
     } finally {
       process.env.TELAR_HOME = TMP;
       fs.rmSync(root, { recursive: true, force: true });

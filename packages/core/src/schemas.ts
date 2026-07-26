@@ -893,15 +893,17 @@ export type PanelReport = z.infer<typeof PanelReport>;
 // One append-only line per agent call in $TELAR_HOME/usage.ndjson. There is
 // exactly one ledger and exactly one writer (usage-ledger.ts, AD-20).
 //
-// Owner attribution (ownerKind + ownerId) is ADDITIVE: every field carries a
-// default, so a line written before attribution existed parses clean, counts
-// toward every total, and never throws (AD-7 tolerant readers — zod also
-// strips unknown keys rather than rejecting them).
+// Owner attribution (ownerKind + ownerId) and idempotency (entryKey) are both
+// ADDITIVE: every field carries a default, so a line written before either
+// existed parses clean, counts toward every total, and never throws (AD-7
+// tolerant readers — zod also strips unknown keys rather than rejecting them).
 //
 // The "session" default is LOAD-BEARING, not a placeholder: it is what makes a
 // pre-attribution record still fold into the session-scoped projections, which
 // is precisely what "an un-attributed historical record still counts toward
-// totals" requires.
+// totals" requires. The "" entryKey default is load-bearing in the same way —
+// it is what keeps every record already on disk folding exactly as it folded
+// before the field existed.
 //
 // NOTE: cost LANGUAGE (USD on Claude, tokens on Codex) is a property of the
 // PROJECTION, never of this record. No currency/unit field belongs here.
@@ -920,5 +922,51 @@ export const UsageEntry = z.object({
   costUsd: z.number().default(0),
   ownerKind: UsageOwnerKind.default("session"),
   ownerId: z.string().default(""),
+  // A stable GLOBAL name for ONE billable event.
+  //
+  // THE RULE, and it is structural: a billing key is a UNIQUE ID MINTED AT THE
+  // MOMENT THE MONEY IS SPENT, carried on the record that spent it, and never
+  // re-derived from position, order or count. Three earlier cuts of this field
+  // derived it from something countable (an attempts[] index; that index plus
+  // startedAt; a per-ordinal settle count re-derived from the journal) and
+  // every one opened a SILENT money-loss path, because a count collides when
+  // two writers meet and regresses when the file it is counted from is
+  // truncated or torn. A collision under a countable key annihilates a real
+  // billing with no row to reconcile it by.
+  //
+  // The two producers, as measured:
+  //   `attempt:<loomId>:<AttemptRecord.id>` — weave.ts attemptKey. The id is a
+  //     crypto.randomUUID() minted by executor.ts when the attempt is created.
+  //     LEGACY FALLBACK, for records written before the field existed: an
+  //     attempt with no usable id keys on `attempt:<loomId>:<index>:<startedAt>`
+  //     (or the bare `attempt:<loomId>:<index>` with no finite startedAt). That
+  //     is the old, countable shape, kept ONLY so a loom.json already on disk
+  //     folds exactly as it always did — a historical attempt is frozen, so the
+  //     collision the shape permits cannot be reached by anything still growing.
+  //   `ultra:<runId>:<ordinal>:<JournalRecord.settleId>` — ultra/storage.ts.
+  //     runId and ordinal are human-readable provenance only; the minted
+  //     settleId is what makes it unique, and a replay reads that id back OFF
+  //     the journal record it is replaying rather than re-deriving it. A record
+  //     predating the field falls back to the old count-derived key.
+  //
+  // usage-ledger.ts folds a non-empty key AT MOST ONCE, so honestly
+  // re-recording the same event (a mediation re-settle, a resume that re-runs a
+  // child already `done` on disk, two processes appending concurrently) writes
+  // a line that changes no total. The log stays append-only: the duplicate row
+  // is never removed, it simply stops counting — and, the corollary that logUsage
+  // now enforces, it is never SUPPRESSED either. Idempotence lives in the fold;
+  // a write withheld to enforce it would destroy the one row a human could use
+  // to notice a loss. An over-count is visible and arguable, an under-count
+  // silently un-binds maxCostUsd.
+  //
+  // WHY NOT reuse sessionId as the key: two legacy chat turns in one session
+  // share a sessionId, so keying on it would fold away half of every
+  // historical session's spend (a direct AC5 violation); normalize() already
+  // defaults ownerId from it; and weave.ts deliberately writes sessionId: ""
+  // to keep loom rows out of the session-scoped projections.
+  //
+  // "" means UN-KEYED — fold every occurrence — which is the pre-existing
+  // behavior of every record already on disk.
+  entryKey: z.string().default(""),
 });
 export type UsageEntry = z.infer<typeof UsageEntry>;

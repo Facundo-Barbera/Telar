@@ -14,7 +14,28 @@ import { defaultGitRunner, type GitRunner } from "./vcs";
 export { defaultGitRunner } from "./vcs";
 export type { GitRunner, GitRunResult } from "./vcs";
 
-const telarDir = () => process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar");
+// Same trim+resolve guard as manifest.ts's telarDir() — see there for the full
+// reasoning. In short: `??` falls back on null/undefined but NOT on "", and an
+// exported-but-empty `TELAR_HOME=` is routine in shell scripts and CI. This
+// module is one of the silent-failure cases, measured rather than assumed —
+// with root "" loomsDir() is the non-empty RELATIVE path "looms", so mkdirSync
+// succeeds and every loom's whole sandbox (loom.json, events.ndjson, spec/,
+// evidence/) is created under <cwd>/looms/<id> with no error, while reads
+// silently resolve against whatever cwd the reader happens to have.
+// Deliberately a like-for-like copy rather than an import of manifest.ts's
+// telarDir: collapsing the five-way duplication is separately tracked.
+//
+// DESIGN CALL on a RELATIVE root: path.resolve makes it absolute but still
+// lands it under the cwd, and it pins NOTHING — this resolver is lazy, so
+// path.resolve re-runs against the CURRENT cwd on every call and a process that
+// chdir's mid-run reads and writes a different root afterwards (measured: with
+// TELAR_HOME="rel-root", two calls straddling a process.chdir() returned two
+// different absolute paths). Refusing a relative root outright is stronger, but
+// it is a behavior change beyond this fix, so we resolve and document.
+const telarDir = () => {
+  const v = process.env.TELAR_HOME?.trim();
+  return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
+};
 const loomsDir = () => path.join(telarDir(), "looms");
 
 // Every consumer of a loom's on-disk location (spec/evidence dirs, loom.json,
@@ -40,6 +61,30 @@ export type LoomKind = "quickfix" | "story" | "custom" | "verify";
 export type LoomEvent = { ts: number; type: string } & Record<string, unknown>;
 
 export type AttemptRecord = {
+  // AD-18 — THE BILLING IDENTITY OF THIS ATTEMPT. A unique id minted at the
+  // moment the attempt is created (executor.ts's four `attempts.push` sites),
+  // carried on the record, persisted in loom.json, and NEVER re-derived from a
+  // position, an order or a count. weave.ts's attemptKey is built from it, so
+  // the ledger can fold an honestly re-presented attempt (a mediation
+  // re-settle, a resume that re-reads the persisted child) to exactly one row
+  // while still billing two genuinely different attempts separately.
+  //
+  // WHY NOT A COUNT — this is the whole point of the field. Every countable
+  // discriminator we tried (the attempts[] index, the index plus startedAt, an
+  // ordinal plus a journal record count) names a SLOT rather than an event, and
+  // a slot collides the moment two processes legitimately share one root
+  // ("a dev server and the packaged app appending to one root concurrently",
+  // per usage-ledger.ts's header): both read the persisted child at
+  // attempts.length === k, both push a genuinely DIFFERENT attempt at index k,
+  // both mint one key, and the fold silently drops one of them. An over-count is
+  // visible and arguable; an under-count silently un-binds maxCostUsd. A minted
+  // id cannot collide, so neither error occurs.
+  //
+  // OPTIONAL, AND THAT IS LOAD-BEARING (the AC5 tolerance rule): every loom.json
+  // already on disk predates this field. Such a record keeps the previous key
+  // shape (weave.ts attemptKey's legacy branch) — a historical attempt is never
+  // concurrently re-pushed, so that branch only ever runs on frozen data.
+  id?: string;
   n: number;
   role: string;
   model: string;

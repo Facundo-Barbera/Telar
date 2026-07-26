@@ -202,7 +202,16 @@ function playwrightCheck(): DoctorCheck {
 // (ok) — but flags the dev sandbox so a machine setup isn't done against it.
 function telarHomeCheck(): DoctorCheck {
   const active = telarDir();
-  const override = process.env.TELAR_HOME;
+  // TRIMMED, because `active` above is: telarDir() (manifest.ts) trims before
+  // it resolves, so a whitespace-only TELAR_HOME resolves to the HOME DEFAULT
+  // while the raw variable is still truthy. Read raw, this line labelled that
+  // default "Custom (TELAR_HOME override)" — a doctor check contradicting the
+  // very value printed beside it, in the one readout a human uses to confirm
+  // which state root is live before doing something they cannot undo. Same
+  // defect class as the logUsage guard that read the raw variable while the
+  // write followed the trimmed one; a display must read the same value it
+  // describes.
+  const override = process.env.TELAR_HOME?.trim();
   const isDev = active.endsWith(".telar-dev");
   const exists = fs.existsSync(active);
   const kind = isDev

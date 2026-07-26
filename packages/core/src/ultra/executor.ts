@@ -27,7 +27,7 @@ import type { AccountProfile } from "../schemas";
 import { compileScript, type ScriptMeta } from "./sandbox";
 import type { UltraAgentOpts, UltraSurface } from "./surface";
 import { MissingModel, LifetimeExceeded, isAbortError, isControlSignal } from "./signals";
-import { appendJournal, readJournalMap, hashCall, type JournalRecord } from "./journal";
+import { appendJournal, readJournal, hashCall, type JournalRecord } from "./journal";
 import { runUltraAgent, type EngineAgentFn, type UltraRunnerOpts } from "./runner";
 
 // Per-run in-flight cap: no single run holds more than 3 agent() calls at once,
@@ -92,11 +92,65 @@ export type UltraEvent =
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
       costUsd?: number;
       turns?: number;
+      // THE BILLING IDENTITY OF THIS SETTLE — a unique id MINTED AT THE MOMENT
+      // THE MONEY IS SPENT (`crypto.randomUUID()`, the live-settle path below),
+      // written onto that settle's journal record, and re-presented VERBATIM by
+      // every later replay of that record. The ledger key storage.ts builds out
+      // of it therefore names this one billing and nothing else.
+      //
+      // WHY IT EXISTS — A KEY MUST NAME A BILLABLE EVENT, NOT A SLOT. The
+      // ledger key was (runId, ordinal), and an ordinal is a SLOT: a per-run
+      // counter reset to 0 on every re-run (`ctl.issued` below), so one name
+      // covered every call that ever occupied that position. A resume genuinely
+      // re-runs — and the provider genuinely re-bills — both the call a human
+      // rewrote AND, because `cacheValid` is a one-way latch, every later
+      // ordinal after the first miss. Keyed on the slot, the fold consumed the
+      // FIRST of those billings and dropped every later one. The ledger's write
+      // path suppresses nothing, so those rows ARE on disk — but a row that
+      // repeats a key is exactly what an honest re-presentation of one settle
+      // looks like, so no projection over the file (manifest.spend, a charter's
+      // budget-left) counts it, and nothing anywhere reports a loss.
+      //
+      // WHY MINTED AND NOT COUNTED — the obvious repair, numbering the settles
+      // 1,2,3… off the journal, is the same bug one level down. That number is
+      // a TALLY OF EXISTING RECORDS, and a tally is not an identity: it
+      // REGRESSES when one journal line is lost to mid-file corruption
+      // (journal.ts skips a malformed line BY DESIGN, "so one corrupt record
+      // doesn't blind resume to every record after it"), and it COLLIDES when
+      // two processes resume one runId, because both scan before either
+      // appends. Either way a later live settle re-mints a key the ledger
+      // already holds and its cost is dropped — silently, and strictly worse
+      // than never deduping at all. A minted id cannot regress, cannot collide,
+      // and needs no coordination between writers.
+      //
+      // WHY NOT `hash`: hashCall is over the SCRIPT-FACING (prompt, opts), so
+      // it discriminates an EDIT and nothing else. The plain
+      // retry-after-failure resume — the latch re-running a later ordinal whose
+      // prompt/opts never changed — hashes IDENTICALLY to the billing that
+      // already folded, so a hash-keyed row would still drop that money.
+      //
+      // A REPLAY NEVER MINTS: it reads the id back out of the record it is
+      // serving. That is what stops a resume from re-billing an ordinal that
+      // already has its row, and equally what lets a replay REPAIR a settle
+      // whose live ledger write failed.
+      settleId: string;
       // True when this event is a RESUME REPLAY served from the journal — the
-      // call was not re-made and was not re-billed, so its cost must not be
-      // appended to the spend ledger a second time. Absent on a live settle.
-      // Additive optional field on an append-only narration stream; no reader
-      // keys off it.
+      // call was not re-made and was not re-billed by the provider; `costUsd`
+      // here is the ORIGINAL live call's journaled cost, replayed verbatim.
+      // Absent on a live settle.
+      //
+      // It is NOT a "skip the ledger" flag. The keyed ledger row IS re-written
+      // on every replay, deliberately: storage.ts's launch() onEvent is the
+      // sole writer, and it logs the entryKey
+      // `ultra:<runId>:<ordinal>:<settleId>` for a live settle and for a cache
+      // replay alike, while usage-ledger.ts's
+      // fold consumes a non-empty entryKey AT MOST ONCE over the FILE. A
+      // re-record therefore folds to nothing, while REPAIRING an ordinal whose
+      // live write failed — appendJournal below runs strictly BEFORE
+      // opts.onEvent, so a live settle can end up journaled-with-cost yet
+      // ledger-less, and the replay is the only chance to close that gap.
+      // Additive optional field on an append-only narration stream; nothing
+      // gates on it — it is the durable record that this settle was a replay.
       cached?: true;
     };
 
@@ -167,6 +221,18 @@ type RunControl = {
   // record would still hash-match by coincidence. This is what makes resume a
   // PREFIX replay, not an independent per-call cache.
   readonly journal: Map<number, JournalRecord>;
+  // PRE-settleId RECORDS ONLY: how many journal records each ordinal has ON
+  // DISK, out of the same scan that built `journal` above. A record written
+  // before `settleId` existed carries no billing identity, so a replay of it
+  // falls back to the key its live settle actually wrote at the time —
+  // `ultra:<runId>:<ordinal>:<count>`, which that older code derived from
+  // exactly this tally — and so still dedupes against the row already on the
+  // ledger. NOTHING LIVE READS IT: every live settle mints its own id, so the
+  // tally's failure modes (a skipped corrupt line makes it regress; two
+  // concurrent processes make it collide) can no longer drop a billing. At
+  // worst they mis-key a REPLAY, whose money is already on the ledger or was
+  // already lost by the write this replay was trying to repair.
+  readonly legacyCounts: Map<number, number>;
   cacheValid: boolean;
 };
 
@@ -201,7 +267,25 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           ok: cached.result !== null,
           ...(cached.costUsd !== undefined ? { costUsd: cached.costUsd } : {}),
           ...(cached.turns !== undefined ? { turns: cached.turns } : {}),
-          cached: true, // replayed, not re-billed — the ledger must not double-count it
+          // The id this settle WAS BILLED UNDER, read back out of the record —
+          // never re-minted. A replay spends nothing, so it must re-present the
+          // key its own live settle already wrote (or would have written, had
+          // that write not failed — that is the repair). A record from before
+          // `settleId` existed has none, and only such a record takes the
+          // count-derived key the older code used for it (RunControl's
+          // `legacyCounts`). The `?? 0` is unreachable — the same scan that
+          // produced `cached` counted it — and "0" is the safe way to be wrong
+          // anyway: it collides with no minted id and with no legacy count
+          // (those start at 1), so a stray replay would append a visible extra
+          // row rather than silently fold real money away.
+          settleId: cached.settleId ?? String(ctl.legacyCounts.get(ordinal) ?? 0),
+          // Replayed: not re-made, not re-billed by the provider. This does
+          // NOT suppress the ledger write — storage.ts re-records this
+          // settle's keyed row (`ultra:<runId>:<ordinal>:<settleId>`) on every
+          // replay so a settle whose LIVE write failed self-heals; the fold's
+          // at-most-once entryKey dedupe is what stops the double-count. See
+          // the field's doc on UltraEvent above.
+          cached: true,
         });
         return cached.result; // served from the journal — no spawn (doc §3)
       }
@@ -279,6 +363,14 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
         result = null; // exhausted — dead agent, per the engine's own null contract
       }
     }
+    // This live call IS a new billable event even when an earlier run already
+    // billed this same ordinal: `cacheValid` latched false above, so the
+    // provider really re-ran it and really re-billed it. So MINT ITS IDENTITY
+    // HERE, at the moment the money is spent — not from the ordinal, not from
+    // the attempt, not from a tally of anything on disk (see
+    // UltraEvent.settleId) — and carry it on the record so every later replay
+    // of THIS settle re-presents THIS id.
+    const settleId = crypto.randomUUID();
     // Only a LIVE call ever appends — a cache hit above already returned. A
     // thrown call (ordinary failure, abort, control signal) never reaches here,
     // so it is simply never cached and re-runs live on the next resume.
@@ -286,6 +378,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ordinal,
       hash,
       result,
+      settleId,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
     });
@@ -297,6 +390,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ok: result !== null,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+      settleId,
     });
     return result;
   };
@@ -365,16 +459,31 @@ export function startUltra(code: string, opts: StartUltraOpts = {}): UltraRun {
     return terminalRun(runId, {}, { runId, state: "failed", meta: {}, error: compiled.error });
   }
 
+  // ONE scan of the journal builds BOTH maps, so they can never disagree about
+  // which record is an ordinal's last one: `journal` keeps that last record
+  // (readJournalMap's own rule, restated here rather than called, because the
+  // count below has to come out of the SAME pass), and `legacyCounts` counts
+  // how many records that ordinal has — read ONLY when the record being
+  // replayed predates `settleId` (RunControl). An ordinal legitimately has more
+  // than one record: every run that re-runs it LIVE appends another. Both maps
+  // are empty on a genuinely fresh runId — the cache-check then misses on
+  // ordinal 0 and every call simply runs live, appending as it goes. A runId
+  // that already has a journal on disk (this IS what resume means, §3) preloads
+  // it here — start and resume are the same code path.
+  const journal = new Map<number, JournalRecord>();
+  const legacyCounts = new Map<number, number>();
+  for (const rec of readJournal(runId)) {
+    journal.set(rec.ordinal, rec);
+    legacyCounts.set(rec.ordinal, (legacyCounts.get(rec.ordinal) ?? 0) + 1);
+  }
+
   const ctl: RunControl = {
     runId,
     abort: new AbortController(),
     sem: new Semaphore(RUN_CONCURRENCY),
     issued: 0,
-    // Empty on a genuinely fresh runId — the cache-check above then misses on
-    // ordinal 0 and every call simply runs live, appending as it goes. A
-    // runId that already has a journal on disk (this IS what resume means,
-    // §3) preloads it here — start and resume are the same code path.
-    journal: readJournalMap(runId),
+    journal,
+    legacyCounts,
     cacheValid: true,
   };
   const surface = buildSurface(ctl, opts);

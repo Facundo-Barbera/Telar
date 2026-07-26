@@ -25,7 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AccountProfile } from "../schemas";
 import { getAccount } from "../accounts";
-import { ledgerSpendUsd, logUsage } from "../usage-ledger";
+import { ledgerReadUnavailable, ledgerSpendUsd, logUsage } from "../usage-ledger";
 import { runDir, ultraDir } from "./journal";
 import {
   startUltra,
@@ -84,6 +84,25 @@ function saveManifest(m: UltraManifest): void {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(m, null, 2));
   fs.renameSync(tmp, file);
+}
+
+// The spend figure ALREADY ON DISK for this run, read with no side effect —
+// deliberately NOT via getUltraManifest, whose self-healing `running` →
+// `stopped` rewrite would fire from inside a live run's own manifest write. It
+// exists for one caller: the fallback below, when the ledger cannot be read at
+// all in a fresh process and there is no in-run figure yet. A fallback that
+// mutates the thing it is a fallback for is not a fallback.
+//
+// Null for "no usable figure": no manifest yet, unreadable, unparseable, or a
+// `spend` that is not a finite number. Null is NOT zero — the caller must be
+// able to tell "nothing to fall back on" from "the fallback is $0".
+function persistedSpend(runId: string): number | null {
+  try {
+    const m = JSON.parse(fs.readFileSync(manifestFile(runId), "utf8")) as { spend?: unknown };
+    return typeof m.spend === "number" && Number.isFinite(m.spend) ? m.spend : null;
+  } catch {
+    return null;
+  }
 }
 
 // Self-healing read (doc §3's startup reconciliation, folded into every
@@ -257,7 +276,7 @@ export type LaunchUltraResult =
 // `script` is read up front ONLY to precompute `meta` (compileScript is a
 // cheap regex/vm literal read, already duplicated by startUltra/resumeUltra
 // internally). This is NOT a redundant nicety: a resumed ordinal that's a
-// full CACHE HIT settles with NO internal `await` at all (readJournalMap's
+// full CACHE HIT settles with NO internal `await` at all (the journal map's
 // lookup is synchronous, doc §3), so its "agent" onEvent can fire
 // SYNCHRONOUSLY *during* the `starter(startOpts)` call below — i.e. before
 // `run = starter(...)` has even assigned `run`. `buildManifest` must never
@@ -283,6 +302,62 @@ async function launch(
   const compiled = compileScript(script);
   const meta: ScriptMeta = compiled.ok ? compiled.meta : {};
 
+  // AD-18 — the manifest's `spend` READ leg, with the same rule weave.ts's
+  // `spentUsd` applies on the sibling leg: A PROJECTION THAT COULD NOT BE READ
+  // MUST NOT BE PERSISTED AS $0.
+  //
+  // ledgerSpendUsd answers 0 for two different events — "no line was ever
+  // written for this run" (true, and worth 0) and "the ledger could not be read
+  // right now" (meaningless) — and a bare read cannot tell them apart.
+  // ledgerReadUnavailable() is the port's own predicate for the second, and it
+  // is TRUE only when the last fold-producing read failed transiently with no
+  // fold of that file to serve. Why it matters here specifically: manifest.json
+  // is rewritten on every agent settle AND once more on the terminal, so a
+  // transient EACCES/EMFILE on the FIRST ledger touch of a fresh, resumed
+  // process writes `spend: 0` over a run that has really spent $7.50 — and if
+  // that lands on the terminal write, the wrong figure is the permanent record.
+  //
+  // Ultra's spend is a READOUT, not a cap, so failing closed here means keeping
+  // the best figure available rather than throwing (weave.ts throws because its
+  // number GATES spending; nothing gates on this one, and failing a settled run
+  // over bookkeeping would be the worse trade). In order: the last figure this
+  // run read successfully, then the figure an earlier process already persisted
+  // in manifest.json, then 0 — and the fallback is announced in the run's own
+  // events.ndjson, one-shot, so a stale readout is never silent.
+  let lastKnownSpend: number | null = null;
+  let spendFallbackReported = false;
+  const projectedSpend = (): number => {
+    const spent = ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId });
+    if (!ledgerReadUnavailable()) {
+      lastKnownSpend = spent;
+      return spent;
+    }
+    // Read the persisted figure only on THIS path, and only until it yields
+    // one: a fallback for a failure has no business in the hot manifest write.
+    // (If the manifest is absent or unusable this re-reads on the next failed
+    // projection — an ENOENT per settle while the ledger is unreadable, which
+    // is cheaper than caching a `null` that would outlive the condition.)
+    // ASSIGNMENT ONLY, never `+=`: `lastKnownSpend` holds a whole projection,
+    // so repeated failures cannot make it drift.
+    if (lastKnownSpend === null) lastKnownSpend = persistedSpend(runId);
+    if (!spendFallbackReported) {
+      spendFallbackReported = true;
+      try {
+        appendUltraEvent(runId, {
+          type: "log",
+          msg:
+            `spend-read-unavailable: the usage ledger could not be read; manifest spend holds at ` +
+            `${lastKnownSpend === null ? "0 (no earlier figure to hold — this run has read no ledger yet)" : String(lastKnownSpend)}` +
+            ` rather than being rewritten to 0`,
+        });
+      } catch {
+        // the run's own event log is unwritable too — still not a reason to
+        // fail a run over accounting.
+      }
+    }
+    return lastKnownSpend ?? 0;
+  };
+
   const buildManifest = (state: UltraState, error?: string, result?: unknown): UltraManifest => ({
     runId,
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
@@ -296,8 +371,10 @@ async function launch(
     // manifest write, never a counter this closure accumulates. A line
     // appended for this run by anything else is visible here too, and a
     // resumed run picks up its own persisted prefix instead of restarting
-    // from zero.
-    spend: ledgerSpendUsd({ ownerKind: "ultra", ownerId: runId }),
+    // from zero. `lastKnownSpend` is NOT an accumulator: it is only ever
+    // ASSIGNED a whole projection, and only ever read when the projection could
+    // not be — see projectedSpend above.
+    spend: projectedSpend(),
     // `result` is only ever set on a `done` terminal (executor.ts's settle()
     // only attaches `result` alongside state "done") — undefined elsewhere,
     // so the spread simply omits the key rather than writing `result: undefined`.
@@ -314,19 +391,135 @@ async function launch(
     onEvent: (e: UltraEvent) => {
       appendUltraEvent(runId, e);
       if (e.type === "agent") {
-        // `e.cached` is a resume replay served from the journal — the call was
-        // never re-made and never re-billed, and its live settle already wrote
-        // its ledger line on the first run. Appending again would double-count.
-        if (!e.cached && typeof e.costUsd === "number") {
-          logUsage({
-            ts: Date.now(),
-            account: opts.account?.name ?? "unknown",
-            model: e.model,
-            sessionId: opts.sessionId ?? "",
-            ownerKind: "ultra",
-            ownerId: runId,
-            costUsd: e.costUsd,
-          });
+        // ONE keyed ledger row per LIVE SETTLE of an ordinal, written on EVERY
+        // presentation of that settle — live or cache-replayed. Identity, not a
+        // guard, is what stops the double-count now: usage-ledger.ts folds a
+        // non-empty `entryKey` at most once, over the FILE, so a row that
+        // already landed cannot be billed twice no matter how many times this
+        // callback re-presents it.
+        //
+        // WHY the old `!e.cached` guard is GONE, and why removing it is the
+        // repair rather than a regression: appendJournal runs strictly BEFORE
+        // opts.onEvent (executor.ts's live-settle path), so a LIVE settle whose
+        // logUsage throws leaves the ordinal journaled WITH its cost and with
+        // no ledger row at all. Every later resume re-emits that same settle as
+        // `cached: true`, replaying the journaled costUsd verbatim under the
+        // SAME settleId — the id is ON the journal record, so the replay reads
+        // it back rather than deriving it — and the old guard skipped exactly
+        // those, so the gap was unrecoverable FOREVER and the run
+        // under-reported real money in silence. Attempting the write on the
+        // cached replay REPAIRS the gap; the fold's entryKey dedupe is what
+        // makes the repair safe.
+        if (typeof e.costUsd === "number") {
+          // ONE reporter for every way this settle's money can fail to reach the
+          // ledger — a value the ledger cannot accept, a rejection it reports by
+          // RETURNING false, and a throw. All three are the same event to a
+          // human: real money that is not on the ledger.
+          //
+          // Never swallowed: events.ndjson is this run's own durable log, so the
+          // miss is visible to anyone tailing the run (and to ultra-mcp's
+          // journal summary) rather than only to the ledger's absence. A `log`
+          // event and not a new UltraEvent variant on purpose — that union is
+          // executor.ts's and is deliberately not touched here, and a variant no
+          // reader knows about would record the failure exactly as invisibly as
+          // swallowing it.
+          const reportSpendMiss = (msg: string) => {
+            try {
+              appendUltraEvent(runId, { type: "log", msg });
+            } catch {
+              // the run's own event log is unwritable too — nothing left to
+              // report to, and still not a reason to fail the run.
+            }
+          };
+          if (!Number.isFinite(e.costUsd)) {
+            // `typeof NaN === "number"`, so the check above is a TYPE check and
+            // not a VALUE check. Handed to logUsage, a NaN or Infinity cost
+            // fails the UsageEntry schema (z.number() rejects NaN), logUsage
+            // returns false WITHOUT throwing, the catch below therefore never
+            // fires, and the only trace of a real, already-paid-for agent settle
+            // would be a console line. weave.ts's recordSpend guards this exact
+            // provider anomaly with its own `spend-record-skipped` event; this
+            // is the sibling leg's copy of that guard, and the asymmetry between
+            // the two legs was the finding.
+            reportSpendMiss(
+              `spend-record-skipped ordinal=${e.ordinal}: non-finite cost ${String(e.costUsd)} — nothing was written to the ledger, and a resume replaying this ordinal from the journal will present the same unusable value`,
+            );
+          } else {
+            // ACCOUNTING IS BEST-EFFORT; THE RUN IS NOT. This callback is invoked
+            // from inside the script's own `await agent()`, so a throw escaping
+            // here fails a run that was already billed AND skips the
+            // saveManifest below — freezing the manifest's state/spend readout
+            // for the rest of the run. logUsage can genuinely throw
+            // (ENOSPC/EACCES/EROFS on mkdirSync/appendFileSync, or its
+            // NODE_ENV=test-without-TELAR_HOME guard), so it is contained here.
+            try {
+              const logged = logUsage({
+                ts: Date.now(),
+                account: opts.account?.name ?? "unknown",
+                model: e.model,
+                sessionId: opts.sessionId ?? "",
+                ownerKind: "ultra",
+                ownerId: runId,
+                costUsd: e.costUsd,
+                // A KEY NAMES A BILLABLE EVENT, NOT A SLOT. (runId, ordinal)
+                // names a slot: `ordinal` is issued from a per-run counter that
+                // RESTARTS AT 0 on every re-run, so that name covers every call
+                // that has ever occupied the position — and a resume genuinely
+                // re-runs, and the provider genuinely re-bills, both the call a
+                // human rewrote and (executor.ts's `cacheValid` being a one-way
+                // latch) every later ordinal after the first miss. Keyed on the
+                // slot, the fold consumed the FIRST of those billings and
+                // dropped every later one. The write path suppresses nothing, so
+                // those rows do land — but a row repeating a key is precisely
+                // what an honest re-presentation of one settle looks like, so no
+                // projection counts it, no `spend-record-failed` event fires and
+                // no log line is written: real money, missing from every
+                // readout.
+                //
+                // `settleId` (executor.ts) is the per-CALL identity: a unique id
+                // MINTED WHEN THE MONEY WAS SPENT and written onto that settle's
+                // journal record. A cache replay reads it back out of the record
+                // it is serving, so a re-record folds to nothing here while a
+                // genuine re-run — which minted its own — gets its own row.
+                //
+                // It is minted rather than COUNTED for the reason the ordinal
+                // itself failed, one level down: a tally of journal records
+                // regresses when a corrupt line is skipped and collides when two
+                // processes resume one runId, and either way a live settle
+                // re-mints a key already on the ledger and its cost is dropped
+                // in the same silence. `runId`/`ordinal` stay in the key as
+                // human-readable provenance; the id alone is what makes it
+                // unique.
+                entryKey: `ultra:${runId}:${e.ordinal}:${e.settleId}`,
+              });
+              if (!logged) {
+                // THE RETURNED BOOLEAN IS READ, not discarded. logUsage's
+                // documented failure signal is `false`, not a throw — it refuses
+                // to throw so that an accounting defect can never fail an
+                // in-flight run — so the catch below cannot see a schema
+                // rejection. Discarding the boolean is what made the "Never
+                // swallowed" claim beside this call false for that path: the row
+                // was missing from usage.ndjson, from the manifest and from
+                // events.ndjson at once, with a console line as the only trace.
+                reportSpendMiss(
+                  `spend-record-failed ordinal=${e.ordinal}: logUsage rejected the entry — it is NOT on the ledger (usage-ledger.ts prints the failing fields); re-attempted only if a later resume REPLAYS this ordinal from the journal`,
+                );
+              }
+            } catch (err) {
+              // The message states the CONDITIONAL repair, not a promise. The
+              // re-attempt happens only where the repair actually lives: a later
+              // resume that REPLAYS this ordinal from the journal re-presents
+              // this settle's `settleId` and rewrites its row. A resume that
+              // re-runs the ordinal LIVE instead (the human edited that call, or
+              // `cacheValid` latched false at an earlier ordinal) mints a NEW id
+              // for the new billing and never re-presents this one — so this
+              // spend stays off the ledger for good, and the log line has to say
+              // so or the human stops looking.
+              reportSpendMiss(
+                `spend-record-failed ordinal=${e.ordinal}: ${err instanceof Error ? err.message : String(err)} — re-attempted only if a later resume REPLAYS this ordinal from the journal; a resume that re-runs it live never re-presents this settle and this spend stays off the ledger`,
+              );
+            }
+          }
         }
         saveManifest(buildManifest("running"));
       }
