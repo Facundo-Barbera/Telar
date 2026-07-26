@@ -2693,7 +2693,13 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
     // resolveSessionProfile throws on every chat request. There is no test file
     // for this route anywhere in the tree, so bun test / tsc / lint all stay
     // green while the app is broken — this line is the only mechanical guard.
-    expect(ROUTE_SRC.text).toContain('import "@/lib/session-profiles";');
+    // `.code` and not `.text`, for the same reason the ordering scan uses it
+    // and every INV-1g pin does: `// import "@/lib/session-profiles";` left
+    // behind by a debugging session is a DEAD import that keeps the literal in
+    // `.text`, so a `.text` check would stay green over an app that 500s on
+    // every chat request. Deletion is caught either way; commenting-out is only
+    // caught here.
+    expect(ROUTE_SRC.code).toContain('import "@/lib/session-profiles";');
   });
 
   test("INV-6d the field scan DISCRIMINATES — a grant-shaped field and a widened allow are both reported", () => {

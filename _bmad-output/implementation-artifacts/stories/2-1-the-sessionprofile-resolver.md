@@ -475,6 +475,105 @@ record.
       gap of AC2's Notes — `manifest.guardrails` is never enforced on a Codex session — which you found by
       measurement, cannot fix inside AC5's fence, and must not leave unrecorded.
 
+### Review Findings
+
+Adversarial code review of `52ee6af` against baseline `deee7fb` (diff scoped to `apps packages`), run
+2026-07-26 via `bmad-code-review`: three parallel review layers (Blind Hunter, Edge Case Hunter, Acceptance
+Auditor) plus three claim verifiers, then a second pass of three skeptics prompted to refute the headline
+findings. **Verdict: PASS** — nothing blocking. All six ACs and all 30 rows of §6.4 are met by named,
+non-vacuous, passing tests; every Debug Log number was independently reproduced; the write set is exact.
+Two items are worth fixing before story 2.2 consumes `toolPolicy`.
+
+- [x] **[Review][Patch] `buildEscalationProfile`'s `allow: []` rests on a measurement that is false, and a
+      test pins it** [`apps/web/lib/session-profiles.ts:138`; comment `:126-131`;
+      `apps/web/lib/session-profiles.test.ts:146`] — the comment claims *"NONE of core's six base tools appear
+      in [`LOOM_ESCALATION_READONLY_TOOLS`]"*, but `apps/web/lib/loom-mcp.ts:91` lists `Read`, `Grep`, `Glob`
+      among its six, and `apps/web/app/api/chat/route.ts:1305-1310` wires that array verbatim as the escalation
+      session's `allowedTools` (the escalation system prompt at `route.ts:236` advertises those three tools by
+      name). The faithful narrowing is `allow: ["Read", "Grep", "Glob"]`. Harmless in 2.1 — nothing consumes
+      `toolPolicy` (D8) and no AC pins it, since D11's table has no `toolPolicy` column — but 2.2 would inherit
+      a wrong value as verified fact and every escalation session would lose project inspection. Fix the value,
+      the comment, and the test's own claim together. Escape hatches checked: `LOOM_ESCALATION_DISALLOWED_TOOLS`
+      never names those three, and no `canUseTool`/`PreToolUse` path excludes them.
+- [x] **[Review][Patch] INV-6c checks the side-effect import against `.text`, so a commented-out import still
+      passes** [`packages/core/test/invariants.test.ts:2696`] — the same test uses `.code` for its ordering
+      assertions (and INV-1g uses `.code` throughout), but the
+      `toContain('import "@/lib/session-profiles";')` check reads `.text`. Comment the import out and INV-6c
+      stays green while every chat request 500s with `session-profile: cannot resolve "project" — no module
+      declared it`; probe P5 already proved `tsc`/`lint`/`bun test` do not notice. Deletion by an unused-import
+      autofix *is* caught either way, so this is a one-word hardening (`.code`) of the only mechanical guard
+      against a total-outage failure mode.
+
+Nine nice-to-have items were recorded in the review report rather than here, the notable ones being: the
+pre-stream gate over-detects `steerer`/`escalation` when a wire `loomId` does not resolve (raised as should-fix
+and correctly knocked down — D9b rules on exactly this for escalation by name, the suite pins the same
+derivation for steerer, and AC5's scope is `SessionKind === "project"`; what survives is that D9b's *"the gate
+cannot false-positive"* is locally over-broad); `requiredCapabilities` is not re-intersected or deduped the way
+`allow` is; the resolved profile's `toolPolicy.deny` does not carry `guardrails.disallowedTools`, which is
+faithful to today's route and caught at the hook layer regardless, but deserves one line telling 2.2 to union
+them; `unmetCapabilities`' optional `providerId` is fail-open by default; and `typeLiteralFields` truncates a
+captured type text at a comma inside angle brackets (field *names*, which are what INV-6a pins, are unaffected).
+
+Not changed by this review: the story `status:` field and `sprint-status.yaml` (the review was read-only and
+the verdict is PASS — the status transition is the orchestrator's call), and `deferred-work.md` (no finding is
+a pre-existing unrelated issue; the Codex guardrail gap is already recorded there by this story).
+
+#### Review fixes — applied 2026-07-26, both patch items closed
+
+Both `[Review][Patch]` items above are done, each with the revert probe §0 rule 7 requires. Nothing else in
+the review was touched: the nine nice-to-haves stay open, `deferred-work.md`, `sprint-status.yaml` and the
+`status:` field are unchanged, and `route.ts` is byte-identical to `52ee6af`
+(`git diff --stat -- apps/web/app/api/chat/route.ts` → empty). The code fix set is **4 `M`, no `A`**, every one
+of them already inside §10's write set — `apps/web/lib/session-profiles.ts`, `apps/web/lib/session-profiles.test.ts`,
+`packages/core/test/invariants.test.ts`, `packages/core/test/session-profile.test.ts` — so the write set is
+unchanged and no new file was created; this story file is the fifth, staged the same way §10 records it.
+All five land in one commit on top of `52ee6af` — `fix(web): the escalation profile grants Read/Grep/Glob, and
+INV-6c pins the import as code` — with `orchestrator-run-log.md` excluded as always. Nothing pushed.
+
+1. **The escalation grant is now `["Read", "Grep", "Glob"]`** (`apps/web/lib/session-profiles.ts`), and its
+   justifying comment says what the array actually contains, naming the three the branch withholds
+   (`WebSearch`/`WebFetch`/`ToolSearch`) as well as the three it grants. The story's own T-A0 row — the false
+   measurement the code was derived from — is corrected in §9 with the same disclosure. The test that pinned
+   `[]` now pins the three, and a **second** test was added that re-derives the value from the two real
+   constants (`BASE_ALLOWED_TOOLS` ∩ `LOOM_ESCALATION_READONLY_TOOLS`, imported from `@/lib/loom-mcp`, which
+   `route.ts` wires verbatim) with an anti-vacuity floor on the intersection — so the measurement is now
+   checked against its source rather than restated, and drift in either constant indicts the builder.
+   *Revert probe:* restoring `allow: []` fails **both** escalation tests (`15 pass / 2 fail`); restored,
+   `17 pass / 0 fail`. One more copy of the same false value was found and corrected while closing this:
+   `packages/core/test/session-profile.test.ts:107`'s `registerFourKinds` fixture, whose own header says it
+   mirrors "the four kinds as the web builders declare them". Nothing in that file asserts on the value —
+   core's `allow` tests use their own `registerPolicy` specs — but a mirror that contradicts what it mirrors
+   is how a wrong value gets re-derived later, which is this finding's whole failure mode.
+2. **`INV-6c` now reads `ROUTE_SRC.code`** (`packages/core/test/invariants.test.ts`), matching its own
+   ordering scan and every `INV-1g` pin. *Revert probe, run in both directions on a route with the import
+   commented out:* `.text` → **1 pass** (the finding, reproduced — green over an app that 500s on every chat
+   request); `.code` → **1 fail**, `Expected to contain: "import \"@/lib/session-profiles\";"`. Route restored
+   and diff-verified empty; full invariants file back to `47 pass / 0 fail`.
+
+**The gate, re-run after the fixes.** The only count that moved is the one the new test adds (+1 in
+`apps/web`, and +1 at the root); §9's Debug Log numbers below are left as they were measured at `52ee6af`
+rather than back-dated.
+
+```
+$ bun test                (repo root)      →  1896 pass / 0 fail · 10368 expect() · 120 files [35.96s]   (1895 at 52ee6af)
+$ cd packages/core && bun test             →  1562 pass / 0 fail · 8845 expect() · 108 files [34.18s]    (unchanged)
+$ cd apps/web    && bun test               →   334 pass / 0 fail · 1523 expect() · 12 files  [1.58s]     (333 at 52ee6af)
+$ cd packages/core && bun test test/invariants.test.ts  →  47 pass / 0 fail · 229 expect() [528ms vs the 2000ms budget]
+$ cd apps/web && bun test lib/session-profiles.test.ts  →  17 pass / 0 fail · 49 expect()  (16 at 52ee6af)
+$ INV-1g / INV-3a / INV-3f by name         →  1 pass each; inventory still 18 root-composition sites, 3 MCP surfaces
+$ prove-run legs                           →  -t "track-a prove-run" 5 · -t "prove-run L6" 1 · -t "prove-run" 11 — unmoved
+$ cd packages/core && bunx tsc --noEmit     →  exit 0
+$ cd apps/web    && bunx tsc --noEmit       →  exit 0
+$ cd apps/web    && bun run lint            →  165 problems (136 errors, 29 warnings), exit 1 — see the comparison below
+```
+
+Two measurement inaccuracies the review caught in this story's own prose are also corrected, in place and
+with the correction disclosed rather than silently overwritten — a story whose governing discipline is
+measurement (T-A0) must not carry false measurements: §9's `~/.telar` line said *"exactly the one pre-existing
+`usage.ndjson`"* when the root holds **two** files, as §0 rule 4 itself says; and §9's lint claim implied
+byte-identity, which is true of the counts, the per-rule breakdown and the finding set but not of the raw
+bytes. The lint claim was re-measured from a fresh `deee7fb` worktree to state it precisely.
+
 ---
 
 ## 5. Dev Notes
@@ -1489,7 +1588,14 @@ on the working tree. Line pointers are `≈:` and were true at measurement time;
 
 - **`allowedTools`** (the non-escalation Claude branch, `≈:1242`): `"Read", "Grep", "Glob", "WebSearch",
   "WebFetch", "ToolSearch", ...LOOM_AUTO_TOOLS, ...ULTRA_AUTO_TOOLS`. The escalation branch is instead
-  `[...LOOM_ESCALATION_READONLY_TOOLS]` — containing **none** of those six.
+  `[...LOOM_ESCALATION_READONLY_TOOLS]` = `"Read", "Grep", "Glob", "mcp__loom__read_bundle",
+  "mcp__loom__get_loom", "mcp__loom__list_looms"` (`apps/web/lib/loom-mcp.ts:91`) — containing **three** of
+  those six: `Read`, `Grep`, `Glob`. **Corrected after review:** this row first read *"containing none of
+  those six"*, and `buildEscalationProfile`'s `allow: []` was derived from it. Re-read off the array, the
+  escalation grant is `["Read", "Grep", "Glob"]` — the three the branch auto-runs and
+  `ESCALATION_SYSTEM_PROMPT` (`≈:236`) advertises by name; `WebSearch`/`WebFetch`/`ToolSearch` are the three
+  it genuinely withholds. The builder and its test now carry that value, and the test re-derives it from
+  `BASE_ALLOWED_TOOLS ∩ LOOM_ESCALATION_READONLY_TOOLS` rather than restating it.
 - **`disallowedTools`** (`≈:1285`): `[...manifest.guardrails.disallowedTools, "AskUserQuestion",
   ...(isEscalationSession ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS] : [])]`.
 - **`settingSources`** (`≈:1227`): `["project", "local"]`, with the long comment recording that user-level
@@ -1728,9 +1834,14 @@ root) → `HTTP/1.1 200 OK`, `Content-Type: text/event-stream`. AC5 holds on the
 suite.
 
 *And the scar was not re-opened.* `ls -la ~/.telar` before and after the whole dev-server session is
-**byte-identical** — still exactly the one pre-existing `usage.ndjson` (201 bytes, dated 26 Jul 01:20) left
-by story 1.1's out-of-harness probe. `~/.telar-dev` was never created. Every write landed in the throwaway
-root (`accounts.json`, `projects.json`). The dev server was stopped and port 3111 confirmed free.
+**identical** — still exactly the **two** pre-existing files story 1.1's out-of-harness probe left there,
+`usage.ndjson` (201 bytes, 26 Jul 01:20) and `accounts.json` (296 bytes, 26 Jul 01:31), both named by §0
+rule 4 ("a synthetic `$1` billing line plus a default `accounts.json`") and both older than this story's
+first commit. **Corrected after review:** this line first said *"still exactly the one pre-existing
+`usage.ndjson`"* — off by one file against the story's own §0. The claim it was making (nothing this story
+ran wrote to the real root) is what the mtimes show, and it holds. `~/.telar-dev` was never created. Every
+write landed in the throwaway root (`accounts.json`, `projects.json`). The dev server was stopped and port
+3111 confirmed free.
 
 **The gate — the manual trio, both workspaces.**
 
@@ -1763,12 +1874,35 @@ function type instead of naming a parameter it ignores — which states the cont
 unused argument did. Final:
 
 ```
-AFTER  (fixed):  165 problems (136 errors, 29 warnings)   ← IDENTICAL to baseline, zero added
+AFTER  (fixed):  165 problems (136 errors, 29 warnings)   ← zero added; see the precision note below
 $ grep -E "session-profiles" <lint output>  →  (none)
 ```
 
 Errors never moved (136 → 136 → 136); the `route.ts` entries in the diff are pure line-number shifts from
 this story's +63 lines, not new findings.
+
+**What "identical" means here, stated precisely — corrected after review, and re-measured to correct it.**
+The two captures are **not** byte-for-byte identical, and this record should not have implied they were. The
+baseline was re-run in a detached `git worktree` at `deee7fb` with `node_modules` reached by symlink (never
+installed), then removed — `git worktree list` shows only the main checkout again — and the two captures were
+compared line by line:
+
+```
+base (deee7fb) 1565 lines · 165 problems (136 errors, 29 warnings) · exit 1
+head (fixed)   1565 lines · 165 problems (136 errors, 29 warnings) · exit 1
+differing lines: 30 of 1565
+  · 19 are identical once whitespace is collapsed — pure stylish-formatter column padding
+  · 11 are route.ts entries with the SAME rule, message and column, at a line number exactly +63
+    (= route.ts's own diff stat, +63/−0; two of them the pre-existing _mode/_isolation warnings)
+  · 0 genuinely different findings
+files carrying findings: 45 in each, same set, same order · 11 distinct rule ids, same count each
+```
+
+So what was measured is *no finding added, none removed, none changed rule, message or column* — the property
+that matters — and **not** *the bytes are the same*. The comparison above is against the tree **after** the
+review fixes, which is the stronger direction: those fixes add comment lines to `apps/web/lib/session-profiles.ts`
+and a test, touch `route.ts` not at all, and still add zero lint findings (`grep -i session-profiles` over the
+head capture → none).
 
 ### Completion Notes
 
@@ -1928,6 +2062,7 @@ commit** — it belongs to the orchestrator, not to this story.
 | 2026-07-26 | `apps/web/lib/session-profiles.ts` (new): the four spec builders + module-scope registration. `route.ts`: named imports, the side-effect import, one resolve call and one capability gate in the pre-stream preamble — 63 inserted lines, zero removed, nothing inside `new ReadableStream`. |
 | 2026-07-26 | Tests: `packages/core/test/session-profile.test.ts` (37, incl. 7 two-direction `tsc` pins and prove-run leg **L6**), `apps/web/lib/session-profiles.test.ts` (16), and **`INV-6`** in `invariants.test.ts` (7: floor, `INV-6a`/`6b`/`6c`/`6d`, and executable citations) with its `THE FIVE` header amended to name the sixth. |
 | 2026-07-26 | `deferred-work.md`: new section recording the pre-existing Codex guardrail gap (AC2's required finding) and the `systemPromptAppendix` deferral to 2.2. |
+| 2026-07-26 | **Review fixes** (both `[Review][Patch]` items; §4's Review-fixes note carries the probes). `buildEscalationProfile`'s `toolPolicy.allow` corrected from `[]` to `["Read", "Grep", "Glob"]` — the route's escalation branch grants three of core's six base tools, not none — with the justifying comment and §9's T-A0 measurement corrected to match, the pinning test updated, and one test added that re-derives the value from `BASE_ALLOWED_TOOLS ∩ LOOM_ESCALATION_READONLY_TOOLS` so it cannot go stale in silence (`apps/web/lib/session-profiles.test.ts` 16 → 17). `INV-6c`'s side-effect-import pin switched from `ROUTE_SRC.text` to `ROUTE_SRC.code`, so a commented-out import fails it. Two false measurements in §9's own prose corrected: the real `~/.telar` holds **two** pre-existing files, and the lint claim is identity of counts/rules/finding set, not of bytes. `route.ts`, `deferred-work.md`, `sprint-status.yaml` and `status:` untouched. |
 
 **Suggested conventional-commit message** — `feat(core)` rather than `feat(web)`, because the port and its
 proofs are the substance and the `apps/web` change is wiring:

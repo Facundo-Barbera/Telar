@@ -104,7 +104,16 @@ const registerFourKinds = (): void => {
     registerSessionProfile(kind, () => ({
       kind,
       settingSources: ["project", "local"],
-      toolPolicy: kind === "escalation" ? { allow: [], deny: ["AskUserQuestion"] } : { deny: ["AskUserQuestion"] },
+      // The escalation narrowing mirrors the real builder: the route's
+      // escalation branch auto-runs [...LOOM_ESCALATION_READONLY_TOOLS], whose
+      // Read/Grep/Glob are three of the six here. (It read `allow: []` until
+      // review caught that claim as false — nothing in this file asserts on the
+      // value, but a mirror that contradicts what it mirrors is how a wrong
+      // value gets re-derived later.)
+      toolPolicy:
+        kind === "escalation"
+          ? { allow: ["Read", "Grep", "Glob"], deny: ["AskUserQuestion"] }
+          : { deny: ["AskUserQuestion"] },
       requiredCapabilities: D11_REQUIRED[kind]!,
       systemPromptAppendix: "",
     }));

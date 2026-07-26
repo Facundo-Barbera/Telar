@@ -123,19 +123,34 @@ export const buildSteererProfile: SessionProfileBuilder = () => ({
 // non-functional today and says nothing about it — which is the silent
 // degradation AD-11 exists to end.
 //
-// `allow: []` is measured, not defensive: the route's escalation branch sets
-// allowedTools to [...LOOM_ESCALATION_READONLY_TOOLS] and NONE of core's six
-// base tools appear in it. Narrowing to the empty set is the faithful
-// translation. (The loom/ultra deny names that branch also adds live in
-// @/lib/loom-mcp and @/lib/ultra-mcp; they join the policy in 2.2 alongside
-// LOOM_AUTO_TOOLS/ULTRA_AUTO_TOOLS, per the port's BASE_ALLOWED_TOOLS note.)
+// `allow: ["Read", "Grep", "Glob"]` is measured, not defensive: the route's
+// escalation branch sets allowedTools to [...LOOM_ESCALATION_READONLY_TOOLS]
+// (@/lib/loom-mcp), and THREE of core's six base tools appear in that array —
+// Read, Grep and Glob, the project-root snapshot half of the read-only toolset.
+// ESCALATION_SYSTEM_PROMPT advertises them by name ("Read / Grep / Glob —
+// inspect the project root (your working directory)"), so dropping them would
+// leave the session unable to do what its own prompt tells it to do. WebSearch,
+// WebFetch and ToolSearch are the three the branch genuinely does not grant, so
+// the narrowing drops exactly those. session-profiles.test.ts re-derives this
+// array from BASE_ALLOWED_TOOLS ∩ LOOM_ESCALATION_READONLY_TOOLS rather than
+// restating it, so the measurement cannot go stale silently again. (The
+// mcp__loom__* read names in that same array, and the loom/ultra deny names the
+// branch adds, live in @/lib/loom-mcp and @/lib/ultra-mcp; they join the policy
+// in 2.2 alongside LOOM_AUTO_TOOLS/ULTRA_AUTO_TOOLS, per the port's
+// BASE_ALLOWED_TOOLS note.)
+//
+// This shipped as `allow: []` in 2.1's first pass, on the claim that NONE of
+// the six appeared. That was false, and the failure mode is worth naming: no
+// test and no request could contradict it, because nothing consumes toolPolicy
+// in 2.1 — 2.2 would have mapped an empty array onto query()'s allowedTools and
+// silently stripped project inspection from every escalation session.
 //
 // The appendix stays "" for the steerer's reason: buildEscalationContext is a
 // per-turn live read inside the stream body.
 export const buildEscalationProfile: SessionProfileBuilder = () => ({
   kind: "escalation",
   settingSources: [...REPO_SETTING_SOURCES],
-  toolPolicy: { allow: [], deny: [...ALWAYS_DENIED_TOOLS] },
+  toolPolicy: { allow: ["Read", "Grep", "Glob"], deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
   systemPromptAppendix: "",
 });

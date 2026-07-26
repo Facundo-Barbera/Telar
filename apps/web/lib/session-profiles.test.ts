@@ -17,6 +17,7 @@
 // @ts-expect-error no @types/bun in this workspace
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  BASE_ALLOWED_TOOLS,
   ProjectManifest,
   registeredSessionKinds,
   resetSessionProfiles,
@@ -26,6 +27,7 @@ import {
   type SessionProfileBuilder,
   type SessionResolutionContext,
 } from "@telar/core";
+import { LOOM_ESCALATION_READONLY_TOOLS } from "./loom-mcp";
 import {
   buildEscalationProfile,
   buildPlannerProfile,
@@ -140,14 +142,37 @@ describe("the four builders carry D11's per-kind decisions", () => {
     }
   });
 
-  test("the escalation profile grants NONE of the base harness tools", () => {
-    // Measured: the route's escalation branch sets allowedTools to
-    // [...LOOM_ESCALATION_READONLY_TOOLS], which contains none of core's six.
-    expect(resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow).toEqual([]);
+  test("the escalation profile grants ONLY the base tools its own branch auto-runs", () => {
+    // The route's escalation branch sets allowedTools to
+    // [...LOOM_ESCALATION_READONLY_TOOLS], and three of core's six base tools
+    // are in it: Read, Grep and Glob (ESCALATION_SYSTEM_PROMPT advertises them
+    // by name — "inspect the project root").
+    expect(resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow).toEqual([
+      "Read",
+      "Grep",
+      "Glob",
+    ]);
     // …while an ordinary project session keeps the whole base set.
-    expect(
-      resolveSessionProfile(ctx({ kind: "project" })).toolPolicy.allow.length,
-    ).toBeGreaterThan(0);
+    expect(resolveSessionProfile(ctx({ kind: "project" })).toolPolicy.allow.length).toBe(
+      BASE_ALLOWED_TOOLS.length,
+    );
+  });
+
+  test("that escalation grant IS the route's own toolset ∩ the base set — measured, not restated", () => {
+    // The literal above is a copy of a measurement, and a copy goes stale in
+    // silence: nothing consumes toolPolicy until 2.2, so a drifted `allow`
+    // would fail no test and no request. This row re-derives it from the two
+    // real constants — @/lib/loom-mcp's array (which route.ts wires verbatim as
+    // the escalation session's allowedTools) intersected with core's base set —
+    // so if either source moves, the builder's value is what gets indicted.
+    // The first revision of this file shipped `allow: []` on the claim that
+    // NONE of the six appeared in that array; three do.
+    const branchGrants = LOOM_ESCALATION_READONLY_TOOLS as readonly string[];
+    const measured = BASE_ALLOWED_TOOLS.filter((t) => branchGrants.includes(t));
+    expect(measured.length).toBeGreaterThan(0); // anti-vacuity: an empty ∩ would pass by accident
+    expect([...resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow].sort()).toEqual(
+      [...measured].sort(),
+    );
   });
 });
 
