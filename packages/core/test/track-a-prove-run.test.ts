@@ -21,23 +21,36 @@
 // WHY THE `packages/core` PATH ARGUMENT IS THERE, because it looks redundant
 // and is not. The bare `bun test -t "track-a prove-run"` form fails on L4, for a
 // reason that has nothing to do with this suite and everything to do with a
-// PRE-EXISTING cross-workspace test-isolation defect: three apps/web suites
-// (lib/loom-mcp.answer-blocked.test.ts, lib/loom-mcp.remint.test.ts,
-// lib/ultra-mcp.test.ts) install a PROCESS-GLOBAL mock.module("@telar/core", …)
-// at MODULE SCOPE — stubbing saveLoom to `() => {}` and getLoom/listLooms to
-// fixtures — and restore it only in afterAll. A repo-root run WITH a -t filter
-// evaluates every file's module scope before running any test, so those afterAll
-// hooks never fire and the stub is live inside every core suite in the process.
-// MEASURED, and measured on code that predates this story: story 1.2's own
-// m5-reconcile-liveness.test.ts fails identically under
+// PRE-EXISTING cross-workspace test-isolation defect: apps/web suites install a
+// PROCESS-GLOBAL mock.module("@telar/core", …) at MODULE SCOPE and restore it
+// only in afterAll. A repo-root run WITH a -t filter evaluates every file's
+// module scope before running any test, so those afterAll hooks never fire and
+// the stub is live inside every core suite in the process.
+//
+// BE PRECISE ABOUT WHICH SUITES DO WHAT — the first version of this note said
+// "three suites stub saveLoom/getLoom/listLooms" and that is wrong about one of
+// them, which is worse than saying nothing: the engineer who picks this up opens
+// the file, finds no such stub, and discards a correct diagnosis of the other
+// two. MEASURED, each one run on its own against packages/core:
+//   - lib/loom-mcp.answer-blocked.test.ts and lib/loom-mcp.remint.test.ts stub
+//     saveLoom to `() => {}` and getLoom/listLooms to fixtures. EITHER ONE
+//     ALONE reproduces the L4 failure:
+//     `bun test packages/core apps/web/lib/loom-mcp.remint.test.ts -t "L4 …"` → 1 fail.
+//   - lib/ultra-mcp.test.ts installs the SAME process-global mock with the SAME
+//     module-scope-install / afterAll-only-restore hygiene defect, but its
+//     factory stubs only compileScript/getProject/getUltraManifest/launchUltra/
+//     readUltraEvents/stopUltraRun — no loom writer. It does NOT reproduce this
+//     symptom: the same command with ultra-mcp.test.ts → 1 pass.
+// Pre-existence is measured too, on code that predates this story: story 1.2's
+// own m5-reconcile-liveness.test.ts fails identically under
 // `bun test -t "default liveness: a stranded in-flight loom"` from the repo
 // root, with the same `TypeError: null is not an object (evaluating
 // 'getLoom(id).state')`. apps/web is Track B/C's write set, so this is recorded
-// rather than crossed (story 1.1's AC6 protocol). The path argument keeps the
-// filtered run inside the core workspace, where no such mock exists. The
-// UNFILTERED repo-root `bun test` is unaffected and green — without -t, bun
-// loads and runs one file at a time, so each mock is restored by its own
-// afterAll before the next file runs.
+// rather than crossed (story 1.1's AC6 protocol) — see deferred-work.md. The
+// path argument keeps the filtered run inside the core workspace, where no such
+// mock exists. The UNFILTERED repo-root `bun test` is unaffected and green —
+// without -t, bun loads and runs one file at a time, so each mock is restored by
+// its own afterAll before the next file runs.
 //
 // THE FIVE LEGS, in AC4's clause order:
 //   L1  an agent-facing event wakes a subscriber while a human-facing one
@@ -75,9 +88,11 @@
 //     that module's own epic (AD-21), and event-bus.test.ts's fixtures plus
 //     these are the only event names in the repo.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 // ── the sandbox ─────────────────────────────────────────────────────────────
@@ -144,12 +159,24 @@ beforeEach(() => {
   admission.resetAdmission({});
 });
 
+// EVERY STEP IS IN A finally, and the ORDER MATTERS. resetAdmission({}) THROWS
+// on a leaked waiter (see the T-6 hazard above), so a plain sequential teardown
+// would skip the TELAR_HOME restore on exactly the run where something already
+// went wrong — leaving every suite that runs after this one re-rooted at a temp
+// directory that this hook then failed to delete. The restore is the last thing
+// that may be skipped, not the first.
 afterAll(() => {
-  bus.resetBus();
-  admission.resetAdmission({});
-  if (ORIGINAL_HOME === undefined) delete process.env.TELAR_HOME;
-  else process.env.TELAR_HOME = ORIGINAL_HOME;
-  fs.rmSync(HOME, { recursive: true, force: true });
+  try {
+    try {
+      bus.resetBus();
+    } finally {
+      admission.resetAdmission({});
+    }
+  } finally {
+    if (ORIGINAL_HOME === undefined) delete process.env.TELAR_HOME;
+    else process.env.TELAR_HOME = ORIGINAL_HOME;
+    fs.rmSync(HOME, { recursive: true, force: true });
+  }
 });
 
 // One line per leg, stable prefix. This IS the artifact epics.md's
@@ -243,9 +270,9 @@ describe("track-a prove-run", () => {
     // "it appeared here instead".
     const ledgerFile = path.join(HOME, "usage.ndjson");
     expect(fs.existsSync(ledgerFile)).toBe(true);
-    expect(path.dirname(fs.realpathSync(ledgerFile)).startsWith(fs.realpathSync(os.tmpdir()))).toBe(
-      true,
-    );
+    // Against THIS suite's root, not merely against os.tmpdir() — every
+    // mkdtemp'd path satisfies the latter, including someone else's.
+    expect(path.dirname(fs.realpathSync(ledgerFile))).toBe(fs.realpathSync(HOME));
 
     // THE TOLERANT-READER HALF (AD-7). Every UsageEntry field EXCEPT `ts`
     // carries a zod .default(...) — including ownerKind, ownerId and entryKey —
@@ -355,8 +382,17 @@ describe("track-a prove-run", () => {
         // T-6: a leaked waiter makes resetAdmission THROW and takes the whole
         // run down, so drain even on a failing assertion. Releasing the
         // remaining held slots admits every waiter; then hand their handles back.
+        //
+        // allSettled, NOT all. Promise.all short-circuits on the FIRST
+        // rejection: one rejected acquire and the loop never runs, so every
+        // already-granted handle beside it leaks, the next beforeEach's
+        // resetAdmission({}) throws, and the rest of the file dies of something
+        // unrelated to the regression that started it — the exact T-6 cascade
+        // this finally exists to prevent.
         for (const release of held.splice(0)) release();
-        for (const h of await Promise.all(pending)) h();
+        for (const settled of await Promise.allSettled(pending)) {
+          if (settled.status === "fulfilled") settled.value();
+        }
         expect(admission.admissionSnapshot().inFlight).toBe(0);
         expect(admission.admissionSnapshot().queued).toBe(0);
       }
@@ -435,17 +471,24 @@ describe("track-a prove-run", () => {
     // HERE, once, in the only place that can tell the difference.
     if (!fs.existsSync(path.join(looms.loomDir(stranded.id), "loom.json"))) {
       throw new Error(
-        "L4 precondition failed: looms.saveLoom() wrote no loom.json. That is not a defect in " +
-          "looms.ts — it means a process-global mock.module(\"@telar/core\", …) is installed and " +
-          "has stubbed saveLoom/getLoom/listLooms out from under this suite. Three apps/web suites " +
-          "install one at MODULE SCOPE and restore it only in afterAll, and a repo-root run WITH a " +
-          "-t filter evaluates every module scope before running any test, so the restore never " +
-          "fires. CONSEQUENCE: everything below would assert against fixtures instead of against " +
-          "the real dispatcher, i.e. it would prove nothing while looking green. NEXT STEP: run " +
+        "L4 precondition failed: looms.saveLoom() wrote no loom.json. TWO CAUSES ARE POSSIBLE and " +
+          "the invocation tells you which. (1) If apps/web files were loaded into this run — a " +
+          "repo-root `bun test -t …` loads every module scope before running any test — then a " +
+          "process-global mock.module(\"@telar/core\", …) is installed and has stubbed saveLoom out " +
+          "from under this suite. TWO apps/web suites do that, MEASURED: " +
+          "lib/loom-mcp.answer-blocked.test.ts and lib/loom-mcp.remint.test.ts, each of which " +
+          "reproduces this failure on its own. (lib/ultra-mcp.test.ts installs the same " +
+          "process-global mock with the same afterAll-only restore, but stubs only the ultra " +
+          "functions and does NOT cause this.) (2) If this run loaded packages/core ONLY, no such " +
+          "mock exists in the process and this IS a real regression in looms.saveLoom — do not " +
+          "let cause (1) talk you out of reading looms.ts. CONSEQUENCE either way: everything " +
+          "below would assert against fixtures instead of against the real dispatcher, i.e. it " +
+          "would prove nothing while looking green. NEXT STEP: run " +
           "`TELAR_HOME=$(mktemp -d) bun test packages/core -t \"track-a prove-run\"` from the repo " +
-          "root, or the unfiltered `bun test` — both are green. The underlying fix belongs to " +
-          "apps/web (Track B/C), not here; story 1.2's m5-reconcile-liveness.test.ts fails the " +
-          "same way under the same invocation.",
+          "root, or the unfiltered `bun test`; if BOTH are green the cause is (1) and the " +
+          "underlying fix belongs to apps/web (Track B/C), not here — story 1.2's " +
+          "m5-reconcile-liveness.test.ts fails the same way under the same invocation, which is " +
+          "how its pre-existence was proved. It is recorded in deferred-work.md.",
       );
     }
 
@@ -502,23 +545,102 @@ describe("track-a prove-run", () => {
     // order — which is what makes "throughout" mean the whole run rather than
     // one moment in it.
     //
-    // LAYER 1 — the guard is ARMED. usage-ledger.ts refuses a write when
-    // NODE_ENV is "test" and TELAR_HOME is unset or blank, which is the primary
-    // protection and exists ONLY inside the harness. NODE_ENV comes from the
-    // runner, not from repo config: nothing in this repo sets it (no bunfig
-    // preload, no env script, no root scripts block), so this is proved
-    // behaviourally rather than assumed.
+    // LAYER 1 — the guard is ARMED, and IT IS PROVED FROM A CHILD PROCESS.
+    // usage-ledger.ts refuses a write when NODE_ENV is "test" and TELAR_HOME is
+    // unset or blank, which is the primary protection and exists ONLY inside the
+    // harness. NODE_ENV comes from the runner, not from repo config: nothing in
+    // this repo sets it (no bunfig preload, no env script, no root scripts
+    // block), so this is proved behaviourally rather than assumed.
     expect(process.env.NODE_ENV).toBe("test");
     expect(process.env.TELAR_HOME).toBe(HOME);
-    const pinned = process.env.TELAR_HOME;
+
+    // WHY A CHILD AND NOT `process.env.TELAR_HOME = "   "` RIGHT HERE. The
+    // in-process form was how this leg was first written, and it ARMS THE EXACT
+    // WEAPON THAT ALREADY FIRED: manifest.ts's telarDir() reads
+    // process.env.TELAR_HOME?.trim() and falls back to path.join(os.homedir(),
+    // ".telar") on a blank value, so the only thing standing between a blank
+    // assignment in the SHARED test process and a synthetic $999 billing line in
+    // the operator's REAL ~/.telar is the very guard under test. Weaken that
+    // guard and the test written to prove ~/.telar is untouched becomes the
+    // thing that touches it — byte-for-byte the story-1.1 incident that is still
+    // open under NEEDS A HUMAN. A child gets its own env AND an mkdtemp'd HOME,
+    // so a regressed guard writes into a temp box this test deletes; the shared
+    // process's TELAR_HOME is never assigned at all. (os.homedir() under Bun is
+    // fixed at process start and ignores an in-process process.env.HOME write —
+    // apps/web/lib/state-root.test.ts's header states this — which is the other
+    // half of why the fake home only exists for a child.)
+    const box = fs.mkdtempSync(path.join(os.tmpdir(), "telar-track-a-guard-"));
     try {
-      process.env.TELAR_HOME = "   ";
-      expect(() => ledger.logUsage({ ts: Date.now(), costUsd: 999 })).toThrow(
+      const fakeHome = path.join(box, "home");
+      const pinnedRoot = path.join(box, "pinned");
+      fs.mkdirSync(fakeHome, { recursive: true });
+      const probe = path.join(box, "probe.ts");
+      const ledgerModule = JSON.stringify(
+        fileURLToPath(new URL("../src/usage-ledger.ts", import.meta.url)),
+      );
+      fs.writeFileSync(
+        probe,
+        [
+          `const { logUsage } = await import(${ledgerModule});`,
+          `const entry = () => ({ ts: Date.now(), account: "personal", model: "claude-opus-5",`,
+          `  sessionId: "track-a-L5", costUsd: 999 });`,
+          `let blank = { threw: false, message: "" };`,
+          `try {`,
+          `  logUsage(entry());`,
+          `} catch (e) {`,
+          `  blank = { threw: true, message: String((e && e.message) || e) };`,
+          `}`,
+          // THE POSITIVE CONTROL, in the same child: with a root actually pinned
+          // the identical call SUCCEEDS. Without it, "it threw" is equally
+          // consistent with a module that failed to load or a child that died,
+          // which is the vacuous-green shape this whole story exists to refuse.
+          `process.env.TELAR_HOME = ${JSON.stringify(pinnedRoot)};`,
+          `const pinned = logUsage({ ...entry(), costUsd: 0.01 });`,
+          `console.log(JSON.stringify({ blank, pinned }));`,
+        ].join("\n") + "\n",
+      );
+      const out = spawnSync(process.execPath, [probe], {
+        // TELAR_HOME is WHITESPACE, not unset: the empty and unset cases were
+        // already guarded and this is the one that got through in story 1.1.
+        env: { ...process.env, HOME: fakeHome, TELAR_HOME: "   ", NODE_ENV: "test" },
+        encoding: "utf8",
+      });
+      if (out.status !== 0) {
+        throw new Error(
+          `L5 layer 1: the write-guard child probe exited ${out.status}. It proves that a blank ` +
+            `TELAR_HOME under NODE_ENV=test cannot write, and that claim is now UNPROVEN. ` +
+            `stdout: ${out.stdout}\nstderr: ${out.stderr}`,
+        );
+      }
+      const readback = JSON.parse(out.stdout.trim()) as {
+        blank: { threw: boolean; message: string };
+        pinned: boolean;
+      };
+      expect(readback.blank.threw).toBe(true);
+      expect(readback.blank.message).toContain(
         "logUsage refused: NODE_ENV=test with no TELAR_HOME",
       );
+      // The control: the same call, same child, same module — writes when a root
+      // is pinned. So the refusal above is the GUARD firing, not a dead probe.
+      expect(readback.pinned).toBe(true);
+      expect(fs.existsSync(path.join(pinnedRoot, "usage.ndjson"))).toBe(true);
+      // AND THE ASSERTION THAT ACTUALLY DISCRIMINATES a working guard from a
+      // regressed one: nothing was created under the home the blank write would
+      // have resolved to. Scanned recursively rather than by listing the home
+      // directly — Bun creates unrelated entries under a fresh HOME on macOS.
+      expect(fs.existsSync(path.join(fakeHome, ".telar"))).toBe(false);
+      expect(
+        fs
+          .readdirSync(fakeHome, { recursive: true, encoding: "utf8" })
+          .filter((f) => f.endsWith("usage.ndjson")),
+      ).toEqual([]);
     } finally {
-      process.env.TELAR_HOME = pinned;
+      fs.rmSync(box, { recursive: true, force: true });
     }
+    // This process's own root was never touched to run that probe — which is the
+    // whole point of doing it in a child.
+    expect(process.env.TELAR_HOME).toBe(HOME);
+
     // KNOW PRECISELY WHAT THAT GUARD DOES NOT COVER, because assuming more is
     // how story 1.1's pollution happened: it does not cover a write outside a
     // NODE_ENV=test process (dev and production are unguarded by design), it is
@@ -536,21 +658,59 @@ describe("track-a prove-run", () => {
     // "Nothing new appeared over there" is a weaker claim than "it appeared
     // here instead", and only the second one distinguishes a correct run from a
     // run in which nothing happened at all.
+    //
+    // EVERY WRITE BELOW IS L5'S OWN, and that is a repair rather than a
+    // duplication of L2 and L4. The first version of this layer asserted over
+    // the records L2 and L4 happen to leave behind, which made the leg pass only
+    // as part of an ordered whole: §6.2's own discovery mechanism — running one
+    // test by name — turned it RED
+    // (`bun test packages/core -t "L5 the real telar home is untouched throughout"`
+    // → `expect(fs.existsSync(ledgerFile)).toBe(true)` receiving false), because
+    // nothing in L5 wrote usage.ndjson. A leg whose failure cannot be reproduced
+    // on its own is a leg whose failure cannot be diagnosed on its own. Three
+    // cheap calls through three ports remove the ordering dependency entirely.
+    const evidenceKey = "track-a-prove-run:L5";
+    const evidenceSession = "sess-track-a-L5";
+    expect(
+      ledger.logUsage({
+        ts: Date.now(),
+        account: "personal",
+        model: "claude-opus-5",
+        sessionId: evidenceSession,
+        costUsd: 0.01,
+        entryKey: evidenceKey,
+      }),
+    ).toBe(true);
+    looms.createLoom({
+      project: "track-a-prove-run",
+      kind: "custom",
+      title: "L5 evidence",
+      prompt: "x",
+      account: "personal",
+    });
+    sessions.writeSessionLease(evidenceSession, { pid: process.pid, token: "L5" }, () => Date.now());
+
     const ledgerFile = path.join(HOME, "usage.ndjson");
     expect(fs.existsSync(ledgerFile)).toBe(true);
-    expect(fs.readFileSync(ledgerFile, "utf8").trim().split("\n").length).toBeGreaterThanOrEqual(2);
+    const ledgerLines = fs.readFileSync(ledgerFile, "utf8").trim().split("\n").filter(Boolean);
+    expect(ledgerLines.length).toBeGreaterThanOrEqual(1);
+    // Not merely "a file exists": the line THIS leg wrote is in it.
+    expect(ledgerLines.some((l) => l.includes(evidenceKey))).toBe(true);
+    // The state root is a temp directory, and the ledger really lives under IT —
+    // not merely under some temp directory, which any mkdtemp'd path satisfies.
     expect(fs.realpathSync(HOME).startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
+    expect(path.dirname(fs.realpathSync(ledgerFile))).toBe(fs.realpathSync(HOME));
     expect(fs.existsSync(path.join(HOME, "looms"))).toBe(true);
+    expect(fs.existsSync(sessions.sessionLeaseFile(evidenceSession))).toBe(true);
     expect(fs.existsSync(path.join(HOME, "sessions"))).toBe(true);
 
-    // LAYER 4 — the fake-HOME child probe is CITED, not rebuilt.
-    // usage-ledger.test.ts already spawns a real child through process.execPath
-    // with an mkdtemp'd HOME, NODE_ENV: "test" and TELAR_HOME: " ", and asserts
-    // nothing appears under the fake home's .telar. os.homedir() under Bun is
-    // fixed at process start and ignores an in-process process.env.HOME write,
-    // which is why that claim can ONLY be observed from a child — and why
-    // writing a second one here would be a near-duplicate spawn for no new
-    // information. (See the citation check below, which fails if it moves.)
+    // LAYER 4 — the EXHAUSTIVE guard coverage is CITED, not rebuilt.
+    // usage-ledger.test.ts owns the full set of write-guard cases (unset, empty
+    // and whitespace TELAR_HOME) behind the same child-process idiom layer 1
+    // now uses. Layer 1 spawns its own child because the claim it makes must be
+    // made without assigning TELAR_HOME in THIS process; it deliberately does
+    // NOT re-enumerate those cases. (See the citation check below, which fails
+    // if that test moves.)
 
     transcript(
       "L5",

@@ -134,17 +134,44 @@ const EXCLUDED_DIRS = new Set([
   "_bmad-output",
 ]);
 
-// Blank out comments so a scan for a CALL SITE cannot be tripped by prose that
+// ONE TOKENIZER, two uses. It walks source once and can blank comments, string
+// contents, or both — length and line structure always preserved, so offsets
+// still line up.
+//
+// WHY BLANK COMMENTS: a scan for a CALL SITE must not be tripped by prose that
 // merely mentions it — panel.ts's header says "must inject an agent() call
 // here", store.ts's says "route.ts's teardown always calls logUsage()", and a
-// naive substring scan reads both as violations. Best-effort by construction:
-// it tracks string and template literals but not regex literals, which is
-// honest and sufficient here (every result below is cross-checked by a floor
-// and by a discriminator fixture). Length is preserved so offsets still line up.
-function stripComments(text: string): string {
+// naive substring scan reads both as violations.
+//
+// WHY IT TRACKS REGEX LITERALS, which is not a nicety. `const isUrl =
+// /^https?:\/\//;` contains the two-character sequence `//`. A tokenizer that
+// knows only about quotes reads that as the start of a line comment and BLANKS
+// THE REST OF THAT PHYSICAL LINE — so any `path.join(`, `logUsage(` or
+// `releaseAdmission(` sharing the line becomes invisible to every scan that
+// reads `.code`. Blanking real code is a much worse failure than missing a
+// comment: it is silent, and it makes an invariant PASS.
+//
+// The remaining honest limit: `${…}` inside a template literal is treated as
+// string content, not as code. Deciding regex-vs-division is the standard
+// lookback heuristic (the preceding significant character or keyword); when it
+// guesses wrong the literal is merely copied verbatim, which can only ever leave
+// a scan seeing MORE text, never less.
+const REGEX_PREV_CHARS = new Set([
+  "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "<", ">", "~", "^",
+]);
+const REGEX_PREV_KEYWORD =
+  /(?:^|[^A-Za-z0-9_$])(return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await|throw)$/;
+
+function tokenize(text: string, blankComments: boolean, blankStrings: boolean): string {
   let out = "";
   let i = 0;
   const n = text.length;
+  // The last few NON-WHITESPACE characters emitted, kept rolling so the
+  // regex-vs-division decision is O(1) rather than a re-scan of `out`.
+  let tail = "";
+  const mark = (ch: string) => {
+    tail = (tail + ch).slice(-24);
+  };
   while (i < n) {
     const c = text[i]!;
     if (c === '"' || c === "'" || c === "`") {
@@ -153,38 +180,97 @@ function stripComments(text: string): string {
       i++;
       while (i < n) {
         const d = text[i]!;
-        out += d;
-        i++;
         if (d === "\\") {
-          if (i < n) {
-            out += text[i]!;
-            i++;
-          }
+          // Length AND line structure are preserved even when blanking: an
+          // escaped newline stays a newline.
+          const next = i + 1 < n ? text[i + 1]! : "";
+          out += blankStrings ? (next === "\n" ? " \n" : " ".repeat(1 + next.length)) : d + next;
+          i += 1 + next.length;
           continue;
         }
-        if (d === quote) break;
-        if (d === "\n" && quote !== "`") break; // unterminated: do not swallow the file
+        if (d === quote) {
+          out += d;
+          i++;
+          break;
+        }
+        if (d === "\n") {
+          out += "\n";
+          i++;
+          if (quote !== "`") break; // unterminated: do not swallow the file
+          continue;
+        }
+        out += blankStrings ? " " : d;
+        i++;
       }
+      mark(quote);
       continue;
     }
     if (c === "/" && text[i + 1] === "/") {
       while (i < n && text[i] !== "\n") {
-        out += " ";
+        out += blankComments ? " " : text[i]!;
         i++;
       }
+      if (!blankComments) mark("/");
       continue;
     }
     if (c === "/" && text[i + 1] === "*") {
       const end = text.indexOf("*/", i + 2);
       const stop = end === -1 ? n : end + 2;
-      for (; i < stop; i++) out += text[i] === "\n" ? "\n" : " ";
+      for (; i < stop; i++) out += text[i] === "\n" ? "\n" : blankComments ? " " : text[i]!;
+      if (!blankComments) mark("/");
+      continue;
+    }
+    if (c === "/") {
+      const last = tail.slice(-1);
+      const opensRegex = last === "" || REGEX_PREV_CHARS.has(last) || REGEX_PREV_KEYWORD.test(tail);
+      if (opensRegex) {
+        // A regex literal is CODE: copied verbatim whatever the flags say.
+        out += c;
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const d = text[i]!;
+          if (d === "\n") break; // unterminated: bounded to one physical line
+          out += d;
+          i++;
+          if (d === "\\") {
+            if (i < n) {
+              out += text[i]!;
+              i++;
+            }
+            continue;
+          }
+          if (d === "[") inClass = true;
+          else if (d === "]") inClass = false;
+          else if (d === "/" && !inClass) break;
+        }
+        while (i < n && /[a-z]/.test(text[i]!)) {
+          out += text[i]!;
+          i++;
+        }
+        mark("/");
+        continue;
+      }
+      out += c;
+      i++;
+      mark("/");
       continue;
     }
     out += c;
     i++;
+    if (c > " ") mark(c);
   }
   return out;
 }
+
+const stripComments = (text: string): string => tokenize(text, true, false);
+
+// String CONTENTS blanked, quotes and length kept. Used where the question is
+// "does this file DO x" rather than "does it mention x": a thrown error that
+// says `"caller must supply restrictTools: true"` documents the wall, it does
+// not mint a capability, and an invariant that fires on correct code gets
+// deleted rather than fixed.
+const stripStringLiterals = (code: string): string => tokenize(code, true, true);
 
 // T-5 — "use client" appears INSIDE COMMENTS in this repo, and the difference is
 // not academic: apps/web/lib/permissions.ts discusses the boundary in a comment
@@ -245,6 +331,35 @@ function walk(rootRel: string, into: SourceFile[]): void {
   }
 }
 
+// ONE real, scannable file from inside a tree the walk is supposed to skip,
+// located on disk at test time. INDEX-1 uses it as a positive control: without
+// it, "nothing leaked" is satisfied by an index that never looked. Bounded — it
+// stops at the first hit and gives up after a fixed number of directories.
+function firstScannableUnder(rootAbs: string): string | null {
+  const stack = [rootAbs];
+  let budget = 500;
+  while (stack.length && budget-- > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(abs);
+        continue;
+      }
+      if (entry.isFile() && EXTENSIONS.has(path.extname(entry.name))) {
+        return path.relative(REPO, abs).split(path.sep).join("/");
+      }
+    }
+  }
+  return null;
+}
+
 const INDEX: SourceFile[] = (() => {
   const files: SourceFile[] = [];
   for (const root of ROOTS) walk(root, files);
@@ -276,29 +391,78 @@ const CORE_FILES = INDEX.filter((f) => f.rel.startsWith("packages/core/"));
 // discriminator fixture. A discriminator that called a different function would
 // prove nothing, so they are functions of a source STRING, never of a file.
 
-// Every `tool("<name>", …)` first string-literal argument. The negative
-// lookbehind keeps `createTool(`, `.tool(` and `mockTool(` out.
-function toolNameLiterals(source: string): string[] {
-  const re = /(?<![A-Za-z0-9_$.])tool\s*\(\s*(["'])((?:\\.|(?!\1).)*)\1/g;
-  const out: string[] = [];
-  for (let m = re.exec(source); m; m = re.exec(source)) out.push(m[2]!);
-  return out;
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// AN IMPORT RENAME IS A ONE-TOKEN HOLE IN THIS WHOLE INVARIANT, so both
+// extractors below take the local BINDING NAMES rather than assuming the
+// canonical spelling. `import { createSdkMcpServer as makeServer }` used to be
+// enough for a fourth MCP surface never to enter MCP_SURFACES at all — INV-1a's
+// "exactly the three we know about" would still pass while an agent-callable
+// accept tool shipped behind a green moat test.
+const MCP_SDK = "@anthropic-ai/claude-agent-sdk";
+const MCP_FACTORY = "createSdkMcpServer";
+const TOOL_FACTORY = "tool";
+const fromMcpSdk = (spec: string): boolean => spec === MCP_SDK;
+
+// Local names bound to an SDK export in this file, canonical spelling included.
+function sdkBindings(source: string, exported: string): string[] {
+  const names = new Set([exported]);
+  if (!source.includes(exported)) return [...names];
+  for (const local of localNamesFor(source, exported, fromMcpSdk).direct) names.add(local);
+  return [...names];
 }
 
-// Every `createSdkMcpServer({ name: "<server>" … })`. All three call sites in
-// the repo put `name` first; if that ever changes, the pinned inventory below
-// fails loudly rather than silently dropping a surface.
-function mcpServerNameLiterals(source: string): string[] {
-  const re = /createSdkMcpServer\s*\(\s*\{\s*name\s*:\s*(["'])([^"']+)\1/g;
-  const out: string[] = [];
-  for (let m = re.exec(source); m; m = re.exec(source)) out.push(m[2]!);
-  return out;
+// Every `tool("<name>", …)` first string-literal argument, under any binding.
+// The negative lookbehind keeps `createTool(`, `.tool(` and `mockTool(` out.
+// Hits are returned in SOURCE ORDER across bindings, because the pinned
+// inventory below is compared as an ordered list.
+function toolNameLiterals(source: string, bindings: string[] = [TOOL_FACTORY]): string[] {
+  const hits: Array<{ at: number; name: string }> = [];
+  for (const binding of bindings) {
+    const re = new RegExp(
+      `(?<![A-Za-z0-9_$.])${escapeRe(binding)}\\s*\\(\\s*(["'])((?:\\\\.|(?!\\1).)*)\\1`,
+      "g",
+    );
+    for (let m = re.exec(source); m; m = re.exec(source)) hits.push({ at: m.index, name: m[2]! });
+  }
+  return hits.sort((a, b) => a.at - b.at).map((h) => h.name);
+}
+
+// Every `createSdkMcpServer({ name: "<server>" … })`, under any binding. All
+// three call sites in the repo put `name` first; if that ever changes, the
+// pinned inventory below fails loudly rather than silently dropping a surface.
+function mcpServerNameLiterals(source: string, bindings: string[] = [MCP_FACTORY]): string[] {
+  const hits: Array<{ at: number; name: string }> = [];
+  for (const binding of bindings) {
+    const re = new RegExp(
+      `(?<![A-Za-z0-9_$.])${escapeRe(binding)}\\s*\\(\\s*\\{\\s*name\\s*:\\s*(["'])([^"']+)\\1`,
+      "g",
+    );
+    for (let m = re.exec(source); m; m = re.exec(source)) hits.push({ at: m.index, name: m[2]! });
+  }
+  return hits.sort((a, b) => a.at - b.at).map((h) => h.name);
+}
+
+// Does this file stand up an MCP server under ANY binding? The cheap substring
+// gate is not a shortcut that reintroduces the hole: a file that binds the
+// factory must NAME it in the import statement to rename it.
+function callsMcpFactory(source: string): boolean {
+  if (!source.includes(MCP_FACTORY)) return false;
+  return sdkBindings(source, MCP_FACTORY).some((n) =>
+    new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(n)}\\s*\\(`).test(source),
+  );
 }
 
 // The belt to the pinned inventory's braces (the inventory is the actual
 // mechanism — a substring deny-list alone would let `mark_delivered` through if
 // it were only checked as a whole word). Tokens are matched by STEM so
 // "delivered"/"completed"/"accepting" cannot walk past a whole-word check.
+// This is the ONLY assertion that judges a tool name on its own semantic merits
+// — INV-1b merely requires that a human added the name to MCP_INVENTORY — so the
+// ordinary English synonyms for "accept" belong here too. `finish_loom` is a
+// name someone would plausibly write, and without `finish` it registers, gets
+// pinned per this file's own ADDING_A_TOOL instructions, and the one semantic
+// gate on the Human-Accept Moat says nothing.
 const ACCEPT_STEMS = [
   "accept",
   "approve",
@@ -310,6 +474,13 @@ const ACCEPT_STEMS = [
   "deliver",
   "finalize",
   "promote",
+  "finish",
+  "resolve",
+  "close",
+  "confirm",
+  "sign",
+  "ack",
+  "clear",
 ];
 function acceptShapedTokens(toolName: string): string[] {
   return toolName
@@ -343,34 +514,115 @@ function importStatements(source: string): string[] {
   return out;
 }
 
+// `export { X } from "./y"` and `export * from "./y"` are MODULE EDGES exactly
+// as imports are, and a scan anchored on the word `import` is blind to them.
+// That blindness is not theoretical: a shim whose entire contents are
+// `export { logUsage } from "@telar/core";`, value-imported by a "use client"
+// component, drags core's runtime barrel into the browser bundle with no
+// `import` line in it for INV-4 to find. This file already proves it knows the
+// construct exists — INV-5c asserts store.ts contains exactly that shape.
+function reExportStatements(source: string): string[] {
+  const lines = source.split("\n");
+  const out: string[] = [];
+  const complete = (s: string): boolean => /\bfrom\s*["'][^"']+["']/.test(s);
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*export\s+(?:type\s+)?[{*]/.test(lines[i]!)) continue;
+    let stmt = lines[i]!;
+    let lookahead = 0;
+    // A LOCAL `export { a, b };` has no `from` and must not run away looking
+    // for one on a later line, so accumulation stops at the first `;`.
+    while (!complete(stmt) && !stmt.includes(";") && i + 1 < lines.length && lookahead < 80) {
+      i++;
+      lookahead++;
+      stmt += "\n" + lines[i]!;
+    }
+    if (complete(stmt)) out.push(stmt);
+  }
+  return out;
+}
+
+// Both kinds, which is what a graph traversal wants.
+const moduleEdgeStatements = (source: string): string[] => [
+  ...importStatements(source),
+  ...reExportStatements(source),
+];
+
 function importSource(statement: string): string | null {
   const m = /["']([^"']+)["']\s*;?\s*$/.exec(statement.trim());
   return m ? m[1]! : null;
 }
 
-// A type-only import is ERASED at build and cannot smuggle runtime. Accepted
-// only if the statement opens `import type`, or every specifier inside the
-// braces is individually prefixed `type `. A default or namespace binding makes
-// it a value import whatever the braces say.
-function isTypeOnlyImport(statement: string): boolean {
+// What an import/export-from statement actually BINDS, with renames resolved.
+// A scan that only looks for the exported NAME in the statement text is defeated
+// by `import { acceptLoom as land }` and by `import * as admission`, and both
+// forms are exactly the ones an invariant about "who can call this" must see.
+type EdgeBinding = { imported: string; local: string; typeOnly: boolean; namespace: boolean };
+function edgeBindings(statement: string): EdgeBinding[] {
   const fromAt = statement.search(/\bfrom\b/);
-  const head = fromAt === -1 ? statement : statement.slice(0, fromAt);
-  if (/^\s*import\s+type\b/.test(head)) return true;
-  const open = head.indexOf("{");
-  const close = head.lastIndexOf("}");
-  if (open === -1 || close === -1 || close < open) return false;
-  const beforeBrace = head
-    .slice(head.indexOf("import") + "import".length, open)
-    .replace(/,\s*$/, "")
-    .trim();
-  if (beforeBrace !== "") return false; // `import Default, { … }`
-  const specs = head
-    .slice(open + 1, close)
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (specs.length === 0) return false;
-  return specs.every((s) => /^type\s/.test(s));
+  const head = (fromAt === -1 ? statement : statement.slice(0, fromAt)).replace(/\n/g, " ");
+  const kw = /\b(import|export)\b/.exec(head);
+  if (!kw) return [];
+  let body = head.slice(kw.index + kw[0].length);
+  const headTypeOnly = /^\s*type\b/.test(body);
+  if (headTypeOnly) body = body.replace(/^\s*type\b/, "");
+  const ns = /^\s*\*\s*as\s+([A-Za-z0-9_$]+)/.exec(body);
+  if (ns) return [{ imported: "*", local: ns[1]!, typeOnly: headTypeOnly, namespace: true }];
+  // `export * from "…"` — every export forwarded, no local binding.
+  if (/^\s*\*/.test(body)) {
+    return [{ imported: "*", local: "*", typeOnly: headTypeOnly, namespace: true }];
+  }
+  const out: EdgeBinding[] = [];
+  const open = body.indexOf("{");
+  const close = body.lastIndexOf("}");
+  const beforeBrace = (open === -1 ? body : body.slice(0, open)).replace(/,\s*$/, "").trim();
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(beforeBrace)) {
+    out.push({ imported: "default", local: beforeBrace, typeOnly: headTypeOnly, namespace: false });
+  }
+  if (open !== -1 && close > open) {
+    for (const raw of body.slice(open + 1, close).split(",")) {
+      const spec = raw.trim();
+      if (!spec) continue;
+      const typeOnly = headTypeOnly || /^type\s/.test(spec);
+      const m = /^(?:type\s+)?([A-Za-z0-9_$]+)(?:\s+as\s+([A-Za-z0-9_$]+))?$/.exec(spec);
+      if (!m) continue;
+      out.push({ imported: m[1]!, local: m[2] ?? m[1]!, typeOnly, namespace: false });
+    }
+  }
+  return out;
+}
+
+// Every local name in `source` that is bound to `exported` from a module the
+// predicate accepts, plus every namespace binding of such a module. Renames and
+// `import * as ns` both land here, which is the point.
+function localNamesFor(
+  source: string,
+  exported: string,
+  fromModule: (spec: string) => boolean,
+): { direct: string[]; namespaces: string[] } {
+  const direct: string[] = [];
+  const namespaces: string[] = [];
+  for (const stmt of moduleEdgeStatements(source)) {
+    const spec = importSource(stmt);
+    if (!spec || !fromModule(spec)) continue;
+    for (const b of edgeBindings(stmt)) {
+      if (b.typeOnly) continue;
+      if (b.namespace && b.local !== "*") namespaces.push(b.local);
+      else if (b.imported === exported) direct.push(b.local);
+    }
+  }
+  return { direct, namespaces };
+}
+
+// A type-only edge is ERASED at build and cannot smuggle runtime. Accepted only
+// if the statement opens `import type` / `export type`, or every specifier
+// inside the braces is individually prefixed `type `. A default binding, a
+// namespace binding, a bare `export * from` and a side-effect `import "x"` are
+// all VALUE edges whatever the braces say. Applies to `export … from` as well as
+// to `import` — same erasure question, same answer.
+function isTypeOnlyImport(statement: string): boolean {
+  const bindings = edgeBindings(statement);
+  if (bindings.length === 0) return false;
+  return bindings.every((b) => b.typeOnly);
 }
 
 // A TELAR_HOME path-composition site: `path.join(<root resolver>(), "<literal>")`.
@@ -380,24 +632,57 @@ function isTypeOnlyImport(statement: string): boolean {
 // containing a resolver at all.
 const ROOT_RESOLVERS = ["telarDir", "stateRoot", "telarHome", "home"];
 type CompositionSite = { resolver: string; composes: string };
-function rootCompositionSites(source: string): CompositionSite[] {
-  const re = new RegExp(
-    `path\\.join\\(\\s*(${ROOT_RESOLVERS.join("|")})\\(\\)\\s*,\\s*(["'\`])([^"'\`]*)\\2`,
+// TWO SHAPES, because composing off the root by template is composing off the
+// root: `${telarDir()}/looms/<id>/spec.json` is a textbook AD-5 cross-module
+// read by path, and a path.join-only matcher leaves the 18-site inventory
+// unchanged while it happens. INV-5's sibling helper composesStateFile already
+// handled the template form, so the asymmetry was internal to this file.
+// `resolvers` is per-file so an ALIASED resolver (`import { telarDir as root }`)
+// cannot walk past the check either.
+function rootCompositionSites(
+  source: string,
+  resolvers: readonly string[] = ROOT_RESOLVERS,
+): CompositionSite[] {
+  const alt = resolvers.map(escapeRe).join("|");
+  const hits: Array<{ at: number; site: CompositionSite }> = [];
+  const joined = new RegExp(
+    `path\\.join\\(\\s*(${alt})\\(\\)\\s*,\\s*(["'\`])([^"'\`]*)\\2`,
     "g",
   );
-  const out: CompositionSite[] = [];
-  for (let m = re.exec(source); m; m = re.exec(source)) {
-    out.push({ resolver: m[1]!, composes: m[3]! });
+  for (let m = joined.exec(source); m; m = joined.exec(source)) {
+    hits.push({ at: m.index, site: { resolver: m[1]!, composes: m[3]! } });
   }
-  return out;
+  const templated = new RegExp(`\\$\\{\\s*(${alt})\\(\\)\\s*\\}/([A-Za-z0-9_.\\-]+)`, "g");
+  for (let m = templated.exec(source); m; m = templated.exec(source)) {
+    hits.push({ at: m.index, site: { resolver: m[1]!, composes: m[2]! } });
+  }
+  return hits.sort((a, b) => a.at - b.at).map((h) => h.site);
+}
+
+// The resolver spellings LIVE IN THIS FILE, so a rename at the import site is
+// invisible to a fixed list: `import { telarDir as root }` then
+// `path.join(root(), "sessions")` composes another module's subtree and reports
+// nothing. Canonical names always included; short-circuits on files that never
+// mention one.
+function resolverNamesIn(source: string): string[] {
+  const names = new Set<string>(ROOT_RESOLVERS);
+  if (!ROOT_RESOLVERS.some((r) => source.includes(r))) return [...names];
+  for (const stmt of moduleEdgeStatements(source)) {
+    for (const b of edgeBindings(stmt)) {
+      if (!b.typeOnly && !b.namespace && ROOT_RESOLVERS.includes(b.imported)) names.add(b.local);
+    }
+  }
+  return [...names];
 }
 
 // A module deriving the state root FROM SCRATCH: `path.join(os.homedir(), ".telar")`.
 // Sanctioned only inside the five known resolvers. servers.ts's
 // `path.join(root, ".telar", …)` is a PROJECT-local .telar and must never be
-// swept up, which is why this matches on os.homedir() specifically.
+// swept up, which is why this matches on homedir() specifically. The `os.`
+// prefix is optional so a `import { homedir } from "node:os"` spelling is not a
+// free pass.
 function homeRootDerivations(source: string): number {
-  const re = /path\.join\(\s*os\.homedir\(\)\s*,\s*(["'])\.telar\1/g;
+  const re = /path\.join\(\s*(?:os\.)?homedir\(\)\s*,\s*(["'])\.telar\1/g;
   let n = 0;
   for (let m = re.exec(source); m; m = re.exec(source)) n++;
   return n;
@@ -407,10 +692,12 @@ function homeRootDerivations(source: string): number {
 const VERBOSE = !!process.env.TELAR_INVARIANTS_VERBOSE?.trim();
 const line = (s: string) => console.log(`[invariants] ${s}`);
 
-const MCP_SURFACES = NON_TEST.filter((f) => f.code.includes("createSdkMcpServer("));
+const MCP_SURFACES = NON_TEST.filter((f) => callsMcpFactory(f.code));
 const COMPOSITION_SITES: { file: string; site: CompositionSite }[] = [];
 for (const f of NON_TEST) {
-  for (const site of rootCompositionSites(f.code)) COMPOSITION_SITES.push({ file: f.rel, site });
+  for (const site of rootCompositionSites(f.code, resolverNamesIn(f.code))) {
+    COMPOSITION_SITES.push({ file: f.rel, site });
+  }
 }
 const HOME_DERIVERS = NON_TEST.filter((f) => homeRootDerivations(f.code) > 0).map((f) => f.rel);
 
@@ -426,8 +713,9 @@ line(
 if (VERBOSE) {
   for (const f of MCP_SURFACES) {
     line(
-      `  mcp ${f.rel}: servers=${JSON.stringify(mcpServerNameLiterals(f.code))} ` +
-        `tools=${JSON.stringify(toolNameLiterals(f.code))}`,
+      `  mcp ${f.rel}: servers=` +
+        `${JSON.stringify(mcpServerNameLiterals(f.code, sdkBindings(f.code, MCP_FACTORY)))} ` +
+        `tools=${JSON.stringify(toolNameLiterals(f.code, sdkBindings(f.code, TOOL_FACTORY)))}`,
     );
   }
   for (const c of COMPOSITION_SITES) {
@@ -480,12 +768,42 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     // _bmad-output holds a preserved reference implementation whose imports
     // belong to another location; bunfig.toml excludes it from test discovery
     // for the same reason. Scanning it would report violations in documentation.
+    //
+    // SPELLED INDEPENDENTLY OF EXCLUDED_DIRS, and that is the whole point of
+    // this test. Deriving the check from the same set walk() skipped with makes
+    // `leaked` empty BY CONSTRUCTION: typo "node_modules" to "node_module" and
+    // walk() indexes tens of thousands of third-party files while the test whose
+    // stated purpose is to catch exactly that still passes. In the file whose
+    // thesis is anti-vacuity, that is the one shape not to ship.
+    const MUST_NOT_BE_INDEXED = [
+      "node_modules",
+      ".next",
+      ".next-desktop",
+      "release",
+      "dist",
+      "build",
+      ".git",
+      "out",
+      "coverage",
+      "_bmad-output",
+    ];
     const leaked = INDEX.filter((f) =>
-      f.rel.split("/").some((seg) => EXCLUDED_DIRS.has(seg)),
+      f.rel.split("/").some((seg) => MUST_NOT_BE_INDEXED.includes(seg)),
     ).map((f) => f.rel);
     expect(leaked).toEqual([]);
-    // …and the exclusion is load-bearing: those trees really do exist on disk.
+    // A CEILING as well as INDEX-0's floor. node_modules alone is tens of
+    // thousands of scannable files, so a broken exclusion blows past this even
+    // if some future rename slips past the list above. Raise it deliberately
+    // when the tree really grows; do not raise it to make a red test green.
+    expect(INDEX.length).toBeLessThan(2000);
+    // …and the exclusion is load-bearing: those trees really do exist on disk,
+    // WITH REAL SCANNABLE FILES IN THEM, and a named one really is absent from
+    // the index. That is the positive control the derived-set version lacked.
     expect(fs.existsSync(path.join(REPO, "_bmad-output"))).toBe(true);
+    expect(fs.existsSync(path.join(REPO, "node_modules"))).toBe(true);
+    const control = firstScannableUnder(path.join(REPO, "_bmad-output"));
+    expect(control).not.toBe(null);
+    expect(byRel.has(control!)).toBe(false);
   });
 
   test("INDEX-2 the index DISCRIMINATES — the directive detector fires on a directive and not on prose", () => {
@@ -515,6 +833,41 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     // Length is preserved, so nothing downstream can be thrown off by offsets.
     const src = 'const e = 1; // gone\nconst f = 2;\n';
     expect(stripComments(src).length).toBe(src.length);
+  });
+
+  test("INDEX-4 stripComments knows a regex literal from a comment, so it cannot BLANK REAL CODE", () => {
+    // The sharper half of the same hazard, and the reason it outranks "misses a
+    // comment": `/^https?:\/\//` contains the two-character sequence `//`. A
+    // quote-only tokenizer reads that as a line comment and blanks the REST OF
+    // THE PHYSICAL LINE, so every call site sharing the line disappears from
+    // `.code` — and a scan that sees nothing PASSES.
+    const g = String.fromCharCode(47); // "/", assembled so this fixture is not
+    const url = `const isUrl = ${g}^https?:\\${g}\\${g}${g}; logUsage({ ts: 1 });`;
+    expect(stripComments(url)).toContain("logUsage({ ts: 1 })");
+    // A character class holding the delimiter does not end the literal early.
+    const cls = `const re = ${g}[^${g}]+${g}g; path.join(telarDir(), "looms");`;
+    expect(stripComments(cls)).toContain('path.join(telarDir(), "looms")');
+    // …and division is still division: a real trailing comment after one is
+    // still blanked, so the regex support did not cost the comment support.
+    expect(stripComments("const r = a / b; // calls logUsage(\n")).not.toContain("logUsage(");
+    expect(stripComments("const r = a / b;\n")).toContain("a / b");
+    expect(stripComments(url).length).toBe(url.length);
+  });
+
+  test("INDEX-5 stripStringLiterals blanks what a file SAYS while keeping what it DOES", () => {
+    // INV-2's marker scan runs over this. A file that throws
+    // `new Error("caller must supply restrictTools: true")` DOCUMENTS the wall;
+    // it mints no capability, and an invariant that fires on correct code gets
+    // deleted rather than fixed.
+    const marker = "restrict" + "Tools";
+    expect(stripStringLiterals(`throw new Error("must supply ${marker}: true");`)).not.toContain(
+      marker,
+    );
+    expect(stripStringLiterals(`const o = { ${marker}: true };`)).toContain(marker);
+    // Quotes, length and line structure survive, so nothing downstream shifts.
+    const src = 'const a = "one";\nconst b = 2;\n';
+    expect(stripStringLiterals(src).length).toBe(src.length);
+    expect(stripStringLiterals(src).split("\n").length).toBe(src.split("\n").length);
   });
 });
 
@@ -603,9 +956,9 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
   const surfaces = MCP_SURFACES;
   const collected = new Map<string, { file: string; tools: string[] }>();
   for (const f of surfaces) {
-    for (const server of mcpServerNameLiterals(f.code)) {
-      collected.set(server, { file: f.rel, tools: toolNameLiterals(f.code) });
-    }
+    const servers = mcpServerNameLiterals(f.code, sdkBindings(f.code, MCP_FACTORY));
+    const tools = toolNameLiterals(f.code, sdkBindings(f.code, TOOL_FACTORY));
+    for (const server of servers) collected.set(server, { file: f.rel, tools });
   }
   const allToolNames = [...collected.values()].flatMap((s) => s.tools);
 
@@ -631,8 +984,46 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     }
     const observed: Record<string, { file: string; tools: string[] }> = {};
     for (const [server, v] of collected) observed[server] = v;
-    // Diagnosis in the asserted value: a diff here prints the server, the file
-    // and the tool list that moved.
+    // AC2 — a bare toEqual on two nested objects prints a diff that names no AD,
+    // no consequence and no next step, and AC1 requires the pin be asserted
+    // EQUAL. So the DIAGNOSIS IS THROWN FIRST and the equality stays as the
+    // mechanism: whichever fires, the reader gets a paragraph, not a diff.
+    const drift: string[] = [];
+    for (const server of new Set([...Object.keys(observed), ...Object.keys(MCP_INVENTORY)])) {
+      const found = observed[server];
+      const pinned = MCP_INVENTORY[server];
+      if (!pinned) {
+        drift.push(`server "${server}" (${found!.file}) is NEW and is not in the pinned inventory`);
+        continue;
+      }
+      if (!found) {
+        drift.push(`pinned server "${server}" (${pinned.file}) is GONE from the tree`);
+        continue;
+      }
+      if (found.file !== pinned.file) {
+        drift.push(`server "${server}" moved from ${pinned.file} to ${found.file}`);
+      }
+      const gained = found.tools.filter((t) => !pinned.tools.includes(t));
+      const lost = pinned.tools.filter((t) => !found.tools.includes(t));
+      if (gained.length) drift.push(`server "${server}" GAINED ${JSON.stringify(gained)}`);
+      if (lost.length) drift.push(`server "${server}" LOST ${JSON.stringify(lost)}`);
+      const reordered = JSON.stringify(found.tools) !== JSON.stringify(pinned.tools);
+      if (!gained.length && !lost.length && reordered) {
+        drift.push(
+          `server "${server}" has the same tools in a DIFFERENT ORDER — cosmetic, not a moat ` +
+            `breach; re-pin the order`,
+        );
+      }
+    }
+    if (drift.length) {
+      throw new Error(
+        `AD-1 / INV-1: the MCP tool inventory MOVED — ${drift.join("; ")}. THE RULE: ready to done ` +
+          `is a HUMAN-ONLY transition and there is no agent-callable accept tool on any MCP ` +
+          `surface; the pin is what makes a new tool a deliberate act rather than a diff nobody ` +
+          `read. CONSEQUENCE: a model that can complete its own work voids every verdict ` +
+          `downstream of it. NEXT STEP: ${ADDING_A_TOOL}`,
+      );
+    }
     expect(observed).toEqual(MCP_INVENTORY);
   });
 
@@ -678,6 +1069,33 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     // …and the extractor ignores the shapes that are not a tool registration.
     expect(toolNameLiterals('const x = createTool("nope");')).toEqual([]);
     expect(toolNameLiterals('registry.tool("nope");')).toEqual([]);
+
+    // AND THE RENAME, which is the shape that used to walk straight past this
+    // invariant's whole universe: MCP_SURFACES was a substring test for
+    // "createSdkMcpServer(", so one `as` and a fourth server was never scanned
+    // at all — INV-1a's "exactly the three we know about" would still pass.
+    const sdk = "@anthropic-ai/" + "claude-agent-sdk";
+    const aliased =
+      `import { ${MCP_FACTORY} as makeServer, ${TOOL_FACTORY} as mkTool } from "${sdk}";\n` +
+      `export const escalate = makeServer({ name: "escalate", version: "1.0.0", tools: [\n` +
+      `  mkTool("accept_loom", "d", {}, async () => {}),\n` +
+      `] });`;
+    expect(sdkBindings(aliased, MCP_FACTORY)).toContain("makeServer");
+    expect(sdkBindings(aliased, TOOL_FACTORY)).toContain("mkTool");
+    expect(callsMcpFactory(aliased)).toBe(true);
+    expect(mcpServerNameLiterals(aliased, sdkBindings(aliased, MCP_FACTORY))).toEqual(["escalate"]);
+    expect(toolNameLiterals(aliased, sdkBindings(aliased, TOOL_FACTORY))).toEqual(["accept_loom"]);
+    // A rename that does NOT come from the SDK binds nothing, so an unrelated
+    // local helper called `makeServer` cannot drag a file into the surface set.
+    expect(callsMcpFactory(`import { makeServer } from "./local";\nmakeServer({ name: "x" });`)).toBe(
+      false,
+    );
+    // The added stems: the ordinary synonyms an author would actually reach for.
+    expect(acceptShapedTokens("finish_loom")).toEqual(["finish"]);
+    expect(acceptShapedTokens("close_loom")).toEqual(["close"]);
+    expect(acceptShapedTokens("confirm_delivery")).toEqual(["confirm", "delivery"]);
+    // …and the near-misses that must stay green under the widened list.
+    for (const name of MCP_INVENTORY.loom!.tools) expect(acceptShapedTokens(name)).toEqual([]);
   });
 
   test("INV-1e the construction half — acceptLoom is the only done writer in core and has one importer", () => {
@@ -699,14 +1117,20 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     expect(loomMcpCoreSpecifiers.length).toBeGreaterThanOrEqual(10); // floor: the list is real
     expect(loomMcpCoreSpecifiers).not.toContain("acceptLoom");
 
-    // Exactly one importer in the whole tree, and it hardcodes `by`.
-    const importers = NON_TEST.filter((f) =>
-      importStatements(f.code).some(
-        (s) =>
-          importSource(s) === "@telar/core" &&
-          /(^|[{,\s])acceptLoom\s*(,|\}|$)/.test(s.replace(/\n/g, " ")),
-      ),
-    ).map((f) => f.rel);
+    // Exactly one importer in the whole tree, and it hardcodes `by`. Resolved
+    // through the BINDINGS rather than by matching the name in the statement
+    // text: `import { acceptLoom as land } from "@telar/core";` is a second call
+    // path to the only `done` writer in core, and a text match for
+    // `acceptLoom` followed by a comma or a closing brace never sees it. Same
+    // for a namespace import that reaches it as `core.acceptLoom(`, and same for
+    // an `export { acceptLoom } from "@telar/core"` re-export shim.
+    const importers = NON_TEST.filter((f) => {
+      const { direct, namespaces } = localNamesFor(f.code, "acceptLoom", isCoreSpecifier);
+      if (direct.length > 0) return true;
+      return namespaces.some((ns) =>
+        new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(ns)}\\.acceptLoom\\s*\\(`).test(f.code),
+      );
+    }).map((f) => f.rel);
     expect(importers).toEqual([ACCEPT_ROUTE]);
     // `by` is server-derived, never read from the request body — the model
     // cannot name who approved its own commit.
@@ -733,30 +1157,102 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     // invariant that breaks on an unrelated edit gets deleted rather than fixed.
     const start = exportedStringConst(loomMcp.code, "LOOM_START_TOOL");
     const answerBlocked = exportedStringConst(loomMcp.code, "LOOM_ANSWER_BLOCKED_TOOL");
-    expect(start).toBe("mcp__loom__start_loom");
-    expect(answerBlocked).toBe("mcp__loom__answer_blocked");
-
-    // Both constants point at tools that really exist on the loom server…
-    expect(MCP_INVENTORY.loom!.tools).toContain(start!.replace("mcp__loom__", ""));
-    expect(MCP_INVENTORY.loom!.tools).toContain(answerBlocked!.replace("mcp__loom__", ""));
-    // …and neither is pre-approved: absent from LOOM_AUTO_TOOLS, so the SDK's
-    // fast path can never run them without the interactive card.
     const auto = exportedStringArray(loomMcp.code, "LOOM_AUTO_TOOLS");
-    expect(auto!.length).toBeGreaterThanOrEqual(8); // floor: the array parsed
-    expect(auto).not.toContain(start);
-    expect(auto).not.toContain(answerBlocked);
+    const routeImports = importStatements(route.code)
+      .filter((s) => importSource(s) === "@/lib/loom-mcp")
+      .join("\n");
 
-    // The route imports them as symbols, wires a PreToolUse hook, and compares
-    // tool_name against both inside the guardrail.
-    const routeImports = importStatements(route.code).filter(
-      (s) => importSource(s) === "@/lib/loom-mcp",
-    );
-    expect(routeImports.join("\n")).toContain("LOOM_START_TOOL");
-    expect(routeImports.join("\n")).toContain("LOOM_ANSWER_BLOCKED_TOOL");
-    expect(/hooks\s*:\s*\{\s*PreToolUse\s*:/.test(route.code)).toBe(true);
-    expect(route.code).toContain("preToolUseGuardrail");
-    expect(route.code).toContain("input.tool_name === LOOM_START_TOOL");
-    expect(route.code).toContain("input.tool_name === LOOM_ANSWER_BLOCKED_TOOL");
+    // AC2 — this block was twelve bare assertions whose output named nothing
+    // ("expected route.code to contain …" is a failing grade for AC2 even when
+    // the assertion is correct). Every check now carries the AD id, the rule,
+    // the consequence and the next step INTO THE ASSERTED VALUE, so the diff bun
+    // prints IS the message. This is AD-1's SECOND enforcement half; the first
+    // is INV-1e.
+    const HOOK =
+      "AD-1 — the Human-Accept Moat is enforced TWICE: by construction in packages/core " +
+      "(looms.ts, tick.ts) and at the TOOL LAYER by the chat route's PreToolUse hook, in every " +
+      "SDK permission mode. This is the tool-layer half. ";
+    const broken: string[] = [];
+    const pinnedConstant = (name: string, got: string | null, want: string) => {
+      if (got !== want) {
+        broken.push(
+          `${LOOM_MCP} no longer exports ${name} = "${want}" (found ${JSON.stringify(got)}). ` +
+            HOOK +
+            `CONSEQUENCE: the route's guardrail compares tool_name against a constant that no ` +
+            `longer names the real tool, so the gate matches nothing while still looking wired. ` +
+            `NEXT STEP: restore the export, or move BOTH the constant and the route's comparison ` +
+            `together and re-pin them here.`,
+        );
+      }
+    };
+    pinnedConstant("LOOM_START_TOOL", start, "mcp__loom__start_loom");
+    pinnedConstant("LOOM_ANSWER_BLOCKED_TOOL", answerBlocked, "mcp__loom__answer_blocked");
+
+    if ((auto?.length ?? 0) < 8) {
+      broken.push(
+        `LOOM_AUTO_TOOLS parsed as ${auto?.length ?? "null"} entries (floor 8). This is the ` +
+          `SCANNER failing, not the tree: exportedStringArray() no longer matches the ` +
+          `declaration's shape. CONSEQUENCE: every "is not pre-approved" check below holds over ` +
+          `the empty set. NEXT STEP: fix exportedStringArray(), do not lower the floor.`,
+      );
+    }
+    for (const [name, value] of [
+      ["LOOM_START_TOOL", start],
+      ["LOOM_ANSWER_BLOCKED_TOOL", answerBlocked],
+    ] as const) {
+      const bare = (value ?? "").replace("mcp__loom__", "");
+      if (value && !MCP_INVENTORY.loom!.tools.includes(bare)) {
+        broken.push(
+          `${name} points at "${bare}", which is not a tool on the loom server. ` +
+            HOOK +
+            `CONSEQUENCE: the hook guards a tool name nothing registers, so the tool it was meant ` +
+            `to guard runs ungated. NEXT STEP: reconcile the constant with MCP_INVENTORY.`,
+        );
+      }
+      if (value && auto?.includes(value)) {
+        broken.push(
+          `${name} appears in LOOM_AUTO_TOOLS. ` +
+            HOOK +
+            `CONSEQUENCE: a pre-approved tool takes the SDK's fast path and runs with no ` +
+            `interactive card, which is precisely the human step the moat exists to require. ` +
+            `NEXT STEP: remove it from LOOM_AUTO_TOOLS.`,
+        );
+      }
+      if (!routeImports.includes(name)) {
+        broken.push(
+          `${CHAT_ROUTE} no longer imports ${name} from @/lib/loom-mcp. ` +
+            HOOK +
+            `CONSEQUENCE: the guardrail can only be comparing against a literal or against ` +
+            `nothing; a literal drifts from the constant silently. NEXT STEP: import the symbol.`,
+        );
+      }
+      if (!route.code.includes(`input.tool_name === ${name}`)) {
+        broken.push(
+          `${CHAT_ROUTE}'s guardrail no longer compares input.tool_name against ${name}. ` +
+            HOOK +
+            `CONSEQUENCE: that tool reaches the model ungated at the tool layer, leaving the moat ` +
+            `resting entirely on the by-construction half. NEXT STEP: restore the comparison in ` +
+            `preToolUseGuardrail.`,
+        );
+      }
+    }
+    if (!/hooks\s*:\s*\{\s*PreToolUse\s*:/.test(route.code)) {
+      broken.push(
+        `${CHAT_ROUTE} no longer wires a PreToolUse hook at all. ` +
+          HOOK +
+          `CONSEQUENCE: the entire tool-layer half of the moat is gone, in every permission mode. ` +
+          `NEXT STEP: restore the hooks: { PreToolUse: … } wiring on the query options.`,
+      );
+    }
+    if (!route.code.includes("preToolUseGuardrail")) {
+      broken.push(
+        `${CHAT_ROUTE} no longer references preToolUseGuardrail. ` +
+          HOOK +
+          `CONSEQUENCE: the hook may be wired to something that does not carry the moat's checks. ` +
+          `NEXT STEP: restore the guardrail, or rename it here and in the route together.`,
+      );
+    }
+    expect(broken).toEqual([]);
   });
 });
 
@@ -863,6 +1359,20 @@ const GRANT_FIELD_PATTERNS: Record<string, RegExp> = {
 
 const callsAgent = (code: string): boolean => /(?<![A-Za-z0-9_$.])agent\s*\(/.test(code);
 
+// Tool names granted INLINE as literals — `tools: ["Read", "Write"]` or
+// `allowedTools: [...]`. The judges grant `tools: VERIFIER_TOOLS`, an
+// identifier, so this returns [] for them and INV-2a checks that set at runtime
+// instead. `disallowedTools` is deliberately NOT read: naming Write in a
+// DENYlist is the wall working, not a grant.
+function grantedToolLiterals(code: string): string[] {
+  const out: string[] = [];
+  const re = /\b(?:tools|allowedTools)\s*:\s*\[([\s\S]{0,600}?)\]/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) {
+    for (const q of m[1]!.matchAll(/(["'])([^"']*)\1/g)) out.push(q[2]!);
+  }
+  return out;
+}
+
 describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, the capability wall", () => {
   test("INV-2a the ten-name deny set is disjoint from VERIFIER_TOOLS at runtime", async () => {
     const { VERIFIER_TOOLS } = await import("../src/verifier");
@@ -924,12 +1434,24 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
   });
 
   test("INV-2d the abstainers introduce no tool grant of their own", () => {
-    // Genuinely new coverage. Checked against COMMENT-STRIPPED source, because
-    // panel.ts's header says "must inject an agent() call here" and a substring
-    // scan reads that prose as a violation.
+    // Genuinely new coverage. Checked against COMMENT-STRIPPED AND
+    // STRING-STRIPPED source: panel.ts's header says "must inject an agent()
+    // call here" (prose), and a thrown
+    // `new Error("caller must supply restrictTools: true …")` DOCUMENTS the wall
+    // rather than minting a capability. An invariant that fires on either gets
+    // deleted rather than fixed.
+    //
+    // THE SET IS DERIVED FROM VERIFICATION_SURFACES, not hardcoded. A hardcoded
+    // list is why "extends to new verification surfaces" did not actually extend:
+    // a file added to the inventory tomorrow was enumerated by INV-2e and
+    // inspected by nothing.
     const violations: string[] = [];
-    for (const file of [VERIFY_THREAD, PANEL, VERIFICATION_STRATEGY]) {
-      const code = byRel.get(file)!.code;
+    const mustNotGrant = Object.entries(VERIFICATION_SURFACES)
+      .filter(([, role]) => role === "must-not-grant")
+      .map(([file]) => file);
+    expect(mustNotGrant.length).toBeGreaterThanOrEqual(3); // floor: the map parsed
+    for (const file of mustNotGrant) {
+      const code = stripStringLiterals(byRel.get(file)!.code);
       for (const marker of ["tools:", "allowedTools", "restrictTools", "disallowedTools"]) {
         if (code.includes(marker)) {
           violations.push(
@@ -958,23 +1480,88 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
   });
 
   test("INV-2e the verification-surface inventory is exact, and every file is classified", () => {
+    // THE PATTERN IS SYMMETRIC, which the first version was not: it gave a
+    // suffix wildcard to `verify-` and `verification-` only, and anchored on a
+    // literal `.ts`. So packages/core/src/verification.ts — the un-hyphenated
+    // sibling of the very file this story had to classify — plus verifier-utils.ts,
+    // critics.ts, panel-view.ts, verify.ts and any .tsx/.mts verification surface
+    // never matched `found`, were never forced into the inventory, and a write
+    // grant hidden in one was invisible to the whole of INV-2.
     const found = NON_TEST.filter(
       (f) =>
         f.rel.startsWith("packages/core/src/") &&
-        /^(verifier|verify-.*|critic|panel|verification-.*)\.ts$/.test(path.basename(f.rel)),
+        /^(verifier|verify|critic|panel|verification)[A-Za-z0-9_.-]*\.(ts|tsx|mts)$/.test(
+          path.basename(f.rel),
+        ),
     ).map((f) => f.rel);
     // A floor before the equality, so a broken filter cannot pass by matching
     // nothing.
     expect(found.length).toBeGreaterThanOrEqual(5);
     expect(found.sort()).toEqual(Object.keys(VERIFICATION_SURFACES).sort());
-    // Every judge grants; every must-not-grant abstains. Stated as a mapping so
-    // a NEW verification surface fails until it is classified here — that is
-    // what makes AD-2's "extends to new verification surfaces" executable.
+
+    // EVERY BUCKET IS CHECKED. "setup-wall" used to be a classification with no
+    // branch behind it: a new packages/core/src/verify-runner.ts that genuinely
+    // granted Write could be labelled setup-wall, satisfy the equality above by
+    // merely being enumerated, and AD-2's "extends to new verification surfaces"
+    // clause would silently not apply to it. A bucket nothing inspects is a
+    // bucket that excuses anything.
+    const violations: string[] = [];
     for (const [file, role] of Object.entries(VERIFICATION_SURFACES)) {
-      const code = byRel.get(file)!.code;
-      if (role === "judge") expect(GRANT_FIELD_PATTERNS.restrictTools!.test(code)).toBe(true);
-      if (role === "must-not-grant") expect(code.includes("restrictTools")).toBe(false);
+      const raw = byRel.get(file)!.code;
+      const code = stripStringLiterals(raw);
+      // Applies to every role, because no classification excuses an inline
+      // literal grant of a write or spawn tool on a verification surface.
+      for (const v of writeToolViolations(grantedToolLiterals(code))) {
+        violations.push(`${file} is classified "${role}" and ${v}`);
+      }
+      if (role === "judge" && !GRANT_FIELD_PATTERNS.restrictTools!.test(code)) {
+        violations.push(
+          `${file} is classified "judge" but carries no \`restrictTools: true\`. AD-2 — that ` +
+            `field IS the availability wall (engine.ts's header: under permissionMode ` +
+            `"bypassPermissions", allowedTools alone does NOT restrict availability). ` +
+            `CONSEQUENCE: the judge silently regains every built-in tool, Write and Bash ` +
+            `included. NEXT STEP: restore the field, or reclassify the file and justify it here.`,
+        );
+      }
+      if (role === "must-not-grant" && code.includes("restrictTools")) {
+        violations.push(
+          `${file} is classified "must-not-grant" but now mentions \`restrictTools\` outside a ` +
+            `string. AD-2 — this file injects its capability or holds pure functions; it must ` +
+            `never mint one. CONSEQUENCE: a second, unreviewed grant site on the verification ` +
+            `path. NEXT STEP: inject the capability, or reclassify the file here and justify it.`,
+        );
+      }
+      if (role === "setup-wall") {
+        // The bucket's DEFINING claim, from verify-lane.ts's own header: it is
+        // the EXECUTOR/SETUP-wall capability (spawn/re-spawn/kill), NOT a judge.
+        // Its no-judge-import CONTENT half stays cited to m10-verify-lane.test.ts's
+        // "the judge producer RECEIVES only url:string …"; what is asserted here
+        // is the structural half, which that citation does not cover.
+        if (code.includes("restrictTools") || callsAgent(code)) {
+          violations.push(
+            `${file} is classified "setup-wall" but mints a judge-shaped capability ` +
+              `(\`restrictTools\` or a direct agent( call). AD-2 — a setup wall stands the lane ` +
+              `up and hands the judge a URL; it never becomes the judge. CONSEQUENCE: the ` +
+              `capability that can spawn and kill processes now also reaches a verdict, and the ` +
+              `separation the whole wall rests on is gone. NEXT STEP: keep the judge in ` +
+              `verifier.ts / critic.ts, or reclassify this file and justify it here.`,
+          );
+        }
+        const judgeImports = importStatements(raw)
+          .map((s) => importSource(s))
+          .filter((s) => s === "./verifier" || s === "./critic");
+        if (judgeImports.length) {
+          violations.push(
+            `${file} is classified "setup-wall" but imports ${JSON.stringify(judgeImports)}. ` +
+              `AD-2 — standing up or repairing the lane grants the judge NOTHING, which is only ` +
+              `true while the two do not reach each other. CONSEQUENCE: the setup wall can now ` +
+              `invoke or configure the judge it is supposed to be walled off from. NEXT STEP: ` +
+              `pass the target URL, not the judge.`,
+          );
+        }
+      }
     }
+    expect(violations).toEqual([]);
   });
 
   test("INV-2f ULTRA_CHILD_TOOLS is deliberately write-capable and is NOT part of this wall", () => {
@@ -1005,6 +1592,25 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
     expect(callsAgent("const x = subagent(1);")).toBe(false);
     expect(callsAgent("deps.agent(1);")).toBe(false);
     expect(callsAgent("await agent({});")).toBe(true);
+    // The inline-grant extractor, which is what makes the "setup-wall" bucket a
+    // checked bucket rather than a label.
+    expect(grantedToolLiterals('const o = { tools: ["Read", "Write"] };')).toEqual([
+      "Read",
+      "Write",
+    ]);
+    expect(writeToolViolations(grantedToolLiterals('{ allowedTools: ["Bash"] }')).length).toBe(1);
+    // A DENYlist naming Write is the wall working, not a grant, so it must not
+    // be swept up — INV-2b asserts those very names are present.
+    expect(grantedToolLiterals('{ disallowedTools: ["Write", "Edit"] }')).toEqual([]);
+    // `tools: VERIFIER_TOOLS` is an identifier, not a literal list: nothing to
+    // read statically, which is why INV-2a checks that set at runtime instead.
+    expect(grantedToolLiterals("{ tools: VERIFIER_TOOLS }")).toEqual([]);
+    // And the marker scan reads what a file DOES, not what it SAYS.
+    const marker = "restrict" + "Tools";
+    expect(stripStringLiterals(`throw new Error("supply ${marker}: true");`).includes(marker)).toBe(
+      false,
+    );
+    expect(stripStringLiterals(`query({ ${marker}: true });`).includes(marker)).toBe(true);
   });
 
   test("INV-2h the four tests this invariant CITES still exist, so the citation cannot rot", () => {
@@ -1165,6 +1771,24 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
           `ROOT_RESOLVERS, which today are ${JSON.stringify(ROOT_RESOLVERS)}.`,
       );
     }
+    // AC2 — a bare toEqual on two 18-element arrays prints a diff naming no AD,
+    // no consequence and no next step. The diagnosis is thrown first; the
+    // equality stays as the mechanism ("the 18-site table is exact").
+    const appeared = observed.filter((s) => !AD5_SITES.includes(s));
+    const vanished = AD5_SITES.filter((s) => !observed.includes(s));
+    if (appeared.length || vanished.length) {
+      throw new Error(
+        `AD-5 / INV-3: the TELAR_HOME path-composition inventory MOVED. NEW sites: ` +
+          `${JSON.stringify(appeared)}. GONE: ${JSON.stringify(vanished)}. THE RULE: one owner ` +
+          `per TELAR_HOME subtree — no module reads or writes another's subtree by path, and the ` +
+          `pinned table is what makes a new composition site a deliberate act. CONSEQUENCE: two ` +
+          `modules end up disagreeing about a layout nobody owns, and the next layout change ` +
+          `breaks the one that was not edited. NEXT STEP: if the new site is legitimate, reach ` +
+          `the subtree through the owner's exported port (loomDir, runDir, sessionDir all exist ` +
+          `and carry the traversal guard) — if it really is a new owner, add it to AD5_SITES and ` +
+          `to AD5_OWNERS with a comment saying why. Do not delete the entry to make this pass.`,
+      );
+    }
     expect(observed).toEqual(AD5_SITES);
   });
 
@@ -1218,7 +1842,11 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
 
   test("INV-3e only the five sanctioned resolvers derive the state root from scratch", () => {
     const unsanctioned = HOME_DERIVERS.filter((f) => !SANCTIONED_ROOT_RESOLVERS.includes(f));
-    const quarantined = KNOWN_VIOLATIONS.map((k) => k.file);
+    // FILTERED BY INVARIANT, not by filename. An entry quarantining an AD-20
+    // violation in some file must not also excuse an entirely unrelated raw
+    // ~/.telar derivation in that same file that nobody ever agreed to excuse —
+    // a quarantine widens by one line otherwise, and silently.
+    const quarantined = KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-3").map((k) => k.file);
     // Anti-vacuity: the five really are found, so a broken pattern cannot pass.
     expect(HOME_DERIVERS.length).toBeGreaterThanOrEqual(5);
     for (const r of SANCTIONED_ROOT_RESOLVERS) expect(HOME_DERIVERS).toContain(r);
@@ -1237,6 +1865,20 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
   });
 
   test("INV-3f every KNOWN_VIOLATIONS entry still violates, so the quarantine cannot rot into a hole", () => {
+    // THE LIST'S LENGTH IS PINNED, so growth is visible in the diff rather than
+    // arriving as one more plausible-looking object literal. A quarantine that
+    // can be extended quietly is a suppression with extra steps.
+    if (KNOWN_VIOLATIONS.length !== 1) {
+      throw new Error(
+        `KNOWN_VIOLATIONS holds ${KNOWN_VIOLATIONS.length} entries; this test was written when it ` +
+          `held exactly 1 (scripts/backfill-tool-detail.ts, INV-3). Each entry is a REAL ` +
+          `violation of a REAL invariant left in place only because the file belongs to another ` +
+          `track's write set. CONSEQUENCE: a list that grows without a reviewer noticing is how ` +
+          `an invariant becomes decorative. NEXT STEP: if the new entry is genuinely someone ` +
+          `else's write set, record it in deferred-work.md the way the first one is, then update ` +
+          `this count deliberately in the same commit.`,
+      );
+    }
     // An unfalsifiable quarantine is a suppression. If the underlying violation
     // is fixed or the file is gone, THIS fails and tells you to delete the entry.
     const stale = KNOWN_VIOLATIONS.filter((k) => {
@@ -1272,9 +1914,31 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     // and an invariant that fires on correct code gets deleted rather than fixed.
     expect(rootCompositionSites(`const d = ${join}(loomsDir(), id);`)).toEqual([]);
     expect(rootCompositionSites(`const d = ${join}(ownerDir, ".runner-lease");`)).toEqual([]);
-    // And the home-root derivation detector: os.homedir() only, never a
+    // THE TEMPLATE FORM composes off the root exactly as path.join does, and a
+    // path.join-only matcher leaves the 18-site table unchanged while a new
+    // module reads another's subtree by path — the textbook AD-5 breach.
+    expect(rootCompositionSites("const p = `${telarDir()}/looms/${id}/spec.json`;")).toEqual([
+      { resolver: "telarDir", composes: "looms" },
+    ]);
+    // AND THE RENAME. The resolver spellings live in THIS file, so an alias at
+    // the import site is invisible to a fixed list unless the per-file binding
+    // set is threaded through — which is what resolverNamesIn does.
+    const aliasedSrc =
+      `import { telarDir as root } from "@telar/core";\n` +
+      `const p = ${join}(root(), "sessions");`;
+    expect(rootCompositionSites(aliasedSrc)).toEqual([]); // canonical list alone: blind
+    expect(resolverNamesIn(aliasedSrc)).toContain("root");
+    expect(rootCompositionSites(aliasedSrc, resolverNamesIn(aliasedSrc))).toEqual([
+      { resolver: "root", composes: "sessions" },
+    ]);
+    // A type-only import binds nothing at runtime and must not widen the set.
+    expect(resolverNamesIn(`import type { telarDir as root } from "@telar/core";`)).not.toContain(
+      "root",
+    );
+    // And the home-root derivation detector: homedir() only, never a
     // project-local .telar (servers.ts's path.join(root, ".telar", …)).
     expect(homeRootDerivations(`const R = ${join}(os.homedir(), ".telar");`)).toBe(1);
+    expect(homeRootDerivations(`const R = ${join}(homedir(), ".telar");`)).toBe(1);
     expect(homeRootDerivations(`const R = ${join}(root, ".telar", "servers.yaml");`)).toBe(0);
   });
 });
@@ -1338,6 +2002,12 @@ function resolveLocalImport(fromRel: string, spec: string): string | null {
 
 const isCoreSpecifier = (spec: string): boolean =>
   spec === "@telar/core" || spec.startsWith("@telar/core/");
+// The SAME runtime, reached by a different spelling. A relative
+// `../../../packages/core/src/usage-ledger` import pulls core into the client
+// bundle exactly as `@telar/core` does; gating the violation branch on the
+// package specifier alone meant that form was merely TRAVERSED and never
+// reported.
+const CORE_SRC = "packages/core/src/";
 
 const CLIENT_SCAN = (() => {
   const visited = new Set<string>();
@@ -1367,15 +2037,21 @@ const CLIENT_SCAN = (() => {
   for (let head = 0; head < queue.length; head++) {
     const rel = queue[head]!;
     const file = byRel.get(rel)!;
-    for (const stmt of importStatements(file.code)) {
+    // BOTH KINDS OF EDGE. `export { logUsage } from "@telar/core"` is a value
+    // edge with no `import` line in it: a two-line shim of exactly that shape,
+    // value-imported by a "use client" component, is a genuine AD-3 breach that
+    // an import-anchored scan reports as [].
+    for (const stmt of moduleEdgeStatements(file.code)) {
       const spec = importSource(stmt);
       if (!spec) continue;
-      if (isCoreSpecifier(spec)) {
+      const target = resolveLocalImport(rel, spec);
+      if (isCoreSpecifier(spec) || (!!target && target.startsWith(CORE_SRC))) {
         coreImportsSeen++;
         if (roots.has(rel)) clientCoreImports++;
         if (!isTypeOnlyImport(stmt)) {
           violations.push(
-            `${chain(rel)} → @telar/core (VALUE import). AD-3 — @telar/core is server-side only ` +
+            `${chain(rel)} → ${spec} (VALUE import of core runtime). AD-3 — @telar/core is ` +
+              `server-side only ` +
               `(fs, child_process, the agent SDK); client components import TYPES ONLY, which are ` +
               `erased at build. CONSEQUENCE: next.config.ts sets transpilePackages: ["@telar/core"], ` +
               `so core is transpiled straight into this bundle — one value import pulls the whole ` +
@@ -1390,7 +2066,6 @@ const CLIENT_SCAN = (() => {
       // is NOT traversed. Traversing it is what would make this invariant
       // permanently red on a tree that is actually correct.
       if (isTypeOnlyImport(stmt)) continue;
-      const target = resolveLocalImport(rel, spec);
       if (!target || isTestFile(target)) continue;
       edges++;
       if (!visited.has(target)) {
@@ -1474,6 +2149,34 @@ describe("INV-4 client components import no core runtime — AD-3, the CLIENT-BU
       GODVIEW,
     );
     expect(resolveLocalImport("apps/web/components/x.tsx", "react")).toBe(null);
+
+    // THE RE-EXPORT EDGE, which an import-anchored scan cannot see at all. A
+    // shim whose entire contents are `export { logUsage } from "@telar/core";`
+    // has no `import` line in it, so the first version of this scan neither
+    // checked it for type-only-ness nor traversed it — while it drags core's
+    // runtime barrel into whatever bundle imports the shim.
+    const shim = `export { logUsage } from "${CORE}";\n`;
+    expect(importStatements(shim)).toEqual([]);
+    expect(reExportStatements(shim).length).toBe(1);
+    expect(moduleEdgeStatements(shim).length).toBe(1);
+    expect(isTypeOnlyImport(reExportStatements(shim)[0]!)).toBe(false);
+    expect(isTypeOnlyImport(`export type { Loom } from "${CORE}";`)).toBe(true);
+    expect(isTypeOnlyImport(`export * from "./looms";`)).toBe(false);
+    // A LOCAL `export { a };` has no `from` and is not an edge — and must not
+    // run away swallowing later lines looking for one.
+    expect(reExportStatements("export { a, b };\nimport { c } from \"./c\";\n")).toEqual([]);
+
+    // THE RELATIVE SPELLING of the same runtime. This resolves INTO the core
+    // source tree, which is byte-for-byte the same bundle content as the package
+    // specifier; the violation branch used to be gated on `@telar/core` alone,
+    // so this form was merely traversed and never reported.
+    expect(CORE_SRC).toBe("packages/core/src/");
+    const viaRelative = resolveLocalImport(
+      "apps/web/components/looms/godview.ts",
+      "../../../../packages/core/src/usage-ledger",
+    );
+    expect(viaRelative).toBe("packages/core/src/usage-ledger.ts");
+    expect(viaRelative!.startsWith(CORE_SRC)).toBe(true);
   });
 
   test("INV-4e the substring shortcut is measurably wrong, which is why the directive is used", () => {
@@ -1524,8 +2227,12 @@ function composesStateFile(code: string, literal: string): boolean {
 
 // Call sites of a named function, ignoring its own declaration. Used for
 // logUsage and releaseAdmission, where the question is "who else calls this".
+// The negative lookbehind drops every DOTTED call, which is deliberate and
+// correct for `deps.logUsage(…)` — an injected dependency is not a second
+// writer — and wrong for a namespace binding of the owning module. See
+// reachableCallSites.
 function callSitesOf(code: string, fn: string): number {
-  const re = new RegExp(`(?<![A-Za-z0-9_$.])${fn}\\s*\\(`, "g");
+  const re = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(fn)}\\s*\\(`, "g");
   let n = 0;
   for (let m = re.exec(code); m; m = re.exec(code)) {
     if (/\bfunction\s+$/.test(code.slice(Math.max(0, m.index - 24), m.index))) continue;
@@ -1533,6 +2240,33 @@ function callSitesOf(code: string, fn: string): number {
   }
   return n;
 }
+
+// The same question, asked in the two spellings a bare-identifier scan cannot
+// see: `import { releaseAdmission as free }` then `free(cls)`, and
+// `import * as admission from "./admission"` then `admission.releaseAdmission(cls)`.
+// The second is exactly the class-mismatch-prone form INV-5f exists to forbid,
+// and it used to report `callers === [admission.ts]` and pass. The namespace
+// branch fires ONLY for a namespace binding of the module that owns the
+// function, so `deps.logUsage(…)` still — correctly — counts for nothing.
+function reachableCallSites(
+  code: string,
+  fn: string,
+  fromModule: (spec: string) => boolean,
+): number {
+  const { direct, namespaces } = localNamesFor(code, fn, fromModule);
+  let n = callSitesOf(code, fn);
+  for (const local of new Set(direct)) if (local !== fn) n += callSitesOf(code, local);
+  for (const ns of new Set(namespaces)) {
+    const re = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(ns)}\\.${escapeRe(fn)}\\s*\\(`, "g");
+    for (let m = re.exec(code); m; m = re.exec(code)) n++;
+  }
+  return n;
+}
+
+const ownsSymbol =
+  (module: string) =>
+  (spec: string): boolean =>
+    isCoreSpecifier(spec) || new RegExp(`(^|/)${escapeRe(module)}$`).test(spec);
 
 describe("INV-5 no module writes a shared runtime service's state directly — AD-20", () => {
   test("INV-5a the usage ledger has a file, and exactly one non-test module composes its path", () => {
@@ -1561,7 +2295,9 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
   });
 
   test("INV-5b the three production logUsage call sites are the only ones, one per UsageOwnerKind", () => {
-    const callers = NON_TEST.filter((f) => callSitesOf(f.code, "logUsage") > 0).map((f) => f.rel);
+    const callers = NON_TEST.filter(
+      (f) => reachableCallSites(f.code, "logUsage", ownsSymbol("usage-ledger")) > 0,
+    ).map((f) => f.rel);
     expect(callers.sort()).toEqual([CHAT_ROUTE, ULTRA_STORAGE, WEAVE].sort());
     // A pleasing and checkable correspondence: one caller per owner kind.
     // weave.ts and ultra/storage.ts pass theirs explicitly; the chat route
@@ -1585,8 +2321,15 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
   });
 
   test("INV-5d the lease filename lives in exactly one module, and both lifetimes share it", () => {
+    // MENTION is the assertable unit here, deliberately, and it is stricter
+    // than composition: a second module that so much as NAMES the filename is a
+    // second place that has to be kept in sync with the first.
     const composers = NON_TEST.filter((f) => f.code.includes(".runner-lease")).map((f) => f.rel);
     expect(composers).toEqual([LEASE]);
+    // …and the one module that names it really does COMPOSE a path from it,
+    // rather than only mentioning it in a message — otherwise "exactly one
+    // module" would be satisfied by a file that had stopped doing the work.
+    expect(composesStateFile(byRel.get(LEASE)!.code, ".runner-lease")).toBe(true);
     // AD-16 — one primitive, two lifetimes. sessions.ts composes a DIRECTORY
     // and hands it to the same function a loom root goes through; it never
     // names the filename itself. That shape must stay passing, and this is the
@@ -1642,7 +2385,9 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     // quietly satisfied by the double-release floor, which is worse because it
     // would look like coverage.
     const callers = NON_TEST.filter(
-      (f) => f.rel.startsWith("packages/core/src/") && callSitesOf(f.code, "releaseAdmission") > 0,
+      (f) =>
+        f.rel.startsWith("packages/core/src/") &&
+        reachableCallSites(f.code, "releaseAdmission", ownsSymbol("admission")) > 0,
     ).map((f) => f.rel);
     const violations = callers
       .filter((rel) => rel !== ADMISSION)
@@ -1681,5 +2426,29 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     expect(callSitesOf("admission.releaseAdmission(cls);", "releaseAdmission")).toBe(0);
     expect(callSitesOf('releaseAdmission("loom-build");', "releaseAdmission")).toBe(1);
     expect(callSitesOf("const logged = logUsage({ ts: 1 });", "logUsage")).toBe(1);
+
+    // …and the two forms the bare-identifier counter is BLIND to, which is what
+    // reachableCallSites exists for. Both are the real hazard: a namespace or a
+    // rename reaches the same function and INV-5f used to pass.
+    const owns = ownsSymbol("admission");
+    const viaNamespace =
+      `import * as admission from "./admission";\nadmission.releaseAdmission("loom-build");`;
+    expect(callSitesOf(viaNamespace, "releaseAdmission")).toBe(0); // blind, by design
+    expect(reachableCallSites(viaNamespace, "releaseAdmission", owns)).toBe(1);
+    const viaRename =
+      `import { releaseAdmission as free } from "./admission";\nfree("loom-build");`;
+    expect(callSitesOf(viaRename, "releaseAdmission")).toBe(0); // blind, by design
+    expect(reachableCallSites(viaRename, "releaseAdmission", owns)).toBe(1);
+    // An INJECTED dep is not a second writer and must stay uncounted — a scan
+    // that fired on it would fire on the correct pattern engine.ts uses.
+    expect(reachableCallSites("deps.releaseAdmission(cls);", "releaseAdmission", owns)).toBe(0);
+    // …and a namespace of some OTHER module does not lend its name either.
+    expect(
+      reachableCallSites(
+        `import * as other from "./other";\nother.releaseAdmission("x");`,
+        "releaseAdmission",
+        owns,
+      ),
+    ).toBe(0);
   });
 });

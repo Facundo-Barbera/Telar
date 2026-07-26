@@ -1901,11 +1901,25 @@ packages/core/test/track-a-prove-run.test.ts -> bytes: 33389 | control chars exc
    repo-root `bun test -t "<filter>"` run silently stubs out core's loom persistence.**
    Three `apps/web` suites — `lib/loom-mcp.answer-blocked.test.ts`, `lib/loom-mcp.remint.test.ts` and
    `lib/ultra-mcp.test.ts` — install a **process-global** `mock.module("@telar/core", …)` at **module scope**
-   (stubbing `saveLoom` to `() => {}` and `getLoom`/`listLooms` to fixtures) and restore it only in
-   `afterAll`. Without `-t`, bun loads and runs one file at a time, so each mock is restored before the next
+   and restore it only in `afterAll`. Without `-t`, bun loads and runs one file at a time, so each mock is
+   restored before the next
    file runs and everything is fine — **the unfiltered repo-root `bun test` is green**. **With** `-t`, bun
    evaluates *every* file's module scope before running *any* test, so those `afterAll` hooks never fire and
    the stub is live inside every core suite in the process.
+   **CORRECTED 2026-07-26 (review finding S14, re-measured independently before correcting).** The first
+   version of this note, and of the guard message it describes, said all three suites stub
+   `saveLoom`/`getLoom`/`listLooms`. **That is wrong about one of them, and being wrong about one is worse
+   than saying nothing**: the engineer who picks this up opens `ultra-mcp.test.ts` looking for a `getLoom`
+   stub that is not there and discards a correct diagnosis of the other two. What was measured, one suite at
+   a time against `packages/core`:
+   - `lib/loom-mcp.answer-blocked.test.ts` and `lib/loom-mcp.remint.test.ts` stub `saveLoom` to `() => {}`
+     and `getLoom`/`listLooms` to fixtures. **Either one alone reproduces the L4 failure** —
+     `TELAR_HOME=$(mktemp -d) bun test packages/core apps/web/lib/loom-mcp.remint.test.ts -t "L4 a stale lease reclaims"`
+     → `0 pass / 1 fail`, and the same with `answer-blocked`.
+   - `lib/ultra-mcp.test.ts` installs the same process-global mock with the same module-scope-install /
+     `afterAll`-only-restore hygiene defect, but its factory stubs only `compileScript`, `getProject`,
+     `getUltraManifest`, `launchUltra`, `readUltraEvents` and `stopUltraRun` — no loom writer. The same
+     command with it → **`1 pass / 0 fail`**. It shares the defect; it does not produce this symptom.
    **This is pre-existing and reproducible on story 1.2's tree**, which is how it was confirmed rather than
    assumed: `bun test -t "default liveness: a stranded in-flight loom"` from the repo root makes
    `m5-reconcile-liveness.test.ts` — a file this story did not touch — fail with
@@ -1917,8 +1931,12 @@ packages/core/test/track-a-prove-run.test.ts -> bytes: 33389 | control chars exc
    repo root, still producing the transcript and the `across N files` figure, and it selects exactly the five
    legs; (b) L4 carries a **precondition guard** that detects the stub and throws a paragraph naming the three
    files, the mechanism, the working commands and the owning track, instead of dying on an opaque
-   `TypeError`. A likely fix for whoever picks it up: move each mock installation into a `beforeAll` paired
-   with the existing `afterAll`, or scope it to the tests that need it.
+   `TypeError`. The guard's message now names the two suites that cause it, notes the third's identical
+   hygiene defect, and — because a guard that is confident about the wrong cause sends the reader to the
+   wrong repo — states the second possible cause explicitly: if the run loaded `packages/core` only, no such
+   mock exists in the process and `saveLoom` really has regressed. A likely fix for whoever picks it up:
+   move each mock installation into a `beforeAll` paired with the existing `afterAll`, or scope it to the
+   tests that need it.
 
 5. **The two AD-5 co-tenancies are encoded as NAMED facts, not as silence.** `AD5_OWNERS` lists
    `sessions: ["packages/core/src/sessions.ts", "apps/web/lib/session-log.ts"]` with the story-1.2 Note-1
@@ -1927,8 +1945,10 @@ packages/core/test/track-a-prove-run.test.ts -> bytes: 33389 | control chars exc
    for `usage.ndjson`) is likewise commented at its table entry and left alone per `deferred-work.md`.
 
 6. **INV-2's classification of the six verification surfaces**, stated in-source in `VERIFICATION_SURFACES`
-   and asserted (a new file matching `/^(verifier|verify-.*|critic|panel|verification-.*)\.ts$/` fails until
-   someone classifies it, which is what makes AD-2's "extends to new verification surfaces" executable):
+   and asserted (a new file matching
+   `/^(verifier|verify|critic|panel|verification)[A-Za-z0-9_.-]*\.(ts|tsx|mts)$/` fails until someone
+   classifies it, which is what makes AD-2's "extends to new verification surfaces" executable — the pattern
+   was widened on 2026-07-26 per review finding S8; see Note 16):
    - `verifier.ts` — **judge**; grants `VERIFIER_TOOLS` with `restrictTools: true`.
    - `critic.ts` — **judge**; same wall, and it *imports* `VERIFIER_TOOLS` from `./verifier` rather than
      re-declaring it (pinned: exactly one `export const VERIFIER_TOOLS` exists in `packages/core/src`).
@@ -2046,6 +2066,55 @@ packages/core/test/track-a-prove-run.test.ts -> bytes: 33389 | control chars exc
     life; the ~40 lines of scan primitives live inside `invariants.test.ts`, and the prove-run duplicates the
     ~20-line `TELAR_HOME` sandbox rather than extracting it, exactly as story 1.2 did.
 
+17. **REVIEW FIX PASS, 2026-07-26 — the code review returned PASS with an empty Blocking section and 21
+    should-fix items; 20 were closed here, 1 was partially closed, and everything left is in
+    `deferred-work.md` by finding id.** The two that mattered most and drove the pass:
+    - **S1 — L5 armed the exact weapon that caused the story-1.1 pollution.** The leg proved the ledger's
+      write-guard by setting `process.env.TELAR_HOME = "   "` **in the shared test process** and relying
+      solely on `usage-ledger.ts`'s guard to throw. `manifest.ts`'s `telarDir()` reads
+      `process.env.TELAR_HOME?.trim()` and falls back to `path.join(os.homedir(), ".telar")` on a blank
+      value, so weakening that guard would have made the test written to prove `~/.telar` is untouched the
+      thing that appends a synthetic `$999` billing line to it. **Now proved from a CHILD PROCESS** with an
+      mkdtemp'd `HOME` and its own env (the idiom `state-root.test.ts` and `usage-ledger.test.ts` already
+      use): the shared process's `TELAR_HOME` is never assigned, and a regressed guard would write into a
+      temp box the test deletes. The child carries a **positive control** — the same call with a root
+      actually pinned succeeds and the file appears — so "it threw" cannot be a dead probe, and the parent
+      asserts nothing named `usage.ndjson` exists anywhere under the fake home.
+    - **S2 — `afterAll` had no `try/finally`.** `resetAdmission({})` throws on a leaked waiter, so the
+      teardown could skip the `TELAR_HOME` restore on exactly the run where something had already gone
+      wrong, re-rooting every later suite at a stale temp directory it had also failed to delete. Both
+      resets and the restore are now each in a `finally`, restore last.
+    - Also closed: S3 (`export … from` is now a traversed, type-checked module edge), S4 (a relative import
+      resolving into `packages/core/src` is now a violation, not merely traversed), S5 (MCP surfaces and
+      tool names are collected under any **binding**, so `createSdkMcpServer as makeServer` cannot hide a
+      fourth surface), S6 (INDEX-1 no longer checks exclusion with the same set `walk()` excluded by — an
+      independently-spelled list, a ceiling on index size, and a real file from inside an excluded tree
+      asserted absent), S7 (`setup-wall` is a checked bucket, and the must-not-grant set is derived from
+      `VERIFICATION_SURFACES` rather than hardcoded), S8 (symmetric surface pattern, `.tsx`/`.mts`
+      included), S9 (the quarantine subtracts by `invariant`, not by filename, and its length is pinned),
+      S10 (template-literal root composition), S11 (namespace and renamed call sites — `admission.releaseAdmission(…)`
+      and `releaseAdmission as free` — are now counted, while an injected `deps.x(…)` still correctly is
+      not), S12 (`acceptLoom as land` and a re-export shim now enter the importer scan), S13 (seven more
+      accept stems), S14 (above, plus the guard message), S15 (`Promise.allSettled`, so one rejected
+      acquire cannot leak the other handles into a T-6 cascade), S16 (L5 writes its own evidence and now
+      passes **in isolation**, which it did not), S17 (the three primary-claim assertions that printed a
+      bare diff — the pinned MCP inventory, the 18-site table, and the whole INV-1g hook block — now carry
+      the AD id, the rule, the consequence and the next step), S18 (marker scans run over
+      string-stripped source, so a thrown message documenting the wall cannot false-fire), S19
+      (`stripComments` is regex-literal aware: `/^https?:\/\//` no longer blanks the rest of its physical
+      line and with it every call site sharing that line), S20 (aliased root resolvers).
+    - **Every new matcher is measurably no weaker and no wider on today's tree**: the T-A0 inventory is
+      unchanged at **470 files / 119 client directives / 170 core / 2 `*-mcp.ts` / 3 MCP surfaces / 18
+      composition sites / 6 home-root derivations**, and the full repo-wide suite went 1833 → **1835 pass /
+      0 fail** (the two new tests are INDEX-4 and INDEX-5, the tokenizer's own discriminators). Each
+      widened scan carries a discriminator fed through the same code path, per §5.5-D0b.
+    - **One defect of my own, found and fixed during this pass:** two NUL bytes reached
+      `invariants.test.ts` from an editing slip, in a `.join(" ")` separator. `file(1)` reported the file as
+      `application/octet-stream` and `grep` skipped it as binary — precisely the §5.4 hazard that once made
+      `usage-ledger.ts` invisible to grep. Removed, and **both** new files re-verified at 0 NUL bytes and 0
+      other control characters. Worth recording because the tests stayed green throughout: the suite could
+      not see it.
+
 ## 10. File List
 
 Measured with the change staged — the only form that sees created files:
@@ -2061,7 +2130,7 @@ Exactly two `A` lines, both under `packages/core/test/`. Nothing else — no `sr
 
 | File | Action | What it is |
 | --- | --- | --- |
-| `packages/core/test/invariants.test.ts` | **added** | 38 tests — the AD-19 invariant suite (INV-1 … INV-5) over one cached tree walk, with anti-vacuity floors, permanent discriminators and a falsifiable `KNOWN_VIOLATIONS` quarantine |
+| `packages/core/test/invariants.test.ts` | **added** | 40 tests (38 at first delivery; INDEX-4 and INDEX-5 added by the review fix pass) — the AD-19 invariant suite (INV-1 … INV-5) over one cached tree walk, with anti-vacuity floors, permanent discriminators and a falsifiable `KNOWN_VIOLATIONS` quarantine |
 | `packages/core/test/track-a-prove-run.test.ts` | **added** | 6 tests — the five-leg Track A prove-run under a sandboxed `TELAR_HOME`, plus the executable-citation check |
 
 ## 11. Change Log
@@ -2071,6 +2140,7 @@ Exactly two `A` lines, both under `packages/core/test/`. Nothing else — no `sr
 | 2026-07-26 | Story 1.3 implemented. Two new test files under `packages/core/test/`; no `src`, `apps/web` or `bunfig.toml` change. All five ACs met: the five AD-19 invariants are executable (AC1) with failure messages that name the AD, the rule, the consequence and the next step (AC2), running in 335 ms against a 2000 ms budget (AC3); the five-leg prove-run runs under a sandboxed state root with the real `~/.telar` proven untouched (AC4); the full core suite, `apps/web`'s suite and `bunx tsc --noEmit` in both workspaces are clean (AC5). Repo-root `bun test`: 1789 → **1833 pass / 0 fail across 118 files**. Status → review. |
 | 2026-07-26 | Cross-track finding recorded (Completion Note 4): a repo-root `bun test -t "<filter>"` run leaves three `apps/web` suites' module-scope `mock.module("@telar/core", …)` installed, stubbing `saveLoom`/`getLoom`/`listLooms` inside every core suite. Pre-existing — story 1.2's `m5-reconcile-liveness.test.ts` fails the same way. Owner: Track B/C. |
 | 2026-07-26 | `scripts/backfill-tool-detail.ts` quarantined as the one `KNOWN_VIOLATIONS` entry under §5.5-D7, with a probe proving the exception fails the moment the underlying violation is fixed (Completion Note 3). |
+| 2026-07-26 | **Review fix pass** (Completion Note 17). Code review returned PASS / nothing blocking / 21 should-fix; 20 closed, 1 partially closed, remainder recorded in `deferred-work.md` by finding id. Load-bearing ones: L5's write-guard proof moved out of the shared test process into a child with an mkdtemp'd `HOME` (**S1** — it was arming the exact weapon that polluted the operator's real `~/.telar` in story 1.1), and `afterAll` wrapped in `try/finally` so a throwing `resetAdmission` can no longer skip the `TELAR_HOME` restore (**S2**). Scanners hardened against renames, namespaces, `export … from` edges, relative cross-workspace imports, regex literals and string literals; the T-A0 inventory is unchanged on today's tree (470 / 119 / 170 / 2 / 3 / 18 / 6). Repo-root `bun test`: 1833 → **1835 pass / 0 fail across 118 files**; `invariants.test.ts` 558 ms against the 2000 ms AC3 budget; `bunx tsc --noEmit` clean in both workspaces. Two NUL bytes introduced by an editing slip during the pass were found and removed; both files re-verified control-character-clean. |
 
 **Suggested conventional-commit message:**
 
