@@ -57,7 +57,7 @@ development_status:
 
   # Epic 2: Session Profiles
   epic-2: in-progress
-  2-1-the-sessionprofile-resolver: ready-for-dev
+  2-1-the-sessionprofile-resolver: review
   2-2-retrofit-the-existing-session-kinds-onto-profiles: backlog
   epic-2-retrospective: optional
 

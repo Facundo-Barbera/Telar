@@ -17,7 +17,10 @@ import {
   readBundleFile,
   readContract,
   resolveProjectMcpServers,
+  resolveSessionProfile,
+  sessionKindFromRole,
   STEERING_FILE,
+  unmetCapabilities,
   type AccountProfile,
   type ProjectManifest,
 } from "@telar/core";
@@ -84,6 +87,14 @@ import {
   extractToolResultText,
   ParentFlattener,
 } from "@/lib/transcript";
+// SIDE-EFFECT IMPORT, and it is load-bearing. @/lib/session-profiles registers
+// the four SessionProfileSpec builders at MODULE SCOPE, and module scope only
+// runs if something imports the module. Without this line the profile registry
+// is EMPTY at request time and resolveSessionProfile below throws on every chat
+// request — a 500 on the live path that no gate would catch, because there is
+// no test file for this route anywhere in the tree, so bun test / tsc / lint
+// all stay green while the app is broken. Do not "tidy" it away as unused.
+import "@/lib/session-profiles";
 
 const toIso = (epoch?: number) =>
   epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
@@ -476,6 +487,58 @@ export async function POST(req: Request) {
 
   const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
   const workspace = manifest.root;
+
+  // AD-9 — the session profile, resolved BEFORE the route body runs. This is
+  // the whole of story 2.1's footprint in this handler: one resolve, one gate.
+  // Nothing inside `new ReadableStream` below reads it yet — migrating the live
+  // path onto sessionProfile's cwd/guardrails/settingSources/toolPolicy is
+  // story 2.2, deliberately behind its own gate because it is the change that
+  // touches production traffic.
+  //
+  // Named `sessionProfile`, NEVER `profile`: `profile` in this scope is the
+  // AccountProfile resolved above, which feeds accountEnv, accountHealth,
+  // generateTitle and the chat stub's `account` field. Shadowing it is a silent
+  // billing bug.
+  //
+  // The kind comes from the WIRE role only. `existingChat` and `loomLink` are
+  // both derived inside the stream closure below, so a RESUMED planner or
+  // steerer session whose client omitted `role` resolves here as `project`.
+  // That under-detection is deliberate and is the safe direction: `project`
+  // requires no capability, so a mis-detected session gets a weaker requirement
+  // and can never take a spurious 400. Do not hoist getChat up here to sharpen
+  // it — that is a store read added to the hot path and a change to a validated
+  // pre-stream sequence; it is 2.2's call.
+  const sessionProfile = resolveSessionProfile({
+    kind: sessionKindFromRole(role),
+    provider,
+    manifest,
+    project: typeof project === "string" ? project : undefined,
+    role,
+    loomId: typeof rawLoomId === "string" ? rawLoomId : undefined,
+    permissionMode,
+  });
+
+  // AD-11 — an unmet capability is a hard error BEFORE the stream opens, in the
+  // same pre-SSE 400 shape as the eight checks above. No silent degradation:
+  // today a planner session on a Codex account returns 200 and quietly drops
+  // the appended system prompt that IS the kind.
+  //
+  // The placement is load-bearing, not cosmetic. It must precede
+  // registerChatRun below, whose only cleanup is endChatRun inside the stream's
+  // `finally` — a 400 after it would leave a registered run with no stream to
+  // end, which POST /api/chat/stop would later try to abort. And it must
+  // precede titlePromise, which spawns a real subprocess that is likewise only
+  // awaited or aborted in that same `finally` — a 400 after it orphans a live
+  // subprocess with no cleanup path.
+  const unmetProfileCapabilities = unmetCapabilities(sessionProfile, provider);
+  if (unmetProfileCapabilities.length > 0) {
+    return Response.json(
+      {
+        error: `A "${sessionProfile.kind}" session needs ${unmetProfileCapabilities.join(", ")}, which the ${providerOf(provider).label} agent does not support. Run this session on a Claude account, or start it as a plain project session.`,
+      },
+      { status: 400 },
+    );
+  }
 
   // Background turn (docs/runtime-architecture.md §A.4): the run is deliberately
   // NOT bound to the request. A client disconnect (navigation, closed tab,

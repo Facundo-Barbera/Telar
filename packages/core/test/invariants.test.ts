@@ -1,4 +1,5 @@
-// THE FIVE LOAD-BEARING INVARIANTS, MADE EXECUTABLE (AD-19 / CAP-6 / NFR-X-14).
+// THE LOAD-BEARING INVARIANTS, MADE EXECUTABLE (AD-19 / CAP-6 / NFR-X-14).
+// AD-19's FIVE, plus INV-6 (AD-10), which story 2.1's AC6 added here by name.
 //
 // WHY THIS FILE EXISTS. brownfield.md states the gap in one sentence: "'No
 // accept tool anywhere' and 'the verifier stack holds no write tools' are true
@@ -18,6 +19,19 @@
 //   INV-3  no module reads another module's TELAR_HOME subtree ..... AD-5
 //   INV-4  client components import no core runtime ................ AD-3
 //   INV-5  no module writes a shared runtime service's state ....... AD-20
+//
+// AND A SIXTH, WHICH AD-19 DOES NOT NAME — read the count above as "the five
+// AD-19 names", not as "everything in this file". AD-19's list is closed
+// because it enumerates the five rules that were load-bearing when the spine
+// was written; it is not a ceiling on what may be made executable here.
+//   INV-6  no SessionProfile field can widen a tool grant ........... AD-10
+// INV-6 arrived with story 2.1, whose AC6 says in as many words that "the
+// invariant suite" is where that assertion belongs — and it belongs with the
+// other five rather than beside the type it guards because it is the same KIND
+// of claim: a structural rule that is true today by construction and that
+// nothing would re-check. AD-10's failure mode is the moat "degrading from
+// structural to configurable", and making session config into DATA is exactly
+// the move that could cause it.
 //
 // THE ANTI-VACUITY RULE, which is the most important thing in this file. Every
 // invariant here is a source scan or a pinned inventory, and the characteristic
@@ -54,7 +68,7 @@
 // target reader is someone hitting this in six months with no context.
 //
 // COST (AC3). The source tree is walked ONCE into a cached in-memory index at
-// module scope; all five invariants read that index. No tsc invocation, no
+// module scope; all six invariants read that index. No tsc invocation, no
 // spawned process (see §5.5-D8 of the story: a compile-time invariant must run
 // the compiler over generated fixtures in BOTH directions, and this story has
 // none — L4's `done`-not-assignable claim is already pinned by
@@ -2450,5 +2464,337 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
         owns,
       ),
     ).toBe(0);
+  });
+});
+
+// ── INV-6 — no SessionProfile field can widen a tool grant (AD-10) ──────────
+// THE SIXTH, and it is not one of AD-19's five — see the header's own note on
+// why it lives here anyway. AD-10's promise is that session config can become
+// DATA without the moat becoming configurable, and the mechanism is a type: a
+// profile carries AD-9's seven config fields plus the registry key, none of
+// which can reach hook registration, and `toolPolicy` carries deny lists and
+// allow-narrowing ONLY. The spine's rejected alternative was review — "'we will
+// review for it' is not a mechanism" — so this is the mechanism.
+//
+// WHAT INV-6 DELIBERATELY DOES NOT ASSERT: that the COMPILER rejects a
+// widening. That claim needs the compiler, it is proved in
+// packages/core/test/session-profile.test.ts over generated fixtures in both
+// directions, and duplicating it here would spend ~0.35 s per fixture against
+// this file's 2000 ms budget for no new signal. It is CITED instead, executably
+// — the same decision INV-2 made about the five suites it leans on, for the
+// same reason.
+const PROFILE_SRC = byRel.get("packages/core/src/session-profile.ts");
+const ROUTE_SRC = byRel.get("apps/web/app/api/chat/route.ts");
+
+// Extracts a type-literal alias's declared FIELDS from a source string. Takes a
+// SOURCE STRING and never a file, so INV-6d's discriminator fixtures run
+// through this exact function — a discriminator that called a different
+// extractor would prove nothing. Comments are blanked first, so a header
+// paragraph that merely NAMES a field (this file's own prose says `hooks`, and
+// session-profile.ts's header says it too) can never be read as a declaration.
+function typeLiteralFields(
+  source: string,
+  typeName: string,
+): Array<{ name: string; type: string }> | null {
+  const code = stripComments(source);
+  const head = new RegExp(`type\\s+${escapeRe(typeName)}\\s*=\\s*\\{`).exec(code);
+  if (!head) return null;
+  // Brace-match the body. Only {} () [] are tracked: `<` and `>` are ambiguous
+  // in TS source (comparisons, arrows) and mis-counting them would silently
+  // truncate the body, which is the failure mode that makes a scan pass.
+  const start = head.index + head[0].length;
+  let depth = 1;
+  let i = start;
+  for (; i < code.length && depth > 0; i++) {
+    const ch = code[i];
+    if (ch === "{" || ch === "(" || ch === "[") depth++;
+    else if (ch === "}" || ch === ")" || ch === "]") depth--;
+  }
+  if (depth !== 0) return null;
+  const body = code.slice(start, i - 1);
+
+  const fields: Array<{ name: string; type: string }> = [];
+  const take = (segment: string) => {
+    const m = /^\s*(?:readonly\s+)?([A-Za-z_$][\w$]*)\s*\??\s*:([\s\S]*)$/.exec(segment);
+    if (m) fields.push({ name: m[1]!, type: m[2]!.trim() });
+  };
+  let seg = "";
+  let d = 0;
+  for (const ch of body) {
+    if (ch === "{" || ch === "(" || ch === "[") d++;
+    else if (ch === "}" || ch === ")" || ch === "]") d--;
+    if ((ch === ";" || ch === ",") && d === 0) {
+      take(seg);
+      seg = "";
+    } else {
+      seg += ch;
+    }
+  }
+  take(seg);
+  return fields;
+}
+
+const fieldNames = (
+  fields: Array<{ name: string; type: string }> | null,
+): string[] => (fields ?? []).map((f) => f.name).sort();
+
+// AD-9's seven config fields PLUS `kind`. EIGHT, and the distinction is
+// load-bearing: `kind` is the REGISTRY KEY, not session configuration, so it
+// can carry no grant. Describe this as "seven plus the registry key", never as
+// "seven".
+const PROFILE_FIELDS = [
+  "cwd",
+  "guardrails",
+  "kind",
+  "mcpServers",
+  "requiredCapabilities",
+  "settingSources",
+  "systemPromptAppendix",
+  "toolPolicy",
+];
+
+// What a surface AUTHORS. No `guardrails` (a spec may only ADD restriction) and
+// no `cwd` (the context supplies it), which is why this list is not the one
+// above.
+const SPEC_FIELDS = [
+  "addDisallowedTools",
+  "addProtectedPaths",
+  "kind",
+  "mcpServers",
+  "requiredCapabilities",
+  "settingSources",
+  "systemPromptAppendix",
+  "toolPolicy",
+];
+
+// Anything on this list reaches hook registration, permission evaluation, or a
+// bare tool grant. A profile field with one of these names would let a
+// mis-authored profile skip the guardrail, which is exactly the degradation
+// AD-10 forbids.
+const GRANT_SHAPED_FIELDS = [
+  "hooks",
+  "canUseTool",
+  "permissionMode",
+  "skipGuardrail",
+  "allowedTools",
+  "bypassPermissions",
+  "strictMcpConfig",
+];
+
+describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the moat outside the profile", () => {
+  const profileFields = PROFILE_SRC ? typeLiteralFields(PROFILE_SRC.text, "SessionProfile") : null;
+  const specFields = PROFILE_SRC ? typeLiteralFields(PROFILE_SRC.text, "SessionProfileSpec") : null;
+  const policyFields = PROFILE_SRC ? typeLiteralFields(PROFILE_SRC.text, "ToolPolicy") : null;
+
+  test("INV-6 the anti-vacuity floor — the port exists and the extractor found all three declarations", () => {
+    if (!PROFILE_SRC) {
+      throw new Error(
+        `AD-10 / INV-6: packages/core/src/session-profile.ts is not in the scan index. ` +
+          `CONSEQUENCE: every field pin below would hold over a null extraction, forever, ` +
+          `silently. NEXT STEP: the port moved or the walk is broken — fix ROOTS or the path, ` +
+          `do not relax the assertions.`,
+      );
+    }
+    const found = {
+      SessionProfile: profileFields?.length ?? 0,
+      SessionProfileSpec: specFields?.length ?? 0,
+      ToolPolicy: policyFields?.length ?? 0,
+    };
+    if (found.SessionProfile < 8 || found.SessionProfileSpec < 6 || found.ToolPolicy < 2) {
+      throw new Error(
+        `AD-10 / INV-6: the type-literal extractor came back thin — ${JSON.stringify(found)} ` +
+          `(floors 8 / 6 / 2). CONSEQUENCE: the inventory pins below would compare two short ` +
+          `lists and pass while a grant-shaped field sat in the file. NEXT STEP: typeLiteralFields ` +
+          `is broken — check the brace matcher and the field regex, not the pinned lists.`,
+      );
+    }
+    expect(found.SessionProfile).toBeGreaterThanOrEqual(8);
+  });
+
+  test("INV-6a the SessionProfile field inventory is EXACTLY AD-9's seven config fields plus the registry key", () => {
+    const observed = fieldNames(profileFields);
+    const appeared = observed.filter((f) => !PROFILE_FIELDS.includes(f));
+    const vanished = PROFILE_FIELDS.filter((f) => !observed.includes(f));
+    if (appeared.length || vanished.length) {
+      throw new Error(
+        `AD-10 / INV-6: the SessionProfile field set MOVED. NEW fields: ${JSON.stringify(appeared)}. ` +
+          `GONE: ${JSON.stringify(vanished)}. THE RULE: a profile carries AD-9's seven config ` +
+          `fields plus "kind", the registry key, and nothing else — the guardrail is wired ` +
+          `OUTSIDE the profile and no field may reach hook registration. CONSEQUENCE: a field ` +
+          `that reaches hooks, canUseTool or permissionMode turns the Human-Accept Moat from a ` +
+          `STRUCTURAL invariant into a CONFIGURABLE one, and a mis-authored profile then omits ` +
+          `it silently — AD-10's named failure. NEXT STEP: if the field is legitimate, add it ` +
+          `here WITH a comment saying why it cannot widen a grant. Do not delete an entry to ` +
+          `make this pass.`,
+      );
+    }
+    expect(observed).toEqual([...PROFILE_FIELDS].sort());
+  });
+
+  test("INV-6a the SessionProfileSpec field inventory is exact, and neither type admits a grant-shaped field", () => {
+    expect(fieldNames(specFields)).toEqual([...SPEC_FIELDS].sort());
+    // The named-hazard check, stated separately from the inventory so the
+    // failure reads as what it is rather than as "a list changed".
+    const rogue = [...fieldNames(profileFields), ...fieldNames(specFields)].filter((f) =>
+      GRANT_SHAPED_FIELDS.includes(f),
+    );
+    expect(rogue).toEqual([]);
+  });
+
+  test("INV-6b ToolPolicy has exactly `deny` and `allow`, and `allow` is keyed to the BASE union, not to string", () => {
+    expect(fieldNames(policyFields)).toEqual(["allow", "deny"]);
+    const allow = (policyFields ?? []).find((f) => f.name === "allow");
+    const deny = (policyFields ?? []).find((f) => f.name === "deny");
+    // `allow` narrows: its element type must be the base union. If this ever
+    // reads `readonly string[]`, over-granting compiles and AC3 is dead while
+    // every runtime test still passes.
+    expect(allow?.type).toBe("readonly BaseAllowedTool[]");
+    // `deny` may name ANYTHING — denying more is always safe, so it is
+    // deliberately NOT keyed to the union.
+    expect(deny?.type).toBe("readonly string[]");
+  });
+
+  test("INV-6c the chat route resolves the session profile BEFORE the stream opens", () => {
+    if (!ROUTE_SRC) {
+      throw new Error(
+        `AD-9 / INV-6: apps/web/app/api/chat/route.ts is not in the scan index. CONSEQUENCE: the ` +
+          `ordering claim below would hold vacuously. NEXT STEP: fix the walk, not the assertion.`,
+      );
+    }
+    // `.code` (comments blanked) and not `.text`: this route's own comments
+    // NAME both `resolveSessionProfile` and `new ReadableStream`, and a scan
+    // that read prose would compare a comment's position to a call site's.
+    const code = ROUTE_SRC.code;
+    const resolveAt = code.indexOf("resolveSessionProfile(");
+    const unmetAt = code.indexOf("unmetCapabilities(");
+    const streamAt = code.indexOf("new ReadableStream(");
+    const registerAt = code.indexOf("registerChatRun(");
+    if (resolveAt < 0 || unmetAt < 0 || streamAt < 0 || registerAt < 0) {
+      throw new Error(
+        `AD-9/AD-11 / INV-6: a call site this invariant orders is MISSING from the chat route — ` +
+          `resolveSessionProfile@${resolveAt}, unmetCapabilities@${unmetAt}, ` +
+          `new ReadableStream@${streamAt}, registerChatRun@${registerAt}. CONSEQUENCE: the ` +
+          `"resolved before the route body" and "fails before the stream opens" claims would ` +
+          `both pass over an absent call. NEXT STEP: if the route legitimately stopped resolving ` +
+          `a profile, this invariant is what should be re-argued — not deleted.`,
+      );
+    }
+    // AC1: "before the route body executes". `new ReadableStream({` IS the
+    // route body — everything from there on is the SSE start(controller)
+    // closure, and once it begins a failure can only become an SSE `error`
+    // event, never a status code.
+    expect(resolveAt).toBeLessThan(streamAt);
+    // AD-11: the capability gate must also precede registerChatRun, whose only
+    // cleanup is endChatRun inside the stream's `finally`. A 400 returned after
+    // it leaves a registered run with no stream to end.
+    expect(unmetAt).toBeLessThan(registerAt);
+    expect(unmetAt).toBeLessThan(streamAt);
+    // The registry is populated by a SIDE-EFFECT import, and without it
+    // resolveSessionProfile throws on every chat request. There is no test file
+    // for this route anywhere in the tree, so bun test / tsc / lint all stay
+    // green while the app is broken — this line is the only mechanical guard.
+    expect(ROUTE_SRC.text).toContain('import "@/lib/session-profiles";');
+  });
+
+  test("INV-6d the field scan DISCRIMINATES — a grant-shaped field and a widened allow are both reported", () => {
+    // Assembled at runtime, never written as literal source: packages/core/test
+    // is one of this scanner's own roots, and a literal declaration here would
+    // make the file a fixture for itself.
+    const ty = (name: string, body: string) => `export type ${name} = {\n${body}\n};\n`;
+    const ro = (name: string, type: string) => `  readonly ${name}: ${type};`;
+    const GOOD_PROFILE = ty(
+      "Session" + "Profile",
+      [
+        ro("kind", "SessionKind"),
+        ro("cwd", "string"),
+        ro("guardrails", 'ProjectManifest["guardrails"]'),
+        ro("settingSources", "readonly ProfileSettingSource[]"),
+        ro("mcpServers", "Readonly<Record<string, SdkMcpServerConfig>>"),
+        ro("toolPolicy", "ResolvedToolPolicy"),
+        ro("requiredCapabilities", "readonly ProviderCapability[]"),
+        ro("systemPromptAppendix", "string"),
+      ].join("\n"),
+    );
+    // 1. A profile carrying a `hooks` field IS reported.
+    const withHooks = GOOD_PROFILE.replace(
+      ro("cwd", "string"),
+      `${ro("cwd", "string")}\n${ro("hoo" + "ks", "{ PreToolUse: unknown[] }")}`,
+    );
+    const rogue = fieldNames(typeLiteralFields(withHooks, "Session" + "Profile")).filter((f) =>
+      GRANT_SHAPED_FIELDS.includes(f),
+    );
+    expect(rogue).toEqual(["hooks"]);
+
+    // 2. A ToolPolicy whose `allow` is `readonly string[]` IS reported — the
+    //    widening AC3 exists to forbid, caught by the SAME type-text check
+    //    INV-6b runs.
+    const widened = ty(
+      "Tool" + "Policy",
+      [ro("deny", "readonly string[]"), "  readonly allow?: readonly string[];"].join("\n"),
+    );
+    const widenedAllow = typeLiteralFields(widened, "Tool" + "Policy")?.find(
+      (f) => f.name === "allow",
+    );
+    expect(widenedAllow?.type).toBe("readonly string[]");
+    expect(widenedAllow?.type).not.toBe("readonly BaseAllowedTool[]");
+
+    // 3. A correctly-shaped declaration is NOT reported.
+    expect(fieldNames(typeLiteralFields(GOOD_PROFILE, "Session" + "Profile"))).toEqual(
+      [...PROFILE_FIELDS].sort(),
+    );
+    expect(
+      fieldNames(typeLiteralFields(GOOD_PROFILE, "Session" + "Profile")).filter((f) =>
+        GRANT_SHAPED_FIELDS.includes(f),
+      ),
+    ).toEqual([]);
+
+    // 4. The extractor does not invent a declaration that is not there, and a
+    //    COMMENT naming a field is not a declaration.
+    expect(typeLiteralFields(GOOD_PROFILE, "NoSuch" + "Type")).toBeNull();
+    const commented = ty(
+      "Session" + "Profile",
+      [ro("kind", "SessionKind"), `  // ${ro("hoo" + "ks", "unknown")}`].join("\n"),
+    );
+    expect(fieldNames(typeLiteralFields(commented, "Session" + "Profile"))).toEqual(["kind"]);
+  });
+
+  test("INV-6 the compile pins this invariant CITES still exist, so the citation cannot rot", () => {
+    // INV-6 deliberately does not run tsc (see this block's header). That makes
+    // these citations load-bearing: if session-profile.test.ts renames or drops
+    // a pin, AC3 is unproved and this is the only thing that would say so.
+    const cited: [string, string][] = [
+      [
+        "packages/core/test/session-profile.test.ts",
+        "AC3 an `allow` naming a tool outside the base union does NOT typecheck",
+      ],
+      [
+        "packages/core/test/session-profile.test.ts",
+        "AC3 the SAME fixture with a base tool DOES compile, with empty output — the discriminator",
+      ],
+      [
+        "packages/core/test/session-profile.test.ts",
+        "AC3 ToolPolicy is EXACTLY { deny, allow? } — adding a field breaks this compile",
+      ],
+      [
+        "packages/core/test/session-profile.test.ts",
+        "AC3 the compile pin DISCRIMINATES — a wrong expectation really does fail",
+      ],
+      [
+        "packages/core/test/session-profile.test.ts",
+        "L6 a profile declaring a capability the provider port does not publish fails before the stream opens",
+      ],
+    ];
+    const missing = cited
+      .filter(([file, title]) => !byRel.get(file)?.text.includes(title))
+      .map(
+        ([file, title]) =>
+          `INV-6 cites ${file} "${title}", which no longer exists there. AD-10's intersect-only ` +
+            `claim is a claim about a TYPE and can only be proved by running the compiler, which ` +
+            `this file deliberately does NOT do (a tsc spawn costs ~0.35 s against a 2000 ms ` +
+            `budget). CONSEQUENCE: the compile-time half of AC3 may be gone while INV-6 still ` +
+            `reads as complete. NEXT STEP: find where it moved and update the citation, or take ` +
+            `over the assertion here and accept the cost.`,
+      );
+    expect(missing).toEqual([]);
   });
 });

@@ -17,6 +17,13 @@ export * from "./admission";
 // module's port contract: undeclared events are internal and nobody may
 // subscribe to them.
 export * from "./event-bus";
+// AD-9/AD-10/AD-11 — the one session-profile port. Session config is a profile
+// resolved BEFORE the route body, never another branch through the handler: a
+// new surface adds a profile, it does not add an `if`. The moat sits OUTSIDE
+// the profile — no field here can reach hook registration, and toolPolicy is
+// intersect-only by its own type — and a capability the provider port does not
+// publish is a hard error before the stream opens, never a silent degradation.
+export * from "./session-profile";
 export * from "./manifest";
 // AD-18/AD-20 — the one append-only spend ledger and its sole writer. The
 // package exports only ".", so the barrel is this port's only route to apps/web.

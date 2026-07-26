@@ -1,7 +1,7 @@
 ---
 story_id: "2-1"
 title: "The SessionProfile resolver"
-status: "ready-for-dev"
+status: "review"
 epic: "Epic 2: Session Profiles"
 track: "B — Session profiles (the chat route + the profile resolver)"
 caps: ["CAP-7 (spec-runtime-foundations)"]
@@ -353,7 +353,7 @@ record.
 
 ### Leg A — the core port (AC1, AC3, AC4)
 
-- [ ] **T-A0 — measure before you design.** Do not write a line of `session-profile.ts` until you have
+- [x] **T-A0 — measure before you design.** Do not write a line of `session-profile.ts` until you have
       recorded, in the Debug Log: the exact `allowedTools` array the route builds today (`≈:1242-1271`), the
       exact `disallowedTools` array (`≈:1285-1289`), the exact `settingSources` value (`≈:1227`), the
       `cwd`/`guardrails` expressions, and the full `runCodexTurn` argument list (`≈:931`). §5.5-D3's base
@@ -361,47 +361,47 @@ record.
       An invented base list is a guard that does not guard — story 1.1's Repair Round 4 lesson verbatim:
       *"an invariant that scans for pattern X while production writes pattern X′ is a guard that does not
       guard."*
-- [ ] **T-A1 — `ProviderCapability` and the provider port** (`packages/core/src/providers.ts`). Per §5.5-D7.
-  - [ ] `ProviderCapability` as an `as const` readonly tuple + its union type, following
+- [x] **T-A1 — `ProviderCapability` and the provider port** (`packages/core/src/providers.ts`). Per §5.5-D7.
+  - [x] `ProviderCapability` as an `as const` readonly tuple + its union type, following
         `ADMISSION_CLASSES` exactly (§5.4-B). Every member's comment names the **measured** divergence it
         stands for and the `route.ts` symbol that proves it.
-  - [ ] `capabilities: readonly ProviderCapability[]` added to `ProviderDescriptor`, populated for both
+  - [x] `capabilities: readonly ProviderCapability[]` added to `ProviderDescriptor`, populated for both
         entries of `PROVIDERS`. Safe by measurement: `ProviderDescriptor` is constructed **only** by
         `PROVIDERS` (grepped — `providerOf` has five callers, all read-only), so a required field breaks no
         consumer. Re-verify that before you rely on it.
-  - [ ] `providerPublishes(id, cap)` and `providerCapabilities(id)`, both pure, both routed through the
+  - [x] `providerPublishes(id, cap)` and `providerCapabilities(id)`, both pure, both routed through the
         existing `providerOf` rather than re-reading `PROVIDERS`.
-  - [ ] Extend the file's header banner with a `CAPABILITIES.` paragraph explaining why the list lives on the
+  - [x] Extend the file's header banner with a `CAPABILITIES.` paragraph explaining why the list lives on the
         auth/config seam — the file's current header says *"This file is auth/config only"*, so **that
         sentence must be updated in the same edit** or the header now lies. This is not optional politeness;
         a header contradicted by its own file is exactly the drift the citation policy exists to stop.
-- [ ] **T-A2 — the types** (`packages/core/src/session-profile.ts`). Per §5.5-D1, D3, D4, D5, D6.
-  - [ ] `SessionKind` as an `as const` tuple + union: the **four kinds that exist today**, named from the
+- [x] **T-A2 — the types** (`packages/core/src/session-profile.ts`). Per §5.5-D1, D3, D4, D5, D6.
+  - [x] `SessionKind` as an `as const` tuple + union: the **four kinds that exist today**, named from the
         route's own vocabulary.
-  - [ ] `BASE_ALLOWED_TOOLS` as an `as const` tuple, derived in T-A0, plus `BaseAllowedTool`.
-  - [ ] `ToolPolicy` — `deny: readonly string[]` (anything) and `allow?: readonly BaseAllowedTool[]`
+  - [x] `BASE_ALLOWED_TOOLS` as an `as const` tuple, derived in T-A0, plus `BaseAllowedTool`.
+  - [x] `ToolPolicy` — `deny: readonly string[]` (anything) and `allow?: readonly BaseAllowedTool[]`
         (narrowing only). **A `MOAT:` comment in `runner/lease.ts`'s exact register** stating what the type
         cannot express and why. No third field.
-  - [ ] `ProfileSettingSource = Exclude<SettingSource, "user">` with the WHY (§5.5-D5). Same utility-type
+  - [x] `ProfileSettingSource = Exclude<SettingSource, "user">` with the WHY (§5.5-D5). Same utility-type
         family as `critic.ts`'s `Omit<>` and `lease.ts`'s `Pick<>`.
-  - [ ] `SessionProfileSpec` (author-facing input) and `SessionProfile` (resolver output). §5.5-D1 fixes both
+  - [x] `SessionProfileSpec` (author-facing input) and `SessionProfile` (resolver output). §5.5-D1 fixes both
         shapes and the reason there are two.
-  - [ ] The file's WHY header, in the `admission.ts` register (§5.4-A): what it replaces, the trade-off most
+  - [x] The file's WHY header, in the `admission.ts` register (§5.4-A): what it replaces, the trade-off most
         likely to be re-litigated, scope, and the moat paragraph.
-- [ ] **T-A3 — the fold** (`resolveSessionProfile`). Pure. No I/O, no clock, no state root.
-  - [ ] `guardrails` = manifest's ∪ spec's additions (§5.5-D4). Union, never replacement.
-  - [ ] `toolPolicy` = base ∩ spec's `allow` (when present), minus everything in `deny`; **`deny` always
+- [x] **T-A3 — the fold** (`resolveSessionProfile`). Pure. No I/O, no clock, no state root.
+  - [x] `guardrails` = manifest's ∪ spec's additions (§5.5-D4). Union, never replacement.
+  - [x] `toolPolicy` = base ∩ spec's `allow` (when present), minus everything in `deny`; **`deny` always
         wins**, matching the SDK's own documented guarantee that a disallow beats any allow (the route's
         comment at `≈:1223-1226` states it).
-  - [ ] `cwd` from the resolution context, not from the spec (§5.5-D1's note and its epic-5 forward pointer).
-  - [ ] Error messages follow the house form: module-name prefix, the diagnosis, the consequence, the next
+  - [x] `cwd` from the resolution context, not from the spec (§5.5-D1's note and its epic-5 forward pointer).
+  - [x] Error messages follow the house form: module-name prefix, the diagnosis, the consequence, the next
         step (§5.4-F).
-- [ ] **T-A4 — the registry** (`registerSessionProfile` / `resolveSessionProfile` / `resetSessionProfiles`).
+- [x] **T-A4 — the registry** (`registerSessionProfile` / `resolveSessionProfile` / `resetSessionProfiles`).
       Per §5.5-D10 — mirror `event-bus.ts`'s `declareEvents` discipline exactly, including the reset export
       and the reason it exists (T-4).
-- [ ] **T-A5 — the capability check** (`unmetCapabilities`). Pure; returns the missing names, never throws,
+- [x] **T-A5 — the capability check** (`unmetCapabilities`). Pure; returns the missing names, never throws,
       never formats a 400. Per §5.5-D8.
-- [ ] **T-A6 — the barrel** (`packages/core/src/index.ts`). One `export * from "./session-profile";` with an
+- [x] **T-A6 — the barrel** (`packages/core/src/index.ts`). One `export * from "./session-profile";` with an
       `AD-9/AD-10/AD-11` banner comment in the established register. §5.4-A reproduces the **event-bus**
       barrel banner verbatim as the model; the sibling **admission** banner it should also match sits at
       `packages/core/src/index.ts` immediately above `export * from "./admission";` and is not reproduced here
@@ -411,19 +411,19 @@ record.
 
 ### Leg B — the specs and the route (AC1, AC4, AC5)
 
-- [ ] **T-B0 — the four spec builders** (`apps/web/lib/session-profiles.ts`). Per §5.5-D11's table.
+- [x] **T-B0 — the four spec builders** (`apps/web/lib/session-profiles.ts`). Per §5.5-D11's table.
       Registered at module scope, mirroring how `declareEvents` is *shaped* (there is no production call site
       to copy — see T-B1). Each builder is `(ctx) => SessionProfileSpec` and reads **only** what the pre-stream
       preamble already has.
-  - [ ] Their colocated spec, `apps/web/lib/session-profiles.test.ts` — house convention for `apps/web/lib`
+  - [x] Their colocated spec, `apps/web/lib/session-profiles.test.ts` — house convention for `apps/web/lib`
         logic. Drive each builder with a realistic `SessionResolutionContext` and **pin all four kinds'
         `requiredCapabilities` and `systemPromptAppendix` values** against D11's table. The core suite's own
         fixtures are synthetic contexts, so this is the only place a wrong capability *name* in a builder gets
         caught by the gate rather than by one manual `curl`.
-- [ ] **T-B1 — the resolve call.** At §5.5-D9's exact insertion point. Variable named **`sessionProfile`** —
+- [x] **T-B1 — the resolve call.** At §5.5-D9's exact insertion point. Variable named **`sessionProfile`** —
       **never `profile`**, which is already an `AccountProfile` in this scope (`≈:377`). See T-1; this is the
       single most likely way to silently break billing in this file.
-  - [ ] **The side-effect import, which nothing else will do for you.** `route.ts` must carry
+  - [x] **The side-effect import, which nothing else will do for you.** `route.ts` must carry
         `import "@/lib/session-profiles";` alongside its named imports. T-B0's builders register **at module
         scope**, and module scope only runs if something imports the module — so without this line the
         registry is **empty at request time** and `resolveSessionProfile` throws
@@ -437,36 +437,36 @@ record.
         **Note there is no precedent to copy here:** `grep -rn "declareEvents(" packages/core/src apps/web`
         finds **zero** production call sites (measured — the bus is declared only inside its own test), so
         this is the first self-registering module in the tree and nothing will remind you.
-- [ ] **T-B2 — the capability gate.** `unmetCapabilities` → the existing pre-SSE 400 shape. Placed **before**
+- [x] **T-B2 — the capability gate.** `unmetCapabilities` → the existing pre-SSE 400 shape. Placed **before**
       `registerChatRun` (`≈:486`) so a rejected request never leaves a registered run behind — §5.5-D9
       explains why that ordering is load-bearing and not cosmetic.
-- [ ] **T-B3 — nothing else.** Verify by diff, not by memory: `git diff -- apps/web/app/api/chat/route.ts`
+- [x] **T-B3 — nothing else.** Verify by diff, not by memory: `git diff -- apps/web/app/api/chat/route.ts`
       must show no hunk inside `new ReadableStream`. Paste it.
 
 ### Leg C — the proofs (AC2, AC3, AC6)
 
-- [ ] **T-C0 — the unit suite** (`packages/core/test/session-profile.test.ts`). §6.4's coverage table is the
+- [x] **T-C0 — the unit suite** (`packages/core/test/session-profile.test.ts`). §6.4's coverage table is the
       checklist; every row is a named test.
-- [ ] **T-C1 — the two-direction `tsc` pins.** Copy §5.4-C's harness verbatim. Keep SDK types **out of the
+- [x] **T-C1 — the two-direction `tsc` pins.** Copy §5.4-C's harness verbatim. Keep SDK types **out of the
       fixture's import surface** so the simple form suffices (§5.5-D13). Both directions, plus the
       `Equal<>` identity pin, plus a **discriminator** proving a wrong expectation really does fail.
-- [ ] **T-C2 — prove-run leg L6.** Per §5.5-D14. Transcript line in the same register as L1–L5, and the
+- [x] **T-C2 — prove-run leg L6.** Per §5.5-D14. Transcript line in the same register as L1–L5, and the
       **measured** one-command form that selects all six legs. If the filter does not behave as D14 predicts,
       **disclose two commands** — do not fake one.
-- [ ] **T-C3 — `INV-6`** (`packages/core/test/invariants.test.ts`). Per §5.5-D12. Floor, then pins, then the
+- [x] **T-C3 — `INV-6`** (`packages/core/test/invariants.test.ts`). Per §5.5-D12. Floor, then pins, then the
       discriminator, then the executable citations. **Update the file's own `THE FIVE` header block** — it
       currently enumerates exactly five and says so twice. A sixth invariant under an unamended header is the
       same defect class as T-A1's stale sentence.
-- [ ] **T-C4 — `INV-1g`, `INV-3a`, `INV-3f` still green.** Run each by name. Paste each result. These are the
+- [x] **T-C4 — `INV-1g`, `INV-3a`, `INV-3f` still green.** Run each by name. Paste each result. These are the
       three pins your change sits across (§0 rule 6).
 
 ### Leg D — the gate and the record
 
-- [ ] **T-D0 — the revert probes.** One per new assertion class, per §0 rule 7 and §6.3. Real failure output,
+- [x] **T-D0 — the revert probes.** One per new assertion class, per §0 rule 7 and §6.3. Real failure output,
       restored, diff-verified.
-- [ ] **T-D1 — discovery proof.** §6.2, both mechanisms, for both new test files.
-- [ ] **T-D2 — the trio.** §6.3's full checklist, real output, both workspaces.
-- [ ] **T-D3 — the record.** §9 Debug Log and Completion Notes; §10 File List measured with the change staged
+- [x] **T-D1 — discovery proof.** §6.2, both mechanisms, for both new test files.
+- [x] **T-D2 — the trio.** §6.3's full checklist, real output, both workspaces.
+- [x] **T-D3 — the record.** §9 Debug Log and Completion Notes; §10 File List measured with the change staged
       (`git add -A -- packages/core apps/web && git diff --cached --name-status`); §11 Change Log with a
       conventional-commit message. Any finding you declined belongs in
       `_bmad-output/implementation-artifacts/deferred-work.md` under a new
@@ -1445,60 +1445,522 @@ rounds on the first alone. What that bought you:
 
 ---
 
+
 ## 9. Dev Agent Record
 
 ### Agent Model Used
 
-_(fill in)_
+`claude-opus-5` (Claude Opus 5), via the `bmad-dev-story` skill, run unattended end to end.
+Parallelisable measurement was fanned out to four `claude-sonnet-5` sub-agents; every design decision,
+every edit and every verification below was made in the Opus context.
 
 ### Debug Log
 
-_(§6.3's checklist, with real output)_
+**Baseline, measured on the working tree at the start of this story — NOT quoted from the story file.**
+`git rev-parse HEAD` → `deee7fb19bacf414e63773a433a6482fbed03e78`. The frontmatter's
+`baseline_commit: b44d9b5…` was left exactly as written (the skill preserves an existing value); note the two
+differ because `deee7fb` is this story's own context commit, which added no code.
+
+```
+ls packages/core/test/*.test.ts | wc -l   →  107     (before)   →  108  (after)   delta +1 ✅
+ls apps/web/lib/*.test.ts       | wc -l   →   10     (before)   →   11  (after)   delta +1 ✅
+repo-root bun test              →  1835 pass / 0 fail, Ran 1835 tests across 118 files   (before)
+repo-root bun test              →  1895 pass / 0 fail, Ran 1895 tests across 120 files   (after)
+                                   M grown by exactly 2 ✅ · N grown by 60
+```
+
+The baseline row was produced by `git stash push --include-untracked -- packages/core apps/web`, running the
+suite, then `git stash pop` — i.e. measured, not remembered. **N's +60 reconciles exactly**: 37 tests in
+`session-profile.test.ts` + 16 executed in `session-profiles.test.ts` (10 authored titles, two of which are
+per-kind loops rendering 4× each → 8 + 8 = 16) + 7 new `INV-6` tests in `invariants.test.ts`
+(40 → 47) = 60.
+
+**§0 rule 5 and NFR-RF-8 fences — both empty, as required:**
+
+```
+$ git diff --stat HEAD -- bunfig.toml
+(no output)
+$ git diff --stat HEAD -- packages/core/test/ultra-runner.test.ts
+(no output)
+```
+
+**T-A0 — the measurements everything else is derived from.** All read off `apps/web/app/api/chat/route.ts`
+on the working tree. Line pointers are `≈:` and were true at measurement time; the symbols are the fact.
+
+- **`allowedTools`** (the non-escalation Claude branch, `≈:1242`): `"Read", "Grep", "Glob", "WebSearch",
+  "WebFetch", "ToolSearch", ...LOOM_AUTO_TOOLS, ...ULTRA_AUTO_TOOLS`. The escalation branch is instead
+  `[...LOOM_ESCALATION_READONLY_TOOLS]` — containing **none** of those six.
+- **`disallowedTools`** (`≈:1285`): `[...manifest.guardrails.disallowedTools, "AskUserQuestion",
+  ...(isEscalationSession ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS] : [])]`.
+- **`settingSources`** (`≈:1227`): `["project", "local"]`, with the long comment recording that user-level
+  settings stay out "on purpose (keeps the developer's personal config/tokens out of the subprocess)" and
+  that a repo's own `settings.local.json` can still widen its access — the trust decision D5 quotes.
+- **`cwd` / `guardrails`**: `const workspace = manifest.root;` (`≈:478`), fed to `cwd: workspace` and to
+  `makeGuardrailDecision(manifest, workspace, …)`.
+- **`runCodexTurn`'s full argument list** (`≈:931`): `{ prompt, cwd, env, model, reasoningEffort?, sandbox,
+  resume, signal, approvalPolicy, onApproval }`. **No `hooks`, no `mcpServers`, no
+  `allowedTools`/`disallowedTools`, no `settingSources`, no `permissionMode`, no `systemPrompt`.** This list
+  is the entire evidence base for §5.5-D7's capability table, and the table was re-derived from it rather
+  than copied.
+
+`BASE_ALLOWED_TOOLS` is therefore exactly the six harness tools core can name for itself, measured — not
+invented.
+
+**Both `typecheck()` variants exist; this story used the SIMPLE one (D13).** No `--types node`, no
+`cwd: CORE_ROOT` — copied from `event-bus.test.ts`, not from `session-lease.test.ts`. The reason is
+mechanical: `session-lease.test.ts` needs the node ambient types only because `runner/lease.ts` imports
+`node:fs`. `session-profile.ts` imports **no** `node:*` module at all, and the fixture prelude imports only
+`BASE_ALLOWED_TOOLS`, `BaseAllowedTool` and `ToolPolicy` — never the Agent SDK — so the throwaway program
+compiles from a directory with no `node_modules` of its own while the port's own imports still resolve from
+their real location.
+
+**AC3, both directions, with the REAL diagnostic text.** One measurement changed the fixture shape and is
+worth recording because the story's expected assertion could not have held as first written: a direct
+`const p: ToolPolicy = { deny: [], allow: ["Bash"] };` makes `tsc` report **only** the element mismatch and
+never the words `ToolPolicy`, because the CLI does not print the related-information span that names the
+declaring type. Measured across four fixture shapes (direct annotation, `satisfies`, a generic parameter, a
+`Record` value) — all four printed the expanded union alone. In **argument** position `tsc` leads with the
+parameter's type name, so the fixture authors the policy through
+`declare function authorToolPolicy(p: ToolPolicy): void;` and `as const` keeps the literal from widening.
+Failing direction:
+
+```
+fixture.ts(6,18): error TS2345: Argument of type '{ readonly deny: readonly []; readonly allow: readonly ["Bash"]; }'
+  is not assignable to parameter of type 'ToolPolicy'.
+  Types of property 'allow' are incompatible.
+    Type 'readonly ["Bash"]' is not assignable to type 'readonly ("Read" | "Grep" | "Glob" | "WebSearch" | "WebFetch" | "ToolSearch")[]'.
+      Type '"Bash"' is not assignable to type '"Read" | "Grep" | "Glob" | "WebSearch" | "WebFetch" | "ToolSearch"'.
+```
+
+— which contains the offending tool name, the type name, **and** the whole base union. Passing direction
+(`allow: ["Read"]`): `status=0`, output exactly `""`.
+
+**The prove-run filter — MEASURED, and it is TWO commands, not one (D14's own fallback).**
+
+```
+$ TELAR_HOME=$(mktemp -d) bun test packages/core -t "prove-run"          →  11 pass  (NOT 6)
+$ TELAR_HOME=$(mktemp -d) bun test packages/core -t "track-a prove-run"  →   5 pass  (L1–L5)
+$ TELAR_HOME=$(mktemp -d) bun test packages/core -t "prove-run L6"       →   1 pass  (L6)
+```
+
+The single-command form selects 11 because three blocks beyond the six legs contain the substring: the
+`prove-run citations` describe in `track-a-prove-run.test.ts` (1 test — its own integrity check), and two
+**unrelated, pre-existing** suites whose prose titles happen to use the phrase —
+`m11-1-modality-derivation.test.ts`'s describe *"library test-gate derivation fires ONLY under a sanction
+(the prove-run fix, narrowed)"* (3 tests) and `m11-0-preflight-plan.test.ts`'s test *"greenfield: EMPTY root +
+gate-mechanism charter intent → PROCEEDS (the prove-run case)"* (1 test). 5 + 1 + 3 + 1 + 1 = 11. Since the
+count is not six, D14's instruction applies verbatim — *"disclose two commands instead… A faked single
+command is worse than an honest pair"* — so **the honest pair is the two `track-a prove-run` / `prove-run L6`
+commands above, six legs in total**. Every prove-run command carries the `packages/core` path argument (T-7).
+
+**L6's transcript line, verbatim:**
+
+```
+[track-b] L6 a "escalation" profile requires mcp-servers, pre-tool-use-hooks, tool-allow-deny-lists; codex
+publishes interactive-approval; unmet = mcp-servers, pre-tool-use-hooks, tool-allow-deny-lists → a pre-SSE
+400, and INV-6c pins the call site ahead of new ReadableStream
+```
+
+**The three pins this story sits across — each run BY NAME, after every edit, all green:**
+
+```
+$ bun test packages/core/test/invariants.test.ts -t "INV-1g"  →  1 pass / 0 fail
+$ bun test packages/core/test/invariants.test.ts -t "INV-3a"  →  1 pass / 0 fail
+    [invariants] inventory: 3 MCP surfaces · 18 root-composition sites · 6 home-root derivations
+$ bun test packages/core/test/invariants.test.ts -t "INV-3f"  →  1 pass / 0 fail
+```
+
+`INV-3a`'s inventory is still **exactly 18** sites — the resolver composes no state path (D2), so no
+nineteenth entry and **no new `KNOWN_VIOLATIONS` entry**. `KNOWN_VIOLATIONS` still holds **exactly one**
+entry, `scripts/backfill-tool-detail.ts` (read off the file: the array opens at `const KNOWN_VIOLATIONS = [`
+and closes after that single object).
+
+**`invariants.test.ts` wall-clock, against story 1.3's 2000 ms AC3 budget.** Before `INV-6`: `Ran 40 tests
+across 1 file. [558.00ms]` (story 1.3's recorded post-fix figure). After: **`Ran 47 tests across 1 file.
+[520.00ms]`** — measured repeatedly at 520–558 ms. Seven tests added at no measurable cost, because `INV-6`
+reads the SAME cached module-scope index every other invariant reads and spawns **no** process. This is
+exactly why D12 keeps the compile pins in `session-profile.test.ts`: a single `tsc` spawn costs ~0.35 s, and
+the seven pins there would have tripled this file's runtime on their own.
+
+**AC5 — the route diff, in full shape.** `git diff --cached -U0 -- apps/web/app/api/chat/route.ts` produces
+**four hunks, every one a pure insertion (63 lines added, 0 removed)**:
+
+```
+@@ -19,0 +20,2 @@ import {      ← resolveSessionProfile, sessionKindFromRole
+@@ -20,0 +23 @@  import {      ← unmetCapabilities
+@@ -86,0 +90,8 @@ import {      ← the side-effect import + its comment
+@@ -479,0 +491,52 @@ export async function POST(req: Request)   ← the resolve call + the capability gate
+```
+
+The last hunk ends at ≈`:543`; `const stream = new ReadableStream({` sits at ≈`:566`. **No hunk is inside
+`new ReadableStream`.** And the moat region is byte-identical — grepping the diff for `hooks:`,
+`preToolUseGuardrail`, `canUseTool`, `makeGuardrailDecision`, `LOOM_START_TOOL` or
+`LOOM_ANSWER_BLOCKED_TOOL` on a `+`/`-` line returns **nothing**.
+
+```
+$ git diff --cached --stat -- apps/web
+ apps/web/app/api/chat/route.ts        |  63 ++++++++++++
+ apps/web/lib/session-profiles.test.ts | 181 ++++++++++++++++++++++++++++++++++
+ apps/web/lib/session-profiles.ts      | 155 +++++++++++++++++++++++++++++
+ 3 files changed, 399 insertions(+)
+```
+
+**Discovery proof, mechanism 2 — by name, from the junit reporter.** `bun test --reporter=junit
+--reporter-outfile=<scratch>/discovery.xml` from the repo root, then a `grep -F` for **every** authored test
+title: **54/54 located, 0 missing**, each with its `file=` attribution
+(`packages/core/test/session-profile.test.ts`, `apps/web/lib/session-profiles.test.ts`,
+`packages/core/test/invariants.test.ts`). The two `${row.kind}` template titles were verified for **all four**
+renderings (`project`, `planner`, `steerer`, `escalation`), not just one. *Recorded because it is the kind of
+thing that silently invalidates a proof:* the first pass reported 10 false MISSINGs, every one containing an
+apostrophe — my needle escaped `'` as `&#x27;` while bun's junit writer emits `&apos;`. The bug was in the
+verification script, not in discovery; re-running with the correct escaping gave 54/54.
+
+Spot checks and the negative control:
+
+```
+$ bun test -t "AC4 the five Claude-only capabilities are exactly the measured divergences"
+   1 pass · 1894 filtered out · 0 fail · Ran 1 test across 120 files.
+$ bun test -t "importing @/lib/session-profiles populates the registry with ALL FOUR kinds"
+   1 pass · 1894 filtered out · 0 fail · Ran 1 test across 120 files.
+$ bun test -t "INV-6c the chat route resolves the session profile BEFORE the stream opens"
+   1 pass · 0 fail
+$ bun test -t "a name that does not exist zzz"
+   error: regex "a name that does not exist zzz" matched 0 tests. Searched 120 files (skipping 1895 tests)
+   exit=1
+```
+
+**The revert probes (§0 rule 7). Five of them, each: break it, capture the REAL failure, `git checkout --`,
+verify `git diff --stat -- packages/core apps/web` is empty.** (The four new files are untracked, so
+everything was `git add`-ed first and each restore comes from the index.)
+
+- **P1 — `INV-6a`**: added `readonly hooks: { PreToolUse: unknown[] };` to `SessionProfile`. Real failure:
+  `AD-10 / INV-6: the SessionProfile field set MOVED. NEW fields: ["hooks"]. GONE: []. THE RULE: a profile
+  carries AD-9's seven config fields plus "kind", the registry key… CONSEQUENCE: a field that reaches hooks,
+  canUseTool or permissionMode turns the Human-Accept Moat from a STRUCTURAL invariant into a CONFIGURABLE
+  one… NEXT STEP: if the field is legitimate, add it here WITH a comment saying why it cannot widen a grant.`
+  The sibling rogue-field assertion fired too. Restored; diff empty; `INV-6a` → 2 pass.
+- **P2 — `INV-6c`**: relocated the whole resolve+gate block inside `new ReadableStream`'s `start(controller)`.
+  Real failure: `expect(received).toBeLessThan(expected) · Expected: < 26572 · Received: 27930`. Restored;
+  diff empty; green again.
+- **P3 — the AC3 compile pins**: widened `ToolPolicy.allow` to `readonly string[]`. **Six** assertions fired —
+  five AC3 compile pins (`5 fail` in that describe) **and** `INV-6b`
+  (`Expected: "readonly BaseAllowedTool[]" · Received: "readonly string[]"`). Restored; diff empty; `14 pass`.
+- **P4 — the capability gate**: gave Codex `capabilities: PROVIDER_CAPABILITIES`, i.e. a gate that no longer
+  gates. **Six** tests fired across BOTH workspaces — 5 in core (including **L6**) and 1 in
+  `apps/web/lib/session-profiles.test.ts` (*"planner, steerer and escalation all FAIL on Codex"*). Restored.
+  **P4b**, the story's literal wording — `capabilities: []` — fired 3, including the
+  `interactive-approval`-published-by-both false-divergence guard. Restored; diff empty.
+- **P5 — the side-effect import**: deleted `import "@/lib/session-profiles";` from `route.ts`. This is the
+  failure with no other guard, and the probe proves it: **`bunx tsc --noEmit` in `apps/web` still exited 0**
+  while the app would 500 on every chat request. `INV-6c` was the only thing that noticed
+  (`Expected to contain: "import \"@/lib/session-profiles\";"`). Restored; diff empty; green.
+
+**The byte check (T-6).** No file this story wrote or edited contains a NUL or a stray control character
+(only TAB and LF permitted), and none is `application/octet-stream`:
+
+```
+packages/core/src/session-profile.ts:        text/plain; charset=utf-8      414 lines   0 control-char lines
+packages/core/src/providers.ts:              text/x-java; charset=utf-8     152 lines   0
+packages/core/src/index.ts:                  text/plain; charset=utf-8       95 lines   0
+packages/core/test/session-profile.test.ts:  text/x-java; charset=utf-8     698 lines   0
+packages/core/test/invariants.test.ts:       text/x-java; charset=utf-8    2800 lines   0
+apps/web/lib/session-profiles.ts:            text/plain; charset=utf-8      156 lines   0
+apps/web/lib/session-profiles.test.ts:       text/x-java; charset=utf-8     180 lines   0
+apps/web/app/api/chat/route.ts:              text/x-java; charset=utf-8    1985 lines   0
+```
+
+(`text/x-java` is `file(1)`'s heuristic for C-family syntax; the load-bearing fact is that nothing is
+`application/octet-stream` and every file is UTF-8 text `grep` reads as text.)
+
+**THE DEV-SERVER PROOF — captured verbatim.** `TELAR_HOME=$(mktemp -d)` **and** `HOME=$(mktemp -d)`, per
+§5.4-D (faking `HOME` too is what keeps a probe off the real `~/.telar` even when the guard under test is the
+broken thing). The throwaway root was seeded **through the ports, inside a `bun test` file** — never a
+`bun -e` probe (§0 rule 4): `createProject(<tmp workspace>, { name: "devproof", account: "codex-probe" })`
+and `upsertAccount({ name: "codex-probe", provider: "codex" })` with **no `configDir`**. Confirmed
+`accountHealth(codex-probe).status = unknown`, so it clears the route's account-health gate (which rejects
+only `missing-config-dir` / `never-logged-in`) and reaches the capability gate with no credentials involved.
+Server: `bun run dev --port 3111` → `✓ Ready in 273ms`, Next.js 16.3.0-canary.80.
+
+*Proof 1 — the capability gate, `role: "planner"` on the Codex account:*
+
+```
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=utf-8
+Transfer-Encoding: chunked
+
+{"error":"A \"planner\" session needs system-prompt-append, which the Codex agent does not support. Run this session on a Claude account, or start it as a plain project session."}
+```
+
+`grep -c -E "^(event|data):"` over that response → **0**. No SSE frame was written.
+
+*Proof 2 — the COMPANION POSITIVE CONTROL, the identical request with no `role` (kind `project`), same
+account:*
+
+```
+HTTP/1.1 200 OK
+Cache-Control: no-cache, no-transform
+Content-Type: text/event-stream
+Transfer-Encoding: chunked
+
+event: error
+data: {"message":"Error: codex app-server exited (code=127, signal=null)"}
+```
+
+This is the control §6.3 demands, and it discriminates in exactly the way it was asked to. The stream
+**opened** — 200 with `text/event-stream`, and the downstream failure (no `codex` binary on this machine)
+arrives as an SSE `error` **event inside the stream**, never as a status code. So the 400 in Proof 1 was
+caused by the capability gate and **not** by a missing side-effect import: had the registry been empty,
+`resolveSessionProfile` would have thrown and this request would have 500'd instead of streaming. T-B1
+verified from both ends.
+
+*Proof 3 — `role: "escalation"`, naming all three unmet capabilities:*
+
+```
+HTTP/1.1 400 Bad Request
+{"error":"A \"escalation\" session needs mcp-servers, pre-tool-use-hooks, tool-allow-deny-lists, which the Codex agent does not support. Run this session on a Claude account, or start it as a plain project session."}
+```
+
+SSE frames: **0**.
+
+*Proof 4 — the gate is a gate, not a wall.* The same `role: "planner"` request against a **Claude** account
+(`upsertAccount({ name: "claude-probe", provider: "claude" })`, added through the port in the same throwaway
+root) → `HTTP/1.1 200 OK`, `Content-Type: text/event-stream`. AC5 holds on the surface as well as in the
+suite.
+
+*And the scar was not re-opened.* `ls -la ~/.telar` before and after the whole dev-server session is
+**byte-identical** — still exactly the one pre-existing `usage.ndjson` (201 bytes, dated 26 Jul 01:20) left
+by story 1.1's out-of-harness probe. `~/.telar-dev` was never created. Every write landed in the throwaway
+root (`accounts.json`, `projects.json`). The dev server was stopped and port 3111 confirmed free.
+
+**The gate — the manual trio, both workspaces.**
+
+```
+$ cd packages/core && bun test        →  1562 pass / 0 fail · Ran 1562 tests across 108 files. [34.19s]
+$ cd packages/core && bunx tsc --noEmit  →  exit 0
+$ cd apps/web && bun test             →   333 pass / 0 fail · Ran 333 tests across 12 files. [1.54s]
+$ cd apps/web && bunx tsc --noEmit    →  exit 0
+$ bun test            (repo root)     →  1895 pass / 0 fail · Ran 1895 tests across 120 files. [35.68s]
+```
+
+**`bun run lint` — and a correction worth recording, because the first answer was wrong.** This is **not** a
+clean baseline and is *"not this SPEC's to fix"*; it exits 1 on pre-existing problems, overwhelmingly
+`react-hooks/*` and `@typescript-eslint/no-explicit-any` in files this story never opened. I first reported
+that the story added zero lint problems. **That claim came from a vacuous comparison** — my `grep -oE`
+pattern matched nothing, so I was diffing two empty strings and reading "identical" as a pass. It is the
+precise anti-vacuity failure this story's own §5.4-E exists to prevent, caught only because the count was
+re-measured with a pattern that had to be non-empty. Re-measured properly:
+
+```
+BEFORE (stash):  165 problems (136 errors, 29 warnings)
+AFTER  (first):  169 problems (136 errors, 33 warnings)   ← +4 warnings, all mine
+```
+
+The four were `'_ctx' is defined but never used` — one per builder in `apps/web/lib/session-profiles.ts`;
+this config does not treat a leading underscore as an ignore pattern (the pre-existing `_mode`/`_isolation`
+warnings in `route.ts` are the same shape). **Fixed rather than carried**: each builder is now declared
+`export const buildXProfile: SessionProfileBuilder = () => ({…})`, annotating with the port's own exported
+function type instead of naming a parameter it ignores — which states the contract more precisely than the
+unused argument did. Final:
+
+```
+AFTER  (fixed):  165 problems (136 errors, 29 warnings)   ← IDENTICAL to baseline, zero added
+$ grep -E "session-profiles" <lint output>  →  (none)
+```
+
+Errors never moved (136 → 136 → 136); the `route.ts` entries in the diff are pure line-number shifts from
+this story's +63 lines, not new findings.
 
 ### Completion Notes
 
-_(fill in. Required entries, at minimum:_
-_1. Which `typecheck()` variant was used and why (D13)._
-_2. The `mcpServers` Record-vs-array deviation from the AC's `mcpServers[]` notation (D6)._
-_3. The branded-type option, considered and declined, with the reason (D1) — so 2.2 does not re-open it._
-_4. The `BASE_ALLOWED_TOOLS` seam: which tool names are in the base union, which stayed in the route, and that_
-_   2.2 owns bringing `LOOM_AUTO_TOOLS`/`ULTRA_AUTO_TOOLS` in (D3)._
-_5. The disclosed behaviour change for a Codex `escalation` session, with the measurement (D11)._
-_6. What `planner` and `steerer` ended up requiring, the grep that established Codex-reachability, and the_
-_   behaviour change that followed (D11)._
-_6b. That `route.ts` carries `import "@/lib/session-profiles";` and that the `project`-session positive control_
-_   streamed — i.e. the registry was actually populated at request time (T-B1)._
-_7. That `steerer`/`escalation` `systemPromptAppendix` is `""` in 2.1 and why 2.2 supplies it (D11)._
-_8. The prove-run filter measurement: one command or two, and the selected count (D14)._
-_9. The pre-stream detectability constraint (D9b): that a resumed planner/steerer resolves as `project`, that_
-_   under-detection is the safe direction, and that `getChat` was deliberately NOT hoisted — so 2.2 inherits_
-_   the analysis instead of re-deriving it._
-_10. The Codex guardrail gap recorded in `deferred-work.md` (AC2's Notes), with its file-and-symbol citation._
-_11. That `bunfig.toml` was not touched and none of story 1.1's five `[Review][Decision]` items was resolved._
-_12. That `KNOWN_VIOLATIONS` still holds exactly one entry._
-_13. The `SPEC.md`-vs-`epics.md` drift noted in §8: SPEC's success paragraph names five prove-run legs and_
-_   does not name the toolPolicy-widening assertion; `epics.md` adds it as AC6 and is the source of truth._
-_14. Anything deliberately left to another story or track, named — not silently dropped.)_
+1. **The `typecheck()` variant (D13): the SIMPLE form** — no `--types node`, no `cwd: CORE_ROOT` — copied
+   from `event-bus.test.ts` rather than `session-lease.test.ts`. The `--types node` variant exists only
+   because `runner/lease.ts` imports `node:fs`; `session-profile.ts` imports no `node:*` module, and the
+   fixture prelude imports only `BASE_ALLOWED_TOOLS`, `BaseAllowedTool` and `ToolPolicy`, keeping the Agent
+   SDK out of the throwaway program's import surface entirely. Harness duplicated a **third** time, per the
+   §3 fence: `packages/core/test/` has never held a helper module and this story did not introduce one.
+2. **`mcpServers` is a name-keyed `Record`, not an array — a disclosed deviation from AC1's `mcpServers[]`
+   notation.** The SDK, the chat route (`mcpServers: { loom, ultra, ...resolveProjectMcpServers(project) }`)
+   and core's own `resolveProjectMcpServers` all key MCP servers by **name**, because the SDK requires the
+   name as the key. Converting to an array and back would lose the keys for pure ceremony, and a record makes
+   duplicate names structurally impossible. Read `mcpServers[]` as "the set of MCP servers". Flagged here
+   because a reviewer holding the AC text will notice, and an undisclosed deviation reads as an error.
+3. **The branded/nominal `SessionProfile` was considered and DECLINED — recorded so 2.2 does not re-open
+   it.** Core has no branded-type precedent (grepped: zero `unique symbol`, zero `__brand`, zero phantom type
+   parameters), and the house mechanism for "this cannot be expressed" is the enumerable union (§5.4-B). It
+   is also unnecessary: `toolPolicy` is the *only* tool-granting field, and its own type forbids widening
+   whether or not the enclosing object was minted by the resolver. The two-type split
+   (`SessionProfileSpec` in, `SessionProfile` out) already delivers the property the brand was wanted for.
+4. **The `BASE_ALLOWED_TOOLS` seam.** The base union is exactly the six tools core can name for itself —
+   `Read, Grep, Glob, WebSearch, WebFetch, ToolSearch` — measured from today's route. `LOOM_AUTO_TOOLS` and
+   `ULTRA_AUTO_TOOLS` are `apps/web/lib` constants; core importing them would invert the dependency, so they
+   **stayed in the route**, and a spec's `allow` narrows the six. **Story 2.2 owns bringing them in**, either
+   by moving those constants into core or by parameterising the base set; doing it here would mean touching
+   `apps/web/lib/loom-mcp.ts`, which is not in this story's write set. Said in-source, above the const.
+5. **The disclosed behaviour change, with the measurement.** After this story an `escalation`, `planner` or
+   `steerer` session on a **Codex** account returns a 400 instead of a 200 that silently drops the thing that
+   made it that kind of session. **It is genuinely reachable, re-derived by grep rather than assumed:**
+   `apps/web/components/session/session-view.tsx`'s `selectProvider` is unrestricted (it sets provider,
+   resets model/effort, and re-points the account — no kind check anywhere), the `planner`/`steerer`/
+   `escalation` props are passed independently of provider, and `apps/web/app/looms/plan/[project]/page.tsx`
+   imposes no restriction either. Nothing stops a Codex account being selected for a planner session today.
+   Proven live in Proofs 1 and 3 above. This is **not** covered by AC5, which scopes "untouched" to the
+   *project-session* path — so the capability set was **not** weakened to avoid it. AD-11: *"No silent
+   degradation, ever."*
+6. **What `planner` and `steerer` require, and why.** Both require **`system-prompt-append`** and
+   deliberately **not** `mcp-servers`. The route's own comment on `isPlannerSession` is the reason: the flag
+   *"Drives ONLY the appended system-prompt guidance below — never loom tool access/gating"*, and the steerer
+   comment says the same (*"never loom tool access/gating (which stays exactly as wired)"*). So the appendix
+   **is** the kind, and requiring a capability the kind does not use would gate it on something irrelevant.
+   `escalation` requires `mcp-servers`, `pre-tool-use-hooks` and `tool-allow-deny-lists`, because the Codex
+   fork returns before `createLoomMcpServer` is ever reached — there are no loom tools at all — and
+   `answer_blocked`'s human gate is a `PreToolUse` comparison that does not run on that branch.
+   `interactive-approval` is published by **both** providers on purpose: Codex genuinely has it via
+   `onCodexApproval`, and a false divergence would 400 a session that works today.
+6b. **`route.ts` carries `import "@/lib/session-profiles";`, and the registry was provably populated at
+   request time.** Verified three ways: by grep (exactly 1 occurrence), mechanically by `INV-6c` (which
+   asserts the literal — and P5 proved that assertion is the *only* thing in the tree that notices its
+   removal, since `tsc` stayed green), and live by the Proof-2 positive control, where a `project` session on
+   the same account streamed rather than throwing `no module declared it`.
+7. **`systemPromptAppendix` is `""` for ALL FOUR kinds in 2.1 — including `planner`, which D11 expected could
+   be supplied now.** This is a **deviation from the story's design table** and it is forced by a measurement
+   D11 did not make: `PLANNER_SYSTEM_PROMPT`, `STEERER_SYSTEM_PROMPT` and `ESCALATION_SYSTEM_PROMPT` are all
+   module-private consts inside `route.ts`, whose **only export is `POST`**. Reaching them would need either
+   a second export from a Next.js route module or hoisting the constants out of the handler — both larger
+   edits to `route.ts` than AC5 permits — and copying the text would create a second source of truth for
+   moat-adjacent prompt content. `planner` has a second blocker: `ultraAnnotationNote` derives from the
+   per-turn `ultra` wire flag, which is not a field of `SessionResolutionContext` (D1 fixes that shape).
+   `steerer`/`escalation` were always 2.2's, since their values embed per-turn live reads
+   (`buildSteererContext`, `buildEscalationContext`) inside the stream body. **Harmless in 2.1** (nothing
+   consumes the appendix — D8), **not harmless in 2.2**, so it is written up in `deferred-work.md` with the
+   fix, and the builder suite pins `""` for all four *on purpose* as the tripwire.
+8. **The prove-run is TWO commands, not one, and the count was measured** — `-t "prove-run"` selects **11**,
+   not six. Full arithmetic and the two honest commands are in the Debug Log. D14's own fallback applies:
+   *"A faked single command is worse than an honest pair."*
+9. **The pre-stream detectability constraint (D9b), so 2.2 inherits the analysis instead of re-deriving it.**
+   `existingChat` (`getChat(resumeTarget)`) and `loomLink` are both derived **inside** the stream closure, so
+   nothing pre-stream can see a resumed session's persisted `role`. A **resumed** planner or steerer session
+   whose client omits `role` therefore resolves as kind `project`. That **under-detection is the safe
+   direction** and is the reason the gate cannot false-positive: `project` requires no capability, so a
+   mis-detected session gets a *weaker* requirement, never a spurious 400. `escalation` is reliably knowable
+   because the client *"sends it on every turn including reattached ones"*. **`getChat` was deliberately NOT
+   hoisted** into the preamble — that is a real store read on the hot path and a change to a validated
+   pre-stream sequence, i.e. 2.2's call. Asserted as named tests and written into the port's header.
+10. **The Codex guardrail gap is recorded, not fixed** — `deferred-work.md`, new
+   `## Deferred from: 2-1-the-sessionprofile-resolver (2026-07-26)` section, with the measurement:
+   `makeGuardrailDecision` has exactly two call sites in `route.ts` (inside `canUseTool` and inside
+   `preToolUseGuardrail`), both reachable only as `query()` options in the `else` branch;
+   `manifest.guardrails` is read in exactly one place, the Claude branch's `disallowedTools`; and searching
+   the entire Codex fork for `makeGuardrailDecision`/`guardrails`/`disallowedTools`/`protectedPaths` returns
+   nothing. So a project's `manifest.guardrails` is **never enforced on a Codex session**. Older than this
+   story; fixing it means changing behaviour inside `new ReadableStream`, which AC5 forbids.
+11. **`bunfig.toml` was not touched** (`git diff --stat HEAD -- bunfig.toml` → empty; fourth story in a row to
+   fence itself from it), and **none of story 1.1's five `[Review][Decision]` items was resolved** — in
+   particular `usageSummary`'s `ownerKind !== "session"` filter, `getChat`'s discarded `costUsd` and
+   `releaseAdmission`'s class-mismatch residual are all untouched. `ultra-runner.test.ts` is byte-identical.
+12. **`KNOWN_VIOLATIONS` still holds exactly one entry** (`scripts/backfill-tool-detail.ts`), and `INV-3a`'s
+   `TELAR_HOME` inventory is still exactly **18** sites. This story added **no** new `KNOWN_VIOLATIONS`
+   entry, because D2's pure resolver composes no state path at all.
+13. **The `SPEC.md` ↔ `epics.md` drift was noticed and is recorded, as §8 asks.** `SPEC.md`'s success
+   paragraph names **five** prove-run legs and does **not** name the `toolPolicy`-widening assertion;
+   `epics.md` re-cuts the run across two stories and adds that assertion as story 2.1's AC6. Per planning
+   decision 4, **`epics.md` is the source of truth**, and this story implemented AC6 accordingly (`INV-6`).
+14. **Deliberately left to another story or track, each named rather than silently dropped.** (a) Migrating
+   the project/planner/steerer/escalation session onto the profile, and removing any session-kind conditional
+   — **story 2.2** in full; `isPlannerSession`, `isSteererSession` and `isEscalationSession` are untouched.
+   (b) Codex MCP injection — the mechanism that *reports* the gap is built; the injection is not.
+   (c) `LOOM_AUTO_TOOLS`/`ULTRA_AUTO_TOOLS` joining the base union — 2.2 (note 4). (d) The three
+   `systemPromptAppendix` values — 2.2 (note 7, recorded in `deferred-work.md`). (e) The Codex guardrail gap
+   — recorded, unowned (note 10). (f) No zod schema for `SessionProfile` (§3, T-12: a zod round-trip would
+   widen the literal union back to `string[]` and destroy AC3). (g) No CI, no route, nothing user-visible.
+15. **One addition beyond §5.2's literal export list, made deliberately and flagged.** `sessionKindFromRole`
+   is exported from `session-profile.ts` even though §5.2 does not list it. §6.4's coverage rows 26 and 27
+   require the wire-role→kind derivation to be **tested in the core suite**, and the only alternative was to
+   put that logic inline in `route.ts` — a file with **no test anywhere in the tree**, which would have made
+   the two rows untestable and defeated the coverage table. `SESSION_KINDS`, `SessionRole`,
+   `SessionProfileBuilder`, `ResolvedToolPolicy`, `ProfilePermissionMode` and `registeredSessionKinds` are
+   likewise present: D3 names `ResolvedToolPolicy` explicitly, §5.4-B's enumerable-union idiom requires the
+   tuple, and the rest are the registry's own vocabulary.
+16. **`ProfilePermissionMode` reuses the SDK's union rather than restating it** —
+   `Exclude<PermissionMode, "bypassPermissions" | "plan" | "dontAsk">`, the same utility-type family as D5's
+   `Exclude<SettingSource, "user">`. It resolves to exactly `apps/web`'s `ClientPermissionMode`
+   (`"default" | "auto" | "acceptEdits"`) without core importing from the app, and the exclusions are the
+   load-bearing part: `bypassPermissions` skips `canUseTool` entirely, so a context that could carry it would
+   be the very degradation AD-10 forbids (NFR-RF-1: reuse, never rebuild).
 
 ---
 
 ## 10. File List
 
-_(measure with the change staged: `git add -A -- packages/core apps/web && git diff --cached --name-status`)_
+Measured with the change staged (`git add -A -- packages/core apps/web && git diff --cached --name-status`):
 
-Expected: 4 `A` (`packages/core/src/session-profile.ts`,
-`packages/core/test/session-profile.test.ts`, `apps/web/lib/session-profiles.ts`,
-`apps/web/lib/session-profiles.test.ts`) and 4 `M` (`packages/core/src/providers.ts`,
-`packages/core/src/index.ts`, `packages/core/test/invariants.test.ts`,
-`apps/web/app/api/chat/route.ts`), plus `deferred-work.md` if you recorded a finding there (AC2's Notes
-require one). **Anything else is a write-set breach — record it as a cross-track finding rather than shipping
-it silently.**
+```
+M	apps/web/app/api/chat/route.ts
+A	apps/web/lib/session-profiles.test.ts
+A	apps/web/lib/session-profiles.ts
+M	packages/core/src/index.ts
+M	packages/core/src/providers.ts
+A	packages/core/src/session-profile.ts
+M	packages/core/test/invariants.test.ts
+A	packages/core/test/session-profile.test.ts
+```
+
+**4 `A` + 4 `M`, exactly as §10 predicted — no write-set breach.** Plus, outside the code write set and
+staged separately:
+
+```
+M	_bmad-output/implementation-artifacts/deferred-work.md          (AC2's required finding + note 7)
+M	_bmad-output/implementation-artifacts/sprint-status.yaml        (2-1 → review)
+M	_bmad-output/implementation-artifacts/stories/2-1-the-sessionprofile-resolver.md
+```
+
+`_bmad-output/implementation-artifacts/orchestrator-run-log.md` is **deliberately excluded from every
+commit** — it belongs to the orchestrator, not to this story.
 
 ---
 
 ## 11. Change Log
 
-_(fill in, with a suggested conventional-commit message. Scope spans both workspaces, so `feat(core)` with the
-`apps/web` wiring named in the body is the closer fit than a bare `feat(web)`. Explain WHY, per
-`project-context.md`. **Do not commit `_bmad-output/implementation-artifacts/orchestrator-run-log.md`** — it
-belongs to the orchestrator, not to this story.)_
+| Date | Change |
+| --- | --- |
+| 2026-07-26 | **Story 2.1 implemented.** New core port `session-profile.ts`: `SessionKind`/`SESSION_KINDS`, `sessionKindFromRole`, `BASE_ALLOWED_TOOLS`/`BaseAllowedTool`, the intersect-only `ToolPolicy` + `ResolvedToolPolicy`, `ProfileSettingSource`, `ProfilePermissionMode`, `SessionProfileSpec`/`SessionProfile`/`SessionResolutionContext`, the `declareEvents`-shaped registry (`registerSessionProfile` / `resolveSessionProfile` / `resetSessionProfiles` / `registeredSessionKinds`), the pure fold, and `unmetCapabilities`. |
+| 2026-07-26 | `providers.ts`: added `ProviderCapability` + `PROVIDER_CAPABILITIES`, a required `capabilities` field on `ProviderDescriptor` populated for both `PROVIDERS` entries, and `providerCapabilities`/`providerPublishes`. Header's "auth/config only" claim amended in the same edit so it no longer contradicts its own file. |
+| 2026-07-26 | `index.ts`: one `export * from "./session-profile";` with its AD-9/AD-10/AD-11 banner. |
+| 2026-07-26 | `apps/web/lib/session-profiles.ts` (new): the four spec builders + module-scope registration. `route.ts`: named imports, the side-effect import, one resolve call and one capability gate in the pre-stream preamble — 63 inserted lines, zero removed, nothing inside `new ReadableStream`. |
+| 2026-07-26 | Tests: `packages/core/test/session-profile.test.ts` (37, incl. 7 two-direction `tsc` pins and prove-run leg **L6**), `apps/web/lib/session-profiles.test.ts` (16), and **`INV-6`** in `invariants.test.ts` (7: floor, `INV-6a`/`6b`/`6c`/`6d`, and executable citations) with its `THE FIVE` header amended to name the sixth. |
+| 2026-07-26 | `deferred-work.md`: new section recording the pre-existing Codex guardrail gap (AC2's required finding) and the `systemPromptAppendix` deferral to 2.2. |
+
+**Suggested conventional-commit message** — `feat(core)` rather than `feat(web)`, because the port and its
+proofs are the substance and the `apps/web` change is wiring:
+
+```
+feat(core): the SessionProfile resolver — session config as data, with the moat left outside it
+
+Adds packages/core/src/session-profile.ts: a typed session profile resolved
+once, before the chat route's body runs, so a new kind of session becomes a
+registered profile rather than another conditional through a 1900-line handler.
+Three epics are queued to add a fourth, fifth and sixth session kind against
+that handler, and the Human-Accept Moat currently rides on it.
+
+The three properties are the point, and each is enforced rather than reviewed:
+
+- The PreToolUse guardrail stays wired OUTSIDE the profile. No field can reach
+  hook registration, and INV-6a pins the field set to AD-9's seven config fields
+  plus the registry key, so adding one fails a test.
+- toolPolicy is intersect-only BY ITS TYPE — deny lists and allow-narrowing
+  only — proved by running tsc over generated fixtures in both directions, and
+  intersected again at runtime so a cast cannot widen either.
+- An unmet capability is a hard error BEFORE the stream opens. providers.ts now
+  publishes what each provider's harness supports, measured against the Codex
+  fork; unmetCapabilities names what is missing and the route turns it into its
+  existing pre-SSE 400.
+
+Additive by design: the route resolves a profile for every request and consumes
+only the capability gate. Migrating the live path onto it is story 2.2, behind
+its own gate. Discloses one behaviour change — a planner, steerer or escalation
+session on a Codex account now 400s instead of returning 200 while silently
+dropping the thing that made it that kind of session (AD-11: no silent
+degradation, ever).
+
+Also records, without fixing, that a project's manifest.guardrails is never
+enforced on a Codex session — older than this story, and outside AC5's fence.
+```
