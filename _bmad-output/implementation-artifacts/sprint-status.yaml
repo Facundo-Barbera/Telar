@@ -51,8 +51,8 @@ development_status:
   # Epic 1: Runtime Foundations
   epic-1: in-progress
   1-1-state-root-isolation-and-the-attributed-spend-ledger: done
-  1-2-the-event-bus-admission-control-and-the-lease-primitive: review
-  1-3-executable-invariants-and-the-track-a-prove-run: backlog
+  1-2-the-event-bus-admission-control-and-the-lease-primitive: done
+  1-3-executable-invariants-and-the-track-a-prove-run: ready-for-dev
   epic-1-retrospective: optional
 
   # Epic 2: Session Profiles
