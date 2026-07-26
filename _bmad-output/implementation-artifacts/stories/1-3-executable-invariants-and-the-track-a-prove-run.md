@@ -1,7 +1,7 @@
 ---
 story_id: "1-3"
 title: "Executable invariants and the Track A prove-run"
-status: "ready-for-dev"
+status: "review"
 epic: "Epic 1: Runtime Foundations"
 track: "A — Runtime foundations (packages/core only)"
 caps: ["CAP-6", "SPEC success signal (spec-runtime-foundations stories.yaml #9)"]
@@ -274,68 +274,68 @@ pre-existing violation, and §5.5-D7's ruling needs that answer before you write
 
 One new file: `packages/core/test/invariants.test.ts` (naming and test-title rules: §5.5-D10).
 
-- [ ] **T-A0 — inventory before you assert.** Write the scan index first and print what it found. Do not
+- [x] **T-A0 — inventory before you assert.** Write the scan index first and print what it found. Do not
       write a single `expect` until you have looked at the index and know the current violation count for
       all five invariants. Record the inventory in the Debug Log. (This is the step that makes §5.5-D7
       actionable instead of a surprise at repair time.)
-  - [ ] Repo-root resolution: walk up from `import.meta.dir` until a directory contains **both**
+  - [x] Repo-root resolution: walk up from `import.meta.dir` until a directory contains **both**
         `bunfig.toml` **and** a `packages/` directory; **throw** if you reach the filesystem root. A test
         that silently scans nothing is the failure §0 rule 1 exists to prevent.
-  - [ ] One recursive walk, one cached index (§5.5-D0 for the exact shape, the exclude list and the
+  - [x] One recursive walk, one cached index (§5.5-D0 for the exact shape, the exclude list and the
         anti-vacuity floors). Build it **once** at module scope; every `describe` reads it.
-  - [ ] Assert the four §5.5-D0 floors: total files walked, `isClient` count (by **directive**), `*-mcp.ts`
+  - [x] Assert the four §5.5-D0 floors: total files walked, `isClient` count (by **directive**), `*-mcp.ts`
         count, and files under `packages/core`. Measured pointers to sanity-check against are in §5.5-D0 —
         they are lower bounds to re-measure, not equalities.
-- [ ] **T-A1 — INV-1: no MCP surface exposes an accept tool (AD-1 / NFR-X-1).** Per §5.5-D1 — **three** parts,
+- [x] **T-A1 — INV-1: no MCP surface exposes an accept tool (AD-1 / NFR-X-1).** Per §5.5-D1 — **three** parts,
       because AD-1 says the moat is enforced twice and names the construction half.
-  - [ ] Part 1, the tool surface: static extraction of every `tool("<name>", …)` literal and every
+  - [x] Part 1, the tool surface: static extraction of every `tool("<name>", …)` literal and every
         `createSdkMcpServer({ name: … })` (three servers: `loom`, `ultra`, `out`); pinned `{server → tools}`
         inventory asserted **equal**; word-boundary deny check; the in-source note about
         `resolveProjectMcpServers` being out of static reach.
-  - [ ] Part 2, the construction half: `acceptLoom` is the only `.state = "done"` writer in
+  - [x] Part 2, the construction half: `acceptLoom` is the only `.state = "done"` writer in
         `packages/core/src`; it is not imported by `loom-mcp.ts`; its only importer is the accept API route;
         it refuses a blank `by`; `tick.ts` assigns `done` nowhere.
-  - [ ] Part 3, the hook: the chat route wires `PreToolUse`, and the guardrail names `LOOM_START_TOOL` and
+  - [x] Part 3, the hook: the chat route wires `PreToolUse`, and the guardrail names `LOOM_START_TOOL` and
         `LOOM_ANSWER_BLOCKED_TOOL` — assert on the exported constants, never on the reason strings.
-  - [ ] The discriminating fixture (§5.5-D0b); AC2 message quality; AC2 revert-probe captured.
-- [ ] **T-A2 — INV-2: the verifier stack is granted no write or edit tools (AD-2 / NFR-X-2).** Per §5.5-D2 —
+  - [x] The discriminating fixture (§5.5-D0b); AC2 message quality; AC2 revert-probe captured.
+- [x] **T-A2 — INV-2: the verifier stack is granted no write or edit tools (AD-2 / NFR-X-2).** Per §5.5-D2 —
       **read the four existing tests first and assert the gap, not a fifth copy.**
-  - [ ] Verify §5.5-D2's table of existing coverage still holds; cite it in-source.
-  - [ ] The consolidating runtime assertion: the **ten**-name deny set is disjoint from `VERIFIER_TOOLS`, plus
+  - [x] Verify §5.5-D2's table of existing coverage still holds; cite it in-source.
+  - [x] The consolidating runtime assertion: the **ten**-name deny set is disjoint from `VERIFIER_TOOLS`, plus
         the floor.
-  - [ ] The grant check on `verifier.ts` and `critic.ts` includes `restrictTools: true` — the field that is
+  - [x] The grant check on `verifier.ts` and `critic.ts` includes `restrictTools: true` — the field that is
         the actual wall — and pins that `critic.ts` **imports** the array rather than re-declaring it.
-  - [ ] New coverage: `verify-thread.ts` and `panel.ts` grant nothing and call no `agent(`; `panel.ts` imports
+  - [x] New coverage: `verify-thread.ts` and `panel.ts` grant nothing and call no `agent(`; `panel.ts` imports
         no `node:fs`.
-  - [ ] New coverage: the verification-surface inventory, with each file's classification stated in-source
+  - [x] New coverage: the verification-surface inventory, with each file's classification stated in-source
         (judge / must-not-grant / setup-wall). `verify-lane.ts`'s no-judge-import half is **cited** to
         `m10-verify-lane.test.ts`.
-  - [ ] `ULTRA_CHILD_TOOLS` is deliberately write-capable and must not be swept up.
-- [ ] **T-A3 — INV-3: no module reads another module's `TELAR_HOME` subtree by path (AD-5).** Per §5.5-D3.
-  - [ ] Re-derive the 18-site path-composition table; pin it. **Not** the five resolvers — newer code imports
+  - [x] `ULTRA_CHILD_TOOLS` is deliberately write-capable and must not be swept up.
+- [x] **T-A3 — INV-3: no module reads another module's `TELAR_HOME` subtree by path (AD-5).** Per §5.5-D3.
+  - [x] Re-derive the 18-site path-composition table; pin it. **Not** the five resolvers — newer code imports
         `telarDir` instead of re-deriving it.
-  - [ ] Per-site ownership check; the "cross-module reuse goes through an exported port" shape.
-  - [ ] **Assert nothing about `projects/` or `workspace/`** — they do not exist as subtrees today (§5.5-D3, point 2).
-  - [ ] Record the two known co-tenancies as *named, justified* entries, not as silence.
-  - [ ] `scripts/backfill-tool-detail.ts` as a `KNOWN_VIOLATIONS` entry under D7 — D0's roots include `scripts`, so
+  - [x] Per-site ownership check; the "cross-module reuse goes through an exported port" shape.
+  - [x] **Assert nothing about `projects/` or `workspace/`** — they do not exist as subtrees today (§5.5-D3, point 2).
+  - [x] Record the two known co-tenancies as *named, justified* entries, not as silence.
+  - [x] `scripts/backfill-tool-detail.ts` as a `KNOWN_VIOLATIONS` entry under D7 — D0's roots include `scripts`, so
         your scan **will** reach it.
-- [ ] **T-A4 — INV-4: client components import no core runtime (AD-3 / NFR-X-3).** Per §5.5-D4.
-  - [ ] Directive-based `isClient` detection (T-5: 119 real, 123 substring; the gap includes a file importing
+- [x] **T-A4 — INV-4: client components import no core runtime (AD-3 / NFR-X-3).** Per §5.5-D4.
+  - [x] Directive-based `isClient` detection (T-5: 119 real, 123 substring; the gap includes a file importing
         `node:fs`).
-  - [ ] Type-only check that survives **multi-line** imports (T-4).
-  - [ ] Transitive BFS following **value edges only** — the decision that keeps the invariant green-and-real
+  - [x] Type-only check that survives **multi-line** imports (T-4).
+  - [x] Transitive BFS following **value edges only** — the decision that keeps the invariant green-and-real
         rather than permanently red (§5.5-D4, point 2). Assert `godview.ts` is in the visited set by name.
-  - [ ] Anti-vacuity floors on client files visited, import statements examined, and edges traversed.
-- [ ] **T-A5 — INV-5: no module writes a shared runtime service's state directly (AD-20).** Per §5.5-D5.
-  - [ ] `usage.ndjson` composed in exactly one non-test module; `apps/web/lib/store.test.ts` excluded or
+  - [x] Anti-vacuity floors on client files visited, import statements examined, and edges traversed.
+- [x] **T-A5 — INV-5: no module writes a shared runtime service's state directly (AD-20).** Per §5.5-D5.
+  - [x] `usage.ndjson` composed in exactly one non-test module; `apps/web/lib/store.test.ts` excluded or
         allow-listed by name with a reason; the three production `logUsage` call sites pinned; the
         `apps/web/lib/store.ts` re-export asserted.
-  - [ ] The lease filename appears in exactly one module (and `sessions.ts` composing a *directory* is the
+  - [x] The lease filename appears in exactly one module (and `sessions.ts` composing a *directory* is the
         AD-16 shape that must stay passing).
-  - [ ] Bus and admission hold no file: assert their state is unreachable except through their ports, and
+  - [x] Bus and admission hold no file: assert their state is unreachable except through their ports, and
         **cite** the existing snapshot-immutability test rather than duplicating it.
-  - [ ] The D9 handle invariant: no `packages/core/src` file outside `admission.ts` calls `releaseAdmission(`.
-- [ ] **T-A6 — AC3 budget.** Measure the file's wall-clock. If it exceeds 2000 ms, the cause is almost
+  - [x] The D9 handle invariant: no `packages/core/src` file outside `admission.ts` calls `releaseAdmission(`.
+- [x] **T-A6 — AC3 budget.** Measure the file's wall-clock. If it exceeds 2000 ms, the cause is almost
       certainly a second tree walk or a spawned process — fix that, do not raise the threshold.
 
 ### Leg B — the Track A prove-run (AC4)
@@ -347,16 +347,16 @@ means for what you write: each leg exercises its port for real, asserts only its
 transcript line, and **cites** the suite that owns the exhaustive coverage. The unique content of this leg is
 the composition, the transcript, and L5.
 
-- [ ] **T-B0 — the sandbox.** House `TELAR_HOME` idiom (§5.4), `resetBus()` and `resetAdmission({})` in
+- [x] **T-B0 — the sandbox.** House `TELAR_HOME` idiom (§5.4), `resetBus()` and `resetAdmission({})` in
       `beforeEach`, full env restore in `afterAll`. `resetAdmission({})` is not optional — story 1.2's
       Completion Note 12 made the ceiling re-read the environment on every entry point, so a
       `TELAR_MAX_AGENTS` in the developer's own shell would otherwise change L3's arithmetic.
-- [ ] **T-B1 — L1, the bus.** Declare a fixture catalogue under a module name of this suite's own; one
+- [x] **T-B1 — L1, the bus.** Declare a fixture catalogue under a module name of this suite's own; one
       `agent-facing` fact, one `human-facing` fact. Attach a wake handler to the first and an ordinary
       subscriber to the second. Publish both. Assert: the wake handler ran; the `human-facing` publish
       reports `wakeDelivered === 0` **and** `delivered >= 1`; `subscribeAgentFacing` on the `human-facing`
       name **throws**.
-- [ ] **T-B2 — L2, attributed spend through a projection.** `logUsage` one entry carrying `ownerKind` +
+- [x] **T-B2 — L2, attributed spend through a projection.** `logUsage` one entry carrying `ownerKind` +
       `ownerId` (`UsageOwnerKind` is `z.enum(["session", "loom", "ultra"])`; `logUsage` returns `boolean` —
       assert the return, not just the absence of a throw), then read it back through a **projection**
       (`ledgerSpendUsd({ownerKind, ownerId})` is the attribution-shaped one; `usageSummary` /
@@ -366,36 +366,36 @@ the composition, the transcript, and L5.
       `ts`** carries a zod `.default(…)`, including `ownerKind` / `ownerId` / `entryKey`. `ts` alone is
       required, which is why `logUsage` takes `UsageEntryInput = { ts: number } & Partial<UsageEntry>`. That
       tolerance is the AD-7 property being demonstrated.
-- [ ] **T-B3 — L3, admission under real contention.** Per AC4's "genuinely queued" note. Take every slot
+- [x] **T-B3 — L3, admission under real contention.** Per AC4's "genuinely queued" note. Take every slot
       through the **handle** `acquireAdmission` returns (§5.5-D9). Capture `admissionSnapshot()` at
       contention. **Drain every waiter and release every slot before the test ends, in `finally` blocks** — **T-6** in §5.6:
       a leaked waiter makes `resetAdmission` throw and takes the whole run down.
-- [ ] **T-B4 — L4, the lease. Read §5.5-D12 before starting: this leg has two halves with different scopes,
+- [x] **T-B4 — L4, the lease. Read §5.5-D12 before starting: this leg has two halves with different scopes,
       and the half that is genuinely new needs a module the earlier drafts of this story never named.**
-  - [ ] The **reclaim-decision half** — a stale lease resolves `reclaimable`, never `done`, on **both** roots
+  - [x] The **reclaim-decision half** — a stale lease resolves `reclaimable`, never `done`, on **both** roots
         (loom-owned and session-owned), since AD-16's claim is one primitive two lifetimes. This is already
         exhaustively covered: **cite** `session-lease.test.ts`'s
         `AC11 a STALE lease resolves to reclaimable on BOTH the loom path and the session path`, its reclaim-union
         enumeration, its ``AC11 `done` is NOT assignable to LeaseReclaim`` tsc test, and its
         `AC11 the lease filename is` \``.runner-lease`\` `on BOTH lifetimes` — per D11, cite, do not re-run.
-  - [ ] The **terminal-state half** — `reclaimable` actually becoming a persisted `failed`. This is the new
+  - [x] The **terminal-state half** — `reclaimable` actually becoming a persisted `failed`. This is the new
         content, it is **loom-only**, and its mechanism is `dispatcher.ts`'s `reconcileStuckLooms(liveness)`
         with `runner/liveness.ts`'s `crossProcessLiveness(...)` injected. See §5.5-D12 for why, and for the two
         traps in it.
-  - [ ] Age the lease with an **injected clock**, never `sleep` (T-9).
-- [ ] **T-B5 — L5, `~/.telar` untouched.** Per §5.5-D6: the guard is armed (layer 1); the before/after
+  - [x] Age the lease with an **injected clock**, never `sleep` (T-9).
+- [x] **T-B5 — L5, `~/.telar` untouched.** Per §5.5-D6: the guard is armed (layer 1); the before/after
       snapshot of the real path — **never-create, never-delete**, and never an "it does not exist" assertion
       (layer 2, the genuinely new content); positive evidence that the writes landed under the temp root
       (layer 3); and the fake-`HOME` child probe **cited**, not rebuilt (layer 4).
-- [ ] **T-B6 — the transcript.** One line per leg, stable prefix, printed via `console.log`. It is the
+- [x] **T-B6 — the transcript.** One line per leg, stable prefix, printed via `console.log`. It is the
       artifact AC4's dev-server-proof line calls "the scripted run's transcript". Paste it into the Debug Log
       verbatim.
 
 ### Leg C — the gate and the record
 
-- [ ] **T-C1 — discovery proof.** §6.2, both mechanisms, for both new files.
-- [ ] **T-C2 — the trio.** §6.3's full checklist, real output.
-- [ ] **T-C3 — the record.** §9 Debug Log and Completion Notes; §10 File List measured with the change
+- [x] **T-C1 — discovery proof.** §6.2, both mechanisms, for both new files.
+- [x] **T-C2 — the trio.** §6.3's full checklist, real output.
+- [x] **T-C3 — the record.** §9 Debug Log and Completion Notes; §10 File List measured with the change
       staged (`git add -A -- packages/core && git diff --cached --name-status`); §11 Change Log with a
       suggested conventional-commit message.
 
@@ -1514,32 +1514,569 @@ line, no `src` change — and `test(core):` is the right prefix.
 
 ### Agent Model Used
 
-<!-- model name + version -->
+Claude Opus 5 (`claude-opus-5`), driven by the `bmad-dev-story` workflow, run **fully autonomously** — the
+operator was asleep for the whole run and every checkpoint the workflow would normally halt at was decided
+in-run and recorded in Completion Note 14.
 
 ### Debug Log
 
-<!-- Real pasted output for every item in §6.3. -->
+Every block below is **real pasted output**, captured at `75d9b75` + the two new files.
+
+**Write-set discipline — nothing outside `packages/core/test/` changed.**
+
+```
+$ git diff --stat -- bunfig.toml
+                                       (empty)
+$ git diff --stat -- packages/core/src apps/web
+                                       (empty)
+$ git diff --stat -- packages/core/test/ultra-runner.test.ts
+                                       (empty)
+```
+
+**Baseline vs. final suite-file count — delta exactly 2.**
+
+```
+$ ls packages/core/test/*.test.ts | wc -l      # baseline, before this story
+     105
+$ ls packages/core/test/*.test.ts | wc -l      # final
+     107
+```
+
+**Baseline repo-root `bun test`, before any file was written:**
+
+```
+ 1789 pass
+ 0 fail
+ 9903 expect() calls
+Ran 1789 tests across 116 files. [30.67s]
+```
+
+**Final repo-root `bun test`:**
+
+```
+ 1833 pass
+ 0 fail
+ 10122 expect() calls
+Ran 1833 tests across 118 files. [30.33s]
+```
+
+`M` grew by exactly **2** (116 → 118) and `N` by exactly **44** (1789 → 1833 = 38 invariants + 6 prove-run).
+A flat `M` with a grown `N` is impossible; a flat `M` and a flat `N` would have meant the two files were
+invisible to discovery and the gate was lying.
+
+**Discovery proof, mechanism 2 — junit reporter over the whole repo.**
+
+```
+$ bun test --reporter=junit --reporter-outfile=<scratch>/discovery.xml
+ 1833 pass / 0 fail / Ran 1833 tests across 118 files. [30.15s]
+```
+
+Extracted from that XML: **38** `<testcase>` elements carrying `file="packages/core/test/invariants.test.ts"`
+and **6** carrying `file="packages/core/test/track-a-prove-run.test.ts"` — i.e. every new test, by name, with
+the `file=` attribute proving the runner executed the file at `packages/core/test/` and not a copy elsewhere.
+Two representative `grep -F` hits:
+
+```
+      <testcase name="INV-1c no collected tool name is accept-shaped, and the near-misses still pass"
+                classname="INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept Moat"
+                time="0.000162" file="packages/core/test/invariants.test.ts" line="639" assertions="5" />
+      <testcase name="L5 the real telar home is untouched throughout" classname="track-a prove-run"
+                time="0.000211" file="packages/core/test/track-a-prove-run.test.ts" line="500" assertions="9" />
+```
+
+The full 44 discovered names, in file order:
+
+```
+invariants.test.ts (38):
+  INDEX-0 … INDEX-3, INV-1a … INV-1g, INV-2a … INV-2h, INV-3a … INV-3g, INV-4a … INV-4e, INV-5a … INV-5g
+track-a-prove-run.test.ts (6):
+  L1 …, L2 …, L3 …, L4 …, L5 …, every suite this prove-run leans on still holds the test it is cited for
+```
+
+**Discovery proof, mechanism 1 — `-t` spot checks, one per new suite, from the repo root.**
+
+```
+$ bun test -t "INV-3f every KNOWN_VIOLATIONS entry still violates, so the quarantine cannot rot into a hole"
+ 1 pass / 1832 filtered out / 0 fail
+Ran 1 test across 118 files. [402.00ms]
+
+$ bun test packages/core -t "L2 a spend record attributes to an owner and reads back through a projection"
+ 1 pass / 1515 filtered out / 0 fail
+Ran 1 test across 107 files. [374.00ms]
+```
+
+**Negative control — a name that does not exist is a hard failure, not a silent pass.**
+
+```
+$ bun test -t "a name that does not exist zzz"
+error: regex "a name that does not exist zzz" matched 0 tests. Searched 118 files (skipping 1833 tests) [401.00ms]
+$ echo $?
+1
+```
+
+…and the positive control for the same mechanism exits `0`:
+
+```
+$ bun test -t "INDEX-0 the four anti-vacuity floors hold, so no invariant below is asserting over the empty set"
+$ echo $?
+0
+```
+
+**AC3 — the measured budget. Threshold 2000 ms; measured 335 ms.**
+
+```
+$ bun test packages/core/test/invariants.test.ts
+ 38 pass / 0 fail / 161 expect() calls
+Ran 38 tests across 1 file. [335.00ms]
+```
+
+The junit per-testcase `time` attributes for that file sum to **0.1256 s**; the rest of the 335 ms is the
+single module-scope tree walk that all five invariants share. No `tsc` invocation and no spawned process was
+added (§5.5-D8), which is what keeps this number two thirds under budget rather than two seconds over it.
+
+**T-A0 — the inventory, printed before a single `expect` was written.**
+Reproduce with `TELAR_INVARIANTS_VERBOSE=1 bun test packages/core/test/invariants.test.ts`:
+
+```
+[invariants] index: 470 files walked · 119 "use client" by directive (123 by substring) · 170 under packages/core · 2 *-mcp.ts
+[invariants] inventory: 3 MCP surfaces · 18 root-composition sites · 6 home-root derivations
+[invariants]   mcp apps/web/lib/loom-mcp.ts: servers=["loom"] tools=["draft_bundle_file","propose_contract","read_bundle","list_looms","get_loom","start_loom","steer_loom","reject_loom","answer_loom","answer_blocked","resume_loom","cancel_loom","watch_loom"]
+[invariants]   mcp apps/web/lib/ultra-mcp.ts: servers=["ultra"] tools=["ultra","ultra_status","ultra_stop"]
+[invariants]   mcp packages/core/src/engine.ts: servers=["out"] tools=["emit_result"]
+[invariants]   path apps/web/lib/mcp-oauth-pending.ts: path.join(telarDir(), "mcp-oauth-pending.json")
+[invariants]   path apps/web/lib/permissions.ts: path.join(telarHome(), "permissions.json")
+[invariants]   path apps/web/lib/session-log.ts: path.join(home(), "sessions")
+[invariants]   path apps/web/lib/store.ts: path.join(stateRoot(), "chats.json")
+[invariants]   path apps/web/lib/store.ts: path.join(stateRoot(), "plan-usage.json")
+[invariants]   path packages/core/src/accounts.ts: path.join(telarDir(), "accounts.json")
+[invariants]   path packages/core/src/dispatcher.ts: path.join(telarDir(), "policy.json")
+[invariants]   path packages/core/src/dispatcher.ts: path.join(telarDir(), "roster.json")
+[invariants]   path packages/core/src/looms.ts: path.join(telarDir(), "looms")
+[invariants]   path packages/core/src/looms.ts: path.join(telarDir(), "runs")
+[invariants]   path packages/core/src/manifest.ts: path.join(telarDir(), "projects.json")
+[invariants]   path packages/core/src/mcp-oauth.ts: path.join(telarDir(), "mcp-oauth.json")
+[invariants]   path packages/core/src/secrets.ts: path.join(telarDir(), "credentials.json")
+[invariants]   path packages/core/src/sessions.ts: path.join(telarDir(), "sessions")
+[invariants]   path packages/core/src/ultra/journal.ts: path.join(telarDir(), "ultra")
+[invariants]   path packages/core/src/usage-ledger.ts: path.join(telarDir(), "usage.ndjson")
+[invariants]   path packages/core/src/vcs.ts: path.join(telarDir(), "worktrees")
+[invariants]   path packages/core/src/watches.ts: path.join(telarDir(), "watches.json")
+[invariants]   home-root derived in apps/web/lib/permissions.ts
+[invariants]   home-root derived in apps/web/lib/session-log.ts
+[invariants]   home-root derived in apps/web/lib/store.ts
+[invariants]   home-root derived in packages/core/src/looms.ts
+[invariants]   home-root derived in packages/core/src/manifest.ts
+[invariants]   home-root derived in scripts/backfill-tool-detail.ts
+[invariants]   "use client" substring-but-not-directive: ["apps/web/components/looms/godview.ts","apps/web/lib/demo-gallery/registry.ts","apps/web/lib/permission-modes.ts","apps/web/lib/permissions.ts"]
+[invariants]   INV-4 BFS: 191 modules visited from 119 client roots · 615 value edges · 36 client→core import statements · 51 core imports seen in total
+```
+
+**Violation count per invariant, AS FOUND, before any quarantine:**
+
+| Invariant | Scanned | Violations as found |
+| --- | --- | --- |
+| INV-1 | 3 MCP surfaces, 17 tool names, `looms.ts`, `tick.ts`, the chat route | **0** |
+| INV-2 | 6 verification-surface files, `VERIFIER_TOOLS` (19 entries) | **0** |
+| INV-3 | 18 composition sites, 6 home-root derivations | **1** — `scripts/backfill-tool-detail.ts` (quarantined, D7) |
+| INV-4 | 119 client roots, 191 modules, 615 value edges, 36 client→core imports | **0** |
+| INV-5 | non-test source for `usage.ndjson`, `logUsage(`, `.runner-lease`, `releaseAdmission(` | **0** |
+
+Both T-5 counts are in the inventory above: **123** substring matches vs **119** directive-confirmed client
+files, and the four-file gap is named, including `apps/web/lib/permissions.ts`, which imports `node:fs` — the
+file that would make INV-4 fail on a correct tree if the substring shortcut had been taken.
+
+**AC2 — one revert-probe per invariant, plus two more.**
+
+> **These are revert-verification results, not unmet ACs.** Each failure below was observed only while the
+> thing under test was DELIBERATELY BROKEN by a temporary local edit. Every file was restored with
+> `git checkout --` immediately afterwards and the restore verified by an empty `git diff --stat` on that
+> exact path, quoted under each probe. Nothing in the committed tree is red.
+
+**P1 — INV-1.** Added `tool("accept_run", …)` to `apps/web/lib/ultra-mcp.ts`. Both halves fired:
+
+```
+INV-1b: expect(observed).toEqual(MCP_INVENTORY)
+  @@ -30,3 +30,3 @@
+         "ultra_status",
+  +      "accept_run",
+         "ultra_stop",
+
+INV-1c: expect(violations).toEqual([])
+  + [ "accept_run: token(s) ["accept"] are accept-shaped. AD-1 — ready to done is a HUMAN-ONLY
+  +   transition and there is no agent-callable accept tool on any MCP surface. CONSEQUENCE: a model
+  +   could complete its own work, which voids every verdict downstream of it. NEXT STEP: a tool was
+  +   added to an MCP surface. AD-1 forbids an agent-callable accept path: confirm this tool cannot
+  +   move a loom from ready to done, then add it to MCP_INVENTORY in this test." ]
+
+$ git diff --stat -- apps/web/lib/ultra-mcp.ts        (empty — byte-identical restore)
+```
+
+**P2 — INV-2.** Added `"Write"` to `VERIFIER_TOOLS` in `packages/core/src/verifier.ts`:
+
+```
+INV-2a: expect(writeToolViolations(VERIFIER_TOOLS)).toEqual([])
+  + [ "Write is granted to the verifier stack. AD-2 — verifier.ts / verify-thread.ts / critic.ts /
+  +   panel.ts and every loom-altitude lab agent are granted NO write or edit tools. CONSEQUENCE: a
+  +   passing verdict becomes self-issuable — the judge could edit the code it is judging, which is the
+  +   one property the verdict's trustworthiness rests on. NEXT STEP: this is a HALT condition in
+  +   story-pipeline.md. Do not weaken this test; remove the grant." ]
+
+$ git diff --stat -- packages/core/src/verifier.ts    (empty — byte-identical restore)
+```
+
+**P3 — INV-3.** Added `path.join(telarDir(), "sessions")` to `packages/core/src/watches.ts`:
+
+```
+INV-3b: expect(violations).toEqual([])
+  + [ "packages/core/src/watches.ts composes path.join(telarDir(), "sessions"), which belongs to
+  +   ["packages/core/src/sessions.ts","apps/web/lib/session-log.ts"]. AD-5 — one owner per TELAR_HOME
+  +   subtree; no module reads or writes another's subtree by path. CONSEQUENCE: two modules now
+  +   disagree about a layout nobody owns, and the next layout change breaks the one that was not
+  +   edited. NEXT STEP: reach it through the owner's exported port (looms.ts's loomDir,
+  +   ultra/journal.ts's runDir, sessions.ts's sessionDir all exist and carry the traversal guard), or
+  +   — if this really is a new owner — add it to AD5_OWNERS with a comment saying why." ]
+
+$ git diff --stat -- packages/core/src/watches.ts     (empty — byte-identical restore)
+```
+
+**P4 — INV-4.** Flipped `apps/web/components/session/usage-pill.tsx`'s `import type { PlanSnapshot } from
+"@/lib/store";` to a value import. **Note the message carries the PATH, not just the endpoint** — that is the
+difference between a fixable finding and a puzzle:
+
+```
+INV-4c: expect(CLIENT_SCAN.violations).toEqual([])
+  + [ "components/session/usage-pill.tsx → lib/store.ts → @telar/core (VALUE import). AD-3 —
+  +   @telar/core is server-side only (fs, child_process, the agent SDK); client components import
+  +   TYPES ONLY, which are erased at build. CONSEQUENCE: next.config.ts sets
+  +   transpilePackages: ["@telar/core"], so core is transpiled straight into this bundle — one value
+  +   import pulls the whole runtime barrel and drags async_hooks into the browser, breaking the build.
+  +   NEXT STEP: make it `import type`, or move the runtime call into a Route Handler, a Server
+  +   Component or instrumentation.ts and pass the result down as data." ]
+
+$ git diff --stat -- apps/web/components/session/usage-pill.tsx   (empty — byte-identical restore)
+```
+
+This is also the probe that proves the **value-edge-only** traversal decision (§5.5-D4 point 2) is real
+rather than convenient: the four client files that import `@/lib/store` are all `import type` today, so the
+BFS does not traverse them and the tree is clean — and flipping exactly one of them to a value import
+immediately reports the two-hop path.
+
+**P5 — INV-5.** Added `path.join(telarDir(), "usage.ndjson")` to `packages/core/src/watches.ts`:
+
+```
+INV-5a: expect(violations).toEqual([])
+  + [ "packages/core/src/watches.ts composes the path to usage.ndjson. AD-20 / AD-18 — the spend ledger
+  +   is a SHARED RUNTIME SERVICE with exactly one writer (logUsage) and one reader path
+  +   (usage-ledger.ts's projections). No module opens it by path, including apps/web, which re-exports
+  +   the port from @telar/core rather than reimplementing it. CONSEQUENCE: a second reader or a second
+  +   accumulator is the exact failure FR-RF-2 exists to end — two numbers for one spend, and the wrong
+  +   one on screen. NEXT STEP: use logUsage / usageSummary / usageCostBySession / usageTokensBySession
+  +   / ledgerSpendUsd." ]
+
+$ git diff --stat -- packages/core/src/watches.ts     (empty — byte-identical restore)
+```
+
+**P6 — the D7 quarantine is FALSIFIABLE.** Temporarily *fixed* `scripts/backfill-tool-detail.ts` to consult
+`TELAR_HOME`. The exception's own assertion failed, which is what separates a quarantine from a suppression:
+
+```
+INV-3f: expect(stale).toEqual([])
+  + [ "scripts/backfill-tool-detail.ts is quarantined as a known INV-3 violation, but it no longer
+  +   violates (the file is gone, or the raw ~/.telar derivation was removed). THIS EXCEPTION NO LONGER
+  +   APPLIES; DELETE IT from KNOWN_VIOLATIONS in this file. Recorded at: story 1.1 review findings;
+  +   _bmad-output/implementation-artifacts/deferred-work.md." ]
+
+$ git diff --stat -- scripts/backfill-tool-detail.ts  (empty — byte-identical restore)
+```
+
+**P7 — AC4/L1's delivery-class filter is load-bearing.** Reverted `canWake` in
+`packages/core/src/event-bus.ts` to `() => true`:
+
+```
+L1: expect(() => port.subscribeAgentFacing("transcript-appended", …)).toThrow(
+      "cannot be subscribed on the wake channel")
+  Received function did not throw
+
+$ git diff --stat -- packages/core/src/event-bus.ts   (empty — byte-identical restore)
+```
+
+**The prove-run transcript, verbatim.** One command, from the repo root:
+
+```
+$ TELAR_HOME=$(mktemp -d) bun test packages/core -t "track-a prove-run"
+[track-a] L1 bus: agent-facing wakeDelivered=1 · human-facing wakeDelivered=0 delivered=1 · wake registration on the human-facing name REFUSED
+[track-a] L2 ledger: logUsage=true · ledgerSpendUsd(loom:loom_prove_run)=1.25 · pre-attribution record still counts (session.requests 0→1) · file under /var/folders/q_/…/T/telar-track-a-prove-run-d56bx9
+[track-a] L3 admission: ceiling=4 · waiting build=2 verify=1 · priority=["loom-verify","loom-build","ultra","other"] · one slot freed → won by loom-verify
+[track-a] L4 lease: stale on BOTH roots → reclaimable (loom + session) · reclaim union=["held","reclaimable"] · stranded loom running→failed · ready loom untouched · never done
+[track-a] L5 ~/.telar untouched: exists=true entries=2 identical before/after · guard armed NODE_ENV=test · all writes under /var/folders/q_/…/T/telar-track-a-prove-run-d56bx9
+
+ 5 pass
+ 1511 filtered out
+ 0 fail
+Ran 5 tests across 107 files. [387.00ms]
+```
+
+**The selector selects the five legs and nothing else** — `5 pass`, `1511 filtered out`, `0 fail`, and the
+`across 107 files` figure proves the whole core tree was searched. `-t` **does** match against the `describe`
+scope in Bun `1.3.14`; the `citations` describe is deliberately named `prove-run citations` (not
+`track-a prove-run citations`) so it does not get swept into the selection. The `packages/core` path argument
+is **not** cosmetic — see Completion Note 4 and the file header, and it is quoted here rather than the bare
+repo-root form because the bare form fails on a pre-existing defect that is not this story's.
+
+**The `~/.telar` evidence.** Read-only `ls -la ~/.telar`, before the first command of this story and after
+the last:
+
+```
+BEFORE                                            AFTER
+.rw-r--r--@ 296 bixku 26 Jul 01:31 accounts.json  .rw-r--r--@ 296 bixku 26 Jul 01:31 accounts.json
+.rw-r--r--@ 201 bixku 26 Jul 01:20 usage.ndjson   .rw-r--r--@ 201 bixku 26 Jul 01:20 usage.ndjson
+```
+
+Byte-for-byte identical, including mtimes. **Stated explicitly: the directory ALREADY EXISTED before this
+story's first command** — it holds the story-1.1 pollution (a synthetic `$1` billing line and a default
+`accounts.json`, created 2026-07-26 01:20/01:31 by an ad-hoc `bun -e` probe run outside the harness, logged
+under NEEDS A HUMAN). **This story did not create it, did not modify it and did not delete it**, and L5
+asserts equality of a before/after fingerprint rather than absence, precisely because absence would be the
+wrong claim. Every probe in this story ran either as a `bun test` file or as a `git`/`grep`/`python3` command
+that writes nothing to any state root; **no `bun -e`, no `bun run <script>`, no bare `bun <file>` was executed
+at any point** (§0 rule 3).
+
+**The trio (AC5).**
+
+```
+$ cd packages/core && bun test
+ 1516 pass / 0 fail / 8648 expect() calls
+Ran 1516 tests across 107 files. [28.69s]
+
+$ cd packages/core && bunx tsc --noEmit
+exit=0
+
+$ cd apps/web && bunx tsc --noEmit
+exit=0
+
+$ cd apps/web && bun test
+ 317 pass / 0 fail / 1474 expect() calls
+Ran 317 tests across 11 files. [1.53s]
+```
+
+`bun run lint` was **not** run and is **not** in AC5. It is not a clean baseline (~77k pre-existing problems
+in `apps/web`, mostly under `.next-desktop/` build output) and is not this story's to fix — and this story has
+**no `apps/web` file to lint**: its entire write set is two files under `packages/core/test/`, a workspace with
+no ESLint config at all.
+
+**No raw control characters in either new file** (§5.4), measured rather than assumed:
+
+```
+packages/core/test/invariants.test.ts       -> bytes: 86249 | control chars excluding TAB/LF: 0 | NUL bytes: 0
+packages/core/test/track-a-prove-run.test.ts -> bytes: 33389 | control chars excluding TAB/LF: 0 | NUL bytes: 0
+```
 
 ### Completion Notes
 
-<!-- Numbered. Include, at minimum:
-  - the T-A0 inventory, and every KNOWN_VIOLATIONS entry with its owning track (§5.5-D7 point 4)
-  - any cross-track finding, in the shape story 1.1 used for its AC6 and 1.2 for its sessions/ co-tenancy
-  - your classification of verify-lane.ts / verification-strategy.ts under INV-2's wall (§5.5-D2 part 4)
-  - the forward note for story 2.1 about the tsc harness (§5.5-D8)
-  - any symbol name changed from §5.5
-  - decisions taken autonomously, if the operator was not reachable
--->
+1. **What landed: two files, no `src` change, no `apps/web` change, no `bunfig.toml` change.**
+   `packages/core/test/invariants.test.ts` (38 tests) makes AD-19's five load-bearing rules executable, and
+   `packages/core/test/track-a-prove-run.test.ts` (6 tests) is `SPEC-runtime-foundations`' success signal —
+   the five-leg substrate demonstration plus an executable-citation check. Both were proved DISCOVERED by the
+   repo-wide runner, by name, with the `file=` attribute (§6.2, both mechanisms). This story is
+   `WORK-SPLIT`'s phase-2 gate ("A6 assertions green"), and it is green.
+
+2. **The T-A0 inventory and the violation count as found** are in the Debug Log, per invariant, before any
+   quarantine. Headline: **470 files walked**, 3 MCP surfaces / 17 tool names, 18 path-composition sites,
+   119 directive-confirmed client files out of 123 substring matches, 615 BFS value edges, 36 client→core
+   import statements — and **exactly one violation in the whole tree**, `scripts/backfill-tool-detail.ts`
+   (Note 3). Every number in this story's Dev Notes was re-derived from the tree; all of them held except
+   where noted in Note 12.
+
+3. **KNOWN_VIOLATIONS — one entry, quarantined under §5.5-D7, and it is a cross-track finding.**
+   `scripts/backfill-tool-detail.ts`'s module-level `TELAR_DIR = path.join(os.homedir(), ".telar")` consults
+   `TELAR_HOME` nowhere, and it then opens `projects.json` (`manifest.ts`'s) and `chats.json` (`store.ts`'s)
+   by raw path — a genuine AD-5 breach and the only remaining `~/.telar` literal outside the five sanctioned
+   resolvers. **Owner: not Track A** — it is a one-off maintenance script, already recorded in story 1.1's
+   review findings and in `deferred-work.md`. It was NOT fixed here (outside this story's write set) and it
+   was NOT excused: INV-3f asserts the entry *still violates*, and probe P6 shows that fixing the underlying
+   defect makes that assertion fail with "THIS EXCEPTION NO LONGER APPLIES; DELETE IT". A quarantine that
+   cannot rot.
+
+4. **CROSS-TRACK FINDING (new, and the most operationally significant thing this story surfaced): a
+   repo-root `bun test -t "<filter>"` run silently stubs out core's loom persistence.**
+   Three `apps/web` suites — `lib/loom-mcp.answer-blocked.test.ts`, `lib/loom-mcp.remint.test.ts` and
+   `lib/ultra-mcp.test.ts` — install a **process-global** `mock.module("@telar/core", …)` at **module scope**
+   (stubbing `saveLoom` to `() => {}` and `getLoom`/`listLooms` to fixtures) and restore it only in
+   `afterAll`. Without `-t`, bun loads and runs one file at a time, so each mock is restored before the next
+   file runs and everything is fine — **the unfiltered repo-root `bun test` is green**. **With** `-t`, bun
+   evaluates *every* file's module scope before running *any* test, so those `afterAll` hooks never fire and
+   the stub is live inside every core suite in the process.
+   **This is pre-existing and reproducible on story 1.2's tree**, which is how it was confirmed rather than
+   assumed: `bun test -t "default liveness: a stranded in-flight loom"` from the repo root makes
+   `m5-reconcile-liveness.test.ts` — a file this story did not touch — fail with
+   `TypeError: null is not an object (evaluating 'getLoom(id).state')`, the identical symptom.
+   **Owner: Track B/C** (`apps/web` is their write set; §0 rule 4 and §3 forbid crossing, and stories 1.1 and
+   1.2 established the record-it-don't-cross protocol). **Two things were done inside this story's write set
+   instead:** (a) AC4's one-command form is quoted as
+   `TELAR_HOME=$(mktemp -d) bun test packages/core -t "track-a prove-run"` — still one command, still from the
+   repo root, still producing the transcript and the `across N files` figure, and it selects exactly the five
+   legs; (b) L4 carries a **precondition guard** that detects the stub and throws a paragraph naming the three
+   files, the mechanism, the working commands and the owning track, instead of dying on an opaque
+   `TypeError`. A likely fix for whoever picks it up: move each mock installation into a `beforeAll` paired
+   with the existing `afterAll`, or scope it to the tests that need it.
+
+5. **The two AD-5 co-tenancies are encoded as NAMED facts, not as silence.** `AD5_OWNERS` lists
+   `sessions: ["packages/core/src/sessions.ts", "apps/web/lib/session-log.ts"]` with the story-1.2 Note-1
+   explanation in-source, so the invariant is green today and a **third** writer fails. `store.ts`'s two-way
+   root resolution (`stateRoot()` for `chats.json`/`plan-usage.json`, core's `telarDir()` via the ledger port
+   for `usage.ndjson`) is likewise commented at its table entry and left alone per `deferred-work.md`.
+
+6. **INV-2's classification of the six verification surfaces**, stated in-source in `VERIFICATION_SURFACES`
+   and asserted (a new file matching `/^(verifier|verify-.*|critic|panel|verification-.*)\.ts$/` fails until
+   someone classifies it, which is what makes AD-2's "extends to new verification surfaces" executable):
+   - `verifier.ts` — **judge**; grants `VERIFIER_TOOLS` with `restrictTools: true`.
+   - `critic.ts` — **judge**; same wall, and it *imports* `VERIFIER_TOOLS` from `./verifier` rather than
+     re-declaring it (pinned: exactly one `export const VERIFIER_TOOLS` exists in `packages/core/src`).
+   - `panel.ts` — **must-not-grant**; pure functions over already-produced verdicts.
+   - `verify-thread.ts` — **must-not-grant**; injected `deps.runIntegrationVerify` / `AutoRepairDeps.verify`.
+   - `verification-strategy.ts` — **must-not-grant**; a pure chooser over already-derived inputs. It matches
+     the pattern and the story's §5.5-D2 prose says "the five verification files", so it is called out here:
+     the regex yields **six**, not five, and the sixth is this one.
+   - `verify-lane.ts` — **setup-wall**, deliberately a capability and deliberately not a judge (its own
+     header says so). Its no-judge-import half is *cited* to `m10-verify-lane.test.ts`, not re-written.
+   `ULTRA_CHILD_TOOLS` (`["Read","Grep","Glob","Write","Edit","Bash"]`) is asserted **write-capable** and
+   asserted **absent** from all six — a "no Write anywhere" pattern sweeping it up would be a false positive
+   on a correct grant.
+
+7. **Citations are executable, in both files.** INV-2h and the `prove-run citations` describe read the cited
+   suites' source and assert the exact test titles still appear. That is what makes "assert the gap, not a
+   fifth copy" and "cite, do not re-run" safe: a renamed or deleted test fails the citation check instead of
+   leaving this story's files reading as complete while the coverage they lean on is gone. Fifteen titles are
+   pinned this way across `roster.test.ts`, `m10-verify-lane.test.ts`, `m10-lane-escalation.test.ts`,
+   `admission.test.ts`, `event-bus.test.ts`, `usage-ledger.test.ts`, `session-lease.test.ts` and
+   `m5-reconcile-liveness.test.ts`.
+
+8. **The self-reference hazard (T-13) is resolved the way §5.5-D0b and T-13 jointly require, and the two
+   rules are kept distinct.** The **floor** counts are asserted over the whole index, so a broken walk fails;
+   the **violation** sets are computed over per-invariant filtered scopes, every one of which excludes
+   `*.test.ts` / `*.test.tsx` — including `invariants.test.ts` itself, which necessarily contains every
+   literal it searches for. Both rules are stated in-source with their reasons so the next reader does not
+   "fix" the exclusion. Every discriminator fixture is assembled from string fragments at runtime
+   (`"createSdkMcpServer" + "("`, `"path." + "join"`, `"usage" + ".ndjson"`, `"@telar/" + "core"`) rather than
+   written as literal source, for the same reason.
+
+9. **Comment stripping was necessary and is a design decision worth flagging.** Three of the five invariants
+   would have reported prose as a violation without it: `panel.ts`'s header says *"must inject an `agent()`
+   call here"*, `store.ts`'s says *"route.ts's teardown always calls `logUsage()`"*, and `verify-lane.ts`
+   mentions `restrictTools`. The index therefore carries a `code` field — the source with comments blanked,
+   length-preserving, string/template aware but **not** regex-literal aware, which is stated in-source as an
+   honest limit. `INDEX-3` is its permanent discriminator.
+
+10. **Every scan carries a permanent positive control** (§5.5-D0b), fed through the **same** function the
+    real scan calls: `INDEX-2` (directive vs. prose), `INDEX-3` (comment stripping), `INV-1d` (a rogue
+    `accept_loom` / `mark_delivered` reported, `answer_blocked` not, `createTool(` / `.tool(` ignored),
+    `INV-2g` (all ten deny names, plus `subagent(` and `deps.agent(` correctly ignored), `INV-3g` (a root
+    composition reported, a sub-path off an exported port not, `os.homedir()` `.telar` vs a project-local
+    `.telar`), `INV-4d` (multi-line `import type` accepted, one value specifier among type ones rejected,
+    `@/` and `./` both resolving to `godview.ts`), `INV-5g` (a `path.join` and a template composition
+    reported, a bare mention not; a declaration and a member call not counted as call sites). These survive
+    in the suite, which is strictly better than the one-time revert probes — a scanner that stops matching
+    fails immediately instead of going quietly green.
+
+11. **The deny-list matches by STEM, not by whole word.** `\bdeliver\b` does not match `mark_delivered`
+    (`_` is a word character and `ed` follows), so a whole-word check would let exactly the example the story
+    warns about walk straight through. `acceptShapedTokens` splits the name on non-alphanumerics and tests
+    each token with `startsWith` against the ten stems, which reports `mark_delivered`, `accept_run` and
+    `completed_*` while leaving `answer_blocked`, `reject_loom`, `propose_contract` and `list_looms` clean.
+    Verified in both directions by `INV-1d`.
+
+12. **Numbers that moved between the story's Dev Notes and the tree, all re-measured.** Everything in §5.5
+    held except: (a) the D2 verification-surface set is **six** files, not "the five verification files" its
+    prose says (Note 6); (b) `usageSummary()` returns `{session, weekly, byAccount}` — there is no `today`
+    window, and it folds **only** `ownerKind === "session"` records, which is why L2's tolerant-reader half
+    asserts on `.session` and why the loom-attributed record correctly does not appear there; (c) the story's
+    §5.5-D9 says "`engine.ts` — the sole `acquireAdmission` caller in `src` — releases through the handle",
+    and the measured fact is stronger: `releaseAdmission(` appears in `packages/core/src` **only inside
+    `admission.ts`'s own `slotHandle`**, so INV-5f pins exactly that. (d) The baseline suite counts moved
+    again while this story ran, exactly as `project-context.md` warns: 105 core test files / 1789 tests /
+    116 files at `75d9b75`, against the story's own pointer of 105 and story 1.2's 1789.
+
+13. **Symbol names.** No semantics from §5.5 were changed. Names chosen where §5.5 left them open:
+    `SourceFile` / `INDEX` / `NON_TEST` / `byRel` (D0), `KNOWN_VIOLATIONS` (D7, as specified),
+    `AD5_SITES` / `AD5_OWNERS` / `SANCTIONED_ROOT_RESOLVERS` (D3), `VERIFICATION_SURFACES` /
+    `WRITE_OR_SPAWN_TOOLS` / `writeToolViolations` (D2), `MCP_INVENTORY` / `acceptShapedTokens` (D1),
+    `CLIENT_SCAN` / `resolveLocalImport` (D4), `composesStateFile` / `callSitesOf` (D5). The prove-run's bus
+    namespace is `"track-a"` (D10 left it to the implementer; it must differ from `event-bus.test.ts`'s
+    `"fixture"`, and it does). `TELAR_INVARIANTS_VERBOSE` is a new, test-only env flag that switches the
+    T-A0 inventory between a two-line summary and the full dump; it is documented in the file header.
+
+14. **Decisions taken autonomously, because the operator was not reachable for the whole run.**
+    - **The AC4 command.** The story specifies `TELAR_HOME=$(mktemp -d) bun test -t "track-a prove-run"` and
+      instructs: *"If `-t` turns out not to match against the `describe` scope in Bun 1.3.14, say so and give
+      the command that does — do not quietly report a run that selected a different set."* `-t` **does** match
+      the describe scope; the bare form fails for the unrelated reason in Note 4. **Chosen:** add the
+      `packages/core` path argument, quote that as the one-command form, prove it selects exactly five, and
+      report the bare form's failure in full with its pre-existing reproduction. **Alternative considered and
+      rejected:** editing the three `apps/web` suites to scope their mocks — correct fix, wrong write set,
+      and §3 forbids it explicitly.
+    - **L4's precondition guard.** **Chosen:** fail loudly with a diagnosis. **Alternative rejected:**
+      skipping the terminal-state half when the stub is detected — a silently-skipped prove-run leg is
+      exactly the vacuous green this entire story exists to prevent.
+    - **`verification-strategy.ts`'s classification.** §5.5-D2 lists it in the measured set but its prose
+      says "the five verification files". **Chosen:** classify it `must-not-grant` (its header describes a
+      pure chooser that does no I/O and can never reach a verdict) and record the discrepancy in Note 6.
+    - **The `_bmad-output` exclusion and `docs/` non-root** were taken as specified (D0), not re-litigated.
+    - **`bunfig.toml` was not touched** and the `[Review][Decision]` on story 1.1 was not resolved.
+
+15. **Forward note for story 2.1 — do not re-derive the compile-time harness.** Story 2.1's intersect-only
+    `toolPolicy` ("it does not compile") **is** a compile-time invariant and must be proved by *running* the
+    compiler, in **both** directions, over fixtures generated in a throwaway directory. The harness already
+    exists twice: `packages/core/test/event-bus.test.ts`'s `typecheck()` (`REPO_TSC` resolved through
+    `process.execPath` + `<workspace>/node_modules/typescript/bin/tsc`, never `node_modules/.bin/tsc`, which
+    is a `#!/usr/bin/env node` shim in a bun-only repo) and `packages/core/test/session-lease.test.ts`'s
+    structural test. **A bare `// @ts-expect-error` in `packages/core/test/` is a comment wearing a test's
+    clothes**: `packages/core/tsconfig.json` is `include: ["src"], exclude: ["test"]`, so the project's own
+    `bunx tsc --noEmit` never sees that directory. Budget: ~0.35 s per fixture, ~1.4 s per suite. This story
+    added **no** `tsc` invocation, which is what keeps `invariants.test.ts` at 335 ms against a 2000 ms AC.
+
+16. **Not done, deliberately, and why.** No repo-wide "no raw control characters" scan (§3 —
+    `apps/web/components/projects/git-tab.tsx` still carries 2 NUL bytes from story 1.1, so it would be red on
+    day one; the two NEW files were checked individually instead and are clean). No fix for story 1.2's
+    `releaseAdmission` class-mismatch residual, and — per §5.5-D9 — **no invariant asserting that a mismatch
+    is detected**, because it structurally cannot be and such a test would be quietly satisfied by the
+    double-release floor, which is worse than no test. No concrete event declared in `src` (§0 rule 5); the
+    prove-run's catalogue lives under its own `"track-a"` namespace inside its own test file. No `SessionProfile`
+    assertion and no `requiredCapability` prove-run leg (§3 — both moved to story 2.1). No CI. No helper
+    module in `packages/core/test/`, which has held nothing but self-contained `*.test.ts` files for its whole
+    life; the ~40 lines of scan primitives live inside `invariants.test.ts`, and the prove-run duplicates the
+    ~20-line `TELAR_HOME` sandbox rather than extracting it, exactly as story 1.2 did.
 
 ## 10. File List
 
-<!-- Measured with the change staged, which is the only form that sees created files:
-     git add -A -- packages/core && git diff --cached --name-status
-     Expected: exactly two A lines, both under packages/core/test/. Nothing else. -->
+Measured with the change staged — the only form that sees created files:
+
+```
+$ git add -A -- packages/core && git diff --cached --name-status
+A	packages/core/test/invariants.test.ts
+A	packages/core/test/track-a-prove-run.test.ts
+```
+
+Exactly two `A` lines, both under `packages/core/test/`. Nothing else — no `src`, no `apps/web`, no
+`bunfig.toml`, no `bun.lock`, no new dependency.
+
+| File | Action | What it is |
+| --- | --- | --- |
+| `packages/core/test/invariants.test.ts` | **added** | 38 tests — the AD-19 invariant suite (INV-1 … INV-5) over one cached tree walk, with anti-vacuity floors, permanent discriminators and a falsifiable `KNOWN_VIOLATIONS` quarantine |
+| `packages/core/test/track-a-prove-run.test.ts` | **added** | 6 tests — the five-leg Track A prove-run under a sandboxed `TELAR_HOME`, plus the executable-citation check |
 
 ## 11. Change Log
 
-<!-- Plus a suggested conventional-commit message, e.g.
-     test(core): make the five load-bearing invariants executable and prove the Track A substrate end to end
-     Do NOT commit _bmad-output/implementation-artifacts/orchestrator-run-log.md — it belongs to the
-     orchestrator, not to this story. -->
+| Date | Change |
+| --- | --- |
+| 2026-07-26 | Story 1.3 implemented. Two new test files under `packages/core/test/`; no `src`, `apps/web` or `bunfig.toml` change. All five ACs met: the five AD-19 invariants are executable (AC1) with failure messages that name the AD, the rule, the consequence and the next step (AC2), running in 335 ms against a 2000 ms budget (AC3); the five-leg prove-run runs under a sandboxed state root with the real `~/.telar` proven untouched (AC4); the full core suite, `apps/web`'s suite and `bunx tsc --noEmit` in both workspaces are clean (AC5). Repo-root `bun test`: 1789 → **1833 pass / 0 fail across 118 files**. Status → review. |
+| 2026-07-26 | Cross-track finding recorded (Completion Note 4): a repo-root `bun test -t "<filter>"` run leaves three `apps/web` suites' module-scope `mock.module("@telar/core", …)` installed, stubbing `saveLoom`/`getLoom`/`listLooms` inside every core suite. Pre-existing — story 1.2's `m5-reconcile-liveness.test.ts` fails the same way. Owner: Track B/C. |
+| 2026-07-26 | `scripts/backfill-tool-detail.ts` quarantined as the one `KNOWN_VIOLATIONS` entry under §5.5-D7, with a probe proving the exception fails the moment the underlying violation is fixed (Completion Note 3). |
+
+**Suggested conventional-commit message:**
+
+```
+test(core): make the five load-bearing invariants executable and prove the Track A substrate end to end
+```
+
+Do **not** commit `_bmad-output/implementation-artifacts/orchestrator-run-log.md` — it belongs to the
+orchestrator, not to this story.
