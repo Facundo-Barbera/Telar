@@ -9,9 +9,12 @@
 // zero of packages/core/test's files use `it(`), and a reset between tests.
 // bun runs EVERY test file in one process and admission.ts holds module-level
 // singleton state, so a suite that leaves occupancy or a queued waiter behind
-// silently re-roots every suite after it — and a stranded waiter makes
-// resetAdmission THROW and takes the whole run down. Every test below drains.
+// silently re-roots every suite after it — and a stranded waiter, or a slot
+// still held, makes resetAdmission THROW and takes the whole run down. Every
+// test below drains.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   ADMISSION_CLASSES,
   DEFAULT_ADMISSION_CEILING,
@@ -55,6 +58,10 @@ const drain = () => {
 // test drains its own waiters — if one ever does not, this throws loudly here
 // rather than corrupting a later suite silently.
 afterAll(() => resetAdmission({}));
+
+// admission.ts's own path, for the child process that proves AC4's import-time
+// initialization — the one thing a suite that already imported it cannot reach.
+const ADMISSION_MODULE = fileURLToPath(new URL("../src/admission.ts", import.meta.url));
 
 describe("readCeiling — tolerant parse, never throws at import", () => {
   test("defaults when unset or blank", () => {
@@ -418,6 +425,229 @@ describe("the queue", () => {
   });
 });
 
+// Every case below is a defect the code review of this story reproduced inside
+// `bun test` (probes BH#1, EC#1, EC#2). They live here rather than in a separate
+// file because they are the same controller's contract: what the mutation seams
+// refuse, and where the ceiling is read from.
+describe("the mutation seams — what they refuse, and why", () => {
+  beforeEach(() => resetAdmission({}));
+
+  test("resetAdmission refuses to zero LIVE occupancy — a reset cannot mint capacity", async () => {
+    // The queue guard does not cover this: with slots held and NOBODY queued it
+    // never fires, and the reset then zeroed occupancy behind it. Same invariant
+    // releaseAdmission's own comment states two functions above — a reset must
+    // not MINT capacity (AC9).
+    const release = await acquireAdmission("loom-build");
+    expect(admissionSnapshot().inFlight).toBe(1);
+
+    expect(() => resetAdmission({})).toThrow(/still held/);
+    // The refusal is total: it did not half-apply on the way out.
+    expect(admissionSnapshot().occupancy["loom-build"]).toBe(1);
+    expect(admissionSnapshot().inFlight).toBe(1);
+
+    release();
+    expect(() => resetAdmission({})).not.toThrow();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("the ceiling holds across a refused reset — never eight calls against a ceiling of four", async () => {
+    // The failure in full (probe BH#1): four slots held via the fast path, a
+    // reset zeroes occupancy, four MORE calls are admitted immediately, and
+    // eight real model calls run against a ceiling of four — then the original
+    // four releases are absorbed by Math.max(0, …) so occupancy under-reports
+    // permanently, with no error and no log.
+    const held: Array<() => void> = [];
+    for (let i = 0; i < DEFAULT_ADMISSION_CEILING; i++) {
+      held.push(await acquireAdmission("loom-build"));
+    }
+    expect(() => resetAdmission({})).toThrow(/still held/);
+
+    const fifth = acquireAdmission("other");
+    await settle();
+    expect(admissionSnapshot().inFlight).toBe(DEFAULT_ADMISSION_CEILING);
+    expect(admissionSnapshot().queued).toBe(1);
+
+    for (const r of held) r();
+    (await fifth)();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("acquireAdmission and releaseAdmission both refuse a class outside the enum", async () => {
+    // `event-bus.ts` guards deliveryClass for exactly these callers — an `as
+    // any`, a JS caller, a value off the wire. Admission needs it more: an
+    // unknown key is invisible to sumMap, so it never counts against anything.
+    await expect(acquireAdmission("bogus" as AdmissionClass)).rejects.toThrow(
+      /not an admission class/,
+    );
+    expect(admissionSnapshot().inFlight).toBe(0);
+    expect(() => releaseAdmission("bogus" as AdmissionClass)).toThrow(/not an admission class/);
+
+    // ...and the four real classes still work, so the guard is not simply
+    // refusing everything.
+    for (const c of ADMISSION_CLASSES) (await acquireAdmission(c))();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("an out-of-enum class cannot slip 25 concurrent acquires past a full ceiling", async () => {
+    // Probe EC#2, as measured: with 3 of 4 slots legitimately held, 25
+    // concurrent acquires under invented classes were ALL admitted at once and
+    // admissionSnapshot().inFlight still read 3 — the ceiling gone, invisibly.
+    const held = [
+      await acquireAdmission("loom-build"),
+      await acquireAdmission("loom-verify"),
+      await acquireAdmission("ultra"),
+    ];
+    const results = await Promise.allSettled(
+      Array.from({ length: 25 }, (_, i) => acquireAdmission(`bogus-${i}` as AdmissionClass)),
+    );
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(25);
+    expect(admissionSnapshot().inFlight).toBe(3);
+    expect(admissionSnapshot().occupancy).toEqual(
+      occ({ "loom-build": 1, "loom-verify": 1, ultra: 1 }),
+    );
+    for (const r of held) r();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("the slot handle releases the class it actually took, and only once (T-9)", async () => {
+    // The identity is minted AT the moment the slot is taken, never derived
+    // from a class string a call site holds separately: acquiring under
+    // "loom-build" and releasing under "other" leaked the build slot for the
+    // life of the process while decrementing a slot "other" never held, and
+    // Math.max(0, …) swallowed both halves.
+    const build = await acquireAdmission("loom-build");
+    expect(admissionSnapshot().occupancy["loom-build"]).toBe(1);
+    build();
+    expect(admissionSnapshot().occupancy["loom-build"]).toBe(0);
+
+    // Idempotent, and this is the shape that matters: the SECOND call of a spent
+    // handle must not hand back a slot a LATER call now holds. Without it, one
+    // stray double-release silently lends the ceiling out by one.
+    const nextBuild = await acquireAdmission("loom-build");
+    build();
+    expect(admissionSnapshot().occupancy["loom-build"]).toBe(1);
+    expect(availableFor(admissionSnapshot().policy, admissionSnapshot().occupancy)).toBe(
+      DEFAULT_ADMISSION_CEILING - 1,
+    );
+    nextBuild();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("a queued waiter gets a handle for the slot pump() charged it", async () => {
+    const held: Array<() => void> = [];
+    for (let i = 0; i < DEFAULT_ADMISSION_CEILING; i++) {
+      held.push(await acquireAdmission("loom-build"));
+    }
+    const waiter = acquireAdmission("loom-verify");
+    await settle();
+    expect(admissionSnapshot().queued).toBe(1);
+
+    held.pop()!(); // pump() charges loom-verify BEFORE waking it (AC6)
+    const release = await waiter;
+    expect(admissionSnapshot().occupancy["loom-verify"]).toBe(1);
+    release();
+    expect(admissionSnapshot().occupancy["loom-verify"]).toBe(0);
+
+    for (const r of held) r();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("configureAdmission refuses a ceiling that would wedge the controller", async () => {
+    // Probe EC#1: configureAdmission({ceiling: 0}) with an empty queue was
+    // accepted; the next acquire then queued and NEVER resolved, and from that
+    // point both recovery seams — configureAdmission and resetAdmission — threw
+    // "waiters still queued". No route back short of a process restart, reached
+    // THROUGH the guard written to prevent stranded waiters (T-4).
+    for (const bad of [0, -1, 2.5, Number.NaN, Infinity, undefined]) {
+      expect(() => configureAdmission({ ceiling: bad as number })).toThrow(/integer >= 1/);
+    }
+    expect(admissionCeiling()).toBe(DEFAULT_ADMISSION_CEILING);
+
+    // The controller is still live: an acquire resolves rather than queueing
+    // forever, and a legitimate ceiling still lands.
+    (await acquireAdmission("ultra"))();
+    configureAdmission({ ceiling: 2 });
+    expect(admissionCeiling()).toBe(2);
+    (await acquireAdmission("ultra"))();
+    expect(admissionSnapshot().inFlight).toBe(0);
+  });
+
+  test("the ceiling is re-read from the environment — a value exported AFTER import is seen", () => {
+    // The convention every other env-derived root in this repo follows, learned
+    // the hard way in story 1.1 ("resolve TELAR_HOME lazily in store.ts so dev
+    // runs never write production state"). This module was imported long before
+    // this line runs, so a frozen capture reports 4 here forever — which is
+    // exactly what an Electron main or a Next route that reads its config after
+    // importing @telar/core used to get, silently.
+    const original = process.env.TELAR_MAX_AGENTS;
+    try {
+      resetAdmission(); // no record supplied -> root the read at the live env
+      delete process.env.TELAR_MAX_AGENTS;
+      expect(admissionCeiling()).toBe(DEFAULT_ADMISSION_CEILING);
+
+      process.env.TELAR_MAX_AGENTS = "7";
+      expect(admissionCeiling()).toBe(7);
+      expect(admissionSnapshot().policy.ceiling).toBe(7);
+
+      // AC4's tolerant parse governs the lazy path too, not only the import.
+      process.env.TELAR_MAX_AGENTS = "not-a-number";
+      expect(admissionCeiling()).toBe(DEFAULT_ADMISSION_CEILING);
+    } finally {
+      if (original === undefined) delete process.env.TELAR_MAX_AGENTS;
+      else process.env.TELAR_MAX_AGENTS = original;
+      resetAdmission({}); // re-root at a fixed record for every later suite
+    }
+  });
+
+  test("an explicit configureAdmission ceiling PINS — an ambient env var cannot undo it", () => {
+    // Deliberate code beats ambient configuration, or the next entry point would
+    // quietly undo a call that was just made.
+    const original = process.env.TELAR_MAX_AGENTS;
+    try {
+      resetAdmission();
+      configureAdmission({ ceiling: 3 });
+      process.env.TELAR_MAX_AGENTS = "9";
+      expect(admissionCeiling()).toBe(3);
+
+      resetAdmission(); // unpins and re-roots
+      expect(admissionCeiling()).toBe(9);
+    } finally {
+      if (original === undefined) delete process.env.TELAR_MAX_AGENTS;
+      else process.env.TELAR_MAX_AGENTS = original;
+      resetAdmission({});
+    }
+  });
+
+  test("AC4 a fresh import initializes the ceiling from the environment and never throws", () => {
+    // The one thing an in-process test cannot reach: module EVALUATION. AC4 is
+    // about what the controller does when it INITIALIZES, so it is checked in a
+    // child that imports the module and asks immediately — no configure, no
+    // reset, no init call to forget. What it pins is that a COLD import answers
+    // from the environment and never throws on hostile input; it cannot
+    // distinguish eager initialization from a memoized first read, and nothing
+    // outside the module can. Run through this runtime (bun), because the repo
+    // is bun-only and there may be no `node` on PATH at all.
+    const script = `import(${JSON.stringify(ADMISSION_MODULE)}).then((m) => console.log(m.admissionCeiling()));`;
+    const run = (TELAR_MAX_AGENTS: string) =>
+      spawnSync(process.execPath, ["-e", script], {
+        encoding: "utf8",
+        env: { ...process.env, TELAR_MAX_AGENTS },
+      });
+
+    const good = run("6");
+    expect(`${good.stdout ?? ""}${good.stderr ?? ""}`.trim()).toBe("6");
+    expect(good.status).toBe(0);
+
+    // Hostile input falls back to 4 rather than throwing at import and taking
+    // the whole server down before anything could catch it.
+    const hostile = run("-3");
+    expect(`${hostile.stdout ?? ""}${hostile.stderr ?? ""}`.trim()).toBe(
+      String(DEFAULT_ADMISSION_CEILING),
+    );
+    expect(hostile.status).toBe(0);
+  });
+});
+
 describe("fanoutClamp — the process ceiling term", () => {
   const base = { maxAgents: 12, inFlight: 0, budgetLeftUsd: Infinity, estCostPerAgent: 0.5 };
 
@@ -454,8 +684,14 @@ describe("fanoutClamp — the process ceiling term", () => {
     // tie-break could steal the `binding` readout from `pool` or `budget` at a
     // tie, and orchestrator.test.ts asserts those two strings directly. Swept
     // over the whole small grid rather than spot-checked.
-    for (let maxAgents = 0; maxAgents <= 6; maxAgents++) {
-      for (let inFlight = 0; inFlight <= 6; inFlight++) {
+    //
+    // Infinity is IN the sweep deliberately: the first version of this grid ran
+    // over finite maxAgents/inFlight only, and could therefore not see that a
+    // NaN cap (Infinity - Infinity) fell through every explicit comparison onto
+    // the chain's final `else`. That is the one input where the term order is
+    // not merely re-derivable — see the NaN case below.
+    for (const maxAgents of [0, 1, 2, 3, 4, 5, 6, Infinity]) {
+      for (const inFlight of [0, 1, 2, 3, 4, 5, 6, Infinity]) {
         for (const budgetLeftUsd of [0, 0.4, 1, 2.5, 5, Infinity]) {
           for (const pieces of [1, 2, 5, 12]) {
             const args = { maxAgents, inFlight, budgetLeftUsd, estCostPerAgent: 0.5 };
@@ -480,6 +716,30 @@ describe("fanoutClamp — the process ceiling term", () => {
         }
       }
     }
+  });
+
+  test("AC10 a NaN cap still reports what it reported before the process term existed", () => {
+    // Probe EC#3. `NaN !== NaN`, so every explicit comparison in the binding
+    // chain is false and the input lands on the chain's final `else`. When that
+    // else was "process", fanoutClamp reported the process as binding for a
+    // caller that supplied NO processCeiling at all — a literal breach of AC10's
+    // "byte-identical without processCeiling". The pre-term formula's else was
+    // "budget", so this one is too. Both labels are meaningless for a NaN clamp;
+    // the point is that adding the term did not move it.
+    const nan = { maxAgents: Infinity, inFlight: Infinity, budgetLeftUsd: Infinity, estCostPerAgent: 1 };
+    const c = fanoutClamp(5, nan);
+    expect(c.capByProcess).toBe(Infinity); // nothing was supplied...
+    expect(Number.isNaN(c.capByPool)).toBe(true);
+    expect(Number.isNaN(c.chosen)).toBe(true);
+    expect(c.binding).toBe("budget"); // ...so the process cannot be named as the cause
+
+    // And with a ceiling actually supplied, the same unusable input does not
+    // suddenly claim the ceiling was binding either — no comparison can succeed.
+    expect(fanoutClamp(5, { ...nan, processCeiling: 4 }).binding).toBe("budget");
+
+    // The term IS reported when it really is the smallest cap (the case above
+    // must not be read as "process is unreachable").
+    expect(fanoutClamp(12, { ...base, processCeiling: 2 }).binding).toBe("process");
   });
 
   test("AC10 a zero process ceiling is pool-exhausted, and capByProcess is always reported", () => {

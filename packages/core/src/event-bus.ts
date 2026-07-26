@@ -162,6 +162,17 @@ export function declareEvents<D extends Record<string, EventDeclaration>>(
           `"<module>:<fact>"; a fact may not carry its own namespace.`,
       );
     }
+    // The entry itself, before either of its fields is read — the same bypass
+    // that omits a field can omit the whole declaration, and reading
+    // `.deliveryClass` off undefined would raise an internal TypeError instead
+    // of naming the event that is malformed.
+    if (decl == null || typeof decl !== "object") {
+      throw new Error(
+        `event-bus: "${eventName(module, fact)}" is not a declaration (got ` +
+          `${decl === null ? "null" : typeof decl}). Every entry is an EventDeclaration carrying a ` +
+          `delivery class and a payload schema (AD-14/AD-21).`,
+      );
+    }
     // Belt-and-suspenders for callers that bypass the type system (`as any`, a
     // JS caller, a payload off the wire). It does NOT satisfy AC1 on its own —
     // "the type system demands it" is discharged by EventDeclaration above.
@@ -170,6 +181,21 @@ export function declareEvents<D extends Record<string, EventDeclaration>>(
         `event-bus: "${eventName(module, fact)}" has no delivery class. Every event must declare ` +
           `"agent-facing" or "human-facing" (AD-14) — it is a required field of EventDeclaration, ` +
           `so this can only be reached by bypassing the type system.`,
+      );
+    }
+    // The payload SHAPE is the other half of the same contract (AD-21), and the
+    // same bypass reaches it. Unguarded, a declaration with the payload omitted
+    // REGISTERED FINE and then blew up at the first publish, as
+    // `TypeError: undefined is not an object (evaluating 'decl.payload.safeParse')`
+    // from inside publish — an internal stack trace, surfacing in whichever
+    // module published rather than in the one that mis-declared, instead of this
+    // module's descriptive error at the moment the contract was broken.
+    if (typeof (decl as { payload?: { safeParse?: unknown } }).payload?.safeParse !== "function") {
+      throw new Error(
+        `event-bus: "${eventName(module, fact)}" has no payload schema. A module's payload shapes ` +
+          `are as binding as its tool signatures (AD-21), so every declaration carries a zod ` +
+          `schema that publish validates against — it is a required field of EventDeclaration, so ` +
+          `this can only be reached by bypassing the type system.`,
       );
     }
     const name = eventName(module, fact);

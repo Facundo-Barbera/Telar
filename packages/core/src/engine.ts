@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
 import { readSecret } from "./secrets";
-import { acquireAdmission, releaseAdmission, type AdmissionClass } from "./admission";
+import { acquireAdmission, type AdmissionClass } from "./admission";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -140,10 +140,12 @@ export async function agent<S extends z.ZodRawShape>(
   promptText: string,
   opts: AgentOpts<S>,
 ): Promise<z.infer<z.ZodObject<S>> | null> {
-  // Resolved ONCE into a local before the try, so acquire and release can never
-  // disagree about which class's slot this call is holding.
+  // The class is resolved ONCE into a local before the try, and the release goes
+  // through the HANDLE acquireAdmission hands back — the handle closes over the
+  // class whose slot was actually taken, so the acquire/release pair cannot
+  // disagree even if this local were later edited apart from the finally.
   const admissionClass = opts.admissionClass ?? "other";
-  await acquireAdmission(admissionClass);
+  const releaseSlot = await acquireAdmission(admissionClass);
   try {
     let result: z.infer<z.ZodObject<S>> | null = null;
     const out = createSdkMcpServer({
@@ -230,7 +232,7 @@ export async function agent<S extends z.ZodRawShape>(
     }
     return result; // null = never emitted — caller treats as failure, never infers success
   } finally {
-    releaseAdmission(admissionClass);
+    releaseSlot();
   }
 }
 

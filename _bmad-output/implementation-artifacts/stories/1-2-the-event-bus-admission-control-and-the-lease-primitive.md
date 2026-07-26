@@ -427,6 +427,196 @@ still have budget.
   **Files:** none (verification only).
   Run and paste real output for all of it — see §6.
 
+### Review Findings
+
+**Code review, 2026-07-26 — VERDICT: PASS. No blocking findings.** Reviewed diff `578e5b4..34379cf`
+(the single commit, scoped to the 14 `packages/core` files in §10). Three parallel adversarial layers
+(Blind Hunter / Edge Case Hunter / Acceptance Auditor) plus an independent pass over all 14 files and
+every re-measurable claim in §6.3. All 11 ACs met; repo-wide suite green (1777 pass / 0 fail across 116
+files, re-run by the reviewer, not quoted); both workspaces typecheck; every scope fence held. The §6
+discovery proof was re-verified independently: 31/26/16 `<testcase>` rows carry the three new files'
+`file=` attributes, matching the `test(` count in each source file exactly.
+
+Everything below is **non-blocking** and was left as an action item — the review was a read-only pass and
+edited no source. Each `[Review][Patch]` item marked *(reproduced)* was re-confirmed by the reviewer inside
+`bun test`, not merely argued. Citations name a **file and a symbol** per this story's own policy; any
+number is a pointer, not a fact.
+
+Two findings were weighed for blocking and deliberately rated should-fix. `acquireAdmission`'s unvalidated
+`cls` defeats the ceiling completely, but no *typed* path can produce a bad class, and AC6's text is
+specifically the release/wake race, which is closed correctly. `fanoutClamp`'s NaN relabel is a literal
+deviation from AC10's "byte-identical without `processCeiling`", but `chosen` is `NaN` both before and
+after (only the diagnostic `binding` differs, and both values are wrong for a NaN input), no call site can
+produce the input, and AC10's own Proof — six call sites unedited plus `orchestrator.test.ts`'s three
+`binding` assertions — is satisfied and green.
+
+**FIX PASS 1, 2026-07-26 — the six `should-fix` items from the review report are addressed: five closed
+outright, one (the `cls` finding) closed in part with a recorded rebuttal.** Each was
+reproduced by the reviewer inside `bun test` (probes BH#1, EC#1, EC#2, EC#3, EC#8); each now carries a
+regression test that was verified load-bearing by reverting the fix and watching the test fail, and every
+new test was confirmed DISCOVERED by the repo-wide runner by name and by `file=` attribution. Details in
+Completion Notes 11–14; probe output in the Debug Log under "Fix pass 1". Items still open below are the
+report's `nice-to-have` tier and were deliberately left — see Completion Note 14.
+
+- [x] **[Review][Decision]** `admission.ts` captures `TELAR_MAX_AGENTS` **once at module evaluation** —
+  `let policy = defaultAdmissionPolicy()` (`packages/core/src/admission.ts`, ≈`:142`); `readCeiling` is
+  called nowhere else except `resetAdmission`. A process that sets the env var *after* importing
+  `@telar/core` silently keeps ceiling 4 and `admissionCeiling()` reports 4 with no warning. Every other
+  env-derived root in this repo resolves **lazily** — the convention story 1.1 learned the hard way
+  (`98c065f fix(web): resolve TELAR_HOME lazily in store.ts…`, and the `?.trim()` scan
+  `apps/web/lib/state-root.test.ts` now enforces). **The decision is genuinely yours:** AC4 specifies
+  "when the controller initializes", so eager capture is what the AC asked for, and making the ceiling
+  lazy is a behavior change to a shipped contract rather than a bug fix.
+  **FIXED (fix pass 1) — reconciled, not traded off.** The import-time initialization AC4 asks for stays
+  exactly as it was (`let policy: AdmissionPolicy = defaultAdmissionPolicy()` still runs at module
+  evaluation, so the ceiling is present with no init call and the parse still cannot throw). What was added
+  is `currentPolicy()`, which re-reads the ceiling from `envRoot` at every entry point
+  (`acquireAdmission` / `releaseAdmission`'s `pump` / `admissionCeiling` / `admissionSnapshot`), so a value
+  exported **after** the first import is now seen. An explicit `configureAdmission({ceiling})` **pins** it —
+  deliberate code outranks an ambient variable — and `resetAdmission(env)` re-roots the read and unpins,
+  which is also what makes a suite's `resetAdmission({})` immune to the shell it runs under. See
+  Completion Note 12.
+
+- [ ] **[Review][Decision]** `fanoutClamp` returns `binding: "pool-exhausted"` whenever `cap <= 0`, even
+  when `capByProcess` alone is the zero term (`packages/core/src/budget.ts`, `fanoutClamp`'s early return,
+  ≈`:74`). A surface rendering "the agent pool is full" would name the wrong cause when the real
+  constraint is the process ceiling — the exact misstatement the `processCeiling` term was added to fix.
+  **Yours to call because it is already a deliberate, tested contract:** `admission.test.ts`'s
+  `"AC10 a zero process ceiling is pool-exhausted, and capByProcess is always reported"` pins it, so
+  changing the label means changing a green assertion.
+
+- [x] **[Review][Patch]** `resetAdmission` zeroes **live** occupancy behind a queue-only guard, minting
+  capacity [`packages/core/src/admission.ts`, `resetAdmission` ≈`:239`]. With 4 slots held and the queue
+  empty the guard does not fire; occupancy resets to zero, 4 more calls are admitted, and **8 concurrent
+  model calls run against a ceiling of 4** — then the original 4 releases are absorbed silently by
+  `Math.max(0, …)`, so occupancy under-reports permanently. `releaseAdmission`'s own comment two lines
+  above states the invariant this breaks ("a double release must not MINT capacity (AC9)"). *(reproduced)*
+  **FIXED (fix pass 1):** `resetAdmission` now throws when `sumMap(occupancy) > 0`, naming the classes
+  still held. No force flag was added — a suite that trips it leaked a slot and should drain.
+  Pinned by `"resetAdmission refuses to zero LIVE occupancy — a reset cannot mint capacity"` and
+  `"the ceiling holds across a refused reset — never eight calls against a ceiling of four"`.
+
+- [x] **[Review][Patch]** `cls` is trusted as a key into `occupancy` with no runtime validation
+  [`packages/core/src/admission.ts`, `acquireAdmission` ≈`:211` / `releaseAdmission` ≈`:225`]. `sumMap`
+  reduces only over `ADMISSION_CLASSES`, so any key outside it is invisible to `availableFor`: with 3 of 4
+  slots held, **25 concurrent `acquireAdmission("bogus-N" as AdmissionClass)` calls are all admitted** and
+  `admissionSnapshot().inFlight` still reads 3. Separately, acquiring under one class and releasing under
+  another leaks the first class's slot for the life of the process while silently decrementing the second.
+  `event-bus.ts`'s `declareEvents` adds exactly this guard for `deliveryClass`; admission has none. T-9's
+  "mint an identity at the moment of the thing" argues for a slot handle rather than a bare class string.
+  *(reproduced)*
+  **FIXED (fix pass 1) — Failure (a) fully; Failure (b) structurally on the production path, with a
+  documented residual (see the rebuttal in Completion Note 15).** `assertAdmissionClass` now guards
+  `acquireAdmission` and `releaseAdmission` — the same posture `event-bus.ts` takes on `deliveryClass`, and
+  here sharper because an out-of-enum key is invisible to `sumMap`; that closes (a) outright. For (b),
+  `acquireAdmission` now **returns the release handle** for the slot it took (T-9: the identity is minted
+  at the moment of the thing), and `engine.ts` — the only caller in `packages/core/src` — releases through
+  it rather than naming the class a second time, so the shipped pair cannot disagree. What remains is that
+  `releaseAdmission(cls)` is still exported and still trusts its argument; it cannot be made to detect a
+  mismatch without breaking AC9. Pinned by
+  `"acquireAdmission and releaseAdmission both refuse a class outside the enum"`,
+  `"an out-of-enum class cannot slip 25 concurrent acquires past a full ceiling"`,
+  `"the slot handle releases the class it actually took, and only once (T-9)"` and
+  `"a queued waiter gets a handle for the slot pump() charged it"`.
+
+- [x] **[Review][Patch]** `configureAdmission` accepts `ceiling <= 0`, wedging the controller unrecoverably
+  [`packages/core/src/admission.ts`, `configureAdmission` ≈`:234`]. Nothing bounds `next.ceiling`. After
+  `configureAdmission({ceiling: 0})` the next `acquireAdmission` queues and **never resolves**, and from
+  then on *both* recovery seams — `configureAdmission` and `resetAdmission` — throw `waiters still queued`.
+  No route back short of a process restart. This is T-4's "a stranded waiter takes the one-process run
+  down", reachable *through* the guard written to prevent it. *(reproduced)*
+  **FIXED (fix pass 1):** `configureAdmission` now rejects a `ceiling` that is not an integer `>= 1`,
+  applying the same bound `readCeiling` applies to `TELAR_MAX_AGENTS`. The key is tested with
+  `"ceiling" in next` rather than `!== undefined`, because the spread would otherwise write an explicit
+  `undefined` straight into the policy. Pinned by
+  `"configureAdmission refuses a ceiling that would wedge the controller"`.
+
+- [x] **[Review][Patch]** `declareEvents` runtime-guards `deliveryClass` but not `payload`
+  [`packages/core/src/event-bus.ts`, `declareEvents`'s validation loop ≈`:168`]. A declaration with the
+  payload omitted **succeeds**; the first `publish` then throws
+  `TypeError: undefined is not an object (evaluating 'decl.payload.safeParse')` from `publish` (≈`:247`) —
+  an internal stack trace instead of the module's descriptive AD-21 error, surfacing in whichever module
+  publishes rather than the one that mis-declared. Contradicts this file's own header claim that the
+  payload shape is "enforced on every publish". *(reproduced)*
+  **FIXED (fix pass 1):** the validation loop now refuses a declaration whose `payload` cannot validate a
+  publish (`typeof decl.payload?.safeParse !== "function"`), and — same bypass, same failure mode — a whole
+  entry that is `null`/`undefined`/not an object is now **named** instead of dereferenced. Both throw the
+  module's descriptive AD-21 error at the moment the contract is broken, in the module that broke it.
+  Pinned by `"the runtime guard covers the PAYLOAD too — a shapeless declaration is refused at declare time"`.
+
+- [x] **[Review][Patch]** `"process"` is the unconditional final `else` of `fanoutClamp`'s new `binding`
+  ternary [`packages/core/src/budget.ts`, `fanoutClamp` ≈`:81`]. `NaN !== NaN`, so every explicit
+  comparison fails and any NaN-producing input lands on `"process"` — `fanoutClamp(5, {maxAgents:
+  Infinity, inFlight: Infinity, …})` reports `binding: "process"` with **no `processCeiling` supplied**,
+  where the pre-change formula reported `"budget"`. `admission.test.ts`'s otherwise-thorough AC10
+  equivalence grid sweeps only finite `maxAgents`/`inFlight`, so it cannot see this. *(reproduced)*
+  **FIXED (fix pass 1), label only.** `capByProcess === cap ? "process"` is now an explicit test like the
+  other two, and the chain's final `else` is `"budget"` — the pre-`processCeiling` formula's own final
+  else, so the no-ceiling answer is byte-identical for every input including a NaN cap (AC10). No value
+  AC10 requires to be byte-identical was touched: `pieces`, `capByPool`, `capByBudget`, `capByProcess` and
+  `chosen` are all unchanged, and `git show 578e5b4:packages/core/src/budget.ts` was re-read to confirm the
+  old else. Pinned by `"AC10 a NaN cap still reports what it reported before the process term existed"`,
+  and the AC10 equivalence grid now sweeps `Infinity` alongside the finite values — which is what made it
+  blind to this in the first place.
+
+- [ ] **[Review][Patch]** Neither `independentPieces` nor the new `processCeiling` is integer-validated, so
+  `chosen` — documented as "the final n actually returned" — can be fractional
+  [`packages/core/src/budget.ts`, `fanoutClamp` ≈`:65`/`:71`]: `processCeiling: 3.7` yields
+  `chosen: 3.7`. `readCeiling` guards `Number.isInteger` for the same quantity. The `pieces` half is
+  pre-existing and unchanged; `processCeiling` is new here and has no caller yet. *(reproduced)*
+
+- [ ] **[Review][Patch]** `sessionDir`'s id guard permits uppercase and does not normalize case
+  [`packages/core/src/sessions.ts`, `sessionDir` ≈`:56`], so on APFS `sessionDir("abc-session")` and
+  `sessionDir("ABC-SESSION")` are different strings resolving to **one physical directory** — two
+  logically distinct sessions sharing one `.runner-lease`, one's heartbeat overwriting the other's
+  pid/token. Low risk today (ids are SDK UUIDs), and `session-log.ts`'s co-tenant resolver shares the
+  property — which is another reason the two want collapsing into one shared resolver.
+
+- [ ] **[Review][Patch]** `sessionDir` has no length bound on `sessionId` [same symbol]. A
+  400-character regex-valid id passes the guard, then fails as a raw `ENAMETOOLONG` from `mkdirSync` deep
+  inside `writeLease`, instead of the clean, catchable `invalid session id` the same guard already
+  produces for every other malformed id.
+
+- [ ] **[Review][Patch]** `publish`'s `catch { result.failed++ }` discards the error object entirely
+  [`packages/core/src/event-bus.ts`, `publish`'s handler wrapper ≈`:278`]. A throwing subscriber is
+  countable but undiagnosable — no message, no stack, nowhere. The posture itself was a decision this
+  story delegated and the author documented, so this is not a breach; but `usage-ledger.ts` sets an
+  in-house precedent for naming the swallowed failure.
+
+- [ ] **[Review][Patch]** The compile-proof harnesses hard-code `packages/core/node_modules/typescript/bin/tsc`
+  with no existence precondition [`packages/core/test/event-bus.test.ts`'s `REPO_TSC` ≈`:67`;
+  `session-lease.test.ts`'s `REPO_TSC` ≈`:331`]. It resolves today, but a hoisting change would make six
+  tests fail as "expected ok true" rather than "tsc not found". One
+  `expect(fs.existsSync(REPO_TSC)).toBe(true)` makes the failure self-explaining.
+
+- [ ] **[Review][Patch]** `expect(source).toContain("fs.watch")` couples a passing test to the wording of a
+  header comment [`packages/core/test/event-bus.test.ts`, the T-1 source-scan test ≈`:453`]. The floor is
+  well-intentioned — a scan whose target moved must not pass by matching nothing — but rewording the WHY
+  block breaks the suite with no behavior change.
+
+- [x] **[Review][Patch]** §6.3-8's `cd packages/core && bun test` line reports `7645 expect() calls`; the
+  actual figure is **7651** [this file, Debug Log ≈`:1013`]. Re-measured twice: `1460 pass / 0 fail / 7651
+  expect() calls / Ran 1460 tests across 105 files`. Every other number on that line matches exactly, and
+  this file's own repo-root (9125) minus web (1474) figures imply 7651 — so only this tally is off. A
+  six-count drift in the one section whose stated purpose is "paste real command output".
+  **FIXED (fix pass 1):** the reviewer's figure was correct; the tally was corrected in place, and the
+  whole §6.3-8 block re-measured after the fix pass (`1472 pass / 0 fail / 8429 expect() calls / 105
+  files`). The repo-root run's own arithmetic still checks out: 8429 + 1474 = 9903, 1472 + 317 = 1789.
+
+- [x] **[Review][Defer]** `writeLease`'s atomic-write temp path is `file + ".tmp"` with no
+  pid/token/random suffix, so two writers to the same owner directory collide: B overwrites the shared tmp
+  before A renames, A's `renameSync` promotes B's content, and B's own rename throws `ENOENT` — the
+  surviving lease can name the wrong owner, which the header's MOAT paragraph does not account for
+  [`packages/core/src/runner/lease.ts`, `writeLease` ≈`:60`] — deferred, pre-existing. `git diff` over this
+  file shows only `loomDir` → `ownerDir` on the `mkdirSync` line, so the write path is byte-unchanged by
+  this story. Flagged because this commit is what promotes `writeLease` to a shared two-lifetime primitive
+  (AD-16) and adds `sessions.ts` as a second caller surface, multiplying the directories that can race.
+  Recorded in `deferred-work.md`.
+
+**Not changed by this review, and why:** story status was left at `review` rather than moved. The verdict
+is PASS, so nothing here demands rework — but promoting 1.2 to `done` unblocks 1-3 and epics 4/5/6, and
+whoever opens that gate should see the two `[Review][Decision]` items and the admission patches first.
+
 ---
 
 ## 5. Dev Notes
@@ -1010,7 +1200,7 @@ $ echo $?
 $ cd packages/core && bun test   # tail
  1460 pass
  0 fail
- 7645 expect() calls
+ 7651 expect() calls
 Ran 1460 tests across 105 files. [29.14s]      # exit 0
 
 $ cd packages/core && bunx tsc --noEmit ; echo $?
@@ -1149,6 +1339,136 @@ accounts.json      # mtime 01:31, pre-dates this run
 usage.ndjson       # mtime 01:20, pre-dates this run
 ```
 
+---
+
+#### Fix pass 1 (2026-07-26) — the six `should-fix` review items
+
+Real output, pasted. Commands run from the repo root unless a `cd` is shown.
+
+**The gate, after the fixes.** File count unchanged (no new suite — the twelve new cases live in the two
+suites they belong to); test count `1777 -> 1789` (+12 = 11 admission + 1 event-bus).
+
+```
+$ bun test   # tail
+ 1789 pass
+ 0 fail
+ 9903 expect() calls
+Ran 1789 tests across 116 files. [29.74s]      # exit 0
+
+$ cd packages/core && bun test   # tail
+ 1472 pass
+ 0 fail
+ 8429 expect() calls
+Ran 1472 tests across 105 files. [28.45s]      # exit 0
+
+$ cd apps/web && bun test   # tail
+ 317 pass
+ 0 fail
+ 1474 expect() calls
+Ran 317 tests across 11 files. [1488.00ms]     # unchanged by this pass
+
+$ cd packages/core && bunx tsc --noEmit ; echo $?
+0
+$ cd apps/web && bunx tsc --noEmit ; echo $?
+0
+$ ls packages/core/test/*.test.ts | wc -l
+     105                                        # unchanged: no file added
+$ git diff --stat -- bunfig.toml packages/core/test/ultra-runner.test.ts
+$                                               # both still byte-identical (§6.1, AC8)
+```
+
+Arithmetic checks out against the parts: 1472 + 317 = 1789, and 8429 + 1474 = 9903.
+
+**Discovery, by name AND by `file=` attribution, for every test in both touched suites** — the same
+mechanism §6.2 requires, re-run rather than assumed:
+
+```
+$ bun test --reporter=junit --reporter-outfile=<scratch>/discovery.xml   # tail
+ 1789 pass / 0 fail / Ran 1789 tests across 116 files. [29.77s]
+
+packages/core/test/admission.test.ts
+  42 tests | missing-by-name=0 | not-attributed-to-this-file=0     # 31 -> 42
+packages/core/test/event-bus.test.ts
+  27 tests | missing-by-name=0 | not-attributed-to-this-file=0     # 26 -> 27
+TOTAL PROBLEMS: 0
+```
+
+`-t` spot checks, one per fix area — `across 116 files` is half the proof — and the negative control:
+
+```
+$ bun test -t "resetAdmission refuses to zero LIVE occupancy"
+ 1 pass / 0 fail / Ran 1 test across 116 files. [296.00ms]                    # exit 0
+$ bun test -t "an out-of-enum class cannot slip 25 concurrent acquires past a full ceiling"
+ 1 pass / 0 fail / Ran 1 test across 116 files. [277.00ms]                    # exit 0
+$ bun test -t "AC10 a NaN cap still reports what it reported before the process term existed"
+ 1 pass / 0 fail / Ran 1 test across 116 files. [278.00ms]                    # exit 0
+$ bun test -t "the runtime guard covers the PAYLOAD too"
+ 1 pass / 0 fail / Ran 1 test across 116 files. [278.00ms]                    # exit 0
+$ bun test -t "a name that does not exist zzz"
+error: regex "a name that does not exist zzz" matched 0 tests. Searched 116 files (skipping 1789 tests)
+```
+
+**Load-bearing probes — every new guard reverted, every new test watched to fail.** This is §7's standard
+("a green test can assert nothing"), applied to all six. Each probe reverted exactly one guard, ran the
+suite, then restored the file from a pre-probe copy and `diff`ed it byte-for-byte (`RESTORED` below is that
+`diff -q` passing). No probe ran outside `bun test`.
+
+```
+probe 1  resetAdmission's `held > 0` throw removed
+         (fail) resetAdmission refuses to zero LIVE occupancy — a reset cannot mint capacity
+         (fail) the ceiling holds across a refused reset — never eight calls against a ceiling of four
+         40 pass / 2 fail          -> RESTORED
+
+probe 2  both assertAdmissionClass call sites removed
+         (fail) acquireAdmission and releaseAdmission both refuse a class outside the enum
+         (fail) an out-of-enum class cannot slip 25 concurrent acquires past a full ceiling
+         34 pass / 9 fail          -> RESTORED
+         (the extra 7 are the cascade: an unknown key corrupts occupancy for every later test — which is
+          itself the finding, since sumMap cannot see it)
+
+probe 3  slotHandle made non-idempotent (the `released` latch removed)
+         (fail) the slot handle releases the class it actually took, and only once (T-9)
+         41 pass / 1 fail          -> RESTORED
+
+probe 4  configureAdmission's ceiling bound removed
+         (fail) configureAdmission refuses a ceiling that would wedge the controller
+         41 pass / 1 fail          -> RESTORED
+
+probe 5a currentPolicy() reduced to `return policy` (the ceiling frozen at import again)
+         (fail) the ceiling is re-read from the environment — a value exported AFTER import is seen
+         41 pass / 1 fail          -> RESTORED
+
+probe 5b the configureAdmission pin removed (`ceilingPinned` never set)
+         (fail) the queue > admissionCeiling reports the live policy ceiling      <- a PRE-EXISTING test
+         ...and 9 more                                                              catches it first
+         RESTORED
+
+probe 6  budget.ts's binding chain final else put back to "process"
+         (fail) AC10 the pool -> budget tie-break is byte-identical with the new term absent
+         (fail) AC10 a NaN cap still reports what it reported before the process term existed
+         40 pass / 2 fail          -> RESTORED
+         (the widened grid catches it independently of the named case — that is the point of widening it)
+
+probe 7  declareEvents' payload guard removed
+         (fail) the runtime guard covers the PAYLOAD too — a shapeless declaration is refused at declare time
+         26 pass / 1 fail          -> RESTORED
+
+probe 8  declareEvents' null-entry guard removed (the same test's last assertion)
+         (fail) the runtime guard covers the PAYLOAD too — a shapeless declaration is refused at declare time
+         26 pass / 1 fail          -> RESTORED
+```
+
+**One test is honestly NOT a revert-proof, and is labelled as such in-source:**
+`"AC4 a fresh import initializes the ceiling from the environment and never throws"` spawns a child that
+imports `admission.ts` cold and asks immediately. It pins that a cold import answers from the environment
+with no init call and does not throw on hostile input — but it **cannot distinguish eager initialization
+from a memoized first read**, and nothing outside the module can. It is a preservation test for AC4, not a
+regression test, and the comment above it says so rather than implying more.
+
+**No write reached the real `~/.telar` in this pass either.** Every probe was a `bun test` run over
+pure/in-memory functions or an `mkdtemp` root; the only child process spawned imports `admission.ts` and
+prints a number.
+
 ### Completion Notes
 
 **1. The `sessions/` co-tenancy finding (§5.6 T-3) — a real hole in `WORK-SPLIT`'s disjoint-write-set
@@ -1258,6 +1578,105 @@ would have caught item T-10 above at authoring time, and this is the second such
 listed in §7 as "still open from 1.1, not yours" — so the scan would either fail on day one or need an
 out-of-scope edit. Worth adding once that residual is cleared.
 
+---
+
+#### Fix pass 1 — review remediation (2026-07-26)
+
+**11. All six `should-fix` items from the review report are addressed, each with a regression test proven
+load-bearing** — five closed outright, and the `cls` item closed on its out-of-enum half and structurally
+on the production path for its class-mismatch half, with the residual and its rebuttal in note 15. One
+line each below; the detail sits under the matching `[Review]` item in §4 and the probe output in the
+Debug Log.
+
+| Finding | Fix | Regression test |
+| --- | --- | --- |
+| `resetAdmission` mints capacity (BH#1) | throws when `sumMap(occupancy) > 0`, naming the classes held | `resetAdmission refuses to zero LIVE occupancy…`, `the ceiling holds across a refused reset…` |
+| `cls` unvalidated (EC#2) | `assertAdmissionClass` on both entry points **and** `acquireAdmission` returns the slot handle (partial — note 15) | four cases, incl. the 25-concurrent-bogus reproduction |
+| `configureAdmission` ceiling ≤ 0 (EC#1) | ceiling must be an integer ≥ 1, the same bound `readCeiling` applies | `configureAdmission refuses a ceiling that would wedge the controller` |
+| `declareEvents` payload unguarded (EC#8) | payload must be able to validate a publish; a null entry is named, not dereferenced | `the runtime guard covers the PAYLOAD too…` |
+| `fanoutClamp`'s NaN relabel (EC#3) | `process` is an explicit test; the final else is `budget`, the pre-term formula's own | `AC10 a NaN cap still reports…` + the AC10 grid widened to sweep `Infinity` |
+| `TELAR_MAX_AGENTS` frozen at import | `currentPolicy()` re-reads it at every entry point; `configureAdmission` pins | `the ceiling is re-read from the environment…`, `an explicit configureAdmission ceiling PINS…` |
+
+**12. AC4 versus the lazy-resolution convention — reconciled rather than traded, and here is the
+reasoning, because the fix brief flagged it as the one place the two could collide.** AC4 says the
+controller "initializes" without throwing "at import time"; the repo's convention (learned in story 1.1,
+`98c065f`) is that every env-derived root resolves lazily. The two only conflict if "initializes at
+import" is read as "and never looks again" — which is not what the AC says and not what its Proof checks
+(the Proof is entirely about `readCeiling` being a pure, never-throwing parse over an env record). So:
+- **The import-time initialization is untouched.** `let policy: AdmissionPolicy = defaultAdmissionPolicy()`
+  still runs at module evaluation, `admissionCeiling()` still answers with no init call, and the parse
+  still cannot throw. Every AC4 test is unchanged and green, plus a new child-process test that imports the
+  module cold under a hostile `TELAR_MAX_AGENTS` and asserts both halves end to end.
+- **What is new is that the value stays true afterwards.** `currentPolicy()` re-reads the ceiling from
+  `envRoot` on every entry point.
+- **Precedence is explicit, not accidental:** an explicit `configureAdmission({ceiling})` pins the value
+  (deliberate code beats an ambient variable — and the pre-existing test
+  `"admissionCeiling reports the live policy ceiling"` fails without the pin, which is how it was checked);
+  `resetAdmission(env)` re-roots the read at `env` and unpins.
+- **Bonus the seam gets for free:** `resetAdmission({})` now roots the read at that empty record, so this
+  suite's ceiling is immune to a `TELAR_MAX_AGENTS` in the developer's own shell. Previously the
+  protection was accidental (nothing re-read the env at all).
+- **The one hazard, stated:** the ceiling can now change mid-run. Lowering it while calls are in flight
+  makes `availableFor` negative, which reads as `at-ceiling` — arrivals queue and releases drain until the
+  new ceiling holds. It cannot over-commit, and `pump()` resolves the policy once per drain so the value
+  cannot move underneath a wake loop.
+
+**13. One deliberate, additive API change: `acquireAdmission` now returns the release handle for the slot
+it took** (`Promise<() => void>`, was `Promise<void>`). The review's finding named the missing handle
+directly, and T-9 is the reason it matters: an identity is minted at the moment of the thing, never
+re-derived. Blast radius, measured: `engine.ts` is the only caller in `packages/core/src` and now calls the
+handle in its `finally`; every existing test that ignores the resolved value keeps working; `apps/web`
+imports none of these symbols. `releaseAdmission(cls)` stays exported unchanged, so AC9's double-release
+flooring is still asserted against the same function. The handle is idempotent — a spent handle firing a
+second time is a no-op rather than a release of a slot somebody else now holds, which the floor at zero
+could not distinguish.
+
+**14. What was deliberately NOT fixed in this pass, and why.** The brief was the report's six `should-fix`
+items; everything below is its `nice-to-have` tier and stays an open action item in §4.
+- `independentPieces` / `processCeiling` integer validation — `pieces` is pre-existing and unchanged by
+  this story, and validating it changes what six untouched call sites do. Wants its own story.
+- `sessionDir`'s case-insensitivity and missing length bound — both are `sessions.ts` behavior changes with
+  a live co-tenant (`apps/web/lib/session-log.ts`) whose resolver shares the property; changing one side
+  alone is what splits the directory in two. §5.6 T-3 says so, and the collapse is tracked.
+- `publish`'s `catch { result.failed++ }` discarding the error — the error posture is a decision this story
+  delegated and documented; changing it is a contract change, not a defect fix.
+- The `REPO_TSC` existence precondition and the `toContain("fs.watch")` source scan — test-ergonomics
+  improvements with no behavior behind them.
+- The `binding: "pool-exhausted"` misnomer when `capByProcess` is the zero term — pinned by a green,
+  deliberate assertion (`"AC10 a zero process ceiling is pool-exhausted…"`). Changing the label means
+  changing a documented contract, which is the operator's call, not a fix pass's. Left open in §4.
+
+**15. Rebuttal — the one half of a should-fix item that is NOT fully closed, and why closing it would
+breach AC9.** The review's finding on `cls` had two failures. Failure (a) — an out-of-enum class admitted
+without limit — is closed outright by `assertAdmissionClass`. Failure (b) — acquiring under one class and
+releasing under another — is closed *structurally for the production path* by the slot handle, but the
+exported `releaseAdmission(cls)` still trusts the class it is given: `acquireAdmission("loom-build")`
+followed by `releaseAdmission("other")` still leaks the build slot and silently floors the `other`
+decrement at zero. This was re-verified against the fixed code by an independent adversarial pass over
+this diff, and it is real.
+It is nevertheless left open, because **every way to close it breaks something the story requires**:
+- The only evidence of a mismatch available inside `releaseAdmission` is `occupancy[cls] === 0` — which is
+  *indistinguishable from a double release*. AC9 requires that exact case to floor silently rather than
+  throw ("occupancy floors at zero on release (`Math.max(0, …)`), asserted directly"), and
+  `"release is idempotent below zero"` and `"AC9 a double release of a HELD slot floors at zero"` assert it
+  by name. Throwing there fails both, and fails AC9.
+- Removing `releaseAdmission` from the public surface is the other route, and T-A1 lists it among the
+  required exports that "downstream stories and the barrel assume".
+- A `console.warn` on the zero-occupancy release would fire on the two AC9 tests that deliberately produce
+  it, so it would report the correct behavior as an anomaly.
+What was done instead: the handle is the safe form and is what production uses, and `releaseAdmission`
+now carries an in-source paragraph stating precisely what it cannot detect, so the next reader does not
+mistake the pair for symmetric. Closing (b) completely means changing AC9's asserted semantics — a
+deliberate contract change, and the operator's call rather than a fix pass's.
+
+**16. Decisions taken autonomously in this pass** (the operator was asleep; nothing was surfaced):
+scope held to the six items; the AC4 reconciliation in note 12 chosen over both alternatives (freezing the
+ceiling and writing a rebuttal, or making it fully lazy and dropping the pin); the slot handle in note 13
+adopted rather than leaving the acquire/release pair to convention; `resetAdmission` given no `force`
+escape hatch (a caller that trips it leaked a slot); the AC10 equivalence grid widened to include
+`Infinity` rather than only adding the named NaN case; and the story's `7645` expect-call tally corrected
+in place after re-measuring, since the Debug Log was being updated anyway. Status left at `review`.
+
 ## 10. File List
 
 Measured with the change staged, which is the only form that sees created files:
@@ -1309,6 +1728,34 @@ A	packages/core/test/session-lease.test.ts
 - `packages/core/src/index.ts` — three barrel lines with WHY comments citing AD-17, AD-14/AD-21,
   AD-5/AD-16 (T-D1).
 
+**Fix pass 1 — review remediation (2026-07-26).** No file created, none deleted; the six fixes land in the
+five files below and their two suites. Measured, not recalled:
+
+```
+$ git diff --name-status -- packages/core
+M	packages/core/src/admission.ts
+M	packages/core/src/budget.ts
+M	packages/core/src/engine.ts
+M	packages/core/src/event-bus.ts
+M	packages/core/test/admission.test.ts
+M	packages/core/test/event-bus.test.ts
+```
+
+- `packages/core/src/admission.ts` — `assertAdmissionClass` + `isAdmissionClass`; `currentPolicy()` and
+  the `envRoot` / `ceilingPinned` pair; `slotHandle`; `acquireAdmission` returns the handle and validates
+  its class; `releaseAdmission` validates its class; `configureAdmission` bounds the ceiling and sets the
+  pin; `resetAdmission` refuses to zero live occupancy and re-roots the env read; `pump` resolves the
+  policy once per drain.
+- `packages/core/src/budget.ts` — `fanoutClamp`'s `binding` chain: `process` is an explicit test and the
+  final else is `budget`. No value changed, on any input.
+- `packages/core/src/engine.ts` — `agent()` releases through the handle `acquireAdmission` returns; the
+  now-unused `releaseAdmission` import dropped.
+- `packages/core/src/event-bus.ts` — `declareEvents` validates the payload schema and the declaration
+  entry itself.
+- `packages/core/test/admission.test.ts` — 31 → 42 tests (the `"the mutation seams"` describe, the NaN
+  case) and the AC10 grid widened to sweep `Infinity`.
+- `packages/core/test/event-bus.test.ts` — 26 → 27 tests.
+
 **Deliberately NOT modified** (asserted in the Debug Log): `bunfig.toml`,
 `packages/core/test/ultra-runner.test.ts`, `apps/web/**` (including `lib/session-log.ts`),
 `packages/core/src/repair-guard.ts`, `tick.ts`, `executor.ts`, `build-fanout.ts`.
@@ -1325,3 +1772,5 @@ A	packages/core/test/session-lease.test.ts
 | 2026-07-26 | Load-bearing probes run for AC6 and AC2 (revert the fix, watch it fail). Finding recorded: the SPEC reference suite's own AC6 case does not fail against a faithful revert; the added AC6 case does. |
 | 2026-07-26 | T-10 incident: a literal NUL byte made `admission.test.ts` binary to git. Found, replaced with escape sequences, all 14 touched files re-verified as UTF-8 text. |
 | 2026-07-26 | Status -> review. |
+| 2026-07-26 | Code review (three adversarial layers + independent verification pass): **PASS, no blocking findings.** All 11 ACs met; suite re-run green (1777/0 across 116 files); §6 discovery proof independently re-confirmed by junit `file=` attribution (31/26/16). 2 `[Review][Decision]` + 12 `[Review][Patch]` + 1 `[Review][Defer]` recorded in §4; the deferred `writeLease` tmp-collision entry also appended to `deferred-work.md`. No source edited, nothing committed, status left at `review`. |
+| 2026-07-26 | Fix pass 1 — the six `should-fix` review items closed in `admission.ts` (occupancy-safe reset, class validation + slot handle, bounded ceiling, lazy ceiling with an explicit pin), `budget.ts` (the NaN binding label), `event-bus.ts` (the payload guard) and `engine.ts` (release through the handle). +12 regression tests, each verified load-bearing by reverting its fix; gate 1777/116 -> 1789/116, 0 fail, both workspaces typecheck. Status stays `review`. |

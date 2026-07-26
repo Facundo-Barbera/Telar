@@ -85,7 +85,18 @@ export function fanoutClamp(independentPieces: number, args: FanoutArgs): Fanout
         ? "pool"
         : capByBudget === cap
           ? "budget"
-          : "process";
+          : capByProcess === cap
+            ? "process"
+            : // Unreachable for any real input — `cap` IS one of the three terms,
+              // so one of the comparisons above must match. It is reachable for a
+              // NaN cap (maxAgents and inFlight both Infinity, say), where every
+              // comparison is false because NaN !== NaN. AC10 requires the
+              // no-processCeiling answer to stay byte-identical to the formula
+              // before this term existed, and that formula's final else was
+              // "budget" — so this one is too. The label is meaningless for a NaN
+              // clamp either way; what matters is that adding the process term
+              // did not silently move it.
+              "budget";
   return { pieces, capByPool, capByBudget, capByProcess, chosen, binding };
 }
 

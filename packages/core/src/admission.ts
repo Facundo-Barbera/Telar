@@ -78,6 +78,26 @@ export const DEFAULT_ADMISSION_CEILING = 4;
 const zeroMap = (): ClassMap => ({ "loom-build": 0, "loom-verify": 0, ultra: 0, other: 0 });
 const sumMap = (m: ClassMap): number => ADMISSION_CLASSES.reduce((n, c) => n + m[c], 0);
 
+const isAdmissionClass = (cls: unknown): cls is AdmissionClass =>
+  typeof cls === "string" && (ADMISSION_CLASSES as readonly string[]).includes(cls);
+
+// Belt-and-suspenders for callers that bypass the type system (`as any`, a JS
+// caller, a class off the wire) — the same guard event-bus.ts's declareEvents
+// puts on deliveryClass, and here for a sharper reason: `occupancy` is a fixed
+// map keyed by class and sumMap only reduces over ADMISSION_CLASSES, so an
+// out-of-enum key is INVISIBLE to availableFor. Unguarded, twenty-five acquires
+// under "bogus" are all admitted at once while the snapshot still reports three
+// in flight — the ceiling AD-17 exists to enforce, gone, silently.
+function assertAdmissionClass(cls: AdmissionClass, fn: string): void {
+  if (!isAdmissionClass(cls)) {
+    throw new Error(
+      `${fn}: ${JSON.stringify(cls)} is not an admission class — expected one of ` +
+        `${ADMISSION_CLASSES.join(", ")}. Occupancy is keyed by class, so an unknown key would be ` +
+        `invisible to the ceiling and admit without limit (AD-17).`,
+    );
+  }
+}
+
 // Tolerant parse: a missing, blank, non-integer or sub-1 value falls back to the
 // default rather than throwing at import time and taking the whole server down.
 export function readCeiling(env: Record<string, string | undefined> = process.env): number {
@@ -139,11 +159,42 @@ export function admissionCheck(
 
 type Waiter = { cls: AdmissionClass; wake: () => void };
 
+// AC4, unchanged: the policy is initialized AT IMPORT, from process.env, and the
+// parse never throws — so admissionCeiling() answers from the first line of the
+// first module that imports this one, with no init call anyone can forget.
+//
+// `envRoot` is the record the ceiling is re-read FROM (see currentPolicy). It
+// starts as the live process environment and is re-rooted only by
+// resetAdmission(env), which is what lets a suite pin its own record and be
+// immune to the shell it runs under.
+let envRoot: Record<string, string | undefined> = process.env;
 let policy: AdmissionPolicy = defaultAdmissionPolicy();
+// Set by an explicit configureAdmission({ceiling}) — a deliberate call from code
+// outranks an ambient environment variable.
+let ceilingPinned = false;
 let occupancy: ClassMap = zeroMap();
 const queue: Waiter[] = [];
 
-export const admissionCeiling = (): number => policy.ceiling;
+// The import-time value above is the FIRST answer, not a frozen one: the ceiling
+// is re-read from the environment at every entry point, which is the convention
+// every other env-derived root in this repo follows (story 1.1: "resolve
+// TELAR_HOME lazily in store.ts so dev runs never write production state").
+// Without it, a process that exports TELAR_MAX_AGENTS after @telar/core is first
+// imported — an Electron main reading a settings file, a Next route reading
+// config — keeps ceiling 4 forever and admissionCeiling() reports 4 with no
+// warning, which is the one number this module exists to make visible and
+// configurable. Eager init and lazy refresh are not in conflict: the import-time
+// read is what makes the value present without an init call, and this is what
+// keeps it TRUE afterwards.
+function currentPolicy(): AdmissionPolicy {
+  if (!ceilingPinned) {
+    const fromEnv = readCeiling(envRoot);
+    if (fromEnv !== policy.ceiling) policy = { ...policy, ceiling: fromEnv };
+  }
+  return policy;
+}
+
+export const admissionCeiling = (): number => currentPolicy().ceiling;
 
 // The observability read (AC5's "names why"): policy — including the priority
 // order — occupancy, waiting-by-class, in-flight and queued, so a reader can
@@ -157,14 +208,15 @@ export function admissionSnapshot(): {
   inFlight: number;
   queued: number;
 } {
+  const p = currentPolicy();
   const waiting = zeroMap();
   for (const w of queue) waiting[w.cls]++;
   return {
     policy: {
-      ...policy,
-      weight: { ...policy.weight },
-      floor: { ...policy.floor },
-      priority: [...policy.priority],
+      ...p,
+      weight: { ...p.weight },
+      floor: { ...p.floor },
+      priority: [...p.priority],
     },
     occupancy: { ...occupancy },
     waiting,
@@ -180,13 +232,17 @@ export function admissionSnapshot(): {
 //         borrows. Without pass 2, several classes each sitting exactly at
 //         their entitlement would stall with free slots on the floor (AC7).
 function pump(): void {
+  // Resolved ONCE for the whole drain: nothing here awaits (a wake() only
+  // resolves a promise, so continuations run later as microtasks), so the policy
+  // cannot move underneath the loop, and the env read stays off the inner path.
+  const p = currentPolicy();
   for (;;) {
     let admitted = false;
 
-    for (const cls of policy.priority) {
+    for (const cls of p.priority) {
       const i = queue.findIndex((w) => w.cls === cls);
       if (i === -1) continue;
-      if (!admissionCheck(policy, occupancy, cls, { allowBorrow: false }).admit) continue;
+      if (!admissionCheck(p, occupancy, cls, { allowBorrow: false }).admit) continue;
       const [w] = queue.splice(i, 1);
       occupancy[cls]++; // taken BEFORE waking, so no arrival can barge the slot
       w!.wake();
@@ -196,7 +252,7 @@ function pump(): void {
     if (admitted) continue;
 
     const head = queue[0];
-    if (head && admissionCheck(policy, occupancy, head.cls, { allowBorrow: true }).admit) {
+    if (head && admissionCheck(p, occupancy, head.cls, { allowBorrow: true }).admit) {
       queue.shift();
       occupancy[head.cls]++; // same rule: the slot is taken before the wake
       head.wake();
@@ -206,23 +262,58 @@ function pump(): void {
   }
 }
 
-// Take a slot, waiting if necessary. Pair with releaseAdmission in a `finally`,
-// and resolve the class ONCE into a local first so the two can never disagree.
-export async function acquireAdmission(cls: AdmissionClass = "other"): Promise<void> {
+// The handle for one taken slot, minted AT the moment the slot is taken (T-9 —
+// an identity names the thing, never a position or a recomputed count). It
+// closes over the class actually charged, so a caller cannot release a class it
+// never held: acquiring under "loom-build" and releasing under "other" would
+// otherwise leak the build slot for the life of the process while decrementing
+// a slot "other" never held, and Math.max(0, …) would swallow both halves.
+// Idempotent, so calling it twice is a no-op rather than a decrement of somebody
+// else's slot.
+function slotHandle(cls: AdmissionClass): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseAdmission(cls);
+  };
+}
+
+// Take a slot, waiting if necessary. RETURNS THE RELEASE HANDLE for the slot it
+// took — call that in a `finally` and the pair can never disagree about which
+// class is being handed back. releaseAdmission(cls) stays exported for callers
+// that genuinely hold the class in a local, but the handle is the safe form.
+export async function acquireAdmission(cls: AdmissionClass = "other"): Promise<() => void> {
+  assertAdmissionClass(cls, "acquireAdmission");
+  const p = currentPolicy();
   // No barging: once anyone is queued, new arrivals queue too. The old gate let
   // an arrival take the slot a just-woken waiter was about to claim, which is
   // how `active` could drift ABOVE the ceiling (AC6).
-  if (queue.length === 0 && admissionCheck(policy, occupancy, cls, { allowBorrow: true }).admit) {
+  if (queue.length === 0 && admissionCheck(p, occupancy, cls, { allowBorrow: true }).admit) {
     occupancy[cls]++;
-    return;
+    return slotHandle(cls);
   }
   await new Promise<void>((wake) => {
     queue.push({ cls, wake });
   });
   // Slot already accounted for by pump() before it woke us — nothing to do.
+  return slotHandle(cls);
 }
 
+// Hand a slot back BY CLASS. Prefer the handle acquireAdmission returns; this
+// form exists because AC9's floor-at-zero is asserted directly against it.
+//
+// WHAT IT CANNOT DETECT, stated so nobody assumes otherwise: it trusts the class
+// it is given. Releasing "other" while the caller actually holds a "loom-build"
+// slot leaves the build slot held for the life of the process and decrements a
+// class that held nothing — and the floor below swallows the second half without
+// a sound. Nothing here can tell the two apart: the only evidence of a mismatch
+// is `occupancy[cls] === 0`, and AC9 requires that case to floor silently rather
+// than throw, which is exactly what a double release looks like. That is why the
+// handle exists and why engine.ts releases through it — the handle closes over
+// the class actually charged, so the pair cannot disagree at all.
 export function releaseAdmission(cls: AdmissionClass = "other"): void {
+  assertAdmissionClass(cls, "releaseAdmission");
   // Floors at zero: a double release must not MINT capacity (AC9).
   occupancy[cls] = Math.max(0, occupancy[cls] - 1);
   pump();
@@ -233,11 +324,48 @@ export function releaseAdmission(cls: AdmissionClass = "other"): void {
 // in ONE process, so this is not hypothetical.
 export function configureAdmission(next: Partial<AdmissionPolicy>): void {
   if (queue.length > 0) throw new Error("configureAdmission: waiters still queued");
+  // A ceiling below 1 admits NOBODY: the next acquire queues and never resolves,
+  // and from that moment both recovery seams refuse to run because a waiter is
+  // queued — a wedge with no route back short of a process restart, reached
+  // THROUGH the guard written to prevent stranded waiters. `"ceiling" in next`
+  // rather than `!== undefined` because the spread below would otherwise write
+  // an explicit `undefined` straight into the policy.
+  if ("ceiling" in next && (!Number.isInteger(next.ceiling) || (next.ceiling as number) < 1)) {
+    throw new Error(
+      `configureAdmission: ceiling must be an integer >= 1, got ${JSON.stringify(next.ceiling)}. ` +
+        `At 0 nothing can ever be admitted, the next acquire queues forever, and both ` +
+        `configureAdmission and resetAdmission then throw "waiters still queued". readCeiling ` +
+        `applies the same bound to TELAR_MAX_AGENTS.`,
+    );
+  }
+  if ("ceiling" in next) ceilingPinned = true;
   policy = { ...policy, ...next };
 }
 
 export function resetAdmission(env?: Record<string, string | undefined>): void {
   if (queue.length > 0) throw new Error("resetAdmission: waiters still queued");
-  policy = defaultAdmissionPolicy(env);
+  // Live occupancy is the other half of the same invariant, and the queue guard
+  // does not cover it: with the pool full and nobody queued, zeroing occupancy
+  // MINTS the whole ceiling — four fresh calls are admitted immediately, eight
+  // real model calls run against a ceiling of four, and the original four
+  // releases are then absorbed by Math.max(0, …) so occupancy under-reports
+  // permanently, with no error and no log. Same rule as releaseAdmission two
+  // functions up: a reset must not mint capacity (AC9). A test that trips this
+  // is a test that leaked a slot — drain it rather than reaching for a force
+  // flag.
+  const held = sumMap(occupancy);
+  if (held > 0) {
+    const by = ADMISSION_CLASSES.filter((c) => occupancy[c] > 0)
+      .map((c) => `${c}=${occupancy[c]}`)
+      .join(", ");
+    throw new Error(
+      `resetAdmission: ${held} slot(s) still held (${by}) — resetting would mint capacity for ` +
+        `calls that are still in flight. Release them first (the handle acquireAdmission returned, ` +
+        `or releaseAdmission for each held class).`,
+    );
+  }
+  envRoot = env ?? process.env;
+  policy = defaultAdmissionPolicy(envRoot);
+  ceilingPinned = false;
   occupancy = zeroMap();
 }

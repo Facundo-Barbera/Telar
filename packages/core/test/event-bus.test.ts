@@ -157,6 +157,35 @@ describe("AC1 — the delivery class is a required FIELD, proved against the com
     ).toThrow(/delivery class/i);
     expect(declaredEvents()).toEqual([]);
   });
+
+  test("the runtime guard covers the PAYLOAD too — a shapeless declaration is refused at declare time", () => {
+    // The same bypass reaches the other half of the contract (AD-21). Unguarded,
+    // this declaration REGISTERED, and the first publish then threw
+    // `TypeError: undefined is not an object (evaluating 'decl.payload.safeParse')`
+    // from inside publish — an internal stack trace, surfacing in whichever
+    // module published rather than in the one that mis-declared, and flatly
+    // contradicting this module's own header ("enforced on every publish").
+    expect(() =>
+      declareEvents("probe", { "thing-happened": { deliveryClass: "human-facing" } as never }),
+    ).toThrow(/no payload schema/);
+    // Nothing was registered, so a publish gets the descriptive AD-21 error.
+    expect(declaredEvents()).toEqual([]);
+    expect(() => publish("probe:thing-happened", { id: "x" })).toThrow(/AD-21/);
+
+    // A payload that is present but is not a schema is refused for the same
+    // reason — the guard is "can this validate a publish", not "is the key set".
+    expect(() =>
+      declareEvents("probe", {
+        "thing-happened": { deliveryClass: "agent-facing", payload: {} } as never,
+      }),
+    ).toThrow(/no payload schema/);
+
+    // ...and a missing entry is NAMED rather than dereferenced.
+    expect(() => declareEvents("probe", { "thing-happened": undefined as never })).toThrow(
+      /is not a declaration/,
+    );
+    expect(declaredEvents()).toEqual([]);
+  });
 });
 
 describe("AC3 — a name must be declared, and only by its own module", () => {
