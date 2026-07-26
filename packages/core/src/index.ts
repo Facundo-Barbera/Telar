@@ -23,6 +23,15 @@ export * from "./event-bus";
 // the profile — no field here can reach hook registration, and toolPolicy is
 // intersect-only by its own type — and a capability the provider port does not
 // publish is a hard error before the stream opens, never a silent degradation.
+// Story 2.2 made that true of the chat route that exists, and added the three
+// symbols the migration needed on this side of the boundary: resolveSessionKind
+// (the route's own escalation > steerer > planner > project precedence, as an
+// ordered fold), sessionRoleFromWire (the one home for "which strings are
+// session roles"), and LOOM_AUTO_TOOL_NAMES / ULTRA_AUTO_TOOL_NAMES, which grow
+// BASE_ALLOWED_TOOLS to the full auto-run vocabulary so a profile's `allow` can
+// name every tool the route grants. A star export, so every one of them travels
+// — and the package exports only ".", which makes this barrel the port's only
+// route to apps/web.
 export * from "./session-profile";
 export * from "./manifest";
 // AD-18/AD-20 — the one append-only spend ledger and its sole writer. The

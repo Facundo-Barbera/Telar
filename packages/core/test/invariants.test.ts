@@ -2764,6 +2764,157 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
     expect(fieldNames(typeLiteralFields(commented, "Session" + "Profile"))).toEqual(["kind"]);
   });
 
+  test("INV-6e the chat route branches on NO session kind — every kind resolves through the profile", () => {
+    // AD-9's promise, made mechanical: "a new surface adds a profile; it does
+    // not add an `if`." Story 2.2 is the story that made that true of the
+    // handler that exists, and a prose claim about a ~1900-line file is not
+    // checkable — so this is.
+    //
+    // BOTH HALVES ARE REQUIRED, and the second is the one story 1.1's Repair
+    // Round 4 paid for: "a guard must read the same value as the thing it
+    // guards." Deleting the three flags AND never consuming the profile would
+    // satisfy the absence half alone, while the route quietly went back to
+    // computing everything inline — so the presence half is the anti-vacuity
+    // floor, not a bonus assertion.
+    if (!ROUTE_SRC) {
+      throw new Error(
+        `AD-9 / INV-6e: apps/web/app/api/chat/route.ts is not in the scan index. CONSEQUENCE: ` +
+          `both halves below would hold vacuously and the route could carry every session-kind ` +
+          `conditional AD-9 forbids. NEXT STEP: fix the walk, not the assertion.`,
+      );
+    }
+    // `.code` (comments blanked) and never `.text`, for the reason INV-6c
+    // records and this test makes acute: after story 2.2 the route's own
+    // comments legitimately DISCUSS isEscalationSession in the past tense
+    // ("There is no isPlannerSession / isSteererSession / isEscalationSession
+    // any more"), so a `.text` scan would fail over a correct file. The mirror
+    // failure is the one that matters: a commented-out flag left by a debugging
+    // session keeps the literal in `.text`, so a `.text` check stays green over
+    // a route that still branches.
+    const code = ROUTE_SRC.code;
+
+    // Assembled at runtime, never written as a literal: packages/core/test is
+    // one of this scanner's own roots, and a literal here would make this file
+    // a fixture for itself. Same idiom INV-6d already uses.
+    const KIND_FLAGS = ["is" + "PlannerSession", "is" + "SteererSession", "is" + "EscalationSession"];
+    // THE predicate. The discriminator below runs this exact function, so a
+    // scan that stopped matching fails immediately instead of going quiet.
+    const kindFlagsIn = (src: string): string[] => KIND_FLAGS.filter((f) => src.includes(f));
+
+    // The five profile reads that must be present. Each one is a decision the
+    // route used to make for itself: cwd and settingSources were literals,
+    // the two tool lists were a ternary over four constants, and the appendix
+    // was a four-arm chain over three module-private prompts.
+    const PROFILE_READS = [
+      "sessionProfile.cwd",
+      "sessionProfile.settingSources",
+      "sessionProfile.toolPolicy.allow",
+      "sessionProfile.toolPolicy.deny",
+      "sessionProfile.systemPromptAppendix",
+    ];
+
+    const broken: string[] = [];
+
+    const flags = kindFlagsIn(code);
+    if (flags.length > 0) {
+      broken.push(
+        `AD-9 / INV-6e: the chat route still names ${JSON.stringify(flags)}. THE RULE: session ` +
+          `configuration is a RESOLVED PROFILE, not a branch through the handler — every kind ` +
+          `resolves through resolveSessionProfile before the stream opens. CONSEQUENCE: epics 4, ` +
+          `5 and 6 each add a session kind against this same file, and the moment one kind is a ` +
+          `conditional the next one lands as a second, in the ~103KB handler the Human-Accept ` +
+          `Moat rides on. NEXT STEP: express what the branch decided as a field on the profile ` +
+          `and read that field. A removal is only safe once the profile carries the decision.`,
+      );
+    }
+
+    const missing = PROFILE_READS.filter((r) => !code.includes(r));
+    if (missing.length > 0) {
+      broken.push(
+        `AD-9 / INV-6e: the chat route no longer reads ${JSON.stringify(missing)} off the ` +
+          `resolved profile. THE RULE (and this is the ANTI-VACUITY FLOOR for the half above): ` +
+          `"a guard must read the same value as the thing it guards" — deleting the three ` +
+          `session-kind flags while ALSO dropping the profile consumption would pass the absence ` +
+          `check while the route computed everything inline again. CONSEQUENCE: the profile ` +
+          `becomes decorative, which is worse than not having it, because two sources of truth ` +
+          `for session shape disagree silently. NEXT STEP: if a field legitimately moved, update ` +
+          `this list AND say where the decision now lives. Do not shorten it to make this pass.`,
+      );
+    }
+
+    // AC2's half: the manifest's guardrails and root reach the session BY
+    // CONSTRUCTION, through the profile, and are no longer re-derived here.
+    // `const workspace` was the second computation of `sessionProfile.cwd`;
+    // `manifest.guardrails` was the second read of the deny set.
+    const REDERIVATIONS = ["const workspace", "manifest.guardrails"];
+    const rederived = REDERIVATIONS.filter((r) => code.includes(r));
+    if (rederived.length > 0) {
+      broken.push(
+        `AD-9 / INV-6e: the chat route re-derives ${JSON.stringify(rederived)} instead of ` +
+          `reading the profile. THE RULE: manifest.root maps onto the profile's cwd, guardrails ` +
+          `and settingSources BY CONSTRUCTION — the fold already does it, so a second ` +
+          `computation here is a second source of truth. CONSEQUENCE: a profile that narrows ` +
+          `guardrails or relocates cwd would be silently overridden by whichever expression the ` +
+          `handler happened to reach for. NEXT STEP: read sessionProfile.cwd / ` +
+          `sessionProfile.toolPolicy.deny.`,
+      );
+    }
+
+    // AD-1's tool-layer half, still wired and now driven from ONE resolved
+    // guardrail set. Three call sites since story 2.2: canUseTool,
+    // preToolUseGuardrail, and onCodexApproval (which is what closes the Codex
+    // half of the gap — see deferred-work.md for the residual it does NOT
+    // close). The floor is what makes "every site reads sessionProfile" mean
+    // something: over zero sites it is trivially true.
+    const guardSites = code.split("makeGuardrailDecision(").length - 1;
+    if (guardSites < 3) {
+      broken.push(
+        `AD-1 / INV-6e: makeGuardrailDecision has ${guardSites} call sites in the chat route ` +
+          `(floor 3: canUseTool, preToolUseGuardrail, onCodexApproval). THE RULE: the moat is ` +
+          `enforced at the tool layer on BOTH providers — the Codex fork reaches the SDK through ` +
+          `none of query()'s options, so its approval callback is the one pre-tool seam it has. ` +
+          `CONSEQUENCE: a project's guardrails.disallowedTools / protectedPaths go silently ` +
+          `inert on half the traffic, which is the gap story 2.2's AC6 closed. NEXT STEP: ` +
+          `restore the call site; do not lower this floor.`,
+      );
+    }
+    // …and every one of them is fed the PROFILE, not the raw manifest. Checked
+    // over the text that follows each call, because the argument is on its own
+    // line under the house formatting.
+    const fedManifest = code
+      .split("makeGuardrailDecision(")
+      .slice(1)
+      .map((tail, i) => [i, tail.slice(0, 120)] as const)
+      .filter(([, window]) => !window.includes("sessionProfile"));
+    if (fedManifest.length > 0) {
+      broken.push(
+        `AD-9/AD-1 / INV-6e: ${fedManifest.length} makeGuardrailDecision call site(s) are not ` +
+          `driven from sessionProfile — first offending window: ` +
+          `${JSON.stringify(fedManifest[0]![1])}. THE RULE: AC2's "by construction" — the ONE ` +
+          `resolved guardrail set governs every seam that enforces it. CONSEQUENCE: the two ` +
+          `enforcement points (canUseTool and the PreToolUse hook) would read different values, ` +
+          `so AD-1's "enforced twice" becomes a belt and a decoration. NEXT STEP: pass ` +
+          `sessionProfile (it is structurally a { guardrails } and that is why this works) and ` +
+          `sessionProfile.cwd.`,
+      );
+    }
+
+    expect(broken).toEqual([]);
+
+    // THE DISCRIMINATOR — the same predicate, over a fixture assembled here, so
+    // a scanner that stopped matching fails loudly instead of reporting a clean
+    // route forever.
+    const fixture =
+      "if (" + "is" + "EscalationSession" + ") { return readOnlyTools; }\n" +
+      "const x = " + "is" + "PlannerSession" + " ? A : B;\n";
+    expect(kindFlagsIn(fixture).sort()).toEqual(
+      ["is" + "EscalationSession", "is" + "PlannerSession"].sort(),
+    );
+    // …and a clean fixture is NOT reported, so the predicate is not simply
+    // returning everything it was handed.
+    expect(kindFlagsIn("const allowedTools = [...sessionProfile.toolPolicy.allow];")).toEqual([]);
+  });
+
   test("INV-6 the compile pins this invariant CITES still exist, so the citation cannot rot", () => {
     // INV-6 deliberately does not run tsc (see this block's header). That makes
     // these citations load-bearing: if session-profile.test.ts renames or drops

@@ -40,12 +40,18 @@
 // unnecessary: toolPolicy is the ONLY tool-granting field, and its own type
 // forbids widening whether or not the enclosing object came from the resolver.
 //
-// SCOPE. This resolves; it does not apply. Story 2.1 lands the port and the
-// capability gate. The live chat path still computes its own cwd/guardrails/
-// settingSources/allowedTools inline — migrating it is story 2.2, deliberately
-// behind its own gate because it is the change that touches production traffic.
-// If you find yourself feeding a resolved toolPolicy into the route's
-// `allowedTools`, that is 2.2, not this file.
+// SCOPE. This resolves; it does not apply. Story 2.1 landed the port and the
+// capability gate; story 2.2 MIGRATED THE LIVE PATH ONTO IT, so the route no
+// longer computes cwd/guardrails/settingSources/allowedTools/disallowedTools/
+// systemPrompt a second time — it reads the resolved profile. That is why
+// BASE_ALLOWED_TOOLS below now names the whole auto-run vocabulary and why the
+// fold unions the manifest's deny set into `toolPolicy.deny`: a consumer reads
+// ONE field per decision and cannot drop half of it. What is still NOT here is
+// `mcpServers` — the route's set is built by CONSTRUCTING in-process MCP
+// servers that close over a variable the SDK mutates mid-stream, which is a
+// side effect and not data. Epic 5's project-less master profile is the story
+// with a reason to pay for that restructure; until then every spec omits the
+// field and it resolves to {}.
 //
 // AD-5/AD-20: this module owns NO state subtree and composes NO path off
 // TELAR_HOME. It reads no env, opens no file, and imports none of node:fs,
@@ -101,41 +107,147 @@ export type SessionRole = "planner" | "steerer" | "escalation";
 // Which kind a request is, from what the WIRE reliably carries — and nothing
 // else.
 //
-// This deliberately under-detects, and under-detection is the safe direction.
-// The route derives `existingChat` (a resumed session's persisted role) and
-// `loomLink` INSIDE its stream closure, so nothing pre-stream can see them. A
-// resumed planner or steerer session whose client omits `role` therefore
-// resolves here as `project` — which requires NO capability, so it gets a
-// weaker requirement and never a spurious 400. The opposite design (gating on a
-// kind detectable only sometimes) produces a 400 that depends on whether the
-// client happened to resend a field: a non-deterministic failure, which is
-// worse than no gate at all.
+// This deliberately under-detects. It is the WIRE NARROWING and it is still
+// correct for what it does: given a raw role and no other input, this is the
+// kind. It is NOT what the chat route resolves a session with any more — story
+// 2.2 hoisted `existingChat` and the loom-link validation into the pre-stream
+// preamble and the route now calls resolveSessionKind below, which sees the
+// persisted role too. The objection story 2.1 recorded against that hoist ("a
+// real store read added to the hot path") dissolved on measurement: getChat
+// already ran on every resumed turn and getLoom on every turn-1 steerer/
+// escalation seed, so the hoist moves two reads EARLIER in the same request
+// rather than adding one.
 //
-// `escalation` is the one kind reliably knowable pre-stream, and the route says
-// why in as many words: the client "sends it on every turn including reattached
-// ones." So the wire role alone is sufficient — a validated loomId is NOT
-// required here, because a Codex account cannot run an escalation session
-// whether or not that id resolves.
-//
-// Do NOT "fix" this by hoisting the route's getChat call into the preamble.
-// That is a real store read added to the hot path and a change to the validated
-// pre-stream sequence; it is story 2.2's call, made when it migrates the kinds
-// for real.
+// Kept exported because it is the correct answer to a different question, and
+// because it is the shape a caller with only a wire role (a future surface, a
+// test, a non-chat entry point) needs. Under-detection remains the safe
+// direction wherever it is used: `project` requires NO capability, so a
+// mis-detected session gets a weaker requirement and never a spurious 400.
 export function sessionKindFromRole(role?: string): SessionKind {
   return role === "planner" || role === "steerer" || role === "escalation" ? role : "project";
 }
 
+// "Which strings are session roles", in ONE place. It was written twice before
+// story 2.2 — the chat route's eight-line `rawRole` ternary and
+// sessionKindFromRole above — and resolveSessionKind below became the third
+// consumer of the same fact. One home, three readers.
+//
+// Anything that is not one of the three collapses to undefined, so a stray or
+// hostile wire value can never be mistaken for a real loom turn. That is the
+// route's own fail-safe idiom, moved rather than reinvented.
+export function sessionRoleFromWire(raw: unknown): SessionRole | undefined {
+  return raw === "planner" || raw === "steerer" || raw === "escalation" ? raw : undefined;
+}
+
+// The kind, from EVERYTHING the pre-stream preamble knows: the wire role, the
+// merged session<->loom link's role, and the VALIDATED loom id.
+//
+// The precedence is measured from the chat route's own systemPrompt ternary
+// chain — escalation, then steerer, then planner, then plain — and ORDER IS
+// LOAD-BEARING. A session can satisfy two predicates at once: a resumed chat
+// persisted as `steerer` whose client also sends `role: "planner"` matched both
+// isSteererSession and isPlannerSession in the old route, and the chain
+// resolved it as STEERER. An unordered Record or a set of independent `if`s
+// would not reproduce that; this ordered fold does, and the collision case has
+// its own test.
+//
+// THE SIGNATURE TAKES THE MERGED LINK, not the raw persisted role, and that is
+// a decision rather than an accident: the route builds `loomLink` anyway (the
+// loom MCP server mutates it during the turn and appendTurn reads it back), so
+// re-deriving the persisted/wire merge inside core would duplicate logic that
+// already has one home. `linkRole` is "planner" IFF the persisted role is —
+// the route's fallback arm can only ever produce "steerer" or "escalation" —
+// so `role === "planner" || linkRole === "planner"` is exactly the old
+// `role === "planner" || existingChat?.role === "planner"`.
+//
+// `loomId` must be VALIDATED (the loom exists AND belongs to the anchoring
+// project). A bad or foreign id leaves it undefined, which drops an escalation
+// request to `project` — failing SAFE to a plain session, exactly as the route
+// has always done, and never to a 400.
+//
+// Pure, like everything else here: no I/O, no clock, no seams.
+export function resolveSessionKind(input: {
+  // The narrowed WIRE role (sessionRoleFromWire above).
+  readonly role?: SessionRole;
+  // loomLink.role — the merged persisted/wire link role.
+  readonly linkRole?: SessionRole;
+  // loomLink.loomId — VALIDATED, never the raw wire value.
+  readonly loomId?: string;
+}): SessionKind {
+  if (input.role === "escalation" && input.loomId) return "escalation";
+  if (input.linkRole === "steerer") return "steerer";
+  if (input.role === "planner" || input.linkRole === "planner") return "planner";
+  return "project";
+}
+
 // --- The tool policy ---------------------------------------------------------
 
-// The tools this port can name for itself, measured from what the chat route
-// builds today for a non-escalation Claude session (its `allowedTools` array).
-// The route's own list continues with ...LOOM_AUTO_TOOLS and
-// ...ULTRA_AUTO_TOOLS, which are apps/web/lib constants: core importing them
-// would invert the dependency, so they stay exactly where they are. A spec's
-// `allow` therefore NARROWS these six and the MCP tool names stay in the route.
-// That is a deliberate seam, not an oversight — story 2.2, which owns the
-// migration, is where LOOM_AUTO_TOOLS/ULTRA_AUTO_TOOLS join the base union,
-// either by moving those constants into core or by parameterising the base set.
+// The loom MCP server's AUTO-RUN tool names, declared HERE so a profile's
+// `allow` can name them. The vocabulary is duplicated on purpose: the canonical
+// registration lives in apps/web/lib/loom-mcp.ts's LOOM_AUTO_TOOLS and core
+// cannot import apps/web without inverting the dependency. These are tool-name
+// STRINGS, not an import of web code, and core already owns the loom domain
+// (looms.ts, tick.ts), so the direction is unchanged.
+//
+// WHAT MAKES THE DUPLICATION SAFE is not care, it is a test:
+// apps/web/lib/session-profiles.test.ts imports both copies and pins them
+// against each other, so drift in either indicts the other. That file is the
+// only place in the repo that can see both worlds.
+//
+// MOAT: `mcp__loom__start_loom` and `mcp__loom__answer_blocked` are ABSENT, and
+// the absence is the property. Both are human-gated commits (docs/loom-model.md
+// §M.6 — the human's Approve click IS the provenance stamp), both are excluded
+// from LOOM_AUTO_TOOLS for that reason, and keeping them out of this tuple
+// makes them UNSPELLABLE in any profile's `allow`, enforced by the compiler
+// rather than by review. That is strictly stronger than what existed before the
+// tuple grew, and it has its own assertion.
+export const LOOM_AUTO_TOOL_NAMES = [
+  "mcp__loom__draft_bundle_file",
+  "mcp__loom__propose_contract",
+  "mcp__loom__read_bundle",
+  "mcp__loom__list_looms",
+  "mcp__loom__get_loom",
+  "mcp__loom__steer_loom",
+  "mcp__loom__reject_loom",
+  "mcp__loom__answer_loom",
+  "mcp__loom__resume_loom",
+  "mcp__loom__cancel_loom",
+  "mcp__loom__watch_loom",
+] as const;
+
+// The ultra MCP server's three auto-run tool names — same duplication contract,
+// same anti-drift pin, canonical copy in apps/web/lib/ultra-mcp.ts's
+// ULTRA_AUTO_TOOLS. All three auto-run (they spend nothing on their own; the
+// script they launch is the thing that spends, and it goes through the same
+// admission controller every other agent call does).
+export const ULTRA_AUTO_TOOL_NAMES = [
+  "mcp__ultra__ultra",
+  "mcp__ultra__ultra_status",
+  "mcp__ultra__ultra_stop",
+] as const;
+
+// The whole AUTO-RUN vocabulary a profile may narrow, measured from what the
+// chat route builds for a non-escalation Claude session: the six built-in
+// read/web tools, then the loom read/draft/lifecycle tools, then ultra's three.
+// TWENTY names, and the ORDER is the route's own literal order — `unionOrdered`
+// preserves it and the fold filters without reordering, so a resolved
+// non-escalation `allow` comes out element-for-element identical to the array
+// the route used to build inline. Order is irrelevant to the SDK; it matters
+// because it makes the equivalence assertion a `toEqual` on arrays rather than
+// an argument about sets.
+//
+// It was SIX until story 2.2. Six meant a spec could name only six of twenty
+// and the route had to keep composing the other fourteen — and any composition
+// the route keeps is a place a future profile cannot narrow. Growing it is what
+// makes `toolPolicy` the whole truth about tool grants, which is what AD-10
+// wants it to be.
+//
+// The alternative — PARAMETERISING the base set so the surface passes its own
+// vocabulary in — was rejected and must stay rejected: BaseAllowedTool is
+// derived FROM this tuple, so a parameterised base widens the element type back
+// to `string`, over-granting compiles, and INV-6b's
+// `expect(allow?.type).toBe("readonly BaseAllowedTool[]")` becomes a true
+// statement about a dead mechanism.
 //
 // DEVIATION FROM THE HOUSE SHAPE, and it is load-bearing: this const carries
 // `as const` and NO `readonly BaseAllowedTool[]` annotation, unlike
@@ -150,6 +262,8 @@ export const BASE_ALLOWED_TOOLS = [
   "WebSearch",
   "WebFetch",
   "ToolSearch",
+  ...LOOM_AUTO_TOOL_NAMES,
+  ...ULTRA_AUTO_TOOL_NAMES,
 ] as const;
 
 export type BaseAllowedTool = (typeof BASE_ALLOWED_TOOLS)[number];
@@ -274,11 +388,40 @@ export type SessionResolutionContext = {
   // distinguish "no role sent" from "role sent and recognised" even though both
   // can fold to the same kind (see sessionKindFromRole's under-detection note).
   readonly role?: SessionRole;
-  // Only meaningful for steerer/escalation, and NOT validated pre-stream — the
-  // route validates it inside the stream closure. A builder must not treat this
-  // as a resolved loom id.
+  // Only meaningful for steerer/escalation, and VALIDATED — this is the
+  // resolved `loomLink.loomId`, which the route establishes pre-stream by
+  // reading the resumed chat's persisted link or checking a turn-1 wire seed
+  // against getLoom(id) AND `loom.project === project`. A bad or foreign id
+  // never reaches here; it leaves the field undefined and the session falls
+  // back to a plain one.
+  //
+  // The contract INVERTED in story 2.2 and the inversion is the point: this
+  // comment used to say "NOT validated pre-stream… a builder must not treat
+  // this as a resolved loom id", which was true while the route validated
+  // inside its stream closure. The steerer and escalation builders now hand
+  // this id to buildSteererContext/buildEscalationContext, so a builder that
+  // could reach an UNVALIDATED id would be a builder that can read another
+  // project's loom. Whoever changes where this value comes from owns that
+  // sentence.
   readonly loomId?: string;
   readonly permissionMode: ProfilePermissionMode;
+  // The composer Ultra chip's annotation for THIS TURN ONLY (docs/plans/
+  // ultra-harness.md §4 — "opt-in is a REQUEST, not a behavior flag"; never a
+  // stored or session-level flag). It reaches the context because the note it
+  // produces is part of the system-prompt appendix, and the old route composed
+  // that note as `ultraAnnotated && !isEscalationSession ? … : ""` — a
+  // session-kind conditional. Moving the note into the builders is what removes
+  // it; that requires the per-turn flag to reach them.
+  //
+  // REQUIRED, not optional, deliberately: an omission would silently drop the
+  // user's explicit ask, and "silently drop the thing that made this turn what
+  // it is" is the exact failure AD-11 exists to end. Every caller decides.
+  //
+  // Safe with respect to INV-6a: that invariant pins the field sets of
+  // SessionProfile and SessionProfileSpec, NOT this type. Adding a field HERE
+  // breaks nothing; adding one to either of those two is a deliberate act that
+  // fails a test, and should stay that way.
+  readonly ultraAnnotated: boolean;
 };
 
 // A surface's contribution: a pure function from the context to a spec.
@@ -374,7 +517,31 @@ export function resolveSessionProfile(ctx: SessionResolutionContext): SessionPro
   // documented guarantee that a disallow beats any allow rule — the route
   // states that guarantee in its own comment above `settingSources`, and it is
   // the one lever the app has against a repo widening its own access.
-  const deny = unionOrdered(spec.toolPolicy.deny);
+  //
+  // THE GUARDRAIL'S DENY SET IS UNIONED IN, manifest entries first so the
+  // manifest's own ordering is what a reader sees. Before story 2.2 the chat
+  // route composed `[...manifest.guardrails.disallowedTools, "AskUserQuestion",
+  // …extras]` itself, which meant a consumer of `toolPolicy.deny` alone would
+  // have silently received HALF the deny set. One field, one read, no chance of
+  // dropping the project's own configuration.
+  //
+  // THE REDUNDANCY IS DELIBERATE and a reviewer will otherwise read it as
+  // duplication: afterwards `guardrails.disallowedTools ⊆ toolPolicy.deny`, and
+  // BOTH fields are consumed, for DIFFERENT mechanisms. `guardrails` feeds
+  // makeGuardrailDecision (our own PreToolUse hook and canUseTool, and it is
+  // the only carrier of protectedPaths); `toolPolicy.deny` feeds the SDK's own
+  // disallowedTools. That is AD-1's "enforced twice" applied one level down —
+  // two independent gates on the same rule, so neither one going quiet takes
+  // the rule with it.
+  //
+  // The one case where this CHANGES the resolved value, stated because it is
+  // the sharpest test of the port's faithfulness: if the manifest denies a BASE
+  // tool (say "Read"), the "deny beats allow" filter below now drops it from
+  // `allow`. The route used to pass "Read" in BOTH arrays and lean on the SDK's
+  // disallow-wins guarantee. Same outcome by a different route — and a tool
+  // that is neither allowed nor denied falls through to canUseTool, where
+  // makeGuardrailDecision denies it on that same manifest entry.
+  const deny = unionOrdered(guardrails.disallowedTools, spec.toolPolicy.deny);
   const requested: readonly string[] = spec.toolPolicy.allow ?? BASE_ALLOWED_TOOLS;
   const allow = unionOrdered(requested).filter(
     (t): t is BaseAllowedTool =>

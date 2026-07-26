@@ -9,20 +9,18 @@ import {
 import {
   accountEnv,
   accountHealth,
-  deriveDeliverableSignal,
   getAccount,
   getLoom,
   getProject,
   providerOf,
-  readBundleFile,
-  readContract,
   resolveProjectMcpServers,
+  resolveSessionKind,
   resolveSessionProfile,
-  sessionKindFromRole,
-  STEERING_FILE,
+  sessionRoleFromWire,
   unmetCapabilities,
   type AccountProfile,
   type ProjectManifest,
+  type SessionRole,
 } from "@telar/core";
 import {
   CODEX_EFFORT_OPTIONS,
@@ -45,17 +43,24 @@ import {
   pushSessionDelta,
   startSessionLog,
 } from "@/lib/session-log";
+// LOOM_START_TOOL and LOOM_ANSWER_BLOCKED_TOOL are the MOAT CONSTANTS INV-1g
+// pins BY IMPORT: it reads this statement, resolves both names in loom-mcp.ts,
+// and requires the `input.tool_name === <CONST>` comparison form in
+// preToolUseGuardrail. They are the two tools no profile can grant — core
+// deliberately keeps both out of BASE_ALLOWED_TOOLS — and they are hard-routed
+// to the interactive card here in EVERY permission mode. Story 2.2 removed the
+// four tool-LIST imports (LOOM_AUTO_TOOLS, LOOM_ESCALATION_READONLY_TOOLS,
+// LOOM_ESCALATION_DISALLOWED_TOOLS, ULTRA_AUTO_TOOLS) because the profile now
+// carries every one of those names; these two stay, and the difference between
+// "a name a profile may grant" and "a name only a human may approve" is exactly
+// why.
 import {
   createLoomMcpServer,
-  formatEscalationContext,
   LOOM_ANSWER_BLOCKED_TOOL,
-  LOOM_AUTO_TOOLS,
-  LOOM_ESCALATION_DISALLOWED_TOOLS,
-  LOOM_ESCALATION_READONLY_TOOLS,
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
-import { createUltraMcpServer, ULTRA_AUTO_TOOLS } from "@/lib/ultra-mcp";
+import { createUltraMcpServer } from "@/lib/ultra-mcp";
 import {
   createPending,
   resolvePending,
@@ -140,143 +145,16 @@ const CODEX_SANDBOXES: Set<string> = new Set(CODEX_SANDBOX_PRESETS.map((p) => p.
 // just falls back to appendTurn's own message-prefix default.
 const TITLE_RACE_MS = 2_000;
 
-// Appended (never replacing) the "claude_code" preset system prompt for a
-// Loom Session (docs/loom-model.md §5's "planner" role) — see
-// `isPlannerSession` below. Guidance only: it does not grant any tool the
-// session doesn't already have (LOOM_AUTO_TOOLS/LOOM_START_TOOL + the
-// PreToolUse guardrail are the actual moat) and a non-planner session's
-// systemPrompt is completely unaffected.
-const PLANNER_SYSTEM_PROMPT = `You are helping the user plan a LOOM in Telar — an autonomous unit of work Telar will build and then independently verify. Your ONLY job in this session is planning, not coding. Workflow:
-1. Understand what the user wants to build (ask brief, focused questions).
-2. Draft a Spec Bundle with your loom tools: use draft_bundle_file to write the objective and any useful context (spec files, examples, constraints), and propose_contract to define a FALSIFIABLE Verification Contract — concrete, checkable assertions (golden-diff / value-equality / schema-match / contains / live-critic), never vague prose. propose_contract will reject an unfalsifiable contract.
-3. Show the user the plan (read_bundle) and refine until they're happy.
-4. When the spec is solid AND the user confirms, call start_loom. This ASKS THE USER TO APPROVE — you cannot start a loom yourself; that human approval is required by design. After it starts, tell the user the loom is building and verifying autonomously and that they can watch it in the god-view.
-Do NOT write the feature's code yourself — the loom's builder does that. Keep your messages concise and guide the user through the plan.
-When you need to clarify something, ask it as a plain chat message and wait for the user's reply — never use a structured question/interactive tool; the chat has no UI to answer those.
-
-OBJECTIVE — the most important thing you write. objective.md is the single source of truth for what the loom builds; write it (via draft_bundle_file, path "objective.md") BEFORE calling start_loom. It must:
-- Describe the CONCRETE CHANGE to make in the project — the actual feature/fix/refactor and its acceptance shape — distilled from the WHOLE conversation.
-- NEVER be the meta-request to create/draft/start the loom, a restatement like "let's work on #109", or a raw fragment of the user's chat message. "Create the loom" is not a task.
-If the user's ask is vague or is only a pointer (an issue number, "the thing we discussed"), ask focused questions and read the referenced material until you can state the real objective — do not draft a placeholder objective.`;
-
-// Appended (never replacing) the "claude_code" preset for a STEERER Loop
-// Session (docs/loom-model.md §5) — the loom Chat tab. Like PLANNER above this
-// is guidance only: it grants ZERO tools (the moat lives in this text plus the
-// unchanged LOOM_AUTO_TOOLS/LOOM_START_TOOL gating + PreToolUse guardrail). The
-// hard rule below forbids any accept/promote/mark-done attempt — acceptance is
-// a human click made OUTSIDE this chat, and there is no accept_loom tool.
-const STEERER_SYSTEM_PROMPT = `You are embedded in the cockpit of a RUNNING loom as its steering session. Your
-job is to answer "what's going on?" and to redirect the loom on the owner's behalf.
-
-You can OBSERVE and STEER this loom with the mcp__loom__ tools, all of which
-default to THIS loom:
-  • get_loom / read_bundle — inspect state, verdict, objective, contract.
-  • steer_loom {directive} — fold a course correction in and re-run the verified loop.
-  • reject_loom {feedback} — send it back with feedback.
-  • resume_loom — retry without new feedback.
-  • cancel_loom — halt it.
-  • watch_loom — get woken as a chat turn on any state transition.
-
-On your FIRST turn, call watch_loom for this loom so state changes reach you.
-
-HARD RULE (the product's core invariant): you can steer/reject/resume/cancel, but
-you can NEVER accept, promote, approve, or mark this loom "done". There is no tool
-for that and there never will be — acceptance is a human click made outside this
-chat. Do not claim you accepted it; do not imply the work is done. If the owner
-asks you to accept it, tell them acceptance is theirs to make in the cockpit.`;
-
-// Keep the per-turn steerer append small: truncate a section to its last
-// `max` bytes, prefixing an elision marker so the model knows it's a tail.
-function tail(s: string, max: number): string {
-  return s.length <= max ? s : `…(truncated)…\n${s.slice(-max)}`;
-}
-
-// Guarded bundle read: a loom mid-flight may lack a file (objective/contract/
-// steering) — a missing section is simply omitted, never an error.
-function safeRead(fn: () => string | null | undefined): string | null {
-  try {
-    return fn() ?? null;
-  } catch {
-    return null;
-  }
-}
-
-// Dynamic per-turn context for a steerer session: recomputed every turn so the
-// state + latest steering decisions are always fresh. Bounds each section so
-// the append stays reasonable. Server-only (value core imports are fine here).
-function buildSteererContext(loomId: string): string {
-  const loom = getLoom(loomId);
-  const objective = safeRead(() => readBundleFile(loomId, "objective.md"));
-  const contract = safeRead(() =>
-    JSON.stringify(readContract(loomId).contract, null, 2),
-  );
-  const steering = safeRead(() => readBundleFile(loomId, STEERING_FILE));
-  return [
-    `\n\n--- LIVE LOOM CONTEXT (id ${loomId}, state: ${loom?.state ?? "unknown"}) ---`,
-    objective && `# Objective\n${tail(objective, 4000)}`,
-    contract && `# Verification Contract\n${contract}`,
-    steering && `# Live steering decisions (append-only)\n${tail(steering, 4000)}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-// Appended (never replacing) the "claude_code" preset for an ESCALATION session
-// (docs/adaptive-verification.md §8's conversational-escalation surface) — the
-// "Discuss with the orchestrator" chat on a `blocked` loom. Guidance only: the
-// actual moat is the toolset (LOOM_ESCALATION_READONLY_TOOLS auto-run +
-// LOOM_ESCALATION_DISALLOWED_TOOLS hard-blocked + answer_blocked human-gated via
-// the PreToolUse guardrail). Reuses the steerer moat language: the agent can
-// NEVER accept/promote/mark-done. Its ONE write is answer_blocked, which only
-// lands after the human's explicit Approve click.
-const ESCALATION_SYSTEM_PROMPT = `You are embedded in a PARKED loom's escalation chat. The loop stopped BEFORE spending on the build because it could not stand up a way to VERIFY this work, and it refuses to guess. Your job is to talk it through with the human and distill the verification recipe.
-
-You can OBSERVE this loom and inspect its project with read-only tools:
-  • get_loom / read_bundle / list_looms — inspect state, objective, contract.
-  • Read / Grep / Glob — inspect the project root (your working directory) to ground your advice in the real repo (package.json, test setup, entry points).
-
-DISCUSS the verification method with the human. Explain the options plainly and help them choose the one that fits the deliverable:
-  • a TEST/EVAL command — a command whose exit code proves the work (e.g. \`bun test\`), for a library/CLI/eval deliverable. Saved as the telar.yaml verifyCommand; a test suite is NEVER auto-spun as a dev server.
-  • a DEV command — how to bring a runnable app up (e.g. \`bun run dev\`), for a web/app deliverable.
-  • a RUNBOOK — optional free-text narrative for how to drive the app to reach the feature (accompanies a command; it can NOT resume the loom on its own).
-  • a SERVERS recipe — a background-process setup, when the app needs services up first.
-
-ONLY when the human has converged on a concrete answer, DISTILL it and call answer_blocked with the fields they settled on. That tool ASKS THE HUMAN TO APPROVE — you cannot resume a loom yourself; that human approval is required by design and IS the provenance stamp. After it resumes, tell them the loop is re-verifying and they can watch it in the cockpit.
-
-HARD RULE (the product's core invariant): you can DISCUSS and, with the human's approval, answer the block — but you can NEVER accept, promote, approve, or mark this loom "done". There is no tool for that and there never will be — acceptance is a human click made outside this chat. Do not claim you accepted it; do not imply the work is done.
-When you need to clarify something, ask it as a plain chat message and wait for the human's reply — never use a structured question/interactive tool; the chat has no UI to answer those.`;
-
-// Dynamic per-turn context for an escalation session (parallel to
-// buildSteererContext): recomputed every turn so blockedReason/blockedQuestion,
-// the contract, and the deliverable-signal evidence are always fresh. Delegates
-// the string assembly to loom-mcp's PURE formatEscalationContext (hermetically
-// tested there) — this function only gathers the core-backed values. Guarded:
-// each read fails safe to omission, never an error.
-function buildEscalationContext(loomId: string, root: string): string {
-  const loom = getLoom(loomId);
-  const assertions = safeRead(() => {
-    const c = readContract(loomId).contract;
-    return c ? JSON.stringify(c.assertions.map((a) => ({ type: a.type, description: a.description }))) : null;
-  });
-  // deriveDeliverableSignal is a bounded synchronous fs read (no LLM, no spawn)
-  // — the same signal the pre-flight parked on, so the agent sees exactly which
-  // verification substrates were checked and why none applied.
-  const signalReason = (() => {
-    try {
-      return deriveDeliverableSignal(root, loom?.charter).reason;
-    } catch {
-      return undefined;
-    }
-  })();
-  return formatEscalationContext({
-    loomId,
-    state: loom?.state,
-    blockedReason: loom?.blockedReason,
-    blockedQuestion: loom?.blockedQuestion,
-    assertions: assertions ? (JSON.parse(assertions) as { type: string; description: string }[]) : undefined,
-    signalReason,
-  });
-}
+// THE THREE SYSTEM PROMPTS AND THE TWO LIVE-CONTEXT READERS MOVED, in story
+// 2.2, to @/lib/session-prompts.ts. They were module-private consts inside
+// this route module — whose only export is POST — so a SessionProfileSpec
+// builder could not reach them, and copying ~90 lines of moat-adjacent prompt
+// text would have made a second source of truth for it. Each one now composes
+// the appendix for its own kind, which is what removed the four-arm
+// `systemPrompt` ternary from the query() options below. Nothing in this file
+// imports them any more: the route reads one field,
+// `sessionProfile.systemPromptAppendix`, and branches only on whether it is
+// empty.
 
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
@@ -321,14 +199,13 @@ export async function POST(req: Request) {
     // it to look for).
     ultra: rawUltra,
   } = await req.json();
-  const role: "planner" | "steerer" | "escalation" | undefined =
-    rawRole === "planner"
-      ? "planner"
-      : rawRole === "steerer"
-        ? "steerer"
-        : rawRole === "escalation"
-          ? "escalation"
-          : undefined;
+  // "Which strings are session roles" now has ONE home, in the profile port —
+  // this eight-line ternary and core's own sessionKindFromRole were two copies
+  // of the same fact, and resolveSessionKind below is the third reader. Same
+  // fail-safe narrowing, same three recognized values: anything else collapses
+  // to undefined so a stray or hostile wire value can never be mistaken for a
+  // real loom turn.
+  const role: SessionRole | undefined = sessionRoleFromWire(rawRole);
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
   const ultraAnnotated: boolean = rawUltra === true;
@@ -337,7 +214,9 @@ export async function POST(req: Request) {
   // wire message is the kickoff sentinel (see @/lib/escalation-kickoff). On a
   // fresh escalation session we swap it for the server-authored kickoff prompt
   // so the model opens from ESCALATION_SYSTEM_PROMPT + buildEscalationContext
-  // with a genuine verification proposal. Byte-identical passthrough for every
+  // (both now in @/lib/session-prompts, reached through the escalation
+  // profile's systemPromptAppendix) with a genuine verification proposal.
+  // Byte-identical passthrough for every
   // other turn (planner/steerer/plain/real escalation replies), so nothing else
   // changes. Substituted HERE, before generateTitle/query/log all read it.
   const message: string = resolveEscalationMessage(role, sessionId, rawMessage);
@@ -486,36 +365,104 @@ export async function POST(req: Request) {
   const permissionMode: ClientPermissionMode = rawPermissionMode;
 
   const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
-  const workspace = manifest.root;
 
-  // AD-9 — the session profile, resolved BEFORE the route body runs. This is
-  // the whole of story 2.1's footprint in this handler: one resolve, one gate.
-  // Nothing inside `new ReadableStream` below reads it yet — migrating the live
-  // path onto sessionProfile's cwd/guardrails/settingSources/toolPolicy is
-  // story 2.2, deliberately behind its own gate because it is the change that
-  // touches production traffic.
+  // Session<->Loom link (docs/loom-model.md §5), hoisted out of the stream
+  // closure by story 2.2 because the session KIND is a function of it and the
+  // profile resolves before the body. Seeded from the resumed chat's own
+  // persisted loomId/role (a brand-new chat starts with neither).
+  //
+  // IT ADDS NO READ, which is what dissolved 2.1's objection to the hoist:
+  // getChat already ran on every resumed turn and getLoom on every turn-1
+  // steerer/escalation seed. Both simply run EARLIER in the same request.
+  //
+  // Without the hoist the profile would see only the wire `role`, so a RESUMED
+  // planner/steerer/escalation chat whose client omits `role` would resolve as
+  // `project` — and once query() is driven from the profile, that silently
+  // strips the guidance that IS the kind from every resumed loom session. That
+  // is the exact silent degradation AD-11 exists to end, reintroduced from the
+  // other side.
+  //
+  // NEITHER READ THROWS: getLoom returns null on a malformed/traversal id and
+  // getChat returns undefined for a missing one, so a bad or foreign loomId
+  // still fails SAFE to a plain session and must NEVER become a 400 — a 400
+  // that depends on whether a client resent a field is a non-deterministic
+  // failure, which is worse than no gate.
+  const resumeTarget = sessionId ?? null;
+  const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
+  // Turn-1 wire seed for an embedded steerer session (mirrors the planner
+  // path, but steerer also binds a loomId). Validated: the loom must exist
+  // AND belong to the anchoring project — a bad/foreign id fails safe to a
+  // normal session, never binds to someone else's loom. Only ever consulted
+  // for a brand-new chat (existingChat's own persisted link wins otherwise).
+  // Both a STEERER (loom Chat tab) and an ESCALATION (blocked-loom "Discuss
+  // with the orchestrator") turn-1 seed bind a loomId the same way, validated
+  // identically.
+  let wireLoomId: string | undefined;
+  if (
+    !existingChat &&
+    (role === "steerer" || role === "escalation") &&
+    typeof rawLoomId === "string" &&
+    rawLoomId
+  ) {
+    const l = getLoom(rawLoomId);
+    if (l && l.project === project) wireLoomId = rawLoomId;
+  }
+  const loomLink: LoomSessionLink = {
+    loomId: existingChat?.loomId ?? wireLoomId,
+    // Both steerer AND escalation are PERSISTED as a link role (store.ts's
+    // Chat.role union is planner|steerer|escalation) — M11.3's discuss-
+    // escalation.tsx fetches the most-recent persisted escalation chat for
+    // a loom (GET /api/looms/[id]/chat?role=escalation) and reattaches it
+    // on mount, so navigating away and back finds the SAME conversation,
+    // not a blank one. This is not an auto-start: the surface only ever
+    // reattaches a discussion the human already opened with an explicit
+    // click; it never opens a fresh one on its own. Loom-born sessions
+    // (steerer/escalation) are filtered out of the regular project
+    // session list (GET /api/chats) — reachable only from the loom's own
+    // UI (the Chat tab / the blocked-state Discuss surface).
+    //
+    // MUTATED IN PLACE later, by the loom MCP server's tools as this turn runs
+    // (draft_bundle_file lazily sets loomId on first use) and read back by
+    // appendTurn. The hoist moves the SAME OBJECT earlier — do not freeze it,
+    // spread it, or hand the profile builder a copy that then diverges.
+    role:
+      existingChat?.role ??
+      (wireLoomId && (role === "steerer" || role === "escalation") ? role : undefined),
+  };
+
+  // AD-9 — the session profile, resolved BEFORE the route body runs. Story 2.1
+  // landed the resolve and the gate; story 2.2 made the handler CONSUME it, so
+  // every session-kind decision below — cwd, guardrails, settingSources, the
+  // two tool lists and the system-prompt appendix — is read off this value
+  // instead of being computed a second time inline. There is no
+  // isPlannerSession / isSteererSession / isEscalationSession any more:
+  // INV-6e in packages/core/test/invariants.test.ts asserts both halves of
+  // that (the three identifiers are gone AND the profile's fields are read).
   //
   // Named `sessionProfile`, NEVER `profile`: `profile` in this scope is the
   // AccountProfile resolved above, which feeds accountEnv, accountHealth,
-  // generateTitle and the chat stub's `account` field. Shadowing it is a silent
-  // billing bug.
+  // generateTitle, savePlanUsage, logUsage's `account` and the chat stub's
+  // `account` field. Shadowing it is a silent billing bug.
   //
-  // The kind comes from the WIRE role only. `existingChat` and `loomLink` are
-  // both derived inside the stream closure below, so a RESUMED planner or
-  // steerer session whose client omitted `role` resolves here as `project`.
-  // That under-detection is deliberate and is the safe direction: `project`
-  // requires no capability, so a mis-detected session gets a weaker requirement
-  // and can never take a spurious 400. Do not hoist getChat up here to sharpen
-  // it — that is a store read added to the hot path and a change to a validated
-  // pre-stream sequence; it is 2.2's call.
+  // The kind comes from resolveSessionKind, which reproduces the precedence the
+  // old `systemPrompt` ternary chain had — escalation, then steerer, then
+  // planner, then plain — over all three inputs the preamble now holds. Order
+  // is load-bearing: a resumed chat persisted as `steerer` whose client also
+  // sends `role: "planner"` satisfies two predicates and must resolve as
+  // STEERER, exactly as it did before.
   const sessionProfile = resolveSessionProfile({
-    kind: sessionKindFromRole(role),
+    kind: resolveSessionKind({ role, linkRole: loomLink.role, loomId: loomLink.loomId }),
     provider,
     manifest,
     project: typeof project === "string" ? project : undefined,
     role,
-    loomId: typeof rawLoomId === "string" ? rawLoomId : undefined,
+    // VALIDATED now, not the raw wire value: the steerer/escalation builders
+    // hand this id to buildSteererContext/buildEscalationContext, and a builder
+    // that could reach an unvalidated id is a builder that can read another
+    // project's loom.
+    loomId: loomLink.loomId,
     permissionMode,
+    ultraAnnotated,
   });
 
   // AD-11 — an unmet capability is a hard error BEFORE the stream opens, in the
@@ -614,79 +561,16 @@ export async function POST(req: Request) {
       // tool_use id — see lib/transcript.ts's ParentFlattener for why a
       // raw parent_tool_use_id isn't already enough.
       const parentFlatten = new ParentFlattener();
-      // The resume target is the client-supplied id, but it's untrusted until
-      // the SDK actually confirms it via a system:init message below.
-      // capturedSession must only ever hold an SDK-confirmed id — the finally
-      // block persists a turn whenever it's truthy, and a resume that fails
-      // before init (e.g. session doesn't exist under this account's config
-      // dir) must not persist a phantom empty turn under the client's guess.
-      const resumeTarget = sessionId ?? null;
-      // Session<->Loom link (docs/loom-model.md §5): seeded from the resumed
-      // chat's own persisted loomId/role (a brand-new chat starts with
-      // neither). Mutated in place by the loom MCP server's tools as this
-      // turn runs — draft_bundle_file lazily sets it on first use — then
-      // threaded back through appendTurn below, the same per-turn
-      // persistence path store.ts already exposes for every other captured
-      // session field.
-      const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
-      // Turn-1 wire seed for an embedded steerer session (mirrors the planner
-      // path, but steerer also binds a loomId). Validated: the loom must exist
-      // AND belong to the anchoring project — a bad/foreign id fails safe to a
-      // normal session, never binds to someone else's loom. Only ever consulted
-      // for a brand-new chat (existingChat's own persisted link wins otherwise).
-      // Both a STEERER (loom Chat tab) and an ESCALATION (blocked-loom "Discuss
-      // with the orchestrator") turn-1 seed bind a loomId the same way, validated
-      // identically — the loom must exist AND belong to the anchoring project.
-      let wireLoomId: string | undefined;
-      if (
-        !existingChat &&
-        (role === "steerer" || role === "escalation") &&
-        typeof rawLoomId === "string" &&
-        rawLoomId
-      ) {
-        const l = getLoom(rawLoomId);
-        if (l && l.project === project) wireLoomId = rawLoomId;
-      }
-      const loomLink: LoomSessionLink = {
-        loomId: existingChat?.loomId ?? wireLoomId,
-        // Both steerer AND escalation are PERSISTED as a link role (store.ts's
-        // Chat.role union is planner|steerer|escalation) — M11.3's discuss-
-        // escalation.tsx fetches the most-recent persisted escalation chat for
-        // a loom (GET /api/looms/[id]/chat?role=escalation) and reattaches it
-        // on mount, so navigating away and back finds the SAME conversation,
-        // not a blank one. This is not an auto-start: the surface only ever
-        // reattaches a discussion the human already opened with an explicit
-        // click; it never opens a fresh one on its own. Loom-born sessions
-        // (steerer/escalation) are filtered out of the regular project
-        // session list (GET /api/chats) — reachable only from the loom's own
-        // UI (the Chat tab / the blocked-state Discuss surface).
-        role:
-          existingChat?.role ??
-          (wireLoomId && (role === "steerer" || role === "escalation") ? role : undefined),
-      };
-      // Whether this turn is part of a Loom Session (docs/loom-model.md §5's
-      // "planner" role) — the body's own `role` (authoritative for turn 1,
-      // before any Chat record exists) OR'd with the resumed chat's own
-      // already-persisted role (belt-and-suspenders for any later turn whose
-      // client omits it). Drives ONLY the appended system-prompt guidance
-      // below — never loom tool access/gating, which stays exactly as wired
-      // via LOOM_AUTO_TOOLS/LOOM_START_TOOL and the PreToolUse guardrail.
-      const isPlannerSession = role === "planner" || existingChat?.role === "planner";
-      // A session is planner XOR steerer XOR neither — the steerer branch drives
-      // ONLY the appended system-prompt guidance + live-context block below,
-      // never loom tool access/gating (which stays exactly as wired).
-      const isSteererSession = loomLink.role === "steerer";
-      // M11.3 escalation session (the blocked-loom "Discuss with the
-      // orchestrator" chat). Derived from the WIRE `role` (sent every turn —
-      // the client sends it on every turn including reattached ones, so this
-      // stays true across the session even though loomLink.role is ALSO now
-      // persisted, above) AND a resolved loomId; a bad/foreign loomId fails
-      // safe to a plain session (loomLink.loomId stayed undefined), exactly
-      // like the steerer seed does. Drives the read-only escalation toolset +
-      // the answer_blocked-only write path + its system
-      // prompt/context below — mutually exclusive with planner/steerer (role is
-      // "escalation", and loomLink.role is never "steerer" for it).
-      const isEscalationSession = role === "escalation" && !!loomLink.loomId;
+      // NOTE ON WHAT MOVED. `resumeTarget`, `existingChat`, `wireLoomId` and
+      // `loomLink` used to be declared right here; story 2.2 hoisted all four
+      // into the pre-stream preamble, because the session KIND is a function of
+      // them and the profile resolves before this closure runs. The three
+      // role-derived booleans that stood alongside them are GONE outright —
+      // every decision they made is now a field on `sessionProfile`.
+      // `resumeTarget` keeps its old contract: it is the client-supplied id and
+      // stays untrusted until the SDK confirms it via system:init below, which
+      // is why `capturedSession` (not `resumeTarget`) is what the finally block
+      // persists against.
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
@@ -738,7 +622,21 @@ export async function POST(req: Request) {
         // below (options.hooks) so the same checks apply whether or not this
         // particular call ever reaches canUseTool at all (auto/acceptEdits
         // mode can approve without invoking it — see the hook's own comment).
-        const guardrail = makeGuardrailDecision(manifest, workspace, toolName, input);
+        //
+        // AC2 — driven from `sessionProfile`, not from `manifest`, so the ONE
+        // resolved guardrail set governs every seam that enforces it.
+        // makeGuardrailDecision is STRUCTURAL (it takes `{ guardrails: … }`),
+        // which is why a SessionProfile is assignable where a manifest was, and
+        // the resolved guardrails are the manifest's UNIONED with whatever the
+        // profile added — never fewer. The moat itself is unchanged and stays
+        // OUTSIDE the profile: no profile field reaches this call site's
+        // registration, only its data.
+        const guardrail = makeGuardrailDecision(
+          sessionProfile,
+          sessionProfile.cwd,
+          toolName,
+          input,
+        );
         if (guardrail.behavior === "deny") return guardrail;
         // The agent-spawn tool itself is auto-allowed (no interactive prompt —
         // every tool the subagent goes on to call still gates individually
@@ -852,7 +750,16 @@ export async function POST(req: Request) {
       const preToolUseGuardrail = async (input: HookInput): Promise<HookJSONOutput> => {
         if (input.hook_event_name !== "PreToolUse") return { continue: true };
         const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
-        const decision = makeGuardrailDecision(manifest, workspace, input.tool_name, toolInput);
+        // Same profile-driven source as canUseTool's own branch above — one
+        // resolved guardrail set, two enforcement points (AD-1's "enforced
+        // twice"). If these two ever read different values, the belt-and-
+        // suspenders becomes a belt and a decoration.
+        const decision = makeGuardrailDecision(
+          sessionProfile,
+          sessionProfile.cwd,
+          input.tool_name,
+          toolInput,
+        );
         if (decision.behavior === "deny") {
           return {
             continue: true,
@@ -970,6 +877,48 @@ export async function POST(req: Request) {
                 (req.reason ? `[file change] ${req.reason}` : "Codex requested approval"),
               ...(req.cwd ? { cwd: req.cwd } : {}),
             };
+            // AC6 / AD-1's tool-layer half, on the ONE pre-tool seam the Codex
+            // harness has. `sessionProfile` (not `manifest`) so the profile's
+            // guardrails govern BOTH providers — AC2's "by construction",
+            // applied where it was otherwise silently inert: before this,
+            // makeGuardrailDecision had exactly two call sites, both reachable
+            // only as query() options, and query() is called only in the Claude
+            // branch. A project configuring guardrails.disallowedTools or
+            // guardrails.protectedPaths in its telar.yaml got both enforced on
+            // Claude and NEITHER on Codex.
+            //
+            // Only for a COMMAND approval, and that restriction is MEASURED,
+            // not cautious: this callback shapes BOTH request kinds as a "Bash"
+            // card (a file change with no `command` gets a synthesized
+            // `[file change] ${reason}` string), so running the check on a file
+            // change would deny every file edit in a project whose guardrails
+            // merely disallow the Bash TOOL — a false positive on a request
+            // that is not a shell command at all. The file-change branch's
+            // residual is recorded in
+            // _bmad-output/implementation-artifacts/deferred-work.md, owned by
+            // story 5.5, along with the two other holes this does not close.
+            //
+            // No card is created for a guardrail-denied action: showing the
+            // human a card for something project policy already forbids invites
+            // them to approve it. MEASURED before choosing send("error", …):
+            // session-view.tsx's applyServerEvent handles an "error" event by
+            // recording it on streamErrorRef and NOT terminating — the stream
+            // drains to completion so the trailing "saved"/"done" still land,
+            // and the message surfaces once the stream closes. So this is
+            // informative rather than destructive, and the human learns WHY the
+            // action was declined instead of watching Codex silently fail.
+            if (req.kind === "command") {
+              const guardrail = makeGuardrailDecision(
+                sessionProfile,
+                sessionProfile.cwd,
+                "Bash",
+                input,
+              );
+              if (guardrail.behavior === "deny") {
+                send("error", { message: guardrail.message });
+                return "decline";
+              }
+            }
             const rule = ruleFor("Bash", input);
             const ruleOptions = ruleOptionsFor("Bash", input);
             const { id, promise } = createPending(project, "Bash", input, rule, undefined, ruleOptions);
@@ -993,7 +942,13 @@ export async function POST(req: Request) {
           };
           for await (const nev of runCodexTurn({
             prompt: message,
-            cwd: workspace,
+            // AC2/AC3 — the same profile-resolved cwd the Claude branch uses.
+            // runCodexTurn takes no hooks, no mcpServers, no allow/deny lists,
+            // no settingSources and no systemPrompt, so `cwd` plus the
+            // onCodexApproval guardrail above is the whole of what a profile
+            // can reach on this provider — which is exactly what the capability
+            // gate publishes and what the deferred residual is about.
+            cwd: sessionProfile.cwd,
             env: accountEnv(profile),
             model,
             ...(effort ? { reasoningEffort: effort as CodexReasoningEffort } : {}),
@@ -1212,65 +1167,67 @@ export async function POST(req: Request) {
         // rule as loomMcpServer above). `getMessageId` threads the per-turn
         // `runId` (declared at the top of this POST) as Ultra's own
         // "messageId" link — the finest-grained id a chat turn has in this
-        // app (see ultra-mcp.ts's UltraMcpOpts doc). Not offered to an
-        // escalation session (excluded from mcpServers/allowedTools below,
-        // same as LOOM_AUTO_TOOLS) — that surface stays a narrow read-only
-        // discuss wall.
+        // app (see ultra-mcp.ts's UltraMcpOpts doc).
+        //
+        // CORRECTED BY STORY 2.2 — this comment used to claim the ultra server
+        // is "not offered to an escalation session (excluded from mcpServers/
+        // allowedTools below)". Measured: `mcpServers` below is UNCONDITIONAL,
+        // so the server IS registered for an escalation session; what that
+        // surface does not get is its TOOLS, which the escalation profile puts
+        // in `toolPolicy.deny` (the SDK guarantees a disallow beats any allow,
+        // so they are truly uncallable while the server is still registered).
+        // Behaviourally identical to what the old comment described, but a
+        // comment that misstates a moat-adjacent fact is worse than no comment
+        // — and this is the sentence a reader consults when deciding what
+        // `mcpServers` should carry. The escalation surface stays a narrow
+        // read-only discuss wall; the TOOLSET enforces that, not the server
+        // list.
         const ultraMcpServer = createUltraMcpServer({
           project,
           account: profile,
           getSessionId: () => capturedSession,
           getMessageId: () => runId,
         });
-        // Composer-annotation half of doc §4's opt-in contract: a PER-TURN
-        // note (never persisted, never a session-level flag) telling the
-        // agent this specific message is the user's explicit Ultra request —
-        // the `ultra` tool's own description tells it to look for exactly
-        // this. Empty string (no-op) on every ordinary turn. Omitted for an
-        // escalation session, which never gets the ultra tools either.
-        const ultraAnnotationNote =
-          ultraAnnotated && !isEscalationSession
-            ? "\n\n--- ULTRA REQUEST (this turn only) ---\nThe user's message below is Ultra-annotated: they explicitly asked for a large orchestrated/parallel run via the composer's Ultra chip. You may call the `ultra` tool THIS turn to author and launch a script. Do not call it on a later turn unless the user says \"ultra\" again or re-annotates."
-            : "";
+        // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
+        // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
+        // — a session-kind conditional, and the smallest one AC1 had to remove.
+        // It now lives with the builders in @/lib/session-prompts, reached
+        // through `sessionProfile.systemPromptAppendix` below: project, planner
+        // and steerer carry it when the chip is on; escalation never does, and
+        // that is enforced by escalationAppendix having no `ultraAnnotated`
+        // parameter at all rather than by a branch here.
         const q = query({
           prompt: message,
           options: {
-            cwd: workspace,
+            // AC2 — `cwd` arrives BY CONSTRUCTION. The fold sets it from
+            // `ctx.manifest.root`, which is exactly what `const workspace =
+            // manifest.root` used to compute here, so this is the removal of a
+            // second computation rather than a new one.
+            cwd: sessionProfile.cwd,
             ...(resumeTarget ? { resume: resumeTarget } : {}),
             model,
             ...(effort ? { effort: effort as EffortLevel } : {}),
+            // `profile`, NOT `sessionProfile` — this is the AccountProfile, and
+            // accountEnv is what dispatches the turn onto the right login. The
+            // two names are one character apart and a mix-up bills the wrong
+            // account; the whole neighbourhood was edited by story 2.2, which is
+            // exactly the context in which such a slip happens.
             env: accountEnv(profile),
-            // Planner guidance (docs/loom-model.md §5) is ADDITIVE via the
-            // preset's own `append` — a normal session's systemPrompt is
-            // byte-for-byte unchanged; only isPlannerSession turns get the
-            // extra paragraph tacked on after Claude Code's default prompt.
-            // Every non-escalation branch also gets ultraAnnotationNote
-            // tacked on (empty string -> no-op) for the SAME reason ultra's
-            // tools are only ever offered there (see allowedTools below).
-            systemPrompt: isEscalationSession
+            // Kind-specific guidance (docs/loom-model.md §5, adaptive-
+            // verification.md §8) is ADDITIVE via the preset's own `append`, and
+            // WHICH text that is has stopped being decided here: the profile's
+            // builder composed it (static prompt + per-turn live context + the
+            // Ultra note, per kind — see @/lib/session-prompts). What remains is
+            // a branch on EMPTINESS, which is the identical shape the
+            // `ultraAnnotationNote ? … : …` fallthrough already had and is what
+            // preserves "a normal session's systemPrompt is byte-for-byte
+            // unchanged".
+            systemPrompt: sessionProfile.systemPromptAppendix
               ? {
                   type: "preset",
                   preset: "claude_code",
-                  // Static moat text + a per-turn seed (blockedReason/question +
-                  // contract + deliverable-signal evidence). loomLink.loomId is
-                  // non-null whenever isEscalationSession (guarded above).
-                  append:
-                    ESCALATION_SYSTEM_PROMPT + buildEscalationContext(loomLink.loomId!, workspace),
+                  append: sessionProfile.systemPromptAppendix,
                 }
-              : isSteererSession
-              ? {
-                  type: "preset",
-                  preset: "claude_code",
-                  // Static moat text + a per-turn live-context block (state +
-                  // latest steering recomputed every turn). loomLink.loomId is
-                  // non-null whenever isSteererSession (role === "steerer" is
-                  // only set alongside a resolved loomId, above).
-                  append: STEERER_SYSTEM_PROMPT + buildSteererContext(loomLink.loomId!) + ultraAnnotationNote,
-                }
-              : isPlannerSession
-              ? { type: "preset", preset: "claude_code", append: PLANNER_SYSTEM_PROMPT + ultraAnnotationNote }
-              : ultraAnnotationNote
-              ? { type: "preset", preset: "claude_code", append: ultraAnnotationNote }
               : { type: "preset", preset: "claude_code" },
             permissionMode,
             // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
@@ -1287,14 +1244,20 @@ export async function POST(req: Request) {
             // explicitly below because the SDK guarantees a disallow always
             // wins over any allow rule (repo-settings or otherwise), which is
             // the one lever we have against a repo widening its own access.
-            settingSources: ["project", "local"],
-            // The agent-spawn tool ("Agent"/"Task") is deliberately NOT
-            // listed here even though it's auto-allowed in effect: an
+            //
+            // AC2 — the literal ["project", "local"] used to live here; it is
+            // now the profile's, and `ProfileSettingSource` makes "user"
+            // UNSPELLABLE by any profile, so the decision above cannot drift
+            // back into a setting. Spread because the field is readonly and the
+            // SDK's own SettingSource[] is not.
+            settingSources: [...sessionProfile.settingSources],
+            // The agent-spawn tool ("Agent"/"Task") is deliberately NOT in the
+            // profile's allow set even though it's auto-allowed in effect: an
             // `allowedTools` entry is approved by the SDK before canUseTool
             // is ever invoked, which would let a model-supplied AgentInput
             // `mode` override reach the subagent unexamined (see canUseTool's
             // own dedicated branch above, which allows it AND strips that
-            // field). Read/Grep/Glob plus the web tools are auto-allowed here:
+            // field). Read/Grep/Glob plus the web tools are auto-allowed:
             // all are individually-safe read-only tools that never touch the
             // filesystem. Auto-allowing the web tools is also what makes them
             // usable inside a SUBAGENT — a subagent's canUseTool requests can't
@@ -1302,54 +1265,41 @@ export async function POST(req: Request) {
             // "Stream closed"), so anything a research subagent needs (web
             // search/fetch, the MCP tool-search) must be pre-allowed, not
             // gated. The PreToolUse guardrail hook still runs for these.
-            allowedTools: isEscalationSession
-              ? // M11.3 escalation session: READ-ONLY auto-run tools only (loom
-                // inspection + project-root snapshot). NO state-changing loom
-                // tool auto-runs; answer_blocked is NOT here (it is human-gated
-                // via the PreToolUse guardrail below, exactly like start_loom).
-                [...LOOM_ESCALATION_READONLY_TOOLS]
-              : [
-                  "Read",
-                  "Grep",
-                  "Glob",
-                  "WebSearch",
-                  "WebFetch",
-                  "ToolSearch",
-                  // The loom moat's read/draft tools ONLY (docs/loom-model.md
-                  // §5/§M.6) — auto-run so a planning session isn't spamming
-                  // permission cards to write bundle files or propose a
-                  // contract. mcp__loom__start_loom is deliberately excluded:
-                  // it is the one tool in this server that dispatches a real
-                  // loom, and must always go through the interactive
-                  // canUseTool prompt (see preToolUseGuardrail's `ask`
-                  // hard-route above and canUseTool's own always-allow-rule
-                  // exclusion for it).
-                  ...LOOM_AUTO_TOOLS,
-                  // Ultra's three tools (docs/plans/ultra-harness.md §4) —
-                  // all auto-run, none human-gated (see ULTRA_AUTO_TOOLS's
-                  // own comment for why this differs from start_loom).
-                  // Excluded from the escalation branch above on purpose:
-                  // that surface stays a narrow read-only discuss wall.
-                  ...ULTRA_AUTO_TOOLS,
-                ],
+            //
+            // ZERO ARITHMETIC HERE, and that is the point of story 2.2. This
+            // used to be a two-arm ternary composing six literals plus
+            // ...LOOM_AUTO_TOOLS plus ...ULTRA_AUTO_TOOLS on one side and
+            // [...LOOM_ESCALATION_READONLY_TOOLS] on the other. The profile
+            // resolves the same names in the same order (core's grown
+            // BASE_ALLOWED_TOOLS is the route's old array, element for
+            // element), and any composition the route KEEPS is a place a future
+            // profile cannot narrow. mcp__loom__start_loom and
+            // mcp__loom__answer_blocked are absent from the base union
+            // entirely, so no profile can spell them here — a strictly stronger
+            // moat than the old literal array, enforced by the compiler.
+            allowedTools: [...sessionProfile.toolPolicy.allow],
             // AskUserQuestion (and any sibling structured-question tool the
-            // SDK exposes) is hard-disallowed here: the chat UI has no
-            // widget to answer a structured question, so the model must ask
+            // SDK exposes) is hard-disallowed for every kind: the chat UI has
+            // no widget to answer a structured question, so the model must ask
             // clarifying questions as plain chat messages instead (see
-            // PLANNER_SYSTEM_PROMPT above). For an escalation session, ADD the
-            // state-changing loom tools (steer/reject/answer_loom/resume/cancel/
-            // watch/draft/propose/start) — PLUS all three ultra tools, same
-            // reasoning — to the disallow set: the SDK guarantees a disallow
-            // beats any allow, so those tools — registered on the loom/ultra
-            // MCP servers for other sessions — are truly uncallable here, even
-            // interactively (never just falling through to canUseTool's card).
+            // PLANNER_SYSTEM_PROMPT in @/lib/session-prompts). An escalation
+            // profile ADDS the state-changing loom tools (steer/reject/
+            // answer_loom/resume/cancel/watch/draft/propose/start) PLUS all
+            // three ultra tools: the SDK guarantees a disallow beats any allow,
+            // so those tools — registered on the loom/ultra MCP servers for
+            // other sessions — are truly uncallable there, even interactively
+            // (never just falling through to canUseTool's card).
             // answer_blocked is deliberately NOT disallowed (it stays
             // callable-but-human-gated — the ONLY escalation write path).
-            disallowedTools: [
-              ...manifest.guardrails.disallowedTools,
-              "AskUserQuestion",
-              ...(isEscalationSession ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS] : []),
-            ],
+            //
+            // AC2 — `manifest.guardrails.disallowedTools` used to be spread in
+            // front of this list by hand. The resolver folds it in now, so this
+            // is ONE field and a reader cannot pick up half the deny set. The
+            // redundancy with `sessionProfile.guardrails` is deliberate and is
+            // AD-1's "enforced twice" one level down: guardrails feed
+            // makeGuardrailDecision (our hook + canUseTool, and the only carrier
+            // of protectedPaths), this feeds the SDK's own deny list.
+            disallowedTools: [...sessionProfile.toolPolicy.deny],
             // The loom MCP server (see loomMcpServer above) — its tools
             // surface as mcp__loom__*, gated the same way every other tool
             // is: allowedTools for the safe read/draft ones, canUseTool +

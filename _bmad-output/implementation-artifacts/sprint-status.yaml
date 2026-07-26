@@ -58,7 +58,7 @@ development_status:
   # Epic 2: Session Profiles
   epic-2: in-progress
   2-1-the-sessionprofile-resolver: done
-  2-2-retrofit-the-existing-session-kinds-onto-profiles: ready-for-dev
+  2-2-retrofit-the-existing-session-kinds-onto-profiles: review
   epic-2-retrospective: optional
 
   # Epic 3: Conversation Shell

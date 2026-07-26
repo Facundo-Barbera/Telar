@@ -5,7 +5,11 @@
 // import apps/web. So nothing in core would notice if a builder here named a
 // capability that does not exist, or dropped one that does. This is the only
 // place a wrong capability NAME gets caught by the gate rather than by a manual
-// curl against a dev server.
+// curl against a dev server — and, since story 2.2, the only place that can see
+// BOTH copies of the tool vocabulary at once (core declares its own
+// LOOM_AUTO_TOOL_NAMES / ULTRA_AUTO_TOOL_NAMES because it cannot import
+// @/lib/loom-mcp; the anti-drift block below is what makes that duplication
+// safe rather than merely tidy).
 //
 // AND THE SIDE EFFECT, which is the other half. The builders register at MODULE
 // SCOPE, and app/api/chat/route.ts depends on a bare `import
@@ -14,20 +18,57 @@
 // it, because there is no test file for that route anywhere in the tree.
 // KINDS_AFTER_IMPORT below captures the registry the instant this module's
 // import ran, so no later reset can make that assertion lie.
+//
+// EVERY EXPECTATION IS RE-DERIVED FROM A SOURCE CONSTANT, never restated. That
+// is not style: `allow: []` shipped in story 2.1 as a restated copy of a
+// measurement that was false, in a field nothing consumed, defended by a
+// confident in-source comment. It survived authoring, review and a commit. A
+// copy of a measurement goes stale in silence; a derivation indicts its source.
+//
+// NO LIVE LOOM READ RUNS IN THIS PROCESS, deliberately. buildSteererContext and
+// buildEscalationContext reach core's getLoom, whose ensureMigrated() can
+// RENAME directories under the resolved state root — and outside a sandboxed
+// child, that root is the operator's real ~/.telar. The rows below therefore
+// drive the builders with `loomId: undefined` (the no-live-read arm), the
+// composition itself is covered hermetically with injected readers in
+// session-prompts.test.ts, and the one assertion that genuinely needs the live
+// arm spawns a CHILD with HOME and TELAR_HOME pointed at throwaway
+// directories. Never mutate process.env.TELAR_HOME in the shared test process.
 // @ts-expect-error no @types/bun in this workspace
 import { beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BASE_ALLOWED_TOOLS,
+  LOOM_AUTO_TOOL_NAMES,
   ProjectManifest,
   registeredSessionKinds,
   resetSessionProfiles,
   resolveSessionProfile,
+  ULTRA_AUTO_TOOL_NAMES,
   unmetCapabilities,
   type SessionKind,
   type SessionProfileBuilder,
   type SessionResolutionContext,
 } from "@telar/core";
-import { LOOM_ESCALATION_READONLY_TOOLS } from "./loom-mcp";
+import {
+  LOOM_ANSWER_BLOCKED_TOOL,
+  LOOM_AUTO_TOOLS,
+  LOOM_ESCALATION_DISALLOWED_TOOLS,
+  LOOM_ESCALATION_READONLY_TOOLS,
+  LOOM_START_TOOL,
+} from "./loom-mcp";
+import { ULTRA_AUTO_TOOLS } from "./ultra-mcp";
+import { makeGuardrailDecision } from "./permissions";
+import {
+  ESCALATION_SYSTEM_PROMPT,
+  PLANNER_SYSTEM_PROMPT,
+  STEERER_SYSTEM_PROMPT,
+  ULTRA_ANNOTATION_NOTE,
+} from "./session-prompts";
 import {
   buildEscalationProfile,
   buildPlannerProfile,
@@ -53,34 +94,58 @@ const ctx = (over: Partial<SessionResolutionContext> = {}): SessionResolutionCon
   manifest,
   project: "demo",
   permissionMode: "default",
+  ultraAnnotated: false,
   ...over,
 });
 
 // The story's D11 table, as data. Every row is checked against the REAL builder.
+//
+// `staticPrompt` is the prompt constant the kind's appendix must CONTAIN — the
+// symbol, never a copy of its text — and `getsUltraNote` records the one
+// per-kind difference the old route expressed as `ultraAnnotated &&
+// !isEscalationSession`. The three `""` appendices this table carried through
+// story 2.1 were a deliberate tripwire, recorded in deferred-work.md as
+// "will fail loudly the moment they change — which is the intended tripwire".
+// They changed; this is what replaced them.
 const D11: Array<{
   kind: SessionKind;
   build: SessionProfileBuilder;
   requiredCapabilities: readonly string[];
-  systemPromptAppendix: string;
+  staticPrompt: string | null;
+  getsUltraNote: boolean;
 }> = [
-  { kind: "project", build: buildProjectProfile, requiredCapabilities: [], systemPromptAppendix: "" },
+  {
+    kind: "project",
+    build: buildProjectProfile,
+    requiredCapabilities: [],
+    staticPrompt: null,
+    getsUltraNote: true,
+  },
   {
     kind: "planner",
     build: buildPlannerProfile,
     requiredCapabilities: ["system-prompt-append"],
-    systemPromptAppendix: "",
+    staticPrompt: PLANNER_SYSTEM_PROMPT,
+    getsUltraNote: true,
   },
   {
     kind: "steerer",
     build: buildSteererProfile,
     requiredCapabilities: ["system-prompt-append"],
-    systemPromptAppendix: "",
+    staticPrompt: STEERER_SYSTEM_PROMPT,
+    getsUltraNote: true,
   },
   {
     kind: "escalation",
     build: buildEscalationProfile,
     requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
-    systemPromptAppendix: "",
+    staticPrompt: ESCALATION_SYSTEM_PROMPT,
+    // NEVER. The escalation surface is offered none of ultra's tools, so
+    // advertising the `ultra` tool to it would instruct it to call something
+    // its own profile hard-denies. escalationAppendix has no `ultraAnnotated`
+    // parameter at all, so this is enforced by a signature rather than
+    // remembered.
+    getsUltraNote: false,
   },
 ];
 
@@ -93,6 +158,64 @@ describe("the registration side effect route.ts depends on", () => {
   });
 });
 
+// ── the core <-> web vocabulary pin (story 2.2, D4) ─────────────────────────
+
+describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
+  test("LOOM_AUTO_TOOL_NAMES is exactly LOOM_AUTO_TOOLS, and ULTRA_AUTO_TOOL_NAMES exactly ULTRA_AUTO_TOOLS", () => {
+    // Core cannot import apps/web — that would invert the dependency — so the
+    // auto-run vocabulary is DECLARED TWICE on purpose: once in
+    // packages/core/src/session-profile.ts, where a profile's `allow` needs the
+    // literal types, and once in @/lib/loom-mcp + @/lib/ultra-mcp, where the
+    // servers register the tools. This file is the only one in the repo that
+    // can see both, and this assertion is what makes the duplication safe:
+    // drift in either copy indicts the other.
+    //
+    // Sorted, because the two orders are allowed to differ — core composes
+    // BASE_ALLOWED_TOOLS in the route's own literal order, which is not
+    // necessarily the order a server registers its tools in.
+    expect([...LOOM_AUTO_TOOL_NAMES].sort()).toEqual([...LOOM_AUTO_TOOLS].sort());
+    expect([...ULTRA_AUTO_TOOL_NAMES].sort()).toEqual([...ULTRA_AUTO_TOOLS].sort());
+    // Anti-vacuity: two empty tuples would satisfy both equalities.
+    expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
+    expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
+  });
+
+  test("MOAT: neither human-gated loom tool is in the auto-run vocabulary or the base union", () => {
+    // Asserted against the CONSTANTS, never against literals. Both tools are
+    // the human's click (docs/loom-model.md §M.6): start_loom dispatches a real
+    // loom, answer_blocked resumes a parked one. Keeping them out of core's
+    // tuple makes them unspellable in any profile's `allow` — a compiler-
+    // enforced moat that did not exist before the tuple grew.
+    for (const gated of [LOOM_START_TOOL, LOOM_ANSWER_BLOCKED_TOOL]) {
+      expect([...LOOM_AUTO_TOOLS]).not.toContain(gated);
+      expect([...LOOM_AUTO_TOOL_NAMES]).not.toContain(gated);
+      expect([...BASE_ALLOWED_TOOLS]).not.toContain(gated);
+    }
+    // Anti-vacuity: the neighbouring auto-run loom tools ARE in all three, so
+    // this is not passing over three empty haystacks.
+    expect([...BASE_ALLOWED_TOOLS]).toContain("mcp__loom__read_bundle");
+  });
+
+  test("BASE_ALLOWED_TOOLS is exactly the route's old non-escalation allowedTools array, in order", () => {
+    // The BEFORE table's project/planner/steerer row: six built-ins, then
+    // ...LOOM_AUTO_TOOLS, then ...ULTRA_AUTO_TOOLS. Re-derived from the WEB
+    // constants (the ones route.ts used to spread) so this compares the two
+    // worlds rather than restating either.
+    const routesOldArray = [
+      "Read",
+      "Grep",
+      "Glob",
+      "WebSearch",
+      "WebFetch",
+      "ToolSearch",
+      ...LOOM_AUTO_TOOLS,
+      ...ULTRA_AUTO_TOOLS,
+    ];
+    expect([...BASE_ALLOWED_TOOLS]).toEqual(routesOldArray);
+    expect(routesOldArray.length).toBe(20); // anti-vacuity + the measured count
+  });
+});
+
 describe("the four builders carry D11's per-kind decisions", () => {
   beforeEach(() => {
     resetSessionProfiles();
@@ -100,10 +223,9 @@ describe("the four builders carry D11's per-kind decisions", () => {
   });
 
   for (const row of D11) {
-    test(`${row.kind} declares exactly its required capabilities and its appendix`, () => {
+    test(`${row.kind} declares exactly its required capabilities`, () => {
       const spec = row.build(ctx({ kind: row.kind }));
       expect([...spec.requiredCapabilities]).toEqual([...row.requiredCapabilities]);
-      expect(spec.systemPromptAppendix ?? "").toBe(row.systemPromptAppendix);
     });
 
     test(`${row.kind} resolves through the registry to the same capability set`, () => {
@@ -113,17 +235,74 @@ describe("the four builders carry D11's per-kind decisions", () => {
       const resolved = resolveSessionProfile(ctx({ kind: row.kind }));
       expect(resolved.kind).toBe(row.kind);
       expect([...resolved.requiredCapabilities]).toEqual([...row.requiredCapabilities]);
-      expect(resolved.systemPromptAppendix).toBe(row.systemPromptAppendix);
+    });
+
+    test(`${row.kind}'s appendix carries its own static prompt and nobody else's`, () => {
+      const appendix = resolveSessionProfile(
+        ctx({ kind: row.kind }),
+      ).systemPromptAppendix;
+      if (row.staticPrompt) {
+        expect(appendix).toContain(row.staticPrompt);
+      }
+      // The exclusion half, and it is the one that catches a mis-wired builder:
+      // every OTHER kind's prompt must be absent. A registry that handed the
+      // steerer builder's output back under the planner key would satisfy a
+      // bare "contains something" check.
+      for (const other of D11) {
+        if (other.kind === row.kind || !other.staticPrompt) continue;
+        expect(appendix).not.toContain(other.staticPrompt);
+      }
+    });
+
+    test(`${row.kind} gets the Ultra note exactly when the flag AND the kind say so`, () => {
+      const off = resolveSessionProfile(
+        ctx({ kind: row.kind, ultraAnnotated: false }),
+      ).systemPromptAppendix;
+      const on = resolveSessionProfile(
+        ctx({ kind: row.kind, ultraAnnotated: true }),
+      ).systemPromptAppendix;
+      // The chip OFF is every ordinary turn: no note, for any kind.
+      expect(off).not.toContain(ULTRA_ANNOTATION_NOTE);
+      expect(on.includes(ULTRA_ANNOTATION_NOTE)).toBe(row.getsUltraNote);
+      // …and the static prompt survives the flag either way, so turning the
+      // chip on can never REPLACE the kind's guidance.
+      if (row.staticPrompt) {
+        expect(on).toContain(row.staticPrompt);
+        expect(off).toContain(row.staticPrompt);
+      }
     });
   }
 
+  test("a plain project session with the Ultra chip OFF has an EMPTY appendix", () => {
+    // The route's old fallthrough arm: `ultraAnnotationNote ? {…append} : {…}`.
+    // "" here is what keeps "a normal session's systemPrompt is byte-for-byte
+    // unchanged" true after the migration — the route branches on emptiness and
+    // passes the bare preset.
+    expect(resolveSessionProfile(ctx({ kind: "project" })).systemPromptAppendix).toBe("");
+    // …and with the chip on it is EXACTLY the note, nothing more.
+    expect(
+      resolveSessionProfile(ctx({ kind: "project", ultraAnnotated: true })).systemPromptAppendix,
+    ).toBe(ULTRA_ANNOTATION_NOTE);
+  });
+
   test("every builder loads the repo's settings and NOT the user's", () => {
     for (const row of D11) {
-      expect(resolveSessionProfile(ctx({ kind: row.kind })).settingSources).toEqual([
-        "project",
-        "local",
-      ]);
+      const settingSources = resolveSessionProfile(ctx({ kind: row.kind })).settingSources;
+      expect(settingSources).toEqual(["project", "local"]);
+      expect(settingSources).not.toContain("user");
     }
+  });
+
+  test("every kind's cwd IS manifest.root — AC2, by construction", () => {
+    for (const row of D11) {
+      expect(resolveSessionProfile(ctx({ kind: row.kind })).cwd).toBe(manifest.root);
+    }
+    // A different manifest root moves it, which is the only thing that may — so
+    // this is not passing because cwd is a constant.
+    const elsewhere = ProjectManifest.parse({ name: "other", root: "/repos/other" });
+    expect(resolveSessionProfile(ctx({ kind: "project", manifest: elsewhere })).cwd).toBe(
+      "/repos/other",
+    );
   });
 
   test("every builder's guardrails UNION the manifest's — none replaces them", () => {
@@ -141,38 +320,337 @@ describe("the four builders carry D11's per-kind decisions", () => {
       );
     }
   });
+});
 
-  test("the escalation profile grants ONLY the base tools its own branch auto-runs", () => {
-    // The route's escalation branch sets allowedTools to
-    // [...LOOM_ESCALATION_READONLY_TOOLS], and three of core's six base tools
-    // are in it: Read, Grep and Glob (ESCALATION_SYSTEM_PROMPT advertises them
-    // by name — "inspect the project root").
-    expect(resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow).toEqual([
-      "Read",
-      "Grep",
-      "Glob",
-    ]);
-    // …while an ordinary project session keeps the whole base set.
-    expect(resolveSessionProfile(ctx({ kind: "project" })).toolPolicy.allow.length).toBe(
-      BASE_ALLOWED_TOOLS.length,
+// ── the per-kind equivalence table (story 2.2, §6.2-A) ─────────────────────
+// For each kind: does the RESOLVED profile reproduce what the route used to
+// build inline? Every expectation derives from the SAME source constants the
+// route spread, so a drifted builder is indicted by its own source rather than
+// by a restated literal.
+
+describe("per-kind equivalence — the profile reproduces the route's own BEFORE table", () => {
+  beforeEach(() => {
+    resetSessionProfiles();
+    registerSessionProfiles();
+  });
+
+  // BEFORE, measured from route.ts at the story's baseline:
+  //   allowedTools    = isEscalationSession ? [...LOOM_ESCALATION_READONLY_TOOLS]
+  //                     : ["Read","Grep","Glob","WebSearch","WebFetch","ToolSearch",
+  //                        ...LOOM_AUTO_TOOLS, ...ULTRA_AUTO_TOOLS]
+  //   disallowedTools = [...manifest.guardrails.disallowedTools, "AskUserQuestion",
+  //                      ...(isEscalationSession
+  //                          ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS]
+  //                          : [])]
+  const MANIFEST_DENY = manifest.guardrails.disallowedTools;
+  const NON_ESCALATION_ALLOW = [
+    "Read",
+    "Grep",
+    "Glob",
+    "WebSearch",
+    "WebFetch",
+    "ToolSearch",
+    ...LOOM_AUTO_TOOLS,
+    ...ULTRA_AUTO_TOOLS,
+  ];
+  const ESCALATION_ALLOW = [...LOOM_ESCALATION_READONLY_TOOLS];
+  const NON_ESCALATION_DENY = [...MANIFEST_DENY, "AskUserQuestion"];
+  const ESCALATION_DENY = [
+    ...MANIFEST_DENY,
+    "AskUserQuestion",
+    ...LOOM_ESCALATION_DISALLOWED_TOOLS,
+    ...ULTRA_AUTO_TOOLS,
+  ];
+
+  test("the derived expectation sets are non-empty — the anti-vacuity floor for this whole block", () => {
+    // Every assertion below compares against one of these five arrays. If a
+    // source constant emptied out, each comparison would hold over [] and this
+    // block would pass forever while the route granted nothing.
+    const floors: Array<[string, number, number]> = [
+      ["NON_ESCALATION_ALLOW", NON_ESCALATION_ALLOW.length, 20],
+      ["ESCALATION_ALLOW", ESCALATION_ALLOW.length, 6],
+      ["NON_ESCALATION_DENY", NON_ESCALATION_DENY.length, 2],
+      ["ESCALATION_DENY", ESCALATION_DENY.length, 14],
+      ["MANIFEST_DENY", MANIFEST_DENY.length, 1],
+    ];
+    const thin = floors.filter(([, got, floor]) => got < floor);
+    if (thin.length > 0) {
+      throw new Error(
+        `AD-9 / story 2.2 §6.2-A: a source constant this equivalence table derives from came ` +
+          `back THIN — ${JSON.stringify(thin)} (name, got, floor). THE RULE: every expectation ` +
+          `here is re-derived from the constant the route itself spread, never restated. ` +
+          `CONSEQUENCE: a shrunken source makes every comparison below hold over a short or ` +
+          `empty list, so the profile could grant nothing and this suite would stay green — ` +
+          `which is exactly how \`allow: []\` survived story 2.1. NEXT STEP: fix the constant ` +
+          `in @/lib/loom-mcp or @/lib/ultra-mcp, or the import here. Do not lower the floor.`,
+      );
+    }
+    expect(thin).toEqual([]);
+  });
+
+  for (const kind of ["project", "planner", "steerer"] as const) {
+    test(`${kind}'s resolved allow IS the route's non-escalation array, element for element`, () => {
+      // Order matters here only because it makes this a toEqual on arrays
+      // rather than an argument about sets; the SDK does not care.
+      expect([...resolveSessionProfile(ctx({ kind })).toolPolicy.allow]).toEqual(
+        NON_ESCALATION_ALLOW,
+      );
+    });
+
+    test(`${kind}'s resolved deny IS manifest guardrails ∪ {AskUserQuestion}`, () => {
+      expect([...resolveSessionProfile(ctx({ kind })).toolPolicy.deny]).toEqual(
+        NON_ESCALATION_DENY,
+      );
+    });
+  }
+
+  test("escalation's resolved allow IS [...LOOM_ESCALATION_READONLY_TOOLS] — all six, not three", () => {
+    // Three of these six are core's built-in read tools; the other three are
+    // mcp__loom__ read names that only became spellable when story 2.2 grew
+    // BASE_ALLOWED_TOOLS. ESCALATION_SYSTEM_PROMPT advertises Read/Grep/Glob by
+    // name ("inspect the project root"), so a short allow leaves the session
+    // unable to do what its own prompt tells it to.
+    expect([...resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow]).toEqual(
+      ESCALATION_ALLOW,
     );
   });
 
-  test("that escalation grant IS the route's own toolset ∩ the base set — measured, not restated", () => {
-    // The literal above is a copy of a measurement, and a copy goes stale in
-    // silence: nothing consumes toolPolicy until 2.2, so a drifted `allow`
-    // would fail no test and no request. This row re-derives it from the two
-    // real constants — @/lib/loom-mcp's array (which route.ts wires verbatim as
-    // the escalation session's allowedTools) intersected with core's base set —
-    // so if either source moves, the builder's value is what gets indicted.
-    // The first revision of this file shipped `allow: []` on the claim that
-    // NONE of the six appeared in that array; three do.
-    const branchGrants = LOOM_ESCALATION_READONLY_TOOLS as readonly string[];
-    const measured = BASE_ALLOWED_TOOLS.filter((t) => branchGrants.includes(t));
-    expect(measured.length).toBeGreaterThan(0); // anti-vacuity: an empty ∩ would pass by accident
-    expect([...resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.allow].sort()).toEqual(
-      [...measured].sort(),
+  test("escalation's resolved deny IS manifest ∪ {AskUserQuestion} ∪ ESC_DENY ∪ ULTRA_AUTO", () => {
+    expect([...resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy.deny]).toEqual(
+      ESCALATION_DENY,
     );
+  });
+
+  test("ESC_READ ∩ ESC_DENY = ∅, and answer_blocked is in NEITHER — verified, not assumed", () => {
+    const overlap = [...LOOM_ESCALATION_READONLY_TOOLS].filter((t) =>
+      ([...LOOM_ESCALATION_DISALLOWED_TOOLS] as string[]).includes(t),
+    );
+    expect(overlap).toEqual([]);
+    // answer_blocked stays callable-but-human-gated — the ONLY escalation write
+    // path. A port that "tidies" it into the read set breaks the moat; one that
+    // tidies it into the deny set breaks the surface.
+    expect([...LOOM_ESCALATION_READONLY_TOOLS]).not.toContain(LOOM_ANSWER_BLOCKED_TOOL);
+    expect([...LOOM_ESCALATION_DISALLOWED_TOOLS]).not.toContain(LOOM_ANSWER_BLOCKED_TOOL);
+    // …and it is not silently reachable through the resolved policy either.
+    const escalation = resolveSessionProfile(ctx({ kind: "escalation" })).toolPolicy;
+    expect([...escalation.allow]).not.toContain(LOOM_ANSWER_BLOCKED_TOOL);
+    expect([...escalation.deny]).not.toContain(LOOM_ANSWER_BLOCKED_TOOL);
+  });
+
+  test("MOAT: no kind's resolved allow contains either human-gated tool", () => {
+    for (const row of D11) {
+      const allow = [...resolveSessionProfile(ctx({ kind: row.kind })).toolPolicy.allow];
+      expect(allow).not.toContain(LOOM_START_TOOL);
+      expect(allow).not.toContain(LOOM_ANSWER_BLOCKED_TOOL);
+      expect(allow.length).toBeGreaterThan(0); // anti-vacuity, per kind
+    }
+  });
+
+  test("a manifest that denies a BASE tool drops it from allow and keeps it in deny", () => {
+    // The one case where the fold CHANGES the resolved value versus what the
+    // route passed. Before: "Read" appeared in BOTH arrays and the SDK's
+    // disallow-wins guarantee denied it. After: it is in `deny` only, and a
+    // tool that is neither allowed nor denied falls through to canUseTool where
+    // makeGuardrailDecision denies it on the same manifest entry. Same outcome,
+    // different route to it — and this is the sharpest test of the port's
+    // faithfulness.
+    const strict = ProjectManifest.parse({
+      name: "demo",
+      root: "/repos/demo",
+      account: "personal",
+      guardrails: { disallowedTools: ["Read"], protectedPaths: [] },
+    });
+    const resolved = resolveSessionProfile(ctx({ kind: "project", manifest: strict }));
+    expect([...resolved.toolPolicy.allow]).not.toContain("Read");
+    expect([...resolved.toolPolicy.deny]).toContain("Read");
+    // The guardrail half is what actually stops the call, so it must still
+    // carry the entry — that is the deliberate redundancy, not duplication.
+    expect(resolved.guardrails.disallowedTools).toContain("Read");
+    // Anti-vacuity: only "Read" left; the other nineteen are untouched.
+    expect(resolved.toolPolicy.allow.length).toBe(BASE_ALLOWED_TOOLS.length - 1);
+  });
+});
+
+// ── the live-context arm, in a sandboxed child (story 2.2, §5.4-D) ─────────
+
+describe("the steerer/escalation builders thread the VALIDATED loomId into the live read", () => {
+  test("a loomId produces a live-context block; no loomId degrades to the static prompt alone", () => {
+    // WHY A CHILD PROCESS. The live readers reach core's getLoom, whose
+    // ensureMigrated() can RENAME directories under the resolved state root,
+    // and outside a sandbox that root is the operator's real ~/.telar — a real
+    // write from a test run, which is the failure this repo has already paid
+    // for once. Mutating process.env.TELAR_HOME in the shared bun process is
+    // equally forbidden (every suite runs in ONE process), so the sanctioned
+    // pattern is a child with HOME and TELAR_HOME pointed at throwaway
+    // directories. The child imports by ABSOLUTE PATH so a temp directory with
+    // no node_modules of its own still resolves the workspace's tsconfig paths.
+    //
+    // It also exercises the FAIL-SAFE for real: the throwaway root holds no
+    // loom at all, so every read inside buildSteererContext misses — and the
+    // appendix still comes back with its static prompt and its live header
+    // rather than a throw.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-profiles-live-"));
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "telar-profiles-home-"));
+    try {
+      const probe = path.join(dir, "probe.ts");
+      fs.writeFileSync(
+        probe,
+        [
+          `import { buildSteererProfile, buildEscalationProfile } from ${JSON.stringify(
+            path.join(here, "session-profiles"),
+          )};`,
+          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", permissionMode: "default" };`,
+          `const app = (o) => (o.systemPromptAppendix ?? "");`,
+          `console.log(JSON.stringify({`,
+          `  steererWithId: app(buildSteererProfile({ ...base, kind: "steerer", loomId: "loom_probe", ultraAnnotated: false })).includes("LIVE LOOM CONTEXT"),`,
+          `  steererNoId: app(buildSteererProfile({ ...base, kind: "steerer", ultraAnnotated: false })).includes("LIVE LOOM CONTEXT"),`,
+          `  steererStatic: app(buildSteererProfile({ ...base, kind: "steerer", loomId: "loom_probe", ultraAnnotated: false })).includes("steering session"),`,
+          `  escalationWithId: app(buildEscalationProfile({ ...base, kind: "escalation", loomId: "loom_probe" })).includes("BLOCKED LOOM CONTEXT"),`,
+          `  escalationNoId: app(buildEscalationProfile({ ...base, kind: "escalation" })).includes("BLOCKED LOOM CONTEXT"),`,
+          `}));`,
+        ].join("\n"),
+      );
+      const out = spawnSync(process.execPath, [probe], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: fakeHome,
+          TELAR_HOME: path.join(dir, "telar"),
+          NODE_ENV: "test",
+        },
+      });
+      const line = (out.stdout ?? "").trim().split("\n").pop() ?? "";
+      let parsed: Record<string, boolean> | null = null;
+      try {
+        parsed = JSON.parse(line) as Record<string, boolean>;
+      } catch {
+        /* fall through to the diagnostic below */
+      }
+      if (!parsed) {
+        throw new Error(
+          `story 2.2 §5.4-D: the sandboxed live-context probe produced no JSON. ` +
+            `status=${out.status} stdout=${JSON.stringify(out.stdout)} ` +
+            `stderr=${JSON.stringify(out.stderr)}. CONSEQUENCE: the loomId pass-through and ` +
+            `the pre-stream fail-safe are BOTH unproved while this test reads as green. ` +
+            `NEXT STEP: fix the probe or its module resolution — do not weaken the assertion, ` +
+            `and do NOT run the readers in this process (they can write to the real ~/.telar).`,
+        );
+      }
+      // The pass-through: a VALIDATED loomId reaches the reader…
+      expect(parsed.steererWithId).toBe(true);
+      expect(parsed.escalationWithId).toBe(true);
+      // …and its absence degrades to the static prompt rather than crashing on
+      // an `undefined!` non-null assertion, which is what the route used to do.
+      expect(parsed.steererNoId).toBe(false);
+      expect(parsed.escalationNoId).toBe(false);
+      // The fail-safe half: no loom exists in the throwaway root, yet the moat
+      // language is still there.
+      expect(parsed.steererStatic).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ── AC6 — the Codex approval seam (story 2.2, §6.2-G) ──────────────────────
+
+describe("AC6 the profile's guardrails govern a Codex approval, not just a Claude tool call", () => {
+  beforeEach(() => {
+    resetSessionProfiles();
+    registerSessionProfiles();
+  });
+
+  // The EXACT shape onCodexApproval builds before it would create a pending:
+  //   { command: req.command ?? (req.reason ? `[file change] ${reason}` : …),
+  //     ...(req.cwd ? { cwd: req.cwd } : {}) }
+  // shaped as a "Bash" card, because that is the one shape ruleFor /
+  // ruleOptionsFor / the card's permissionPreview already know how to render.
+  const codexInput = (req: {
+    command?: string;
+    cwd?: string;
+    reason?: string;
+  }): Record<string, unknown> => ({
+    command:
+      req.command ?? (req.reason ? `[file change] ${req.reason}` : "Codex requested approval"),
+    ...(req.cwd ? { cwd: req.cwd } : {}),
+  });
+
+  const decide = (
+    guardrails: { disallowedTools?: string[]; protectedPaths?: string[] },
+    req: { command?: string; cwd?: string; reason?: string },
+  ) => {
+    const m = ProjectManifest.parse({
+      name: "demo",
+      root: "/repos/demo",
+      account: "personal",
+      guardrails: { disallowedTools: [], protectedPaths: [], ...guardrails },
+    });
+    const profile = resolveSessionProfile(ctx({ kind: "project", provider: "codex", manifest: m }));
+    // The route's own call, verbatim: the PROFILE where a manifest is expected
+    // (makeGuardrailDecision is structural), and the profile's cwd as the root.
+    return makeGuardrailDecision(profile, profile.cwd, "Bash", codexInput(req));
+  };
+
+  test("a command touching a protectedPaths entry is DENIED — no card is ever shaped", () => {
+    // Showing the human a card for something project policy already forbids
+    // invites them to approve it, so the decision has to land BEFORE
+    // createPending. This is the value the route branches on.
+    const d = decide({ protectedPaths: [".env"] }, { command: "rm -rf .env" });
+    expect(d.behavior).toBe("deny");
+    expect(d.behavior === "deny" && d.message).toContain("protected path");
+  });
+
+  test("a command that touches nothing protected PROCEEDS to the card", () => {
+    // The discriminator. Without it, a guardrail that denied everything would
+    // satisfy the row above and Codex would be unusable — a "fix" that reads as
+    // a fix and is an outage.
+    expect(decide({ protectedPaths: [".env"] }, { command: "bun test" }).behavior).toBe("allow");
+    expect(decide({}, { command: "rm -rf .env" }).behavior).toBe("allow");
+  });
+
+  test("a project whose guardrails disallow the Bash TOOL declines a command request", () => {
+    const d = decide({ disallowedTools: ["Bash"] }, { command: "bun test" });
+    expect(d.behavior).toBe("deny");
+    expect(d.behavior === "deny" && d.message).toContain("disallowed by this project's guardrails");
+  });
+
+  test("THE FALSE-POSITIVE GUARD — a file-change request must NOT be denied by that same Bash entry", () => {
+    // This is why the route's check is gated on `req.kind === "command"`, and
+    // the restriction is MEASURED rather than cautious: onCodexApproval shapes
+    // BOTH request kinds as a "Bash" card, synthesizing
+    // `[file change] ${reason}` when there is no command. Running the check on
+    // a file change would therefore deny EVERY file edit in a project whose
+    // guardrails merely disallow the Bash tool — a false positive on a request
+    // that is not a shell command at all.
+    //
+    // The assertion is deliberately shaped as "the raw decision WOULD deny, so
+    // the kind gate is what saves it": that is the fact the route's `if`
+    // depends on, and if it ever stopped being true the gate would be dead code
+    // rather than a guard.
+    const asIfChecked = decide({ disallowedTools: ["Bash"] }, { reason: "update src/app.ts" });
+    expect(asIfChecked.behavior).toBe("deny");
+    // …and the input really is the synthesized file-change shape, not a command.
+    expect(codexInput({ reason: "update src/app.ts" }).command).toBe(
+      "[file change] update src/app.ts",
+    );
+  });
+
+  test("the guardrails being consulted are the PROFILE's, folded from the manifest", () => {
+    // AC2's "by construction" at this seam: the route passes `sessionProfile`,
+    // so what governs a Codex approval is the resolved guardrail set — the
+    // manifest's entries unioned with anything the profile added, never fewer.
+    const m = ProjectManifest.parse({
+      name: "demo",
+      root: "/repos/demo",
+      account: "personal",
+      guardrails: { disallowedTools: ["Bash"], protectedPaths: ["secrets/"] },
+    });
+    const profile = resolveSessionProfile(ctx({ kind: "project", provider: "codex", manifest: m }));
+    expect(profile.guardrails.disallowedTools).toContain("Bash");
+    expect(profile.guardrails.protectedPaths).toContain("secrets/");
+    expect(profile.cwd).toBe("/repos/demo");
   });
 });
 
@@ -198,6 +676,13 @@ describe("the gate these builders feed — the behaviour change this story ships
   test("planner, steerer and escalation all FAIL on Codex — the disclosed behaviour change", () => {
     // Deliberate, and it is the point of AD-11: today each of these returns a
     // 200 that silently drops the thing that made it that kind of session.
+    //
+    // Story 2.2 WIDENS who this reaches, and that is AC3's one disclosed
+    // exception: because the route now resolves the kind from the persisted
+    // link as well as the wire role, a RESUMED planner/steerer/escalation chat
+    // on a Codex account whose client omits `role` now takes this 400 instead
+    // of the 200 it used to take. It fails LOUDLY in place of failing silently
+    // — the completion of 2.1's own gate, not a new policy.
     for (const kind of ["planner", "steerer", "escalation"] as const) {
       const unmet = unmetCapabilities(resolveSessionProfile(ctx({ kind, provider: "codex" })), "codex");
       expect(unmet.length).toBeGreaterThan(0);

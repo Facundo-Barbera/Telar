@@ -21,25 +21,48 @@
 // in the repo (grepped: declareEvents has zero production call sites), so there
 // is no precedent to remind you.
 //
-// WHAT 2.1 DELIBERATELY DOES NOT PUT HERE. Story 2.1 lands the resolver
-// additively: the route resolves a profile for every request but consumes only
-// the capability gate. Story 2.2 is the one that migrates the live chat path
-// onto these values, and it is behind its own gate because it is the change
-// that touches production traffic. So three fields are deliberately inert here
-// and 2.2 fills them:
-//   - `mcpServers` is omitted (resolves to {}). The route's real set is
-//     { loom, ultra, ...resolveProjectMcpServers(project) }, and building it
-//     means CONSTRUCTING the in-process MCP servers — a side effect, not data.
-//   - `systemPromptAppendix` is "" for all four kinds. See the note on the
-//     planner builder: the prompt constants are module-private to route.ts.
-//   - `toolPolicy` narrows only the six tools core can name for itself.
-//     LOOM_AUTO_TOOLS / ULTRA_AUTO_TOOLS join the base union in 2.2.
-// The one field that is NOT inert is `requiredCapabilities` — that is what the
-// pre-stream gate reads, and it carries this story's real behaviour change.
+// WHAT 2.1 LEFT INERT, AND WHAT 2.2 FILLED IN. Story 2.1 landed the resolver
+// additively: the route resolved a profile for every request but consumed only
+// the capability gate, so three fields here carried no decision. Story 2.2 —
+// the story that migrated the live chat path onto these values — closed two of
+// them and consciously kept the third:
+//   - `systemPromptAppendix` — CLOSED. The three prompts moved out of the route
+//     into @/lib/session-prompts (they were module-private consts inside a
+//     Next.js route module whose only export is POST, which is exactly why 2.1
+//     could not reach them), and each builder now composes its own appendix
+//     from the static prompt, the per-turn live-context read, and the Ultra
+//     note. This is where the route's four-arm `systemPrompt` ternary went.
+//   - `toolPolicy` — CLOSED. core's BASE_ALLOWED_TOOLS grew from six names to
+//     the full twenty-name auto-run vocabulary, so `allow` can name every tool
+//     the route grants and the route composes NOTHING. `deny` now carries the
+//     manifest's own guardrail deny set too, folded in by the resolver.
+//   - `mcpServers` — STILL OMITTED, and this is a disclosed, measured
+//     deviation rather than an oversight. The route's set is
+//     { loom, ultra, ...resolveProjectMcpServers(project) } and it is
+//     UNCONDITIONAL — it does not branch on session kind, so AC1 never required
+//     moving it. Building it is a SIDE EFFECT and not data:
+//     createLoomMcpServer/createUltraMcpServer close over
+//     `getSessionId: () => capturedSession`, a variable the SDK's system:init
+//     message mutates INSIDE the stream. A pure builder cannot produce that
+//     without restructuring how the session id is threaded, which has more
+//     blast radius than this whole story. FORWARD OWNER: epic 5's project-less
+//     master profile is the first kind that genuinely needs a different MCP
+//     set, and it is the story with a reason to pay for the restructure.
 import {
   registerSessionProfile,
   type SessionProfileBuilder,
 } from "@telar/core";
+import {
+  LOOM_ESCALATION_DISALLOWED_TOOLS,
+  LOOM_ESCALATION_READONLY_TOOLS,
+} from "@/lib/loom-mcp";
+import { ULTRA_AUTO_TOOLS } from "@/lib/ultra-mcp";
+import {
+  escalationAppendix,
+  plannerAppendix,
+  projectAppendix,
+  steererAppendix,
+} from "@/lib/session-prompts";
 
 // Every kind loads the repo's own .claude (CLAUDE.md, skills, slash commands,
 // settings, MCP servers) and deliberately NOT the user's. Measured from the
@@ -61,12 +84,24 @@ const ALWAYS_DENIED_TOOLS = ["AskUserQuestion"] as const;
 // NOTHING: under-detection then yields a weaker requirement and never a
 // spurious 400. AC5 depends on it too — a project session has to keep working
 // unchanged on BOTH providers.
-export const buildProjectProfile: SessionProfileBuilder = () => ({
+// `toolPolicy.allow` is OMITTED here and on planner/steerer, and the omission
+// is the measured truth rather than a shortcut: an absent `allow` resolves to
+// the WHOLE base set, and the route's own non-escalation `allowedTools` array
+// was exactly core's twenty-name BASE_ALLOWED_TOOLS in the same order. Writing
+// `allow: [...BASE_ALLOWED_TOOLS]` would say the same thing while adding a
+// second place for the two to drift apart. Only escalation narrows.
+//
+// The loom and ultra auto-tools are NOT gated on being a loom session — a plain
+// project session with no loom link gets the identical twenty. Measured from
+// the route's own array, which branched only on isEscalationSession.
+export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   kind: "project",
   settingSources: [...REPO_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: [],
-  systemPromptAppendix: "",
+  // The route's old fallthrough arm: `ultraAnnotationNote ? { …append } : { }`.
+  // "" when the composer's Ultra chip is off, which is every ordinary turn.
+  systemPromptAppendix: projectAppendix({ ultraAnnotated: ctx.ultraAnnotated }),
 });
 
 // The Loom planning session (docs/loom-model.md §5). The route's own comment on
@@ -78,21 +113,18 @@ export const buildProjectProfile: SessionProfileBuilder = () => ({
 // and deliberately does NOT require `mcp-servers`: requiring a capability the
 // kind does not use would gate it on something irrelevant.
 //
-// The appendix is "" in 2.1 and 2.2 supplies it. Measured reason, and it is a
-// deviation worth stating: PLANNER_SYSTEM_PROMPT is a module-private const
-// inside app/api/chat/route.ts, whose only export is POST. Reaching it from
-// here would mean either exporting a second symbol from a Next.js route module
-// or hoisting the constant out of the handler — both are larger edits to
-// route.ts than AC5 allows, and copying the text would create a second source
-// of truth for moat-adjacent prompt content. 2.2 hoists the prompts anyway (its
-// AC1 removes the session-kind conditionals), so it is the right owner. Nothing
-// consumes this field in 2.1.
-export const buildPlannerProfile: SessionProfileBuilder = () => ({
+// The appendix was "" in 2.1 and 2.2 supplies it, from @/lib/session-prompts's
+// PLANNER_SYSTEM_PROMPT — the const the route used to hold privately. This is
+// the arm of the route's `systemPrompt` ternary guarded by isPlannerSession,
+// moved intact: static guidance plus the per-turn Ultra note, in that order.
+// Pure — planner is the one loom kind with no live read, so nothing here can
+// fail.
+export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
   kind: "planner",
   settingSources: [...REPO_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
-  systemPromptAppendix: "",
+  systemPromptAppendix: plannerAppendix({ ultraAnnotated: ctx.ultraAnnotated }),
 });
 
 // The embedded steering session (the loom Chat tab). Same reasoning as planner,
@@ -102,16 +134,28 @@ export const buildPlannerProfile: SessionProfileBuilder = () => ({
 // live-context block is the distinguishing content, and it is exactly what
 // Codex drops.
 //
-// The appendix stays "" for a second reason on top of the planner's: the real
-// value embeds a PER-TURN live read (buildSteererContext(loomId)) that happens
-// inside the stream body. Hoisting that read into the preamble is a behaviour
-// change inside new ReadableStream, which AC5 forbids. 2.2 supplies it.
-export const buildSteererProfile: SessionProfileBuilder = () => ({
+// The appendix embeds a PER-TURN LIVE READ — buildSteererContext(loomId) walks
+// the loom's bundle for the objective, contract and steering log — which is why
+// 2.1 could not supply it and why THIS BUILDER IS NOT PURE. That is the one
+// stated property this story bends, and it is the honest trade: the
+// kind -> live-context mapping IS the registry, and any design that keeps the
+// read in the route puts the branch back in the route. The read is still once
+// per turn (one POST = one turn); it simply happens pre-stream now, which is
+// why session-prompts.ts wraps it fail-safe.
+//
+// `ctx.loomId` is the VALIDATED loom id (the route resolves it against
+// getLoom + `loom.project === project` before the profile resolves), not the
+// raw wire value. A builder that could reach an unvalidated id is a builder
+// that can read another project's loom.
+export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
   kind: "steerer",
   settingSources: [...REPO_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
-  systemPromptAppendix: "",
+  systemPromptAppendix: steererAppendix({
+    loomId: ctx.loomId,
+    ultraAnnotated: ctx.ultraAnnotated,
+  }),
 });
 
 // The blocked-loom escalation chat (M11.3): a read-only loom toolset plus the
@@ -123,36 +167,58 @@ export const buildSteererProfile: SessionProfileBuilder = () => ({
 // non-functional today and says nothing about it — which is the silent
 // degradation AD-11 exists to end.
 //
-// `allow: ["Read", "Grep", "Glob"]` is measured, not defensive: the route's
-// escalation branch sets allowedTools to [...LOOM_ESCALATION_READONLY_TOOLS]
-// (@/lib/loom-mcp), and THREE of core's six base tools appear in that array —
-// Read, Grep and Glob, the project-root snapshot half of the read-only toolset.
-// ESCALATION_SYSTEM_PROMPT advertises them by name ("Read / Grep / Glob —
-// inspect the project root (your working directory)"), so dropping them would
-// leave the session unable to do what its own prompt tells it to do. WebSearch,
-// WebFetch and ToolSearch are the three the branch genuinely does not grant, so
-// the narrowing drops exactly those. session-profiles.test.ts re-derives this
-// array from BASE_ALLOWED_TOOLS ∩ LOOM_ESCALATION_READONLY_TOOLS rather than
-// restating it, so the measurement cannot go stale silently again. (The
-// mcp__loom__* read names in that same array, and the loom/ultra deny names the
-// branch adds, live in @/lib/loom-mcp and @/lib/ultra-mcp; they join the policy
-// in 2.2 alongside LOOM_AUTO_TOOLS/ULTRA_AUTO_TOOLS, per the port's
-// BASE_ALLOWED_TOOLS note.)
+// `allow` IS the route's escalation branch, spread from the same constant the
+// route used: `allowedTools: [...LOOM_ESCALATION_READONLY_TOOLS]`. All six
+// names — Read, Grep, Glob plus the three mcp__loom__ read tools — are in
+// core's grown BASE_ALLOWED_TOOLS, so this spread TYPECHECKS against
+// `readonly BaseAllowedTool[]`, and that compile is itself the proof that the
+// base union covers the escalation toolset. (apps/web test files ARE seen by
+// `bunx tsc --noEmit` in this workspace, so no fixture spawn is needed for a
+// web-side compile claim.)
 //
-// This shipped as `allow: []` in 2.1's first pass, on the claim that NONE of
-// the six appeared. That was false, and the failure mode is worth naming: no
-// test and no request could contradict it, because nothing consumes toolPolicy
-// in 2.1 — 2.2 would have mapped an empty array onto query()'s allowedTools and
-// silently stripped project inspection from every escalation session.
+// It shipped as `allow: []` in 2.1's first pass, on the claim that NONE of
+// core's six base tools appeared in that array; three did. It was corrected to
+// three names, and this story replaces the three with the whole six by spreading
+// the constant instead of restating any of it. The failure mode is worth naming
+// because it is the reason every expectation in the suites derives from a
+// constant: nothing consumed toolPolicy in 2.1, so no test and no request could
+// contradict a wrong value. This story is the first consumer — an empty or
+// short `allow` would now silently strip project inspection from every
+// escalation session, which is precisely what ESCALATION_SYSTEM_PROMPT tells
+// the agent to do ("Read / Grep / Glob — inspect the project root").
 //
-// The appendix stays "" for the steerer's reason: buildEscalationContext is a
-// per-turn live read inside the stream body.
-export const buildEscalationProfile: SessionProfileBuilder = () => ({
+// `deny` is the route's escalation `disallowedTools` tail: AskUserQuestion, the
+// nine state-changing loom tools, and all three ultra tools. The resolver folds
+// the project manifest's own `guardrails.disallowedTools` in front of these, so
+// this array is the ADDITION and never the whole set.
+//
+// MOAT: mcp__loom__answer_blocked is in NEITHER list. It stays
+// callable-but-human-gated — the only escalation write path, force-routed to
+// the interactive card by the route's PreToolUse hook in every permission mode.
+// A port that "tidies" it into `allow` breaks the moat; one that tidies it into
+// `deny` breaks the surface. It is also unspellable in `allow` by type, because
+// core deliberately kept it out of BASE_ALLOWED_TOOLS.
+//
+// The appendix is ESCALATION_SYSTEM_PROMPT plus a per-turn live read, and
+// NEVER an Ultra note — escalationAppendix has no `ultraAnnotated` parameter at
+// all, so that is enforced by the signature rather than remembered. Measured
+// from the route's own `ultraAnnotated && !isEscalationSession`.
+export const buildEscalationProfile: SessionProfileBuilder = (ctx) => ({
   kind: "escalation",
   settingSources: [...REPO_SETTING_SOURCES],
-  toolPolicy: { allow: ["Read", "Grep", "Glob"], deny: [...ALWAYS_DENIED_TOOLS] },
+  toolPolicy: {
+    allow: [...LOOM_ESCALATION_READONLY_TOOLS],
+    deny: [
+      ...ALWAYS_DENIED_TOOLS,
+      ...LOOM_ESCALATION_DISALLOWED_TOOLS,
+      ...ULTRA_AUTO_TOOLS,
+    ],
+  },
   requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
-  systemPromptAppendix: "",
+  systemPromptAppendix: escalationAppendix({
+    loomId: ctx.loomId,
+    cwd: ctx.manifest.root,
+  }),
 });
 
 // Registration at module scope — the side effect the route's bare import

@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   BASE_ALLOWED_TOOLS,
+  LOOM_AUTO_TOOL_NAMES,
   PROVIDER_CAPABILITIES,
   PROVIDERS,
   ProjectManifest,
@@ -50,9 +51,12 @@ import {
   registerSessionProfile,
   registeredSessionKinds,
   resetSessionProfiles,
+  resolveSessionKind,
   resolveSessionProfile,
   SESSION_KINDS,
   sessionKindFromRole,
+  sessionRoleFromWire,
+  ULTRA_AUTO_TOOL_NAMES,
   unmetCapabilities,
   type ProviderCapability,
   type SessionProfileSpec,
@@ -83,6 +87,9 @@ const ctx = (over: Partial<SessionResolutionContext> = {}): SessionResolutionCon
   manifest: manifestWith(),
   project: "demo",
   permissionMode: "default",
+  // The per-turn Ultra chip (story 2.2). Required on the context, so the
+  // default here is the ordinary turn and every test that cares says so.
+  ultraAnnotated: false,
   ...over,
 });
 
@@ -105,14 +112,32 @@ const registerFourKinds = (): void => {
       kind,
       settingSources: ["project", "local"],
       // The escalation narrowing mirrors the real builder: the route's
-      // escalation branch auto-runs [...LOOM_ESCALATION_READONLY_TOOLS], whose
-      // Read/Grep/Glob are three of the six here. (It read `allow: []` until
-      // review caught that claim as false — nothing in this file asserts on the
-      // value, but a mirror that contradicts what it mirrors is how a wrong
-      // value gets re-derived later.)
+      // escalation branch auto-ran [...LOOM_ESCALATION_READONLY_TOOLS], and
+      // since story 2.2 grew BASE_ALLOWED_TOOLS to the full auto-run
+      // vocabulary, ALL SIX of those names are spellable here — the three
+      // built-in read tools plus the three mcp__loom__ read tools. (It read
+      // `allow: ["Read","Grep","Glob"]` before the tuple grew, and `allow: []`
+      // before review caught THAT claim as false. Nothing in this file asserts
+      // on the value; a mirror that contradicts what it mirrors is how a wrong
+      // value gets re-derived later, which is why it is kept honest.)
+      //
+      // Core cannot import apps/web, so this is a MIRROR and not the pin. The
+      // pin — this list against @/lib/loom-mcp's real constant — lives in
+      // apps/web/lib/session-profiles.test.ts, the one file that sees both
+      // worlds.
       toolPolicy:
         kind === "escalation"
-          ? { allow: ["Read", "Grep", "Glob"], deny: ["AskUserQuestion"] }
+          ? {
+              allow: [
+                "Read",
+                "Grep",
+                "Glob",
+                "mcp__loom__read_bundle",
+                "mcp__loom__get_loom",
+                "mcp__loom__list_looms",
+              ],
+              deny: ["AskUserQuestion"],
+            }
           : { deny: ["AskUserQuestion"] },
       requiredCapabilities: D11_REQUIRED[kind]!,
       systemPromptAppendix: "",
@@ -334,11 +359,29 @@ describe("AC3 the runtime intersect — enforced twice, so a cast cannot widen e
   });
 
   test("AC3 `deny` may name ANYTHING — denying more is always safe, so it is not keyed to the base union", () => {
-    registerPolicy({ deny: ["Bash", "AskUserQuestion", "mcp__ultra__ultra"] });
+    // All three are OUTSIDE the base union — deliberately, and the third is the
+    // interesting one: mcp__loom__start_loom is the human-gated commit, and
+    // core keeps it out of BASE_ALLOWED_TOOLS so no profile can ever grant it.
+    // It used to read `mcp__ultra__ultra` here, which story 2.2 moved INTO the
+    // union; leaving it would have turned this row into a second (and much
+    // less legible) copy of the "deny beats allow" test above.
+    registerPolicy({ deny: ["Bash", "AskUserQuestion", "mcp__loom__start_loom"] });
     const resolved = resolveSessionProfile(ctx());
-    expect(resolved.toolPolicy.deny).toEqual(["Bash", "AskUserQuestion", "mcp__ultra__ultra"]);
+    expect(resolved.toolPolicy.deny).toEqual(["Bash", "AskUserQuestion", "mcp__loom__start_loom"]);
     // …and denying a non-base tool does not disturb the base allow set.
     expect(resolved.toolPolicy.allow).toEqual([...BASE_ALLOWED_TOOLS]);
+  });
+
+  test("AC3 denying an MCP AUTO-RUN tool DOES narrow the allow set — it is inside the union now", () => {
+    // The other half of the row above, and the behaviour change story 2.2's
+    // grown tuple introduces: mcp__ultra__ultra is a BASE tool since the
+    // vocabulary grew, so denying it removes it from `allow` exactly the way
+    // denying "Grep" does. Before the growth this was impossible to express.
+    registerPolicy({ deny: ["mcp__ultra__ultra"] });
+    const allow = resolveSessionProfile(ctx()).toolPolicy.allow;
+    expect(allow).not.toContain("mcp__ultra__ultra");
+    expect(allow).toContain("mcp__ultra__ultra_status");
+    expect(allow.length).toBe(BASE_ALLOWED_TOOLS.length - 1);
   });
 
   test("AC3 both resolved policy fields are non-optional, so a consumer never reads undefined as 'everything'", () => {
@@ -380,6 +423,243 @@ describe("AC4 the kind comes from what the WIRE reliably carries — under-detec
   test("AC4 planner and steerer map through the same derivation", () => {
     expect(sessionKindFromRole("planner")).toBe("planner");
     expect(sessionKindFromRole("steerer")).toBe("steerer");
+  });
+});
+
+// ── story 2.2 — the SHARPENED kind, resolved from everything the preamble sees ─
+
+describe("2.2 sessionRoleFromWire — one home for 'which strings are session roles'", () => {
+  test("the three recognized values narrow, and everything else collapses to undefined", () => {
+    expect(sessionRoleFromWire("planner")).toBe("planner");
+    expect(sessionRoleFromWire("steerer")).toBe("steerer");
+    expect(sessionRoleFromWire("escalation")).toBe("escalation");
+    // The fail-safe half: a stray, absent or hostile wire value can never be
+    // mistaken for a real loom turn. This is the route's own eight-line ternary,
+    // moved rather than reinvented — it was the SECOND copy of this fact and
+    // resolveSessionKind below would have been the third.
+    for (const bad of [undefined, null, "", "PLANNER", "project", 1, true, {}, ["steerer"]]) {
+      expect(sessionRoleFromWire(bad)).toBeUndefined();
+    }
+  });
+
+  test("it agrees with sessionKindFromRole on every value it accepts", () => {
+    // Two functions answering adjacent questions about the same three strings.
+    // If they ever disagree, the wire narrowing and the kind narrowing have
+    // drifted and one of them is lying about what a role is.
+    for (const raw of ["planner", "steerer", "escalation"]) {
+      expect(sessionRoleFromWire(raw)).toBe(sessionKindFromRole(raw) as never);
+    }
+    expect(sessionKindFromRole(sessionRoleFromWire("nonsense"))).toBe("project");
+  });
+});
+
+describe("2.2 resolveSessionKind — the route's own precedence, as an ordered fold", () => {
+  test("no role and no link at all resolves to `project`", () => {
+    expect(resolveSessionKind({})).toBe("project");
+  });
+
+  test("wire role alone: planner resolves planner, and a bare steerer/escalation does NOT", () => {
+    expect(resolveSessionKind({ role: "planner" })).toBe("planner");
+    // steerer is decided by the LINK role, never by the wire role on its own —
+    // the route only ever sets loomLink.role = "steerer" alongside a VALIDATED
+    // loom id, so a wire `role: "steerer"` whose loom did not resolve is a
+    // plain session. Under-detection, the safe direction.
+    expect(resolveSessionKind({ role: "steerer" })).toBe("project");
+  });
+
+  test("escalation needs the wire role AND a resolved loomId — without the id it fails SAFE", () => {
+    expect(resolveSessionKind({ role: "escalation", loomId: "loom_1" })).toBe("escalation");
+    // This is T-8: a bad or foreign loomId leaves loomLink.loomId undefined and
+    // the session runs as a plain one, exactly as the route has always done. It
+    // must never become a 400 — a 400 that depends on whether a client resent a
+    // field is a non-deterministic failure. `project` requires NO capability,
+    // so this direction can never produce a spurious one.
+    expect(resolveSessionKind({ role: "escalation" })).toBe("project");
+    expect(resolveSessionKind({ role: "escalation", loomId: "" })).toBe("project");
+  });
+
+  test("the PERSISTED link drives a resumed session whose client omitted `role`", () => {
+    // The whole reason story 2.2 hoisted getChat into the preamble. Before it,
+    // these three resolved as `project` and — once query() is driven from the
+    // profile — that would have silently stripped the guidance that IS the kind
+    // from every resumed loom session.
+    expect(resolveSessionKind({ linkRole: "planner", loomId: "loom_1" })).toBe("planner");
+    expect(resolveSessionKind({ linkRole: "steerer", loomId: "loom_1" })).toBe("steerer");
+    // …and a persisted ESCALATION link with no wire role is NOT escalation: the
+    // route's own comment records that the client "sends it on every turn
+    // including reattached ones", so the wire role is authoritative for that
+    // kind. Measured from the old isEscalationSession, which read the wire
+    // `role` and not loomLink.role.
+    expect(resolveSessionKind({ linkRole: "escalation", loomId: "loom_1" })).toBe("project");
+  });
+
+  test("THE COLLISION CASE — persisted steerer + wire planner resolves STEERER, because order is load-bearing", () => {
+    // A session can satisfy two predicates at once. In the old route this turn
+    // was BOTH isSteererSession and isPlannerSession, and the systemPrompt
+    // ternary chain — escalation, then steerer, then planner — resolved it as
+    // steerer. An unordered Record or a set of independent `if`s would not
+    // reproduce that; this is the one behaviour a careless port changes in
+    // silence, so it gets its own row.
+    expect(resolveSessionKind({ role: "planner", linkRole: "steerer", loomId: "loom_1" })).toBe(
+      "steerer",
+    );
+    // …and escalation outranks steerer, the other rung of the same ladder.
+    expect(
+      resolveSessionKind({ role: "escalation", linkRole: "steerer", loomId: "loom_1" }),
+    ).toBe("escalation");
+  });
+
+  test("`linkRole === \"planner\"` is EXACTLY the old `existingChat?.role === \"planner\"`", () => {
+    // The route builds loomLink.role as
+    //   existingChat?.role ?? (wireLoomId && (role === "steerer" || role === "escalation") ? role : undefined)
+    // whose fallback arm can only ever produce "steerer" or "escalation" —
+    // never "planner". So linkRole is "planner" IFF the persisted role is, and
+    // `role === "planner" || linkRole === "planner"` is the old boolean
+    // verbatim. If that fallback ever grows a third arm this equivalence dies
+    // silently, which is why it is written down as an executable row.
+    const oldBoolean = (wireRole?: string, persistedRole?: string) =>
+      wireRole === "planner" || persistedRole === "planner";
+    for (const wireRole of [undefined, "planner", "steerer", "escalation"] as const) {
+      for (const persisted of [undefined, "planner", "steerer", "escalation"] as const) {
+        // Reproduce the route's own merge, including its steerer/escalation-only
+        // fallback arm.
+        const linkRole =
+          persisted ??
+          (wireRole === "steerer" || wireRole === "escalation" ? wireRole : undefined);
+        const kind = resolveSessionKind({ role: wireRole, linkRole, loomId: "loom_1" });
+        // Whenever the old boolean said planner AND neither higher rung fired,
+        // the fold must say planner too.
+        const higherRungFired = wireRole === "escalation" || linkRole === "steerer";
+        if (oldBoolean(wireRole, persisted) && !higherRungFired) expect(kind).toBe("planner");
+      }
+    }
+  });
+
+  test("resolveSessionKind DISCRIMINATES — the fold does not answer `planner` to everything", () => {
+    // Anti-vacuity for the loop above, which only asserts on rows where its
+    // premise holds: a fold that returned "planner" unconditionally would
+    // satisfy every one of those assertions.
+    const answers = new Set(
+      (
+        [
+          {},
+          { role: "planner" },
+          { linkRole: "steerer", loomId: "l" },
+          { role: "escalation", loomId: "l" },
+        ] as const
+      ).map((i) => resolveSessionKind(i)),
+    );
+    expect([...answers].sort()).toEqual(["escalation", "planner", "project", "steerer"]);
+  });
+
+  test("every kind resolveSessionKind can return HAS a registered builder — no unreachable answer", () => {
+    // The fold's output is a registry key. A member of SessionKind it could
+    // return but nothing declares would throw on the live path, and the throw
+    // would say "no module declared it" for a kind the resolver itself just
+    // invented.
+    registerFourKinds();
+    const reachable = ["project", "planner", "steerer", "escalation"];
+    expect([...registeredSessionKinds()].sort()).toEqual([...reachable].sort());
+  });
+});
+
+describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () => {
+  const registerPolicy = (toolPolicy: SessionProfileSpec["toolPolicy"]) =>
+    registerSessionProfile("project", () => ({
+      kind: "project",
+      settingSources: ["project"],
+      toolPolicy,
+      requiredCapabilities: [],
+    }));
+
+  test("deny ⊇ guardrails.disallowedTools — one field carries the whole deny set", () => {
+    registerPolicy({ deny: ["AskUserQuestion"] });
+    const resolved = resolveSessionProfile(
+      ctx({ manifest: manifestWith({ disallowedTools: ["Bash", "Write"] }) }),
+    );
+    // Manifest entries FIRST, preserving the manifest's own ordering, then the
+    // spec's additions — the unionOrdered contract. The route used to compose
+    // exactly this by hand and a consumer reading toolPolicy.deny alone would
+    // have silently received half of it.
+    expect(resolved.toolPolicy.deny).toEqual(["Bash", "Write", "AskUserQuestion"]);
+    const missing = resolved.guardrails.disallowedTools.filter(
+      (t) => !resolved.toolPolicy.deny.includes(t),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test("the deliberate redundancy holds for EVERY registered kind, spec additions included", () => {
+    resetSessionProfiles();
+    registerFourKinds();
+    for (const kind of SESSION_KINDS) {
+      const resolved = resolveSessionProfile(
+        ctx({ kind, manifest: manifestWith({ disallowedTools: ["Bash", "Write"] }) }),
+      );
+      // Anti-vacuity: an empty guardrail set would satisfy the subset claim.
+      expect(resolved.guardrails.disallowedTools.length).toBeGreaterThan(0);
+      for (const t of resolved.guardrails.disallowedTools) {
+        expect(resolved.toolPolicy.deny).toContain(t);
+      }
+    }
+  });
+
+  test("a spec's addDisallowedTools reaches BOTH guardrails and the SDK deny list", () => {
+    // The fold reads the RESOLVED guardrails, not the raw manifest, so a
+    // profile that adds restriction adds it to both mechanisms rather than to
+    // only the one the reader happens to consult.
+    registerPolicy({ deny: ["AskUserQuestion"] });
+    resetSessionProfiles();
+    registerSessionProfile("project", () => ({
+      kind: "project",
+      settingSources: ["project"],
+      toolPolicy: { deny: ["AskUserQuestion"] },
+      requiredCapabilities: [],
+      addDisallowedTools: ["Edit"],
+    }));
+    const resolved = resolveSessionProfile(
+      ctx({ manifest: manifestWith({ disallowedTools: ["Bash"] }) }),
+    );
+    expect(resolved.guardrails.disallowedTools).toEqual(["Bash", "Edit"]);
+    expect(resolved.toolPolicy.deny).toEqual(["Bash", "Edit", "AskUserQuestion"]);
+  });
+
+  test("THE SHARPEST CASE — a manifest that denies a BASE tool drops it from `allow` too", () => {
+    // Before story 2.2 the route passed "Read" in BOTH allowedTools and
+    // disallowedTools and leaned on the SDK's documented "a disallow beats any
+    // allow" guarantee. Now it is in `deny` only, and the fold's own
+    // deny-beats-allow filter removes it from `allow`. SAME OUTCOME, different
+    // route to it: a tool that is neither allowed nor denied falls through to
+    // canUseTool, where makeGuardrailDecision denies it on that same manifest
+    // entry — which is why the redundancy in the previous test matters.
+    registerPolicy({ deny: ["AskUserQuestion"] });
+    const resolved = resolveSessionProfile(
+      ctx({ manifest: manifestWith({ disallowedTools: ["Read"] }) }),
+    );
+    expect(resolved.toolPolicy.allow).not.toContain("Read");
+    expect(resolved.toolPolicy.deny).toContain("Read");
+    // Anti-vacuity: the rest of the base set is untouched, so this is not
+    // passing because `allow` collapsed.
+    expect(resolved.toolPolicy.allow.length).toBe(BASE_ALLOWED_TOOLS.length - 1);
+    expect(resolved.toolPolicy.allow).toContain("Grep");
+  });
+
+  test("an omitted `allow` still means the whole base set — now twenty names, not six", () => {
+    registerPolicy({ deny: [] });
+    const allow = resolveSessionProfile(ctx()).toolPolicy.allow;
+    expect(allow).toEqual([...BASE_ALLOWED_TOOLS]);
+    // Order is the route's own literal order, which is what makes the
+    // per-kind equivalence table in apps/web a `toEqual` on arrays rather than
+    // an argument about sets.
+    expect(allow.slice(0, 6)).toEqual([
+      "Read",
+      "Grep",
+      "Glob",
+      "WebSearch",
+      "WebFetch",
+      "ToolSearch",
+    ]);
+    expect(allow.slice(6, 6 + LOOM_AUTO_TOOL_NAMES.length)).toEqual([...LOOM_AUTO_TOOL_NAMES]);
+    expect(allow.slice(6 + LOOM_AUTO_TOOL_NAMES.length)).toEqual([...ULTRA_AUTO_TOOL_NAMES]);
   });
 });
 
@@ -564,11 +844,86 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
     // passing proof. The diagnostic must name the offending TOOL and the TYPE.
     expect(r.output).toContain("Bash");
     expect(r.output).toContain("ToolPolicy");
-    // …and the whole base union, so a change to BASE_ALLOWED_TOOLS surfaces
-    // here rather than leaving a stale proof green.
-    expect(r.output).toContain(
-      `'"Read" | "Grep" | "Glob" | "WebSearch" | "WebFetch" | "ToolSearch"'`,
+    // …and enough of the base union that this cannot pass over a DIFFERENT
+    // union. It used to assert the whole rendered union
+    // (`'"Read" | "Grep" | … | "ToolSearch"'`) so a change to
+    // BASE_ALLOWED_TOOLS surfaced here rather than leaving a stale proof green.
+    // Story 2.2 grew the tuple to twenty names and TypeScript now ELIDES the
+    // middle — MEASURED, this is what the compiler actually prints:
+    //
+    //   Type 'readonly ["Bash"]' is not assignable to type 'readonly
+    //   ("mcp__loom__draft_bundle_file" | "mcp__loom__propose_contract" | …
+    //   | "mcp__loom__steer_loom" | ... 13 more ... | "ToolSearch")[]'.
+    //
+    // So the "the union is EXACTLY these N names" claim moved to a RUNTIME
+    // set-equality assertion in the sibling test below — the property is still
+    // pinned somewhere executable, which is the whole point — and what stays
+    // here are the parts of the diagnostic that still DISCRIMINATE: one member
+    // from each end of the rendered union, and the elision marker itself, which
+    // is what proves the union is long rather than short.
+    expect(r.output).toContain(`"mcp__loom__draft_bundle_file"`);
+    expect(r.output).toContain(`"ToolSearch"`);
+    expect(r.output).toContain("more ...");
+  });
+
+  test("AC3 BASE_ALLOWED_TOOLS is EXACTLY the twenty auto-run names, in the route's own order", () => {
+    // The runtime half of the pin the compile diagnostic can no longer carry
+    // (see the elision note above). Re-derived from the two tuples core
+    // declares rather than restated as one flat literal, so growing either one
+    // moves this expectation with it — and the six built-in names are spelled
+    // out because they are the part that has NO other source in this package.
+    expect([...BASE_ALLOWED_TOOLS]).toEqual([
+      "Read",
+      "Grep",
+      "Glob",
+      "WebSearch",
+      "WebFetch",
+      "ToolSearch",
+      ...LOOM_AUTO_TOOL_NAMES,
+      ...ULTRA_AUTO_TOOL_NAMES,
+    ]);
+    // Anti-vacuity: a tuple that emptied out would satisfy a `toEqual` against
+    // an equally-empty derivation.
+    expect(BASE_ALLOWED_TOOLS.length).toBe(20);
+    expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
+    expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
+    // No duplicates: `unionOrdered` would silently absorb one, so a copy-paste
+    // slip in either tuple would shorten the resolved allow set rather than
+    // fail.
+    expect(new Set(BASE_ALLOWED_TOOLS).size).toBe(BASE_ALLOWED_TOOLS.length);
+  });
+
+  test("MOAT: neither human-gated tool is spellable in any profile's `allow` — they are not in the base union", () => {
+    // mcp__loom__start_loom (the commit that dispatches a real loom) and
+    // mcp__loom__answer_blocked (the escalation write that resumes a parked
+    // loop) are the two tools docs/loom-model.md §M.6 says a human must approve
+    // every single time. Keeping them OUT of BASE_ALLOWED_TOOLS makes them
+    // unspellable in `allow` — enforced by the compiler, not by review — which
+    // is strictly stronger than the literal tool array the route used to build.
+    //
+    // Asserted against the values, and cross-checked against the web-side
+    // constants in apps/web/lib/session-profiles.test.ts, which is the only
+    // suite that can import both.
+    const humanGated = ["mcp__loom__start_loom", "mcp__loom__answer_blocked"];
+    const leaked = humanGated.filter((t) =>
+      (BASE_ALLOWED_TOOLS as readonly string[]).includes(t),
     );
+    if (leaked.length > 0) {
+      throw new Error(
+        `AD-1/AD-10: ${JSON.stringify(leaked)} entered BASE_ALLOWED_TOOLS. THE RULE: the two ` +
+          `human-gated loom tools are never in any allowedTools and always force-routed to the ` +
+          `interactive card by the route's PreToolUse hook, in EVERY permission mode. ` +
+          `CONSEQUENCE: a profile could now GRANT the commit action, so the SDK would pre-approve ` +
+          `it before canUseTool ever ran and the human's Approve click — which IS the provenance ` +
+          `stamp startLoomFromBundle/answerBlocked record as \`by\` — would be skipped. NEXT ` +
+          `STEP: remove it from the tuple. It is deliberately absent from LOOM_AUTO_TOOLS for ` +
+          `the same reason; do not "complete" the vocabulary.`,
+      );
+    }
+    expect(leaked).toEqual([]);
+    // Anti-vacuity: the neighbouring auto-run loom tools ARE present, so this
+    // is not passing because the loom names are absent wholesale.
+    expect([...BASE_ALLOWED_TOOLS]).toContain("mcp__loom__read_bundle");
   });
 
   test("AC3 the SAME fixture with a base tool DOES compile, with empty output — the discriminator", () => {

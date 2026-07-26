@@ -1,7 +1,7 @@
 ---
 story_id: "2-2"
 title: "Retrofit the existing session kinds onto profiles"
-status: "ready-for-dev"
+status: "ready-for-review"
 epic: "Epic 2: Session Profiles"
 track: "B — Session profiles (the chat route + the profile resolver)"
 caps: ["CAP-7 (spec-runtime-foundations)"]
@@ -348,64 +348,64 @@ the story.
 
 ### Leg A — the port can express what the route needs (AC1, AC2, AC3)
 
-- [ ] **A1. Read, in full, before writing anything**: `packages/core/src/session-profile.ts`,
+- [x] **A1. Read, in full, before writing anything**: `packages/core/src/session-profile.ts`,
       `apps/web/lib/session-profiles.ts`, `packages/core/test/session-profile.test.ts`,
       `apps/web/lib/session-profiles.test.ts`, `packages/core/test/invariants.test.ts`'s `INV-1g` and `INV-6`
       blocks, and `apps/web/app/api/chat/route.ts` end to end. §5.3 says what to look for in each.
-- [ ] **A2. Measure the BEFORE table.** Re-derive §5.5-D13's per-kind allow/deny/appendix from `route.ts` as
+- [x] **A2. Measure the BEFORE table.** Re-derive §5.5-D13's per-kind allow/deny/appendix from `route.ts` as
       it stands **right now**. Record the measurement in the Debug Log with the symbol you read it from. If it
       differs from §5.5-D13, **your measurement wins** and you say so in the Completion Notes.
-- [ ] **A3. Grow `BASE_ALLOWED_TOOLS`** (§5.5-D4). Add core-owned `as const` tuples for the loom and ultra
+- [x] **A3. Grow `BASE_ALLOWED_TOOLS`** (§5.5-D4). Add core-owned `as const` tuples for the loom and ultra
       auto-run tool names and fold them into the base tuple. Keep `as const` and **no** type annotation — the
       literal types are the whole mechanism behind 2.1's AC3. `mcp__loom__start_loom` and
       `mcp__loom__answer_blocked` **must stay outside the union**; that is a moat property, not an omission,
       and it gets its own assertion.
-- [ ] **A4. Add `resolveSessionKind` and `sessionRoleFromWire`** to the port (§5.5-D2, which gives both
+- [x] **A4. Add `resolveSessionKind` and `sessionRoleFromWire`** to the port (§5.5-D2, which gives both
       signatures literally). `resolveSessionKind` takes `{ role, linkRole, loomId }` — the **merged**
       `loomLink.role`, not the raw persisted role — and reproduces the route's precedence
       (escalation > steerer > planner > project). Keep `sessionKindFromRole`; it is the wire narrowing and is
       still correct for what it does.
-- [ ] **A5. Extend `SessionResolutionContext`** (§5.5-D3) with `ultraAnnotated: boolean`, and **rewrite the
+- [x] **A5. Extend `SessionResolutionContext`** (§5.5-D3) with `ultraAnnotated: boolean`, and **rewrite the
       `loomId` field's comment**: after this story it is a *validated* loom id (the route resolves and
       validates it pre-stream), which is the exact opposite of what the comment says today. A stale comment on
       a security-adjacent field is a defect.
-- [ ] **A6. Union the manifest's `disallowedTools` into the resolved `toolPolicy.deny`** (§5.5-D5), so a
+- [x] **A6. Union the manifest's `disallowedTools` into the resolved `toolPolicy.deny`** (§5.5-D5), so a
       consumer reads one field and cannot drop half the deny set. Update the fold's header comment to say why
       the redundancy with `guardrails.disallowedTools` is deliberate (AD-1's "enforced twice", one level down).
-- [ ] **A7. Barrel** — export every new symbol from `packages/core/src/index.ts`, matching the existing AD
+- [x] **A7. Barrel** — export every new symbol from `packages/core/src/index.ts`, matching the existing AD
       banner style.
-- [ ] **A8. Update `packages/core/test/session-profile.test.ts`.** Non-negotiable items: the `tsc` union pin
+- [x] **A8. Update `packages/core/test/session-profile.test.ts`.** Non-negotiable items: the `tsc` union pin
       (§5.6 T-1), `registerFourKinds`'s escalation mirror, new coverage for `resolveSessionKind`'s precedence,
       for the `deny ⊇ guardrails.disallowedTools` fold, and for the moat property in A3. **Do not rename any
       of the five test titles `INV-6` cites** (§5.6 T-2).
 
 ### Leg B — the builders carry the real decisions (AC1, AC2, AC3)
 
-- [ ] **B1. Create `apps/web/lib/session-prompts.ts`** (§5.5-D6): move `PLANNER_SYSTEM_PROMPT`,
+- [x] **B1. Create `apps/web/lib/session-prompts.ts`** (§5.5-D6): move `PLANNER_SYSTEM_PROMPT`,
       `STEERER_SYSTEM_PROMPT`, `ESCALATION_SYSTEM_PROMPT`, the Ultra annotation note text, `tail`, `safeRead`,
       `buildSteererContext` and `buildEscalationContext` out of `route.ts` **byte-identically**. Moved text is
       moved, not rewritten: `git diff` must show the prompt bodies unchanged. Add a WHY header (§5.4-A) saying
       what the module is and why it is not in `route.ts` any more.
-- [ ] **B2. Make the live-context assembly fail-safe** (§5.5-D7). It now runs **pre-stream**, where a throw is
+- [x] **B2. Make the live-context assembly fail-safe** (§5.5-D7). It now runs **pre-stream**, where a throw is
       a 500 instead of an SSE `error`. `getLoom` returns `null` rather than throwing and both readers are
       already guarded, but the composition must be belt-and-suspenders: a failure degrades to the static
       prompt, never to a 500. Test it with an injected throwing reader or an id that resolves to nothing.
-- [ ] **B3. Fill in the four builders** in `apps/web/lib/session-profiles.ts` from the A2 measurement:
+- [x] **B3. Fill in the four builders** in `apps/web/lib/session-profiles.ts` from the A2 measurement:
       `toolPolicy.allow` (omit for the three non-escalation kinds — an absent `allow` means the whole base
       set, which is the measured truth), `toolPolicy.deny`, and `systemPromptAppendix`. Every value carries a
       comment naming the symbol it was measured from.
-- [ ] **B4. Update `apps/web/lib/session-profiles.test.ts`.** The `D11` table's four `""` appendices and the
+- [x] **B4. Update `apps/web/lib/session-profiles.test.ts`.** The `D11` table's four `""` appendices and the
       three-name escalation `allow` were written as **deliberate tripwires** and they fire now
       (`deferred-work.md`: *"will fail loudly the moment they change — which is the intended tripwire"*).
       Replace them with re-derived expectations, keeping the existing re-derivation idiom. Add the anti-drift
       test pinning core's new tool-name tuples against `LOOM_AUTO_TOOLS` / `ULTRA_AUTO_TOOLS` from the web
       modules (§5.5-D4) — this is what makes the duplication safe without editing either web module.
-- [ ] **B5. Create `apps/web/lib/session-prompts.test.ts`** — the appendix composition per kind, the Ultra
+- [x] **B5. Create `apps/web/lib/session-prompts.test.ts`** — the appendix composition per kind, the Ultra
       note's presence/absence, and B2's fail-safe.
 
 ### Leg C — the route reads the profile and stops branching (AC1–AC5)
 
-- [ ] **C1. Hoist the kind decision pre-stream** (§5.5-D1): move `resumeTarget`, `existingChat`, `wireLoomId`
+- [x] **C1. Hoist the kind decision pre-stream** (§5.5-D1): move `resumeTarget`, `existingChat`, `wireLoomId`
       and `loomLink` out of the `new ReadableStream` closure into the preamble, **above** the
       `resolveSessionProfile` call. Verified safe at `cbbac0a`: every consumer of all four is lexically later
       than the resolve site, and `loomLink` must stay the **same mutable object** the loom MCP server narrows
@@ -413,9 +413,9 @@ the story.
       else**: hoist these four for the kind decision and for nothing else. Do not let `existingChat` start
       feeding model defaults, permission mode or account resolution while you are in the neighbourhood — each
       would be a new behaviour riding along inside a refactor.
-- [ ] **C2. Feed the sharpened kind + `ultraAnnotated` into `resolveSessionProfile`**, and delete
+- [x] **C2. Feed the sharpened kind + `ultraAnnotated` into `resolveSessionProfile`**, and delete
       `isPlannerSession`, `isSteererSession`, `isEscalationSession`.
-- [ ] **C3. Drive `query()` from the profile**: `cwd`, `settingSources`, `allowedTools`, `disallowedTools`,
+- [x] **C3. Drive `query()` from the profile**: `cwd`, `settingSources`, `allowedTools`, `disallowedTools`,
       `systemPrompt`. §5.5-D11 has the target shape. **Do not touch** `permissionMode`, `canUseTool`,
       `hooks`, `strictMcpConfig`, `mcpServers`, `maxTurns`, `includePartialMessages`, `forwardSubagentText`,
       `abortController`, `model`, `effort`, `env`, `resume`.
@@ -426,54 +426,54 @@ the story.
       file, mid-way through proving AC1. **Keep** `LOOM_START_TOOL`, `LOOM_ANSWER_BLOCKED_TOOL` and the
       `LoomSessionLink` type: the first two are the moat constants `INV-1g` pins by import, the third types
       `loomLink`.
-- [ ] **C4. Drive both `makeGuardrailDecision` call sites from the profile** — `sessionProfile` and
+- [x] **C4. Drive both `makeGuardrailDecision` call sites from the profile** — `sessionProfile` and
       `sessionProfile.cwd` in place of `manifest` and `workspace`. Then delete `const workspace`.
-- [ ] **C5. Drive the Codex branch's `cwd` from the profile**, and add the third `makeGuardrailDecision` call
+- [x] **C5. Drive the Codex branch's `cwd` from the profile**, and add the third `makeGuardrailDecision` call
       site inside `onCodexApproval` (AC6, §5.5-D9).
-- [ ] **C6. Verify `INV-1g` and `INV-6c` still pass without editing them.** Both scan this file by literal
+- [x] **C6. Verify `INV-1g` and `INV-6c` still pass without editing them.** Both scan this file by literal
       substring. `INV-1g` needs `LOOM_START_TOOL`/`LOOM_ANSWER_BLOCKED_TOOL` imported from `@/lib/loom-mcp`,
       the `input.tool_name === <CONST>` comparison form, `hooks: { PreToolUse: …`, and `preToolUseGuardrail`
       — none of which you are changing, but a "tidy" of the hook block would break it. `INV-6c` needs
       `resolveSessionProfile(` < `new ReadableStream(`, `unmetCapabilities(` < `registerChatRun(`, and the bare
       `import "@/lib/session-profiles";` present in `.code`.
-- [ ] **C7. Correct the false comment** above `ultraMcpServer` (§5.5-D17): it claims the ultra server is
+- [x] **C7. Correct the false comment** above `ultraMcpServer` (§5.5-D17): it claims the ultra server is
       *"excluded from mcpServers"* for an escalation session. It is not — `mcpServers` is unconditional; only
       its **tools** are denied. A comment that misstates a moat-adjacent fact is worse than no comment.
-- [ ] **C8. Confirm AC5** — `git diff` the `done` payload's `costUsd` expression and paste it into the Debug
+- [x] **C8. Confirm AC5** — `git diff` the `done` payload's `costUsd` expression and paste it into the Debug
       Log unchanged.
 
 ### Leg D — the proofs (AC1, AC3, AC6)
 
 _Task ids here are `V*` (verification), not `D*` — `D1`–`D17` are the design decisions in §5.5._
 
-- [ ] **V1. Add `INV-6e`** to `packages/core/test/invariants.test.ts` (§5.5-D15) — AC1's mechanical half, with
+- [x] **V1. Add `INV-6e`** to `packages/core/test/invariants.test.ts` (§5.5-D15) — AC1's mechanical half, with
       an anti-vacuity floor and a discriminator fixture, in the house failure-message register (the diagnosis
       is built into the asserted value; no `expect` message argument — measured: no test in this repo passes
       one).
-- [ ] **V2. Write the per-kind equivalence table** (§6.2-A), re-deriving every expectation from source
+- [x] **V2. Write the per-kind equivalence table** (§6.2-A), re-deriving every expectation from source
       constants with an anti-vacuity floor on each derived set.
-- [ ] **V3. Probe every new assertion** (hard rule 7). Numbered `P1…Pn` in the Debug Log: what you broke, the
+- [x] **V3. Probe every new assertion** (hard rule 7). Numbered `P1…Pn` in the Debug Log: what you broke, the
       real failure text, the restore, the empty `git diff --stat`.
-- [ ] **V4. Run the dev-server proof** on both providers plus the three Claude-only kinds. Debug Log per §2.
+- [x] **V4. Run the dev-server proof** on both providers plus the three Claude-only kinds. Debug Log per §2.
 
 ### Leg E — the gate and the record
 
-- [ ] **E1. The manual pre-commit trio**, from `project-context.md` (there is **no CI**): `bun test` (repo
+- [x] **E1. The manual pre-commit trio**, from `project-context.md` (there is **no CI**): `bun test` (repo
       root, unfiltered — the unfiltered form is green; only `-t` filtering is poisoned), `bunx tsc --noEmit` in
       **both** `packages/core` and `apps/web`, `bun run lint` in `apps/web`. Record before/after counts for
       each; lint is expected to be unchanged (it carries a pre-existing non-zero problem count — measure it,
       do not quote it).
-- [ ] **E2. Amend `deferred-work.md`** with §5.5-D9's decision: what AC6 closed, and **all three** residual
+- [x] **E2. Amend `deferred-work.md`** with §5.5-D9's decision: what AC6 closed, and **all three** residual
       holes named separately — the card not firing (`approvalPolicy: "never"` / sandbox-permitted actions), the
       sandbox's lack of per-path granularity, and the file-change shape mismatch that survives even
       `approvalPolicy: "untrusted"`. Name **story 5.5** as owner. A residual written as one hole when it is
       three is the "partial fix that reads as complete" this story exists to refuse. Amend the 2-1
       `systemPromptAppendix` entry too — it is closed by Leg B and should say so rather than reading as open.
-- [ ] **E3. Completion Notes** — the disclosed behaviour change (AC3 layer 3), the A2 measurement and any
+- [x] **E3. Completion Notes** — the disclosed behaviour change (AC3 layer 3), the A2 measurement and any
       divergence from §5.5-D13, the decisions you made that this file left to you, and any cross-track finding.
-- [ ] **E4. `git diff --stat -- bunfig.toml`** prints nothing (hard rule 5). `KNOWN_VIOLATIONS.length` is
+- [x] **E4. `git diff --stat -- bunfig.toml`** prints nothing (hard rule 5). `KNOWN_VIOLATIONS.length` is
       still `1` (hard rule 6).
-- [ ] **E5. Commit** with a conventional prefix and scope — this diff spans both workspaces, so
+- [x] **E5. Commit** with a conventional prefix and scope — this diff spans both workspaces, so
       `feat(web)`/`refactor(web)` with a body naming the core half is right; explain **why**, per
       `project-context.md`. **Never commit
       `_bmad-output/implementation-artifacts/orchestrator-run-log.md`** — it belongs to the orchestrator, not
@@ -1543,21 +1543,217 @@ command-only restriction is real and not an accident). Drive `makeGuardrailDecis
 
 ### Agent Model Used
 
-_(to be filled by the dev agent)_
+Claude Opus 5 (`claude-opus-5`), via the `bmad-dev-story` skill, run unattended end to end.
 
 ### Debug Log
 
-_(to be filled by the dev agent — see §6.3 for what it must contain)_
+_(§6.3's nine items, in its order.)_
+
+#### 1. The A2 measurement — the BEFORE table, re-derived rather than inherited
+
+Measured against `route.ts` as it stood at the start of this story. `git diff --stat cbbac0a HEAD -- apps/web packages/core` printed **nothing**, so the working tree's `route.ts` was byte-identical to the baseline `cbbac0a` the story pinned. Every value below was read from the named symbol, not from §5.5-D13.
+
+Source sets, each counted from its own declaration:
+
+| Symbol | File | Count |
+| --- | --- | --- |
+| the six built-in names, inline in `allowedTools` | `route.ts` | 6 (`Read, Grep, Glob, WebSearch, WebFetch, ToolSearch`) |
+| `LOOM_AUTO_TOOLS` | `apps/web/lib/loom-mcp.ts` | 11 |
+| `ULTRA_AUTO_TOOLS` | `apps/web/lib/ultra-mcp.ts` | 3 |
+| `LOOM_ESCALATION_READONLY_TOOLS` | `apps/web/lib/loom-mcp.ts` | 6 |
+| `LOOM_ESCALATION_DISALLOWED_TOOLS` | `apps/web/lib/loom-mcp.ts` | 9 |
+| `manifest.guardrails.disallowedTools` (`MG`) | `packages/core/src/schemas.ts` | project-supplied |
+
+BEFORE — what `route.ts` passed, read from the `allowedTools` ternary, the `disallowedTools` array and the `systemPrompt` chain:
+
+| kind | `allowedTools` | `disallowedTools` | `systemPrompt.append` |
+| --- | --- | --- | --- |
+| project | `BASE6 ∪ LOOM_AUTO ∪ ULTRA_AUTO` (20) | `MG ∪ {AskUserQuestion}` | `ultraNote` or **no `append` key at all** |
+| planner | same 20 | same | `PLANNER + ultraNote` |
+| steerer | same 20 | same | `STEERER + buildSteererContext(loomId) + ultraNote` |
+| escalation | `ESC_READ` (6) | `MG ∪ {AskUserQuestion} ∪ ESC_DENY ∪ ULTRA_AUTO` | `ESCALATION + buildEscalationContext(loomId, workspace)` — **no** `ultraNote` |
+
+Unconditional for all four: `cwd = manifest.root` (via `const workspace`), `settingSources = ["project","local"]`, `mcpServers = {loom, ultra, ...project}`, `permissionMode` from the wire.
+
+**Divergence from §5.5-D13: none.** The table matched on every cell. Four adjacent facts §5.5-D13 asked to be verified rather than assumed, each checked:
+
+- Every **non-escalation** kind gets the identical 20, including a plain project session with no loom link — the loom/ultra auto-tools were never gated on being a loom session. **Confirmed**: the ternary's only predicate is `isEscalationSession`.
+- `escalation` gets no Ultra note and no ultra tools, but the ultra MCP **server is still constructed and passed**. **Confirmed** — and this is what made §5.5-D17's comment false; see item 9.
+- `ESC_READ ∩ ESC_DENY = ∅`. **Confirmed**, and now asserted (`ESC_READ ∩ ESC_DENY = ∅, and answer_blocked is in NEITHER — verified, not assumed`).
+- `mcp__loom__answer_blocked` is in **neither** set. **Confirmed**, same test.
+
+#### 2. The removal ledger — one row per removed conditional, and the field that now decides it
+
+| Removed from `route.ts` | What it decided | What decides it now |
+| --- | --- | --- |
+| `const isPlannerSession = role === "planner" \|\| existingChat?.role === "planner"` | which system prompt | `resolveSessionKind({role, linkRole, loomId})` → `sessionProfile.systemPromptAppendix` |
+| `const isSteererSession = loomLink.role === "steerer"` | system prompt + live-context block | same, via `buildSteererProfile` → `steererAppendix` |
+| `const isEscalationSession = role === "escalation" && !!loomLink.loomId` | system prompt, `allowedTools`, `disallowedTools` extras, the Ultra note | same, via `buildEscalationProfile`; tools via `sessionProfile.toolPolicy.{allow,deny}` |
+| the 4-arm `systemPrompt:` ternary (escalation → steerer → planner → ultraNote → bare preset) | the appended text | `sessionProfile.systemPromptAppendix ? {…append} : {…}` — a branch on **emptiness**, the shape `ultraAnnotationNote ? … : …` already had |
+| the 2-arm `allowedTools:` ternary over 4 constants | the tool grant | `allowedTools: [...sessionProfile.toolPolicy.allow]` |
+| `disallowedTools: [...manifest.guardrails.disallowedTools, "AskUserQuestion", ...(isEscalationSession ? […] : [])]` | the deny set | `disallowedTools: [...sessionProfile.toolPolicy.deny]` (the fold unions `MG` in — §5.5-D5) |
+| `const ultraAnnotationNote = ultraAnnotated && !isEscalationSession ? … : ""` | the per-turn Ultra note | `ultraNote(ctx.ultraAnnotated)` inside each builder; `escalationAppendix` has **no** `ultraAnnotated` parameter, so its exclusion is a signature rather than a branch |
+| `const workspace = manifest.root` | `cwd` ×3 + guardrail root ×2 | `sessionProfile.cwd` (AC2, by construction) |
+| `settingSources: ["project", "local"]` | which settings load | `[...sessionProfile.settingSources]` |
+| the 8-line `rawRole` ternary | the wire role | `sessionRoleFromWire(rawRole)` in `@telar/core` |
+
+Five consumers of `workspace`, all measured before deletion and all migrated: the two `makeGuardrailDecision` calls, `runCodexTurn`'s `cwd`, `query()`'s `cwd`, and `buildEscalationContext(loomId, workspace)` (which became `escalationAppendix({loomId, cwd})`).
+
+**Net effect on the file**: `route.ts` 1985 → 1935 lines, with ~150 lines of prompt/reader text relocated to `session-prompts.ts` and ~50 lines of kind logic hoisted within it. `git diff --stat` reports `632 +++---` on that file.
+
+**Mechanical proof**: `INV-6e` (see item 3, probes P1–P5). **Live proof**: item 5.
+
+#### 3. Probes `P1…P20` — every new assertion broken, the real failure captured, the restore verified
+
+**One deviation from V3's wording, stated because it is deliberate.** §5.4/V3 says "restore with `git checkout --`, verify with an empty `git diff --stat`". This story's work was **uncommitted** at probe time, so `git checkout --` would have restored each file to its pre-story `HEAD` state and destroyed the implementation. The restore was therefore a byte-exact copy from a snapshot taken immediately before each break, verified with `cmp` — **stricter** than an empty diff, because it compares bytes rather than git's view of them. Every one of the twenty reported `RESTORED byte-exact: yes`. Harness: `probe.sh` in the session scratchpad; filtered runs always carry a path argument (hard rule 8).
+
+| # | What was broken | Real failure |
+| --- | --- | --- |
+| P1 | reintroduced `isEscalationSession` into the `allowedTools` line | `INV-6e` fails: *"the chat route still names ["isEscalationSession"]"* |
+| P2 | reverted `settingSources` to the literal `["project","local"]` | `INV-6e` fails on the anti-vacuity floor: *"no longer reads ["sessionProfile.settingSources"] off the resolved profile"* |
+| P3 | reintroduced `const workspace = manifest.root` | `INV-6e` fails: *"re-derives ["const workspace"] instead of reading the profile"* |
+| P4 | fed `manifest` to `preToolUseGuardrail`'s `makeGuardrailDecision` | `INV-6e` fails: *"1 makeGuardrailDecision call site(s) are not driven from sessionProfile"*, printing the offending window |
+| P5 | made `kindFlagsIn` return `[]` | `INV-6e`'s discriminator fails — the scanner cannot go quietly green |
+| P6 | swapped the steerer/planner rungs in `resolveSessionKind` | `THE COLLISION CASE — persisted steerer + wire planner resolves STEERER` fails |
+| P7 | reverted the deny fold to `unionOrdered(spec.toolPolicy.deny)` | **4** fold tests fail, incl. `THE SHARPEST CASE — a manifest that denies a BASE tool` |
+| P8 | added `mcp__loom__start_loom` to `LOOM_AUTO_TOOL_NAMES` | **5** fail across core, incl. the MOAT guard printing its full AD-1/AD-10 diagnosis |
+| P9 | reverted escalation `allow` to `["Read","Grep","Glob"]` | `escalation's resolved allow IS [...LOOM_ESCALATION_READONLY_TOOLS] — all six, not three` fails |
+| P10 | dropped `...ULTRA_AUTO_TOOLS` from escalation `deny` | `escalation's resolved deny IS manifest ∪ {AskUserQuestion} ∪ ESC_DENY ∪ ULTRA_AUTO` fails |
+| P11 | gave escalation the Ultra note | `escalation gets the Ultra note exactly when the flag AND the kind say so` fails |
+| P12 | dropped `mcp__loom__watch_loom` from core's tuple | **5** fail: the core↔web anti-drift pin **and** all three non-escalation equivalence rows |
+| P13 | removed the `try/catch` from `safeLiveContext` | **5** fail, each with the injected `the loom store is unreachable` escaping — a pre-stream 500 |
+| P14 | wrapped the Ultra note inside the same `try` as the live read | `the PURE half survives the IMPURE half's failure` fails |
+| P15 | made `steererAppendix` ignore `loomId` | the **sandboxed child** test fails (148 ms — it really spawned) |
+| P16 | fed an empty guardrail set to the AC6 decision helper | **3** AC6 rows fail |
+| P17 | emptied `ESCALATION_ALLOW` in the equivalence table | the §6.2-A anti-vacuity floor fires with its full paragraph |
+| P18 | widened `ToolPolicy.allow` to `readonly string[]` | **5** compile pins fail, incl. `the compile pin DISCRIMINATES` |
+| P19 | hard-coded `ultraAnnotated: false` in `buildPlannerProfile` | `planner gets the Ultra note exactly when the flag AND the kind say so` fails |
+| P20 | made `sessionRoleFromWire` pass its argument through | `the three recognized values narrow, and everything else collapses to undefined` fails |
+
+#### 4. The `tsc` diagnostic re-measured for T-1, verbatim
+
+The old pin asserted the **whole rendered union**. With twenty names TypeScript elides the middle. Measured output, verbatim:
+
+```
+error TS2345: Argument of type '{ readonly deny: readonly []; readonly allow: readonly ["Bash"]; }'
+is not assignable to parameter of type 'ToolPolicy'.
+  Types of property 'allow' are incompatible.
+    Type 'readonly ["Bash"]' is not assignable to type 'readonly ("mcp__loom__draft_bundle_file" |
+    "mcp__loom__propose_contract" | "mcp__loom__read_bundle" | "mcp__loom__list_looms" |
+    "mcp__loom__get_loom" | "mcp__loom__steer_loom" | ... 13 more ... | "ToolSearch")[]'.
+```
+
+Per T-1, the assertions that still **discriminate** stay in the compile test — the offending tool (`Bash`), the type (`ToolPolicy`), one union member from each end (`"mcp__loom__draft_bundle_file"`, `"ToolSearch"`) and the elision marker `more ...` itself, which is what proves the union is long rather than short. The "the union is EXACTLY these N names" claim moved to a **runtime** set-equality assertion in the same file (`AC3 BASE_ALLOWED_TOOLS is EXACTLY the twenty auto-run names, in the route's own order`), re-derived from `LOOM_AUTO_TOOL_NAMES`/`ULTRA_AUTO_TOOL_NAMES` with a duplicate check. **No cited test title was renamed** (T-2); `INV-6 the compile pins this invariant CITES still exist` passes.
+
+#### 5. V4 — the dev-server proof (**PARTIAL, and the boundary is stated exactly**)
+
+**`TELAR_HOME` confirmed before starting**, per §2: `apps/web/package.json`'s dev script is
+`TELAR_HOME="${TELAR_HOME:-$HOME/.telar-dev}" next dev` — it defaults to `~/.telar-dev` and honours an explicit value. It was pointed at a **throwaway scratchpad root**, which is strictly safer than the default and leaves zero footprint. Verified afterwards: `~/.telar-dev` was **never created**, and `~/.telar`'s mtime (26 Jul 01:31) predates this session entirely.
+
+Server: Next.js 16.3.0-canary.80 (Turbopack), ready in 269 ms on :3117, `[instrumentation] recovered 0 stuck loom(s) on boot`. **This alone proves what `bun test`/`tsc`/`lint` cannot: the rewritten route module loads and compiles under the real bundler.**
+
+**What ran, all of it through the real handler:**
+
+| Request | Result |
+| --- | --- |
+| unknown project | `400 {"error":"Unknown project \"__no_such_project__\"."}` — **AC4, live and byte-identical** |
+| missing `project` | `400 {"error":"Unknown project \"\"."}` |
+| unknown project **with** `role`+`loomId`+`sessionId`+`ultra` | same `400` — the new hoisted preamble does not disturb the first pre-stream check |
+| `role:"planner"`, Codex account | `400 A "planner" session needs system-prompt-append…` |
+| `role:"steerer"` + resolving `loomId`, Codex | `400 A "steerer" session needs system-prompt-append…` |
+| `role:"escalation"` + resolving `loomId`, Codex | `400 A "escalation" session needs mcp-servers, pre-tool-use-hooks, tool-allow-deny-lists…` |
+| **resumed** steerer chat, client omits `role`, Codex | `400 A "steerer" session needs system-prompt-append…` — **§5.5-D12's disclosed change, live** |
+| **resumed** planner chat, client omits `role`, Codex | `400 A "planner" session needs system-prompt-append…` — same |
+| **CONTROL**: resumed *plain* chat, Codex | `200`, stream opens — project requires nothing, untouched (§5.5-D10) |
+| `role:"escalation"` + **unresolvable** `loomId` | `200`, stream opens — **T-8, live**: fails SAFE to a plain session, never a 400 |
+| `role:"escalation"` + **foreign** loom (another project) | `200`, stream opens — T-8, the ownership half |
+
+The three `200`s terminated with `codex app-server exited (code=127)` — no `codex` binary on PATH, so **no provider was contacted, no token was spent, and no account was touched**. That is the point: every assertion above lands *before* anything billable.
+
+**What did NOT run, and why.** §2's full proof asks for a real turn on **each** provider that calls a tool, plus one turn per remaining kind on Claude. That requires a registered account and spends the operator's money against a live provider. This story ran unattended, overnight, with no human present to supervise a real-money agent turn — so it was **deliberately not run**, and no part of it is claimed. **Outstanding for the operator, and it is the one proof this record does not carry:**
+
+1. `cd apps/web && bun run dev` (defaults `TELAR_HOME` to `~/.telar-dev` — confirm, never `~/.telar`).
+2. A project session on a **Claude** account and one on a **Codex** account; send a turn that calls a tool. Record: the account, the tool, the permission card (or its absence) and why, the `done` payload's `costUsd` **noting it is the session total**, and the absence of a stream error.
+3. On Claude only, one turn per remaining kind — a planner session, a loom's Chat tab (steerer), and a `blocked` loom's "Discuss with the orchestrator" (escalation) — each showing the kind-specific guidance still present in the model's behaviour.
+
+The compensating stack for what is untested live is §5.5-D14's, with its limits: the per-kind equivalence table (the profile reproduces what the route used to build, re-derived from the same constants), `INV-6e` (the route consumes those fields and names none of the three flags), `INV-6c`/`INV-1g` unchanged, and the live pre-stream evidence above. "The profile is right" + "the route reads the profile" ≈ "the route is right" — an approximation, stated as one.
+
+#### 6. AC5 — the `done` payload's `costUsd`, pasted unchanged
+
+```ts
+              costUsd: capturedSession
+                ? sessionSpendUsd(capturedSession)
+                : lastResult.totalCostUsd,
+```
+
+`git diff` over `route.ts` shows **no hunk touching this expression**. It remains the session's ledger total (AD-18: a projection over the one ledger, never an independent counter), not the turn's delta. The trap shape was watched for: the dangerous edit here is a *revert* to `lastResult.totalCostUsd`, and a large refactor of this file is exactly the context in which someone "tidies" an expression back to its simpler-looking predecessor.
+
+#### 7. The gate (§6.1's manual pre-commit trio; there is no CI)
+
+| Command | Before | After |
+| --- | --- | --- |
+| `bun test` (repo root, unfiltered) | **1896 pass / 0 fail**, 10368 `expect()`, 120 files | **1962 pass / 0 fail**, 10571 `expect()`, **121** files |
+| `bunx tsc --noEmit` in `packages/core` | exit **0** | exit **0** |
+| `bunx tsc --noEmit` in `apps/web` | exit **0** | exit **0** |
+| `bun run lint` in `apps/web` | exit 1, **77** problems / 74 locations | exit 1, **77** problems / 74 locations |
+
+Lint is **byte-for-byte unchanged** — the 77 figure was re-measured at baseline by stashing this story's work and re-running, not quoted. All 77 are pre-existing (`no-explicit-any`, `no-unused-vars` on the deliberately-underscored `_mode`/`_isolation` destructures, and unrelated component findings); the two new files and the two edited libs contribute **zero**. `invariants.test.ts` runs in 542 ms against its own stated 2000 ms ceiling.
+
+#### 8. The two fences
+
+- `git diff --stat -- bunfig.toml` prints **nothing** (hard rule 5 — the fifth consecutive story to fence it; it remains story 1.1's unresolved `[Review][Decision]` and the human's call).
+- `KNOWN_VIOLATIONS.length` is still **1** (`scripts/backfill-tool-detail.ts`); `INV-3f` passes and `INV-3a`'s inventory still reports **18 root-composition sites**, unchanged — no new file composes a `TELAR_HOME` path (hard rule 6, T-14).
+
+#### 9. The disclosed behaviour change and the disclosed deviations
+
+- **§5.5-D12 — the one thing that is not identical.** A resumed planner/steerer/escalation chat on a **Codex** account whose client omits `role` now takes the pre-SSE 400 instead of a 200 that silently dropped the appended system prompt that *is* the kind. Asserted in unit tests, proved live (item 5), named in the commit message. It is the completion of story 2.1's AD-11 gate, not new policy: 2.1 already 400s those kinds when the client *does* send `role`. It fails **loudly in place of failing silently**.
+- **§5.5-D8 — `mcpServers` stays inert (`{}`)**, disclosed rather than quietly kept. Measured: the route's set is unconditional, so AC1 never required moving it; building it is a side effect over `getSessionId: () => capturedSession`, which the SDK mutates mid-stream. Forward owner: **epic 5**.
+- **§5.5-D9 — the Codex residual**, three distinct holes, recorded in `deferred-work.md` and owned by **story 5.5**.
+- **§5.5-D17 — the false comment above `ultraMcpServer`, corrected.** It claimed the ultra server is *"not offered to an escalation session (excluded from mcpServers/allowedTools)"*. Measured: `mcpServers` is unconditional, so the server **is** registered; only its tools are denied. Behaviour unchanged; this is a measurement, not a bug fix.
 
 ### Completion Notes
 
-_(to be filled by the dev agent)_
+**What shipped.** The chat route no longer contains a session-kind conditional. `isPlannerSession`, `isSteererSession` and `isEscalationSession` are gone, and every decision they made is a field on the profile the route already resolved. AD-9's promise — *"a new surface adds a profile; it does not add an `if`"* — is now true of the handler that exists, which is what epics 4, 5 and 6 were waiting on.
+
+**Every removal was paid for by a field, per the dispatch note.** The removal ledger (Debug Log item 2) is one row per conditional with the field that now carries its decision. Nothing was removed on the argument that it looked redundant.
+
+**Three decisions this file left to me.**
+
+1. **`ultraAnnotated` is REQUIRED on `SessionResolutionContext`, not optional.** Optional would default an omission to "no Ultra note", which is the safe direction for grants but silently drops the user's explicit per-turn ask — the failure AD-11 exists to end. `permissionMode` is already required, so this is consistent. The cost is that both test `ctx()` helpers had to declare it; that is the point.
+2. **`INV-6e` does not assert the literal `sessionProfile.guardrails`,** which §5.5-D15 lists. It cannot: §5.5-D9 and §5.3 item 8 both prescribe passing the **whole profile** to `makeGuardrailDecision` (it is structural), so that literal never appears in the route. A measurement beats the design note, per §5.5's own rule. What `INV-6e` asserts instead is **stronger**: that `makeGuardrailDecision` has ≥3 call sites and that **every one** is driven from `sessionProfile`, plus that `manifest.guardrails` and `const workspace` no longer appear at all. Probes P3 and P4 show both halves firing.
+3. **The dev-server proof was run only as far as it could go without spending the operator's money** — see Debug Log item 5, which states exactly what ran, what did not, and the three steps left for the operator. Nothing is claimed that was not executed.
+
+**Two design choices worth a reviewer's attention.**
+
+- **A `steerer`/`escalation` builder is no longer pure.** It performs the per-turn live read while composing its appendix, and that read moved from inside the stream (where a throw is an SSE `error`) to pre-stream (where a throw is a bare 500). The core fold stays pure — it takes an already-read context and calls a surface-owned function. `safeLiveContext` wraps the live read **and nothing else**, so a failure degrades to the static prompt and never to `""`; the Ultra note is pure and deliberately outside that `try` so it survives. Probes P13/P14 hold both halves. The rejected alternative was a pre-computed `loomContext: string` on the context — computing it requires knowing the kind, so the route would branch to compute it: AC1 defeated by indirection.
+- **`BASE_ALLOWED_TOOLS` grew from 6 to 20, which strengthens the moat rather than weakening it.** `mcp__loom__start_loom` and `mcp__loom__answer_blocked` are deliberately outside the tuple, so they are now **unspellable in any profile's `allow`, enforced by the compiler** — stronger than the literal array the route used to build. That property has its own test in both workspaces (P8, P12). The rejected alternative — parameterising the base set — would widen `BaseAllowedTool` back to `string`, make over-granting compile, and turn `INV-6b` into a true statement about a dead mechanism.
+
+**One behaviour genuinely changes; it is disclosed and asserted.** §5.5-D12, above and in the commit message. Project sessions are untouched on both providers.
+
+**Two prose comments are knowingly stale and are NOT mine to fix** (§5.5-D6, the record-do-not-cross protocol): `apps/web/lib/escalation-kickoff.ts` and `apps/web/lib/loom-mcp.ts` both name `ESCALATION_SYSTEM_PROMPT` / `buildEscalationContext` / `buildSteererContext` in comments that read as if those symbols live in `route.ts`. **Their new home is `apps/web/lib/session-prompts.ts`.** Neither file is in this story's write set and neither comment is load-bearing — no import, no type, no test depends on it. The next story touching either file can fix it in one line. (`route.ts`'s own two references were corrected, since that file *is* in the write set.)
+
+**Cross-track findings: none new.** The `mock.module("@telar/core")` leak in `apps/web/lib/loom-mcp.*.test.ts` was fenced, not fixed (hard rule 8, story 1.3's item); every filtered run in this story carried a path argument. `bunfig.toml` was fenced for the fifth consecutive story.
+
+**One hazard found and worked around, worth carrying forward.** `getLoom` calls `ensureMigrated()`, which **renames directories** under the resolved state root — so calling the live-context readers from a test with no `TELAR_HOME` override would write into the operator's real `~/.telar`. This is the same class of failure that put a synthetic `$1` billing line there during story 1.1. No test in this story calls a real reader in the shared process: the composers are driven with injected readers, and the one assertion that needs the real arm spawns a **child** with `HOME` and `TELAR_HOME` pointed at throwaway directories (§5.4-D), importing by absolute path so the temp directory needs no `node_modules`. Probe P15 confirms that test genuinely discriminates.
+
+**Suite health.** 1962 pass / 0 fail across 121 files, up from 1896 / 120. **No pre-existing failures were encountered**, so none are being reported as inherited.
 
 ---
 
 ## 10. File List
 
-_(to be filled by the dev agent)_
+| Path | New / Edit | What changed |
+| --- | --- | --- |
+| `packages/core/src/session-profile.ts` | EDIT | `LOOM_AUTO_TOOL_NAMES` + `ULTRA_AUTO_TOOL_NAMES`; `BASE_ALLOWED_TOOLS` 6 → 20; `sessionRoleFromWire`; `resolveSessionKind`; `SessionResolutionContext.ultraAnnotated`; `loomId`'s inverted contract; the `deny ⊇ guardrails.disallowedTools` fold; header SCOPE rewritten |
+| `packages/core/src/index.ts` | EDIT | Barrel banner amended (the star export already carries every new symbol) |
+| `packages/core/test/session-profile.test.ts` | EDIT | T-1 re-pin + the runtime union assertion; the moat property; `resolveSessionKind` precedence incl. the collision case; `sessionRoleFromWire`; the deny fold; `registerFourKinds`'s escalation mirror; `ctx()` gains `ultraAnnotated`. 37 → 55 tests |
+| `packages/core/test/invariants.test.ts` | EDIT | `INV-6e` only. `INV-1g`, `INV-3*`, `KNOWN_VIOLATIONS`, `INV-6a–d` and the `PROFILE_FIELDS`/`SPEC_FIELDS`/`GRANT_SHAPED_FIELDS` arrays untouched. 47 → 48 tests |
+| `apps/web/lib/session-prompts.ts` | **NEW** | The three prompts + the Ultra note + `tail`/`safeRead`/`buildSteererContext`/`buildEscalationContext`, moved byte-identically; `ultraNote`, `safeLiveContext`, and the four per-kind appendix composers |
+| `apps/web/lib/session-prompts.test.ts` | **NEW** | 18 tests: prompt integrity, the moved helpers, composition per kind, and the pre-stream fail-safe with its discriminator |
+| `apps/web/lib/session-profiles.ts` | EDIT | The four builders carry real `toolPolicy` and `systemPromptAppendix` values; header records what closed and what stays inert with its owner |
+| `apps/web/lib/session-profiles.test.ts` | EDIT | The fired tripwires re-derived; the core↔web anti-drift pin; the per-kind equivalence table with its anti-vacuity floor; the AC6 Codex-seam block; the sandboxed-child live-read test. 13 → 46 tests |
+| `apps/web/app/api/chat/route.ts` | **EDIT, LARGE** | Leg C in full: the pre-stream hoist, the three flags deleted, `query()` driven from the profile, three profile-driven `makeGuardrailDecision` sites (one new, AC6), Codex `cwd`, dead imports removed, §5.5-D17's comment corrected. 1985 → 1935 lines |
+| `_bmad-output/implementation-artifacts/deferred-work.md` | EDIT | §5.5-D9's decision with all three residual holes named separately and story 5.5 as owner; the 2-1 `systemPromptAppendix` entry marked closed, with `mcpServers` carried forward to epic 5 |
 
 ---
 
@@ -1566,3 +1762,4 @@ _(to be filled by the dev agent)_
 | Date | Change | By |
 | --- | --- | --- |
 | 2026-07-26 | Story created. Ultimate context engine analysis completed — comprehensive developer guide created. Baseline `cbbac0a`. | create-story |
+| 2026-07-26 | Implemented end to end. Every session-kind conditional removed from the chat route; the four kinds now resolve through the story 2.1 resolver. `INV-6e` added. AC6 closes the Codex guardrail gap at the approval seam; the three-part residual is owned by story 5.5. One disclosed behaviour change (§5.5-D12). Gate: 1962 pass / 0 fail across 121 files, `tsc` clean in both workspaces, lint unchanged at 77. Status → ready-for-review. | dev-story (Opus 5) |
