@@ -49,15 +49,15 @@ story_location: "{project-root}/_bmad-output/implementation-artifacts"
 
 development_status:
   # Epic 1: Runtime Foundations
-  epic-1: in-progress
+  epic-1: done
   1-1-state-root-isolation-and-the-attributed-spend-ledger: done
   1-2-the-event-bus-admission-control-and-the-lease-primitive: done
-  1-3-executable-invariants-and-the-track-a-prove-run: review
+  1-3-executable-invariants-and-the-track-a-prove-run: done
   epic-1-retrospective: optional
 
   # Epic 2: Session Profiles
-  epic-2: backlog
-  2-1-the-sessionprofile-resolver: backlog
+  epic-2: in-progress
+  2-1-the-sessionprofile-resolver: ready-for-dev
   2-2-retrofit-the-existing-session-kinds-onto-profiles: backlog
   epic-2-retrospective: optional
 
