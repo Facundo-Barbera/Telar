@@ -68,6 +68,7 @@ import {
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
 import { createUltraMcpServer } from "@/lib/ultra-mcp";
+import { createWorkspaceMcpServer } from "@/lib/workspace-mcp";
 import {
   createPending,
   resolvePending,
@@ -1305,6 +1306,21 @@ export async function POST(req: Request) {
           getSessionId: () => capturedSession,
           getMessageId: () => runId,
         });
+        // The "workspace" in-process MCP server (story 5.1) — the ONLY path any
+        // session has to the user's item store, which lives under TELAR_HOME and
+        // is deliberately outside every session's cwd. `project` and `account`
+        // are this chat's own server-resolved values and are NEVER read from
+        // tool input: a `project` argument on list_items would let any project
+        // session enumerate and file into every other project's items, which is
+        // the precise leak the tool-surface design exists to prevent. Bound as
+        // `wsMcpServer` rather than anything starting with `workspace` because
+        // INV-6e greps this file for the substring `const workspace` — a guard
+        // left behind by story 2.2's removal of `const workspace = manifest.root`.
+        const wsMcpServer = createWorkspaceMcpServer({
+          project,
+          account: profile,
+          getSessionId: () => capturedSession,
+        });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -1388,9 +1404,12 @@ export async function POST(req: Request) {
             // ...LOOM_AUTO_TOOLS plus ...ULTRA_AUTO_TOOLS on one side and
             // [...LOOM_ESCALATION_READONLY_TOOLS] on the other. The profile
             // resolves the same names in the same order (core's grown
-            // BASE_ALLOWED_TOOLS is the route's old array, element for
-            // element), and any composition the route KEEPS is a place a future
-            // profile cannot narrow. mcp__loom__start_loom and
+            // BASE_ALLOWED_TOOLS OPENS with the route's old array, element for
+            // element — story 5.1 appended the four mcp__workspace__ names, so
+            // it is now a strict superset rather than equal to it, and
+            // session-profiles.test.ts pins the prefix and the suffix
+            // separately), and any composition the route KEEPS is a place a
+            // future profile cannot narrow. mcp__loom__start_loom and
             // mcp__loom__answer_blocked are absent from the base union
             // entirely, so no profile can spell them here — a strictly stronger
             // moat than the old literal array, enforced by the compiler.
@@ -1432,6 +1451,12 @@ export async function POST(req: Request) {
             mcpServers: {
               loom: loomMcpServer,
               ultra: ultraMcpServer,
+              workspace: wsMcpServer,
+              // THE SPREAD STAYS LAST, and that is object-literal later-key-wins
+              // rather than tidiness: a project telar.yaml server named
+              // `workspace` would otherwise SHADOW ours. (The same is already
+              // true of one named `loom` — pre-existing, recorded in
+              // deferred-work.md, and deliberately not fixed here.)
               ...(project ? resolveProjectMcpServers(project) : {}),
             },
             // Telar OWNS the MCP surface: use ONLY the servers above (loom +

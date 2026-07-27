@@ -39,9 +39,12 @@
 //     from the static prompt, the per-turn live-context read, and the Ultra
 //     note. This is where the route's four-arm `systemPrompt` ternary went.
 //   - `toolPolicy` — CLOSED. core's BASE_ALLOWED_TOOLS grew from six names to
-//     the full twenty-name auto-run vocabulary, so `allow` can name every tool
-//     the route grants and the route composes NOTHING. `deny` now carries the
-//     manifest's own guardrail deny set too, folded in by the resolver.
+//     the whole auto-run vocabulary, so `allow` can name every tool the route
+//     grants and the route composes NOTHING. `deny` now carries the manifest's
+//     own guardrail deny set too, folded in by the resolver. (It was twenty
+//     names when 2.2 closed this; story 5.1 appended the workspace store's four,
+//     so it is twenty-four today. The invariant is "the WHOLE vocabulary", not a
+//     number — read the tuple, never this sentence, for the count.)
 //   - `mcpServers` — STILL OMITTED, and this is a disclosed, measured
 //     deviation rather than an oversight. The route's set is
 //     { loom, ultra, ...resolveProjectMcpServers(project) } and it is
@@ -63,6 +66,7 @@ import {
   LOOM_ESCALATION_READONLY_TOOLS,
 } from "@/lib/loom-mcp";
 import { ULTRA_AUTO_TOOLS } from "@/lib/ultra-mcp";
+import { WORKSPACE_AUTO_TOOLS } from "@/lib/workspace-mcp";
 import {
   escalationAppendix,
   plannerAppendix,
@@ -93,13 +97,18 @@ const ALWAYS_DENIED_TOOLS = ["AskUserQuestion"] as const;
 // `toolPolicy.allow` is OMITTED here and on planner/steerer, and the omission
 // is the measured truth rather than a shortcut: an absent `allow` resolves to
 // the WHOLE base set, and the route's own non-escalation `allowedTools` array
-// was exactly core's twenty-name BASE_ALLOWED_TOOLS in the same order. Writing
+// was exactly BASE_ALLOWED_TOOLS's FIRST TWENTY names, in the same order — the
+// twenty core held when story 2.2 migrated the live path onto this port. Story
+// 5.1 appended the workspace store's four, so the base set is now a strict
+// SUPERSET of that historical array rather than equal to it, and
+// session-profiles.test.ts pins both halves separately. Writing
 // `allow: [...BASE_ALLOWED_TOOLS]` would say the same thing while adding a
 // second place for the two to drift apart. Only escalation narrows.
 //
-// The loom and ultra auto-tools are NOT gated on being a loom session — a plain
-// project session with no loom link gets the identical twenty. Measured from
-// the route's own array, which branched only on isEscalationSession.
+// The loom, ultra and workspace auto-tools are NOT gated on being a loom
+// session — a plain project session with no loom link gets the identical set.
+// Measured from the route's own array, which branched only on
+// isEscalationSession.
 export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   kind: "project",
   settingSources: [...REPO_SETTING_SOURCES],
@@ -253,6 +262,17 @@ export const buildEscalationProfile: SessionProfileBuilder = (ctx) => ({
       ...ALWAYS_DENIED_TOOLS,
       ...LOOM_ESCALATION_DISALLOWED_TOOLS,
       ...ULTRA_AUTO_TOOLS,
+      // STORY 5.1 — a correctness fix, not a convenience, and it is the same
+      // argument ...ULTRA_AUTO_TOOLS above is here for. The route's `mcpServers`
+      // literal is UNCONDITIONAL (its own comment records story 2.2 correcting a
+      // claim to the contrary), so the workspace server IS registered for an
+      // escalation session. This builder sets `allow` EXPLICITLY, so growing
+      // core's BASE_ALLOWED_TOOLS does not reach it — which would leave the four
+      // workspace names in NEITHER list, falling through to canUseTool: an
+      // interactive permission card offering a WRITE path on what this profile's
+      // own comment calls a narrow read-only discuss wall. Denying them makes
+      // them truly uncallable (the SDK guarantees a disallow beats any allow).
+      ...WORKSPACE_AUTO_TOOLS,
     ],
   },
   requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],

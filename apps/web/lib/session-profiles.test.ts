@@ -49,6 +49,7 @@ import {
   resetSessionProfiles,
   resolveSessionProfile,
   ULTRA_AUTO_TOOL_NAMES,
+  WORKSPACE_AUTO_TOOL_NAMES,
   unmetCapabilities,
   type SessionKind,
   type SessionProfileBuilder,
@@ -62,6 +63,7 @@ import {
   LOOM_START_TOOL,
 } from "./loom-mcp";
 import { ULTRA_AUTO_TOOLS } from "./ultra-mcp";
+import { WORKSPACE_AUTO_TOOLS } from "./workspace-mcp";
 import { ULTRA_AUTHORING_REFERENCE } from "./ultra-authoring";
 import { makeGuardrailDecision } from "./permissions";
 import {
@@ -181,6 +183,30 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
   });
 
+  test("WORKSPACE_AUTO_TOOL_NAMES is exactly WORKSPACE_AUTO_TOOLS — story 5.1's third copy of the same contract", () => {
+    // The workspace vocabulary is declared twice for the identical reason: core
+    // needs the literal types so a profile's `allow` can name the tools, and
+    // @/lib/workspace-mcp is where the server actually registers them. This
+    // assertion is the whole of what makes that duplication safe.
+    //
+    // UNSORTED, unlike its two siblings above, and that is a deliberate
+    // strengthening rather than an inconsistency: invariants.test.ts's
+    // MCP_INVENTORY compares each server's tool list as an ORDERED list, and
+    // workspace-mcp.test.ts pins the registration order against
+    // WORKSPACE_AUTO_TOOLS. So core's tuple, the server's constant, the
+    // registration order and the pinned inventory all have to agree on ONE
+    // sequence — and comparing sorted here would be the one link in that chain
+    // that let a reorder through.
+    expect([...WORKSPACE_AUTO_TOOL_NAMES]).toEqual([...WORKSPACE_AUTO_TOOLS]);
+    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);
+    // Fully qualified on BOTH sides — the bare form would produce tools that
+    // never auto-run and that the resolver's runtime filter drops silently.
+    for (const n of WORKSPACE_AUTO_TOOL_NAMES) expect(n.startsWith("mcp__workspace__")).toBe(true);
+    // …and every one of them really is grantable, which is the point of the
+    // tuple existing in core at all.
+    for (const n of WORKSPACE_AUTO_TOOLS) expect([...BASE_ALLOWED_TOOLS]).toContain(n);
+  });
+
   test("MOAT: neither human-gated loom tool is in the auto-run vocabulary or the base union", () => {
     // Asserted against the CONSTANTS, never against literals. Both tools are
     // the human's click (docs/loom-model.md §M.6): start_loom dispatches a real
@@ -197,11 +223,21 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     expect([...BASE_ALLOWED_TOOLS]).toContain("mcp__loom__read_bundle");
   });
 
-  test("BASE_ALLOWED_TOOLS is exactly the route's old non-escalation allowedTools array, in order", () => {
+  test("BASE_ALLOWED_TOOLS still OPENS with the route's old non-escalation array, element for element", () => {
     // The BEFORE table's project/planner/steerer row: six built-ins, then
     // ...LOOM_AUTO_TOOLS, then ...ULTRA_AUTO_TOOLS. Re-derived from the WEB
     // constants (the ones route.ts used to spread) so this compares the two
     // worlds rather than restating either.
+    //
+    // THIS WAS A `toEqual` ON THE WHOLE TUPLE UNTIL STORY 5.1, and it was right:
+    // core's twenty WERE the route's old array exactly, which is what made
+    // "the route composes NOTHING" checkable. 5.1 appended the workspace store's
+    // four, so the relationship is now PREFIX rather than EQUALITY — and the
+    // assertion is split in two rather than weakened to a `toContain`, because
+    // an ordered exact-set claim is the only kind that catches a silent grant.
+    // Half one: the historical array is still there, in order, untouched.
+    // Half two (below): the suffix is EXACTLY the four workspace names and
+    // nothing else, so a fifth name cannot arrive between them.
     const routesOldArray = [
       "Read",
       "Grep",
@@ -212,8 +248,15 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
       ...LOOM_AUTO_TOOLS,
       ...ULTRA_AUTO_TOOLS,
     ];
-    expect([...BASE_ALLOWED_TOOLS]).toEqual(routesOldArray);
     expect(routesOldArray.length).toBe(20); // anti-vacuity + the measured count
+    expect([...BASE_ALLOWED_TOOLS].slice(0, routesOldArray.length)).toEqual(routesOldArray);
+    expect([...BASE_ALLOWED_TOOLS].slice(routesOldArray.length)).toEqual([...WORKSPACE_AUTO_TOOLS]);
+    // …and the two halves account for the WHOLE tuple, so nothing hides in a gap.
+    expect(BASE_ALLOWED_TOOLS.length).toBe(routesOldArray.length + WORKSPACE_AUTO_TOOLS.length);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(24);
+    // No duplicates: unionOrdered would silently absorb one, shortening the
+    // resolved allow set rather than failing.
+    expect(new Set(BASE_ALLOWED_TOOLS).size).toBe(BASE_ALLOWED_TOOLS.length);
   });
 });
 
@@ -403,6 +446,10 @@ describe("per-kind equivalence — the profile reproduces the route's own BEFORE
   //                          ? [...LOOM_ESCALATION_DISALLOWED_TOOLS, ...ULTRA_AUTO_TOOLS]
   //                          : [])]
   const MANIFEST_DENY = manifest.guardrails.disallowedTools;
+  // STORY 5.1 appended ...WORKSPACE_AUTO_TOOLS. The three per-kind equivalence
+  // tests below are FED BY THIS CONST, so growing it here is what moves them —
+  // which is exactly why every expectation in this block derives from the
+  // constant the route itself spread rather than restating a literal.
   const NON_ESCALATION_ALLOW = [
     "Read",
     "Grep",
@@ -412,14 +459,21 @@ describe("per-kind equivalence — the profile reproduces the route's own BEFORE
     "ToolSearch",
     ...LOOM_AUTO_TOOLS,
     ...ULTRA_AUTO_TOOLS,
+    ...WORKSPACE_AUTO_TOOLS,
   ];
   const ESCALATION_ALLOW = [...LOOM_ESCALATION_READONLY_TOOLS];
   const NON_ESCALATION_DENY = [...MANIFEST_DENY, "AskUserQuestion"];
+  // STORY 5.1 appended ...WORKSPACE_AUTO_TOOLS, mirroring buildEscalationProfile.
+  // The escalation builder sets `allow` EXPLICITLY, so growing core's base set
+  // does not reach it: without this deny the four workspace names would sit in
+  // NEITHER list and fall through to canUseTool — an interactive card offering a
+  // WRITE path on a read-only discuss wall.
   const ESCALATION_DENY = [
     ...MANIFEST_DENY,
     "AskUserQuestion",
     ...LOOM_ESCALATION_DISALLOWED_TOOLS,
     ...ULTRA_AUTO_TOOLS,
+    ...WORKSPACE_AUTO_TOOLS,
   ];
 
   test("the derived expectation sets are non-empty — the anti-vacuity floor for this whole block", () => {

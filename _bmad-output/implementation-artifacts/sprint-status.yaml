@@ -67,14 +67,14 @@ development_status:
   epic-3-retrospective: optional
 
   # Epic 4: Ultra Finish
-  epic-4: in-progress
+  epic-4: done
   4-1-completion-wake-and-session-cost-rollup: done
-  4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: review
+  4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: done
   epic-4-retrospective: optional
 
   # Epic 5: Organization Workspace
-  epic-5: backlog
-  5-1-the-item-store-and-the-workspace-mcp-server: backlog
+  epic-5: in-progress
+  5-1-the-item-store-and-the-workspace-mcp-server: review
   5-2-the-queue-packet-detail-and-the-shared-chip-grammar: backlog
   5-3-the-master-session-profile-chat-surface-and-desk-rail: backlog
   5-4-experts-brain-dump-the-briefing-and-bed-mode: backlog

@@ -226,15 +226,45 @@ export const ULTRA_AUTO_TOOL_NAMES = [
   "mcp__ultra__ultra_stop",
 ] as const;
 
-// The whole AUTO-RUN vocabulary a profile may narrow, measured from what the
-// chat route builds for a non-escalation Claude session: the six built-in
-// read/web tools, then the loom read/draft/lifecycle tools, then ultra's three.
-// TWENTY names, and the ORDER is the route's own literal order — `unionOrdered`
-// preserves it and the fold filters without reordering, so a resolved
-// non-escalation `allow` comes out element-for-element identical to the array
-// the route used to build inline. Order is irrelevant to the SDK; it matters
-// because it makes the equivalence assertion a `toEqual` on arrays rather than
-// an argument about sets.
+// The workspace MCP server's four auto-run tool names — same duplication
+// contract, same anti-drift pin, canonical copy in
+// apps/web/lib/workspace-mcp.ts's WORKSPACE_AUTO_TOOLS.
+//
+// ALL FOUR AUTO-RUN, and that is a product requirement rather than a
+// convenience: ui-contract.md §5 says "The tool pills are real in v1", so a
+// permission card on every "what are the tasks here?" would be a failure of the
+// surface this story exists to build. It is also safe in the way LOOM_AUTO_TOOL_
+// NAMES' exclusions are safe — there is no human-gated commit here to leave out.
+// Filing a task is PREPARE, never COMMIT (NFR-OW-2): no workspace tool accepts
+// anything, deletes anything, promotes a sub-task or changes lane structure, and
+// story 5.1's AC8 asserts each of those absences rather than asserting them.
+//
+// FULLY QUALIFIED (`mcp__workspace__*`), like the two tuples above and UNLIKE
+// invariants.test.ts's MCP_INVENTORY, which pins the BARE names. The asymmetry
+// is real and getting it wrong is silent: BASE_ALLOWED_TOOLS is matched against
+// what the SDK reports, which is the qualified form, so bare names here would
+// produce tools that never auto-run AND that resolveSessionProfile's runtime
+// filter drops without a word.
+export const WORKSPACE_AUTO_TOOL_NAMES = [
+  "mcp__workspace__list_items",
+  "mcp__workspace__list_lanes",
+  "mcp__workspace__create_item",
+  "mcp__workspace__update_item",
+] as const;
+
+// The whole AUTO-RUN vocabulary a profile may narrow: the six built-in read/web
+// tools, then the loom read/draft/lifecycle tools, then ultra's three, then the
+// workspace store's four.
+//
+// TWENTY-FOUR names. It was TWENTY until story 5.1, when the workspace tools
+// joined — and the twenty were exactly the route's own literal order, which is
+// where this tuple's ordering came from. `unionOrdered` preserves that order and
+// the fold filters without reordering, so a resolved non-escalation `allow` comes
+// out element-for-element identical to the array it is derived from. Order is
+// irrelevant to the SDK; it matters because it makes the equivalence assertion a
+// `toEqual` on arrays rather than an argument about sets. The workspace names go
+// LAST, so the first twenty still reproduce the route's old array exactly and the
+// growth is visible as a suffix rather than as a reshuffle.
 //
 // It was SIX until story 2.2. Six meant a spec could name only six of twenty
 // and the route had to keep composing the other fourteen — and any composition
@@ -264,6 +294,7 @@ export const BASE_ALLOWED_TOOLS = [
   "ToolSearch",
   ...LOOM_AUTO_TOOL_NAMES,
   ...ULTRA_AUTO_TOOL_NAMES,
+  ...WORKSPACE_AUTO_TOOL_NAMES,
 ] as const;
 
 export type BaseAllowedTool = (typeof BASE_ALLOWED_TOOLS)[number];

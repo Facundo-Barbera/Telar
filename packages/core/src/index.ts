@@ -102,3 +102,15 @@ export * from "./sessions";
 export * from "./setup/setup-agent";
 // Ultra — deterministic script harness (docs/plans/ultra-harness.md). Additive.
 export * from "./ultra";
+// AD-5/AD-6/NFR-X-5 — the workspace item store: the one owning module for
+// TELAR_HOME/workspace, and the zod schemas for everything it persists. The
+// schemas live in workspace/schema.ts rather than in schemas.ts for the same
+// reason verification-strategy.ts's do: a subtree with its own owning module
+// keeps its shapes beside that module, so the owner and the shape move together.
+// The package exports only ".", so this barrel is the port's only route to
+// apps/web — which is what lets apps/web/lib/workspace-mcp.ts declare no entity
+// schema of its own (NFR-X-5) and reach the store by import rather than by path
+// (AC7: a session cannot reach this subtree with file tools, and does not need
+// to). Its lane type is `WorkspaceLane`, not `Lane`, because run-server.ts
+// already star-exports a `Lane` through this same barrel.
+export * from "./workspace";

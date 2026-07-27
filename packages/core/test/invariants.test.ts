@@ -957,6 +957,7 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
 // apps/web module and without depending on a private field.
 const LOOM_MCP = "apps/web/lib/loom-mcp.ts";
 const ULTRA_MCP = "apps/web/lib/ultra-mcp.ts";
+const WORKSPACE_MCP = "apps/web/lib/workspace-mcp.ts";
 const ENGINE = "packages/core/src/engine.ts";
 const LOOMS = "packages/core/src/looms.ts";
 const TICK = "packages/core/src/tick.ts";
@@ -987,6 +988,20 @@ const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
     ],
   },
   ultra: { file: ULTRA_MCP, tools: ["ultra", "ultra_status", "ultra_stop"] },
+  // Story 5.1 — the workspace item store's tool surface, the ONLY path a session
+  // has to TELAR_HOME/workspace. THE ORDER IS THE REGISTRATION ORDER and this
+  // list is compared as an ORDERED one, which is deliberate here: the same four
+  // names in the same sequence appear in core's WORKSPACE_AUTO_TOOL_NAMES, in
+  // @/lib/workspace-mcp's WORKSPACE_AUTO_TOOLS, and in the tools[] array itself,
+  // and session-profiles.test.ts pins the first two against each other unsorted
+  // for exactly that reason.
+  //
+  // NONE OF THE FOUR IS AN ACCEPT PATH, and INV-1c below judges that
+  // semantically rather than taking this comment's word for it. The near misses
+  // are close enough to be worth naming: promote_subtask (NFR-OW-15 forbids an
+  // agent promotion path AND `promote` is an ACCEPT_STEM), close_lane,
+  // land_packet, merge_lane, mark_completed and list_deliverables all fail.
+  workspace: { file: WORKSPACE_MCP, tools: ["list_items", "list_lanes", "create_item", "update_item"] },
   // engine.ts's agent() builds this per call. IT IS AN MCP SURFACE TOO, and
   // AC1 says "no MCP surface" — so it is in the inventory, not exempt from it.
   out: { file: ENGINE, tools: ["emit_result"] },
@@ -1021,12 +1036,23 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
   }
   const allToolNames = [...collected.values()].flatMap((s) => s.tools);
 
-  test("INV-1a the set of MCP surfaces in the tree is exactly the three we know about", () => {
-    // A FOURTH surface must fail here rather than be silently unscanned — that
+  test("INV-1a the set of MCP surfaces in the tree is exactly the four we know about", () => {
+    // A FIFTH surface must fail here rather than be silently unscanned — that
     // is the difference between "no accept tool on the servers I remembered"
     // and "no accept tool anywhere".
-    expect(surfaces.map((f) => f.rel).sort()).toEqual([LOOM_MCP, ENGINE, ULTRA_MCP].sort());
-    expect([...collected.keys()].sort()).toEqual(["loom", "out", "ultra"]);
+    //
+    // IT WAS THREE UNTIL STORY 5.1, which added the workspace store's server.
+    // MCP_SURFACES is `NON_TEST.filter(callsMcpFactory)`, so that file entered
+    // this set the moment it called createSdkMcpServer — the edit below is the
+    // deliberate acknowledgement the mechanism is asking for, not a chore.
+    //
+    // NOTE THE ASYMMETRY BETWEEN THE TWO ASSERTIONS, because it is a trap: the
+    // first sorts BOTH sides, the second compares against a BARE SORTED LITERAL.
+    // "workspace" happens to sort last, so appending would have been correct by
+    // luck; it is spliced into sorted position deliberately, because the next
+    // server somebody adds may be called "build".
+    expect(surfaces.map((f) => f.rel).sort()).toEqual([LOOM_MCP, ENGINE, ULTRA_MCP, WORKSPACE_MCP].sort());
+    expect([...collected.keys()].sort()).toEqual(["loom", "out", "ultra", "workspace"]);
   });
 
   test("INV-1b the collected tool inventory EQUALS the pinned one, per server", () => {
@@ -1752,6 +1778,13 @@ const AD5_SITES = [
   "packages/core/src/usage-ledger.ts :: usage.ndjson",
   "packages/core/src/vcs.ts :: worktrees",
   "packages/core/src/watches.ts :: watches.json",
+  // Story 5.1 — the 19th site, in sorted position ("wa" < "wo"). The workspace
+  // store composes `path.join(telarDir(), "workspace")` as a BARE QUOTED
+  // LITERAL, in exactly one function in exactly one file, and its comment says
+  // that the literal is a deliberate concession to THIS scanner: a const second
+  // argument produces zero sites and would leave INV-3a, INV-3b and INV-3d all
+  // green while the subtree was real on disk.
+  "packages/core/src/workspace/store.ts :: workspace",
 ];
 
 // Who OWNS each thing composed off the root. AD-5's rule is one owner per
@@ -1771,6 +1804,14 @@ const AD5_OWNERS: Record<string, string[]> = {
   runs: ["packages/core/src/looms.ts"],
   worktrees: ["packages/core/src/vcs.ts"],
   ultra: ["packages/core/src/ultra/journal.ts"],
+  // Story 5.1 — AD-5's one-owner rule for the workspace item store. ONE owner,
+  // and only store.ts composes it: apps/web reaches this subtree through
+  // @telar/core's exported functions and never by path, which is what makes
+  // AC7 ("a session cannot reach the store with file tools") a structural fact
+  // rather than a policy. lanes.yaml and packets/ never appear in this table
+  // because rootCompositionSites captures only the FIRST segment — INV-11 arm 1
+  // is what pins the deeper layout to this same module.
+  workspace: ["packages/core/src/workspace/store.ts"],
   // CO-TENANCY 1, recorded as a NAMED FACT rather than as silence, because an
   // invariant that quietly permits it teaches the next reader it is fine.
   // AD-5 assigns sessions/<sessionId>/ to the session module; core owns
@@ -1892,12 +1933,28 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     }
   });
 
-  test("INV-3d nothing is asserted about projects or workspace, because neither exists yet", () => {
-    // Documented as an assertion so a future reader does not "restore" a check
-    // over the empty set. When the planned AD-5 layout lands, these flip from
-    // absent to owned and this test is where that shows up.
-    const planned = observed.filter((s) => / :: (projects|workspace)$/.test(s));
-    expect(planned).toEqual([]);
+  test("INV-3d `workspace` is now OWNED and `projects` is still absent — the planned layout, half-landed", () => {
+    // THIS TEST PREDICTED ITS OWN REWRITE. Until story 5.1 it read "nothing is
+    // asserted about projects or workspace, because neither exists yet", and its
+    // comment said: "When the planned AD-5 layout lands, these flip from absent
+    // to owned and this test is where that shows up." Story 5.1 landed the
+    // workspace half, so `workspace` flips and `projects` does not — and keeping
+    // the two apart is the whole content, because a rewrite that simply deleted
+    // the assertion would lose the still-absent half.
+    const composed = observed.filter((s) => / :: (projects|workspace)$/.test(s));
+    expect(composed).toEqual(["packages/core/src/workspace/store.ts :: workspace"]);
+
+    // OWNED, and by exactly one module — the AD-5 claim, not merely "a site
+    // exists". AD5_OWNERS is the table INV-3b enforces; this asserts the entry
+    // says what this story says it says.
+    expect(AD5_OWNERS.workspace).toEqual(["packages/core/src/workspace/store.ts"]);
+
+    // `projects` STAYS ABSENT. There is no per-project TELAR_HOME subtree yet;
+    // projects.json (manifest.ts's flat registry file) is a different thing and
+    // is deliberately not what this pattern matches.
+    expect(composed.filter((s) => s.endsWith(":: projects"))).toEqual([]);
+    expect(observed).toContain("packages/core/src/manifest.ts :: projects.json");
+
     // …and the flat layout that DOES exist is present, so this is a statement
     // about today's tree rather than about a broken scan.
     expect(observed).toContain("packages/core/src/looms.ts :: looms");
@@ -3128,6 +3185,62 @@ const STATE_ROOT_READERS: readonly string[] = [
   "escalationAppendix",
   "buildSteererProfile",
   "buildEscalationProfile",
+  // TWO OF THE FOUR MISSING SYMBOLS, added by story 5.1 because it had this file
+  // legitimately open. `buildSteererProfile`/`buildEscalationProfile` were
+  // already listed; their project and planner siblings were not, even though
+  // story 4.1 gave all four builders the same live ultra-wake read through their
+  // composers. Both are called only from apps/web/lib/session-profiles.test.ts,
+  // which INV-7 classifies `child`, so both land green.
+  "buildProjectProfile",
+  "buildPlannerProfile",
+  // `projectAppendix` AND `plannerAppendix` ARE DELIBERATELY *NOT* HERE, AND
+  // THE OMISSION IS A RECORDED FINDING RATHER THAN AN OVERSIGHT. Story 5.1
+  // attempted them and reverted, per its own instruction to treat a red INV-7
+  // as a finding:
+  //
+  //   Adding them turns INV-7b red on EIGHTEEN call sites in
+  //   apps/web/lib/session-prompts.test.ts — e.g. `projectAppendix({
+  //   ultraAnnotated: false })` and `plannerAppendix({ ultraAnnotated: true })`.
+  //   Those calls pass NO `read:` seam, so INJECTED_READER does not match and
+  //   the file is not classified `injected` for them; they pass no `sessionId`
+  //   either, and a composer with no session id has no wake to read BY
+  //   CONSTRUCTION, so in FACT they reach no state root. The scanner cannot see
+  //   that, and it is right not to guess.
+  //
+  //   Closing it needs one of two things, and BOTH are outside story 5.1's
+  //   write-set fence: threading a `read:` seam through those eighteen call
+  //   sites (Track B's apps/web/lib/session-prompts.ts and its suite), or adding
+  //   the two names to INJECTABLE_COMPOSERS below (this file, but outside the
+  //   fenced edit list 5.1 was given). Recorded in deferred-work.md with the
+  //   measured call-site count so the next story with either file open can close
+  //   it in one pass instead of rediscovering it.
+  // ── story 5.1: the workspace item store (packages/core/src/workspace/store.ts)
+  // Every one of these resolves TELAR_HOME through manifest.ts's telarDir() and
+  // then opens a file, so calling any of them decides which ~/.telar you touch
+  // by looking at the ambient environment — which is exactly the class this list
+  // exists to police.
+  //
+  // THE PER-ID READER IS `getWorkspaceItem`, NOT `getItem`, and the name is
+  // load-bearing: readerCallSites matches a bare `<name>(` seeded from this list
+  // for EVERY file, and the tree is full of `localStorage.getItem`. That is safe
+  // today only because of the `(?<![A-Za-z0-9_$.])` lookbehind excluding
+  // dot-prefixed calls, and INV-7b should not be staked on it.
+  //
+  // The store's PURE PROJECTIONS are deliberately absent — rankOf, queueSlice,
+  // deskSlice, attachmentTally and migratePacket take already-read data and
+  // resolve nothing, so listing them would be a false claim about what they do
+  // (and would make every pure projection test a violation). They are not
+  // ROOT_PARAMETERIZED_READERS either: they take no root at all.
+  "workspaceDir",
+  "workspaceHomeDir",
+  "ensureWorkspace",
+  "readLanes",
+  "writeLanes",
+  "getWorkspaceItem",
+  "listItems",
+  "createItem",
+  "updateItem",
+  "readPacketAttachments",
 ];
 
 // ROOT-PARAMETERIZED readers take the root as an ARGUMENT and resolve nothing.
@@ -5333,5 +5446,243 @@ describe("INV-10 the ultra run anchor is registered in the adapter and NOWHERE e
     // at exactly ONE entry across eight stories; INV-3f pins its LENGTH and this
     // pins the fact that INV-10 did not reach for it.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-10")).toEqual([]);
+  });
+});
+
+// ── INV-11 — the workspace item store is reachable ONLY through its port ─────
+// Story 5.1, AC1/AC3/AC7/AC8. Six arms, and each one asserts something no other
+// invariant in this file can:
+//
+//   a. ONE composing module. INV-3a/3b already pin the FIRST segment off the
+//      root, but rootCompositionSites captures only that segment — `lanes.yaml`
+//      and `packets/` never enter AD5_SITES at all, so the deeper layout has no
+//      owner check without this.
+//   b. NO GRANT EXPRESSION NAMES THE SUBTREE. This is AC7's executable half.
+//      Scoping it to the story's own write set would return zero
+//      unconditionally, which is the vacuity this file exists to refuse — so it
+//      runs tree-wide over NON_TEST, and its negative control is real code that
+//      already exists.
+//   c. THE TOOL NAMES SURVIVE ACCEPT_STEMS, checked at the NAME rather than
+//      downstream at INV-1c's inventory, so a rename in a later story is caught
+//      where it is made.
+//   d. NO writeFileSync / appendFileSync IN THE STORE. AC3's atomicity, as
+//      source text.
+//   e. NO z.object( AND NO DELETE CALL IN THE SERVER. AC3 proof 2 (schemas are
+//      core's) and AC8 proof 2 (there is no deletion path).
+//   f. THE QUARANTINE DID NOT GROW.
+const WORKSPACE_STORE = "packages/core/src/workspace/store.ts";
+const WORKSPACE_SRC_DIR = "packages/core/src/workspace/";
+
+describe("INV-11 the workspace item store is reachable only through its port — AD-5/AD-6, story 5.1", () => {
+  const workspaceFiles = NON_TEST.filter((f) => f.rel.startsWith(WORKSPACE_SRC_DIR));
+
+  test("INV-11a exactly ONE module composes the workspace root, and one composes the layout under it", () => {
+    // Anti-vacuity FIRST, on the shared scan: a composition scan finding nothing
+    // would make every claim below hold over the empty set.
+    if (COMPOSITION_SITES.length < 15) {
+      throw new Error(
+        `AD-5 / INV-11: only ${COMPOSITION_SITES.length} TELAR_HOME path-composition sites found ` +
+          `(floor 15). CONSEQUENCE: the ownership claim below would pass while scanning nothing. ` +
+          `NEXT STEP: the SCANNER is broken — check rootCompositionSites() and ROOT_RESOLVERS.`,
+      );
+    }
+    const composing = COMPOSITION_SITES.filter((c) => c.site.composes === "workspace").map((c) => c.file);
+    expect(composing).toEqual([WORKSPACE_STORE]);
+
+    // THE DEEPER LAYOUT, which INV-3a structurally cannot see. `lanes.yaml` and
+    // the `packets` directory are composed off workspaceDir(), not off the root,
+    // so they produce no composition site — and a second module opening
+    // `<root>/workspace/lanes.yaml` by hand would leave INV-3a green.
+    const layoutHolders = NON_TEST.filter(
+      (f) => /lanes\.yaml/.test(f.code) || /["'`]packets["'`]/.test(f.code),
+    ).map((f) => f.rel);
+    expect(layoutHolders).toEqual([WORKSPACE_STORE]);
+    // …and the store really does hold both, so this is not passing over a scan
+    // that matched nothing.
+    expect(byRel.get(WORKSPACE_STORE)!.code).toContain("lanes.yaml");
+
+    // DISCRIMINATES, in both directions, through the SAME extractor the real
+    // scan uses. Assembled from fragments so this file's own text is never
+    // picked up by the scan it is testing (packages/core/test is a walked root).
+    const join = "path." + "join";
+    expect(rootCompositionSites(`const d = ${join}(telarDir(), "workspace");`)).toEqual([
+      { resolver: "telarDir", composes: "workspace" },
+    ]);
+    // A sub-path off the owner's exported PORT is the sanctioned shape and must
+    // NOT be reported — an invariant that fires on correct code gets deleted
+    // rather than fixed.
+    //
+    // THE PORT NAME IS ASSEMBLED FROM FRAGMENTS, for the same reason INV-3g
+    // assembles `path.join`: `workspaceDir` is in STATE_ROOT_READERS, and
+    // packages/core/test is a walked root, so a literal `workspaceDir(` in this
+    // file would report THIS FILE as an un-sandboxed reader call site and turn
+    // INV-7b red. (Measured, not reasoned about — the first draft of this arm
+    // did exactly that.)
+    const wsPort = "workspace" + "Dir";
+    expect(rootCompositionSites(`const d = ${join}(${wsPort}(), "packets");`)).toEqual([]);
+  });
+
+  test("INV-11b NO grant expression anywhere in the tree hands a session the workspace subtree — AC7", () => {
+    // Codex's sandbox boundary is PURELY PATH-BASED (working root + --add-dir),
+    // so the only way a session could reach this store with file tools is if
+    // some module added it to a writable-roots grant. brownfield.md: granting it
+    // "would widen each session's write boundary across all projects' items —
+    // the opposite of the isolation the rest of the system maintains."
+    const GRANT = /(?:additionalDirectories|writableRoots|addDir|add-dir)/;
+    const NAMES_WORKSPACE = /(?:workspaceDir|workspaceHomeDir|workspace\/packets|lanes\.yaml|["'`]workspace["'`])/;
+
+    const granters = NON_TEST.filter((f) => GRANT.test(f.code)).map((f) => f.rel);
+    // ANTI-VACUITY: the scan must find the grant expressions that DO exist, or
+    // "no grant names the workspace" is a statement about an empty set.
+    if (granters.length < 1) {
+      throw new Error(
+        `AD-5 / INV-11b: the grant-expression scan found ${granters.length} files (floor 1). ` +
+          `CONSEQUENCE: AC7's whole executable half would hold vacuously — a module could add the ` +
+          `workspace store to a session's writable roots and nothing would fail. NEXT STEP: the ` +
+          `PATTERN is broken, not the tree — apps/web/lib/codex-app-server.ts's writableRoots is ` +
+          `the known-present hit.`,
+      );
+    }
+    expect(granters).toContain("apps/web/lib/codex-app-server.ts");
+
+    const violations = NON_TEST.filter((f) => GRANT.test(f.code) && NAMES_WORKSPACE.test(f.code)).map(
+      (f) =>
+        `${f.rel} contains BOTH a sandbox grant expression and a reference to the workspace store. ` +
+          `AD-5 / CAP-12 — TELAR_HOME/workspace is reached through the in-process MCP server and ` +
+          `through nothing else; it sits outside every session's cwd on purpose. CONSEQUENCE: a ` +
+          `session granted this path can read and write EVERY project's items with file tools, ` +
+          `which is the cross-project reach the tool surface exists to prevent. NEXT STEP: reach ` +
+          `the store through @telar/core's exported functions; never widen a session's write ` +
+          `boundary onto it.`,
+    );
+    expect(violations).toEqual([]);
+
+    // TWO-DIRECTION DISCRIMINATOR, through the SAME predicates, on fixtures
+    // assembled at RUNTIME so this file's own source cannot satisfy them.
+    // Both the grant word and the port name are assembled from fragments — the
+    // grant word so this file is not itself reported as a granter, the port name
+    // because `workspaceDir` is in STATE_ROOT_READERS and a literal here would
+    // turn INV-7b red on this very file (INV-3g's rule, same reason).
+    const grantWord = "writable" + "Roots";
+    const wsPort = "workspace" + "Dir";
+    const bad = `const opts = { ${grantWord}: [cwd, ${wsPort}()] };`;
+    expect(GRANT.test(bad) && NAMES_WORKSPACE.test(bad)).toBe(true);
+    // THE NEGATIVE CONTROL IS REAL CODE. codex-app-server.ts's
+    // `writableRoots: [cwd]` is correct and must not fire — a naive
+    // co-occurrence scan that flagged it would be an invariant nobody keeps.
+    const good = `const opts = { ${grantWord}: [cwd] };`;
+    expect(GRANT.test(good)).toBe(true);
+    expect(NAMES_WORKSPACE.test(good)).toBe(false);
+    expect(NAMES_WORKSPACE.test(byRel.get("apps/web/lib/codex-app-server.ts")!.code)).toBe(false);
+  });
+
+  test("INV-11c every workspace tool name survives ACCEPT_STEMS, checked at the NAME", () => {
+    // INV-1c already runs this over the collected inventory. Running it here on
+    // the server's own exported constant catches a rename AT THE CONSTANT, which
+    // is where a later story makes it — and it reads the constant out of source
+    // text rather than importing apps/web, which would drag Next into this file.
+    const src = byRel.get(WORKSPACE_MCP);
+    expect(src).toBeDefined();
+    const names = exportedStringArray(src!.code, "WORKSPACE_AUTO_TOOLS");
+    // ANTI-VACUITY: a null or short read would make the loop below assert
+    // nothing at all.
+    if (!names || names.length !== 4) {
+      throw new Error(
+        `AD-1 / INV-11c: WORKSPACE_AUTO_TOOLS read back as ${JSON.stringify(names)} (expected 4 ` +
+          `names). CONSEQUENCE: the accept-shape check below would run over an empty list and an ` +
+          `accept-named workspace tool could ship. NEXT STEP: this is the READER that is broken — ` +
+          `check exportedStringArray against ${WORKSPACE_MCP}'s WORKSPACE_AUTO_TOOLS.`,
+      );
+    }
+    for (const qualified of names) {
+      expect(qualified.startsWith("mcp__workspace__")).toBe(true);
+      expect(acceptShapedTokens(qualified.replace("mcp__workspace__", ""))).toEqual([]);
+    }
+    // …and it agrees with the pinned inventory, so the two cannot drift.
+    expect(names.map((n) => n.replace("mcp__workspace__", ""))).toEqual(MCP_INVENTORY.workspace!.tools);
+
+    // DISCRIMINATOR: the same function fires on the names this surface is
+    // forbidden to grow. `promote_subtask` is the sharpest — NFR-OW-15 forbids
+    // an agent promotion path, and `promote` is independently an ACCEPT_STEM.
+    for (const forbidden of ["promote_subtask", "close_lane", "land_packet", "mark_completed"]) {
+      expect(acceptShapedTokens(forbidden).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("INV-11d the store writes ONLY through atomicWrite — no writeFileSync, no appendFileSync", () => {
+    // ANTI-VACUITY: the directory really was found and really was walked.
+    if (workspaceFiles.length < 3) {
+      throw new Error(
+        `AD-6 / INV-11d: only ${workspaceFiles.length} files found under ${WORKSPACE_SRC_DIR} ` +
+          `(floor 3: schema.ts, store.ts, index.ts). CONSEQUENCE: the write-path scan below would ` +
+          `hold over an empty set. NEXT STEP: the WALK is broken — check ROOTS and EXCLUDED_DIRS.`,
+      );
+    }
+    const violations = workspaceFiles
+      .filter((f) => /(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test(f.code))
+      .map(
+        (f) =>
+          `${f.rel} writes with writeFileSync/appendFileSync. AD-6 — every write to a persisted ` +
+            `store is ATOMIC (.tmp then renameSync), through manifest.ts's exported atomicWrite. ` +
+            `CONSEQUENCE: a crash or a concurrent read mid-write leaves a TRUNCATED packet.yaml, ` +
+            `and a packet holds \`raw\` verbatim with no source to be rebuilt from. NEXT STEP: ` +
+            `import { atomicWrite } from "../manifest". (project-context.md's append-only ` +
+            `exception covers the NDJSON stream class only; nothing here is in it.)`,
+      );
+    expect(violations).toEqual([]);
+    // The POSITIVE half: the store really does write, through the sanctioned
+    // idiom. Without this the arm passes for a store that writes nothing at all.
+    expect(byRel.get(WORKSPACE_STORE)!.code).toContain("atomicWrite(");
+    // DISCRIMINATOR, on a runtime-assembled fixture through the same pattern.
+    const bad = "fs." + "writeFileSync" + "(file, data);";
+    expect(/(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test(bad.replace("fs.", ""))).toBe(true);
+    // …and a DOT-PREFIXED member call on some other object is not a match, which
+    // is what keeps the pattern from firing on unrelated code.
+    expect(/(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test("shim.writeFileSync(x);")).toBe(false);
+  });
+
+  test("INV-11e the MCP server declares no entity schema and has no delete call", () => {
+    const src = byRel.get(WORKSPACE_MCP);
+    expect(src).toBeDefined();
+    // ANTI-VACUITY: zod really is in use in this file, so "no z.object(" is a
+    // statement about a file that uses zod rather than about one that does not.
+    expect(src!.code).toContain("z.string(");
+
+    // NFR-X-5 — "zod schemas for persisted entities are owned by @telar/core and
+    // never redefined in apps/web". The tool() input shapes are RAW zod shapes
+    // ({ itemId: z.string() }), which are argument schemas; a z.object( here
+    // would be the first step toward a second definition of `Item`.
+    expect(/z\.object\s*\(/.test(src!.code)).toBe(false);
+    expect(/z\.looseObject\s*\(/.test(src!.code)).toBe(false);
+
+    // SPEC.md non-goals: "No deletion path." CAP-3: "No path deletes an item."
+    // Dismissing an item drains it to the queue; nothing removes one.
+    const deleters = ["rmSync", "unlinkSync", "rmdirSync", "rmdir", "unlink"].filter((d) =>
+      new RegExp(`(?<![A-Za-z0-9_$.])${d}\\s*\\(`).test(src!.code),
+    );
+    expect(deleters).toEqual([]);
+    // …and the store itself has none either, which is the half a handler scan
+    // would miss.
+    expect(
+      ["rmSync", "unlinkSync", "rmdirSync"].filter((d) =>
+        new RegExp(`(?<![A-Za-z0-9_$.])${d}\\s*\\(`).test(byRel.get(WORKSPACE_STORE)!.code),
+      ),
+    ).toEqual([]);
+
+    // DISCRIMINATOR, both directions, on runtime-assembled fixtures.
+    expect(/z\.object\s*\(/.test("const S = z." + "object({ a: z.string() });")).toBe(true);
+    expect(/z\.object\s*\(/.test("const S = { a: z.string() };")).toBe(false);
+    // A BARE call matches; the same name reached through an object does not,
+    // which is what keeps the pattern from firing on unrelated member calls.
+    expect(/(?<![A-Za-z0-9_$.])rmSync\s*\(/.test("rm" + "Sync" + "(dir);")).toBe(true);
+    expect(/(?<![A-Za-z0-9_$.])rmSync\s*\(/.test("shim." + "rmSync" + "(dir);")).toBe(false);
+  });
+
+  test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {
+    // The shape INV-7f / INV-8h / INV-9e / INV-10e already use. KNOWN_VIOLATIONS
+    // has held at exactly ONE entry across nine stories; INV-3f pins its LENGTH
+    // and this pins the fact that INV-11 did not reach for it.
+    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-11")).toEqual([]);
+    expect(KNOWN_VIOLATIONS.length).toBe(1);
   });
 });

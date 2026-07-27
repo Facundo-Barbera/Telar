@@ -58,6 +58,7 @@ import {
   sessionRoleFromWire,
   ULTRA_AUTO_TOOL_NAMES,
   unmetCapabilities,
+  WORKSPACE_AUTO_TOOL_NAMES,
   type ProviderCapability,
   type SessionProfileSpec,
   type SessionResolutionContext,
@@ -643,7 +644,7 @@ describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () 
     expect(resolved.toolPolicy.allow).toContain("Grep");
   });
 
-  test("an omitted `allow` still means the whole base set — now twenty names, not six", () => {
+  test("an omitted `allow` still means the whole base set — now twenty-four names, not six", () => {
     registerPolicy({ deny: [] });
     const allow = resolveSessionProfile(ctx()).toolPolicy.allow;
     expect(allow).toEqual([...BASE_ALLOWED_TOOLS]);
@@ -658,8 +659,18 @@ describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () 
       "WebFetch",
       "ToolSearch",
     ]);
-    expect(allow.slice(6, 6 + LOOM_AUTO_TOOL_NAMES.length)).toEqual([...LOOM_AUTO_TOOL_NAMES]);
-    expect(allow.slice(6 + LOOM_AUTO_TOOL_NAMES.length)).toEqual([...ULTRA_AUTO_TOOL_NAMES]);
+    const loomEnd = 6 + LOOM_AUTO_TOOL_NAMES.length;
+    const ultraEnd = loomEnd + ULTRA_AUTO_TOOL_NAMES.length;
+    expect(allow.slice(6, loomEnd)).toEqual([...LOOM_AUTO_TOOL_NAMES]);
+    // THE OLD ASSERTION WAS A ONE-ARGUMENT slice(6 + LOOM_AUTO_TOOL_NAMES.length)
+    // — "index 17 to the end" — and it was RIGHT while ultra's three were the
+    // tail. With the workspace's four appended it would compare seven elements
+    // against three, so both bounds are now explicit and the tail is named.
+    expect(allow.slice(loomEnd, ultraEnd)).toEqual([...ULTRA_AUTO_TOOL_NAMES]);
+    expect(allow.slice(ultraEnd)).toEqual([...WORKSPACE_AUTO_TOOL_NAMES]);
+    // The segments really do partition the whole set — a slice arithmetic slip
+    // would otherwise leave a gap nothing asserts over.
+    expect(ultraEnd + WORKSPACE_AUTO_TOOL_NAMES.length).toBe(allow.length);
   });
 });
 
@@ -866,12 +877,23 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
     expect(r.output).toContain("more ...");
   });
 
-  test("AC3 BASE_ALLOWED_TOOLS is EXACTLY the twenty auto-run names, in the route's own order", () => {
+  test("AC3 BASE_ALLOWED_TOOLS is EXACTLY the twenty-four auto-run names, in the route's own order", () => {
     // The runtime half of the pin the compile diagnostic can no longer carry
-    // (see the elision note above). Re-derived from the two tuples core
-    // declares rather than restated as one flat literal, so growing either one
-    // moves this expectation with it — and the six built-in names are spelled
-    // out because they are the part that has NO other source in this package.
+    // (see the elision note above). Re-derived from the THREE tuples core
+    // declares rather than restated as one flat literal, so growing any one of
+    // them moves this expectation with it — and the six built-in names are
+    // spelled out because they are the part that has NO other source in this
+    // package.
+    //
+    // IT WAS TWENTY UNTIL STORY 5.1, and the old expectation was right for its
+    // tree: the twenty were exactly the chat route's own literal non-escalation
+    // allowedTools array, element for element, which is where the ordering came
+    // from. Story 5.1 appended the workspace store's four (FR-OW-12: a session
+    // reads its project's slice, creates items and modifies them; list_lanes is
+    // the fourth because a session cannot file into "the right lane" without
+    // knowing which lanes exist, and lanes are user data rather than an enum).
+    // THE WORKSPACE NAMES GO LAST so the first twenty still reproduce the
+    // route's old array exactly and the growth reads as a suffix.
     expect([...BASE_ALLOWED_TOOLS]).toEqual([
       "Read",
       "Grep",
@@ -881,12 +903,19 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
       "ToolSearch",
       ...LOOM_AUTO_TOOL_NAMES,
       ...ULTRA_AUTO_TOOL_NAMES,
+      ...WORKSPACE_AUTO_TOOL_NAMES,
     ]);
     // Anti-vacuity: a tuple that emptied out would satisfy a `toEqual` against
     // an equally-empty derivation.
-    expect(BASE_ALLOWED_TOOLS.length).toBe(20);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(24);
     expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
+    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);
+    // FULLY QUALIFIED, like its two siblings and unlike invariants.test.ts's
+    // MCP_INVENTORY, which pins the BARE names. Writing the bare form here
+    // produces tools that never auto-run AND that the runtime filter in
+    // resolveSessionProfile drops without a word.
+    for (const n of WORKSPACE_AUTO_TOOL_NAMES) expect(n.startsWith("mcp__workspace__")).toBe(true);
     // No duplicates: `unionOrdered` would silently absorb one, so a copy-paste
     // slip in either tuple would shorten the resolved allow set rather than
     // fail.
