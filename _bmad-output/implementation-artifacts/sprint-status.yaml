@@ -62,13 +62,13 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Conversation Shell
-  epic-3: in-progress
-  3-1-carve-out-the-conversation-shell-and-its-primitives: review
+  epic-3: done
+  3-1-carve-out-the-conversation-shell-and-its-primitives: done
   epic-3-retrospective: optional
 
   # Epic 4: Ultra Finish
-  epic-4: backlog
-  4-1-completion-wake-and-session-cost-rollup: backlog
+  epic-4: in-progress
+  4-1-completion-wake-and-session-cost-rollup: ready-for-dev
   4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: backlog
   epic-4-retrospective: optional
 
