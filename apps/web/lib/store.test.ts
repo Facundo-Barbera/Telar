@@ -344,9 +344,23 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
     }
   });
 
-  test("getChat's costUsd excludes ultra spend that rode the same sessionId", () => {
-    // An ultra run's ledger lines legitimately carry the OWNING chat's
-    // sessionId. They are the run's spend, not the chat's.
+  test("getChat's costUsd INCLUDES ultra spend that rode the same sessionId, and excludes loom spend", () => {
+    // CHANGED BY STORY 4.1 / AC5, deliberately, and the old assertion is worth
+    // recording because it was right for its story and is wrong for this one.
+    // It read: "excludes ultra spend that rode the same sessionId — they are the
+    // run's spend, not the chat's", and asserted 1.5.
+    //
+    // FR-UW-5 is the counter-requirement: "that spend attributes to the owning
+    // chat message and folds into the session's per-turn usage display". A run
+    // the user launched from this chat IS this chat's spend as far as the human
+    // reading the heartbeat bar is concerned — that is the whole point of the
+    // rollup. So `sessionSpendUsd` now sums the session fold and the ultra fold.
+    //
+    // WHAT DID NOT CHANGE, and this is the half that keeps the old reasoning
+    // alive: LOOM rows are still excluded. A loom is a different owner with a
+    // different consumer (a charter's budget-left), no AC here mentions it, and
+    // widening `usageSummary`'s account windows to include either kind remains
+    // an unresolved [Review][Decision] on story 1.1.
     const root = projectionRoot("owner");
     try {
       seedChat(root, "chat-1", 999);
@@ -355,7 +369,65 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
       store.logUsage(
         ledgerLine({ sessionId: "chat-1", ownerKind: "ultra", ownerId: "run_x", costUsd: 5 }),
       );
-      expect(store.getChat("chat-1")!.costUsd).toBe(1.5);
+      expect(store.getChat("chat-1")!.costUsd).toBe(6.5);
+      // A loom row on the same session moves NOTHING.
+      store.logUsage(
+        ledgerLine({ sessionId: "chat-1", ownerKind: "loom", ownerId: "loom_y", costUsd: 100 }),
+      );
+      expect(store.getChat("chat-1")!.costUsd).toBe(6.5);
+      // NO DOUBLE COUNT: the sidebar/dashboard windows are byte-identical to
+      // what the session-owned rows alone produce — reason (2) of the ledger's
+      // owner-scoping rule, preserved exactly.
+      expect(store.usageSummary().weekly.costUsd).toBe(1.5);
+    } finally {
+      process.env.TELAR_HOME = TMP;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("4.1 the rollup is a PROJECTION — an out-of-band ultra append moves it, a counter could not", () => {
+    // The property that distinguishes a fold from an accumulator, applied to
+    // the NEW summand specifically: a run's row written by another process (the
+    // detached run continues after the launching turn's POST already ended) is
+    // visible to the very next read.
+    const root = projectionRoot("ultra-oob");
+    try {
+      seedChat(root, "chat-oob", 999); // poisoned counter
+      store.logUsage(ledgerLine({ sessionId: "chat-oob", costUsd: 2 }));
+      expect(store.sessionSpendUsd("chat-oob")).toBe(2);
+      fs.appendFileSync(
+        path.join(root, "usage.ndjson"),
+        JSON.stringify(
+          ledgerLine({
+            sessionId: "chat-oob",
+            ownerKind: "ultra",
+            ownerId: "run_oob",
+            messageId: "turn-oob",
+            costUsd: 4.5,
+            entryKey: "ultra:run_oob:0:s1",
+          }),
+        ) + "\n",
+      );
+      expect(store.sessionSpendUsd("chat-oob")).toBe(6.5);
+      // The live readout and the persisted one are the SAME function, so they
+      // cannot disagree — that is why the widening happened here and nowhere else.
+      expect(store.getChat("chat-oob")!.costUsd).toBe(6.5);
+      // Re-presenting the same settle (ultra rewrites its row on every replay)
+      // folds once — the entryKey dedupe still governs the new summand.
+      fs.appendFileSync(
+        path.join(root, "usage.ndjson"),
+        JSON.stringify(
+          ledgerLine({
+            sessionId: "chat-oob",
+            ownerKind: "ultra",
+            ownerId: "run_oob",
+            messageId: "turn-oob",
+            costUsd: 4.5,
+            entryKey: "ultra:run_oob:0:s1",
+          }),
+        ) + "\n",
+      );
+      expect(store.sessionSpendUsd("chat-oob")).toBe(6.5);
     } finally {
       process.env.TELAR_HOME = TMP;
       fs.rmSync(root, { recursive: true, force: true });
@@ -411,11 +483,20 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
       // Same fold the persisted surface uses — the live and reload readouts
       // cannot disagree, which is the whole point of one ledger.
       expect(store.getChat("chat-live")!.costUsd).toBe(3.5);
-      // An ultra line riding this chat's sessionId is that run's spend.
+      // An ultra line riding this chat's sessionId is a run THIS CHAT launched,
+      // and story 4.1 / AC5 folds it in. Before 4.1 this asserted 3.5 — see the
+      // "getChat's costUsd INCLUDES ultra spend" test above for why the
+      // requirement inverted and what stayed the same.
       store.logUsage(
         ledgerLine({ sessionId: "chat-live", ownerKind: "ultra", ownerId: "run_y", costUsd: 9 }),
       );
-      expect(store.sessionSpendUsd("chat-live")).toBe(3.5);
+      expect(store.sessionSpendUsd("chat-live")).toBe(12.5);
+      // A loom line still moves nothing — the exclusion the old assertion was
+      // really protecting is intact for the owner that still needs it.
+      store.logUsage(
+        ledgerLine({ sessionId: "chat-live", ownerKind: "loom", ownerId: "loom_y", costUsd: 40 }),
+      );
+      expect(store.sessionSpendUsd("chat-live")).toBe(12.5);
       expect(store.sessionSpendUsd("no-such-session")).toBe(0);
     } finally {
       process.env.TELAR_HOME = TMP;

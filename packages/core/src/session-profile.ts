@@ -422,6 +422,30 @@ export type SessionResolutionContext = {
   // breaks nothing; adding one to either of those two is a deliberate act that
   // fails a test, and should stay that way.
   readonly ultraAnnotated: boolean;
+  // The SDK session id this turn belongs to, when there is one. Added by story
+  // 4.1 (Track D) so a builder can compose per-turn context keyed by session —
+  // concretely, the completed-Ultra-run block that FR-UW-1's mid-conversation
+  // half (AC2) requires: the outcome has to reach the model as context on the
+  // NEXT turn, and the system-prompt appendix is the only per-turn channel that
+  // exists today.
+  //
+  // OPTIONAL, unlike `ultraAnnotated` above, and the asymmetry is deliberate: an
+  // omission here drops nothing the user asked for. Turn 1 of a fresh session
+  // genuinely has no id yet (the SDK mints it inside the stream), and a session
+  // with no id has no pending wakes BY CONSTRUCTION — a wake exists only for a
+  // run whose manifest already names a session. So "absent" and "no wakes" are
+  // the same fact, which is exactly when optional is the honest shape.
+  //
+  // Safe with respect to INV-6a for the same reason `ultraAnnotated` is: that
+  // invariant pins the field sets of SessionProfile and SessionProfileSpec, NOT
+  // this type. Adding a field HERE breaks nothing.
+  //
+  // FORWARD OWNER NOTE: three tracks now push per-turn context through this
+  // type one field at a time. The clean end state is a contributor registry any
+  // module can add an appendix fragment to; it is recorded in deferred-work.md
+  // with epic 5's project-less master profile as owner, because that is the
+  // first story with a reason to pay for it.
+  readonly sessionId?: string;
 };
 
 // A surface's contribution: a pure function from the context to a spec.

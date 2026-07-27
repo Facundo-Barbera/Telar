@@ -68,7 +68,7 @@ development_status:
 
   # Epic 4: Ultra Finish
   epic-4: in-progress
-  4-1-completion-wake-and-session-cost-rollup: ready-for-dev
+  4-1-completion-wake-and-session-cost-rollup: review
   4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: backlog
   epic-4-retrospective: optional
 

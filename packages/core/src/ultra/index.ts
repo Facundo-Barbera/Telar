@@ -9,3 +9,7 @@ export * from "./journal";
 export * from "./runner";
 export * from "./executor";
 export * from "./storage";
+// Story 4.1 — the declared event catalogue (AD-21) and the durable completion
+// wake it feeds. `events` before `wake`: wake.ts is built on the catalogue.
+export * from "./events";
+export * from "./wake";

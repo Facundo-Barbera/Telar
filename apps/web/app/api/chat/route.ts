@@ -9,9 +9,11 @@ import {
 import {
   accountEnv,
   accountHealth,
+  ackUltraWakes,
   getAccount,
   getLoom,
   getProject,
+  pendingUltraWakes,
   providerOf,
   resolveProjectMcpServers,
   resolveSessionKind,
@@ -34,6 +36,7 @@ import {
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
+import { isUltraWakeTrigger, resolveUltraWakeMessage } from "@/lib/ultra-wake";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
@@ -219,7 +222,20 @@ export async function POST(req: Request) {
   // Byte-identical passthrough for every
   // other turn (planner/steerer/plain/real escalation replies), so nothing else
   // changes. Substituted HERE, before generateTitle/query/log all read it.
-  const message: string = resolveEscalationMessage(role, sessionId, rawMessage);
+  //
+  // Story 4.1 / AC1 does the same thing for the completion wake, composed as a
+  // second swap on the same line rather than as a second branch: the client
+  // injects ULTRA_WAKE_SENTINEL as a hidden turn when a detached Ultra run
+  // finishes on an idle session, and the server substitutes its own
+  // instruction so THE CLIENT NEVER AUTHORS THE FACTS. The outcome itself
+  // arrives through the system-prompt appendix (@/lib/session-prompts), not
+  // through this string. Note the sentinel's session polarity is the OPPOSITE
+  // of the kickoff's — a wake fires only on an already-resumed session — which
+  // is why it is its own recognizer and not a case of this one.
+  const message: string = resolveUltraWakeMessage(
+    sessionId,
+    resolveEscalationMessage(role, sessionId, rawMessage),
+  );
   // Bug-B fix — the kickoff's resolved instruction ("The human just opened
   // this escalation...") is machinery fed to the model, never something the
   // human said. `message` above (the resolved prompt) still drives the SDK
@@ -228,7 +244,20 @@ export async function POST(req: Request) {
   // instruction text anywhere it could render as a "user" bubble, and title
   // generation (further below) skips it entirely.
   const isKickoff = isEscalationKickoff(role, sessionId, rawMessage);
-  const displayText: string = isKickoff ? "Discuss verification" : message;
+  // Story 4.1 — the wake trigger is machinery for exactly the same reason the
+  // kickoff is: its wire text is a sentinel, and the text the model runs is
+  // server-authored. `hidden: true` on the client suppresses the user BUBBLE and
+  // nothing else — the turn is still POSTed with that text and persistence is
+  // governed server-side — so without `hideUserMessage` below, the trigger would
+  // be invisible during the session and would reappear as a user bubble after a
+  // page reload. Both machinery turns share one flag so neither can drift.
+  const isUltraWake = isUltraWakeTrigger(sessionId, rawMessage);
+  const hiddenTurn = isKickoff || isUltraWake;
+  const displayText: string = isKickoff
+    ? "Discuss verification"
+    : isUltraWake
+      ? "Ultra run finished"
+      : message;
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.
@@ -463,6 +492,14 @@ export async function POST(req: Request) {
     loomId: loomLink.loomId,
     permissionMode,
     ultraAnnotated,
+    // Story 4.1 / AC2 — lets the project/planner/steerer composers read this
+    // session's completed-Ultra-run mailbox and fold it into the appendix, so
+    // the outcome reaches the model as PER-TURN CONTEXT on every turn rather
+    // than only on a wake turn. That is what makes the mid-conversation case
+    // work without a second delivery mechanism. `undefined` on turn 1 of a
+    // fresh session, which is correct: no id yet means no wakes yet, by
+    // construction.
+    sessionId: typeof sessionId === "string" && sessionId ? sessionId : undefined,
   });
 
   // AD-11 — an unmet capability is a hard error BEFORE the stream opens, in the
@@ -484,6 +521,34 @@ export async function POST(req: Request) {
         error: `A "${sessionProfile.kind}" session needs ${unmetProfileCapabilities.join(", ")}, which the ${providerOf(provider).label} agent does not support. Run this session on a Claude account, or start it as a plain project session.`,
       },
       { status: 400 },
+    );
+  }
+
+  // Story 4.1 / AC7 — CONSUME the wakes this turn's appendix is about to carry,
+  // so the same outcome is never stated twice.
+  //
+  // THE WINDOW IS EXACT, and both edges are load-bearing. AFTER the capability
+  // gate above: a pre-stream 400 would otherwise consume a wake no model ever
+  // saw. BEFORE registerChatRun below: the route's own comment on that call
+  // explains that an early return after it leaves a registered run with no
+  // stream to end, so nothing that can fail may be inserted past it — and this
+  // cannot fail (ackUltraWakes swallows an unwritable state root and simply
+  // leaves the wake pending, which is the correct failure direction).
+  //
+  // A DELIBERATE SECOND READ, not a value threaded out of the composer. Every
+  // appendix composer in session-prompts.ts returns a plain `string` — that is
+  // the shape of all five — and changing one so it could hand back the records
+  // it rendered would make the profile builder's return value carry data
+  // SessionProfile has no field for. So the ids are re-read here. It is cheap
+  // relative to what the turn is about to do, it keeps the composer pure of the
+  // ack, and if the two reads ever disagreed (a run settling in the microseconds
+  // between them) the newer wake simply stays pending for the next turn — the
+  // correct direction, and the one the ack's idempotence already tolerates.
+  // Do not "fix" this into one read.
+  if (typeof sessionId === "string" && sessionId) {
+    ackUltraWakes(
+      sessionId,
+      pendingUltraWakes(sessionId).map((w) => w.runId),
     );
   }
 
@@ -967,11 +1032,12 @@ export async function POST(req: Request) {
                 // and a reconnecting client can tail this turn (Phase 1b).
                 // displayText (not the resolved kickoff instruction) so a
                 // mid-turn reconnect's synthetic "user" event can never leak
-                // the machinery prompt into a rendered bubble either. isKickoff
-                // also suppresses the line entirely (hidden) — the kickoff's
-                // local POST path never renders a user bubble either, so a
-                // mid-turn reconnect must not manufacture one.
-                startSessionLog(capturedSession, displayText, isKickoff);
+                // the machinery prompt into a rendered bubble either.
+                // `hiddenTurn` also suppresses the line entirely — neither the
+                // escalation kickoff nor story 4.1's Ultra wake trigger renders
+                // a user bubble on its local POST path, so a mid-turn reconnect
+                // must not manufacture one for either.
+                startSessionLog(capturedSession, displayText, hiddenTurn);
                 send("session", {
                   sessionId: capturedSession,
                   slashCommands: [],
@@ -1352,10 +1418,11 @@ export async function POST(req: Request) {
             // reconnecting client can tail this turn (Phase 1b). displayText
             // (not the resolved kickoff instruction) so a mid-turn reconnect's
             // synthetic "user" event can never leak the machinery prompt.
-            // isKickoff also suppresses the line entirely (hidden) — the
-            // kickoff's local POST path never renders a user bubble either, so
-            // a mid-turn reconnect must not manufacture one (M11.3 finding).
-            startSessionLog(capturedSession, displayText, isKickoff);
+            // `hiddenTurn` also suppresses the line entirely — neither the
+            // kickoff nor story 4.1's Ultra wake trigger renders a user bubble
+            // on its local POST path, so a mid-turn reconnect must not
+            // manufacture one for either (M11.3 finding).
+            startSessionLog(capturedSession, displayText, hiddenTurn);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -1869,8 +1936,12 @@ export async function POST(req: Request) {
               // server-authored instruction, not something the human said —
               // never persist it into the visible transcript (userMessage
               // above is only a fallback-title source for a would-be fresh
-              // chat; appendTurn skips pushing it when this is set).
-              hideUserMessage: isKickoff,
+              // chat; appendTurn skips pushing it when this is set). Story 4.1's
+              // Ultra wake trigger is the same kind of machinery and shares the
+              // flag: `hidden: true` on the client suppresses only the LOCAL
+              // bubble, so without this the trigger would reappear after a
+              // reload as something the human appeared to type.
+              hideUserMessage: hiddenTurn,
               assistantMessage: { role: "assistant", parts },
               costUsd,
               title,

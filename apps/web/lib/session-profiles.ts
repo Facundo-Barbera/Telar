@@ -17,9 +17,15 @@
 // line the registry is EMPTY at request time and resolveSessionProfile throws
 // on every chat request — and no gate would catch it: there is no test file for
 // app/api/chat/route.ts anywhere in the tree, so bun test, tsc and lint all
-// stay green while the app is broken. This is the first self-registering module
-// in the repo (grepped: declareEvents has zero production call sites), so there
-// is no precedent to remind you.
+// stay green while the app is broken. This was the first self-registering module
+// in the repo, and the parenthetical here used to read "(grepped: declareEvents
+// has zero production call sites)". Story 4.1 made that false: there is now
+// exactly one, in packages/core/src/ultra/events.ts. It is NOT a precedent for
+// this file's shape, though — it deliberately does the opposite, registering
+// through a self-healing accessor rather than at module scope, because
+// declareEvents throws on re-declaration and resetBus() clears the registry out
+// from under a cached handle. Read that file's header before copying either
+// pattern; they are answers to different problems.
 //
 // WHAT 2.1 LEFT INERT, AND WHAT 2.2 FILLED IN. Story 2.1 landed the resolver
 // additively: the route resolved a profile for every request but consumed only
@@ -101,7 +107,13 @@ export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   requiredCapabilities: [],
   // The route's old fallthrough arm: `ultraAnnotationNote ? { …append } : { }`.
   // "" when the composer's Ultra chip is off, which is every ordinary turn.
-  systemPromptAppendix: projectAppendix({ ultraAnnotated: ctx.ultraAnnotated }),
+  // `sessionId` (story 4.1) carries the completed-Ultra-run block. Undefined on
+  // turn 1 of a fresh session, which is correct: the SDK mints the id inside the
+  // stream, and a session with no id has no pending wakes by construction.
+  systemPromptAppendix: projectAppendix({
+    ultraAnnotated: ctx.ultraAnnotated,
+    sessionId: ctx.sessionId,
+  }),
 });
 
 // The Loom planning session (docs/loom-model.md §5). The route's own comment on
@@ -117,14 +129,24 @@ export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
 // PLANNER_SYSTEM_PROMPT — the const the route used to hold privately. This is
 // the arm of the route's `systemPrompt` ternary guarded by isPlannerSession,
 // moved intact: static guidance plus the per-turn Ultra note, in that order.
-// Pure — planner is the one loom kind with no live read, so nothing here can
-// fail.
+//
+// NO LONGER PURE, and this comment used to say it was. Story 4.1 added the
+// completed-Ultra-run block, which is a live read of the ultra subtree, to
+// project, planner AND steerer — an Ultra run can be launched from any of the
+// three, so the outcome has to be able to come back to any of the three. So the
+// old sentence ("Pure — planner is the one loom kind with no live read, so
+// nothing here can fail") is now false and is replaced rather than left to
+// mislead: planner performs exactly one live read, it is wrapped in its own
+// safeLiveContext, and a failure of it degrades to the static prompt.
 export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
   kind: "planner",
   settingSources: [...REPO_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
-  systemPromptAppendix: plannerAppendix({ ultraAnnotated: ctx.ultraAnnotated }),
+  systemPromptAppendix: plannerAppendix({
+    ultraAnnotated: ctx.ultraAnnotated,
+    sessionId: ctx.sessionId,
+  }),
 });
 
 // The embedded steering session (the loom Chat tab). Same reasoning as planner,
@@ -155,6 +177,7 @@ export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
   systemPromptAppendix: steererAppendix({
     loomId: ctx.loomId,
     ultraAnnotated: ctx.ultraAnnotated,
+    sessionId: ctx.sessionId,
   }),
 });
 

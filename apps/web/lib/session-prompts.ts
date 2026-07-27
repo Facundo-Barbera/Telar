@@ -21,6 +21,17 @@
 // the builder for its kind, which is what lets tracks D, E and F add a session
 // kind without editing the route.
 //
+// STORY 4.1 WIDENED WHAT FOLLOWS FROM TWO KINDS TO FOUR-MINUS-ONE. The paragraph
+// below was written when only steerer and escalation performed live reads.
+// PROJECT, PLANNER and STEERER now each perform one more — the completed-Ultra-run
+// block (buildUltraWakeContext), which reads the ultra subtree — because an Ultra
+// run can be launched from any non-escalation session and its outcome has to be
+// able to come back to whichever session launched it. Escalation is the one kind
+// that does NOT get it, and that is enforced by its signature carrying no
+// `sessionId` at all. The reasoning below is unchanged and so is the fail-safe:
+// EACH live read sits inside its OWN safeLiveContext, so a failure drops that
+// block and nothing else.
+//
 // THE PROPERTY THIS FILE BENDS, stated plainly because the alternative is
 // discovering it in review. Composing a steerer or escalation appendix performs
 // FILESYSTEM READS (getLoom, readBundleFile, readContract,
@@ -52,11 +63,13 @@
 import {
   deriveDeliverableSignal,
   getLoom,
+  pendingUltraWakes,
   readBundleFile,
   readContract,
   STEERING_FILE,
 } from "@telar/core";
 import { formatEscalationContext } from "@/lib/loom-mcp";
+import { formatUltraWakeAppendix } from "@/lib/ultra-wake";
 
 // --- The three static prompts (moved verbatim from route.ts) -----------------
 
@@ -210,7 +223,37 @@ export function buildEscalationContext(loomId: string, root: string): string {
   });
 }
 
+// Story 4.1 / AC2 — the per-turn COMPLETED ULTRA RUNS block. Reads the durable
+// mailbox and hands it to the pure formatter in @/lib/ultra-wake; the string
+// assembly lives there so it is unit-testable with no disk (the same split
+// buildEscalationContext takes with formatEscalationContext).
+//
+// Server-only: `pendingUltraWakes` is a value import from @telar/core, exactly
+// like getLoom above, and INV-4 enforces transitively that no "use client" file
+// can reach this module.
+export function buildUltraWakeContext(sessionId: string): string {
+  return formatUltraWakeAppendix(pendingUltraWakes(sessionId));
+}
+
 // --- The appendix composers, one per kind -----------------------------------
+
+// Story 4.1 — the wake block, composed through its OWN safeLiveContext call.
+//
+// TWO INDEPENDENT LIVE READS IN ONE COMPOSER, and that is new here: before this
+// story no composer in this file ran more than one. They get SEPARATE wrappers
+// on purpose, so a failure of either drops only its own block and neither can
+// take the static prompt with it. A reader who finds one `safeLiveContext` and
+// assumes it covers both will "simplify" them into one and re-couple exactly the
+// failures the wrapper exists to keep apart.
+//
+// The injectable seam is `readWake`, NOT `read`: `read` is already occupied by
+// buildSteererContext and is keyed by loomId, while this one is keyed by
+// sessionId and is an orthogonal concern. Production never passes either.
+function ultraWakeAppendix(sessionId?: string, readWake?: (sessionId: string) => string): string {
+  return sessionId
+    ? safeLiveContext(() => (readWake ?? buildUltraWakeContext)(sessionId))
+    : "";
+}
 
 // The per-turn Ultra note, or "". A PURE function of the wire flag: it cannot
 // fail, which is why it must survive a live-context failure (see
@@ -241,18 +284,32 @@ export function safeLiveContext(read: () => string): string {
   }
 }
 
-// project — no static prompt of its own. The whole appendix is the Ultra note,
-// and "" when the chip is off, which is exactly what the route's old
-// `ultraAnnotationNote ? {…append} : {…}` fallthrough produced. A plain
-// session's systemPrompt stays byte-for-byte unchanged.
-export function projectAppendix(opts: { ultraAnnotated: boolean }): string {
-  return ultraNote(opts.ultraAnnotated);
+// project — no static prompt of its own. The appendix is the Ultra note plus,
+// as of story 4.1, the completed-run block; both are "" on an ordinary turn,
+// which is exactly what the route's old `ultraAnnotationNote ? {…append} : {…}`
+// fallthrough produced. A plain session with no chip and no finished run has a
+// byte-for-byte unchanged systemPrompt.
+export function projectAppendix(opts: {
+  ultraAnnotated: boolean;
+  sessionId?: string;
+  readWake?: (sessionId: string) => string;
+}): string {
+  return ultraNote(opts.ultraAnnotated) + ultraWakeAppendix(opts.sessionId, opts.readWake);
 }
 
-// planner — static guidance plus the Ultra note. No live read, so nothing here
-// can fail.
-export function plannerAppendix(opts: { ultraAnnotated: boolean }): string {
-  return PLANNER_SYSTEM_PROMPT + ultraNote(opts.ultraAnnotated);
+// planner — static guidance, the Ultra note, then the completed-run block. The
+// wake block is the one part of this composer that CAN fail (it reads the ultra
+// subtree), which is why it goes through safeLiveContext and the rest does not.
+export function plannerAppendix(opts: {
+  ultraAnnotated: boolean;
+  sessionId?: string;
+  readWake?: (sessionId: string) => string;
+}): string {
+  return (
+    PLANNER_SYSTEM_PROMPT +
+    ultraNote(opts.ultraAnnotated) +
+    ultraWakeAppendix(opts.sessionId, opts.readWake)
+  );
 }
 
 // steerer — static moat text + a per-turn live-context block + the Ultra note,
@@ -267,21 +324,37 @@ export function plannerAppendix(opts: { ultraAnnotated: boolean }): string {
 // prompt is the same fail-safe direction as safeLiveContext and costs nothing.
 //
 // `read` is injectable for the fail-safe test — production never passes it.
+// `readWake` is its story-4.1 sibling, a SECOND and independent live read (see
+// ultraWakeAppendix above for why they are not folded into one wrapper).
 export function steererAppendix(opts: {
   loomId?: string;
   ultraAnnotated: boolean;
+  sessionId?: string;
   read?: (loomId: string) => string;
+  readWake?: (sessionId: string) => string;
 }): string {
   const id = opts.loomId;
   const live = id ? safeLiveContext(() => (opts.read ?? buildSteererContext)(id)) : "";
-  return STEERER_SYSTEM_PROMPT + live + ultraNote(opts.ultraAnnotated);
+  return (
+    STEERER_SYSTEM_PROMPT +
+    live +
+    ultraNote(opts.ultraAnnotated) +
+    ultraWakeAppendix(opts.sessionId, opts.readWake)
+  );
 }
 
 // escalation — static moat text + a per-turn seed (blockedReason/question +
-// contract + deliverable-signal evidence). NEVER an Ultra note: the escalation
-// surface is a narrow read-only discuss wall and is offered none of ultra's
-// tools, so advertising the `ultra` tool to it would be an instruction to call
-// something the same profile hard-denies. Measured from the route's own
+// contract + deliverable-signal evidence). NEVER an Ultra note AND, as of story
+// 4.1, never a completed-run block either, for the identical reason: this
+// profile HARD-DENIES all three ultra tools, so telling it a run finished is
+// advertising an outcome to a surface that cannot act on it — the same class of
+// mistake the note's own absence already names. Enforced by the signature, which
+// carries neither `ultraAnnotated` nor `sessionId`, rather than by remembering.
+//
+// On the note specifically: the escalation surface is a narrow read-only discuss
+// wall and is offered none of ultra's tools, so advertising the `ultra` tool to
+// it would be an instruction to call something the same profile hard-denies.
+// Measured from the route's own
 // `ultraAnnotated && !isEscalationSession`, and it is the reason this signature
 // has no `ultraAnnotated` at all — the absence is enforced by the type rather
 // than remembered.

@@ -2379,7 +2379,22 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     expect(store).toContain('export { logUsage, usageSummary } from "@telar/core";');
     expect(store).toContain('export type { UsageEntry, UsageWindow } from "@telar/core";');
     expect(store).toContain("ledgerReadDegraded");
-    expect(store).toContain("usageCostBySession");
+    // STORY 4.1 CHANGED WHICH PROJECTION store.ts NAMES, and this line moved with
+    // it — deliberately, after the pin fired and was read rather than edited
+    // around. It used to require "usageCostBySession".
+    //
+    // WHAT CHANGED: `sessionSpendUsd` now sums the session-owned fold and the
+    // session's ULTRA fold (AC5 / FR-UW-5), and it takes both out of ONE
+    // `readFold()` through `sessionCostFolds` — because two accessor calls are
+    // two reads, and the port's readUnavailable/readStale flags are cleared on
+    // entry to each, so a transient failure on the first leg is erased by a
+    // second, luckier one. (Pinned in packages/core/test/usage-ledger.test.ts:
+    // "4.1 sessionCostFolds is ONE read…" plus its discriminator.)
+    //
+    // WHAT DID NOT CHANGE, which is the whole of what INV-5c is for: store.ts
+    // still reads a session's cost THROUGH THE PORT, still reimplements nothing,
+    // and still opens no file — asserted on the line below, unchanged.
+    expect(store).toContain("sessionCostFolds");
     expect(composesStateFile(store, "usage.ndjson")).toBe(false);
   });
 
@@ -4672,5 +4687,220 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     // contract rather than excused from it. A future INV-8 entry appearing here
     // should be an argument someone has, not a line that lands quietly.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-8")).toEqual([]);
+  });
+});
+
+// ── INV-9 (AD-21) ───────────────────────────────────────────────────────────
+//
+// PUBLISHED EVENT NAMES ARE CONTRACT, and story 4.1 is when that stopped being
+// a rule about nothing. Until it landed, `declareEvents` had ZERO production
+// call sites — the only event names in the tree were fixtures inside
+// event-bus.test.ts — so AD-21 was a doctrine with no surface to bind. Ultra's
+// `ultra:run-completed` is the first real one, and this is what keeps it from
+// being renamed, re-classed or quietly joined by a second name.
+//
+// ATTRIBUTION, PRECISELY, because getting it wrong files this under the wrong
+// rule. AD-19's own `Binds:` line is `AD-1, AD-2, AD-3, AD-5, AD-20` — AD-21 is
+// NOT in it — and AD-19's rule is written as a FLOOR ("At minimum: …"). So
+// INV-9 LIVES IN the AD-19 suite and PINS AD-21. It is not "an AD-19
+// invariant".
+//
+// BUDGET. This file deliberately spawns no process and invokes no compiler
+// (INV-*'s own constraint). INV-9 fits inside that: a static scan over the
+// index, plus a runtime read of the bus registry after installing ultra's
+// catalogue through its own self-healing accessor. The accessor is what makes
+// the runtime half safe to run here at all — `bun test` runs every file in ONE
+// process and `resetBus()` clears declarations globally, so a test that assumed
+// another file had left the catalogue registered would pass or fail on file
+// order. It installs its own.
+
+const ULTRA_EVENTS_SRC = "packages/core/src/ultra/events.ts";
+
+// The module namespace(s) a source file declares into. A function of a STRING,
+// never of a file, so INV-9d can feed it a runtime-assembled fixture through the
+// SAME function the real scan uses — a discriminator that called a different
+// function would prove nothing.
+//
+// CAPTURES ARE FILTERED THROUGH THE BUS'S OWN SEGMENT SHAPE, and that is a real
+// property rather than a convenience. Measured: without it this scan reports
+// event-bus.ts itself, because its "no module declared it" error carries the
+// literal `declareEvents("<module>", {...})` as the next step it tells the caller
+// to take. `<module>` is a PLACEHOLDER — declareEvents would refuse it at the
+// first character — so a string that cannot be a namespace is not a declaration
+// site. The regex is the same lower-kebab segment event-bus.ts validates against;
+// keeping the two in the same shape is what stops this scan drifting away from
+// what the bus actually accepts.
+const EVENT_SEGMENT = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+function declaredEventNamespaces(source: string): string[] {
+  const out: string[] = [];
+  const re = /declareEvents\(\s*(["'`])([^"'`]*)\1/g;
+  for (let m = re.exec(source); m; m = re.exec(source)) {
+    if (EVENT_SEGMENT.test(m[2]!)) out.push(m[2]!);
+  }
+  return out;
+}
+
+// Which namespace a path is ENTITLED to declare into: the directory under
+// packages/core/src that owns it. `packages/core/src/ultra/events.ts` → "ultra".
+// A file directly under src/ owns no module subtree and is entitled to none,
+// which is why it returns null rather than a guess.
+function owningModuleNamespace(rel: string): string | null {
+  const m = /^packages\/core\/src\/([a-z][a-z0-9-]*)\/[^/]+$/.exec(rel);
+  return m ? m[1]! : null;
+}
+
+// The violation objects, carrying the AD id, the rule in one clause, the
+// consequence, and the next step — in that order, and in the asserted VALUE
+// rather than in an expect message (no suite in this repo passes one).
+function eventNamespaceViolations(rel: string, source: string): string[] {
+  const owner = owningModuleNamespace(rel);
+  return declaredEventNamespaces(source)
+    .filter((ns) => ns !== owner)
+    .map(
+      (ns) =>
+        `${rel} calls declareEvents("${ns}") but the directory that owns it is ` +
+        `${owner === null ? "not a module subtree of packages/core/src" : `"${owner}"`}. AD-21 — a ` +
+        `module's published event names are as binding as its tool signatures, and the full name is ` +
+        `COMPOSED inside declareEvents from the declaring module's own namespace precisely so a ` +
+        `module cannot declare into another's. CONSEQUENCE: two modules can mint names in one ` +
+        `namespace, so a subscriber cannot tell whose contract it is holding and a rename by either ` +
+        `owner silently breaks the other. NEXT STEP: declare under "${owner ?? "<the owning module>"}", ` +
+        `or move the declaration into the module that owns the namespace.`,
+    );
+}
+
+// The module that DEFINES declareEvents is not a CALLER of it — the same
+// definer/caller distinction INV-5b draws with ownsSymbol("usage-ledger").
+// Belt-and-braces with the segment filter above: that filter is what actually
+// excludes event-bus.ts today, and this is what keeps the scan honest if a
+// future error message there ever quotes a real namespace.
+const EVENT_DECL_SITES = NON_TEST.filter(
+  (f) => f.rel !== EVENT_BUS && declaredEventNamespaces(f.code).length > 0,
+).map((f) => f.rel);
+
+describe("INV-9 a module's declared event names and delivery classes are contract — AD-21", () => {
+  test("INV-9 floor — at least one PRODUCTION declareEvents call exists, so nothing below passes vacuously", () => {
+    // A LOWER BOUND to re-measure, never an equality: a second module declaring
+    // its own catalogue is expected and is not this invariant's business. What
+    // is its business is that deleting the declaration cannot turn the whole
+    // invariant green by emptying its input.
+    const core = EVENT_DECL_SITES.filter((rel) => rel.startsWith("packages/core/src/"));
+    if (core.length === 0) {
+      throw new Error(
+        `INV-9: NO production declareEvents call exists under packages/core/src. AD-21 governs ` +
+          `published event names, and every assertion below reads this set — so with it empty they ` +
+          `would all hold by visiting nothing. This is the state the repo was in before story 4.1, ` +
+          `and event-bus.ts's own header recorded it. CONSEQUENCE: the delivery-class gate (AD-14) ` +
+          `and the namespace rule are unenforced. NEXT STEP: find where the catalogue moved and ` +
+          `update ${ULTRA_EVENTS_SRC}; do not delete this test.`,
+      );
+    }
+    // …and the one that exists today is ultra's, which the arms below read.
+    expect(core).toContain(ULTRA_EVENTS_SRC);
+    expect(byRel.get(ULTRA_EVENTS_SRC)).toBeDefined();
+  });
+
+  test("INV-9a ultra's declared catalogue is an EXACT SET — a second name cannot appear quietly", async () => {
+    // The runtime half, installed HERE through ultra's own self-healing accessor
+    // rather than assuming another suite left it registered (bun runs every file
+    // in one process; resetBus() clears declarations globally).
+    const { ultraEvents, ULTRA_RUN_COMPLETED } = await import("../src/ultra/events");
+    const { declaredEvents, resetBus } = await import("../src/event-bus");
+    resetBus();
+    ultraEvents();
+    // AD-21 made mechanical: adding a name means editing this line, which is
+    // exactly the "deliberate contract change" the rule asks for.
+    expect(declaredEvents()).toEqual([ULTRA_RUN_COMPLETED]);
+    expect(ULTRA_RUN_COMPLETED).toBe("ultra:run-completed");
+    // The name is COMPOSED, never handed in pre-composed — so the source says
+    // "ultra" and "run-completed" separately and never the joined literal.
+    const src = byRel.get(ULTRA_EVENTS_SRC)!.code;
+    expect(src).toContain('declareEvents("ultra"');
+    expect(src).toContain('"run-completed"');
+    expect(src.includes('declareEvents("ultra:run-completed"')).toBe(false);
+    resetBus();
+  });
+
+  test("INV-9b the wake event is agent-facing — the class it exists to be", async () => {
+    const { ultraEvents, ULTRA_RUN_COMPLETED } = await import("../src/ultra/events");
+    const { eventDeclaration, canWake, resetBus } = await import("../src/event-bus");
+    resetBus();
+    ultraEvents();
+    // A silent re-class would strip FR-UW-1 without failing anything else: a
+    // human-facing wake is refused by subscribeAgentFacing at REGISTRATION, so
+    // the recorder would simply never attach and the feature would go quiet.
+    const decl = eventDeclaration(ULTRA_RUN_COMPLETED);
+    expect(decl).toEqual({ deliveryClass: "agent-facing" });
+    expect(canWake(decl!.deliveryClass)).toBe(true);
+    resetBus();
+  });
+
+  test("INV-9c every production declaration's namespace matches the directory that owns it", () => {
+    const violations = EVENT_DECL_SITES.flatMap((rel) =>
+      eventNamespaceViolations(rel, byRel.get(rel)!.code),
+    );
+    expect(violations).toEqual([]);
+    // Anti-vacuity: the scan really did visit the one site that exists.
+    expect(EVENT_DECL_SITES).toContain(ULTRA_EVENTS_SRC);
+    expect(declaredEventNamespaces(byRel.get(ULTRA_EVENTS_SRC)!.code)).toEqual(["ultra"]);
+    // …and the definer is excluded because it DEFINES rather than calls — its
+    // only `declareEvents("…")` text is the placeholder inside its own error.
+    expect(EVENT_DECL_SITES).not.toContain(EVENT_BUS);
+    expect(byRel.get(EVENT_BUS)!.code).toContain('declareEvents("<module>"');
+    expect(declaredEventNamespaces(byRel.get(EVENT_BUS)!.code)).toEqual([]);
+  });
+
+  test("INV-9d the DISCRIMINATOR — both failure shapes are REPORTED, by the same functions", async () => {
+    // Runtime-assembled fixtures, fed through the very functions the real check
+    // above uses. A guard that cannot fail is worse than no guard.
+    //
+    // 1. A mis-namespaced declaration, in both directions.
+    expect(
+      eventNamespaceViolations("packages/core/src/ultra/events.ts", 'declareEvents("loom", {})')
+        .length,
+    ).toBe(1);
+    expect(
+      eventNamespaceViolations("packages/core/src/ultra/events.ts", 'declareEvents("ultra", {})'),
+    ).toEqual([]);
+    // A file directly under src/ owns no module subtree, so ANY namespace it
+    // declares is a violation.
+    expect(
+      eventNamespaceViolations("packages/core/src/weave.ts", 'declareEvents("weave", {})').length,
+    ).toBe(1);
+    // The extractor itself discriminates, rather than matching everything or
+    // nothing.
+    expect(declaredEventNamespaces("nothing to see here")).toEqual([]);
+    expect(declaredEventNamespaces("declareEvents('a', {}); declareEvents(`b`, {})")).toEqual([
+      "a",
+      "b",
+    ]);
+    // …and a string that could never BE a namespace is not a declaration site,
+    // which is what keeps event-bus.ts's own error text out of the scan.
+    expect(declaredEventNamespaces('declareEvents("<module>", {})')).toEqual([]);
+    expect(declaredEventNamespaces('declareEvents("Ultra", {})')).toEqual([]);
+    expect(declaredEventNamespaces('declareEvents("ultra:run", {})')).toEqual([]);
+    // 2. A human-facing class on the wake channel, refused at REGISTRATION —
+    // the load-bearing half of the gate, exercised through the real functions.
+    const { z } = await import("zod");
+    const { declareEvents, resetBus, subscribeAgentFacing } = await import("../src/event-bus");
+    resetBus();
+    declareEvents("fixture", {
+      "run-completed": { deliveryClass: "human-facing", payload: z.object({}) },
+      "wake-worthy": { deliveryClass: "agent-facing", payload: z.object({}) },
+    });
+    expect(() => subscribeAgentFacing("fixture:run-completed", () => {})).toThrow(/human-facing/);
+    // …and the same call on an agent-facing name of the SAME shape succeeds, so
+    // the throw is about the CLASS and not about the fixture.
+    expect(() => subscribeAgentFacing("fixture:wake-worthy", () => {})).not.toThrow();
+    resetBus();
+  });
+
+  test("INV-9e the quarantine did not grow — INV-9 added no KNOWN_VIOLATIONS entry", () => {
+    // INV-3f pins the LENGTH of KNOWN_VIOLATIONS; this pins the fact that INV-9
+    // did not reach for it, in the shape INV-7f and INV-8h already use. Ultra's
+    // catalogue was written to the contract rather than excused from it, and a
+    // future INV-9 entry appearing here should be an argument someone has, not a
+    // line that lands quietly.
+    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-9")).toEqual([]);
   });
 });

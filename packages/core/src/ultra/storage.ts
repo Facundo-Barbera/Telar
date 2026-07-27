@@ -27,6 +27,7 @@ import type { AccountProfile } from "../schemas";
 import { getAccount } from "../accounts";
 import { ledgerReadUnavailable, ledgerSpendUsd, logUsage } from "../usage-ledger";
 import { runDir, ultraDir } from "./journal";
+import { ultraEvents, ultraRunLabel } from "./events";
 import {
   startUltra,
   resumeUltra,
@@ -460,6 +461,18 @@ async function launch(
                 sessionId: opts.sessionId ?? "",
                 ownerKind: "ultra",
                 ownerId: runId,
+                // Story 4.1 / FR-UW-5 — the OWNING CHAT TURN. `ownerId` is
+                // already spoken for as the runId, so per-turn attribution
+                // needed its own field (schemas.ts's UsageEntry.messageId). This
+                // is the launching turn's `runId`, threaded in by
+                // apps/web/app/api/chat/route.ts's `getMessageId: () => runId`.
+                // Additive and defaulted: a run launched with no messageId
+                // writes no such key at all, exactly as before.
+                //
+                // NO NEW CALL SITE. INV-5b pins logUsage's three production
+                // callers to one per UsageOwnerKind, and this is a field on the
+                // ultra caller that already existed.
+                messageId: opts.messageId ?? "",
                 costUsd: e.costUsd,
                 // A KEY NAMES A BILLABLE EVENT, NOT A SLOT. (runId, ordinal)
                 // names a slot: `ordinal` is issued from a per-run counter that
@@ -546,7 +559,67 @@ async function launch(
   // just persists the terminal outcome whenever it lands.
   run.finished
     .then((result) => {
-      saveManifest(buildManifest(result.state, result.error, result.result));
+      const manifest = buildManifest(result.state, result.error, result.result);
+      saveManifest(manifest);
+      // Story 4.1 / AC4 — announce the terminal state on the one event bus, as
+      // an `agent-facing` event (AD-14). THE ORDER IS LOAD-BEARING: the durable
+      // write happens first, so if only one of the two survives it is the one
+      // the wake's correctness actually rests on.
+      //
+      // WHY HERE AND NOT IN executor.ts's settle(). settle() is the more
+      // "central" terminal point and that is exactly why it is wrong: it lives
+      // inside the executor, which knows a runId and nothing else — no
+      // sessionId, no messageId, no account, no persisted spend. This closure
+      // has all of them, runs in whichever process is actually driving the run,
+      // and already performs the terminal saveManifest. It also keeps
+      // executor.ts out of this story's write set, which the SPEC's
+      // finish-work-only non-goal is asking for.
+      //
+      // BEST-EFFORT, exactly like the logUsage call two functions above:
+      // NOTIFICATION IS BEST-EFFORT, THE RUN IS NOT. A throw escaping here is
+      // an unhandled rejection on a run that has already finished and already
+      // persisted, so it is contained and reported into the run's own event log
+      // — one-shot, the same posture weave.ts's recordSpend takes.
+      //
+      // AND IT IS THE FAST PATH, NEVER THE GUARANTEE. If this publish is lost —
+      // it threw, no subscriber was installed in this process, or the process
+      // died before reaching it — the run is STILL pending, because
+      // `pendingUltraWakes` derives pending from the MANIFEST (terminal, and no
+      // `deliveredAt` stamp), not from anything this line does. Losing the
+      // event degrades delivery to "late", never to "never". Do not rewrite
+      // this comment to say the subscriber is what makes the wake work.
+      try {
+        ultraEvents().publish("run-completed", {
+          runId,
+          sessionId: manifest.sessionId ?? "",
+          messageId: manifest.messageId ?? "",
+          state: result.state,
+          name: ultraRunLabel(manifest.meta, runId),
+          // Guarded the same way wake.ts's `toPendingWake` guards it, and for
+          // the same reason: `UltraRunCompletedPayload.spendUsd` is z.number(),
+          // which REJECTS NaN — so an unguarded non-finite spend would make
+          // publish throw and the catch below would report a delivery failure
+          // that was really a bookkeeping anomaly. The two readers now agree.
+          spendUsd: Number.isFinite(manifest.spend) ? manifest.spend : 0,
+          terminalAt: manifest.updatedAt,
+          ...(manifest.result !== undefined ? { result: manifest.result } : {}),
+          ...(manifest.error ? { error: manifest.error } : {}),
+        });
+      } catch (err) {
+        try {
+          appendUltraEvent(runId, {
+            type: "log",
+            msg:
+              `run-completed-publish-failed: ${err instanceof Error ? err.message : String(err)}` +
+              ` — the terminal manifest IS written, so this run stays pending for the session's ` +
+              `next turn (pendingUltraWakes reconciles from the manifest); only the immediate ` +
+              `wake was lost`,
+          });
+        } catch {
+          // the run's own event log is unwritable too — still not a reason to
+          // fail a run that has already finished.
+        }
+      }
     })
     .catch(() => {
       // startUltra's own finished promise never rejects (every path settles

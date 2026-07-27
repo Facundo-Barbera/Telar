@@ -906,7 +906,15 @@ export type PanelReport = z.infer<typeof PanelReport>;
 // before the field existed.
 //
 // NOTE: cost LANGUAGE (USD on Claude, tokens on Codex) is a property of the
-// PROJECTION, never of this record. No currency/unit field belongs here.
+// PROJECTION, never of this record. No UNIT SELECTOR belongs here.
+//
+// AMENDED BY STORY 4.1. This line used to read "No currency/unit field belongs
+// here", which taken literally is contradicted three lines down by `costUsd`.
+// The real rule: every row carries the raw material for BOTH denominations — a
+// cost number AND token counts, unconditionally — and carries nothing that
+// chooses between them (no `currency`, no `unit`, no `provider`). The chooser is
+// apps/web/lib/spend-readout.ts, at render time. Asserted, not just asserted
+// about, in packages/core/test/usage-ledger.test.ts's "4.1 AC6 proof 1".
 export const UsageOwnerKind = z.enum(["session", "loom", "ultra"]);
 export type UsageOwnerKind = z.infer<typeof UsageOwnerKind>;
 
@@ -968,5 +976,27 @@ export const UsageEntry = z.object({
   // "" means UN-KEYED — fold every occurrence — which is the pre-existing
   // behavior of every record already on disk.
   entryKey: z.string().default(""),
+  // Story 4.1 / FR-UW-5 — WHICH CHAT TURN OWNS THIS SPEND.
+  //
+  // The owner key is (ownerKind, ownerId), and for an ultra row `ownerId` is
+  // already spoken for as the runId — so per-turn attribution had nowhere to
+  // live until this field. `ultra/storage.ts` fills it from the launching
+  // turn's `opts.messageId`; nothing else supplies one today.
+  //
+  // A PRECISE HONESTY NOTE, because the obvious sentence about this field is
+  // false. "The owning chat MESSAGE" in this app means the owning chat TURN:
+  // `apps/web/lib/store.ts`'s `ChatMessage` has no id field at all (only the
+  // `tool` variant of `Part` carries one) and `appendTurn` takes no
+  // runId/messageId, so the per-turn `runId` is never persisted into
+  // chats.json. `apps/web/lib/ultra-mcp.ts` says the same from the other side:
+  // "This app has no id finer-grained than a turn." So a row here joins back to
+  // a RUN and to a TURN, and never to a stored message object.
+  //
+  // ADDITIVE AND DEFAULTED, for the reason every field above it is: a required
+  // field would reject every historical line (AD-7 tolerant readers), and
+  // usage-ledger.ts omits it from the serialized JSON when empty so an
+  // un-attributed row stays byte-identical to one written before it existed —
+  // the same asymmetry `entryKey` already has, for the same reason.
+  messageId: z.string().default(""),
 });
 export type UsageEntry = z.infer<typeof UsageEntry>;

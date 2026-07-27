@@ -35,7 +35,8 @@
 import { useState } from "react";
 import { GaugeIcon, UserRoundIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { fmtCost, fmtTokens } from "@/lib/format";
+import { fmtTokens } from "@/lib/format";
+import type { SpendReadout } from "@/lib/spend-readout";
 import { useAnchoredOverlay } from "@/lib/use-anchored-overlay";
 import { cn } from "@/lib/utils";
 
@@ -90,7 +91,17 @@ function LegendRow({
   );
 }
 
-export function CostPill({ total }: { total: number }) {
+// Story 4.1 / AC6 — the pill renders a READOUT, not a bare USD number. The unit
+// is decided by lib/spend-readout.ts from the session's provider, because the
+// ledger record carries no UNIT SELECTOR (AD-18): every row holds a cost number
+// AND token counts side by side, and nothing on it chooses between them. (Said
+// precisely on purpose — the loose form, "the record carries no currency or
+// unit", is contradicted by `UsageEntry.costUsd` and was corrected in
+// schemas.ts and usage-ledger.ts by this same story.) This component only prints
+// what the projection already decided. Before 4.1 it took `total: number`, and a
+// Codex session was HIDDEN at the call site rather than shown in its own
+// language — see spend-readout.ts's header for the measurement.
+export function CostPill({ readout }: { readout: SpendReadout }) {
   const { open, pinned, bind, toggle } = usePinnableHover();
   const { anchorRef, floatRef, style, ready } = useAnchoredOverlay<
     HTMLDivElement,
@@ -108,7 +119,7 @@ export function CostPill({ total }: { total: number }) {
         onClick={toggle}
         className="flex items-center"
         aria-expanded={open}
-        title={pinned ? "Click to unpin" : "Hover to preview · click to pin"}
+        title={pinned ? "Click to unpin" : `${readout.title} · hover to preview, click to pin`}
       >
         <Badge
           variant="outline"
@@ -117,7 +128,7 @@ export function CostPill({ total }: { total: number }) {
             pinned && "ring-1 ring-ring",
           )}
         >
-          {fmtCost(total)}
+          {readout.text}
         </Badge>
       </button>
       {open && (
@@ -129,15 +140,18 @@ export function CostPill({ total }: { total: number }) {
           <div className="w-72 rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
             <div className="mb-1.5 flex items-center justify-between px-1.5">
               <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
-                Cost breakdown
+                {readout.unit === "tokens" ? "Token breakdown" : "Cost breakdown"}
               </span>
-              <span className="font-mono text-xs font-semibold">{fmtCost(total)}</span>
+              <span className="font-mono text-xs font-semibold">{readout.text}</span>
             </div>
             <ul className="space-y-0.5">
               <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
                 <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
+                {/* Story 4.1 / AC5 widened the source: this figure now folds the
+                    session's own rows AND the ultra rows its runs wrote, so
+                    "sub-agents" honestly includes a detached Ultra run's agents. */}
                 <span className="min-w-0 flex-1 truncate">Main + all sub-agents</span>
-                <span className="shrink-0 font-mono text-[11px]">{fmtCost(total)}</span>
+                <span className="shrink-0 font-mono text-[11px]">{readout.text}</span>
               </li>
             </ul>
             {/* The transcript carries one aggregate cost — per-sub-agent spend

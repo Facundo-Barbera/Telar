@@ -1,7 +1,7 @@
 ---
 story_id: "4.1"
 title: "Completion wake and session-cost rollup"
-status: ready-for-dev
+status: review
 epic: 4
 track: "D — Ultra finish (lib/ultra-mcp.ts, ultra owner-adapter pieces, ultra/ subtree)"
 caps: ["UW CAP-1", "UW CAP-5"]
@@ -242,60 +242,60 @@ Leg order matters. **B before C** (the ledger's shape before its readers). **D b
 
 ### Leg A — the cost language (AC6)
 
-- **A1.** Write `apps/web/lib/spend-readout.ts`: a pure, dependency-free module in the shape of `apps/web/lib/escalation-kickoff.ts` (no React, no core import, no fetch). Export the readout type and one function of `(provider, { usd, tokens })`. Use `fmtCost` / `fmtTokens` from `apps/web/lib/format.ts`; invent no third formatter.
-- **A2.** `spend-readout.test.ts` — both providers, a zero case, and the field-set assertion that `UsageEntry` carries no currency/unit key (AC6 proof 1). Put the `UsageEntry` half wherever it can see the schema; if that is a core suite, put it there and say so.
-- **A3.** `session-meters.tsx` — `CostPill` renders a readout rather than a bare USD number. Read every call site first (grep `CostPill`) and change them all; do not leave a second shape behind.
-- **A4.** `session-view.tsx` — replace the `provider !== "codex"` hide with the readout. Record in a comment **which** token figure you chose for the Codex form and why; whatever you choose, 4.2's anchor must be able to choose the same.
+- [x] **A1.** Write `apps/web/lib/spend-readout.ts`: a pure, dependency-free module in the shape of `apps/web/lib/escalation-kickoff.ts` (no React, no core import, no fetch). Export the readout type and one function of `(provider, { usd, tokens })`. Use `fmtCost` / `fmtTokens` from `apps/web/lib/format.ts`; invent no third formatter.
+- [x] **A2.** `spend-readout.test.ts` — both providers, a zero case, and the field-set assertion that `UsageEntry` carries no currency/unit key (AC6 proof 1). Put the `UsageEntry` half wherever it can see the schema; if that is a core suite, put it there and say so.
+- [x] **A3.** `session-meters.tsx` — `CostPill` renders a readout rather than a bare USD number. Read every call site first (grep `CostPill`) and change them all; do not leave a second shape behind.
+- [x] **A4.** `session-view.tsx` — replace the `provider !== "codex"` hide with the readout. Record in a comment **which** token figure you chose for the Codex form and why; whatever you choose, 4.2's anchor must be able to choose the same.
 
 ### Leg B — the ledger (AC5)
 
-- **B1.** `schemas.ts` — `UsageEntry` gains `messageId: z.string().default("")`. Additive and defaulted, per that file's own stated doctrine; a required field would break every historical line (AD-7).
-- **B2.** `usage-ledger.ts` — serialize `messageId` with the same omit-when-empty treatment `entryKey` already gets, so an un-keyed historical row stays byte-identical.
-- **B3.** `usage-ledger.ts` — `Fold` gains the two ultra maps; `foldLine` accumulates them **above** the `ownerKind !== "session"` early return, restricted to `ownerKind === "ultra"`. Export `ultraCostBySession()` and `ultraCostByMessage()` in the shape of the existing `usageCostBySession()`.
-- **B4.** `ultra/storage.ts` — the **existing** `logUsage` call passes `messageId: opts.messageId ?? ""`. Nothing else in that call changes; the `entryKey` and the replay-safe re-write on `cached` settles stay exactly as they are (§5.6-T6).
-- **B5.** `usage-ledger.test.ts` — the two folds, a pre-`messageId` row folding clean (tolerant reader), the entryKey dedupe still holding across the new maps, and the no-double-count trio from AC5 proof 5.
-- **B6.** `ultra-storage.test.ts` — the row on disk carries `messageId`; a run launched without one writes no `messageId` key at all.
+- [x] **B1.** `schemas.ts` — `UsageEntry` gains `messageId: z.string().default("")`. Additive and defaulted, per that file's own stated doctrine; a required field would break every historical line (AD-7).
+- [x] **B2.** `usage-ledger.ts` — serialize `messageId` with the same omit-when-empty treatment `entryKey` already gets, so an un-keyed historical row stays byte-identical.
+- [x] **B3.** `usage-ledger.ts` — `Fold` gains the two ultra maps; `foldLine` accumulates them **above** the `ownerKind !== "session"` early return, restricted to `ownerKind === "ultra"`. Export `ultraCostBySession()` and `ultraCostByMessage()` in the shape of the existing `usageCostBySession()`.
+- [x] **B4.** `ultra/storage.ts` — the **existing** `logUsage` call passes `messageId: opts.messageId ?? ""`. Nothing else in that call changes; the `entryKey` and the replay-safe re-write on `cached` settles stay exactly as they are (§5.6-T6).
+- [x] **B5.** `usage-ledger.test.ts` — the two folds, a pre-`messageId` row folding clean (tolerant reader), the entryKey dedupe still holding across the new maps, and the no-double-count trio from AC5 proof 5.
+- [x] **B6.** `ultra-storage.test.ts` — the row on disk carries `messageId`; a run launched without one writes no `messageId` key at all.
 
 ### Leg C — the display projection (AC5)
 
-- **C1.** `store.ts` — `sessionSpendUsd` sums the session fold and the ultra fold. One function, one place. Leave `displayedSpendUsd`'s `ledgerReadDegraded()` fallback semantics alone — but read §5.6-T7 first, because a degraded read now has two summands and the fallback question is not automatically unchanged.
-- **C2.** `store.test.ts` — the arithmetic; that an out-of-band ultra append moves the value (the property a counter cannot pass); that a loom row on the same session does **not** move it; that `usageSummary()` is unchanged.
+- [x] **C1.** `store.ts` — `sessionSpendUsd` sums the session fold and the ultra fold. One function, one place. Leave `displayedSpendUsd`'s `ledgerReadDegraded()` fallback semantics alone — but read §5.6-T7 first, because a degraded read now has two summands and the fallback question is not automatically unchanged.
+- [x] **C2.** `store.test.ts` — the arithmetic; that an out-of-band ultra append moves the value (the property a counter cannot pass); that a loom row on the same session does **not** move it; that `usageSummary()` is unchanged.
 
 ### Leg D — the declared event (AC4)
 
-- **D1.** `packages/core/src/ultra/events.ts` — the catalogue, with the self-healing accessor of §5.5-D2. One event: `run-completed`, `agent-facing`, with a zod payload.
-- **D2.** `ultra/storage.ts` — publish at `run.finished.then`, immediately after the terminal `saveManifest`. Wrap it in its own `try`/`catch`: notification is best-effort, the run is not — the identical posture the `logUsage` call two functions above already takes.
-- **D3.** `ultra/index.ts` — export the new module.
+- [x] **D1.** `packages/core/src/ultra/events.ts` — the catalogue, with the self-healing accessor of §5.5-D2. One event: `run-completed`, `agent-facing`, with a zod payload.
+- [x] **D2.** `ultra/storage.ts` — publish at `run.finished.then`, immediately after the terminal `saveManifest`. Wrap it in its own `try`/`catch`: notification is best-effort, the run is not — the identical posture the `logUsage` call two functions above already takes.
+- [x] **D3.** `ultra/index.ts` — export the new module.
 
 ### Leg E — the durable wake record (AC1, AC2, AC7)
 
-- **E1.** `packages/core/src/ultra/wake.ts` — the zod record, its file inside `runDir(runId)` (atomic `.tmp` → `renameSync`, AD-6), the `subscribeAgentFacing` recorder, `pendingUltraWakes(sessionId)`, `ackUltraWakes(sessionId, runIds)`.
-- **E2.** Wire the recorder installation into the same self-healing accessor as the declaration, so one call gets you both and neither can be registered twice (§5.5-D2).
-- **E3.** `packages/core/test/ultra-wake.test.ts` — publish → recorded → pending → acked → not pending; the never-published restart floor; the self-healed-`stopped` case; the non-terminal positive control; the human-facing discriminator for AC4.
+- [x] **E1.** `packages/core/src/ultra/wake.ts` — the zod record, its file inside `runDir(runId)` (atomic `.tmp` → `renameSync`, AD-6), the `subscribeAgentFacing` recorder, `pendingUltraWakes(sessionId)`, `ackUltraWakes(sessionId, runIds)`.
+- [x] **E2.** Wire the recorder installation into the same self-healing accessor as the declaration, so one call gets you both and neither can be registered twice (§5.5-D2).
+- [x] **E3.** `packages/core/test/ultra-wake.test.ts` — publish → recorded → pending → acked → not pending; the never-published restart floor; the self-healed-`stopped` case; the non-terminal positive control; the human-facing discriminator for AC4.
 
 ### Leg F — delivery (AC1, AC2)
 
-- **F1.** `apps/web/lib/ultra-wake.ts` — the pure seam: the sentinel, the recognizer, the server-authored instruction, and the appendix formatter. Read `escalation-kickoff.ts` first and mirror its shape, its header style and its "pure, dependency-free, shared by client and server, unit-testable without importing either heavy module" rationale. **Invert one condition** — §5.6-T11.
-- **F2.** `apps/web/lib/ultra-wake.test.ts` — the formatter for each terminal state, the empty case (returns `""`, never a stray header), a bound on length, and the recognizer's negative cases **including the sentinel with an empty `sessionId`** (T11's trap).
-- **F3.** `packages/core/src/session-profile.ts` — one optional `sessionId?` on `SessionResolutionContext`, with a comment saying who added it and why. Nothing else in that file.
-- **F4.** `session-prompts.ts` — the wake appendix through its **own** `safeLiveContext` call, with its **own** injectable parameter (`readWake?`, **not** `read`, which is already taken — §5.6-T12), folded into `projectAppendix`, `plannerAppendix` and `steererAppendix`. **Not** `escalationAppendix` — that profile hard-denies all three ultra tools, and advertising an outcome to a surface that cannot act on it is the same class of mistake its own comment already names.
-- **F5.** `session-profiles.ts` — pass `ctx.sessionId` to those three composers.
-- **F6.** `route.ts` — four lines: `sessionId` into the `resolveSessionProfile({…})` object; the sentinel swap beside the existing `resolveEscalationMessage` line; `hideUserMessage` extended; and the ack, placed **after** the `unmetCapabilities` 400 and **before** `registerChatRun`, taking its ids from a second direct `pendingUltraWakes(sessionId)` call (§5.5-D10 for the window, D10a for the ids).
-- **F7.** `apps/web/lib/use-ultra-wake.ts` — the polling hook (§5.5-D9). `use-accounts.ts` is the template.
-- **F8.** `session-view.tsx` — call the hook; push its trigger into `injectionQueue` **with `hidden: true`**, which requires the two-line change in §5.5-D9a (the item type and the drain's dispatch). Read the §6.D comment and §5.6-T9 before you touch anything near it: the three gate conditions do not change, the dispatch line does.
-- **F9.** `session-prompts.test.ts` / `session-profiles.test.ts` — the injected-read proof and the builder proof.
+- [x] **F1.** `apps/web/lib/ultra-wake.ts` — the pure seam: the sentinel, the recognizer, the server-authored instruction, and the appendix formatter. Read `escalation-kickoff.ts` first and mirror its shape, its header style and its "pure, dependency-free, shared by client and server, unit-testable without importing either heavy module" rationale. **Invert one condition** — §5.6-T11.
+- [x] **F2.** `apps/web/lib/ultra-wake.test.ts` — the formatter for each terminal state, the empty case (returns `""`, never a stray header), a bound on length, and the recognizer's negative cases **including the sentinel with an empty `sessionId`** (T11's trap).
+- [x] **F3.** `packages/core/src/session-profile.ts` — one optional `sessionId?` on `SessionResolutionContext`, with a comment saying who added it and why. Nothing else in that file.
+- [x] **F4.** `session-prompts.ts` — the wake appendix through its **own** `safeLiveContext` call, with its **own** injectable parameter (`readWake?`, **not** `read`, which is already taken — §5.6-T12), folded into `projectAppendix`, `plannerAppendix` and `steererAppendix`. **Not** `escalationAppendix` — that profile hard-denies all three ultra tools, and advertising an outcome to a surface that cannot act on it is the same class of mistake its own comment already names.
+- [x] **F5.** `session-profiles.ts` — pass `ctx.sessionId` to those three composers.
+- [x] **F6.** `route.ts` — four lines: `sessionId` into the `resolveSessionProfile({…})` object; the sentinel swap beside the existing `resolveEscalationMessage` line; `hideUserMessage` extended; and the ack, placed **after** the `unmetCapabilities` 400 and **before** `registerChatRun`, taking its ids from a second direct `pendingUltraWakes(sessionId)` call (§5.5-D10 for the window, D10a for the ids).
+- [x] **F7.** `apps/web/lib/use-ultra-wake.ts` — the polling hook (§5.5-D9). `use-accounts.ts` is the template.
+- [x] **F8.** `session-view.tsx` — call the hook; push its trigger into `injectionQueue` **with `hidden: true`**, which requires the two-line change in §5.5-D9a (the item type and the drain's dispatch). Read the §6.D comment and §5.6-T9 before you touch anything near it: the three gate conditions do not change, the dispatch line does.
+- [x] **F9.** `session-prompts.test.ts` / `session-profiles.test.ts` — the injected-read proof and the builder proof.
 
 ### Leg G — the executable contract (AC4)
 
-- **G1.** `invariants.test.ts` — append **INV-9** only (§5.5-D12): the floor, the exact-set catalogue pin, the delivery-class pin, the discriminator, and the `KNOWN_VIOLATIONS`-unchanged assertion in the shape of `INV-7f` / `INV-8h`.
-- **G2.** Re-run `INV-5b`, `INV-3a`/`INV-3b` and `INV-6a` and record their verdicts by name. If any fires, read §5.6-T8 before you edit a pin.
+- [x] **G1.** `invariants.test.ts` — append **INV-9** only (§5.5-D12): the floor, the exact-set catalogue pin, the delivery-class pin, the discriminator, and the `KNOWN_VIOLATIONS`-unchanged assertion in the shape of `INV-7f` / `INV-8h`.
+- [x] **G2.** Re-run `INV-5b`, `INV-3a`/`INV-3b` and `INV-6a` and record their verdicts by name. If any fires, read §5.6-T8 before you edit a pin.
 
 ### Leg V — the gate and the record
 
-- **V1.** `bun test`, `bun run lint`, `bunx tsc --noEmit` in **both** `packages/core` and `apps/web`. Record real output; report new lint problems in changed files only.
-- **V2.** The dev-server proof, in full, as specified above.
-- **V3.** `deferred-work.md` — everything you found and did not cross, each with a named owner.
-- **V4.** §9, §10, §11 of this file. Every claim re-derived from the tree at the moment you write it (hard rule at the top of §0).
+- [x] **V1.** `bun test`, `bun run lint`, `bunx tsc --noEmit` in **both** `packages/core` and `apps/web`. Record real output; report new lint problems in changed files only.
+- [x] **V2.** The dev-server proof, in full, as specified above.
+- [x] **V3.** `deferred-work.md` — everything you found and did not cross, each with a named owner.
+- [x] **V4.** §9, §10, §11 of this file. Every claim re-derived from the tree at the moment you write it (hard rule at the top of §0).
 
 ---
 
@@ -637,24 +637,208 @@ There is no DOM harness, and that is not a compromise here — it is why the des
 
 ### Agent Model Used
 
-_(fill in)_
+`claude-opus-5` (Claude Code, `/effort ultracode`). Reconnaissance and adversarial verification were fanned out to `claude-sonnet-5` subagents through the Workflow tool; every design decision, every edit and every claim below is the primary model's.
 
 ### Debug Log
 
-_(fill in — §6.3 lists what it must contain)_
+**Everything in this log was measured in this session, at the moment it was written. Numbers are labelled as measurements or as pointers; nothing is carried forward from §5 or from the frontmatter.**
+
+**(1) The full gate.**
+
+- **Baseline, re-measured BEFORE the first edit**, at `HEAD` = `5e8596a`: `bun test` → **2048 pass / 0 fail / 10994 `expect()` calls across 126 files** (40.44s). This matches the frontmatter's carried-forward pointer, which was therefore correct — but it is recorded here as *my own* measurement, not as a confirmation of a quote. `git diff --stat 9a94632 5e8596a -- packages apps` is **empty**, so the source tree the story was written against and the tree at `HEAD` are identical; `5e8596a` is the story-document commit.
+- **After, at the close of implementation (including every fix the adversarial audit produced):** `bun test` → **2119 pass / 0 fail / 11296 `expect()` calls across 129 files** (40.10s). +71 tests, +3 files, **0 failures, and no pre-existing failure to report** — the suite was clean before and is clean after.
+- **`bunx tsc --noEmit` in `packages/core`:** clean, no output. **In `apps/web`:** clean, no output. (One error was found and fixed on the way: `apps/web/lib/ultra-wake.test.ts` used a `1n` BigInt literal, and this workspace's tsconfig targets below ES2020. It is now `BigInt(1)`, with a comment saying why.)
+- **`bun run lint` in `apps/web`:** **65 errors / 12 warnings across 20 files — every one of them pre-existing.** This is not an assertion of memory: I captured the lint output, `git stash push -u`'d the entire change, captured it again, and diffed the two with line numbers normalized away (`FILE <path>` + rule + message). The two are **byte-identical, 151 lines each**. My changes introduce **zero** new lint problems. `apps/web/app/api/chat/route.ts` appears in both lists with the same rules (`no-explicit-any` ×2, `no-unused-vars` ×4) at shifted line numbers; `session-view.tsx`, `session-meters.tsx` and every new file appear in neither.
+- **Spec counts, re-measured (they are a smell test, not a fact):** `ls packages/core/test/*.test.ts | wc -l` → **109**. `ls apps/web/lib/*.test.ts | wc -l` → **14**. The honest form, `find apps/web \( -name "*.test.ts" -o -name "*.test.tsx" \) -not -path "*/node_modules/*" | wc -l` → **20**. (§6.1's pointers were 108 / 12 / 18 at `9a94632`; +1 core file, +2 web flat files, +2 web total is exactly what this story added.)
+
+**(2) Invariant verdicts, by name.**
+
+| Invariant | Verdict | Evidence |
+| --- | --- | --- |
+| **INV-5b** (the three `logUsage` callers) | **PASS, pin untouched** | `git diff HEAD -- packages/core/test/invariants.test.ts \| grep 'CHAT_ROUTE, ULTRA_STORAGE, WEAVE'` returns **nothing** — the array was never edited. This story added a **field** to ultra's existing call, not a call site. |
+| **INV-3a / INV-3b** (`AD5_SITES`) | **PASS, did not fire** | The T-A0 inventory line reports **18 root-composition sites** both before and after — identical. `wake.json` composes off `runDir(runId)` (`packages/core/src/ultra/journal.ts`), which is not a root resolver, exactly as §5.6-T8 predicted. `AD5_SITES` was not touched. |
+| **INV-6a** (`SessionProfile` / `SessionProfileSpec` field sets) | **PASS, did not fire** | The new `sessionId?` went on `SessionResolutionContext`, which INV-6a does not pin — the type's own in-source comment says so. Neither pinned type changed. |
+| **INV-7** (no test reaches the real state root) | **PASS** | The readers line moved from `30/126 test files … 179 in-process call sites · 13 child-probe call sites` to `30/129 … 185 in-process · 15 child-probe`. The **+2 child-probe** sites are this story's new sandboxed probe in `session-profiles.test.ts`. The three new suites take the sanctioned mechanisms: `ultra-wake.test.ts` pins a module-scope `mkdtempSync` root **and** re-pins in `beforeEach`; `session-prompts.test.ts` uses the injected-read seam (`readWake`); `session-profiles.test.ts` uses the child spawned with throwaway `HOME` **and** `TELAR_HOME`. `spend-readout.test.ts` and `apps/web/lib/ultra-wake.test.ts` touch no disk at all. |
+| **INV-8** (the Conversation shell) | **PASS, unmoved** | Its inventory line is identical before and after: `8 files under components/conversation · 8 React contexts · 11 consuming hooks`. This story touches no file under `components/conversation/**`. |
+| **`KNOWN_VIOLATIONS`** | **Still exactly ONE entry** | `INV-3f` throws unless the length is `1`, and it passes. `INV-7f`, `INV-8h` and the new `INV-9e` each independently assert their own invariant contributed zero. |
+| **INV-9** (new, AD-21) | **PASS, six arms** | floor (a production `declareEvents` exists), `9a` exact-set catalogue, `9b` delivery class, `9c` namespace-matches-directory, `9d` the two-direction discriminator, `9e` the quarantine did not grow. |
+
+**A self-consistency check on the index, because a scan that stopped scanning passes as green as a clean tree.** The walk went **493 → 502 files** (+9), `packages/core` **172 → 175** (+3), `"use client"` by directive **124 → 125** (+1). This story adds exactly 9 files: 3 under `packages/core` (`ultra/events.ts`, `ultra/wake.ts`, `test/ultra-wake.test.ts`) and 6 under `apps/web`, of which exactly one (`lib/use-ultra-wake.ts`) carries a `"use client"` directive. All three deltas match by construction.
+
+**One thing INV-9c caught that is worth recording.** The first cut of the namespace scan reported `packages/core/src/event-bus.ts` itself as a declaration site — its "no module declared it" error carries the literal `declareEvents("<module>", {...})` as the next step it tells the caller to take, and comment-stripping does not remove a string inside real code. The fix is not an exclusion list: captures are now filtered through **the bus's own lower-kebab segment shape**, so a string that could never *be* a namespace is not a declaration site. `event-bus.ts` is *also* excluded by path, as the definer rather than a caller (the same distinction `INV-5b` draws with `ownsSymbol`), and `INV-9c` asserts both facts so neither can silently become the only one doing the work.
+
+**(3) The dev-server proof — what was proved live, what was proved by test instead, and what was NOT proved.**
+
+**`TELAR_HOME`, confirmed BEFORE anything started.** `apps/web`'s `dev` script is `TELAR_HOME="${TELAR_HOME:-$HOME/.telar-dev}" next dev`, and `TELAR_HOME` was **unset** in the shell (`echo "TELAR_HOME=[${TELAR_HOME:-<unset>}]"` → `[<unset>]`), so the server resolved `~/.telar-dev`. Before starting I took **content hashes** of the operator's real root: `~/.telar/accounts.json` = `c7436b2a…3a22`, `~/.telar/usage.ndjson` = `afea3563…0170`. **After the entire proof, both are identical.** Proved by hash, not by existence — story 1.1's failure was an *append* to a file that already existed, which an existence check cannot see.
+
+**⚠️ THE HARD BLOCKER, and it is environmental rather than mine.** The Agent SDK's `darwin-arm64` native CLI package is **not installed in this checkout**: `ls apps/web/node_modules/@anthropic-ai/` returns only `claude-agent-sdk`, with no native sibling. Every live model call — an Ultra child `agent()`, and a chat turn's `query()` — fails with `Error: Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional…`. This is pre-existing and unrelated to story 4.1 (the whole suite is green because every suite injects a fake agent through the DI seam), and it is recorded in `deferred-work.md` as an environment note. **No model call ever happened, so this proof cost nothing.**
+
+**What WAS proved live, against a real `next dev` on `~/.telar-dev`:**
+
+1. **A real Ultra run, launched through the real HTTP API** (`POST /api/ultra`, project `wake-proof` registered in the dev root, `sessionId: "devproof-session-1"`, `messageId: "devproof-turn-1"`). First run `u-ce023fe79cb5` — one `agent()` call — reached terminal **`failed`** in ~1s with the native-binary error as its `error`. Second run `u-534fd3ef96f8` — no child agents, a pure return — reached terminal **`done`** with `result: {"checked":3,"verdict":"all clear"}`. Both are genuine terminal states written by `storage.ts`'s `run.finished.then`.
+2. **The publish reached the wake-channel recorder INSIDE the real Next server process.** `~/.telar-dev/ultra/u-534fd3ef96f8/wake.json` on disk: `{"runId":"u-534fd3ef96f8","recordedAt":1785122707369,"deliveredAt":0}`. That file is written by `recordUltraWake`, which is only reachable through `subscribeAgentFacing` — so AC4's fast path is demonstrated **in production**, not only in a test.
+3. **`GET /api/ultra/wakes?sessionId=devproof-session-1`** returned both runs as pending, each carrying its own outcome: the `done` one with its `result`, the `failed` one with its `error`, both with `name` resolved from `meta.name` (`"wake proof done"`, `"wake proof sweep"`), `messageId`, `spendUsd` and `terminalAt`. **`live: 0`.** T10's several-runs-one-session case, live.
+4. **The route's ack fired in its exact window.** A real `POST /api/chat` carrying `message: "__telar_ultra_wake__"` on `sessionId: devproof-session-1` took the pending count from **2 → 0**, and both `wake.json` files gained the **same** `deliveredAt` (`1785122728080`) — one ack call, both wakes consumed. The turn itself then failed at `query()` on the native binary; the ack had already run, which is precisely the placement §5.5-D10 specifies (after the capability gate, before `registerChatRun`). **This also surfaced a real property I did not assume and have recorded**: a wake acked pre-stream is consumed even if the turn later dies mid-stream. That is the correct trade (the alternative re-delivers on every abort) and it is now in `deferred-work.md` with a named owner.
+5. **AC7's RESTART FLOOR, live and end-to-end.** I planted a `running` manifest with no live registry entry (`u-devproof-crashed`, a run whose process died), **killed and restarted the dev server** so nothing in-process survived, and asked the API again. It came back **pending**, self-healed to `state: "stopped"`, carrying its `spendUsd: 1.25` and its `name` — and `ls` on its directory shows **`manifest.json` only: no `wake.json` at all**. No publish ever fired for that run, and it is still pending. That is AC7 proofs 2 and 3 and trap T3, demonstrated against a real restarted server rather than simulated.
+6. **AC3's read path still answers.** `GET /api/ultra/u-534fd3ef96f8` returned `state=done spend=0 result={'checked': 3, 'verdict': 'all clear'}` after all of the above.
+
+**What was proved BY TEST rather than at the dev server, and why:**
+
+- **The `messageId` ledger row.** A ledger row is written per **settled agent**, and no agent could settle without the native binary — so the dev root has **no `usage.ndjson` at all** (`[ -f ~/.telar-dev/usage.ndjson ]` → false). The claim is instead proved in `packages/core/test/ultra-storage.test.ts` → *"4.1 the ledger row on disk carries messageId, and it is the launching turn's id"*, which reads the written line **back off disk** and asserts `messageId`, `sessionId`, `ownerKind`, `ownerId` and the fold's own figure; and its sibling *"a run launched with NO messageId writes no messageId key at all"*.
+
+**What was NOT proved, stated plainly rather than implied:**
+
+- **The unprompted assistant turn rendering**, **the no-user-bubble check before and after a page reload**, **the heartbeat readout changing**, **the mid-conversation case**, and **`ultra_status` called by a model** all require a live assistant turn, which this checkout cannot produce. §6.2 already classes the first three as "not provable without a DOM, and therefore proved at the dev server instead" — and the dev server cannot produce them here either. **I did not fake them and I am not claiming them.** What stands in their place: the injected-turn path is a two-line change to a mechanism that already ships twice (the loom watcher's queue and the escalation kickoff's `hidden`), the route half is exercised live by (4) above, the appendix half is unit-tested in `apps/web/lib/ultra-wake.test.ts` and driven through the **real builders in a sandboxed child** in `session-profiles.test.ts`, and `hideUserMessage` is now shared with the kickoff so it cannot drift from a path that is already proven in production.
+- **The loom watcher's `[watcher] …` injections staying VISIBLE after D9a's change** — the one regression D9a could cause and that nothing else catches. Not observable without a rendered session. What I can state instead, from the code: the watcher's `setInjectionQueue` call in §6.C sets **no** `hidden` field, the drain now reads `next.hidden ? { hidden: true } : undefined`, and `undefined` is **exactly what `send()` received before this story** (the old line was `void send(next.text)`). So the watcher's dispatch is byte-equivalent to its previous behaviour, and `send`'s user-bubble spread is unreachable-by-change for it. **This is an argument, not an observation, and it is labelled as one.**
+
+**(4) The T4 finding — does a chat turn's own `session` row already contain its ultra children's cost?**
+
+**No. They are disjoint, and here is the evidence I actually gathered rather than the reasoning I could have assumed.**
+
+- **The chat row is the chat's own SDK turn.** `apps/web/app/api/chat/route.ts`'s teardown `logUsage` passes `costUsd: lastResult.totalCostUsd`, where `lastResult` is the `result` message of **this route's own `query()`**.
+- **An ultra child is a SEPARATE SDK session.** `packages/core/src/ultra/runner.ts` imports `query` from `@anthropic-ai/claude-agent-sdk` **and** `agent as engineAgent` from `../engine`; `packages/core/src/engine.ts`'s `agent()` opens its **own** `query({…})`. A child is never a step of the chat's turn — it is a different process-level conversation.
+- **It outlives the turn.** `launchUltra` returns as soon as the manifest is seeded and `run.finished` is handled with a fire-and-forget `.then()`, so the run keeps going after the launching POST has already run `endChatRun` in its `finally`. A cost that lands after the turn's `result` message cannot be inside it.
+- **And the clincher is structural, not behavioural.** A ledger row carries exactly one `ownerKind`. `foldLine` accumulates `bySessionCost` **only** for `ownerKind === "session"`, and the new `ultraCostBySession` **only** for `ownerKind === "ultra"`. So the two summands cannot overlap **whatever the SDK does**, and a future SDK change cannot make them overlap.
+
+**Turned into an assertion rather than left as a finding:** `packages/core/test/usage-ledger.test.ts` → *"4.1 AC5 proof 5 — NO DOUBLE COUNT: usageCostBySession and usageSummary are unchanged by ultra rows"* snapshots both projections, appends two keyed ultra rows on the same session, and asserts both are **unchanged** while the sum moves to the expected total. `apps/web/lib/store.test.ts` carries the display-side twin.
+
+**In-source, per T4's instruction:** the owner-scoping rule's comment in `usage-ledger.ts` now states that reason (1) describes the **pre-4.1** behaviour of the session fold, that the fold itself is unchanged, and that the sum happens one layer up in `sessionSpendUsd` — so the comment does not go on claiming a filter prevents something the code above it now does. Reason (2) is preserved **exactly** and is asserted.
+
+**(5) The widenings — all five, re-stated, plus one honest correction to the count.**
+
+1. **`packages/core/src/session-profile.ts`** — one **optional** `sessionId?` on `SessionResolutionContext`. Optional rather than required because an omission drops nothing the user asked for: turn 1 of a fresh session has no id, and a session with no id has no pending wakes by construction. INV-6a does not pin this type; it did not fire.
+2. **`apps/web/lib/session-prompts.ts` + `session-profiles.ts`** — the per-turn context channel AC2 requires, which has no other home today. One new composer, one new injectable seam (`readWake`, **not** `read` — that name is taken), threaded into `projectAppendix` / `plannerAppendix` / `steererAppendix` and **never** `escalationAppendix`.
+3. **`apps/web/app/api/chat/route.ts`** — **§5.5-D8 estimated "four lines"; it is seven changed expressions plus two imports, and I am correcting the estimate rather than quietly exceeding it.** They are: (a) the sentinel swap composed onto the existing `resolveEscalationMessage` line; (b) `isUltraWake` + `hiddenTurn`; (c) `displayText`'s third arm (`"Ultra run finished"`, so a would-be fresh-chat title is not the machinery prompt); (d) `hideUserMessage: hiddenTurn`; (e) **two** `startSessionLog(…, hiddenTurn)` sites; (f) `sessionId` into the resolution-context object; (g) the ack block. **(e) is the one the story's estimate missed and it is not optional**: without it, a mid-turn reconnect's synthetic `user` event would manufacture a visible bubble containing the raw sentinel — the exact defect §5.5-D10 exists to prevent, at a site §5.5-D10 did not enumerate. Every one of the seven mirrors the escalation kickoff's own handling of the identical problem, and the two machinery turns now **share one flag** so they cannot drift apart.
+4. **`apps/web/components/session/session-view.tsx` + `session-meters.tsx`** — the trigger and the readout. `CostPill`'s prop changes from `total: number` to `readout: SpendReadout`; it has exactly **one** call site (grepped). Story 3.1's three recorded cleanups in `session-view.tsx` were **NOT** taken, deliberately.
+5. **`injectionQueue`'s item type and the §6.D drain's dispatch** (§5.5-D9a) — `{ id; text }` → `{ id; text; hidden? }`, and `void send(next.text)` → `void send(next.text, next.hidden ? { hidden: true } : undefined)`. **The gate's three conditions are untouched.** Without this the trigger ships as a visible bubble containing the raw sentinel.
+
+**Not widenings, but disclosed anyway because they are edits a reviewer will see:** three **prose corrections** in files already in the write set, each because the existing sentence was measurably false. (i) `usage-ledger.ts`'s header and `schemas.ts`'s note both said the ledger record "carries no currency or unit" — read literally that is contradicted by `costUsd`; both now say **no unit SELECTOR**, which is what they always meant, and `packages/core/test/usage-ledger.test.ts`'s *"4.1 AC6 proof 1"* asserts it. **This was found by writing the test the story asked for, which failed against the loose claim.** (ii) `session-profiles.ts`'s header said "grepped: `declareEvents` has zero production call sites" — this story made that false, and the comment now says so and warns against copying the wrong registration pattern. (iii) `session-prompts.ts`'s header and `session-profiles.ts`'s planner comment said only steerer/escalation perform live reads and that planner "is pure — nothing here can fail"; project, planner and steerer now each perform one more.
+
+**(6) What was recorded in `deferred-work.md`, with owners.** Ten items plus an environment note and a cleanup note — the §3 loom-root-leg ruling (owner: whichever story next opens `weave.ts`'s spend path, most plausibly epic 6's F3), `pendingUltraWakes`' full-directory scan (owner: **4.2**), the missing appendix-contributor registry (owner: **epic 5's 5.3**), the chat route's own row still having no `messageId` (owner: the first story needing a per-turn cost split, most plausibly 4.2), `usageSummary`'s owner scope (owner: **the human** — an open `[Review][Decision]`), the wake recorder's install timing (owner: whichever story first needs `recordedAt` to mean something), the pre-stream ack's mid-stream-failure window (owner: whichever story wants at-least-once delivery), the swallowed terminal-`saveManifest` throw (owner: whichever story next opens ultra's terminal write path, most plausibly 4.2), `wake.json`'s lack of cross-process CAS (owner: whichever story first supports two live processes on one root), `event-bus.ts`'s now-false header sentence that this story made false and is fenced from fixing (owner: whichever story next opens that file), the SDK native-binary environment note (no owner), and the dev-root artifacts this proof could not delete because the sandbox denies `$HOME` deletions (owner: the operator, nothing depends on it).
 
 ### Completion Notes
 
-_(fill in — must include: all five widenings re-stated (§5.5-D8's four plus D9a); the §3 ruling on the loom root leg re-stated as a ruling; your T4 finding and its evidence; the AC3 statement that the two read paths are independent; the AC6 disclosure that Ultra is Claude-only and the per-run anchor readout is 4.2's; the D4 note that `pendingUltraWakes` scans every run directory and that the cost was accepted rather than missed; and anything you recorded in `deferred-work.md` with its owner.)_
+1. **Two legs, one link — built that way and provable that way.** The wake rides FR-RF-3's bus; the rollup rides FR-RF-2's ledger. They share exactly the `runId → (sessionId, messageId)` link the manifest already carried. `packages/core/test/ultra-wake.test.ts` never touches the ledger and `packages/core/test/usage-ledger.test.ts` never touches the bus; neither leg's correctness depends on the other's mechanism.
+
+2. **THE GUARANTEE IS THE PROJECTION; THE PUBLISH IS THE FAST PATH.** This is the sentence T1 warns is easiest to get backwards, so it is stated once here and repeated in `wake.ts`'s header, at the publish site, and in the deferred-work entry. `pendingUltraWakes(sessionId)` folds **manifests** — terminal, this session's, no `deliveredAt` stamp — so a lost publish, a thrown publish, a process that died before terminal, and a `stopped` that self-healed on read **without ever reaching `settle()`** all still report pending. Proved three ways: a test that never publishes at all, a test that drives the self-heal, and a live dev-server restart with a wake record that does not exist.
+
+3. **All five widenings are re-stated in Debug Log (5), and the count of one of them is CORRECTED upward.** §5.5-D8 estimated four lines in `route.ts`; it is seven expressions plus two imports. The extra one that matters is `startSessionLog(…, hiddenTurn)` at two sites — without it the wake trigger reappears as a visible user bubble on a mid-turn reconnect. I would rather be told the estimate was wrong than have it silently exceeded.
+
+4. **The §3 ruling on the loom root leg, re-stated AS A RULING so the next reader knows it was decided and not missed.** A woven ROOT loom's own attempts are still never billed (`packages/core/src/weave.ts`, `recordSpend` fires only on settled **children**). **Story 4.1 rules this OUT.** Three independent reasons: it is `ownerKind: "loom"` — a different owner with a different consumer (a charter's budget-left) and no AC here mentions loom spend; `weave.ts` is not in Track D's write set and fixing it means editing the tick loop's own budget input; and story 1.1's own record says *"it changes what a charter's budget-left means and is the human's call"*, which is not something a Track D story settles silently while doing something else. It is now in `deferred-work.md` for the first time (grep-confirmed it was absent), with the owner named.
+
+5. **The T4 finding and its evidence** are in Debug Log (4). Short form: **disjoint**, on three behavioural grounds *and* one structural one — a row carries exactly one `ownerKind`, so the two summands cannot overlap whatever the SDK does. Asserted, not assumed: `usageCostBySession()` and `usageSummary()` are snapshotted and re-checked unchanged.
+
+6. **AC3 — the two read paths are independent, named.** The wake path is `pendingUltraWakes` → `listUltraRuns`/`getUltraManifest` + `readUltraWakeRecord`, reached over `GET /api/ultra/wakes`. The polling path is `ultra_status` → `getUltraManifest` + `readUltraEvents` + `readJournal`, reached over the in-process MCP server. **They share the manifest and the ledger and nothing else, and neither can disable the other.** `apps/web/lib/ultra-mcp.ts` and `apps/web/lib/ultra-mcp.test.ts` are **byte-identical** after this story — `git diff HEAD --stat` on both is empty — so `ultra_status`'s schema, description and rollup did not move. The read path was exercised live after the wake fired.
+
+7. **AC5's "set, not accumulate" is preserved, and preserved means UNTOUCHED.** `git diff` shows **no lines** matching `costUsd: capturedSession` / `sessionSpendUsd(capturedSession)` in `route.ts`, and **no lines** matching `setSessionCost` in `session-view.tsx`. Story 1.1's AC6 is now carried against 4.1 and it did not move. What *did* change is what `sessionSpendUsd` returns, in **one** function, so the live `done` payload and the persisted `getChat`/`listChats` readout move **together** — which is the whole reason that function is the single source for both.
+
+8. **AC6, disclosed rather than allowed to over-read.** Ultra is **Claude-only** today: `createUltraMcpServer` is constructed at `apps/web/app/api/chat/route.ts` line-region inside the `} else {` that closes the `if (provider === "codex")` fork — verified by brace-matching the branch, not by reading a comment — and NFR-UW-8 says *"Claude-first. No Codex-specific Ultra work."* So **a Codex session has no ultra rows to roll up**, and AC6's Codex half is about the **projection's language**, not about ultra spend on Codex. Separately, `ui-contract.md` §2 puts the **per-run** `$`/tokens readout on the run anchor, which is CAP-2 = **story 4.2**. What 4.1 ships is the **per-session** readout: `apps/web/lib/spend-readout.ts`, rendered by `CostPill`. Before this story a Codex session's cost pill was **hidden**; it now shows the token form. The Codex token figure is `tokens.input + tokens.output`, deliberately excluding the two cache fields (they are re-presentations of content already sent and would climb every turn on an idle transcript), and 4.2's anchor can compute the identical pair from `UsageEntry`'s own fields.
+
+9. **The D4 cost was ACCEPTED, not missed, and it is stated in three places.** `pendingUltraWakes` calls `listUltraRuns()`, which `readdirSync`s **every ultra run directory ever created** — not scoped by session or project — and `JSON.parse`s each manifest, **writing** any stale `running` one back as `stopped`. Nothing reaps that directory. Because the appendix composes on every chat POST for every session, every turn in the app is a full historical scan. Mitigation in place: the short-circuit (no `sessionId` → return before touching the filesystem). It is stated in a comment above the function so the next reader meets it as a known bound, and recorded in `deferred-work.md` with **4.2** as owner, since 4.2's dock signal needs the same session-scoped question answered from every page.
+
+10. **INV-9 lives in the AD-19 suite and pins AD-21 — it is not "an AD-19 invariant".** AD-19's own `Binds:` line is `AD-1, AD-2, AD-3, AD-5, AD-20`; AD-21 is not in it, and AD-19's rule is written as a floor. The distinction is stated in-source above the describe block.
+
+11. **The event catalogue is reached through a self-healing accessor, and the reasoning is written into the file because the next module to declare one will copy it.** `declareEvents` throws on re-declaration; Next dev re-evaluates route modules, `bun test` runs every file in one process, and `resetBus()` clears declarations **globally**. A module-scope call dies on the second evaluation; a cached-port-plus-a-boolean-flag survives that and then breaks under `resetBus()`. `ultraEvents()` checks the **registry**, never a flag. A test drives exactly that: declare, `resetBus()`, re-acquire, and assert both the new declaration **and** the re-attached recorder.
+
+12. **A design decision the story left open, made and recorded: `storage.ts` does NOT import `wake.ts`.** The publish goes through `ultraEvents()` (the declaration only) and the recorder is attached by `ultraWakeChannel()`, which every wake-facing entry point calls. The alternative — the publish site calling `ultraWakeChannel()` directly, which is the most literal reading of task E2 — creates a `storage ↔ wake` **module cycle**, because `pendingUltraWakes` reads manifests through `storage`. ESM tolerates that cycle, but it is a smell a reviewer would rightly flag, and the third option (a registration seam in `events.ts` filled at `wake.ts`'s module scope) makes correctness depend on import order in a way a direct `import "../src/ultra/storage"` in a test would defeat. **The chosen shape still satisfies E2 — one accessor gets you the declaration and the recorder, and neither can register twice — and its only cost is that a process which has never asked about wakes writes no `recordedAt`, which costs a stamp and never a wake.** Verified live: the dev server had the recorder installed and wrote `recordedAt` for both proof runs. Recorded in `deferred-work.md` with the fix, should anyone ever need the stamp to be reliable.
+
+13. **A property observed live and NOT designed for, now recorded.** A wake acked pre-stream is consumed even if the turn later dies mid-stream — I saw it happen when the proof turn failed on the missing SDK binary. The ordering is still correct (acking after a successful stream would re-deliver on every abort, disconnect and mid-turn error, which is the double-statement AC7 exists to prevent), and the loss is a **rendering**, never accounting: the manifest and the ledger rows are untouched and `ultra_status` still answers. In `deferred-work.md` with a named owner and the shape of the real fix (a two-phase claim/confirm ack).
+
+14. **Two existing assertions were deliberately INVERTED, and both say so in place.** `apps/web/lib/store.test.ts`'s *"getChat's costUsd excludes ultra spend that rode the same sessionId"* asserted `1.5`; AC5 is the counter-requirement, so it now asserts `6.5` and is renamed *"…INCLUDES ultra spend… and excludes loom spend"*. The same inversion lands inside the `sessionSpendUsd` test. Both carry the old assertion, the reason it was right for its story, and — the half that did not change — **loom rows are still excluded**, asserted alongside.
+
+15. **Two residuals from story 1.1 are still open and are still not mine.** Unbounded in-process retention of the whole ledger (`Fold.entries` + `seenKeys`), and `readFold`'s truncate-in-place / coarse-mtime cache-identity gaps. **This story grows `Fold` by two `Map`s**, which makes the first residual marginally worse and does not change its shape; I did not attempt the fix.
+
+16. **Hard rules 5, 6 and 9 held.** `KNOWN_VIOLATIONS` is still exactly one entry (`INV-3f` enforces it and passes; `INV-9e` asserts this story added none). `bunfig.toml` is unchanged (`git diff --stat` empty). **`ultra:run-anchor` is still UNREGISTERED** — grep finds it only in `components/conversation/registry.test.ts` and the demo-gallery's configuration-6 fixtures, which is exactly what proves the shell's AD-8 tombstone. This story registers **no item kind at all** and renders nothing inside the transcript.
+
+17. **Adversarial verification, and what it actually found.** Five independent `claude-sonnet-5` audit agents were run over the working diff in parallel — a false-sentence hunter, a wake-correctness hunter, a ledger-correctness hunter, a scope-fence auditor against the story's own nine hard rules and write-set table, and an AC-coverage auditor walking every numbered proof clause. **They found five things worth acting on, and every one is now either fixed in the tree with a test or recorded with an owner.** Listing them rather than summarising, because the point of running them is the findings:
+
+    - **[FIXED — a real bug in my own new code] A RESUMED run's new outcome was lost permanently.** `deliveredAt` stamped a RUN, and nothing on `resumeUltraRun`'s path touches `wake.json` — so a run delivered as `stopped`, then resumed and finished `done` with a real result, was excluded from `pendingUltraWakes` **forever**, surviving a restart. That is the "delivered never" this module exists to make impossible, in the documented Stop → edit → resume flow. **Fix:** the record gains `deliveredTerminalAt`, so a delivery stamp names a TERMINAL rather than a run; a resume writes a new `updatedAt` and the run becomes pending again by construction. Pinned by *"AC7 a RESUMED run's NEW outcome is pending again…"*, which carries its own discriminator (the SAME terminal is still delivered-once, so "re-deliver on any change" cannot pass it).
+    - **[FIXED — a real bug in my own new code] `sessionSpendUsd` made TWO ledger reads, and my comment claimed it made one.** `usageCostBySession()` and `ultraCostBySession()` each call `readFold()`, and `readUnavailable`/`readStale` are cleared on entry to each — so a transient failure on the session leg that cleared before the ultra leg was erased, `ledgerReadDegraded()` answered false, and `displayedSpendUsd` returned a confident **$0.00 beside a real transcript** without consulting the stored counter. **Fix:** `sessionCostFolds()` returns both maps from one `readFold()`. Pinned by *"4.1 sessionCostFolds is ONE read…"* **and its discriminator**, which reproduces the old two-call spelling and asserts it really does erase the flag — so nobody re-introduces it believing it equivalent. This is also what made `INV-5c` fire; see note 18.
+    - **[FIXED — the recurring defect, inside my own fix for it] `session-meters.tsx` asserted "the ledger record itself carries no currency or unit"** — the exact sentence this story corrected in `schemas.ts` and `usage-ledger.ts`, reintroduced verbatim in a third file. Now states the precise claim (no unit *selector*).
+    - **[FIXED — a false implication] `ultra/events.ts` said event-bus.ts's header "used to end" with a sentence**, implying that text had changed. It has not: `event-bus.ts` still says *"The only event names in this repo today are fixtures in event-bus.test.ts"*, and **this story is what made that false**. The file is fenced out of my write set, so the comment now says exactly that and the finding is recorded with an owner instead of crossed.
+    - **[FIXED — consistency] The publish payload passed `manifest.spend` unguarded** while `toPendingWake` guarded it; `spendUsd` is `z.number()`, which rejects NaN, so a non-finite spend would have thrown a publish that the catch would then report as a delivery failure. Both readers now agree.
+    - **[RECORDED, not fixed — pre-existing] A throw from the terminal `saveManifest` is swallowed** by a `.catch(() => {})` that predates this story, leaving the run `running` with a live registry entry that blocks the self-heal — so its wake is unreachable until a restart. It is **the one place `wake.ts`'s guarantee stops**, and that file's header now says so rather than glossing it. Fixing it means changing `saveManifest`'s error contract and giving the registry a `.delete`, both outside "add a publish and one field". Owner named in `deferred-work.md`.
+    - **[RECORDED, not fixed] `wake.json` is read-decide-write with no CAS.** Safe within one process (all three writers are fully synchronous, no `await`), unsafe across two processes on one root — a case this repo contemplates for the ledger. The failure direction is the tolerable one (stated twice, never lost). Owner named.
+
+    The AC-coverage auditor also flagged **AC2 proof 3 as PARTIAL**: the clause asks `session-prompts.test.ts` to assert the rendered appendix carries the state and the result/error, and my tests there injected a generic sentinel. **Fixed:** that file now has *"4.1 AC2 proof 3 — the composed appendix carries the STATE and the result/error, with no ultra_status call"*, driving the REAL formatter through the injected read, and the sandboxed child probe additionally asserts the state word reaches a real profile.
+
+18. **A DELIBERATE DEVIATION FROM "APPEND INV-9 ONLY", disclosed rather than buried.** Task G1 says to append INV-9 to `invariants.test.ts` and touch nothing else. **I also edited one line of `INV-5c`**, and I would rather be told this was wrong than have it pass unnoticed. What happened: `INV-5c` asserts `apps/web/lib/store.ts` mentions `usageCostBySession`, as a proxy for "store.ts reads the session's cost THROUGH THE PORT". Fixing the two-read bug above moved store.ts onto `sessionCostFolds`, so the pin fired. Per §5.6-T8 I read what it caught before touching it: the invariant's **substance** — store.ts consumes the port, reimplements nothing, opens no file — is unchanged and is still asserted on the untouched line below it; only the name of the port function it uses has changed. So the pin now names the function store.ts actually uses, with the reason written in place. **This is exactly what a pin is for** — it forced the change to be deliberate instead of silent — but it is still an edit outside the task's literal scope, and the adjudication is the operator's.
 
 ---
 
 ## 10. File List
 
-_(fill in — measured, not copied from §0's table)_
+**Measured from `git status --short` and `git diff --stat HEAD` at the close of implementation, not copied from §0's table.**
+
+### New — `packages/core` (3)
+
+| Path | What it is |
+| --- | --- |
+| `packages/core/src/ultra/events.ts` | Ultra's declared event catalogue — `ultra:run-completed`, `agent-facing`, its zod payload, the self-healing `ultraEvents()` accessor, and `ultraRunLabel`. The repo's **first production `declareEvents` call**. |
+| `packages/core/src/ultra/wake.ts` | The durable wake record (`ultra/<runId>/wake.json`, zod, atomic `.tmp`→`rename`), the `subscribeAgentFacing` recorder, `ultraWakeChannel`, `pendingUltraWakes`, `ackUltraWakes`, `liveUltraRunCount`, `readUltraWakeRecord`. |
+| `packages/core/test/ultra-wake.test.ts` | 19 tests — the class gate and its discriminator, the accessor under `resetBus()`, pending/not-pending with a genuinely live positive control, the restart floor, the self-healed `stopped`, durable + idempotent + session-scoped ack, T10, D3a's label fallback, the tolerant read, AD-5 placement, and the real launch path end to end. |
+
+### New — `apps/web` (6)
+
+| Path | What it is |
+| --- | --- |
+| `apps/web/lib/ultra-wake.ts` | The pure, dependency-free seam: `ULTRA_WAKE_SENTINEL`, `isUltraWakeTrigger` (session polarity **inverted** vs the escalation template), `resolveUltraWakeMessage`, `ULTRA_WAKE_PROMPT`, `formatUltraWakeAppendix`. |
+| `apps/web/lib/ultra-wake.test.ts` | 17 tests — the recognizer including T11's empty-`sessionId` case by name, the formatter per terminal state, the empty case, the length bound, unserializable results. |
+| `apps/web/lib/spend-readout.ts` | The pure cost-language projection: USD on Claude, tokens on Codex. |
+| `apps/web/lib/spend-readout.test.ts` | 6 tests — both providers, the discriminator, zero, the clamp, and NFR-UW-7 (a readout is not a budget). |
+| `apps/web/lib/use-ultra-wake.ts` | Track D's client hook — poll on the house cadence, self-limiting, type-only core import. The one new `"use client"` file. |
+| `apps/web/app/api/ultra/wakes/route.ts` | `GET ?sessionId=` → `{ pending, live }`. A static segment beside the existing dynamic `[id]`. |
+
+### Edited — `packages/core` (6)
+
+| Path | Change |
+| --- | --- |
+| `packages/core/src/schemas.ts` | `UsageEntry` gains `messageId` (additive, defaulted); the currency/unit note corrected to "no unit SELECTOR". |
+| `packages/core/src/usage-ledger.ts` | Two ultra folds + `ultraCostBySession()` / `ultraCostByMessage()`, plus `sessionCostFolds()` — the ATOMIC accessor the display sum must go through; `messageId` serialized omit-when-empty; the owner-scoping rule's reason (1) amended; the header's currency/unit claim corrected. **No new `logUsage` call site.** |
+| `packages/core/src/ultra/storage.ts` | `messageId` into the **existing** `logUsage` call; the terminal publish in `run.finished.then`, wrapped best-effort. |
+| `packages/core/src/ultra/index.ts` | Two export lines. |
+| `packages/core/src/session-profile.ts` | One optional `sessionId?` on `SessionResolutionContext`. |
+| `packages/core/test/invariants.test.ts` | INV-9 appended — floor, `9a`–`9e`, plus the two namespace-scan helpers. **Plus one disclosed line in `INV-5c`** (Completion Note 18). Nothing else above it touched. |
+| `packages/core/test/ultra-storage.test.ts` | The `messageId` row on disk (present / absent), and the terminal publish (fires once, carries the manifest's fields, survives a throwing subscriber). |
+| `packages/core/test/usage-ledger.test.ts` | The two folds, the AC5 proof-4 agreement, the AC5 proof-5 no-double-count trio, the dedupe across the new maps, the pre-`messageId` tolerant read, the serialization shape, and AC6 proof 1. |
+
+### Edited — `apps/web` (8)
+
+| Path | Change |
+| --- | --- |
+| `apps/web/app/api/chat/route.ts` | The seven expressions of Debug Log (5) item 3, plus two imports. |
+| `apps/web/lib/session-prompts.ts` | `buildUltraWakeContext`, `ultraWakeAppendix` (its **own** `safeLiveContext`), `readWake` on three composers; header corrected. |
+| `apps/web/lib/session-profiles.ts` | `ctx.sessionId` into three builders; two header/comment corrections. |
+| `apps/web/lib/store.ts` | `sessionSpendUsd` sums the session fold and the ultra fold — **one** widening, at the display projection. |
+| `apps/web/components/session/session-view.tsx` | The hook + the one-trigger-per-pass enqueue (§6.C-bis), D9a's queue item type and drain dispatch, and the readout swap. The §6.D gate's three conditions untouched. |
+| `apps/web/components/session/session-meters.tsx` | `CostPill` takes a `SpendReadout` instead of a bare USD number. |
+| `apps/web/lib/session-prompts.test.ts` | Six wake-appendix tests, including the two-independent-live-reads proof and the escalation exclusion as a **typed data object**. |
+| `apps/web/lib/session-profiles.test.ts` | A second sandboxed child probe: `ctx.sessionId` reaches the wake block on project/planner/steerer, not on escalation, carrying the real outcome. |
+| `apps/web/lib/store.test.ts` | Two inverted assertions (with their history in place) + the out-of-band ultra-append projection test. |
+
+### Edited — records (2)
+
+| Path | Change |
+| --- | --- |
+| `_bmad-output/implementation-artifacts/deferred-work.md` | The story-4.1 section: seven recorded-and-not-crossed items with owners, an environment note, and a dev-root cleanup note. |
+| `_bmad-output/implementation-artifacts/stories/4-1-completion-wake-and-session-cost-rollup.md` | This file — §4 checkboxes, §9, §10, §11, and `status: review`. |
+
+**Deliberately NOT changed, and each is a claim `git diff` can check:** `apps/web/lib/ultra-mcp.ts`, `apps/web/lib/ultra-mcp.test.ts` (AC3), `bunfig.toml`, `KNOWN_VIOLATIONS`, `packages/core/src/weave.ts`, `packages/core/src/event-bus.ts`, `packages/core/src/ultra/{executor,sandbox,runner,journal,surface}.ts`, everything under `apps/web/components/conversation/**` and `apps/web/components/dock/**`.
 
 ---
 
 ## 11. Change Log
 
-_(fill in)_
+| Date | Change |
+| --- | --- |
+| 2026-07-26 | **Baseline re-measured** before any edit at `5e8596a`: 2048 pass / 0 fail / 126 files. Confirmed `git diff 9a94632 5e8596a -- packages apps` is empty, so the tree matches what §5 was written against. |
+| 2026-07-26 | **Leg A (AC6)** — `spend-readout.ts` + suite; `CostPill` renders a readout; `session-view.tsx`'s Codex **hide** replaced by the token form. |
+| 2026-07-26 | **Leg B (AC5)** — `UsageEntry.messageId` (additive, defaulted, omit-when-empty); `ultraCostBySession()` / `ultraCostByMessage()` folded above the owner-scoping early return; ultra's **existing** `logUsage` call passes `messageId`. No new call site. |
+| 2026-07-26 | **Leg C (AC5)** — `sessionSpendUsd` sums the two folds; `usageCostBySession`/`usageSummary` asserted unchanged. |
+| 2026-07-26 | **Leg D (AC4)** — `ultra/events.ts`: the repo's first production `declareEvents`, reached through a registry-checking self-healing accessor; the terminal publish in `storage.ts`, best-effort. |
+| 2026-07-26 | **Leg E (AC1/2/7)** — `ultra/wake.ts`: the durable record, the wake-channel recorder, `pendingUltraWakes` as a manifest projection, the idempotent session-scoped ack. |
+| 2026-07-26 | **Leg F (AC1/2)** — the pure seam, the wakes route, the client hook, the per-turn appendix through its own `safeLiveContext`, the route's seven expressions, and D9a's two-line queue change. |
+| 2026-07-26 | **Leg G (AC4)** — INV-9 appended: floor, exact-set catalogue, delivery class, namespace-matches-directory, a two-direction discriminator, quarantine-unchanged. Found and fixed a self-inflicted false positive (the bus's own error text) by filtering captures through the bus's own segment shape. |
+| 2026-07-26 | **Three prose corrections** in files already in the write set, each because the sentence was measurably false: the ledger's "no currency or unit" (→ no unit *selector*, now asserted), `session-profiles.ts`'s "declareEvents has zero production call sites", and the "planner is pure" claim. |
+| 2026-07-26 | **Adversarial audit round** — five parallel auditors over the diff. Two real bugs in this story's own new code fixed with regression pins (a resumed run's wake lost permanently; `sessionSpendUsd`'s two non-atomic ledger reads), three false/imprecise sentences corrected, one payload guard added, two pre-existing defects recorded with owners, and AC2 proof 3's literal placement closed. `INV-5c`'s pin updated — a disclosed deviation from "append INV-9 only", see Completion Note 18. |
+| 2026-07-26 | **Leg V** — full gate: **2119 pass / 0 fail / 129 files**; `tsc` clean in both workspaces; lint **byte-identical** to a stashed baseline (zero new problems). Dev-server proof run against `~/.telar-dev` with the real root verified untouched by content hash; the parts needing a live model turn are blocked by a missing SDK native binary and are recorded as unproved rather than claimed. `deferred-work.md` updated with **ten** owned items plus an environment note and a cleanup note. Status → `review`. |

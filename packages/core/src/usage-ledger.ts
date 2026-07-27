@@ -18,7 +18,18 @@
 // counter: the session's per-turn cost, ultra's manifest `spend` and a loom
 // charter's budget-left all fold these lines. Cost language (USD on Claude,
 // tokens on Codex) is a rendering concern of the projection — the record
-// itself carries no currency or unit.
+// carries NO UNIT SELECTOR.
+//
+// AMENDED BY STORY 4.1, because the sentence used to read "the record itself
+// carries no currency or unit" and, read literally, that is false: `costUsd`
+// names a currency and is the field every USD readout folds. What is true, and
+// what the sentence always meant, is that a row carries the raw material for
+// BOTH denominations — a cost number and token counts, side by side, on every
+// row — and carries nothing that CHOOSES between them: no `currency`, no
+// `unit`, no `provider`. The chooser is apps/web/lib/spend-readout.ts, at render
+// time, from the session's provider. `packages/core/test/usage-ledger.test.ts`'s
+// "4.1 AC6 proof 1" asserts exactly that, which is how the prose stopped being
+// the only thing holding the claim up.
 import fs from "node:fs";
 import path from "node:path";
 import { telarDir } from "./manifest";
@@ -116,6 +127,14 @@ type Fold = {
   bySessionTokens: Map<string, TokenTotals>;
   bySessionCost: Map<string, number>;
   byOwnerCost: Map<string, number>;
+  // Story 4.1 / AC5 — the two ULTRA-scoped folds. Deliberately separate maps
+  // rather than a widening of bySessionCost: that map feeds usageSummary()'s
+  // account windows, whose byte-identity is the owner filter's stated reason
+  // (2) and whose widening is an unresolved [Review][Decision] on story 1.1.
+  // Keeping them apart is what lets `sessionSpendUsd` sum the two ONE LAYER UP
+  // while every other projection stays exactly as it was.
+  ultraCostBySession: Map<string, number>;
+  ultraCostByMessage: Map<string, number>;
   entries: UsageEntry[];
   // Every non-empty entryKey this fold has already consumed — THE dedupe.
   // Derived from the file, so it is rebuilt whenever the fold is.
@@ -127,6 +146,8 @@ function emptyFold(): Fold {
     bySessionTokens: new Map(),
     bySessionCost: new Map(),
     byOwnerCost: new Map(),
+    ultraCostBySession: new Map(),
+    ultraCostByMessage: new Map(),
     entries: [],
     seenKeys: new Set(),
   };
@@ -218,6 +239,32 @@ function foldLine(fold: Fold, entry: UsageEntry) {
     ownerKey(entry.ownerKind, entry.ownerId),
     (fold.byOwnerCost.get(ownerKey(entry.ownerKind, entry.ownerId)) ?? 0) + entry.costUsd,
   );
+  // Story 4.1 / AC5 — the ultra folds, accumulated ABOVE the owner-scoping
+  // early return below, because that return is what excludes these rows from
+  // every session-scoped projection and it is NOT being relaxed. Same dedupe
+  // (the entryKey check at the top of this function has already run), same
+  // pass, no second read of the file.
+  //
+  // Keyed on the row's OWN fields: `sessionId` is the launching chat's id (the
+  // owning chat's session, which is what makes a per-session rollup possible at
+  // all) and `messageId` is the launching turn's runId. A row with an empty
+  // messageId — every ultra row written before story 4.1 — contributes to the
+  // per-session fold and is skipped by the per-message one, which is the honest
+  // answer: it is this session's spend, and nothing on disk says whose turn.
+  if (entry.ownerKind === "ultra") {
+    if (entry.sessionId) {
+      fold.ultraCostBySession.set(
+        entry.sessionId,
+        (fold.ultraCostBySession.get(entry.sessionId) ?? 0) + entry.costUsd,
+      );
+    }
+    if (entry.messageId) {
+      fold.ultraCostByMessage.set(
+        entry.messageId,
+        (fold.ultraCostByMessage.get(entry.messageId) ?? 0) + entry.costUsd,
+      );
+    }
+  }
   if (entry.ownerKind !== "session") return;
   const totals = fold.bySessionTokens.get(entry.sessionId) ?? emptyTokenTotals();
   totals.inputTokens += entry.inputTokens;
@@ -334,6 +381,25 @@ function statIdentity(file: string): FileId | null {
 //     change; scoping to "session" keeps those readouts byte-identical.
 // A pre-attribution record is unaffected: the schema defaults it to
 // ownerKind "session", so it still counts toward every total.
+//
+// STORY 4.1 AMENDS REASON (1), AND ONLY REASON (1). Reason (2) is preserved
+// exactly — usageCostBySession() and usageSummary() are untouched and are
+// asserted unchanged. Reason (1) now describes the PRE-4.1 behaviour of the
+// session fold, and it stays true OF THIS FUNCTION: bySessionCost still holds a
+// chat's own turns and nothing else. What changed is one layer up. AD-18/FR-UW-5
+// want a run's spend to appear in the session's display, so
+// apps/web/lib/store.ts's `sessionSpendUsd` SUMS this fold with
+// ultraCostBySession() — deliberately, in one place, at the display projection.
+// The two summands are disjoint by construction (a row is either
+// ownerKind "session" or ownerKind "ultra", never both), and they are disjoint
+// in SUBSTANCE too: the chat route logs its own SDK turn's
+// `lastResult.totalCostUsd`, while an ultra child runs through
+// ultra/runner.ts -> engine.agent() -> a SEPARATE query(), detached, continuing
+// after the launching turn's POST already ran endChatRun in its finally. So the
+// sum adds two things, never the same thing twice.
+//
+// The rule that has NOT moved: this filter is not relaxed, not reordered and not
+// removed. Anything that wants ultra rows asks for them by name.
 function readFold(): Fold {
   const file = usageFile();
   // Cleared on ENTRY: the flags describe the read that is about to happen, and
@@ -527,10 +593,16 @@ export function logUsage(entry: UsageEntryInput): boolean {
   // `entryKey` is omitted from the JSON when empty so an UN-KEYED record stays
   // byte-identical to one written before the field existed: the schema
   // materializes the "" default on parse, and serializing it would add a 12th
-  // key to every historical-shaped line.
+  // key to every historical-shaped line. `messageId` (story 4.1) gets exactly
+  // the same treatment for exactly the same reason — a row nobody attributed to
+  // a turn must not grow a key just because the field now exists.
   fs.appendFileSync(
     usageFile(),
-    JSON.stringify({ ...normalized, entryKey: normalized.entryKey || undefined }) + "\n",
+    JSON.stringify({
+      ...normalized,
+      entryKey: normalized.entryKey || undefined,
+      messageId: normalized.messageId || undefined,
+    }) + "\n",
   );
   return true;
 }
@@ -550,6 +622,79 @@ export function usageCostBySession(): Map<string, number> {
 // loom charter's budget-left. Both are folds of this same log, not counters.
 export function ledgerSpendUsd(owner: { ownerKind: UsageOwnerKind; ownerId: string }): number {
   return readFold().byOwnerCost.get(ownerKey(owner.ownerKind, owner.ownerId)) ?? 0;
+}
+
+// Story 4.1 / AC5 — ULTRA spend rolled up by the LAUNCHING CHAT SESSION.
+//
+// The projection `apps/web/lib/store.ts`'s `sessionSpendUsd` adds to its
+// session-owned fold, and the reason FR-UW-5 is a projection rather than a
+// counter: fold the same rows two ways and they agree by construction, so
+// `ultraCostBySession().get(sid)` necessarily equals the sum of
+// `ledgerSpendUsd({ ownerKind: "ultra", ownerId })` over that session's runs.
+// There is no second number that can drift from the first.
+//
+// Keyed by the OWNING chat's session id (a Chat's id IS the SDK session id).
+// Rows with no sessionId — a run launched outside a chat — are simply absent,
+// which is the honest answer rather than an "" bucket nothing reads.
+export function ultraCostBySession(): Map<string, number> {
+  return readFold().ultraCostBySession;
+}
+
+// Story 4.1 / AC5 — ULTRA spend rolled up by the OWNING CHAT TURN.
+//
+// Deliberately answers only for `ownerKind: "ultra"` rows. The chat route's own
+// per-turn row carries no messageId and is not being given one (that is an
+// explicit scope fence: `runId` is in scope there and it is one line, but
+// changing the shape of the per-turn row is changing the row story 1.1 spent
+// four repair rounds stabilising). So this map is "what did the runs this turn
+// launched cost", never "what did this turn cost" — and the two are different
+// questions with different owners.
+//
+// The key is the launching turn's `runId`, which `apps/web/app/api/chat/route.ts`
+// threads into ultra through `getMessageId: () => runId`. It is the finest-
+// grained id a chat turn has in this app; there is no stored message object to
+// join to (see UsageEntry.messageId's note in schemas.ts).
+export function ultraCostByMessage(): Map<string, number> {
+  return readFold().ultraCostByMessage;
+}
+
+// Story 4.1 / AC5 — BOTH per-session cost maps out of ONE fold read, for the
+// display projection that sums them (`apps/web/lib/store.ts`'s
+// `sessionSpendUsd`).
+//
+// WHY THIS EXISTS AT ALL, and it is a bug that was found and fixed rather than a
+// tidiness. The obvious spelling of that sum is
+// `usageCostBySession().get(id) + ultraCostBySession().get(id)`, and it is
+// WRONG: those are two exported functions, so it is TWO `readFold()` calls, and
+// `readUnavailable`/`readStale` are cleared on ENTRY to each one. So the flags
+// left standing afterwards describe only the SECOND call, and a transient
+// failure on the first that clears before the second is erased.
+//
+// The reachable consequence, in order: a cold process's session-leg read fails
+// transiently (EACCES/EMFILE/EIO — the module header treats these as
+// first-class), so that leg answers 0 and raises `readUnavailable`; microseconds
+// later the ultra-leg read succeeds, clears the flag, and answers 0 because the
+// session genuinely has no ultra rows; `sessionSpendUsd` returns 0 and
+// `ledgerReadDegraded()` returns FALSE; and `displayedSpendUsd`'s
+// `projected !== 0 || !ledgerReadDegraded()` short-circuit therefore returns a
+// confident $0.00 beside a real transcript WITHOUT ever consulting the stored
+// counter. That is precisely the failure `ledgerReadDegraded()` exists to
+// prevent, reopened through a seam rather than through the predicate.
+//
+// ONE read fixes it by construction: the two maps come off the SAME `Fold`
+// object, so the flags describe exactly the read that produced both, and a
+// degraded read degrades the pair together — which is what the caller's comment
+// is entitled to claim only because of this function.
+//
+// The two single-map accessors above are kept: they are the story's named
+// projections, they are what INV-tests and the ledger suite read, and a caller
+// that wants only one of them should not pay for both.
+export function sessionCostFolds(): {
+  session: Map<string, number>;
+  ultra: Map<string, number>;
+} {
+  const fold = readFold();
+  return { session: fold.bySessionCost, ultra: fold.ultraCostBySession };
 }
 
 // Whether the projection just read is TRUSTWORTHY — the other half of the

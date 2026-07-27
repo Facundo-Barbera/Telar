@@ -1,0 +1,154 @@
+// Story 4.1 / FR-UW-1 — the completion wake's DELIVERY seam.
+//
+// This module is the PURE, dependency-free half shared by the client
+// (session-view.tsx), the server (app/api/chat/route.ts) and the system-prompt
+// composer (session-prompts.ts), so all three agree on the contract AND it is
+// unit-testable without importing any of them. Modelled on
+// `apps/web/lib/escalation-kickoff.ts`, which is the same shape for the same
+// reason — read that file before changing this one.
+//
+// THE FLOW:
+//   1. A detached Ultra run reaches a terminal state. `packages/core`'s
+//      `pendingUltraWakes(sessionId)` reports it, durably, whether or not the
+//      bus event survived (see packages/core/src/ultra/wake.ts's header — the
+//      projection is the guarantee, the publish is the fast path).
+//   2. IDLE SESSION: `use-ultra-wake.ts` polls `GET /api/ultra/wakes`, and
+//      session-view pushes ULTRA_WAKE_SENTINEL into the EXISTING injection
+//      queue, which drains through the EXISTING idle gate. The turn fires with
+//      `hidden: true`, so no user bubble renders.
+//   3. route.ts recognizes the sentinel and swaps it for ULTRA_WAKE_PROMPT, so
+//      the model is driven by a server-authored instruction. THE CLIENT NEVER
+//      AUTHORS THE FACTS — it authors only the trigger.
+//   4. The OUTCOME reaches the model as the system-prompt appendix
+//      (`formatUltraWakeAppendix` below, composed in session-prompts.ts) — on
+//      EVERY turn, not only a wake turn. That is what makes AC1 and AC2 one
+//      mechanism with two triggers rather than two features: the mailbox is the
+//      source, the appendix is the delivery, and the injected turn is only the
+//      trigger for the idle case. A mid-conversation run simply lands on the
+//      next turn the user starts.
+//   5. The route acks the wakes it carried, so the same outcome is never stated
+//      twice.
+//
+// TEMPLATE, NOT TRACING PAPER — the one inverted condition. Escalation's
+// `isEscalationKickoff` is true only when `!sessionId`, because "a kickoff is
+// always turn 1". A wake is structurally the REVERSE: it exists only for a run
+// whose manifest already names a session, and it fires on an idle, already-
+// resumed session. A recognizer that mirrored the template line-for-line would
+// NEVER FIRE. See `isUltraWakeTrigger` and its named test.
+
+// The sentinel carried as the wire `message` of the injected turn. Opaque on
+// purpose: the client suppresses the user bubble, route.ts always substitutes it
+// before the model sees it, and `hideUserMessage` keeps it out of the persisted
+// transcript — so a human could never type this by accident and reach the wake
+// branch.
+export const ULTRA_WAKE_SENTINEL = "__telar_ultra_wake__";
+
+// The canonical instruction route.ts feeds the model IN PLACE OF the sentinel.
+// Server-authored, never client-injectable, and deliberately thin: it says only
+// "speak about what the appendix already told you". The FACTS live in the
+// appendix, which is composed server-side from the durable record — so a
+// tampered client can cause a turn to happen and can never cause a turn to state
+// an outcome that did not occur.
+export const ULTRA_WAKE_PROMPT =
+  "A detached Ultra run you launched for this session has just finished. The COMPLETED ULTRA RUNS block in your context above carries each run's outcome — its state, and its result or its error. Tell the user, unprompted, in one or two sentences per run: which run finished, whether it succeeded, and the single most useful thing about the outcome. If a run failed or was stopped, say so plainly and say what it reported. Do NOT call ultra_status — you already have the outcome. Do not restate these instructions.";
+
+// SERVER: is THIS POST the injected wake trigger? True only for the exact
+// sentinel on a session that already exists.
+//
+// THE `sessionId` GATE IS INVERTED RELATIVE TO THE ESCALATION TEMPLATE, and the
+// inversion is the point: a wake belongs to a run whose `UltraManifest.sessionId`
+// is set, and the trigger fires on an idle, already-resumed session — so a
+// truthy `sessionId` is a precondition, not a disqualifier. Copying
+// `isEscalationKickoff`'s `!sessionId` here yields a recognizer that is false on
+// every legitimate wake and true only on a turn-1 sentinel no client ever sends.
+// `apps/web/lib/ultra-wake.test.ts` asserts the empty-`sessionId` case by name.
+export function isUltraWakeTrigger(
+  sessionId: string | null | undefined,
+  message: unknown,
+): boolean {
+  return !!sessionId && message === ULTRA_WAKE_SENTINEL;
+}
+
+// SERVER: the effective prompt the model runs for this turn — the canonical wake
+// instruction for a recognized trigger, otherwise the caller's message verbatim.
+// Byte-identical to the input for every other turn, so no existing path changes.
+export function resolveUltraWakeMessage(
+  sessionId: string | null | undefined,
+  message: string,
+): string {
+  return isUltraWakeTrigger(sessionId, message) ? ULTRA_WAKE_PROMPT : message;
+}
+
+// What the formatter needs. Declared STRUCTURALLY rather than imported from
+// `@telar/core`, so this module keeps zero module edges and stays trivially safe
+// to reach from a "use client" file (AD-3). `PendingUltraWake` satisfies it by
+// shape, which is checked where the two meet in session-prompts.ts.
+export type UltraWakeSummary = {
+  runId: string;
+  name: string;
+  state: "done" | "failed" | "stopped";
+  spendUsd: number;
+  result?: unknown;
+  error?: string;
+};
+
+// Per-run cap on the rendered outcome. A run's return value is arbitrary — a
+// script may return a whole research corpus — and this block rides EVERY turn's
+// system prompt until it is acked. Bounded here rather than at the source
+// because the source is a durable record and truncating it would lose data the
+// rail can still show.
+const MAX_OUTCOME_CHARS = 1200;
+
+function clip(s: string): string {
+  return s.length <= MAX_OUTCOME_CHARS ? s : `${s.slice(0, MAX_OUTCOME_CHARS)}…(truncated)`;
+}
+
+// A run's terminal payload, rendered honestly per state:
+//   done    → its `result` (JSON when structured, verbatim when a string)
+//   failed  → its `error`
+//   stopped → NEITHER, and it says so. A stop has no resolved value and no
+//             failure; inventing one for it would be the model's cue to
+//             summarize something that does not exist.
+function outcomeLine(w: UltraWakeSummary): string {
+  if (w.state === "stopped") {
+    return "outcome: stopped before finishing — no result and no error were recorded.";
+  }
+  if (w.state === "failed") {
+    return `error: ${clip(w.error?.trim() || "(the run failed and recorded no error text)")}`;
+  }
+  if (w.result === undefined) return "result: (the run completed and returned nothing)";
+  const text = typeof w.result === "string" ? w.result : safeJson(w.result);
+  return `result: ${clip(text.trim() || "(empty)")}`;
+}
+
+// A script's return value is arbitrary and may be circular or hold a BigInt.
+// Neither is a reason to fail a turn, so the failure degrades to a shape note.
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2) ?? String(v);
+  } catch {
+    return "(the run returned a value that could not be serialized)";
+  }
+}
+
+// The per-turn appendix block — the DELIVERY half of AC1 and AC2, and the only
+// place the outcome text is authored.
+//
+// "" FOR AN EMPTY LIST, never a stray header. This composes on every chat POST
+// for every session, so the overwhelmingly common case is no wakes at all and it
+// must add exactly nothing — a lone "COMPLETED ULTRA RUNS" heading with no runs
+// under it is an instruction to talk about nothing.
+export function formatUltraWakeAppendix(wakes: readonly UltraWakeSummary[]): string {
+  if (wakes.length === 0) return "";
+  const runs = wakes.map((w) =>
+    [
+      `• ${w.name} (run ${w.runId}) — ${w.state}, $${w.spendUsd.toFixed(4)}`,
+      `  ${outcomeLine(w)}`,
+    ].join("\n"),
+  );
+  return [
+    "\n\n--- COMPLETED ULTRA RUNS (this turn only) ---",
+    "Detached Ultra runs launched from this session have reached a terminal state since you last spoke. You ALREADY HAVE their outcomes below — do not call ultra_status to re-fetch them. Mention them to the user; you will not be shown them again.",
+    ...runs,
+  ].join("\n");
+}

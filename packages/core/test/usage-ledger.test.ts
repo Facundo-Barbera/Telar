@@ -26,7 +26,14 @@ const {
   ledgerSpendUsd,
   ledgerReadUnavailable,
   ledgerReadDegraded,
+  // Story 4.1 / AC5 — the two ultra-scoped folds, and the ATOMIC accessor the
+  // display projection must go through (see its own comment for why).
+  ultraCostBySession,
+  ultraCostByMessage,
+  sessionCostFolds,
 } = await import("../src/usage-ledger");
+// Story 4.1 / AC6 proof 1 — the field-set assertion needs the schema itself.
+const { UsageEntry } = await import("../src/schemas");
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
@@ -907,6 +914,288 @@ describe("usage ledger (CAP-2)", () => {
     fs.writeFileSync(ledgerPath(empty), "");
     expect(ledgerSpendUsd({ ownerKind: "loom", ownerId: "D1" })).toBe(0); // present and empty
     expect(ledgerReadDegraded()).toBe(false);
+  });
+
+  // ── Story 4.1 — the two ultra folds and the messageId field (AC5, AC6) ─────
+
+  test("4.1 ultraCostBySession and ultraCostByMessage fold ONLY ultra rows", () => {
+    // The whole point of two separate maps: the session-scoped projections stay
+    // exactly as they were, and anything that wants ultra rows asks by name.
+    const root = freshRoot("ultra-folds");
+    logUsage(entry({ sessionId: "chat-1", costUsd: 1.5 })); // the chat's own turn
+    logUsage(
+      entry({
+        sessionId: "chat-1",
+        ownerKind: "ultra",
+        ownerId: "run_a",
+        messageId: "turn-1",
+        costUsd: 5,
+        entryKey: "ultra:run_a:0:s1",
+      }),
+    );
+    logUsage(
+      entry({
+        sessionId: "chat-1",
+        ownerKind: "ultra",
+        ownerId: "run_b",
+        messageId: "turn-2",
+        costUsd: 2,
+        entryKey: "ultra:run_b:0:s2",
+      }),
+    );
+    // A loom row on the SAME session is in neither ultra map — a different
+    // owner, a different consumer (a charter's budget-left).
+    logUsage(entry({ sessionId: "chat-1", ownerKind: "loom", ownerId: "loom_z", costUsd: 100 }));
+    expect(ultraCostBySession().get("chat-1")).toBe(7);
+    expect(ultraCostByMessage().get("turn-1")).toBe(5);
+    expect(ultraCostByMessage().get("turn-2")).toBe(2);
+    expect(ultraCostByMessage().get("no-such-turn")).toBeUndefined();
+    // …and the session-scoped fold is UNCHANGED — reason (2) of the
+    // owner-scoping rule, preserved exactly.
+    expect(usageCostBySession().get("chat-1")).toBe(1.5);
+    expect(root).toBeTruthy();
+  });
+
+  test("4.1 AC5 proof 4 — the same rows folded two ways agree, so the manifest cannot disagree with the rollup", () => {
+    // "Matching the run manifest's spend" IS this: manifest.spend is
+    // ledgerSpendUsd({ownerKind:"ultra", ownerId:runId}), and the session rollup
+    // is ultraCostBySession(). Two folds of one file, never two counters.
+    freshRoot("ultra-agree");
+    const rows: Array<[string, string, number]> = [
+      ["run_p", "turn-1", 1.25],
+      ["run_p", "turn-1", 0.75],
+      ["run_q", "turn-2", 4],
+    ];
+    rows.forEach(([runId, messageId, costUsd], i) =>
+      logUsage(
+        entry({
+          sessionId: "chat-agree",
+          ownerKind: "ultra",
+          ownerId: runId,
+          messageId,
+          costUsd,
+          entryKey: `ultra:${runId}:${i}:s${i}`,
+        }),
+      ),
+    );
+    const perRun =
+      ledgerSpendUsd({ ownerKind: "ultra", ownerId: "run_p" }) +
+      ledgerSpendUsd({ ownerKind: "ultra", ownerId: "run_q" });
+    expect(perRun).toBe(6);
+    expect(ultraCostBySession().get("chat-agree")).toBe(6);
+    expect(ultraCostByMessage().get("turn-1")).toBe(2);
+    expect(ultraCostByMessage().get("turn-2")).toBe(4);
+  });
+
+  test("4.1 AC5 proof 5 — NO DOUBLE COUNT: usageCostBySession and usageSummary are unchanged by ultra rows", () => {
+    // The trio the story asks for, asserted as a before/after rather than as
+    // two independent numbers that happen to look right.
+    freshRoot("ultra-nodouble");
+    logUsage(entry({ sessionId: "chat-nd", costUsd: 3, account: "personal" }));
+    const sessionBefore = usageCostBySession().get("chat-nd");
+    const summaryBefore = JSON.stringify(usageSummary());
+    logUsage(
+      entry({
+        sessionId: "chat-nd",
+        ownerKind: "ultra",
+        ownerId: "run_nd_1",
+        messageId: "turn-nd",
+        costUsd: 8,
+        entryKey: "ultra:run_nd_1:0:sA",
+      }),
+    );
+    logUsage(
+      entry({
+        sessionId: "chat-nd",
+        ownerKind: "ultra",
+        ownerId: "run_nd_2",
+        messageId: "turn-nd",
+        costUsd: 1,
+        entryKey: "ultra:run_nd_2:0:sB",
+      }),
+    );
+    expect(usageCostBySession().get("chat-nd")).toBe(sessionBefore);
+    expect(JSON.stringify(usageSummary())).toBe(summaryBefore);
+    // The sum is the DISPLAY's job (apps/web/lib/store.ts's sessionSpendUsd);
+    // here it is the arithmetic that display performs, checked at the source.
+    expect((usageCostBySession().get("chat-nd") ?? 0) + (ultraCostBySession().get("chat-nd") ?? 0))
+      .toBe(12);
+  });
+
+  test("4.1 the entryKey dedupe holds across the new maps too", () => {
+    // The ultra folds accumulate BELOW the dedupe's early return, so a
+    // re-presented settle folds once here exactly as it does everywhere else.
+    // Without this, ultra's deliberate replay-on-resume rewrite (storage.ts's
+    // removed `!e.cached` guard) would double-count into the new maps only.
+    const root = freshRoot("ultra-dedupe");
+    const row = {
+      ownerKind: "ultra",
+      ownerId: "run_d",
+      sessionId: "chat-d",
+      messageId: "turn-d",
+      costUsd: 4,
+      entryKey: "ultra:run_d:0:settle-1",
+    };
+    fs.writeFileSync(ledgerPath(root), raw(row) + raw(row) + raw(row));
+    expect(ultraCostBySession().get("chat-d")).toBe(4);
+    expect(ultraCostByMessage().get("turn-d")).toBe(4);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: "run_d" })).toBe(4);
+    // …and a genuinely different settle of the same ordinal DOES count.
+    fs.appendFileSync(ledgerPath(root), raw({ ...row, entryKey: "ultra:run_d:0:settle-2" }));
+    expect(ultraCostBySession().get("chat-d")).toBe(8);
+  });
+
+  test("4.1 AD-7 — a pre-messageId ultra row folds clean and contributes to the session map only", () => {
+    // Every ultra row already on disk predates the field. It must still roll up
+    // by session (that spend is real) and must not invent a "" message bucket.
+    const root = freshRoot("ultra-tolerant");
+    handWrite(root, {
+      ts: Date.now(),
+      account: "personal",
+      model: "sonnet",
+      sessionId: "chat-old",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      costUsd: 6,
+      ownerKind: "ultra",
+      ownerId: "run_old",
+      entryKey: "ultra:run_old:0:legacy",
+    });
+    expect(ultraCostBySession().get("chat-old")).toBe(6);
+    expect(ultraCostByMessage().get("")).toBeUndefined();
+    expect([...ultraCostByMessage().keys()]).toEqual([]);
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: "run_old" })).toBe(6);
+  });
+
+  test("4.1 an un-attributed row omits messageId on disk; an attributed one carries it", () => {
+    // Same omit-when-empty asymmetry entryKey already has, for the same reason:
+    // a row nobody attributed must stay byte-identical to one written before
+    // the field existed.
+    const root = freshRoot("messageid-shape");
+    logUsage(entry({ sessionId: "chat-shape" })); // the chat route's own row
+    logUsage(
+      entry({
+        sessionId: "chat-shape",
+        ownerKind: "ultra",
+        ownerId: "run_shape",
+        messageId: "turn-shape",
+      }),
+    );
+    const [plain, attributed] = rawLines(root);
+    expect(Object.keys(plain!)).not.toContain("messageId");
+    expect(attributed!.messageId).toBe("turn-shape");
+  });
+
+  test("4.1 AC6 proof 1 — the ledger RECORD carries no unit SELECTOR, so the language is the projection's", () => {
+    // WHAT THE CLAIM ACTUALLY IS, stated precisely because the loose version of
+    // it is false and this test found that out. usage-ledger.ts's header and
+    // schemas.ts both said "the record itself carries no currency or unit". Read
+    // as "no field name mentions a currency" that is FALSE: `costUsd` names one,
+    // and it is the field every USD readout folds. Both comments were amended by
+    // story 4.1 to say what they always meant, and it is what this asserts:
+    //
+    //   the record carries the RAW MATERIAL for both denominations — a cost
+    //   number and token counts, side by side, always — and carries NOTHING that
+    //   chooses between them. There is no `currency`, no `unit`, no `provider`
+    //   on the row. The chooser is apps/web/lib/spend-readout.ts, at render
+    //   time, from the session's provider. That is what makes AC6 a property of
+    //   the projection rather than of the record.
+    const fields = Object.keys(UsageEntry.shape);
+    const lower = fields.map((k) => k.toLowerCase());
+    for (const selector of ["currency", "unit", "denomination", "denom", "symbol", "provider", "locale"]) {
+      expect({ selector, present: lower.some((f) => f.includes(selector)) }).toEqual({
+        selector,
+        present: false,
+      });
+    }
+    // Both denominations' raw material is present on EVERY row, unconditionally
+    // — which is the other half of "the projection chooses": neither language
+    // needs a row shaped for it.
+    expect(fields).toContain("costUsd");
+    expect(fields).toContain("inputTokens");
+    expect(fields).toContain("outputTokens");
+    // Anti-vacuity: the shape really was read, and story 4.1's own field is on it.
+    expect(fields).toContain("messageId");
+    expect(fields.length).toBeGreaterThanOrEqual(13);
+  });
+
+  test("4.1 sessionCostFolds is ONE read — a transient failure cannot be erased by a second, luckier one", () => {
+    // THE REGRESSION THIS PINS, found by adversarial review of story 4.1 and
+    // fixed rather than documented away. `sessionSpendUsd` sums the session fold
+    // and the ultra fold. Written as two accessor calls that is TWO `readFold()`
+    // calls, and `readUnavailable`/`readStale` are cleared on ENTRY to each — so
+    // the flags left standing describe only the SECOND call. A cold-process
+    // transient failure on the first leg that clears before the second is
+    // therefore ERASED: the sum is 0, `ledgerReadDegraded()` says false, and
+    // `displayedSpendUsd`'s `projected !== 0 || !ledgerReadDegraded()`
+    // short-circuit returns a confident $0.00 beside a real transcript without
+    // ever consulting the stored counter — the exact failure that predicate
+    // exists to prevent, reopened through a seam instead of through the guard.
+    const root = freshRoot("atomic-folds");
+    handWrite(root, entry({ sessionId: "s-atomic", costUsd: 10 }));
+    // Warm nothing: a fresh root has no cached fold for this file, so the first
+    // open IS this process's first touch — the cold case the scenario needs.
+    const realOpen = fs.openSync;
+    let failures = 1;
+    (fs as { openSync: typeof fs.openSync }).openSync = ((
+      ...args: Parameters<typeof fs.openSync>
+    ) => {
+      if (failures > 0 && String(args[0]).endsWith("usage.ndjson")) {
+        failures--;
+        const err = new Error("EACCES, permission denied") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return realOpen(...args);
+    }) as typeof fs.openSync;
+    try {
+      // THE ATOMIC ACCESSOR: one read, so the failure is still visible after it.
+      const folds = sessionCostFolds();
+      expect((folds.session.get("s-atomic") ?? 0) + (folds.ultra.get("s-atomic") ?? 0)).toBe(0);
+      expect(ledgerReadDegraded()).toBe(true);
+      expect(ledgerReadUnavailable()).toBe(true);
+    } finally {
+      (fs as { openSync: typeof fs.openSync }).openSync = realOpen;
+    }
+    // …and once the ledger is readable the real figure wins, so the assertion
+    // above is about the failure and not about an empty ledger.
+    const clean = sessionCostFolds();
+    expect((clean.session.get("s-atomic") ?? 0) + (clean.ultra.get("s-atomic") ?? 0)).toBe(10);
+    expect(ledgerReadDegraded()).toBe(false);
+  });
+
+  test("4.1 the DISCRIMINATOR — two separate accessor calls really do erase the flag", () => {
+    // Without this, `sessionCostFolds` would look like tidiness. This is the
+    // shape it replaced, failing in exactly the way described above: the second,
+    // successful read clears the flag the first, failed one raised.
+    const root = freshRoot("atomic-discriminator");
+    handWrite(root, entry({ sessionId: "s-disc", costUsd: 10 }));
+    const realOpen = fs.openSync;
+    let failures = 1;
+    (fs as { openSync: typeof fs.openSync }).openSync = ((
+      ...args: Parameters<typeof fs.openSync>
+    ) => {
+      if (failures > 0 && String(args[0]).endsWith("usage.ndjson")) {
+        failures--;
+        const err = new Error("EACCES, permission denied") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return realOpen(...args);
+    }) as typeof fs.openSync;
+    try {
+      const sessionLeg = usageCostBySession().get("s-disc") ?? 0; // fails: 0, flag raised
+      const ultraLeg = ultraCostBySession().get("s-disc") ?? 0; // succeeds: 0 (no ultra rows), flag CLEARED
+      expect(sessionLeg + ultraLeg).toBe(0);
+      // …and the caller is now told the read was fine. That is the bug, pinned
+      // so nobody re-introduces the two-call spelling believing it equivalent.
+      expect(ledgerReadDegraded()).toBe(false);
+    } finally {
+      (fs as { openSync: typeof fs.openSync }).openSync = realOpen;
+    }
+    expect(root).toBeTruthy();
   });
 
   test("(g) neither the ledger module nor this suite contains a raw NUL byte", () => {

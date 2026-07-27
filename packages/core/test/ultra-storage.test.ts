@@ -363,6 +363,121 @@ describe("Ultra storage — sessionId/messageId/account linkage (doc §5)", () =
     expect(seenCwd).toEqual(["/tmp/my-project", "/tmp/my-project"]);
     expect(getUltraManifest(resumed.runId)?.account).toBe("personal");
   });
+
+  // ── Story 4.1 / AC5 — the ledger row learns which chat TURN owns it ────────
+
+  test("4.1 the ledger row on disk carries messageId, and it is the launching turn's id", async () => {
+    // FR-UW-5's attribution, read back off the file rather than inferred from a
+    // projection — the row is where the claim lives, so the row is what is read.
+    const script = `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`;
+    const res = await launchUltra({
+      script,
+      agent: costedFake(0.5),
+      sessionId: "sess-4-1",
+      messageId: "turn-4-1",
+      account: { name: "personal" },
+    });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    const lines = ultraLinesFor(res.runId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.messageId).toBe("turn-4-1");
+    expect(lines[0]!.sessionId).toBe("sess-4-1");
+    expect(lines[0]!.ownerKind).toBe("ultra");
+    expect(lines[0]!.ownerId).toBe(res.runId);
+    // NO NEW CALL SITE: this is a field on the row storage.ts already wrote, so
+    // the fold's own answer for this run is unchanged in value.
+    expect(ledgerSpendUsd({ ownerKind: "ultra", ownerId: res.runId })).toBeCloseTo(0.5);
+  });
+
+  test("4.1 a run launched with NO messageId writes no messageId key at all", async () => {
+    // Additive and defaulted (AD-7): an un-attributed row must stay
+    // byte-identical to one written before the field existed, so the key is
+    // omitted rather than serialized as "".
+    const script = `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`;
+    const res = await launchUltra({ script, agent: costedFake(0.25), sessionId: "sess-4-1-b" });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    const [row] = ultraLinesFor(res.runId);
+    expect(Object.keys(row!)).not.toContain("messageId");
+    expect(row!.sessionId).toBe("sess-4-1-b");
+  });
+});
+
+// ── Story 4.1 / AC4 — the terminal publish ──────────────────────────────────
+
+describe("Ultra storage — the terminal write publishes ultra:run-completed (AC4)", () => {
+  test("the publish fires ONCE, after the durable manifest write, carrying the manifest's own fields", async () => {
+    const { resetBus, subscribe } = await import("../src/event-bus");
+    const { ultraEvents, ULTRA_RUN_COMPLETED } = await import("../src/ultra");
+    resetBus();
+    // Subscribe on the ORDINARY channel: this test is about the publish site,
+    // not about the wake channel (which packages/core/test/ultra-wake.test.ts
+    // owns). Installing the declaration first is what the accessor is for.
+    ultraEvents();
+    const seen: any[] = [];
+    const off = subscribe(ULTRA_RUN_COMPLETED, (p) => seen.push(p));
+    try {
+      const script = `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`;
+      const res = await launchUltra({
+        script,
+        agent: costedFake(1.5),
+        sessionId: "sess-pub",
+        messageId: "turn-pub",
+      });
+      if (!res.ok) throw new Error("unreachable");
+      await getLiveUltraRun(res.runId)!.finished;
+      // The .then() runs on a microtask after `finished` settles — yield once so
+      // the assertion is about the publish rather than about the scheduler.
+      await delay(5);
+      expect(seen).toHaveLength(1);
+      const m = getUltraManifest(res.runId)!;
+      expect(seen[0]).toMatchObject({
+        runId: res.runId,
+        sessionId: "sess-pub",
+        messageId: "turn-pub",
+        state: "done",
+        name: "t", // META's `export const meta = { name: "t", … }`
+        spendUsd: m.spend,
+        terminalAt: m.updatedAt,
+      });
+      // ORDER: the manifest is already terminal and already carries the spend
+      // the payload states, so if only one of the two survived it is the
+      // durable one.
+      expect(m.state).toBe("done");
+      expect(m.spend).toBeCloseTo(1.5);
+    } finally {
+      off();
+      resetBus();
+    }
+  });
+
+  test("a publish that THROWS never fails the run — the terminal manifest still lands", async () => {
+    const { resetBus, subscribe } = await import("../src/event-bus");
+    const { ultraEvents, ULTRA_RUN_COMPLETED } = await import("../src/ultra");
+    resetBus();
+    ultraEvents();
+    // A throwing subscriber is reported as `failed` by publish rather than
+    // escaping it — but the storage-side try/catch is what covers a throw from
+    // publish ITSELF (an undeclared name after a stray resetBus, a payload the
+    // schema refuses). Both must leave the run intact.
+    const off = subscribe(ULTRA_RUN_COMPLETED, () => {
+      throw new Error("subscriber exploded");
+    });
+    try {
+      const script = `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`;
+      const res = await launchUltra({ script, agent: costedFake(0.75), sessionId: "sess-pub-boom" });
+      if (!res.ok) throw new Error("unreachable");
+      await getLiveUltraRun(res.runId)!.finished;
+      await delay(5);
+      const m = getUltraManifest(res.runId)!;
+      expect(m.state).toBe("done");
+      expect(m.spend).toBeCloseTo(0.75);
+    } finally {
+      off();
+      resetBus();
+    }
+  });
 });
 
 // ── CAP-2 / AC6(b): manifest.spend is a PROJECTION over usage.ndjson ─────────

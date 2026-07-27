@@ -4,7 +4,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { ledgerReadDegraded, usageCostBySession, usageTokensBySession } from "@telar/core";
+import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
 
 // The spend ledger itself lives in @telar/core (usage-ledger.ts) — it is
@@ -228,17 +228,47 @@ export function listChats(
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-// A session's spend, projected over the one ledger. Session-scoped by the
-// port: a loom's or an ultra run's lines can legitimately carry the owning
-// chat's sessionId, and they are that owner's spend, not this chat's.
+// A session's spend, projected over the one ledger — the session's OWN turns
+// plus the Ultra runs those turns launched (story 4.1 / AC5, FR-UW-5).
 //
 // Exported because the LIVE per-turn readout has to be the same projection as
 // the persisted one (AD-18 — "three counters that can disagree" is the failure
 // it exists to prevent). The chat route reads this after appending the turn's
 // ledger line and broadcasts it on "done"; the session view sets that value
 // rather than accumulating a delta of its own.
+//
+// THE ONE WIDENING STORY 4.1 MAKES TO A READOUT, and it is here on purpose.
+// This function is the single source for BOTH the live `done` payload and the
+// persisted display (getChat/listChats via displayedSpendUsd), so widening it
+// moves both surfaces together and neither can drift. What is NOT widened:
+// `usageCostBySession()` itself, and therefore `usageSummary()`'s
+// sidebar/dashboard account windows — that is an unresolved [Review][Decision]
+// on story 1.1 and is the human's call, not this story's.
+//
+// NO DOUBLE COUNT, and it is a property of the two folds rather than a hope. A
+// ledger row has exactly one `ownerKind`, so a row counted by
+// `usageCostBySession()` (which folds only `ownerKind === "session"`) is
+// structurally invisible to `ultraCostBySession()` (which folds only
+// `ownerKind === "ultra"`). They are also disjoint in substance: the chat route
+// logs its own SDK turn's `lastResult.totalCostUsd`, while an ultra run's
+// children go through a SEPARATE detached `query()` that outlives the launching
+// turn. A loom row on the same session is in neither map and is that loom's
+// spend, not this chat's.
+//
+// A DEGRADED READ NOW HAS TWO SUMMANDS, and they degrade TOGETHER — but ONLY
+// because this goes through `sessionCostFolds()`, which takes BOTH maps out of
+// ONE `readFold()`. That is not a micro-optimization, it is the correctness
+// condition, and the obvious spelling gets it wrong:
+// `usageCostBySession().get(id) + ultraCostBySession().get(id)` is TWO reads,
+// and the port's `readUnavailable`/`readStale` flags are cleared on entry to
+// each — so a transient failure on the session leg that clears before the ultra
+// leg is ERASED, `ledgerReadDegraded()` answers false, and the fallback below
+// never fires. See `sessionCostFolds`' own comment in
+// packages/core/src/usage-ledger.ts for the full scenario; it is asserted there
+// too, in both directions.
 export function sessionSpendUsd(sessionId: string): number {
-  return usageCostBySession().get(sessionId) ?? 0;
+  const { session, ultra } = sessionCostFolds();
+  return (session.get(sessionId) ?? 0) + (ultra.get(sessionId) ?? 0);
 }
 
 // The spend a CHAT DISPLAYS. The same projection as sessionSpendUsd, plus the
@@ -262,6 +292,18 @@ export function sessionSpendUsd(sessionId: string): number {
 // $12.34, read while a stale fold is being served, displayed $0.00 with
 // `Unavailable` reporting false. A budget wants stale-and-high; a per-session
 // readout wants "was this row's figure actually read".
+//
+// STORY 4.1 NARROWED WHAT THE FALLBACK CAN SUBSTITUTE FOR, and it is stated
+// rather than left for a reader to discover. `stored` is `chat.costUsd`, which
+// appendTurn only ever increments by the chat's OWN turn cost — it has never
+// held ultra spend and still does not. Before 4.1 that made it a COMPLETE
+// substitute for the (session-only) projection. Now that the projection also
+// folds the session's ultra runs, `stored` is a KNOWN-INCOMPLETE substitute
+// whenever the fallback actually fires for a session that launched runs: the
+// displayed figure loses the ultra component for as long as the ledger is
+// unreadable. That is still the right trade — a partial real number beats a
+// confident $0.00 — and it is bounded, because the moment the ledger reads
+// clean the full projection wins again.
 //
 // NOT A GENERAL FALLBACK, deliberately. A ledger that READS CLEAN and simply
 // has no row for this session still displays 0 — that case (a rotated, pruned

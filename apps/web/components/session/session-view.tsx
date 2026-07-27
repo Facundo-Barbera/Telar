@@ -84,7 +84,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fmtCost, fmtTokens, shortId } from "@/lib/format";
+import { fmtTokens, shortId } from "@/lib/format";
 import { consumeSSE } from "@/lib/sse";
 import { UsagePill } from "@/components/session/usage-pill";
 import type { PlanSnapshot } from "@/lib/store";
@@ -111,7 +111,10 @@ import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
 } from "@/lib/escalation-kickoff";
+import { spendReadout } from "@/lib/spend-readout";
+import { ULTRA_WAKE_SENTINEL } from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
+import { useUltraWake } from "@/lib/use-ultra-wake";
 import { cn } from "@/lib/utils";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
 
@@ -959,10 +962,21 @@ function SessionViewInner({
   const [watcherAlerts, setWatcherAlerts] = useState<
     { id: string; loomId: string; title: string; state: WorkUnitState }[]
   >([]);
-  // Synthetic "[watcher] …" turns waiting for the composer to go idle before
-  // they dispatch through send() (never mid-turn — the busy guard forbids it).
+  // Synthetic turns waiting for the composer to go idle before they dispatch
+  // through send() (never mid-turn — the busy guard forbids it): the loom
+  // watcher's "[watcher] …" messages, and story 4.1's Ultra completion-wake
+  // trigger.
+  //
+  // `hidden` IS NEW IN 4.1 AND IS NOT OPTIONAL MACHINERY. Before it, the item
+  // type was `{ id; text }` and the §6.D drain dispatched `send(next.text)` with
+  // no options object at all — so `send`'s `opts?.hidden` read falsy and its
+  // `...(opts?.hidden ? [] : [{ role: "user", … }])` spread pushed a real user
+  // bubble. Enqueuing a sentinel and "letting the existing effect drain it"
+  // would therefore have rendered the raw sentinel as something the human
+  // appeared to type — the exact opposite of AC1. The watcher sets no flag, so
+  // its own "[watcher] …" turns stay VISIBLE, which is what they are meant to be.
   const [injectionQueue, setInjectionQueue] = useState<
-    { id: string; text: string }[]
+    { id: string; text: string; hidden?: boolean }[]
   >([]);
   // De-dupe: watchId -> last trigger state we fired on. A ref, so it survives
   // re-subscribes and a connect-time `run` snapshot of an already-fired state
@@ -1974,6 +1988,43 @@ function SessionViewInner({
     ];
   }, [loomHandoff, loomLive, title]);
 
+  // §6.C-bis — story 4.1 / AC1: the Ultra completion wake. Sibling to the
+  // watcher subscriber above and, like it, this only ENQUEUES — the §6.D drain
+  // below owns when the turn actually fires, and reusing that gate untouched is
+  // what keeps a wake from POSTing a second concurrent turn.
+  //
+  // A POLL, NOT A STREAM (NFR-X-15 / §5.5-D9): one small session-scoped question
+  // answered on the house cadence. `/api/ultra/[id]/events` exists and is story
+  // 4.2's per-run channel for the anchor; a wake does not need a stream per run.
+  const { pending: pendingWakes } = useUltraWake(sessionId);
+  // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
+  // all of them — its formatter takes a list — so three finished runs must not
+  // fire three turns. This ref is what makes the enqueue one-shot: the wakes
+  // stay pending until the ROUTE acks them (which it does on the turn that
+  // consumes them), so without it every poll in that window would enqueue again.
+  // It re-arms when the poll reports the mailbox empty, exactly as the watcher's
+  // `lastFiredRef` re-arms on a different state.
+  const ultraWakeFiredRef = useRef(false);
+  useEffect(() => {
+    if (pendingWakes.length === 0) {
+      ultraWakeFiredRef.current = false;
+      return;
+    }
+    if (ultraWakeFiredRef.current) return;
+    ultraWakeFiredRef.current = true;
+    const seq = watcherSeqRef.current++;
+    setInjectionQueue((q) => [
+      ...q,
+      // The SENTINEL, never the outcome text. route.ts swaps it for the
+      // server-authored instruction and the system-prompt appendix carries the
+      // facts, so this client authors the trigger and nothing else. `hidden`
+      // suppresses the local bubble; the route's `hideUserMessage` is what keeps
+      // it out of the persisted transcript (they are two different suppressions,
+      // and a wake needs both).
+      { id: `uw${seq}`, text: ULTRA_WAKE_SENTINEL, hidden: true },
+    ]);
+  }, [pendingWakes]);
+
   // §6.D — injection: when the composer is idle ("ready" — mid-turn is forbidden
   // by the busy guard) and a watcher turn is queued, dequeue exactly ONE and
   // dispatch it via the normal send() path. Removing the item BEFORE send()
@@ -1995,7 +2046,14 @@ function SessionViewInner({
       return;
     const [next, ...rest] = injectionQueue;
     setInjectionQueue(rest);
-    void send(next.text);
+    // THE DISPATCH CHANGED IN STORY 4.1; THE GATE DID NOT. The three conditions
+    // above are untouched and must stay that way — writing a second idleness
+    // predicate is how "an assistant turn appears on its own" becomes "two turns
+    // fire at once". What changed is one line: the flag is threaded through, so
+    // a hidden item (the Ultra wake trigger) reaches send()'s `hidden` branch
+    // and renders no user bubble, while an unflagged item (the loom watcher)
+    // dispatches EXACTLY as before — `undefined` is what send() already received.
+    void send(next.text, next.hidden ? { hidden: true } : undefined);
   }, [status, injectionQueue, send]);
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -2385,12 +2443,29 @@ function SessionViewInner({
               }}
             />
           )}
-          {/* Aggregate session cost with a hover breakdown (real grand total;
-              per-sub-agent split reserved — spend isn't attributed yet).
-              Hidden for Codex: a ChatGPT-subscription account has no per-token
-              billing, so the figure is always $0.00 — a dead pill, not real
-              spend. The CTX pill stays; context occupancy is real either way. */}
-          {provider !== "codex" && <CostPill total={sessionCost} />}
+          {/* Aggregate session spend, rendered in THIS session's cost language
+              (story 4.1 / AC6). It used to be `provider !== "codex" &&
+              <CostPill total={sessionCost} />` — a HIDE, on the correct
+              observation that a ChatGPT-subscription account has no per-token
+              billing so its USD figure is always $0.00. That reasoning is right
+              about USD and is exactly why tokens are the substitute rather than
+              nothing; lib/spend-readout.ts makes the unit a property of the
+              projection. A Codex session now shows the token form instead of a
+              blank. The CTX pill is unaffected — it is context-window
+              occupancy, not spend, and it always rendered for both providers.
+
+              THE CODEX FIGURE IS `tokens.input + tokens.output` — the lifetime
+              billable pair, deliberately excluding the two cache fields, which
+              are re-presentations of content this session already sent and
+              would climb every turn on an idle transcript. Story 4.2's per-run
+              anchor must be able to choose the same pair, and it can: they are
+              the same two fields `UsageEntry` carries per row. */}
+          <CostPill
+            readout={spendReadout(provider, {
+              usd: sessionCost,
+              tokens: tokens.input + tokens.output,
+            })}
+          />
           {/* Minimize this session to the mini-dock — the dock's natural entry
               point. Only once a real, persisted session id exists to follow. */}
           {dock && sessionId && chatPersisted && (

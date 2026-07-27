@@ -554,6 +554,117 @@ describe("the steerer/escalation builders thread the VALIDATED loomId into the l
   }, 30_000);
 });
 
+// ── story 4.1 / AC2 — ctx.sessionId reaches the wake block, in the same child ──
+
+describe("the project/planner/steerer builders thread ctx.sessionId into the wake read", () => {
+  test("a sessionId with pending wakes produces the block; no sessionId, and none of them do", () => {
+    // SAME SANDBOX, SAME REASON, and it now matters for a THIRD reader. The wake
+    // read (pendingUltraWakes) walks TELAR_HOME/ultra and can WRITE — a stale
+    // `running` manifest self-heals to `stopped` on read — so running it in this
+    // shared bun process would reconcile runs in the operator's real ~/.telar.
+    // Mutating process.env.TELAR_HOME here is equally forbidden (one process for
+    // every suite), so this is the sanctioned child with HOME and TELAR_HOME
+    // pointed at throwaways.
+    //
+    // NOTE ON INV-7: that invariant scans BY NAME, and it does not know that
+    // buildProjectProfile transitively reaches a state-root reader. The
+    // discipline still binds where the call is indirect — which is the whole
+    // reason this test is a child probe rather than three in-process calls, and
+    // why `ctx()` above deliberately never sets `sessionId`.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-profiles-wake-"));
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "telar-profiles-wakehome-"));
+    const telar = path.join(dir, "telar");
+    try {
+      // A terminal run, planted in the throwaway root, owned by the probe's
+      // session. This is what makes the positive arm a real read rather than an
+      // assertion about an empty directory.
+      const runDir = path.join(telar, "ultra", "run_probe_1");
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(runDir, "manifest.json"),
+        JSON.stringify({
+          runId: "run_probe_1",
+          sessionId: "sess_probe",
+          meta: { name: "probe run" },
+          state: "done",
+          spend: 1.25,
+          result: { probed: true },
+          startedAt: 1,
+          updatedAt: 2,
+        }),
+      );
+      const probe = path.join(dir, "probe.ts");
+      fs.writeFileSync(
+        probe,
+        [
+          `import { buildProjectProfile, buildPlannerProfile, buildSteererProfile, buildEscalationProfile } from ${JSON.stringify(
+            path.join(here, "session-profiles"),
+          )};`,
+          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", permissionMode: "default" };`,
+          `const app = (o) => (o.systemPromptAppendix ?? "");`,
+          `const H = "COMPLETED ULTRA RUNS";`,
+          `console.log(JSON.stringify({`,
+          `  projectWith: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false, sessionId: "sess_probe" })).includes(H),`,
+          `  projectNone: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false })).includes(H),`,
+          `  projectOtherSession: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false, sessionId: "sess_other" })).includes(H),`,
+          `  plannerWith: app(buildPlannerProfile({ ...base, kind: "planner", ultraAnnotated: false, sessionId: "sess_probe" })).includes(H),`,
+          `  steererWith: app(buildSteererProfile({ ...base, kind: "steerer", ultraAnnotated: false, sessionId: "sess_probe" })).includes(H),`,
+          `  escalationWith: app(buildEscalationProfile({ ...base, kind: "escalation", sessionId: "sess_probe" })).includes(H),`,
+          `  outcomeCarried: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false, sessionId: "sess_probe" })).includes("probed"),`,
+          `  labelCarried: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false, sessionId: "sess_probe" })).includes("probe run"),`,
+          `  stateCarried: app(buildProjectProfile({ ...base, kind: "project", ultraAnnotated: false, sessionId: "sess_probe" })).includes("done"),`,
+          `  plannerStatic: app(buildPlannerProfile({ ...base, kind: "planner", ultraAnnotated: false, sessionId: "sess_probe" })).includes("planning, not coding"),`,
+          `}));`,
+        ].join("\n"),
+      );
+      const out = spawnSync(process.execPath, [probe], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: fakeHome, TELAR_HOME: telar, NODE_ENV: "test" },
+      });
+      const line = (out.stdout ?? "").trim().split("\n").pop() ?? "";
+      let parsed: Record<string, boolean> | null = null;
+      try {
+        parsed = JSON.parse(line) as Record<string, boolean>;
+      } catch {
+        /* fall through to the diagnostic below */
+      }
+      if (!parsed) {
+        throw new Error(
+          `story 4.1 / AC2: the sandboxed wake-context probe produced no JSON. ` +
+            `status=${out.status} stdout=${JSON.stringify(out.stdout)} ` +
+            `stderr=${JSON.stringify(out.stderr)}. CONSEQUENCE: the sessionId pass-through and ` +
+            `the escalation exclusion are BOTH unproved while this test reads as green. ` +
+            `NEXT STEP: fix the probe or its module resolution — do not weaken the assertion, ` +
+            `and do NOT run the wake read in this process (pendingUltraWakes can WRITE, via ` +
+            `getUltraManifest's self-healing rewrite, into the operator's real ~/.telar).`,
+        );
+      }
+      // The pass-through, on all three kinds that can launch a run…
+      expect(parsed.projectWith).toBe(true);
+      expect(parsed.plannerWith).toBe(true);
+      expect(parsed.steererWith).toBe(true);
+      // …and the DISCRIMINATORS, so "it always appends the block" cannot pass.
+      expect(parsed.projectNone).toBe(false);
+      expect(parsed.projectOtherSession).toBe(false);
+      // ESCALATION never gets it — it hard-denies every ultra tool, so an
+      // outcome it cannot act on has no business in its context.
+      expect(parsed.escalationWith).toBe(false);
+      // The block carries the OUTCOME, not just a header — AC1's
+      // "{state, result|error}" clause reaching a real profile, through the
+      // real production path (pendingUltraWakes -> formatUltraWakeAppendix).
+      expect(parsed.outcomeCarried).toBe(true);
+      expect(parsed.labelCarried).toBe(true);
+      expect(parsed.stateCarried).toBe(true);
+      // …and the static prompt is untouched beside it.
+      expect(parsed.plannerStatic).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 // ── AC6 — the Codex approval seam (story 2.2, §6.2-G) ──────────────────────
 
 describe("AC6 the profile's guardrails govern a Codex approval, not just a Claude tool call", () => {

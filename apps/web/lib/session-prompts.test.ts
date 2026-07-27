@@ -52,8 +52,15 @@ import {
   safeRead,
   ultraNote,
 } from "./session-prompts";
+// Story 4.1 — the REAL formatter, so the injected read below renders what
+// production renders rather than a stand-in the assertions could not tell apart.
+import { formatUltraWakeAppendix } from "./ultra-wake";
 
 const LIVE = "\n\n--- LIVE CONTEXT SENTINEL ---";
+// Story 4.1's second, INDEPENDENT live block. A distinct sentinel so a test can
+// tell which of the two reads produced what — the whole point of the pair being
+// wrapped separately.
+const WAKE = "\n\n--- WAKE CONTEXT SENTINEL ---";
 const boom = () => {
   throw new Error("the loom store is unreachable");
 };
@@ -259,6 +266,146 @@ describe("THE FAIL-SAFE — a throwing reader degrades the live block, never the
     // throw, and the tests would read as a passing fail-safe proof.
     expect(steererAppendixThrowing({ ultraAnnotated: false })).not.toContain(LIVE);
     expect(steerer({ ultraAnnotated: false })).toContain(LIVE);
+  });
+
+  // ── Story 4.1 / AC2 — the completed-Ultra-run block ───────────────────────
+  //
+  // The proof that the outcome reaches the model as PER-TURN CONTEXT, driven
+  // through the injectable `readWake` seam. That seam is also the INV-7
+  // mechanism this file uses throughout: the composer never touches the state
+  // root here, because the read it would perform is supplied.
+  //
+  // A test that asserted "the model did not call ultra_status" would not be a
+  // test. A test that the APPENDIX carries the state and the result/error is the
+  // honest proof, and it is this.
+
+  test("4.1 the wake block reaches project, planner and steerer — every kind that can launch a run", () => {
+    for (const appendix of [
+      projectAppendix({ ultraAnnotated: false, sessionId: "sess-1", readWake: () => WAKE }),
+      plannerAppendix({ ultraAnnotated: false, sessionId: "sess-1", readWake: () => WAKE }),
+      steererAppendix({
+        loomId: "loom_1",
+        ultraAnnotated: false,
+        sessionId: "sess-1",
+        read: () => LIVE,
+        readWake: () => WAKE,
+      }),
+    ]) {
+      expect(appendix).toContain(WAKE);
+    }
+  });
+
+  test("4.1 no sessionId means no wake block, and never a crash", () => {
+    // Turn 1 of a fresh session has no id yet — the SDK mints it inside the
+    // stream — and a session with no id has no pending wakes by construction.
+    expect(projectAppendix({ ultraAnnotated: false })).toBe("");
+    expect(projectAppendix({ ultraAnnotated: false, readWake: () => WAKE })).toBe("");
+    expect(plannerAppendix({ ultraAnnotated: false })).toBe(PLANNER_SYSTEM_PROMPT);
+  });
+
+  test("4.1 an EMPTY wake block adds exactly nothing — a plain turn is byte-identical", () => {
+    // This composes on every chat POST for every session, so the common case has
+    // to be free. A stray header would be an instruction to talk about nothing.
+    expect(projectAppendix({ ultraAnnotated: false, sessionId: "sess-1", readWake: () => "" })).toBe(
+      "",
+    );
+    expect(plannerAppendix({ ultraAnnotated: false, sessionId: "sess-1", readWake: () => "" })).toBe(
+      PLANNER_SYSTEM_PROMPT,
+    );
+  });
+
+  test("4.1 a THROWING wake read drops only its own block — the static prompt and the note survive", () => {
+    // The whole reason it gets its own safeLiveContext. This runs PRE-STREAM,
+    // where an escaped throw is a bare 500 with no SSE frame at all.
+    const appendix = plannerAppendix({
+      ultraAnnotated: true,
+      sessionId: "sess-1",
+      readWake: boom,
+    });
+    expect(appendix).toBe(PLANNER_SYSTEM_PROMPT + ULTRA_ANNOTATION_NOTE);
+    expect(appendix).not.toBe("");
+  });
+
+  test("4.1 the TWO live reads in one composer are INDEPENDENT — either can fail alone", () => {
+    // Steerer is the first composer in this file to run two live reads, and they
+    // are wrapped separately on purpose. A reader who finds one safeLiveContext
+    // and "simplifies" them into one re-couples exactly these failures.
+    const base = { loomId: "loom_1", ultraAnnotated: false, sessionId: "sess-1" } as const;
+    // Loom read fails, wake read works: the wake block survives.
+    const loomBroke = steererAppendix({ ...base, read: boom, readWake: () => WAKE });
+    expect(loomBroke).not.toContain(LIVE);
+    expect(loomBroke).toContain(WAKE);
+    // Wake read fails, loom read works: the loom block survives.
+    const wakeBroke = steererAppendix({ ...base, read: () => LIVE, readWake: boom });
+    expect(wakeBroke).toContain(LIVE);
+    expect(wakeBroke).not.toContain(WAKE);
+    // Both fail: the static moat text is still there, which is the property
+    // safeLiveContext exists for.
+    const bothBroke = steererAppendix({ ...base, read: boom, readWake: boom });
+    expect(bothBroke).toBe(STEERER_SYSTEM_PROMPT);
+    // And both work: the order is static prompt, loom block, note, wake block.
+    expect(
+      steererAppendix({ ...base, ultraAnnotated: true, read: () => LIVE, readWake: () => WAKE }),
+    ).toBe(STEERER_SYSTEM_PROMPT + LIVE + ULTRA_ANNOTATION_NOTE + WAKE);
+  });
+
+  test("4.1 AC2 proof 3 — the composed appendix carries the STATE and the result/error, with no ultra_status call", () => {
+    // AC2's literal proof clause lives here: drive the composer with an
+    // INJECTED read (this file's INV-7-sanctioned idiom) and assert the RENDERED
+    // appendix contains the state and the result/error. The injected read runs
+    // the REAL formatter over a real-shaped record, so this is the whole
+    // delivery path minus the disk — which is the part session-profiles.test.ts
+    // proves separately, in a sandboxed child.
+    //
+    // A test that asserted "the model did not call ultra_status" would not be a
+    // test. That the outcome is IN the context is the honest proof, and it is
+    // this one.
+    const wakes = [
+      { runId: "run_a", name: "alpha", state: "done" as const, spendUsd: 1.5, result: { files: 12 } },
+      { runId: "run_b", name: "beta", state: "failed" as const, spendUsd: 0.25, error: "step 3 threw" },
+      { runId: "run_c", name: "gamma", state: "stopped" as const, spendUsd: 0 },
+    ];
+    const appendix = projectAppendix({
+      ultraAnnotated: false,
+      sessionId: "sess-1",
+      readWake: () => formatUltraWakeAppendix(wakes),
+    });
+    // Every STATE word reaches the model…
+    expect(appendix).toContain("done");
+    expect(appendix).toContain("failed");
+    expect(appendix).toContain("stopped");
+    // …and the result / error alongside it.
+    expect(appendix).toContain('"files": 12');
+    expect(appendix).toContain("step 3 threw");
+    // …and the run's own identity, so the model can name what finished.
+    expect(appendix).toContain("alpha");
+    expect(appendix).toContain("run_a");
+    // The instruction the model reads is the one that stops it polling.
+    expect(appendix).toContain("do not call ultra_status");
+    // Anti-vacuity: with nothing pending the same composer adds NOTHING, so the
+    // assertions above are about the wakes and not about the composer.
+    expect(
+      projectAppendix({ ultraAnnotated: false, sessionId: "sess-1", readWake: () => formatUltraWakeAppendix([]) }),
+    ).toBe("");
+  });
+
+  test("4.1 ESCALATION never carries a wake block — by signature, not by memory", () => {
+    // Same reasoning as the Ultra note, and the same enforcement: this profile
+    // HARD-DENIES all three ultra tools, so advertising a finished run to it is
+    // advertising an outcome to a surface that cannot act on it.
+    //
+    // Written as a TYPE ANNOTATION on a data object rather than above a call —
+    // see this file's header. A directive above a call still CALLS, and the call
+    // it would make here falls through to a real state-root read.
+    const optsAskingForAWake: Parameters<typeof escalationAppendix>[0] = {
+      loomId: "loom_1",
+      cwd: "/repos/demo",
+      // @ts-expect-error escalation never carries the completed-run block — by signature
+      sessionId: "sess-1",
+    };
+    const appendix = escalationAppendix({ ...optsAskingForAWake, read: () => LIVE });
+    expect(appendix).toBe(ESCALATION_SYSTEM_PROMPT + LIVE);
+    expect(appendix).not.toContain(WAKE);
   });
 });
 
