@@ -112,7 +112,11 @@ import {
   shouldFireEscalationKickoff,
 } from "@/lib/escalation-kickoff";
 import { spendReadout } from "@/lib/spend-readout";
-import { ULTRA_WAKE_SENTINEL } from "@/lib/ultra-wake";
+import {
+  freshUltraWakes,
+  shouldEnqueueUltraWake,
+  ULTRA_WAKE_SENTINEL,
+} from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
 import { useUltraWake } from "@/lib/use-ultra-wake";
 import { cn } from "@/lib/utils";
@@ -1999,30 +2003,67 @@ function SessionViewInner({
   const { pending: pendingWakes } = useUltraWake(sessionId);
   // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
   // all of them — its formatter takes a list — so three finished runs must not
-  // fire three turns. This ref is what makes the enqueue one-shot: the wakes
-  // stay pending until the ROUTE acks them (which it does on the turn that
-  // consumes them), so without it every poll in that window would enqueue again.
-  // It re-arms when the poll reports the mailbox empty, exactly as the watcher's
-  // `lastFiredRef` re-arms on a different state.
-  const ultraWakeFiredRef = useRef(false);
+  // fire three turns. The wakes stay pending until the ROUTE acks them (which it
+  // does on the turn that consumes them), so without a latch every poll in that
+  // window would enqueue again.
+  //
+  // THE LATCH IS THE SET OF RUNS ALREADY ANNOUNCED, NOT A BOOLEAN (review SF-1).
+  // It was a boolean cleared only by `pendingWakes.length === 0`, and that has a
+  // reachable hole: several runs can be live for one session (§5.6-T10's own
+  // premise, and `packages/core/src/ultra/executor.ts`'s `RUN_CONCURRENCY = 3`
+  // is what bounds it), so run A settles and its wake turn streams for 30s, run B
+  // settles a second later, and every subsequent poll returns a NON-empty
+  // mailbox — so the latch never cleared, B was never enqueued, and when the
+  // session went idle no unprompted turn ever appeared for it. AC1's
+  // Given/When/Then was simply unmet for the second run.
+  //
+  // Keying on the run-ids themselves fixes it without re-opening T10: a poll
+  // enqueues exactly one trigger if it carries any run this component has not
+  // announced yet, however many that is. Pruning to the currently-pending set is
+  // what re-arms a RESUMED run — `deliveredTerminalAt` makes it pending again
+  // under the same id, and it must be announceable again — while a run that is
+  // merely still-unacked stays in the set and cannot re-fire.
+  //
+  // NOTE the deliberate non-re-arm: if the wake turn DIES before the route acks
+  // (the SDK binary missing, a mid-stream abort), the run stays pending and
+  // stays announced, so no second trigger fires for it. That is the old
+  // behaviour preserved on purpose — a permanently failing turn must not become
+  // a turn loop — and the outcome still reaches the model on the next turn the
+  // human starts, which is AC2's path and needs no trigger at all.
+  //
+  // The decision itself is `freshUltraWakes` in lib/ultra-wake.ts — pure, and
+  // out of this file precisely so a test can drive it. All this ref holds is the
+  // carry-over between polls.
+  const announcedWakesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (pendingWakes.length === 0) {
-      ultraWakeFiredRef.current = false;
-      return;
-    }
-    if (ultraWakeFiredRef.current) return;
-    ultraWakeFiredRef.current = true;
+    const { fresh, announced } = freshUltraWakes(
+      announcedWakesRef.current,
+      pendingWakes.map((w) => w.runId),
+    );
+    announcedWakesRef.current = announced;
+    if (fresh.length === 0) return;
     const seq = watcherSeqRef.current++;
-    setInjectionQueue((q) => [
-      ...q,
-      // The SENTINEL, never the outcome text. route.ts swaps it for the
-      // server-authored instruction and the system-prompt appendix carries the
-      // facts, so this client authors the trigger and nothing else. `hidden`
-      // suppresses the local bubble; the route's `hideUserMessage` is what keeps
-      // it out of the persisted transcript (they are two different suppressions,
-      // and a wake needs both).
-      { id: `uw${seq}`, text: ULTRA_WAKE_SENTINEL, hidden: true },
-    ]);
+    // BOTH HALVES OF T10 ARE IN THE SEAM, not here — `freshUltraWakes` decides
+    // WHICH runs are new, `shouldEnqueueUltraWake` decides whether a trigger may
+    // be added given what is already queued. Read that second one's header
+    // before touching this: dropping it re-opens exactly what T10 forbids, and
+    // it is asked inside the updater so it sees the real queue rather than a
+    // render-time closure over it. (`seq` is simply not consumed on the skip
+    // path; it is an id source, and a gap in it means nothing.)
+    setInjectionQueue((q) =>
+      shouldEnqueueUltraWake(fresh, q)
+        ? [
+            ...q,
+            // The SENTINEL, never the outcome text. route.ts swaps it for the
+            // server-authored instruction and the system-prompt appendix carries
+            // the facts, so this client authors the trigger and nothing else.
+            // `hidden` suppresses the local bubble; the route's `hideUserMessage`
+            // is what keeps it out of the persisted transcript (they are two
+            // different suppressions, and a wake needs both).
+            { id: `uw${seq}`, text: ULTRA_WAKE_SENTINEL, hidden: true },
+          ]
+        : q,
+    );
   }, [pendingWakes]);
 
   // §6.D — injection: when the composer is idle ("ready" — mid-turn is forbidden
@@ -2046,6 +2087,21 @@ function SessionViewInner({
       return;
     const [next, ...rest] = injectionQueue;
     setInjectionQueue(rest);
+    // A WAKE TRIGGER IS ONLY VALID WHILE THE MAILBOX IT SPEAKS FOR IS STILL FULL
+    // (review SF-2). Nothing else re-validates it: the server's
+    // `isUltraWakeTrigger` is `!!sessionId && message === ULTRA_WAKE_SENTINEL`
+    // and consults no state. So a trigger enqueued while the drain was blocked
+    // and dispatched after the wakes were already acked would run
+    // ULTRA_WAKE_PROMPT — "the COMPLETED ULTRA RUNS block in your context above
+    // carries each run's outcome" — against a prompt with no such block, on a
+    // turn that renders no user bubble. The reachable path is the §1b reconnect
+    // tail: `status` is transiently "ready" while `reconnectAbortRef.current` is
+    // non-null, so the composer is enabled and the drain is not; the human types;
+    // that POST acks and renders the wakes; the tail clears and this drains the
+    // stale trigger. Dropping it here (already removed from the queue above) is
+    // the whole fix. The sentinel IS the discriminator — the same seam the route
+    // recognizes on — so no second flag has to be kept in sync with it.
+    if (next.text === ULTRA_WAKE_SENTINEL && pendingWakes.length === 0) return;
     // THE DISPATCH CHANGED IN STORY 4.1; THE GATE DID NOT. The three conditions
     // above are untouched and must stay that way — writing a second idleness
     // predicate is how "an assistant turn appears on its own" becomes "two turns
@@ -2054,7 +2110,7 @@ function SessionViewInner({
     // and renders no user bubble, while an unflagged item (the loom watcher)
     // dispatches EXACTLY as before — `undefined` is what send() already received.
     void send(next.text, next.hidden ? { hidden: true } : undefined);
-  }, [status, injectionQueue, send]);
+  }, [status, injectionQueue, send, pendingWakes]);
 
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();

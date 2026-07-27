@@ -36,7 +36,11 @@ import {
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
-import { isUltraWakeTrigger, resolveUltraWakeMessage } from "@/lib/ultra-wake";
+import {
+  appendixCarriesUltraWake,
+  isUltraWakeTrigger,
+  resolveUltraWakeMessage,
+} from "@/lib/ultra-wake";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
@@ -524,32 +528,79 @@ export async function POST(req: Request) {
     );
   }
 
-  // Story 4.1 / AC7 — CONSUME the wakes this turn's appendix is about to carry,
-  // so the same outcome is never stated twice.
+  // Story 4.1 / AC7 — CONSUME the wakes this turn's appendix ACTUALLY CARRIED,
+  // so the same outcome is never stated twice and never stated zero times.
   //
   // THE WINDOW IS EXACT, and both edges are load-bearing. AFTER the capability
   // gate above: a pre-stream 400 would otherwise consume a wake no model ever
   // saw. BEFORE registerChatRun below: the route's own comment on that call
   // explains that an early return after it leaves a registered run with no
-  // stream to end, so nothing that can fail may be inserted past it — and this
-  // cannot fail (ackUltraWakes swallows an unwritable state root and simply
-  // leaves the wake pending, which is the correct failure direction).
+  // stream to end, so nothing that can fail may be inserted past it.
+  //
+  // ── THIS BLOCK CAN THROW, AND IT IS WRAPPED FOR IT (review B1) ──────────────
+  // An earlier version of this comment claimed the ack "cannot fail" because
+  // `ackUltraWakes` swallows an unwritable state root. That was true of
+  // `ackUltraWakes` and false of the line as a whole: `pendingUltraWakes` has no
+  // try/catch of its own, and it reaches `listUltraRuns` — whose `try` guards
+  // only the `readdirSync`, not the per-id call — and then `getUltraManifest`,
+  // whose self-heal `saveManifest(m)` is an UNWRAPPED WRITE. Two reproduced
+  // escapes, both from a probe on a temp state root: a `running` manifest with
+  // no `runId` key throws `invalid ultra runId: undefined`, and a well-formed
+  // stale `running` manifest whose heal write cannot land throws that write's
+  // errno. Neither is session-scoped — `listUltraRuns()` walks the whole
+  // directory — so one bad manifest anywhere would 500 EVERY chat turn in the
+  // app, including sessions that have never touched Ultra, with no SSE `error`
+  // frame because the stream has not opened. The sibling read one screen away
+  // (`ultraWakeAppendix` in lib/session-prompts.ts) already sits inside
+  // `safeLiveContext` for exactly this reason; this one is wrapped to match.
+  // The right fix for the underlying throw is in `getUltraManifest`'s contract,
+  // which is fenced out of this story and recorded in deferred-work.md.
+  //
+  // ── AND IT IS GATED ON DELIVERY, NOT ON THE TURN EXISTING (review SF-3) ─────
+  // Acking a wake the model was never shown marks it delivered having been
+  // delivered ZERO times — the one failure packages/core/src/ultra/wake.ts's
+  // header says is impossible. Two reachable ways this turn can consume an
+  // outcome it does not carry, so both are filtered rather than assumed away:
+  //   · THE COMPOSER'S READ FAILED. `ultraWakeAppendix` wraps its read in
+  //     `safeLiveContext`, which degrades to "" — so the mailbox can be full
+  //     while the block is absent, and the failure is silent by design.
+  //   · THE PROVIDER DISCARDS THE APPENDIX. `runCodexTurn` below takes no
+  //     `systemPrompt` at all, so on a Codex turn nothing composed here reaches
+  //     the model. Ultra is Claude-only today, but a session that launched a run
+  //     on Claude and then switched provider is an ordinary way to get here.
+  // `appendixCarriesUltraWake` asks the composed prompt itself, against the same
+  // marker the formatter renders, so the two cannot drift.
   //
   // A DELIBERATE SECOND READ, not a value threaded out of the composer. Every
   // appendix composer in session-prompts.ts returns a plain `string` — that is
   // the shape of all five — and changing one so it could hand back the records
   // it rendered would make the profile builder's return value carry data
   // SessionProfile has no field for. So the ids are re-read here. It is cheap
-  // relative to what the turn is about to do, it keeps the composer pure of the
-  // ack, and if the two reads ever disagreed (a run settling in the microseconds
-  // between them) the newer wake simply stays pending for the next turn — the
-  // correct direction, and the one the ack's idempotence already tolerates.
-  // Do not "fix" this into one read.
-  if (typeof sessionId === "string" && sessionId) {
-    ackUltraWakes(
-      sessionId,
-      pendingUltraWakes(sessionId).map((w) => w.runId),
-    );
+  // relative to what the turn is about to do, and it keeps the composer pure of
+  // the ack.
+  //
+  // THE TWO READS CAN ONLY DISAGREE IN ONE DIRECTION, and the earlier comment
+  // here had it backwards. `resolveSessionProfile` is EAGER — `const spec =
+  // build(ctx)` — and nothing between it and this line awaits, so the
+  // composer's read strictly PRECEDES this one and this one can only be a
+  // SUPERSET. A run that settled in between is therefore in this read and NOT in
+  // the appendix, which is precisely the case the delivery gate above filters
+  // out; it stays pending for the next turn. Do not "fix" this into one read,
+  // and do not restate it as "the newer wake simply stays pending" without the
+  // gate — the gate is what makes that sentence true.
+  if (typeof sessionId === "string" && sessionId && provider !== "codex") {
+    try {
+      const carried = pendingUltraWakes(sessionId)
+        .map((w) => w.runId)
+        .filter((runId) =>
+          appendixCarriesUltraWake(sessionProfile.systemPromptAppendix, runId),
+        );
+      ackUltraWakes(sessionId, carried);
+    } catch {
+      // The mailbox could not be read. The wakes simply stay pending and are
+      // re-stated on the next turn — the correct failure direction, and the one
+      // the ack's idempotence already tolerates. Never a 500 on a turn path.
+    }
   }
 
   // Background turn (docs/runtime-architecture.md §A.4): the run is deliberately

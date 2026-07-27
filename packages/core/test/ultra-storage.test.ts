@@ -452,15 +452,20 @@ describe("Ultra storage — the terminal write publishes ultra:run-completed (AC
     }
   });
 
-  test("a publish that THROWS never fails the run — the terminal manifest still lands", async () => {
+  test("a SUBSCRIBER that throws never fails the run — the terminal manifest still lands", async () => {
     const { resetBus, subscribe } = await import("../src/event-bus");
     const { ultraEvents, ULTRA_RUN_COMPLETED } = await import("../src/ultra");
     resetBus();
     ultraEvents();
-    // A throwing subscriber is reported as `failed` by publish rather than
-    // escaping it — but the storage-side try/catch is what covers a throw from
-    // publish ITSELF (an undeclared name after a stray resetBus, a payload the
-    // schema refuses). Both must leave the run intact.
+    // NAMED FOR WHAT THE FIXTURE ACTUALLY DOES. This test read "a publish that
+    // THROWS" until the story-4.1 code review (NH-2), and it never made the
+    // publish throw: a throwing SUBSCRIBER is caught by `publish` by design and
+    // reported as a failed delivery, so the publish call itself returns
+    // normally. The property is real and worth pinning; the old title claimed a
+    // second one, and someone hardening this path could have read it as licence
+    // to remove the storage-side try/catch around `publish` ITSELF — the guard
+    // that covers an undeclared name after a stray resetBus or a payload the
+    // schema refuses, and the one that is genuinely still untested here.
     const off = subscribe(ULTRA_RUN_COMPLETED, () => {
       throw new Error("subscriber exploded");
     });

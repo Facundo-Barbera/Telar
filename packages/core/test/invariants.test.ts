@@ -3064,9 +3064,45 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
 // apps/web/lib/session-profiles.test.ts drives buildSteererProfile through the
 // registry (`row.build(ctx(…))`, `resolveSessionProfile(ctx(…))`) dozens of
 // times without ever spelling the builder as a call, and those calls are safe
-// only because that file's `ctx()` helper never sets `loomId` — the composers
-// short-circuit to "" before reaching a reader when the id is absent. That is a
-// property of a test helper, not a sandbox, and INV-7 cannot see it. The same
+// only because that file's `ctx()` helper never sets `loomId` AND never sets
+// `sessionId` — the composers short-circuit to "" before reaching a reader when
+// the id is absent. THE SECOND HALF OF THAT SENTENCE IS NEW AND IS NOT
+// COSMETIC: story 4.1 gave projectAppendix / plannerAppendix / steererAppendix —
+// and through them buildProjectProfile / buildPlannerProfile — a SECOND
+// transitive route to the state root, keyed off `sessionId` rather than
+// `loomId` (sessionId → ultraWakeAppendix → buildUltraWakeContext →
+// pendingUltraWakes → listUltraRuns → getUltraManifest, which WRITES: it
+// re-saves a stale `running` manifest as `stopped`).
+//
+// FOUR of those five symbols are absent from the surface below —
+// projectAppendix, plannerAppendix, buildProjectProfile, buildPlannerProfile.
+// The fifth, steererAppendix, IS listed, and so is buildSteererProfile, but both
+// were added for the `loomId` chain and neither presence says anything about
+// this one. And `INJECTED_READER` matches `read:`: it cannot match this seam's
+// `readWake:` and does not require it. So adding `sessionId` to the helper above
+// would read as a harmless widening and would silently point dozens of
+// in-process calls at the operator's real root, with `safeLiveContext`
+// swallowing every trace.
+//
+// LATENT TODAY, NOT LIVE — and the reason is two different mechanisms, not one.
+// The IN-PROCESS calls that carry a `sessionId` all live in
+// apps/web/lib/session-prompts.test.ts, and every one that reaches a
+// wake-capable composer injects `readWake`; the single exception there calls
+// escalationAppendix, which never composes the wake block at all and is safe by
+// signature. The `sessionId`-carrying calls in session-profiles.test.ts inject
+// nothing — they are safe because they run inside the SANDBOXED CHILD probe,
+// spawned with `HOME` and `TELAR_HOME` both thrown away. Stating that as "every
+// call also injects readWake" is what the story-4.1 review-fix round first wrote
+// here, and its own adversarial pass caught it: the sentence is false and it
+// credits the wrong guarantee, which is worse, because the next reader would
+// look for an injection that is not there.
+//
+// Widening the surface and adding the second predicate is recorded in
+// deferred-work.md with a named owner — story 4.1's write-set row for this file
+// reads "Append INV-9 only", so its review round amended this comment and
+// deliberately did not touch the guard.
+// Both halves are a property of a test helper, not a sandbox, and INV-7 cannot
+// see either. The same
 // goes for looms.ts's acceptLoom / listChildLooms and bundle.ts's writeContract
 // / quickBundle / snapshotBundle, each of which reaches a reader one hop down
 // (every test file calling them today pins TELAR_HOME, checked at authoring

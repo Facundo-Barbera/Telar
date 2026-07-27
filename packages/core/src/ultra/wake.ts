@@ -38,8 +38,13 @@
 //                               pending again rather than swallowed by the old
 //                               stamp. See `deliveredTerminalAt`.
 //
-// ── THE ONE PLACE THIS GUARANTEE STOPS, stated rather than glossed ────────────
-// It rests on THE TERMINAL MANIFEST BEING WRITTEN. `storage.ts`'s
+// ── THE TWO PLACES THIS GUARANTEE STOPS, stated rather than glossed ───────────
+// This enumeration is deliberately CROSS-MODULE — the guarantee above is an
+// end-to-end claim, so scoping the holes to this file's own internals would not
+// rescue it. It named only the first of these until the story-4.1 code review
+// (SF-4) pointed out that the same commit recorded a second and left it out.
+//
+// (1) IT RESTS ON THE TERMINAL MANIFEST BEING WRITTEN. `storage.ts`'s
 // `run.finished.then` calls `saveManifest` before the publish, and that call is
 // NOT wrapped — a throw there (JSON.stringify on a script that returned a BigInt
 // or a circular value; ENOSPC/EROFS) lands in the trailing `.catch(() => {})`,
@@ -49,8 +54,26 @@
 // PRE-EXISTING defect in the terminal write path rather than one this module
 // introduces, and it is recorded in
 // _bmad-output/implementation-artifacts/deferred-work.md with a named owner
+// (whichever story next opens ultra's terminal write path, most plausibly 4.2)
 // instead of being fixed here — changing saveManifest's error contract is
-// outside story 4.1's write set. Do not read the guarantee above as covering it.
+// outside story 4.1's write set.
+//
+// (2) THE CONSUMER ACKS BEFORE THE MODEL READS. `ackUltraWakes` is called
+// pre-stream by `apps/web/app/api/chat/route.ts`, deliberately: acking after a
+// successful stream would re-deliver the same outcome on every abort,
+// disconnect and mid-turn error, which is the double-statement AC7 exists to
+// prevent. The residue is that a turn which acks and then dies BEFORE the model
+// reads its prompt has consumed an outcome that was stated zero times. The
+// route narrows this as far as a one-phase ack can — it acks only runs the
+// composed appendix demonstrably carries (`appendixCarriesUltraWake`), so a
+// failed composer read or a provider that discards the system prompt no longer
+// consumes anything — but a turn that dies at `query()` construction is still
+// inside the window. Closing it needs a two-phase claim/confirm ack, which is a
+// route-lifecycle change rather than a wake change; recorded in
+// deferred-work.md with a named owner (whichever story next wants at-least-once
+// delivery rather than at-most-once).
+//
+// Do not read the guarantee above as covering either of these.
 //
 // ── WHERE THE RECORD LIVES, AND THE TWO PLACES IT DELIBERATELY DOES NOT ───────
 // `TELAR_HOME/ultra/<runId>/wake.json`, composed off `runDir(runId)` — ultra's

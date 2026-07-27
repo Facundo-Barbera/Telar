@@ -1,13 +1,21 @@
 // Story 4.1 / AC6 — the cost language is a property of the PROJECTION, and the
-// record carries no unit at all.
+// record carries no unit SELECTOR.
+//
+// Not "no unit at all", which is what this header said until the story-4.1 code
+// review (SF-9): a row carries a `costUsd` number and token counts side by side,
+// and carries nothing that CHOOSES between them. That is the whole reason a
+// projection has to decide.
 //
 // Two claims, and they are proved in two different places on purpose:
 //   · "a property of the projection" — driven here, both providers, pure.
 //   · "not the record" — the `UsageEntry` field-set assertion, which needs to see
-//     the zod schema. It lives in `packages/core/test/usage-ledger.test.ts`
-//     ("AC6 the ledger record carries no currency or unit field"), because that
-//     is where the schema is in scope; §2 AC6 proof 1 permits either home and
-//     asks that the choice be stated. This is the statement.
+//     the zod schema. It lives in `packages/core/test/usage-ledger.test.ts`,
+//     because that is where the schema is in scope; §2 AC6 proof 1 permits
+//     either home and asks that the choice be stated. This is the statement.
+//     Its title, quoted so a grep for it resolves: "4.1 AC6 proof 1 — the ledger
+//     RECORD carries no unit SELECTOR, so the language is the projection's".
+//     (The title cited here originally — "AC6 the ledger record carries no
+//     currency or unit field" — existed nowhere in the tree but this line.)
 //
 // No DOM, no disk, no core import. bun provides "bun:test" at runtime;
 // @types/bun isn't a dependency of this Next app, so the web tsconfig can't

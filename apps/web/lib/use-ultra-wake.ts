@@ -53,7 +53,28 @@ export function useUltraWake(sessionId: string | null) {
     }
   }, [sessionId]);
 
+  // THE ONE SUPPRESSION IN THIS FILE, and it is written out because story 4.1's
+  // record claimed this file added zero lint problems and the code review
+  // measured otherwise (B2). It is `react-hooks/set-state-in-effect`, reported
+  // on the `void reload()` line below.
+  //
+  // WHY IT IS A FALSE POSITIVE HERE, on the rule's own terms. The rule is about
+  // cascading renders caused by setting state SYNCHRONOUSLY in an effect body.
+  // `reload` is async and every setState in it sits behind `await fetch`, so
+  // nothing is set during the effect. What the rule actually keys on is that the
+  // effect body calls a function that transitively calls setState at all —
+  // measured rather than reasoned: removing the synchronous no-session branch
+  // above does NOT clear it, and `use-accounts.ts:26` reports the identical
+  // error with no synchronous branch of its own.
+  //
+  // WHY IT IS SUPPRESSED HERE AND NOT THERE. `use-accounts.ts` is the file §5.3
+  // item 8 names as this hook's template; it carries the same error at the
+  // baseline commit and is deliberately NOT touched by this round, because it is
+  // pre-existing and in no story's write set. Narrowing the divergence to the
+  // one file that owns it is the smaller inconsistency than either a repo-wide
+  // rule change or a drive-by edit to a file nobody opened.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, [reload]);
 

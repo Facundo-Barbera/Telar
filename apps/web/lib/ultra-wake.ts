@@ -79,6 +79,70 @@ export function resolveUltraWakeMessage(
   return isUltraWakeTrigger(sessionId, message) ? ULTRA_WAKE_PROMPT : message;
 }
 
+// CLIENT: which of this poll's pending runs have not been announced yet, and
+// the announced-set to carry into the next poll.
+//
+// PURE AND LIVING HERE ON PURPOSE. This is the latch that decides whether an
+// unprompted turn fires, and until the story-4.1 review it lived inline in
+// session-view.tsx where nothing could execute it — which is exactly how SF-1
+// (a second run finishing inside the first wake turn never got its turn) shipped
+// and was then found by reading rather than by running. §6.2 classes the RENDER
+// as unprovable without a DOM; the DECISION is not, so it is out here where a
+// test can drive it.
+//
+// The contract, in three sentences. A run is announced at most once per terminal
+// — the caller enqueues ONE trigger however many runs are fresh (T10), because
+// the appendix carries a list. A run that is still pending stays announced, so a
+// turn that has not yet been acked cannot re-fire. A run that DROPS OUT of
+// pending is forgotten, which is what re-arms a run resumed to a new terminal
+// under the same id (see UltraWakeRecord.deliveredTerminalAt).
+export function freshUltraWakes(
+  announced: ReadonlySet<string>,
+  pendingRunIds: readonly string[],
+): { fresh: string[]; announced: Set<string> } {
+  // One pass, rebuilding rather than deleting: an id absent from
+  // `pendingRunIds` is simply never carried over, which IS the pruning. Building
+  // a new set also keeps this free of aliasing on the caller's, so the caller
+  // can hold it in a ref without the prune being visible before the assignment.
+  const next = new Set<string>();
+  const fresh: string[] = [];
+  for (const id of pendingRunIds) {
+    if (next.has(id)) continue; // a duplicate within one poll is still one run
+    next.add(id);
+    if (!announced.has(id)) fresh.push(id);
+  }
+  return { fresh, announced: next };
+}
+
+// CLIENT: given this poll's fresh runs and what is already waiting in the
+// injection queue, may this poll enqueue a wake trigger?
+//
+// THE SECOND HALF OF T10, and it is out here for the same reason the first half
+// is: the fix round's own adversarial pass refuted an earlier version of the
+// SF-1 latch that had `freshUltraWakes` alone deciding, and the defect was
+// invisible until something executed the rule over time. What it refuted: the
+// announced-SET stops one run being announced twice, but it does NOT stop a
+// SECOND run enqueueing a SECOND trigger while the first is still undispatched —
+// which the boolean latch it replaced could never do. With the drain blocked
+// (the §1b reconnect tail), A queues a trigger and B queues another; the first
+// turn's appendix carries BOTH and acks both; the second then fires a hidden
+// turn against an empty appendix. session-view's SF-2 drop-guard cannot catch
+// that: it reads a poll snapshot that lags the server-side ack by up to
+// POLL_MS. So the queue is asked directly, at enqueue time, where the answer is
+// exact.
+//
+// One trigger, however many runs — the appendix's formatter takes a list, which
+// is the whole reason T10 is satisfiable at all. A run marked announced but not
+// separately triggered is correct, not lost: the trigger already queued composes
+// its appendix from the mailbox at DISPATCH time, not at enqueue time.
+export function shouldEnqueueUltraWake(
+  fresh: readonly string[],
+  queued: readonly { text: string }[],
+): boolean {
+  if (fresh.length === 0) return false;
+  return !queued.some((i) => i.text === ULTRA_WAKE_SENTINEL);
+}
+
 // What the formatter needs. Declared STRUCTURALLY rather than imported from
 // `@telar/core`, so this module keeps zero module edges and stays trivially safe
 // to reach from a "use client" file (AD-3). `PendingUltraWake` satisfies it by
@@ -131,6 +195,42 @@ function safeJson(v: unknown): string {
   }
 }
 
+// THE ONE SPELLING OF "this run's outcome is in this block", used by the
+// renderer below AND by the route's ack, so the two cannot drift.
+//
+// The ack needs it because AC7's exactly-once is a claim about DELIVERY, not
+// about a turn having happened: a wake marked delivered on a turn that did not
+// carry it has been delivered ZERO times, which is the one outcome
+// packages/core/src/ultra/wake.ts's header says is impossible. Asking the
+// composed prompt whether the run is actually in it is the only check that
+// cannot be fooled by a composer whose read failed (`safeLiveContext` degrades
+// to "") or by a provider that discards the appendix (`runCodexTurn` takes no
+// systemPrompt). Found by the story-4.1 code review as SF-3.
+const BULLET = "• ";
+const runMarker = (runId: string) => `(run ${runId})`;
+
+// SERVER: did the composed system-prompt appendix ACTUALLY carry this run's
+// outcome? Line-scoped rather than a whole-string `includes`, and the scoping is
+// load-bearing: the appendix embeds a run's arbitrary `result` text, so a plain
+// substring search lets ONE RUN'S OUTPUT ANSWER FOR ANOTHER — a script that
+// happens to print "(run u-xyz)" would make this return true for `u-xyz`, which
+// on the ack path means acking a run the model was never shown. Requiring the
+// marker on a line that begins with the formatter's own bullet removes the
+// accidental case entirely; the residue is a deliberately forged bullet line,
+// which needs an author who already controls a run to also know a sibling's id,
+// and whose worst outcome is one wake stated zero times instead of once.
+// Recorded in deferred-work.md rather than closed, because closing it properly
+// means giving the composer a data channel back to the route and
+// `SessionProfile` has no field for one.
+//
+// Line-oriented is also why the formatter and this share `runMarker`: the render
+// and the check must agree on one spelling, and a test pins the anchoring.
+export function appendixCarriesUltraWake(appendix: string, runId: string): boolean {
+  if (!runId) return false;
+  const marker = runMarker(runId);
+  return appendix.split("\n").some((line) => line.startsWith(BULLET) && line.includes(marker));
+}
+
 // The per-turn appendix block — the DELIVERY half of AC1 and AC2, and the only
 // place the outcome text is authored.
 //
@@ -142,7 +242,7 @@ export function formatUltraWakeAppendix(wakes: readonly UltraWakeSummary[]): str
   if (wakes.length === 0) return "";
   const runs = wakes.map((w) =>
     [
-      `• ${w.name} (run ${w.runId}) — ${w.state}, $${w.spendUsd.toFixed(4)}`,
+      `${BULLET}${w.name} ${runMarker(w.runId)} — ${w.state}, $${w.spendUsd.toFixed(4)}`,
       `  ${outcomeLine(w)}`,
     ].join("\n"),
   );

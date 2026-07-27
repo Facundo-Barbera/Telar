@@ -24,14 +24,31 @@ export const dynamic = "force-dynamic";
 // The repo already relies on exactly that shape: `app/api/chat/stop/` and
 // `app/api/chat/permission/` sit beside `app/api/chat/[sessionId]/` and have
 // since before this story.
+// THE READ IS WRAPPED, for the same reason the chat route's ack is (review B1).
+// `pendingUltraWakes` is not throw-free: it reaches `listUltraRuns`, whose `try`
+// guards only the `readdirSync`, and then `getUltraManifest`, whose self-heal
+// `saveManifest` is an unwrapped write. One malformed or unhealable manifest
+// ANYWHERE under `TELAR_HOME/ultra/` therefore throws for every session,
+// including sessions that have never touched Ultra — this scan is not
+// session-scoped. Unguarded, that is a 500 on a 4-second poll, for as long as the
+// bad manifest is on disk. The hook tolerates a failed poll by design
+// (`if (!r.ok) return;`), so the visible cost was "the wake never arrives" plus a
+// server-log 500 every tick; degrading to the empty mailbox says the same thing
+// without either. The wake is not lost — pending is a projection over the
+// manifests, so it is re-reported the moment the root is readable again, and the
+// next chat turn's appendix carries it regardless of this route.
 export async function GET(req: Request) {
   const sessionId = new URL(req.url).searchParams.get("sessionId")?.trim() ?? "";
   // No session, no wake, and no directory scan — `pendingUltraWakes` short-
   // circuits on this too, but answering here keeps the poll free for the
   // brand-new-session case the hook hits on every mount.
   if (!sessionId) return Response.json({ pending: [], live: 0 });
-  return Response.json({
-    pending: pendingUltraWakes(sessionId),
-    live: liveUltraRunCount(sessionId),
-  });
+  try {
+    return Response.json({
+      pending: pendingUltraWakes(sessionId),
+      live: liveUltraRunCount(sessionId),
+    });
+  } catch {
+    return Response.json({ pending: [], live: 0 });
+  }
 }

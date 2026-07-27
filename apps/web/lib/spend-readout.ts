@@ -1,12 +1,26 @@
 // Story 4.1 / AC6 — a session's spend rendered in ITS OWN cost language.
 //
 // WHY THIS IS A MODULE AND NOT A TERNARY IN THE PILL. AD-18's rule is that the
-// ledger record carries no currency and no unit (`UsageEntry` has neither field,
-// and `packages/core/src/usage-ledger.ts`'s header says so in prose) — so the
-// unit is a property of the PROJECTION, decided at render time from the
-// session's provider. Putting that decision in one pure function is what lets
-// the heartbeat pill and, later, the per-run anchor reach the same answer
-// without either of them re-deriving it.
+// ledger record carries NO UNIT SELECTOR — a `UsageEntry` row carries the raw
+// material for both denominations (a `costUsd` number and token counts, side by
+// side) and carries nothing that CHOOSES between them: no `currency`, no
+// `unit`, no `provider`. So the unit is a property of the PROJECTION, decided at
+// render time from the session's provider, and this file is the chooser.
+// Putting that decision in one pure function is what lets the heartbeat pill
+// and, later, the per-run anchor reach the same answer without either of them
+// re-deriving it.
+//
+// SAY "NO UNIT SELECTOR", NEVER "NO CURRENCY AND NO UNIT", and this file said
+// the loose form until the story-4.1 code review caught it (SF-8). Read
+// literally the loose form is false — `costUsd` names a currency — and it is
+// this repo's named recurring defect: story 4.1 corrected the same sentence in
+// `packages/core/src/usage-ledger.ts`, `packages/core/src/schemas.ts` and
+// `apps/web/components/session/session-meters.tsx`, and reintroduced it here, in
+// a file it was creating, while citing the header it had just amended as
+// agreeing with it. The corrected form is now in all four, and
+// `packages/core/test/usage-ledger.test.ts`'s "4.1 AC6 proof 1 — the ledger
+// RECORD carries no unit SELECTOR, so the language is the projection's" asserts
+// it, so the prose is no longer the only thing holding the claim up.
 //
 // PURE AND DEPENDENCY-FREE, in the shape of `apps/web/lib/escalation-kickoff.ts`:
 // no React, no `@telar/core` (not even a type import), no fetch. Its only import
