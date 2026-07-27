@@ -33,15 +33,19 @@ import {
   ULTRA_TOOL_NAME,
   UNPHASED,
   agentRows,
+  anchorControls,
   anchorForm,
+  anchorShape,
   anchorSpend,
   armReducer,
   extractRunId,
   filterRunsBySession,
+  isSessionRoute,
   launchedRunId,
   narratorLines,
   phaseGroups,
   progressFraction,
+  reconcileStreams,
   runLabel,
   runSnapshot,
   sendOptionsFor,
@@ -49,6 +53,7 @@ import {
   summarizeRuns,
   unwrapManifest,
   unwrapManifests,
+  wantedStreams,
   type AgentIndexRow,
   type RunSnapshot,
   type UltraAnchorPayload,
@@ -682,10 +687,33 @@ describe("4.2 C1/D5 — filterRunsBySession is defined-and-equal, never truthy",
   ];
 
   test("an absent sessionId returns the input UNCHANGED — in order, in length, same reference", () => {
-    // `GET /api/ultra` has no callers today but it is a published shape, and its
-    // unfiltered behaviour must stay byte-for-byte what it was. The route is a
-    // three-line caller of this function, which is how a route with no test
-    // harness in this repo is still proved.
+    // `GET /api/ultra` HAS TWO CALLERS AND ONE OF THEM DEPENDS ON THIS EXACT
+    // CASE. The spec's §5.5-D5 said the route "has no callers today but it is a
+    // published shape"; that was true at `e093a98` and was falsified by the very
+    // commit that copied the sentence here.
+    //
+    //   git grep -nE 'fetch\(.?/api/ultra' e093a98 -- apps/web
+    //
+    // returns exactly one line at the baseline — `use-ultra-wake.ts`'s
+    // `/api/ultra/wakes`, a DIFFERENT route — and nothing for the list route.
+    // (The `.?` is load-bearing: every call in this repo but one is a BACKTICK
+    // template literal, so a pattern written `fetch("/api/ultra` matches nothing
+    // at `e093a98` and would make this citation unreproducible.) The same
+    // command at HEAD returns nine lines, two of them this route's:
+    //
+    //   `components/common/ultra-dock-signal.tsx` — `fetch("/api/ultra")`, NO
+    //   query, UNFILTERED, on an 8s interval from a component mounted app-wide
+    //   in `app/layout.tsx`. That is a hot path on every route in the app, and
+    //   §2 AC7 proof 1 requires it to be unfiltered: filtering by the sessions
+    //   you already know about can never discover the one you do not.
+    //
+    //   `lib/use-ultra-runs.ts` — the filtered form, per session, written as a
+    //   template literal: fetch(`/api/ultra?sessionId=${…}`).
+    //
+    // So "the unfiltered answer must stay byte-for-byte what it was" is not a
+    // courtesy to a hypothetical future consumer; it is what keeps the dock
+    // signal working. The route is a three-line caller of this function, which
+    // is how a route with no test harness in this repo is still proved.
     const out = filterRunsBySession(rows, undefined);
     expect(out).toBe(rows);
     expect(out.map((r) => r.runId)).toEqual(["a", "b", "c", "d"]);
@@ -790,6 +818,303 @@ describe("4.2 AC6 — the chip arms exactly one message", () => {
     const opts = sendOptionsFor({ kind: "user", armed: false });
     expect(opts).toBeUndefined();
     expect(sendOptionsFor({ kind: "user", armed: true })).toEqual({ ultra: true });
+  });
+});
+
+// ── REVIEW ROUND 1 — the regression pins ────────────────────────────────────
+//
+// One block, because five of the seven findings below reduce to ONE root cause
+// the review named precisely: THE SURFACE ONLY KNEW ABOUT A RUN IT PERSONALLY
+// WATCHED HAPPEN. Every test here fails against the shipped code.
+
+describe("4.2 review B1 — a run this reader never watched states NO figure it never read", () => {
+  // The reviewer's own reproduction, restated as a fixture: a run that spawned
+  // five agents across two declared phases and finished. The page is reloaded
+  // tomorrow; `GET /api/ultra?sessionId=` answers with the MANIFEST and nothing
+  // else, because a manifest is all the list route has.
+  const finished = manifest({
+    runId: "u-yesterday",
+    state: "done",
+    meta: { name: "sweep", phases: ["Scan", "Rank"] },
+  });
+  const journal: UltraEventLike[] = [
+    ev.phase("Scan"),
+    ev.log("scanning the tree"),
+    ev.start(0),
+    ev.agent(0),
+    ev.start(1),
+    ev.agent(1),
+    ev.start(2),
+    ev.agent(2),
+    ev.phase("Rank"),
+    ev.start(3),
+    ev.agent(3),
+    ev.start(4),
+    ev.agent(4),
+  ];
+
+  test("the manifest ALONE yields no `agentsDone`, no sliver — absent, never `0`", () => {
+    const snap = runSnapshot(finished, null, [], "u-yesterday");
+    // ABSENT ON THE KEY, the same form `progress` and `error` already use, so a
+    // renderer cannot accidentally interpolate `undefined done`.
+    expect("agentsDone" in snap).toBe(false);
+    expect(snap.agentsDone).toBeUndefined();
+    expect("progress" in snap).toBe(false);
+    // …and the rest of the snapshot is still complete and uncrashed.
+    expect(snap.state).toBe("done");
+    expect(snap.name).toBe("sweep");
+    expect(snap.pending).toBe(false);
+  });
+
+  test("THE DISCRIMINATOR — `[]` is READ-AND-EMPTY and DOES state `0`; `null` is NOT READ", () => {
+    // Without this pair, "absent" is indistinguishable from "the field was
+    // dropped". `[]` and `null` are different answers to different questions and
+    // the whole fix is that the type can now tell them apart.
+    expect(runSnapshot(finished, []).agentsDone).toBe(0);
+    expect("agentsDone" in runSnapshot(finished, [])).toBe(true);
+    expect("agentsDone" in runSnapshot(finished, null)).toBe(false);
+  });
+
+  test("once the journal IS read, the figures are the real ones — 5 done, 2 of 2, two phases", () => {
+    // This is what `use-ultra-runs.ts` now opens a stream for a terminal run to
+    // obtain. Before the fix these three numbers were 0, `0 of 2` and none.
+    const snap = runSnapshot(finished, journal, [], "u-yesterday");
+    expect(snap.agentsDone).toBe(5);
+    expect(snap.progress).toEqual({ seen: 2, declared: 2 });
+    expect(snap.phases.map((p) => p.title)).toEqual(["Scan", "Rank"]);
+    expect(snap.narrator).toEqual(["scanning the tree"]);
+  });
+
+  test("the AGENT INDEX is an independent second source, so its rows alone license the count", () => {
+    // `GET /api/ultra/[id]/agents` can answer for a run whose events this page
+    // never streamed. A reader holding that is not guessing.
+    const index: AgentIndexRow[] = [
+      { ordinal: 0, settled: true, attempt: 1, lastText: "done" },
+      { ordinal: 1, settled: false, attempt: 1, lastText: "working" },
+    ];
+    const snap = runSnapshot(finished, null, index, "u-yesterday");
+    expect(snap.agentsDone).toBe(1);
+    // …but the journal is still unread, so the phase fraction stays absent.
+    expect("progress" in snap).toBe(false);
+  });
+});
+
+describe("4.2 review B2 — an unresolved runId is not a live run", () => {
+  test("the pending payload offers NO Stop, even though its state reads `running`", () => {
+    // `null` for the events, exactly as `session-view.tsx`'s pending factory
+    // passes it: the pending window is when this reader has NOT looked, so it
+    // states no count either (B1 wearing D8's clothes — every persisted launch
+    // in a reloaded transcript comes through here on the first paint).
+    const pending = runSnapshot(null, null, [], "u-finished-days-ago");
+    expect("agentsDone" in pending).toBe(false);
+    expect(pending.pending).toBe(true);
+    // The state fallback is deliberate and stays (AD-15): a run with no manifest
+    // is far likelier to be starting than finished. What changes is that the
+    // CONTROL no longer believes it.
+    expect(pending.state).toBe("running");
+    expect(anchorControls(pending).canStop).toBe(false);
+    expect(anchorControls(pending).canResume).toBe(false);
+  });
+
+  test("THE ANTI-VACUITY HALF — a real `running` run DOES offer Stop", () => {
+    // Without this, `canStop: false` everywhere would pass the test above.
+    const live = runSnapshot(manifest({ state: "running" }), []);
+    expect(live.pending).toBe(false);
+    expect(anchorControls(live).canStop).toBe(true);
+  });
+
+  test("Resume is for `stopped` and `failed`, never `done`, and never for pending", () => {
+    expect(anchorControls(runSnapshot(manifest({ state: "stopped" }), [])).canResume).toBe(true);
+    expect(anchorControls(runSnapshot(manifest({ state: "failed" }), [])).canResume).toBe(true);
+    expect(anchorControls(runSnapshot(manifest({ state: "done" }), [])).canResume).toBe(false);
+  });
+});
+
+describe("4.2 review SF-1 — the stream set is RECONCILED, never rebuilt", () => {
+  test("A SECOND RUN LAUNCHING DOES NOT TOUCH THE FIRST RUN'S STREAM", () => {
+    // THE CASE NO EXISTING TEST DROVE, and the one AC4 calls first-class. Run A
+    // is live and has narrated. Run B launches. The old effect's cleanup closed
+    // A, the body re-opened it, and the route replayed A's whole journal into an
+    // accumulator nothing reset — so the narrator repeated itself.
+    const wanted = wantedStreams(["A", "B"], ["A", "B"], new Set());
+    expect(wanted).toEqual(["A", "B"]);
+    const step = reconcileStreams(["A"], wanted);
+    expect(step.open).toEqual(["B"]);
+    // THE ASSERTION THAT IS THE FIX: A is in neither list.
+    expect(step.close).toEqual([]);
+  });
+
+  test("a run that goes terminal and has been drained IS closed, and nothing else is", () => {
+    const wanted = wantedStreams(["B"], ["A", "B"], new Set(["A"]));
+    expect(wanted).toEqual(["B"]);
+    const step = reconcileStreams(["A", "B"], wanted);
+    expect(step.close).toEqual(["A"]);
+    expect(step.open).toEqual([]);
+  });
+
+  test("B1's half — an UNDRAINED terminal run is wanted; a drained one is not", () => {
+    // This is the whole of "read a finished run's journal exactly once".
+    expect(wantedStreams([], ["A"], new Set())).toEqual(["A"]);
+    expect(wantedStreams([], ["A"], new Set(["A"]))).toEqual([]);
+    // A LIVE run is wanted whether or not it was drained before — a resumed run
+    // is drained and live at once, and it must be watched again.
+    expect(wantedStreams(["A"], ["A"], new Set(["A"]))).toEqual(["A"]);
+  });
+
+  test("nothing wanted and nothing open is a no-op, not a wipe", () => {
+    expect(reconcileStreams([], [])).toEqual({ close: [], open: [] });
+    expect(reconcileStreams(["A"], ["A"])).toEqual({ close: [], open: [] });
+  });
+
+  test("A RESUMED RUN KEEPS ITS STREAM — `hydrated` must mean the CURRENT connection drained", () => {
+    // The sequence that strands a run, walked one step at a time. Found by an
+    // adversarial pass over this very fix, not by the original review: the first
+    // version of it left `hydrated` add-only, and `hydrated` add-only is a claim
+    // that a run drained ONCE can never need reading again — which a resume
+    // falsifies.
+    const hydrated = new Set<string>();
+
+    // 1. Page mounts on a terminal run. Not hydrated ⇒ wanted (B1).
+    expect(wantedStreams([], ["A"], hydrated)).toEqual(["A"]);
+    // 2. Its journal drains to `end`.
+    hydrated.add("A");
+    expect(wantedStreams([], ["A"], hydrated)).toEqual([]);
+    // 3. The user clicks Resume. A is live again, so it is wanted regardless…
+    expect(wantedStreams(["A"], ["A"], hydrated)).toEqual(["A"]);
+    // …and OPENING THE STREAM UN-HYDRATES IT, which is the line under test.
+    hydrated.delete("A");
+    // 4. A settles. The 4s list poll can see the terminal manifest BEFORE the
+    //    400ms SSE tail delivers `end`, so A leaves the live set first. With the
+    //    delete, A is still wanted and its stream survives to be drained.
+    expect(wantedStreams([], ["A"], hydrated)).toEqual(["A"]);
+    expect(reconcileStreams(["A"], wantedStreams([], ["A"], hydrated)).close).toEqual([]);
+    // THE ANTI-VACUITY HALF: without the delete, that same step CLOSES the
+    // stream, `end` never arrives, and the run reads `journal = null` forever.
+    const stale = new Set(["A"]);
+    expect(wantedStreams([], ["A"], stale)).toEqual([]);
+    expect(reconcileStreams(["A"], wantedStreams([], ["A"], stale)).close).toEqual(["A"]);
+    // 5. `end` finally arrives and A is hydrated again, for good this time.
+    hydrated.add("A");
+    expect(wantedStreams([], ["A"], hydrated)).toEqual([]);
+  });
+});
+
+describe("4.2 review SF-3 — `settled` and `live` are different questions", () => {
+  const inFlight: UltraEventLike[] = [ev.start(0), ev.start(1), ev.agent(1)];
+
+  test("while the run is RUNNING, an unsettled ordinal is live", () => {
+    const rows = agentRows(inFlight, [], "running");
+    expect(rows.map((r) => [r.ordinal, r.settled, r.live])).toEqual([
+      [0, false, true],
+      [1, true, false],
+    ]);
+  });
+
+  test("once the run is STOPPED, its in-flight ordinals are terminated — not live, not settled", () => {
+    // `stopUltraRun` ABORTS them, so ordinal 0 never emits a settling `agent`
+    // event and stays `settled: false` forever. The rail used to paint that as a
+    // live dot and an infinitely-animating shimmer inside a card headed
+    // `stopped`. The same arrives with no user action at all through
+    // `getUltraManifest`'s on-read `running` → `stopped` rewrite (AD-15/T14).
+    for (const state of ["stopped", "failed", "done"] as const) {
+      const rows = agentRows(inFlight, [], state);
+      expect(rows[0]!.live).toBe(false);
+      // AND THE COUNT STAYS HONEST: an aborted agent did not finish, so it is
+      // still not `done`. Marking it settled to stop the shimmer would have
+      // traded one false statement for another.
+      expect(rows[0]!.settled).toBe(false);
+      expect(rows[1]!.live).toBe(false);
+    }
+  });
+
+  test("`runSnapshot` crosses the two, and `agentsDone` counts settlement only", () => {
+    const stopped = runSnapshot(manifest({ state: "stopped" }), inFlight);
+    expect(stopped.agentsDone).toBe(1);
+    expect(stopped.phases.flatMap((p) => p.agents).every((a) => !a.live)).toBe(true);
+    const running = runSnapshot(manifest({ state: "running" }), inFlight);
+    expect(running.phases.flatMap((p) => p.agents).filter((a) => a.live)).toHaveLength(1);
+  });
+
+  test("the default arg keeps every caller with no run in hand reading `!settled`", () => {
+    const rows = agentRows(inFlight, []);
+    expect(rows.map((r) => r.live)).toEqual([true, false]);
+  });
+});
+
+describe("4.2 review SF-4 — the dock never docks the session on screen", () => {
+  test("the session's own page matches; another session's does not", () => {
+    expect(isSessionRoute("/projects/telar/sessions/abc", "abc")).toBe(true);
+    expect(isSessionRoute("/projects/telar/sessions/abc", "xyz")).toBe(false);
+  });
+
+  test("AC7's OWN CASE still docks — another page, same app", () => {
+    // The guard must be about one SESSION, not one tab: AC7's Given is "the user
+    // is on another page with a run live", which is a FOCUSED tab. A
+    // visibility/focus guard would suppress the head in exactly the case the AC
+    // exists for, which is why this is a route test.
+    expect(isSessionRoute("/projects/telar", "abc")).toBe(false);
+    expect(isSessionRoute("/", "abc")).toBe(false);
+    expect(isSessionRoute("/looms/l-1", "abc")).toBe(false);
+  });
+
+  test("a percent-escaped pathname matches, an empty id never does, a malformed escape does not throw", () => {
+    expect(isSessionRoute("/projects/my%20proj/sessions/abc", "abc")).toBe(true);
+    expect(isSessionRoute("/projects/x/sessions/a%20b", "a b")).toBe(true);
+    expect(isSessionRoute("/projects/x/sessions/", "")).toBe(false);
+    expect(isSessionRoute("/projects/x/sessions/%zz", "abc")).toBe(false);
+  });
+
+  test("a session id that is a SUFFIX of another must not match it", () => {
+    expect(isSessionRoute("/projects/x/sessions/abcdef", "def")).toBe(false);
+  });
+});
+
+describe("4.2 review SF-5 — the anchor's shape is constant while running", () => {
+  test("THE CASE `anchorForm` COULD NOT SEE — the sliver arriving mid-run", () => {
+    // A launch renders pending (no manifest ⇒ `progressFraction` short-circuits
+    // ⇒ no fraction), then the first manifest lands carrying `meta.phases`, then
+    // phases are observed. The old anchor gained `gap-1` + `h-px` at step two —
+    // a second height change AC2 forbids — and `anchorForm(run)` read `state`
+    // alone, so it reported "running" at every step and saw nothing.
+    const steps: RunSnapshot[] = [
+      runSnapshot(null, [], [], "u-1"),
+      runSnapshot(manifest({ state: "running" }), []),
+      runSnapshot(manifest({ state: "running" }), [ev.phase("Scan")]),
+      runSnapshot(manifest({ state: "running" }), [ev.phase("Scan"), ev.start(0)]),
+      runSnapshot(manifest({ state: "running" }), [ev.phase("Scan"), ev.phase("Rewrite")]),
+    ];
+    // The fraction really does appear part-way through — otherwise this test
+    // proves nothing about the case it names.
+    expect(steps[0]!.progress).toBeUndefined();
+    expect(steps.at(-1)!.progress).toEqual({ seen: 2, declared: 2 });
+    const shapes = steps.map((s) => JSON.stringify(anchorShape(s)));
+    expect(new Set(shapes).size).toBe(1);
+  });
+
+  test("and it still changes EXACTLY ONCE, at terminal", () => {
+    const running = anchorShape(runSnapshot(manifest({ state: "running" }), []));
+    const done = anchorShape(runSnapshot(manifest({ state: "done" }), []));
+    expect(running).not.toEqual(done);
+    expect(running.detail).toBe(true);
+    expect(running.sliver).toBe(true);
+    expect(done.detail).toBe(false);
+    expect(done.sliver).toBe(false);
+    // `anchorForm` is now DERIVED from the shape, so the two cannot drift.
+    expect(anchorForm(runSnapshot(manifest({ state: "running" }), []))).toBe("running");
+    expect(anchorForm(runSnapshot(manifest({ state: "done" }), []))).toBe("terminal");
+  });
+
+  test("the terminal error row is part of the shape, so it is visible to this proof too", () => {
+    expect(anchorShape(runSnapshot(manifest({ state: "failed", error: "boom" }), [])).errorRow).toBe(true);
+    expect(anchorShape(runSnapshot(manifest({ state: "failed" }), [])).errorRow).toBe(false);
+    expect(anchorShape(runSnapshot(manifest({ state: "done" }), [])).errorRow).toBe(false);
+    // An EMPTY error is not an error row. `runSnapshot` copies the manifest's
+    // field whenever it is not `undefined`, so `""` is reachable, and the
+    // renderer this replaced branched on truthiness — a row of height beside no
+    // content would be a behaviour change smuggled in by a refactor.
+    expect(anchorShape(runSnapshot(manifest({ state: "failed", error: "" }), [])).errorRow).toBe(false);
+    // …and it is still a `running` run that has no error row at all.
+    expect(anchorShape(runSnapshot(manifest({ state: "running", error: "boom" }), [])).errorRow).toBe(false);
   });
 });
 
@@ -934,6 +1259,85 @@ describe("4.2 §5.5-D1 item 7 — the wake's dispatch can never carry the chip's
     expect(armed.armed).toBe(true);
     const wakeOptions = { hidden: true } as const;
     expect("ultra" in wakeOptions).toBe(false);
+  });
+});
+
+describe("4.2 review round 1 — the four fixes that live in components and hooks, pinned statically", () => {
+  // WHY STATIC AND NOT PURE. Each of these is a line of JSX or of effect body,
+  // and there is no DOM harness in this repo (hard rule 9). The DECISIONS were
+  // all moved into `lib/ultra-runs.ts` above and are asserted there; what these
+  // pin is that the component actually CALLS them — which is the half a pure
+  // test cannot see, and the half every one of these findings turned on.
+
+  test("SF-2 — the Ultra chip is gated off the escalation surface, not just off Codex", () => {
+    const src = readSource("apps/web/components/session/session-view.tsx");
+    // AC6 proof 6 says the chip is "gated off the escalation surface … the
+    // absence is enforced by the type". The type enforces the absence of the
+    // APPENDIX (`escalationAppendix` has no `ultraAnnotated` parameter and
+    // `buildEscalationProfile` denies all of `ULTRA_AUTO_TOOLS`); it never
+    // enforced the absence of the CONTROL, and proof 6 is about the control.
+    expect(src).toContain('{provider !== "codex" && !escalation && (');
+    // The one-term version is gone rather than merely shadowed.
+    expect(src).not.toContain('{provider !== "codex" && (\n');
+    // …and B1 at the pending factory: `null` (not read) rather than `[]` (read
+    // and empty), because every persisted launch in a reloaded transcript
+    // renders through it on the first paint.
+    expect(src).toContain("run: runSnapshot(null, null, [], runId),");
+  });
+
+  test("SF-1 — the hook reconciles its streams and resets the accumulator per connection", () => {
+    const src = readSource("apps/web/lib/use-ultra-runs.ts");
+    // The decision is delegated to the two functions this file drives above,
+    // rather than open-coded in an effect where nothing can reach it.
+    expect(src).toContain("wantedStreams(");
+    expect(src).toContain("reconcileStreams(");
+    // TERMINAL RUNS ARE IN THE EFFECT KEY (B1). Without `allIds` the effect
+    // cannot notice a run it has never streamed.
+    expect(src).toContain("}, [liveIds, allIds, reload]);");
+    // EVERY CONNECTION REPLAYS FROM LINE 0 — the route's `nextLine = 0` lives
+    // inside `start(controller)` — so the accumulator is reset on `open`, which
+    // also covers a browser reconnect after a transport error.
+    expect(src).toContain('es.addEventListener("open"');
+    // …and OPENING UN-HYDRATES, so `hydrated` means "the CURRENT connection
+    // drained". Without it a resumed run whose list poll beats its `end` frame
+    // has its still-undrained stream closed and reads `journal = null` forever.
+    expect(src).toContain("hydrated.current.delete(runId);");
+    // AND THE WIPE LIVES IN A MOUNT-ONLY EFFECT. React runs a cleanup on EVERY
+    // dependency change, so a close-everything cleanup on the reconciling effect
+    // is what tore down a still-wanted stream when a second run launched.
+    expect(src).toContain(
+      "for (const [, es] of open) es.close();\n      open.clear();\n    };\n  }, []);",
+    );
+  });
+
+  test("SF-4 / NH-1 — the dock signal consults the route, and mints its initial by code point", () => {
+    const src = readSource("apps/web/components/common/ultra-dock-signal.tsx");
+    expect(src).toContain("isSessionRoute(window.location.pathname, sessionId)");
+    expect(src).toContain("if (!seeded.current.has(sessionId) && !watching) {");
+    // `String.prototype[0]` indexes UTF-16 code units, so a title starting with
+    // an emoji renders half a surrogate pair (§5.6-T19 item 9).
+    expect(src).toContain("Array.from(title.trim())[0]");
+    expect(src).not.toContain("title.trim()[0]");
+  });
+
+  test("SF-5 / B2 / NH-2 — the anchor reserves the sliver row, refuses a fabricated count, and carries no dead expression", () => {
+    const src = readSource("apps/web/components/session/ultra-anchor.tsx");
+    // The row is drawn whenever the running form is, and its INK is what is
+    // conditional — so the fraction arriving cannot change the height.
+    expect(src).toContain("{shape.sliver && (");
+    expect(src).toContain('run.progress === undefined && "opacity-0"');
+    // The controls come from the tested rule, so B2's `!pending` term cannot be
+    // dropped here without dropping it there.
+    expect(src).toContain("{controls.canStop && (");
+    expect(src).toContain("{controls.canResume && (");
+    // B1 at the render site: an absent count renders NOTHING, never `0 done`.
+    expect(src).toContain("{run.agentsDone !== undefined && (");
+    // NH-2 — `{view.live && null}` renders nothing in EITHER branch. Asserted
+    // over STRIPPED source, because the comment that replaced it necessarily
+    // quotes the expression it removed — and a scan that cannot tell code from
+    // prose is the same mistake AC9's own scan was fixed for.
+    expect(stripComments(src)).not.toContain("view.live");
+    expect(src).toContain("view.live && null");
   });
 });
 

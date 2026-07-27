@@ -310,6 +310,14 @@ function AgentRowView({
   // AC11 proof 6 — COST ONLY. There are no token counts anywhere on the ultra
   // path, and a live agent with no cost yet renders nothing rather than `$0`.
   const cost = agent.costUsd === undefined ? null : anchorSpend(provider, agent.costUsd).text;
+  // REVIEW ROUND 1, SF-3 — `live` AND NOT `!settled`. `stopUltraRun` aborts its
+  // in-flight agents, so neither ever emits a settling `agent` event and both
+  // stay `settled: false` for good; the same arrives with no user action at all
+  // through `getUltraManifest`'s on-read `running` → `stopped` rewrite after a
+  // server restart. Branching on `!settled` painted an infinitely-animating
+  // shimmer and a live dot inside a card whose header read `stopped` — an
+  // animation that never ends on a run that ended, which is a placebo. The
+  // decision is `lib/ultra-runs.ts`'s, where a test can drive it.
   const failed = agent.settled && agent.ok === false;
   return (
     <div>
@@ -322,7 +330,7 @@ function AgentRowView({
         <span
           className={cn(
             "shrink-0 text-[9px] leading-none",
-            failed ? "text-destructive" : agent.settled ? "text-muted-foreground/50" : "text-foreground",
+            failed ? "text-destructive" : agent.live ? "text-foreground" : "text-muted-foreground/50",
           )}
           aria-hidden
         >
@@ -340,14 +348,14 @@ function AgentRowView({
         {cost && <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{cost}</span>}
       </button>
       {agent.snippet !== "" &&
-        (agent.settled ? (
-          <div className="min-w-0 truncate px-2 pb-0.5 text-[10px] text-muted-foreground">
-            {agent.snippet}
-          </div>
-        ) : (
+        (agent.live ? (
           <Shimmer as="div" className="min-w-0 truncate px-2 pb-0.5 text-[10px]">
             {agent.snippet}
           </Shimmer>
+        ) : (
+          <div className="min-w-0 truncate px-2 pb-0.5 text-[10px] text-muted-foreground">
+            {agent.snippet}
+          </div>
         ))}
       {open && <AgentTranscript runId={runId} ordinal={agent.ordinal} />}
     </div>
@@ -506,6 +514,14 @@ function ScriptTab({ runId }: { runId: string }) {
           return;
         }
         const d: unknown = await r.json();
+        // The SECOND suspension point needs its own re-check, exactly as
+        // `AgentTranscript` and `Result` above already do (review NH-2). It has
+        // no behavioural consequence today — `RunCard` is keyed by `runId`, so
+        // this instance's `runId` cannot change while mounted, leaving only a
+        // post-unmount `setScript` that React 19 no-ops — but a file that
+        // applies a pattern correctly twice and drops it once reads as a
+        // decision rather than an omission.
+        if (cancelled) return;
         const s = (d as { script?: unknown }).script;
         setScript(typeof s === "string" ? s : "(no script on disk for this run)");
       } catch {

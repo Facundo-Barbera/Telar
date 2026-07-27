@@ -9,9 +9,11 @@ import type { UltraEvent, UltraManifest } from "@telar/core";
 import {
   type AgentIndexRow,
   type RunSnapshot,
+  reconcileStreams,
   runSnapshot,
   unwrapManifest,
   unwrapManifests,
+  wantedStreams,
 } from "@/lib/ultra-runs";
 
 // Story 4.2 — Track D's client hook: this session's Ultra runs, live.
@@ -24,10 +26,20 @@ import {
 //   `ultraRunLabel` — it is a core VALUE export and INV-4c fails on the edge by
 //   name).
 //
-//   ONE `EventSource` PER LIVE RUN answers "what is happening right now" for a
-//   run the user is looking at, against `/api/ultra/[id]/events` — the channel
+//   ONE `EventSource` PER RUN WHOSE JOURNAL THIS PAGE STILL NEEDS answers "what
+//   did this run do", against `/api/ultra/[id]/events` — the channel
 //   `ui-contract.md` names and story 4.1's D9 explicitly reserved for this
-//   story. NO STREAM IS OPENED FOR A TERMINAL RUN; it reconciles from the list.
+//   story.
+//
+// REVIEW ROUND 1 / B1 — A TERMINAL RUN GETS ITS JOURNAL READ TOO, EXACTLY ONCE.
+// This file used to say "NO STREAM IS OPENED FOR A TERMINAL RUN; it reconciles
+// from the list", and that sentence was the defect: the LIST is a list of
+// MANIFESTS, and a manifest carries no agent count, no phase history and no log
+// lines. So a run that settled before the page mounted rendered `0 done`, an
+// empty rail card and a `0 of 2` sliver — three figures stated as fact by a
+// reader that had never opened the only channel that knows them. The route
+// replays every event from line 0 and then sends `end` for a terminal run, so
+// one open IS a one-shot read; `hydrated` below is what keeps it to one.
 //
 // EVERY STREAM IS CLOSED ON ITS `end` FRAME (§5.6-T7), and that is not
 // housekeeping. THE BROWSER RECONNECTS ON STREAM CLOSE BY DESIGN, so a missing
@@ -46,12 +58,20 @@ import {
 //
 // NO GLOBAL STORE, NO NEW CLIENT-STATE MECHANISM (NFR-X-15): `useState` /
 // `useEffect` + `fetch`, refetch on mount, on the app-wide `telar:refresh`
-// event, and on an interval WHILE SOMETHING RUNS. Self-limiting: a session whose
-// runs are all terminal polls once and then stops.
+// event, and on an interval WHILE SOMETHING RUNS. Still self-limiting, and the
+// cost of the B1 fix is stated rather than hidden: a session whose runs are all
+// terminal polls the list once, opens ONE stream and ONE `agents/` request PER
+// RUN — bounded by that session's own run count, once per page — and then does
+// nothing at all until a run starts.
 const POLL_MS = 4000;
 
 type RunRow = UltraManifest & { name?: string };
-type Stream = { manifest: UltraManifest | null; events: UltraEvent[] };
+type Stream = {
+  manifest: UltraManifest | null;
+  events: UltraEvent[];
+  /** the route sent `end`, so `events` is this run's WHOLE journal */
+  drained: boolean;
+};
 
 export type UseUltraRuns = {
   /** Keyed by runId — the SAME object `spliceRunAnchors` takes, passed straight
@@ -70,6 +90,12 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
   // a side effect keyed on identity, and re-rendering because one opened would
   // re-run the effect that opened it.
   const sources = useRef<Map<string, EventSource>>(new Map());
+  // Runs whose journal has been drained to `end` at least once. A ref for the
+  // same reason: it gates a side effect and must not itself schedule a render.
+  const hydrated = useRef<Set<string>>(new Set());
+  // Runs whose agent index has been pulled at least once, so a terminal run
+  // costs one request rather than one per list change.
+  const indexed = useRef<Set<string>>(new Set());
 
   const reload = useCallback(async () => {
     if (!sessionId) {
@@ -121,6 +147,18 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
     [rows],
   );
 
+  // EVERY run this session has, live or not (B1). A sorted, joined string for
+  // the same reason `liveIds` is one: it is an effect key, and a fresh array
+  // every poll would re-run the effect on every tick of data it already has.
+  const allIds = useMemo(
+    () =>
+      rows
+        .map((r) => r.runId)
+        .sort()
+        .join(","),
+    [rows],
+  );
+
   // The list poll, gated on something actually running.
   useEffect(() => {
     if (!sessionId || liveIds === "") return;
@@ -128,97 +166,169 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
     return () => clearInterval(id);
   }, [sessionId, liveIds, reload]);
 
-  // ONE STREAM PER LIVE RUN. The effect key is the sorted id list, so it re-runs
-  // when a run starts or goes terminal and not on every tick of the data those
-  // streams deliver.
+  // ONE STREAM PER RUN THAT STILL NEEDS ONE, RECONCILED INCREMENTALLY. The
+  // effect key is the sorted id list, so it re-runs when a run appears or goes
+  // terminal and not on every tick of the data those streams deliver.
+  //
+  // THE CLEANUP DOES NOT CLOSE ANYTHING, AND THAT IS THE FIX (review SF-1).
+  // React runs an effect's cleanup on EVERY dependency change, so a
+  // close-everything cleanup meant a second run launching tore down the first
+  // run's still-wanted stream — after which `wantedStreams`/`reconcileStreams`
+  // found nothing open, re-opened it, and the route replayed the whole journal
+  // into `streams` a second time. Unmount closes everything, in its own effect
+  // below; every other transition is the reconciler's job.
   useEffect(() => {
-    const wanted = new Set(liveIds === "" ? [] : liveIds.split(","));
     const open = sources.current;
-    // Close streams for runs that are no longer live (or no longer ours).
-    for (const [runId, es] of open) {
-      if (!wanted.has(runId)) {
-        es.close();
-        open.delete(runId);
-      }
+    const wanted = wantedStreams(
+      liveIds === "" ? [] : liveIds.split(","),
+      allIds === "" ? [] : allIds.split(","),
+      hydrated.current,
+    );
+    const step = reconcileStreams([...open.keys()], wanted);
+    for (const runId of step.close) {
+      open.get(runId)?.close();
+      open.delete(runId);
     }
-    for (const runId of wanted) {
-      if (open.has(runId)) continue;
+    for (const runId of step.open) {
       const es = new EventSource(`/api/ultra/${encodeURIComponent(runId)}/events`);
       open.set(runId, es);
+      // OPENING UN-HYDRATES, and this line is not bookkeeping — without it a
+      // RESUMED run loses its journal permanently. `hydrated` must mean "the
+      // CURRENT connection drained to `end`", not "some past connection did".
+      // The sequence: run A is terminal and hydrated; the user clicks Resume, so
+      // A is live again and gets a fresh stream whose `open` handler resets
+      // `events` to []; A settles, and if the 4 s list poll sees the terminal
+      // manifest before the 400 ms SSE tail delivers `end`, A leaves the live
+      // set while still hydrated — so the reconciler closes it, `end` never
+      // arrives, `drained` stays false, and the projection reads `journal =
+      // null` for that run for the life of the page. Deleting here keeps A
+      // wanted (it is un-hydrated) until its own `end` says otherwise. It cannot
+      // loop: the stream is in `open`, so `reconcileStreams` will not re-open it.
+      hydrated.current.delete(runId);
+      // THE ACCUMULATOR IS RESET ON EVERY CONNECTION, not just the first. The
+      // route's `nextLine = 0` lives INSIDE `start(controller)`, i.e. per
+      // connection, so every connect replays the journal from line 0 — and an
+      // `EventSource` reconnects on its own after a transport error. Appending a
+      // second replay onto the first is what made the narrator repeat itself;
+      // `open` fires before any message on that connection, so this is the one
+      // place the reset is exactly one replay wide.
+      //
+      // THE COST, STATED: on a RECONNECT this briefly under-reports — the
+      // accumulator is empty for the tick between `open` and the replay landing,
+      // so a live run's `agentsDone` can blink to 0 and back. That is the trade
+      // taken deliberately: the alternative it replaces was a permanent
+      // OVER-report (a narrator repeating its whole history, growing once per
+      // reconnect), and a figure that is briefly low and self-corrects is a
+      // smaller lie than one that is wrong forever and compounds.
+      es.addEventListener("open", () => {
+        setStreams((prev) => ({
+          ...prev,
+          [runId]: { manifest: prev[runId]?.manifest ?? null, events: [], drained: false },
+        }));
+      });
       es.addEventListener("run", (e) => {
         const manifest = unwrapManifest(safeParse((e as MessageEvent).data));
         if (!manifest) return;
         setStreams((prev) => ({
           ...prev,
-          [runId]: { manifest, events: prev[runId]?.events ?? [] },
+          [runId]: {
+            manifest,
+            events: prev[runId]?.events ?? [],
+            drained: prev[runId]?.drained ?? false,
+          },
         }));
       });
       es.addEventListener("ev", (e) => {
         const ev = safeParse((e as MessageEvent).data) as UltraEvent | null;
         if (!ev || typeof ev !== "object" || typeof (ev as { type?: unknown }).type !== "string") return;
         setStreams((prev) => {
-          const prior = prev[runId] ?? { manifest: null, events: [] };
+          const prior = prev[runId] ?? { manifest: null, events: [], drained: false };
           return { ...prev, [runId]: { ...prior, events: [...prior.events, ev] } };
         });
       });
       es.addEventListener("end", (e) => {
         const manifest = unwrapManifest(safeParse((e as MessageEvent).data));
-        if (manifest) {
-          setStreams((prev) => ({
+        // `end` means the journal is COMPLETE, which is what licenses the
+        // projection to state `agentsDone` and the sliver for this run at all.
+        const wasLive = liveIds !== "" && liveIds.split(",").includes(runId);
+        hydrated.current.add(runId);
+        setStreams((prev) => {
+          const prior = prev[runId] ?? { manifest: null, events: [], drained: false };
+          return {
             ...prev,
-            [runId]: { manifest, events: prev[runId]?.events ?? [] },
-          }));
-        }
+            [runId]: { ...prior, ...(manifest ? { manifest } : {}), drained: true },
+          };
+        });
         // §5.6-T7 — WITHOUT THIS THE BROWSER RE-OPENS THE STREAM FOREVER.
         es.close();
         open.delete(runId);
-        // A terminal run's own final state also belongs on the list, and the
-        // list is what the rail and the dock read.
-        void reload();
+        // A run that WENT terminal under this page's eyes has a final state the
+        // list has not seen yet, and the list is what the rail and the dock
+        // read. A run that was ALREADY terminal has nothing new to tell it, so
+        // hydrating history costs no extra list polls.
+        if (wasLive) void reload();
       });
       // A stream error is not a failure to report: the route can be silent for
       // an unbounded time on connect (the run dir may not exist yet) and there
       // is no heartbeat, so `onerror` here would fire on ordinary reconnects.
       // The list poll is the reconciler.
     }
+  }, [liveIds, allIds, reload]);
+
+  // THE ONLY PLACE EVERYTHING CLOSES: unmount. Kept apart from the reconciler
+  // above so that closing a stream is never a side effect of the dependency
+  // list moving (SF-1). A session change does not need it — `sessionId` moving
+  // re-fetches the list, the id set changes with it, and the reconciler closes
+  // what is no longer ours.
+  useEffect(() => {
+    const open = sources.current;
     return () => {
-      // The page is going away (or the session changed): close everything. This
-      // deliberately does NOT run on every list change — the effect key is the
-      // live-id set, so a stream survives ticks of its own data.
       for (const [, es] of open) es.close();
       open.clear();
     };
-  }, [liveIds, reload]);
+  }, []);
 
   // The agent index — the snippet's only source, and the only reader that can
   // see an ordinal the event stream has not mentioned yet. Polled beside the
   // list rather than streamed: it is a small per-run question, and adding a
   // second SSE channel per run would double the open connections for a figure
   // that changes on the same cadence the list does.
+  // A TERMINAL RUN IS PULLED ONCE AND A LIVE RUN IS POLLED (B1). `agents/` is
+  // the only reader that can see an ordinal at all for a run whose events this
+  // page never streamed, and a finished run's index does not move — so history
+  // costs one request per run per page, not one per cadence.
   useEffect(() => {
-    if (!sessionId || liveIds === "") return;
+    if (!sessionId || allIds === "") return;
     let cancelled = false;
-    const pull = async () => {
-      for (const runId of liveIds.split(",")) {
+    const pull = async (ids: readonly string[]) => {
+      for (const runId of ids) {
         try {
           const r = await fetch(`/api/ultra/${encodeURIComponent(runId)}/agents`);
           if (!r.ok || cancelled) continue;
           const d: unknown = await r.json();
           const agents = (d as { agents?: unknown }).agents;
           if (!Array.isArray(agents) || cancelled) continue;
+          indexed.current.add(runId);
           setIndexes((prev) => ({ ...prev, [runId]: agents as AgentIndexRow[] }));
         } catch {
           // best-effort, same as the list poll
         }
       }
     };
-    void pull();
-    const id = setInterval(() => void pull(), POLL_MS);
+    const live = liveIds === "" ? [] : liveIds.split(",");
+    const first = allIds.split(",").filter((id) => live.includes(id) || !indexed.current.has(id));
+    if (first.length > 0) void pull(first);
+    if (live.length === 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const id = setInterval(() => void pull(live), POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId, liveIds]);
+  }, [sessionId, allIds, liveIds]);
 
   // THE PROJECTION. Every decision here lives in `lib/ultra-runs.ts` and is
   // tested there; this is assembly.
@@ -233,7 +343,14 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
       // `running`.
       const manifest =
         stream?.manifest && stream.manifest.updatedAt >= row.updatedAt ? stream.manifest : row;
-      const snap = runSnapshot(manifest, stream?.events ?? [], indexes[row.runId] ?? [], row.runId);
+      // `null`, NOT `[]`, until this run's journal has actually been read (B1).
+      // A live run's stream is authoritative from the moment it connects — the
+      // route replays from line 0 — so "connected" is enough for it; a terminal
+      // run must have been DRAINED to `end`, because a half-arrived replay would
+      // otherwise state a smaller `agentsDone` than the run really has.
+      const journal =
+        stream && (manifest.state === "running" || stream.drained) ? stream.events : null;
+      const snap = runSnapshot(manifest, journal, indexes[row.runId] ?? [], row.runId);
       // The list route rendered `name` server-side; prefer it over the
       // client-side copy of the label rule, which exists only for the
       // stream-only window (§5.5-D5a).

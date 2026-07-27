@@ -39,8 +39,11 @@
 // that this file declares exactly one kind.
 // ────────────────────────────────────────────────────────────────────────────
 //
-// AD-12: THE RENDERER IS A PURE FUNCTION OF `(payload, view)` AND READS NOTHING
-// ELSE. No fetch, no EventSource, no context, no sessionId. Every run figure
+// AD-12: THE RENDERER IS A PURE FUNCTION OF ITS ARGUMENTS AND READS NOTHING
+// ELSE. `ItemRenderer` is `(payload, view) => ReactNode`; this leaf kind takes
+// the PAYLOAD ALONE, because it has no nested items and no disclosure state, and
+// a function of fewer parameters is assignable to that type.
+// No fetch, no EventSource, no context, no sessionId. Every run figure
 // arrives pre-projected in the payload, which `session-view.tsx` builds from
 // `use-ultra-runs.ts`. The architecture's own adversarial review (finding A3)
 // found the failure this prevents: a kind that reads live state from a React
@@ -51,9 +54,13 @@
 //   - `N done` and NO DENOMINATOR — nothing knows how many agents a script will
 //     spawn, so `agentsTotal` is typed `undefined` and the denominator is simply
 //     not drawn. That is a DECISION, not an oversight; `lib/ultra-runs.ts` says
-//     why in one grep.
-//   - the sliver is a fraction of DECLARED PHASES and is absent when the script
-//     declared none. Never an indeterminate bar, never a pulse.
+//     why in one grep. AND NO NUMERATOR EITHER until the journal has been read:
+//     `agentsDone` is ABSENT — not `0` — for a run this page has only ever seen
+//     a manifest of (review round 1, B1).
+//   - the sliver is a fraction of DECLARED PHASES and draws NOTHING when the
+//     script declared none. Never an indeterminate bar, never a pulse. Its ROW is
+//     reserved in the running form so its arrival cannot change the anchor's
+//     height (AC2, review round 1, SF-5); its INK is not.
 //   - the spend goes through `anchorSpend` → `spendReadout`. NO BUDGET UI
 //     ANYWHERE (NFR-UW-7 / AC9): no meter, no ceiling, no percentage, no
 //     reserved headroom.
@@ -77,7 +84,8 @@ import { Loader2Icon, PlayIcon, SquareIcon, TriangleAlertIcon, WorkflowIcon } fr
 import type { ItemKind } from "@/components/conversation/registry";
 import {
   ULTRA_ANCHOR_KIND,
-  anchorForm,
+  anchorControls,
+  anchorShape,
   anchorSpend,
   type UltraAnchorPayload,
   type UltraRunState,
@@ -130,18 +138,22 @@ const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
 export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
   id: ULTRA_ANCHOR_KIND,
-  render: (payload, view) => {
+  render: (payload) => {
     const { run, provider, onFocus, onStop, onResume, busy } = payload;
-    const form = anchorForm(run);
+    // THE WHOLE SHAPE, from one function the projection tests can drive (AC2,
+    // widened in review round 1). Nothing below branches on anything else that
+    // changes the anchor's height.
+    const shape = anchorShape(run);
+    // AC5 proof 1's two affordance rules — and B2's `!pending` term with them —
+    // now live in `anchorControls`, under the same tests as everything else this
+    // file used to decide for itself. A control's existence is a decision, and a
+    // decision that lives in a component ships unproven. They are SEPARATE from
+    // `anchorShape` because these two buttons sit in a non-wrapping flex row, so
+    // they change the anchor's width and never its height — and AC2's proof must
+    // not have to be told which of its own fields to ignore.
+    const controls = anchorControls(run);
     const tone = ULTRA_STATE_TONE[run.state];
     const spend = anchorSpend(provider, run.spendUsd);
-    // AC5 proof 1 — the Resume affordance appears for `stopped` and `failed` and
-    // NOT for `done`. THAT IS A UI RULE, NOT A CORE RULE: `resumeUltraRun` does
-    // not gate on state and will happily resume a `done` run and re-fire its
-    // wake. Stated here so the next reader does not "fix" the UI to match the
-    // port.
-    const canResume = run.state === "stopped" || run.state === "failed";
-    const canStop = run.state === "running";
     // AC5 proof 6 — the state rendered is the MANIFEST's, never an optimistic
     // local one. The agent can stop a run by tool call
     // (`mcp__ultra__ultra_stop`), and a button that optimistically set local
@@ -185,20 +197,34 @@ export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
             {run.name}
           </span>
           {/* A NEUTRAL OUTLINE, never a saturated fill. The gallery's
-              `STATE_STYLE` is the thing not to copy. */}
+              `STATE_STYLE` is the thing not to copy.
+
+              A PENDING RUN SAYS `launching`, NOT `running` (review B2). The
+              badge is a claim about the run, and until the manifest lands this
+              reader has no such claim to make — `pending` is the only thing it
+              actually knows, and it is what the detail row below already says
+              in its own words. */}
           <span className="shrink-0 rounded border px-1 py-0 text-[10px] text-muted-foreground">
-            {STATE_LABEL[run.state]}
+            {run.pending ? "launching" : STATE_LABEL[run.state]}
           </span>
           {/* AC11 proof 3 — `N done` and NO DENOMINATOR. A denominator would
               have to be invented, and `ultra_status`'s `total` is a count of
-              SETTLED agents, so `done/total` through that lens is always 1.0. */}
-          <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
-            {run.agentsDone} done
-          </span>
+              SETTLED agents, so `done/total` through that lens is always 1.0.
+
+              AND NO NUMERATOR EITHER until the journal has been read (review
+              B1). `agentsDone` is ABSENT — not zero — for a run this page has
+              only ever seen a manifest of, because the manifest does not know.
+              `0 done` for a run that settled five agents is the same fabricated
+              figure the missing denominator refuses, pointed the other way. */}
+          {run.agentsDone !== undefined && (
+            <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+              {run.agentsDone} done
+            </span>
+          )}
           <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums" title={spend.title}>
             {spend.text}
           </span>
-          {canStop && (
+          {controls.canStop && (
             <button
               type="button"
               disabled={busy}
@@ -212,7 +238,7 @@ export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
               <SquareIcon className="size-3" />
             </button>
           )}
-          {canResume && (
+          {controls.canResume && (
             <button
               type="button"
               disabled={busy}
@@ -234,8 +260,11 @@ export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
             the running form does not reflow as ticks arrive — which matters
             mechanically: `components/ai-elements/conversation.tsx` configures
             `StickToBottom` with `resize="smooth"`, so anything that grows
-            mid-stream animates the WHOLE transcript (NFR-UW-11). */}
-        {form === "running" && (
+            mid-stream animates the WHOLE transcript (NFR-UW-11).
+            "No conditional row inside it" was a CLAIM and not a fact until
+            review round 1: the sliver below was conditional, and SF-5 is what it
+            cost. It is now reserved. */}
+        {shape.detail && (
           <div className="flex min-w-0 flex-col gap-1">
             <div className="min-w-0 truncate text-[11px] text-muted-foreground">
               {run.narrator.at(-1) ?? (run.pending ? "Launching…" : " ")}
@@ -244,14 +273,34 @@ export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
                 and never of agents. `Progress` is not used: it auto-renders its
                 own track and indicator after `children` and its root adds
                 `gap-3`, and it would read as a budget meter, which AC9 forbids.
-                Two divs, one pixel. Absent entirely when the script declared no
-                phases. */}
-            {run.progress && (
-              <div className="h-px w-full overflow-hidden bg-border" aria-hidden>
+                Two divs, one pixel.
+
+                ITS ROW IS RESERVED AND ITS INK IS NOT (review round 1, SF-5).
+                Drawing the track only when `run.progress` existed made the
+                anchor GROW MID-RUN: `progress` is undefined for D8's pending
+                payload and becomes defined when the first manifest lands, so
+                `gap-1` + `h-px` = 5px arrived while running — a second height
+                change AC2 forbids, and one the old `anchorForm` was
+                structurally blind to because it read `state` alone.
+                Reserved-and-invisible is what keeps BOTH rules: AC2 gets a
+                constant running height, and AC11 proof 4 still gets "no sliver
+                at all when the script declared no phases", because `opacity-0`
+                draws nothing — no indeterminate bar, and no 0% pretending to be
+                a measurement. */}
+            {shape.sliver && (
+              <div
+                className={cn(
+                  "h-px w-full overflow-hidden bg-border",
+                  run.progress === undefined && "opacity-0",
+                )}
+                aria-hidden
+              >
                 <div
                   className="h-px bg-muted-foreground/60 transition-all duration-500 ease-out"
                   style={{
-                    width: `${Math.round((run.progress.seen / run.progress.declared) * 100)}%`,
+                    width: run.progress
+                      ? `${Math.round((run.progress.seen / run.progress.declared) * 100)}%`
+                      : "0%",
                   }}
                 />
               </div>
@@ -263,17 +312,19 @@ export const ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {
             truncated. It is present only on non-`done` runs, and it is part of
             the TERMINAL form, so it replaces the detail row rather than adding
             to it. */}
-        {form === "terminal" && run.error && (
+        {shape.errorRow && (
           <div className="flex min-w-0 items-center gap-1 text-[11px] text-destructive">
             <TriangleAlertIcon className="size-3 shrink-0" />
             <span className="min-w-0 truncate">{run.error}</span>
           </div>
         )}
-        {/* `view` is part of the renderer contract and this leaf kind has no
-            nested items and no disclosure state of its own — the anchor is
-            fixed-height by AC2, so there is nothing to expand. Referenced so the
-            signature stays honest rather than silently unused. */}
-        {view.live && null}
+        {/* `ItemRenderer` is `(payload, view) => ReactNode` and this renderer
+            takes ONE argument, deliberately: a leaf kind with no nested items
+            and no disclosure state of its own has nothing to do with `view`, and
+            a function of fewer parameters is assignable to that type. The
+            previous version referenced it as `{view.live && null}` — an
+            expression that renders nothing in EITHER branch, which is dead
+            scaffolding rather than an honest signature (review NH-2). */}
       </div>
     );
   },

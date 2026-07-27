@@ -41,6 +41,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { UltraManifest } from "@telar/core";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import {
+  isSessionRoute,
   runSnapshot,
   summarizeRuns,
   unwrapManifests,
@@ -91,7 +92,11 @@ export function UltraDockSignal() {
       // The list route already rendered `name` server-side; `runSnapshot` falls
       // back to its own copy of the label rule when it has not.
       const withName = m as UltraManifest & { name?: string };
-      const snap = runSnapshot(m, []);
+      // `null`, NOT `[]` — this poller never reads a journal, and `[]` would
+      // claim it had (B1). Nothing the dock renders comes from one; passing the
+      // truth here is what keeps `agentsDone` from being a fabricated `0` if
+      // anyone ever puts it on the head.
+      const snap = runSnapshot(m, null);
       list.push(withName.name ? { ...snap, name: withName.name } : snap);
       bySession.set(m.sessionId, list);
     }
@@ -138,14 +143,35 @@ export function UltraDockSignal() {
       if (!chat || typeof chat.project !== "string" || chat.project === "") continue;
       const title = typeof chat.title === "string" && chat.title !== "" ? chat.title : sessionId;
 
-      if (!seeded.current.has(sessionId)) {
+      // NEVER DOCK THE SESSION THE USER IS LOOKING AT (review round 1, SF-4).
+      // Read from `location` inside the poll rather than through
+      // `usePathname()`: this component renders nothing, so it needs no reactive
+      // value — and `usePathname` in a root-layout component carries a
+      // prerender/`Suspense` constraint under `cacheComponents` that Next's own
+      // reference states ("routes with dynamic params not covered by
+      // generateStaticParams … otherwise the build fails"), which is the same
+      // class of constraint §5.5-G5 weighed for `useSearchParams`. Nothing here
+      // is worth buying that with.
+      const watching =
+        typeof window !== "undefined" && isSessionRoute(window.location.pathname, sessionId);
+      if (!seeded.current.has(sessionId) && !watching) {
         seeded.current.add(sessionId);
         autoDock({
           id: sessionId,
           title,
           project: chat.project,
-          // Minted exactly as `session-view.tsx`'s own auto-dock mints it.
-          initial: (title.trim()[0] ?? chat.project.trim()[0] ?? "·").toUpperCase(),
+          // As `session-view.tsx`'s own auto-dock mints it, EXCEPT BY CODE POINT
+          // (review NH-1). `String.prototype[0]` indexes UTF-16 code units, so a
+          // title beginning with an emoji — a chat titled from a first message
+          // that starts with one — renders half a surrogate pair as a
+          // replacement glyph, and `.toUpperCase()` does not repair it.
+          // §5.6-T19 item 9 is the repo rule and this story already followed it
+          // in `agents/route.ts`; this site had missed it.
+          initial: (
+            Array.from(title.trim())[0] ??
+            Array.from(chat.project.trim())[0] ??
+            "·"
+          ).toUpperCase(),
         });
       }
 

@@ -40,6 +40,15 @@
 //     `AgentRow` HAS NO `tokens` FIELD. The demo gallery's `agentTokensAt`
 //     interpolates one over wall time; that is theatre.
 //
+// REVIEW ROUND 1 EXTENDED THAT REFUSAL FROM "WHAT THE ENGINE CANNOT PRODUCE" TO
+// "WHAT THIS READER HAS NOT READ" (B1), which is the same rule and was the
+// bigger hole. A run that was already terminal when the page mounted has a
+// manifest and NOTHING ELSE, and the manifest carries no agent count, no phase
+// history and no log lines — so the anchor stated `0 done` about a run that
+// settled five agents. `agentsDone` and `progress` are now ABSENT rather than
+// zero until this run's journal has actually been read, and `runSnapshot` takes
+// `null` (not `[]`) to say so.
+//
 // NOT A BUDGET (NFR-UW-7 / AC9). Every money figure here goes through
 // `spendReadout`, whose own header says a readout has no ceiling, no percentage
 // and no reserved headroom. Nothing in ultra gates on money — `storage.ts` says
@@ -82,7 +91,19 @@ export type AgentRow = {
   costUsd?: number;
   /** highest-`attempt` text from the agent index; "" while nothing has streamed */
   snippet: string;
+  /** an `agent` settle event (or the index's own `settled`) was seen for this
+   *  ordinal. IT IS NOT THE COMPLEMENT OF `live` — see below. */
   settled: boolean;
+  /** REVIEW ROUND 1, SF-3 — is this ordinal working RIGHT NOW? `!settled` is not
+   *  the same question and treating it as one is a placebo: `stopUltraRun`
+   *  ABORTS its in-flight agents, so neither ever emits its settling `agent`
+   *  event and both stay `settled: false` forever. Rendering that as "live" put
+   *  an infinitely-animating shimmer inside a card whose header read `stopped`.
+   *  The same arrives with no user action at all through `getUltraManifest`'s
+   *  on-read `running` → `stopped` rewrite (AD-15 / §5.6-T14) after a server
+   *  restart. An unsettled ordinal on a run that has ENDED was terminated, not
+   *  started; it is neither settled nor live. */
+  live: boolean;
 };
 
 export type PhaseGroup = { title: string; agents: AgentRow[] };
@@ -103,8 +124,20 @@ export type RunSnapshot = {
   error?: string;
   startedAt: number;
   updatedAt: number;
-  /** deduped count of ordinals that have SETTLED */
-  agentsDone: number;
+  /** Deduped count of ordinals that have SETTLED — and ABSENT, never `0`, when
+   *  this run's event journal has not been read (REVIEW ROUND 1, B1).
+   *
+   *  `0 done` for a run that settled five agents yesterday is a WRONG NUMBER
+   *  STATED AS FACT, which is the same prohibition AC11 proof 3 makes about the
+   *  denominator pointed at the numerator. The manifest carries no agent count,
+   *  so a run projected from its manifest ALONE knows nothing about its agents —
+   *  and this file's own doctrine for that is already written down twice
+   *  (`agentsTotal` is typed `undefined`; `progress` is absent rather than
+   *  zero): NOT SOURCED ⇒ NOT RENDERED. `use-ultra-runs.ts` now reads a terminal
+   *  run's journal too, so the absence is a brief window rather than a permanent
+   *  state — but it is the window, and a failed read, that this refuses to lie
+   *  about. */
+  agentsDone?: number;
   /** AC11 proof 3 — the TYPE ITSELF refuses the denominator. Nothing knows how
    *  many agents a script will spawn. `ultra_status`'s `total` is a count of
    *  settled agents, so `done/total` through that lens is always 1.0 — a
@@ -249,8 +282,13 @@ export function narratorLines(events: readonly UltraEventLike[]): string[] {
 export function agentRows(
   events: readonly UltraEventLike[],
   agentIndex: readonly AgentIndexRow[],
+  /** The OWNING RUN's state, because whether an unsettled ordinal is still
+   *  working is a fact about the run and not about the ordinal (SF-3). Defaults
+   *  to `running`, which is the only state under which "unsettled" and "live"
+   *  coincide — so every caller that has no run in hand keeps the old reading. */
+  runState: UltraRunState = "running",
 ): AgentRow[] {
-  const byOrdinal = new Map<number, AgentRow>();
+  const byOrdinal = new Map<number, Omit<AgentRow, "live">>();
   for (const e of events) {
     if (e.type === "agent-start") {
       const prev = byOrdinal.get(e.ordinal);
@@ -304,7 +342,13 @@ export function agentRows(
       });
     }
   }
-  return [...byOrdinal.values()].sort((a, b) => a.ordinal - b.ordinal);
+  // Liveness is decided HERE, in one place, over the run's own state — never in
+  // the component, where it would be untestable (§5.4's whole reason this module
+  // exists).
+  const runIsLive = runState === "running";
+  return [...byOrdinal.values()]
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map((r) => ({ ...r, live: runIsLive && !r.settled }));
 }
 
 // ── phase grouping (T5) ─────────────────────────────────────────────────────
@@ -386,13 +430,24 @@ export function progressFraction(
 
 export function runSnapshot(
   manifest: UltraManifestLike | null,
-  events: readonly UltraEventLike[],
+  /** THE JOURNAL, OR `null` FOR "NOT READ" — and the difference is the whole of
+   *  B1. `[]` means this reader has the run's events and there are none; `null`
+   *  means it has never opened the channel that would tell it, which is exactly
+   *  the state a page is in for a run that was already terminal when it mounted.
+   *  Every figure that can only come from the journal is ABSENT in that case
+   *  rather than zero. */
+  events: readonly UltraEventLike[] | null,
   agentIndex: readonly AgentIndexRow[] = [],
   runId?: string,
 ): RunSnapshot {
   const id = manifest?.runId ?? runId ?? "";
-  const rows = agentRows(events, agentIndex);
-  const progress = progressFraction(manifest, events);
+  const state = manifest?.state ?? "running";
+  const journal = events ?? [];
+  // The agent INDEX is a second, independent source for the same question, so a
+  // run whose index has answered is sourced even with no journal read.
+  const sourced = events !== null || agentIndex.length > 0;
+  const rows = agentRows(journal, agentIndex, state);
+  const progress = events === null ? undefined : progressFraction(manifest, journal);
   return {
     runId: id,
     name: runLabel(manifest?.meta, id),
@@ -402,25 +457,96 @@ export function runSnapshot(
     // server restart reaches a terminal state with no event, no publish and no
     // `end` frame anyone will ever see. A UI that waits for an event to declare
     // a run finished shows a permanently-running anchor for every one of them.
-    state: manifest?.state ?? "running",
+    state,
     spendUsd: manifest?.spend ?? 0,
     ...(manifest?.error !== undefined ? { error: manifest.error } : {}),
     startedAt: manifest?.startedAt ?? 0,
     updatedAt: manifest?.updatedAt ?? 0,
-    agentsDone: rows.filter((r) => r.settled).length,
+    ...(sourced ? { agentsDone: rows.filter((r) => r.settled).length } : {}),
     agentsTotal: undefined,
-    phases: phaseGroups(events, rows),
-    narrator: narratorLines(events),
+    phases: phaseGroups(journal, rows),
+    narrator: narratorLines(journal),
     ...(progress !== undefined ? { progress } : {}),
     pending: manifest === null,
   };
 }
 
+/** Every stacked row the anchor can draw. AC2's executable stand-in, WIDENED IN
+ *  REVIEW ROUND 1 (SF-5) from a bare form to the full set of shape-affecting
+ *  decisions.
+ *
+ *  WHY THE OLD SHAPE WAS A GUARD THAT COULD NOT FAIL. `anchorForm` read `state`
+ *  and nothing else, so it was STRUCTURALLY BLIND to a height change driven by
+ *  anything else — and there was one: the phase sliver was rendered only when
+ *  `run.progress` was defined, and `progress` is undefined for D8's pending
+ *  payload (`progressFraction` short-circuits on a null manifest) and becomes
+ *  defined when the first manifest lands. So the anchor gained `gap-1` + `h-px`
+ *  MID-STREAM, a second height change AC2 forbids, and the test asserting "the
+ *  form changes at most once" could not see it. */
+export type AnchorShape = {
+  form: "running" | "terminal";
+  /** row 2 — the narrator line plus the sliver track. */
+  detail: boolean;
+  /** the sliver's TRACK, which is RESERVED rather than conditional: a run whose
+   *  script declared no phases still gets the pixel, drawn empty. Absence would
+   *  be a height change the moment `meta.phases` arrived. */
+  sliver: boolean;
+  /** the terminal error line (`failed` only — `done` has no error). */
+  errorRow: boolean;
+};
+
 /** AC2's honest proof. A rendered HEIGHT cannot be tested without a DOM; the
- *  claim that THE SHAPE-SELECTING FUNCTION IS CONSTANT WHILE RUNNING can, and
- *  that is what this is. The renderer consumes it, so the two cannot diverge. */
+ *  claim that THE SHAPE OF THE ANCHOR IS CONSTANT WHILE RUNNING can, and that is
+ *  what this is. The renderer consumes it — it branches on nothing else — so the
+ *  two cannot diverge. */
+export function anchorShape(run: RunSnapshot): AnchorShape {
+  const form: AnchorShape["form"] = run.state === "running" ? "running" : "terminal";
+  return {
+    form,
+    detail: form === "running",
+    sliver: form === "running",
+    // NON-EMPTY, not merely present: the renderer this replaces branched on
+    // `run.error` truthiness, and `error: ""` is reachable (`runSnapshot` copies
+    // the manifest's field whenever it is not `undefined`). An empty string
+    // would otherwise draw an icon beside nothing — a row of height, with no
+    // content, on a terminal run.
+    errorRow: form === "terminal" && run.error !== undefined && run.error !== "",
+  };
+}
+
+/** WHICH AFFORDANCES EXIST, kept SEPARATE from the shape on purpose: the two
+ *  controls sit in row 1, which is a non-wrapping flex line, so their presence
+ *  changes the anchor's WIDTH and never its HEIGHT. Folding them into
+ *  `AnchorShape` would make AC2's "the shape is constant while running" proof
+ *  fail on a difference AC2 does not forbid — and a proof that has to be told
+ *  which of its own fields to ignore is back to being prose. */
+export type AnchorControls = { canStop: boolean; canResume: boolean };
+
+export function anchorControls(run: RunSnapshot): AnchorControls {
+  return {
+    // `!run.pending` IS LOAD-BEARING AND IS NOT BELT AND BRACES (review B2). The
+    // pending payload has no manifest, and `state` FALLS BACK to `running`
+    // because AD-15 leaves no honest alternative — a run with no manifest yet is
+    // far likelier to be starting than finished. But `session-view.tsx` seeds
+    // `messages` synchronously from `initialChat` while `useUltraRuns` starts
+    // empty and fetches in an effect, so on the FIRST PAINT of any session that
+    // ever launched a run every anchor is pending — including one whose run
+    // finished last week. Without this term that run offered a live `running`
+    // badge and an ENABLED STOP BUTTON, on every load, for every such session.
+    canStop: run.state === "running" && !run.pending,
+    // AC5 proof 1 — Resume is for `stopped` and `failed` and NOT for `done`.
+    // THAT IS A UI RULE, NOT A CORE RULE: `resumeUltraRun` does not gate on
+    // state and will happily resume a `done` run and re-fire its wake. Stated
+    // here so the next reader does not "fix" the UI to match the port.
+    canResume: run.state === "stopped" || run.state === "failed",
+  };
+}
+
+/** The form alone, kept because AC2's original proof and `ui-contract.md` both
+ *  speak in those two words. It is now DERIVED from the shape rather than
+ *  computed beside it, so it cannot drift from what the renderer draws. */
 export function anchorForm(run: RunSnapshot): "running" | "terminal" {
-  return run.state === "running" ? "running" : "terminal";
+  return anchorShape(run).form;
 }
 
 // ── the session filter (D5 / C1) ────────────────────────────────────────────
@@ -440,6 +566,56 @@ export function filterRunsBySession<T extends { sessionId?: string }>(
 ): readonly T[] {
   if (sessionId === undefined) return runs;
   return runs.filter((r) => r.sessionId === sessionId);
+}
+
+// ── the journal-stream reconciler (review round 1 — B1 and SF-1) ────────────
+
+// WHICH RUNS NEED AN OPEN JOURNAL STREAM, AND WHAT TO DO ABOUT IT. Both
+// decisions live here rather than inside `use-ultra-runs.ts`'s effect, for the
+// reason this file's header gives: an effect body cannot be driven by a test in
+// this repo, and BOTH of these shipped wrong.
+//
+// B1 — A TERMINAL RUN NEEDS ITS JOURNAL READ EXACTLY ONCE. The hook opened a
+// stream only for a `running` run, so a run that settled before the page mounted
+// was projected from its MANIFEST ALONE — and the manifest carries no agent
+// count, no phase history and no log lines. The anchor therefore stated `0 done`
+// as a fact for a run that settled five agents. `/api/ultra/[id]/events` replays
+// every event from line 0 and then sends `end` for a terminal run, so opening it
+// once IS a one-shot read of the journal rather than a subscription; `hydrated`
+// is what stops it becoming one.
+//
+// SF-1 — AND THE SET IS RECONCILED, NEVER REBUILT. The effect closed every
+// stream in its cleanup, which React runs on EVERY dependency change: a second
+// run launching tore down the FIRST run's still-wanted stream, the body then
+// found the map empty and re-opened it, and the route replayed the whole journal
+// into an accumulator nothing reset — so the narrator repeated its own history,
+// once more per concurrent launch. AC4's headline "concurrent runs are
+// first-class" case was the one case that broke it.
+
+/** Every run whose journal this page still needs open: all the live ones, plus
+ *  any run it has not yet drained to `end`. */
+export function wantedStreams(
+  liveIds: readonly string[],
+  allIds: readonly string[],
+  hydrated: ReadonlySet<string>,
+): string[] {
+  const live = new Set(liveIds);
+  return allIds.filter((id) => live.has(id) || !hydrated.has(id));
+}
+
+/** The INCREMENTAL step from what is open to what is wanted. A run present in
+ *  both appears in NEITHER list — that is the whole point, and it is what a
+ *  close-everything cleanup could not express. */
+export function reconcileStreams(
+  openIds: readonly string[],
+  wanted: readonly string[],
+): { close: string[]; open: string[] } {
+  const want = new Set(wanted);
+  const have = new Set(openIds);
+  return {
+    close: openIds.filter((id) => !want.has(id)),
+    open: wanted.filter((id) => !have.has(id)),
+  };
 }
 
 // ── the dock summary (AC7 proof 6) ──────────────────────────────────────────
@@ -478,6 +654,39 @@ export function summarizeRuns(runs: readonly RunSnapshot[], provider: SpendProvi
 // THE ONE PLACE IT CHANGES.
 export function anchorSpend(provider: SpendProvider, usd: number): SpendReadout {
   return spendReadout(provider, { usd, tokens: 0 });
+}
+
+/** REVIEW ROUND 1, SF-4 — is this the session the user is looking at RIGHT NOW?
+ *
+ *  The dock signal's job is discovering a session that is NOT a dock entry
+ *  (AC7's whole case), and it did that by docking every session with a live run
+ *  — including the one whose page was on screen, so a minimized head for the
+ *  session you were already reading slid into the corner within 8 seconds, and
+ *  nothing removed it because `session-view.tsx`'s `clearAutoDock` effect fires
+ *  only at mount.
+ *
+ *  A ROUTE TEST AND NOT A FOCUS TEST, deliberately, and this is a considered
+ *  deviation from the review's suggested fix. `loom-notifications.tsx`'s
+ *  `visibilityState === "hidden" || !document.hasFocus()` is the right guard for
+ *  a NOTIFICATION, whose whole premise is that the user is away. It is the wrong
+ *  guard here: AC7's Given is "the user is on ANOTHER PAGE with a run live" — a
+ *  focused tab — so a focus guard would suppress the dock head in exactly the
+ *  case the AC exists to describe. What must be skipped is one session, not one
+ *  tab, and that is a fact about the ROUTE.
+ *
+ *  `dock.tsx` builds `/projects/<project>/sessions/<id>`, so the id is the last
+ *  segment. Compared raw first, then decoded, because a router pathname may or
+ *  may not carry percent-escapes and a malformed one must be a non-match rather
+ *  than a throw. */
+export function isSessionRoute(pathname: string, sessionId: string): boolean {
+  if (sessionId === "") return false;
+  const suffix = `/sessions/${sessionId}`;
+  if (pathname.endsWith(suffix)) return true;
+  try {
+    return decodeURIComponent(pathname).endsWith(suffix);
+  } catch {
+    return false;
+  }
 }
 
 // ── the composer's arm state (AC6 / D2) ─────────────────────────────────────

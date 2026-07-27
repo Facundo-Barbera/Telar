@@ -2145,9 +2145,18 @@ function SessionViewInner({
   // first turn of a brand-new session can launch a run before the list can
   // answer. Dropping the anchor for that window would make it blink into
   // existence a poll later.
+  //
+  // `null` FOR THE EVENTS, NOT `[]` (review round 1, B1). `[]` would mean "this
+  // reader has the run's journal and it is empty", and the pending window is
+  // precisely when it has not looked: `session-view.tsx` seeds `messages`
+  // synchronously from `initialChat` while `useUltraRuns` starts empty, so on
+  // the first paint of a reloaded session EVERY persisted launch comes through
+  // here — including one whose run settled five agents last week. `[]` made that
+  // anchor read `0 done` for the width of the list poll, which is B1's own
+  // defect wearing D8's clothes.
   const pendingUltraAnchor = useCallback(
     (runId: string): UltraAnchorPayload => ({
-      run: runSnapshot(null, [], [], runId),
+      run: runSnapshot(null, null, [], runId),
       provider: "claude",
       onFocus: () => setOpenRunId(runId),
       onStop: () => void ultraAct(runId, "stop"),
@@ -3194,13 +3203,31 @@ function SessionViewInner({
                       ultra MCP server only in the non-Codex fork, so on Codex
                       the chip would arm a tool that is never offered.
 
+                      AND NOT ON THE ESCALATION SURFACE (review round 1, SF-2).
+                      AC6 proof 6 says the chip is "gated off the escalation
+                      surface", and it was gated on the PROVIDER and nothing
+                      else — while `discuss-escalation.tsx` mounts
+                      `<SessionView escalation embedded …/>` with `provider`
+                      defaulting to `"claude"`. So the chip rendered in a blocked
+                      loom's orchestrator chat, armed, showed `aria-pressed`, and
+                      put `ultra: true` on the same body literal that carries
+                      `role: "escalation"` — where `resolveSessionProfile`'s
+                      escalation branch builds `escalationAppendix`, whose
+                      signature carries no `ultraAnnotated` at all, and
+                      `buildEscalationProfile` hard-denies every one of
+                      `ULTRA_AUTO_TOOLS`. The flag was discarded entirely: a
+                      control that cannot do anything, which is exactly the
+                      placebo hard rule 3 forbids. The TYPE enforces the absence
+                      of the APPENDIX; only this term enforces the absence of the
+                      CONTROL, and AC6 proof 6 is about the control.
+
                       THE GLYPH IS `WorkflowIcon`, NOT `SparklesIcon`.
                       `SparklesIcon` is taken twice over — `composer-settings.tsx`
                       uses it for the Claude-config chip immediately to the left,
                       and `subagent-rail.tsx`'s `TOOL_GLYPH` maps it to the
                       `general-purpose` subagent type in the very rail this story
                       adds a Workflows section to. */}
-                  {provider !== "codex" && (
+                  {provider !== "codex" && !escalation && (
                     <Button
                       type="button"
                       variant="outline"
