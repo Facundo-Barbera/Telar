@@ -693,7 +693,7 @@ const ROOT_RESOLVERS = ["telarDir", "stateRoot", "telarHome", "home"];
 type CompositionSite = { resolver: string; composes: string };
 // TWO SHAPES, because composing off the root by template is composing off the
 // root: `${telarDir()}/looms/<id>/spec.json` is a textbook AD-5 cross-module
-// read by path, and a path.join-only matcher leaves the 18-site inventory
+// read by path, and a path.join-only matcher leaves the 19-site inventory
 // unchanged while it happens. INV-5's sibling helper composesStateFile already
 // handled the template form, so the asymmetry was internal to this file.
 // `resolvers` is per-file so an ALIASED resolver (`import { telarDir as root }`)
@@ -1757,7 +1757,7 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
 // at the bottom of this file. Same AD, opposite scope: INV-3 scans production
 // source and excludes tests; INV-7 scans tests and excludes production source.
 
-// The 18 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
+// The 19 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
 // it. It is the invariant's whole content.
 const AD5_SITES = [
   "apps/web/lib/mcp-oauth-pending.ts :: mcp-oauth-pending.json",
@@ -1870,14 +1870,14 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     if (COMPOSITION_SITES.length < 15) {
       throw new Error(
         `AD-5 / INV-3: only ${COMPOSITION_SITES.length} TELAR_HOME path-composition sites found ` +
-          `(floor 15, measured 18). CONSEQUENCE: the ownership check below would pass while ` +
+          `(floor 15, re-measured 19 in this pass). CONSEQUENCE: the ownership check below would pass while ` +
           `scanning nothing. NEXT STEP: the SCANNER is broken — check rootCompositionSites() and ` +
           `ROOT_RESOLVERS, which today are ${JSON.stringify(ROOT_RESOLVERS)}.`,
       );
     }
-    // AC2 — a bare toEqual on two 18-element arrays prints a diff naming no AD,
+    // AC2 — a bare toEqual on two 19-element arrays prints a diff naming no AD,
     // no consequence and no next step. The diagnosis is thrown first; the
-    // equality stays as the mechanism ("the 18-site table is exact").
+    // equality stays as the mechanism ("the 19-site table is exact").
     const appeared = observed.filter((s) => !AD5_SITES.includes(s));
     const vanished = AD5_SITES.filter((s) => !observed.includes(s));
     if (appeared.length || vanished.length) {
@@ -2035,7 +2035,7 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     expect(rootCompositionSites(`const d = ${join}(loomsDir(), id);`)).toEqual([]);
     expect(rootCompositionSites(`const d = ${join}(ownerDir, ".runner-lease");`)).toEqual([]);
     // THE TEMPLATE FORM composes off the root exactly as path.join does, and a
-    // path.join-only matcher leaves the 18-site table unchanged while a new
+    // path.join-only matcher leaves the 19-site table unchanged while a new
     // module reads another's subtree by path — the textbook AD-5 breach.
     expect(rootCompositionSites("const p = `${telarDir()}/looms/${id}/spec.json`;")).toEqual([
       { resolver: "telarDir", composes: "looms" },
@@ -3131,11 +3131,16 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
 // pendingUltraWakes → listUltraRuns → getUltraManifest, which WRITES: it
 // re-saves a stale `running` manifest as `stopped`).
 //
-// FOUR of those five symbols are absent from the surface below —
-// projectAppendix, plannerAppendix, buildProjectProfile, buildPlannerProfile.
-// The fifth, steererAppendix, IS listed, and so is buildSteererProfile, but both
-// were added for the `loomId` chain and neither presence says anything about
-// this one. And `INJECTED_READER` matches `read:`: it cannot match this seam's
+// TWO of those five symbols are still absent from the surface below —
+// projectAppendix and plannerAppendix. `buildProjectProfile` and
+// `buildPlannerProfile` WERE absent when this note was written and story 5.1
+// ADDED THEM, 54 lines down; this sentence is corrected here rather than left to
+// contradict the list it introduces. The fifth, steererAppendix, IS listed, and
+// so is buildSteererProfile, but both were added for the `loomId` chain and
+// neither presence says anything about this one. And the two that remain absent
+// are a recorded finding with a measured remedy, not an oversight — see the
+// block at their place in the list.
+// `INJECTED_READER` matches `read:`: it cannot match this seam's
 // `readWake:` and does not require it. So adding `sessionId` to the helper above
 // would read as a harmless widening and would silently point dozens of
 // in-process calls at the operator's real root, with `safeLiveContext`
@@ -3199,21 +3204,29 @@ const STATE_ROOT_READERS: readonly string[] = [
   // as a finding:
   //
   //   Adding them turns INV-7b red on EIGHTEEN call sites in
-  //   apps/web/lib/session-prompts.test.ts — e.g. `projectAppendix({
-  //   ultraAnnotated: false })` and `plannerAppendix({ ultraAnnotated: true })`.
-  //   Those calls pass NO `read:` seam, so INJECTED_READER does not match and
-  //   the file is not classified `injected` for them; they pass no `sessionId`
-  //   either, and a composer with no session id has no wake to read BY
-  //   CONSTRUCTION, so in FACT they reach no state root. The scanner cannot see
-  //   that, and it is right not to guess.
+  //   apps/web/lib/session-prompts.test.ts (10 `projectAppendix(` + 8
+  //   `plannerAppendix(`). RE-DERIVED at review-fix time, because the first
+  //   version of this note said all eighteen "pass no `sessionId`" and that is
+  //   FALSE — the eighteen split into two groups with DIFFERENT remedies:
   //
-  //   Closing it needs one of two things, and BOTH are outside story 5.1's
-  //   write-set fence: threading a `read:` seam through those eighteen call
-  //   sites (Track B's apps/web/lib/session-prompts.ts and its suite), or adding
-  //   the two names to INJECTABLE_COMPOSERS below (this file, but outside the
-  //   fenced edit list 5.1 was given). Recorded in deferred-work.md with the
-  //   measured call-site count so the next story with either file open can close
-  //   it in one pass instead of rediscovering it.
+  //     - TEN pass neither a seam nor a session id (`projectAppendix({
+  //       ultraAnnotated: false })`). A composer with no session id has no wake
+  //       to read BY CONSTRUCTION, so in FACT they reach no state root. The
+  //       scanner cannot see that and is right not to guess.
+  //     - EIGHT pass a stubbed reader seam, and SEVEN of those also pass
+  //       `sessionId: "sess-1"` (`projectAppendix({ ultraAnnotated: false,
+  //       sessionId: "sess-1", readWake: () => WAKE })`). They reach no state
+  //       root because the SEAM IS STUBBED — the honest injected case. INV-7
+  //       cannot see it only because INJECTED_READER is `/read\s*:/` and the
+  //       seam is spelled `readWake:`, which that pattern does not match.
+  //
+  //   So the remedy is not one change but two, and the cheaper one is now
+  //   named: widening INJECTED_READER to the `readWake:` spelling clears EIGHT
+  //   of the eighteen on its own, leaving the ten genuinely seamless calls for
+  //   either a threaded seam (Track B's apps/web/lib/session-prompts.ts and its
+  //   suite) or INJECTABLE_COMPOSERS below. Both files were outside story 5.1's
+  //   write-set fence. Recorded in deferred-work.md with these counts so the
+  //   next story with either file open can close it in one pass.
   // ── story 5.1: the workspace item store (packages/core/src/workspace/store.ts)
   // Every one of these resolves TELAR_HOME through manifest.ts's telarDir() and
   // then opens a file, so calling any of them decides which ~/.telar you touch
@@ -3235,6 +3248,11 @@ const STATE_ROOT_READERS: readonly string[] = [
   "workspaceHomeDir",
   "ensureWorkspace",
   "readLanes",
+  // The reporting half of the same read, added by story 5.1's review fix when
+  // readLanes gained per-row tolerance. It opens lanes.yaml itself — readLanes
+  // is now a thin caller of it — so leaving it off would put the ONLY function
+  // that actually reads the file outside the surface this list polices.
+  "readLanesReport",
   "writeLanes",
   "getWorkspaceItem",
   "listItems",
@@ -3646,26 +3664,26 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
     const broken: string[] = [];
     if (TEST_FILES.length < 100) {
       broken.push(
-        `only ${TEST_FILES.length} *.test.ts files in the index (floor 100, measured 121) — the ` +
+        `only ${TEST_FILES.length} *.test.ts files in the index (floor 100, re-measured 135 in this pass) — the ` +
           `WALK is broken, not the tree. INV-7 scans exactly this set.`,
       );
     }
     if (READER_SCANS.length < 25) {
       broken.push(
-        `only ${READER_SCANS.length} test files reach the reader surface (floor 25, measured 30) — ` +
+        `only ${READER_SCANS.length} test files reach the reader surface (floor 25, re-measured 32 in this pass) — ` +
           `readerCallSites or READER_SURFACE is broken. The violation set below would be empty ` +
           `because nothing was scanned, not because nothing is wrong.`,
       );
     }
     if (READER_EXEC_SITES < 100) {
       broken.push(
-        `only ${READER_EXEC_SITES} in-process reader call sites found (floor 100, measured 179) — ` +
+        `only ${READER_EXEC_SITES} in-process reader call sites found (floor 100, re-measured 475 in this pass) — ` +
           `the same failure, one level down.`,
       );
     }
     if (READER_PROBE_SITES < 3) {
       broken.push(
-        `only ${READER_PROBE_SITES} child-probe call sites found (floor 3, measured 13) — the ` +
+        `only ${READER_PROBE_SITES} child-probe call sites found (floor 3, re-measured 24 in this pass) — the ` +
           `EXEC/PROBE split is broken. Both halves are load-bearing: if every hit landed in the ` +
           `in-process class, the child-process mechanism below would never be exercised.`,
       );
@@ -5473,6 +5491,58 @@ describe("INV-10 the ultra run anchor is registered in the adapter and NOWHERE e
 const WORKSPACE_STORE = "packages/core/src/workspace/store.ts";
 const WORKSPACE_SRC_DIR = "packages/core/src/workspace/";
 
+// ── the fs-call detector INV-11d and INV-11e both scan with ──────────────────
+//
+// WHY THIS IS NOT ONE REGEX. Both arms shipped as
+// `/(?<![A-Za-z0-9_$.])(writeFileSync|…)\s*\(/` — a lookbehind that excludes a
+// DOT PREFIX so the pattern would not fire on an unrelated `shim.writeFileSync`.
+// It also excluded the one receiver that matters: `store.ts` imports fs as a
+// NAMESPACE and spells every call `fs.`, so neither arm could fire on the code
+// it was written to police. Both were proved vacuous by mutation — a
+// `fs.writeFileSync` replacing atomicWrite, and an `fs.rmSync` delete path added
+// to the MCP server, each left the whole suite green.
+//
+// The fix keeps the property the lookbehind was protecting and drops the one it
+// was not entitled to: a member call matches when — and only when — its receiver
+// is THAT FILE'S OWN binding for node:fs. `shim.writeFileSync` still does not
+// match; `fs.writeFileSync` in a file that imported fs does.
+// The SYNC and ASYNC spellings of the same two capabilities. `node:fs/promises`
+// is a real import target — `writeFile`/`rm` there reach the same disk as
+// `writeFileSync`/`rmSync` here — so a list of only the Sync names would leave
+// the async half of both arms unguarded.
+const WRITERS = ["writeFileSync", "appendFileSync", "writeFile", "appendFile"] as const;
+const FS_MODULE = /^(node:)?fs(\/promises)?$/;
+function fsBindings(code: string): string[] {
+  const names: string[] = [];
+  // `import fs from "node:fs"`, `import * as fs from "fs"`, and the mixed form.
+  const importRe = /import\s+(?:(\*\s*as\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*,?\s*)?(?:\{[^}]*\}\s*)?from\s*["']([^"']+)["']/g;
+  for (const m of code.matchAll(importRe)) {
+    // `type` is the keyword in `import type { X } from "node:fs"`, not a binding.
+    if (m[2] && m[2] !== "type" && FS_MODULE.test(m[3]!)) names.push(m[2]);
+  }
+  // `const fs = require("fs")` / `await import("node:fs")`, so a CJS or dynamic
+  // spelling cannot walk past the scan.
+  const requireRe = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+import|require)\s*\(\s*["']([^"']+)["']/g;
+  for (const m of code.matchAll(requireRe)) {
+    if (FS_MODULE.test(m[2]!)) names.push(m[1]!);
+  }
+  return [...new Set(names)];
+}
+// Which of `names` this file calls — BARE (a named import) or through its own fs
+// binding. Returns the offending names so the failure message can print them.
+function fsCallsIn(code: string, names: readonly string[]): string[] {
+  const bindings = fsBindings(code);
+  return names.filter((n) => {
+    if (new RegExp(`(?<![A-Za-z0-9_$.])${n}\\s*\\(`).test(code)) return true;
+    // `fs.promises.` is the third spelling of the same call and reaches the same
+    // disk — without this segment, `fs.promises.rm(dir)` walks past a scan that
+    // catches `fs.rmSync(dir)`.
+    return bindings.some((b) =>
+      new RegExp(`(?<![A-Za-z0-9_$.])${b}\\s*\\.\\s*(?:promises\\s*\\.\\s*)?${n}\\s*\\(`).test(code),
+    );
+  });
+}
+
 describe("INV-11 the workspace item store is reachable only through its port — AD-5/AD-6, story 5.1", () => {
   const workspaceFiles = NON_TEST.filter((f) => f.rel.startsWith(WORKSPACE_SRC_DIR));
 
@@ -5618,8 +5688,12 @@ describe("INV-11 the workspace item store is reachable only through its port —
           `hold over an empty set. NEXT STEP: the WALK is broken — check ROOTS and EXCLUDED_DIRS.`,
       );
     }
+    // THE SCAN SEES `fs.writeFileSync`, NOT ONLY A BARE `writeFileSync`. The
+    // store imports fs as a namespace; an arm that could not fire on the only
+    // spelling the store uses was a comment wearing a test's clothes, and a
+    // mutation proved exactly that.
     const violations = workspaceFiles
-      .filter((f) => /(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test(f.code))
+      .filter((f) => fsCallsIn(f.code, WRITERS).length > 0)
       .map(
         (f) =>
           `${f.rel} writes with writeFileSync/appendFileSync. AD-6 — every write to a persisted ` +
@@ -5633,12 +5707,36 @@ describe("INV-11 the workspace item store is reachable only through its port —
     // The POSITIVE half: the store really does write, through the sanctioned
     // idiom. Without this the arm passes for a store that writes nothing at all.
     expect(byRel.get(WORKSPACE_STORE)!.code).toContain("atomicWrite(");
-    // DISCRIMINATOR, on a runtime-assembled fixture through the same pattern.
-    const bad = "fs." + "writeFileSync" + "(file, data);";
-    expect(/(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test(bad.replace("fs.", ""))).toBe(true);
-    // …and a DOT-PREFIXED member call on some other object is not a match, which
-    // is what keeps the pattern from firing on unrelated code.
-    expect(/(?<![A-Za-z0-9_$.])(writeFileSync|appendFileSync)\s*\(/.test("shim.writeFileSync(x);")).toBe(false);
+    // ANTI-VACUITY ON THE RECEIVER, which is the half whose absence made this
+    // arm vacuous: the store's fs binding really was FOUND. Rename the import
+    // and the member scan would hold over an empty binding set again — this
+    // turns that back into a red test rather than a silent hole.
+    expect(fsBindings(byRel.get(WORKSPACE_STORE)!.code)).toContain("fs");
+
+    // DISCRIMINATOR, THREE DIRECTIONS, on runtime-assembled fixtures.
+    const IMPORTED = 'import fs from "node:fs";\n';
+    // 1. the MUTATION THAT WALKED PAST THE OLD PATTERN now matches…
+    expect(fsCallsIn(IMPORTED + "fs." + "writeFileSync" + "(file, data);", ["writeFileSync"])).toEqual([
+      "writeFileSync",
+    ]);
+    // 2. …the bare named-import spelling still matches…
+    expect(fsCallsIn("write" + "FileSync" + "(file, data);", ["writeFileSync"])).toEqual(["writeFileSync"]);
+    // 3. …and a member call on some OTHER object still does not, which is the
+    //    property the original lookbehind was protecting and this keeps.
+    expect(fsCallsIn(IMPORTED + "shim." + "writeFileSync" + "(x);", ["writeFileSync"])).toEqual([]);
+    // 4. THE ASYNC SPELLINGS OF THE SAME CAPABILITY, which a Sync-only name list
+    //    would have let straight through: `node:fs/promises`, and `fs.promises.`
+    //    off a plain `node:fs` binding. Both reach the same disk.
+    expect(
+      fsCallsIn('import fsp from "node:fs/promises";\nawait fsp.' + "writeFile" + "(f, d);", WRITERS),
+    ).toEqual(["writeFile"]);
+    expect(fsCallsIn(IMPORTED + "await fs.promises." + "writeFile" + "(f, d);", WRITERS)).toEqual([
+      "writeFile",
+    ]);
+    // …and the namespace form of the import is found too.
+    expect(
+      fsCallsIn('import * as nodefs from "node:fs";\nnodefs.' + "writeFileSync" + "(f, d);", WRITERS),
+    ).toEqual(["writeFileSync"]);
   });
 
   test("INV-11e the MCP server declares no entity schema and has no delete call", () => {
@@ -5657,25 +5755,38 @@ describe("INV-11 the workspace item store is reachable only through its port —
 
     // SPEC.md non-goals: "No deletion path." CAP-3: "No path deletes an item."
     // Dismissing an item drains it to the queue; nothing removes one.
-    const deleters = ["rmSync", "unlinkSync", "rmdirSync", "rmdir", "unlink"].filter((d) =>
-      new RegExp(`(?<![A-Za-z0-9_$.])${d}\\s*\\(`).test(src!.code),
-    );
-    expect(deleters).toEqual([]);
+    // THE SCAN SEES `fs.rmSync`, NOT ONLY A BARE `rmSync` — same defect and same
+    // fix as INV-11d above. A mutation adding `import fs from "node:fs"` plus an
+    // exported `fs.rmSync(dir, {recursive:true})` to THIS file left core and
+    // apps/web fully green under the old pattern.
+    const DELETERS = ["rmSync", "unlinkSync", "rmdirSync", "rm", "rmdir", "unlink"] as const;
+    expect(fsCallsIn(src!.code, DELETERS)).toEqual([]);
     // …and the store itself has none either, which is the half a handler scan
     // would miss.
-    expect(
-      ["rmSync", "unlinkSync", "rmdirSync"].filter((d) =>
-        new RegExp(`(?<![A-Za-z0-9_$.])${d}\\s*\\(`).test(byRel.get(WORKSPACE_STORE)!.code),
-      ),
-    ).toEqual([]);
+    expect(fsCallsIn(byRel.get(WORKSPACE_STORE)!.code, DELETERS)).toEqual([]);
 
     // DISCRIMINATOR, both directions, on runtime-assembled fixtures.
     expect(/z\.object\s*\(/.test("const S = z." + "object({ a: z.string() });")).toBe(true);
     expect(/z\.object\s*\(/.test("const S = { a: z.string() };")).toBe(false);
-    // A BARE call matches; the same name reached through an object does not,
-    // which is what keeps the pattern from firing on unrelated member calls.
-    expect(/(?<![A-Za-z0-9_$.])rmSync\s*\(/.test("rm" + "Sync" + "(dir);")).toBe(true);
-    expect(/(?<![A-Za-z0-9_$.])rmSync\s*\(/.test("shim." + "rmSync" + "(dir);")).toBe(false);
+    // THE EXACT MUTATION SHAPE, assembled at runtime: an fs import plus a
+    // namespace delete call. This is the arm's own proof that it can fail — the
+    // half whose absence let a real deletion path be added to this surface with
+    // 1715/1715 and 663/663 still green. `undeleted` proves the same fixture
+    // WITHOUT the import is not enough to trip it, so the binding is what did.
+    const DELETE_PATH = "export function deleteEverything(dir) { fs." + "rmSync" + "(dir, {recursive:true}); }";
+    expect(fsCallsIn('import fs from "node:fs";\n' + DELETE_PATH, DELETERS)).toEqual(["rmSync"]);
+    expect(fsCallsIn(DELETE_PATH, DELETERS)).toEqual([]);
+    // A BARE call matches; the same name reached through an unrelated object
+    // does not, which is what keeps the pattern off ordinary member calls.
+    expect(fsCallsIn("rm" + "Sync" + "(dir);", DELETERS)).toEqual(["rmSync"]);
+    expect(fsCallsIn('import fs from "node:fs";\nshim.' + "rmSync" + "(dir);", DELETERS)).toEqual([]);
+    // The async delete spellings, for the same reason as INV-11d's arm 4.
+    expect(fsCallsIn('import fsp from "node:fs/promises";\nawait fsp.' + "rm" + "(dir);", DELETERS)).toEqual([
+      "rm",
+    ]);
+    expect(fsCallsIn('import fs from "node:fs";\nawait fs.promises.' + "rm" + "(dir);", DELETERS)).toEqual([
+      "rm",
+    ]);
   });
 
   test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {

@@ -9,10 +9,13 @@
 // resolves to the operator's real ~/.telar (manifest.ts's telarDir states why),
 // which is exactly how a synthetic billing line reached it during story 1.1.
 //
-// WHAT IS PROVED WITH A CONTENT HASH AND NOT AN MTIME, in three places below:
-// "this file was not rewritten". macOS mtime resolution is coarse enough that a
-// rewrite inside one tick passes an mtime check, so the claim would be a comment
-// wearing a test's clothes. sha256 of the bytes cannot be fooled that way.
+// WHAT IS PROVED WITH A CONTENT HASH AND NOT AN MTIME, in TEN assertions below
+// (`grep -n 'hashOf(' | grep toBe` — the header first said three, and the count
+// was wrong before the review-fix round added four more): "this file was not
+// rewritten", and its two-direction twin "this file WAS". macOS mtime resolution
+// is coarse enough that a rewrite inside one tick passes an mtime check, so the
+// claim would be a comment wearing a test's clothes. sha256 of the bytes cannot
+// be fooled that way.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -138,6 +141,33 @@ describe("AC1 the store's layout on disk", () => {
     for (const bad of ["../../etc", "a/b", "", "..", "has space"]) {
       expect(getWorkspaceItem(bad)).toBeNull();
     }
+  });
+
+  test("AC1 the traversal guard CONTAINS — a real readable packet outside packets/ is not reachable by id", () => {
+    // The test above proves "not a 500" and NOT containment: with the guard
+    // deleted entirely, every id there still resolves to a path that does not
+    // exist, so it returns null anyway and the suite stays green. This plants a
+    // VALID packet at a path a traversal id would reach, so the only way to
+    // return null is to refuse the id.
+    ensureWorkspace();
+    const inside = createItem({ title: "the real one" });
+    const escaped = path.join(HOME, "workspace", "escaped");
+    fs.mkdirSync(escaped, { recursive: true });
+    fs.writeFileSync(
+      path.join(escaped, "packet.yaml"),
+      YAML.stringify({ ...getWorkspaceItem(inside.id), id: "escaped", title: "OUTSIDE packets/" }),
+    );
+    // The plant is genuinely readable — otherwise this proves nothing.
+    expect(YAML.parse(fs.readFileSync(path.join(escaped, "packet.yaml"), "utf8")).title).toBe(
+      "OUTSIDE packets/",
+    );
+    const outsideBefore = hashOf(path.join(escaped, "packet.yaml"));
+
+    expect(getWorkspaceItem("../escaped")).toBeNull();
+    expect(readPacketAttachments("../escaped")).toEqual([]);
+    // …and the WRITE direction is contained too: the same id reaches no file.
+    expect(updateItem("../escaped", { title: "clobbered" })).toBeNull();
+    expect(hashOf(path.join(escaped, "packet.yaml"))).toBe(outsideBefore);
   });
 });
 
@@ -337,6 +367,33 @@ describe("AC4 migrate-on-read — five behaviours, five tests", () => {
     expect(after.raw).toBe("the original words");
   });
 
+  test("AC4 the survival goes ALL THE WAY DOWN — a hand-added key INSIDE `deadline` survives too", () => {
+    // The claim was true one level deep and false everywhere else, which is the
+    // worst of the three states because it looks like the good one: `Item` was
+    // loose while every shape it nests was strict, so a key hand-added under
+    // `deadline:` was DESTROYED by the next updateItem while a top-level one
+    // survived. Nested user text is exactly what AD-7's version field protects.
+    ensureWorkspace();
+    const item = createItem({ title: "with a deadline" });
+    updateItem(item.id, { deadline: { label: "Fri", kind: "self" } });
+    const onDisk = YAML.parse(fs.readFileSync(packetPath(item.id), "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(
+      packetPath(item.id),
+      YAML.stringify({
+        ...onDisk,
+        deadline: { label: "Fri", kind: "self", userNote: "the one I keep sliding" },
+        timeline: [{ ...(onDisk.timeline as Record<string, unknown>[])[0]!, mood: "resigned" }],
+      }),
+    );
+
+    updateItem(item.id, { title: "renamed again" });
+
+    const after = YAML.parse(fs.readFileSync(packetPath(item.id), "utf8")) as Record<string, unknown>;
+    expect((after.deadline as Record<string, unknown>).userNote).toBe("the one I keep sliding");
+    expect((after.timeline as Record<string, unknown>[])[0]!.mood).toBe("resigned");
+    expect(after.title).toBe("renamed again");
+  });
+
   test("AC4 the tolerance DISCRIMINATES — z.object would have stripped that key, z.looseObject does not", () => {
     // Both halves through the SAME zod the schema uses, so this cannot pass on a
     // mistaken belief about the library. Without it, the test above would prove
@@ -458,19 +515,222 @@ describe("D9 the reconcile rule — lanes.yaml is authoritative, and reconciliat
     expect(after).toContain(survivor.id);
   });
 
-  test("D9 a torn lane MOVE simply did not happen — no duplicate, no ambiguity", () => {
+  test("D9 a lane move writes BOTH files — the packet AND lanes.yaml", () => {
+    // THE ARM THIS STORE SHIPPED WITHOUT, and its absence was not cosmetic:
+    // updateItem wrote only the packet, so `mcp__workspace__update_item({lane})`
+    // returned success while lanes.yaml — which OWNS membership — was
+    // byte-identical and every read kept reporting the old lane.
+    ensureWorkspace();
+    writeLanes([lane("office", []), lane("free", [])]);
+    const item = createItem({ title: "moved by a tool", lane: "office" });
+    const lanesBefore = hashOf(lanesPath());
+    const packetBefore = hashOf(packetPath(item.id));
+
+    updateItem(item.id, { lane: "free" });
+
+    // Both halves moved, and the STORED stacks say so — not just the projection.
+    expect(hashOf(lanesPath())).not.toBe(lanesBefore);
+    expect(hashOf(packetPath(item.id))).not.toBe(packetBefore);
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([]);
+    expect(readLanes().find((l) => l.key === "free")!.items).toEqual([item.id]);
+    expect(getWorkspaceItem(item.id)!.lane).toBe("free");
+    expect(rankOf(readLanes(), item.id)).toBe(1);
+
+    // …and exactly ONE row, in the new lane: removed from the old stack rather
+    // than copied into the new one.
+    const rows = queueSlice(readLanes(), listItems().items);
+    expect(rows.map((r) => [r.lane, r.rank, r.item.id])).toEqual([["free", 1, item.id]]);
+  });
+
+  test("D9 the lanes write is DISCRIMINATING — a patch that names no lane leaves lanes.yaml byte-identical", () => {
+    // The other direction, so the arm above pins a lane MOVE rather than an
+    // unconditional writeLanes on every update. Without this, a store that
+    // rewrote lanes.yaml on every patch would pass the test above.
+    ensureWorkspace();
+    writeLanes([lane("office", []), lane("free", [])]);
+    const item = createItem({ title: "retitled only", lane: "office" });
+    const before = hashOf(lanesPath());
+
+    updateItem(item.id, { title: "a new title", desk: false });
+
+    expect(hashOf(lanesPath())).toBe(before);
+    expect(getWorkspaceItem(item.id)!.title).toBe("a new title");
+
+    // …and a "move" to the lane the item is ALREADY in writes nothing either,
+    // because removing and re-appending would silently send it to the BOTTOM of
+    // its own lane — a queue-position change nobody asked for.
+    const sibling = createItem({ title: "below it", lane: "office" });
+    const twoDeep = hashOf(lanesPath());
+    expect(rankOf(readLanes(), item.id)).toBe(1);
+    updateItem(item.id, { lane: "office" });
+    expect(hashOf(lanesPath())).toBe(twoDeep);
+    expect(rankOf(readLanes(), item.id)).toBe(1);
+    expect(rankOf(readLanes(), sibling.id)).toBe(2);
+  });
+
+  test("D9 a move to a lane that does not exist creates no lane, and does NOT evict the item", () => {
+    // update_item's missing half of create_item's guard — but NOT create's
+    // resolution. A create has no home, so an unknown key has to land somewhere.
+    // An update HAS a home: redirecting a typo'd laneKey into the seed lane
+    // would throw a filed item out of the user's queue on a model's spelling
+    // mistake, and with the seed lane retired it would land in NO stack, visible
+    // in no queue, on no desk and in no report. It stays put and asks.
+    ensureWorkspace();
+    writeLanes([lane("unfiled", []), lane("office", [])]);
+    const item = createItem({ title: "filed properly", lane: "office" });
+    const lanesBefore = hashOf(lanesPath());
+
+    const moved = updateItem(item.id, { lane: "school" })!;
+
+    expect(moved.lane).toBe("office"); // where it actually is, not where it was asked to go
+    expect(moved.unplaced).toBe(true); // …and the user is asked
+    expect(readLanes().map((l) => l.key)).toEqual(["unfiled", "office"]); // no `school`
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([item.id]);
+    expect(rankOf(readLanes(), item.id)).toBe(1); // its queue position survived
+    expect(hashOf(lanesPath())).toBe(lanesBefore); // lanes.yaml untouched
+  });
+
+  test("D9 with the seed lane RETIRED, a typo'd lane key still does not make the item vanish", () => {
+    // The sharpest form of the same defect: with nowhere to redirect to, an
+    // evicting update leaves the item in no stack at all — no queue row, no desk
+    // card, and NOTHING in the unreadable channel naming it. A real item, gone,
+    // with zero diagnostics.
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const item = createItem({ title: "must not vanish", lane: "office" });
+
+    updateItem(item.id, { lane: "ofice" }); // the typo
+
+    expect(rankOf(readLanes(), item.id)).toBe(1);
+    expect(queueSlice(readLanes(), listItems().items).map((r) => [r.lane, r.item.id])).toEqual([
+      ["office", item.id],
+    ]);
+    expect(deskSlice(listItems().items).map((d) => d.id)).toEqual([item.id]);
+  });
+
+  test("D9 a SUCCESSFUL move clears `unplaced` — the desk stops asking a question that was answered", () => {
+    // The failure direction sets the flag; without the success direction
+    // clearing it, an item filed into a real lane keeps rendering "unplaced —
+    // what is it?" forever, and deskSlice's hint chain puts unplaced FIRST, so
+    // it masks the item's deadline too.
+    ensureWorkspace();
+    writeLanes([lane("unfiled", []), lane("office", [])]);
+    const typo = createItem({ title: "typo lane", lane: "ofice" });
+    expect(typo.unplaced).toBe(true);
+
+    const placed = updateItem(typo.id, { lane: "office" })!;
+
+    expect(placed.lane).toBe("office");
+    expect(placed.unplaced).toBe(false);
+    expect(rankOf(readLanes(), typo.id)).toBe(1);
+    expect(deskSlice(listItems().items)[0]!.hint).toBeUndefined();
+    // …and a caller that explicitly asks for unplaced in the SAME patch wins.
+    expect(updateItem(typo.id, { lane: "office", unplaced: true })!.unplaced).toBe(true);
+  });
+
+  test("D9 a duplicated id elsewhere does not re-rank the item on a no-op move to its own lane", () => {
+    // The "already in the target" guard has to look at the TARGET stack, not at
+    // whichever stack holds the id first. A hand-edited paste that also lists the
+    // id in an earlier lane would otherwise make a no-op move remove and
+    // re-append it — sending the user's rank-2 item to the bottom.
+    ensureWorkspace();
+    const top = createItem({ title: "top" });
+    const middle = createItem({ title: "middle" });
+    const bottom = createItem({ title: "bottom" });
+    writeLanes([lane("school", [middle.id]), lane("office", [top.id, middle.id, bottom.id])]);
+    const before = hashOf(lanesPath());
+
+    updateItem(middle.id, { lane: "office" });
+
+    // Kept its position in the target…
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([top.id, middle.id, bottom.id]);
+    // …and the stray duplicate was cleaned out of the other stack, which is the
+    // one thing this call SHOULD change.
+    expect(readLanes().find((l) => l.key === "school")!.items).toEqual([]);
+    expect(hashOf(lanesPath())).not.toBe(before);
+    expect(rankOf(readLanes(), middle.id)).toBe(2);
+  });
+
+  test("D9 a WRITE preserves a lane row this build could not read — tolerance is not a delayed delete", () => {
+    // The trap in per-row tolerance: a partial READ written back is a partial
+    // DELETE. createItem and updateItem rewrite the whole file, so writing the
+    // parsed subset would erase the skipped row and every item id in it on the
+    // very next capture — silently, and the unreadable channel would then go
+    // quiet because there is nothing left to report.
+    ensureWorkspace();
+    const held = createItem({ title: "inside the broken row" });
+    fs.writeFileSync(
+      lanesPath(),
+      YAML.stringify([
+        { key: "office", label: "Office", window: "work hours", items: [] },
+        { key: "school", label: "School", items: [held.id], note: "the human dropped `window:`" },
+        { key: "free", label: "Free", window: "whenever", items: [] },
+      ]),
+    );
+    expect(readLanes().map((l) => l.key)).toEqual(["office", "free"]);
+
+    createItem({ title: "an ordinary capture", lane: "free" });
+
+    const onDisk = YAML.parse(fs.readFileSync(lanesPath(), "utf8")) as Record<string, unknown>[];
+    expect(onDisk.map((r) => r.key)).toEqual(["office", "school", "free"]);
+    const school = onDisk.find((r) => r.key === "school")!;
+    expect(school.items).toEqual([held.id]); // its ids survived
+    expect(school.note).toBe("the human dropped `window:`"); // and every other key
+    expect(listItems().unreadable.map((u) => u.id)).toContain("school"); // still reported
+
+    // …and an updateItem write preserves it too.
+    updateItem(held.id, { lane: "free" });
+    const after = YAML.parse(fs.readFileSync(lanesPath(), "utf8")) as Record<string, unknown>[];
+    expect(after.map((r) => r.key)).toEqual(["office", "school", "free"]);
+    expect(after.find((r) => r.key === "school")!.note).toBe("the human dropped `window:`");
+    // The id was removed from the broken row's stack because that row's `items`
+    // is still a readable list — the row keeps every one of its own keys.
+    expect(after.find((r) => r.key === "school")!.items).toEqual([]);
+    expect(readLanes().find((l) => l.key === "free")!.items).toContain(held.id);
+  });
+
+  test("D9 a TORN lane move — packet written, lanes.yaml not — simply did not happen", () => {
+    // FAULT-INJECTED, not narrated: the packet is rewritten ON DISK exactly as a
+    // crash between updateItem's two writes would leave it, and lanes.yaml is
+    // left untouched. (The previous version of this test called updateItem and
+    // labelled the result "simulating a crash" — nothing was simulated, because
+    // updateItem could not write lanes.yaml at all, so the assertion held for
+    // the defect rather than for the safety property.)
     ensureWorkspace();
     writeLanes([lane("office", []), lane("free", [])]);
     const item = createItem({ title: "mid-move", lane: "office" });
     expect(readLanes().find((l) => l.key === "office")!.items).toEqual([item.id]);
+    const lanesBefore = hashOf(lanesPath());
 
-    // updateItem writes the packet and (simulating a crash) lanes.yaml is never
-    // updated. The id is still in its OLD stack, so the orphan arm does not fire.
-    updateItem(item.id, { lane: "free" });
+    // The torn state: packet.lane says `free`, the id is still in `office`.
+    fs.writeFileSync(packetPath(item.id), YAML.stringify({ ...getWorkspaceItem(item.id), lane: "free" }));
+    expect(getWorkspaceItem(item.id)!.lane).toBe("free");
+    expect(hashOf(lanesPath())).toBe(lanesBefore);
 
+    // lanes.yaml is authoritative, so the move did not happen: the id is still
+    // in its OLD stack and the orphan arm does not fire.
     const rows = queueSlice(readLanes(), listItems().items);
     expect(rows.map((r) => [r.lane, r.item.id])).toEqual([["office", item.id]]);
     expect(rows.length).toBe(1); // exactly one row: no duplicate
+
+    // …and the recovery is a re-run of the same call, not a repair tool.
+    updateItem(item.id, { lane: "free" });
+    expect(queueSlice(readLanes(), listItems().items).map((r) => [r.lane, r.item.id])).toEqual([
+      ["free", item.id],
+    ]);
+  });
+
+  test("D9 a DUPLICATE lane key does not make the store write the same id into two stacks", () => {
+    // A hand-edited paste leaves two rows keyed `office`. Appending to every
+    // matching row would have the store MANUFACTURING the exact duplicate-id
+    // fault arm 4 then reports and blames on the human.
+    ensureWorkspace();
+    writeLanes([lane("office", []), lane("office", [])]);
+    const item = createItem({ title: "into a duplicated key", lane: "office" });
+
+    const stacks = readLanes().map((l) => l.items);
+    expect(stacks).toEqual([[item.id], []]);
+    expect(listItems().unreadable.filter((u) => u.reason.includes("more than one lane"))).toEqual([]);
   });
 });
 
@@ -512,6 +772,76 @@ describe("AD-6 lanes.yaml is authoritative, so a hand-edit WINS", () => {
   });
 });
 
+// ── AD-7 — lanes.yaml is read PER ROW, because AD-6 invites the hand-edit ────
+
+describe("AD-7 one malformed lane row does not discard the file", () => {
+  const brokenLanes = (rows: unknown[]) => fs.writeFileSync(lanesPath(), YAML.stringify(rows));
+
+  test("AD-7 a row missing `window:` is SKIPPED and every other lane survives", () => {
+    // The all-or-nothing read this store shipped with returned `[]` here: the
+    // user's ENTIRE lane structure vanished from every read because one row of
+    // five was imperfect, and the next create_item then filed into no stack at
+    // all. Hand-editability is the premise (AD-6), so an imperfect hand-edit
+    // cannot cost the whole file.
+    ensureWorkspace();
+    const item = createItem({ title: "already filed" });
+    brokenLanes([
+      { key: "office", label: "Office", window: "work hours", items: [item.id] },
+      { key: "school", label: "School", items: [] }, // the human dropped `window:`
+      { key: "free", label: "Free", window: "whenever", items: [] },
+    ]);
+
+    expect(readLanes().map((l) => l.key)).toEqual(["office", "free"]);
+    expect(rankOf(readLanes(), item.id)).toBe(1);
+    // …and a create still files into a real lane rather than accumulating unfiled.
+    const next = createItem({ title: "filed after the bad edit", lane: "free" });
+    expect(next.unplaced).toBeUndefined();
+    expect(readLanes().find((l) => l.key === "free")!.items).toEqual([next.id]);
+  });
+
+  test("AD-7 the skipped row is REPORTED by name, so tolerance is not silent loss", () => {
+    // Without the report, "tolerant" and "silently lossy" are the same thing
+    // from the user's side: a lane would simply stop existing.
+    ensureWorkspace();
+    brokenLanes([
+      { key: "office", label: "Office", window: "work hours", items: [] },
+      { key: "school", label: "School", items: [] },
+    ]);
+    const reported = listItems().unreadable;
+    expect(reported.map((u) => u.id)).toEqual(["school"]);
+    expect(reported[0]!.reason).toContain("lanes.yaml");
+    expect(reported[0]!.reason).toContain("window");
+    expect(reported[0]!.reason).toContain("SKIPPED");
+    // Nothing was rewritten to "fix" it — the human's file is theirs.
+    expect(YAML.parse(fs.readFileSync(lanesPath(), "utf8")).length).toBe(2);
+  });
+
+  test("AD-7 a row with no readable key at all is reported by its POSITION", () => {
+    ensureWorkspace();
+    brokenLanes([{ key: "office", label: "Office", window: "work hours", items: [] }, "not a mapping"]);
+    expect(readLanes().map((l) => l.key)).toEqual(["office"]);
+    expect(listItems().unreadable.map((u) => u.id)).toEqual(["lanes.yaml[1]"]);
+  });
+
+  test("AD-7 a WHOLE-FILE fault is still [] — and says so, rather than returning half a structure", () => {
+    // The per-row tolerance above must not turn a file that is not a lane list
+    // into a partially-read one. Both whole-file faults report; neither throws.
+    ensureWorkspace();
+    fs.writeFileSync(lanesPath(), "{{{ not yaml at all ][");
+    expect(readLanes()).toEqual([]);
+    expect(listItems().unreadable.map((u) => u.id)).toEqual(["lanes.yaml"]);
+
+    fs.writeFileSync(lanesPath(), YAML.stringify({ office: ["i-1"] })); // a mapping, not a sequence
+    expect(readLanes()).toEqual([]);
+    expect(listItems().unreadable[0]!.reason).toContain("must be a YAML sequence");
+
+    // An EMPTY file is the ordinary first-run state, not a fault.
+    fs.writeFileSync(lanesPath(), "");
+    expect(readLanes()).toEqual([]);
+    expect(listItems().unreadable).toEqual([]);
+  });
+});
+
 // ── AC5 — provenance, the desk, and filing ──────────────────────────────────
 
 describe("AC5 creating an item files it, stamps provenance, and places it on the desk", () => {
@@ -542,6 +872,25 @@ describe("AC5 creating an item files it, stamps provenance, and places it on the
     expect(item.unplaced).toBe(true);
     expect(readLanes().map((l) => l.key)).toEqual(["unfiled"]); // NFR-OW-10 held
     expect(deskSlice([item])[0]!.hint).toBe("unplaced — what is it?");
+  });
+
+  test("AC8 proof 4 with the seed lane RETIRED, a create writes the item and creates NO lane at all", () => {
+    // The arm with no test: `createItem`'s "no lane is created to receive it".
+    // A lane-creating `else` branch — the natural-looking fix for an item that
+    // lands nowhere — is exactly the agent lane-structure change NFR-OW-10
+    // forbids, and it left the whole suite green.
+    ensureWorkspace();
+    writeLanes([]); // the human retired every lane, seed included
+    const item = createItem({ title: "nowhere to land", lane: "office" });
+
+    expect(readLanes()).toEqual([]); // NOTHING was created — not `office`, not `unfiled`
+    expect(fs.readFileSync(lanesPath(), "utf8").includes("office")).toBe(false);
+    // The item itself still exists and is readable; it is UNFILED, a resting
+    // state, and it is on the desk so the human is asked.
+    expect(getWorkspaceItem(item.id)!.title).toBe("nowhere to land");
+    expect(rankOf(readLanes(), item.id)).toBeNull();
+    expect(queueSlice(readLanes(), listItems().items)).toEqual([]);
+    expect(deskSlice(listItems().items).map((d) => d.id)).toEqual([item.id]);
   });
 
   test("AC5 the creation note reaches the timeline's TEXT and the caller cannot forge the actor", () => {
@@ -653,7 +1002,11 @@ describe("AC9 raw and rawSource are never overwritten", () => {
       expect(r.ok).toBe(false);
       expect(r.output).toContain(field);
     }
-  });
+    // SIX SEQUENTIAL tsc SPAWNS, measured at ~4.85s against bun's 5000ms
+    // default — a 3% margin, so any concurrent load would turn the whole AC9
+    // gate red for a reason that has nothing to do with the code. The timeout is
+    // raised rather than the loop split, so the six stay one claim.
+  }, 60_000);
 
   test("AC9 the compile proof DISCRIMINATES — a patch of a PERMITTED field compiles clean", () => {
     // Without this half, a fixture failing to compile for any reason at all (a
@@ -796,6 +1149,71 @@ describe("A5 the pure projections take already-read data and touch no disk", () 
       files: 2,
       mockups: 2,
     });
+  });
+
+  test("A5 a stray FILE in packets/ is not an item, and is not reported as a corrupt one", () => {
+    // An item is a DIRECTORY. A `.DS_Store`, a `.tmp` from an interrupted write,
+    // or a note someone dropped in packets/ used to reach packetFile(), throw on
+    // the id guard, and be handed to the model as an unreadable ITEM — telling
+    // the user one of their tasks was corrupt when nothing of theirs was
+    // involved.
+    ensureWorkspace();
+    const real = createItem({ title: "a real one" });
+    fs.writeFileSync(path.join(HOME, "workspace", "packets", ".DS_Store"), "finder");
+    fs.writeFileSync(path.join(HOME, "workspace", "packets", "stray-note.md"), "# dropped here");
+
+    const { items, unreadable } = listItems();
+    expect(items.map((i) => i.id)).toEqual([real.id]);
+    expect(unreadable).toEqual([]);
+  });
+
+  test("A5 the tally excludes THIS STORE'S OWN crash residue and the OS's, not just packet.yaml", () => {
+    // atomicWrite writes `<file>.tmp` then renames; a crash between the two
+    // leaves the .tmp behind, and reporting it as "1 file" tells the user they
+    // attached something when what actually happened is that a write of THEIRS
+    // failed. `.DS_Store` is Finder's, from opening the directory once.
+    expect(attachmentTally(["packet.yaml.tmp", ".DS_Store"])).toEqual({ files: 0, mockups: 0 });
+    expect(attachmentTally(["brief.md", "packet.yaml.tmp", ".DS_Store", "flow.png"])).toEqual({
+      files: 1,
+      mockups: 1,
+    });
+
+    // …and the disk reader agrees, so the exclusion is not only true of the pure
+    // half. Both are planted as REAL files beside a real packet.
+    ensureWorkspace();
+    const item = createItem({ title: "with residue beside it" });
+    fs.writeFileSync(path.join(packetDirOf(item.id), "packet.yaml.tmp"), "half a write");
+    fs.writeFileSync(path.join(packetDirOf(item.id), ".DS_Store"), "finder");
+    fs.writeFileSync(path.join(packetDirOf(item.id), "brief.md"), "# real");
+    expect(readPacketAttachments(item.id)).toEqual(["brief.md"]);
+    expect(attachmentTally(readPacketAttachments(item.id))).toEqual({ files: 1, mockups: 0 });
+  });
+
+  test("A5 capturedLabel's VALUE is asserted, not just its presence", () => {
+    // Scrambling the weekday table or swapping HH:MM left the whole suite green,
+    // because every assertion on `captured` only checked that a string was
+    // there. The label is what the UI renders, so its FORM is the contract:
+    // "<Www> <HH>:<MM>", zero-padded, and the weekday must be the one the clock
+    // says. Derived from the SAME instant, so this cannot go stale at midnight.
+    ensureWorkspace();
+    const before = new Date();
+    const item = createItem({ title: "stamped" });
+    const after = new Date();
+    const expected = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    expect(item.captured).toMatch(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) [0-2][0-9]:[0-5][0-9]$/);
+    const [day, clock] = item.captured.split(" ");
+    // The weekday is the RIGHT one — a scrambled table names a different day
+    // (except across a midnight boundary, which is why both ends are accepted).
+    expect([expected[before.getDay()], expected[after.getDay()]]).toContain(day);
+    const [hh, mm] = clock!.split(":").map(Number);
+    expect(hh).toBe(before.getHours() === after.getHours() ? before.getHours() : hh);
+    expect([before.getMinutes(), after.getMinutes()]).toContain(mm);
+    // …and the ORDER is HH then MM, which a swap would break: minutes cannot
+    // exceed 59 and hours cannot exceed 23.
+    expect(hh).toBeLessThanOrEqual(23);
+    expect(mm).toBeLessThanOrEqual(59);
+    // The timeline entry carries the SAME label — one clock read, not two.
+    expect(item.timeline![0]!.at).toBe(item.captured);
   });
 
   test("A5 the tally excludes SUBDIRECTORIES, because the reader hands it files only", () => {

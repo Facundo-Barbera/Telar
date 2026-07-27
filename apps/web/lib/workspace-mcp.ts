@@ -116,13 +116,40 @@ const errResult = (message: string) => ({
 });
 const okResult = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-const LIST_ITEMS_DESCRIPTION = `List the user's workspace tasks for THIS session's project — the shared item store, not this chat's private notes. Returns each item's id, title, lane, 1-based rank within that lane, and whether it is on the workspace desk. Items with no project are floating and are not in a project-scoped list. Scope is resolved server-side from the session; there is no argument that can widen it. Call this before answering any question about what the user has to do.`;
+// What happened to a lane key that names no lane, in the words the MODEL will
+// read back to the user. TWO SENTENCES, because the two verbs genuinely behave
+// differently and one shared sentence would tell the model the item moved when
+// it did not: a create has no home and lands in "unfiled"; an update has one and
+// STAYS PUT (the store refuses to evict a filed item over a typo). The shared
+// opening clause is factored out so only the consequence differs.
+//
+// THE NO-LANE-NAMED CASE GETS ITS OWN SENTENCE. `No lane named null exists` is
+// what the composed form said whenever no lane was named at all, which is the
+// bare-one-liner path and therefore the COMMON case: it reads as a lookup
+// failure for a lane called "null" rather than as "you did not say".
+const noSuchLane = (laneKey?: string): string =>
+  laneKey === undefined ? `No lane was named` : `No lane named ${JSON.stringify(laneKey)} exists`;
+
+const TAIL = ` Lanes are theirs to create — call list_lanes to see which ones exist.`;
+
+// create_item: the item is NEW and has no home, so it has to land somewhere.
+const unplacedNote = (laneKey?: string): string =>
+  `${noSuchLane(laneKey)}, so this landed in "unfiled" and is marked for the user to place.${TAIL}`;
+
+// update_item: the item ALREADY has a home, and the store deliberately does not
+// redirect it into "unfiled" — that would evict a filed item from the user's
+// queue over a spelling mistake. The sentences differ because the BEHAVIOURS
+// differ, and a shared one would tell the model the item moved when it did not.
+const notMovedNote = (laneKey: string): string =>
+  `${noSuchLane(laneKey)}, so the item did NOT move — it is still in the lane it was in, and is now marked unplaced so the user is asked where it belongs.${TAIL}`;
+
+const LIST_ITEMS_DESCRIPTION = `List the user's workspace tasks for THIS session's project — the shared item store, not this chat's private notes. Returns each item's id, title, lane, 1-based rank within that lane, and whether it is on the workspace desk. Items with no project are floating and are not in a project-scoped list. If some packets could not be read you get a COUNT of them, so you know the list may be short; the store is fine, a file needs a human. Scope is resolved server-side from the session; there is no argument that can widen it. Call this before answering any question about what the user has to do.`;
 
 const LIST_LANES_DESCRIPTION = `List the user's lanes: key, label, the coarse window the lane's work tends to happen in, and how many items it holds. Lanes are the user's own data, not a fixed set — call this before create_item so you file into a lane that exists. You cannot create, rename, split or retire a lane; that is the user's to do.`;
 
 const CREATE_ITEM_DESCRIPTION = `File a new task into the user's workspace. Give it a title and, ideally, the key of an existing lane (call list_lanes first). Returns the item's id, the lane it landed in, its 1-based rank, its provenance and that it is on the desk. If you name a lane that does not exist — or name none — the item lands in the store's unfiled lane and is marked unplaced so the user is asked where it belongs; NO LANE IS EVER CREATED FOR YOU. The item is filed to this session's project automatically. There is no way to delete an item.`;
 
-const UPDATE_ITEM_DESCRIPTION = `Modify an existing workspace task: retitle it, move it to another existing lane, take it off the desk (desk:false — this drains it to the queue and never deletes it), mark it unplaced, or attach a foreign issue reference. Every other field is out of reach on purpose: the user's original words (raw), the sub-task list, the timeline and the promotion link cannot be changed by a tool.`;
+const UPDATE_ITEM_DESCRIPTION = `Modify an existing workspace task: retitle it, move it to another existing lane (it goes to the BOTTOM of that lane), take it off the desk (desk:false — this drains it to the queue and never deletes it), mark it unplaced, or attach a foreign issue reference. Naming a lane that does not exist lands the item in the unfiled lane and marks it unplaced, exactly as create_item does; NO LANE IS EVER CREATED FOR YOU, so call list_lanes first. Every other field is out of reach on purpose: the user's original words (raw), the sub-task list, the timeline and the promotion link cannot be changed by a tool.`;
 
 export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfig {
   // The project scope, resolved ONCE from the server's own options. Every
@@ -195,7 +222,23 @@ export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfi
                 items: scoped.map((i) => summarise(i, lanes)),
                 // One unreadable packet never blanks the other ninety-nine, and
                 // a human is told rather than silently shown a short list.
-                ...(unreadable.length ? { unreadable } : {}),
+                //
+                // A COUNT WHEN THIS SERVER IS PROJECT-SCOPED, THE LIST ONLY WHEN
+                // IT IS NOT. An unreadable packet has no readable `project`
+                // field BY CONSTRUCTION — that is what unreadable means — so
+                // there is nothing to filter it by, and passing the array
+                // through handed a project session other projects' item ids and
+                // lane keys in the reason text. That is the same leak
+                // `update_item`'s anti-oracle ordering exists to prevent, one
+                // channel over. The count still tells the model the truthful
+                // thing ("some items could not be read, so this list may be
+                // short"); the diagnosis itself belongs to 5.3's project-less
+                // master, which is the unscoped case below.
+                ...(unreadable.length
+                  ? opts.project === undefined
+                    ? { unreadable }
+                    : { unreadable: unreadable.length }
+                  : {}),
               },
               null,
               2,
@@ -268,12 +311,7 @@ export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfi
                 rank: rankOf(readLanes(), item.id),
                 provenance: item.provenance,
                 desk: item.desk === true,
-                ...(item.unplaced
-                  ? {
-                      unplaced: true,
-                      note: `No lane named ${JSON.stringify(laneKey ?? null)} exists, so this landed in "unfiled" and is marked for the user to place. Lanes are theirs to create.`,
-                    }
-                  : {}),
+                ...(item.unplaced ? { unplaced: true, note: unplacedNote(laneKey) } : {}),
               },
               null,
               2,
@@ -330,7 +368,26 @@ export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfi
             );
           }
           if (!updated) return errResult(`No workspace item found with id "${itemId}".`);
-          return okResult(JSON.stringify(summarise(updated, readLanes()), null, 2));
+          // READ THE LANES AFTER THE WRITE, because a lane change is a TWO-FILE
+          // move: the store rewrote lanes.yaml, so a stale read here would
+          // report the rank the item held before its own move.
+          const lanes = readLanes();
+          // THE INVERSE OF create_item's GUARD, which this surface was missing:
+          // a laneKey naming no existing lane returned isError:false and said
+          // nothing, so a model was told a move succeeded that had instead
+          // resolved to "unfiled". No lane is ever created for either verb.
+          const unknownLane = laneKey !== undefined && !lanes.some((l) => l.key === laneKey);
+          // Narrowed for the note below: `laneKey` is a string on this branch.
+          return okResult(
+            JSON.stringify(
+              {
+                ...summarise(updated, lanes),
+                ...(unknownLane ? { note: notMovedNote(laneKey) } : {}),
+              },
+              null,
+              2,
+            ),
+          );
         },
       ),
     ],

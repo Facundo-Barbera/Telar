@@ -1452,11 +1452,15 @@ export async function POST(req: Request) {
               loom: loomMcpServer,
               ultra: ultraMcpServer,
               workspace: wsMcpServer,
-              // THE SPREAD STAYS LAST, and that is object-literal later-key-wins
-              // rather than tidiness: a project telar.yaml server named
-              // `workspace` would otherwise SHADOW ours. (The same is already
-              // true of one named `loom` — pre-existing, recorded in
-              // deferred-work.md, and deliberately not fixed here.)
+              // THE SPREAD IS LAST, AND THAT IS NOT A PROTECTION — object-literal
+              // LATER KEYS WIN, so a project telar.yaml server named `workspace`
+              // SHADOWS ours. Spread-FIRST would be the protection, and moving it
+              // is a real behaviour change (a project's own server would then be
+              // silently dropped instead), so it is not done here. Pre-existing:
+              // one named `loom` or `ultra` already shadows those. Recorded in
+              // deferred-work.md; the fix is a reserved-name guard in
+              // resolveProjectMcpServers, not a reordering. Do not read this
+              // ordering as the guard.
               ...(project ? resolveProjectMcpServers(project) : {}),
             },
             // Telar OWNS the MCP surface: use ONLY the servers above (loom +

@@ -27,12 +27,15 @@
 // ── WHAT THIS MODULE DELIBERATELY IMPORTS RATHER THAN RE-DERIVES ─────────────
 // `telarDir` and `atomicWrite` both come from manifest.ts. Taking the
 // atomicWrite IMPORT is the minority choice and is deliberate: it has exactly
-// one other importer (servers.ts) while watches.ts, accounts.ts, looms.ts,
-// ultra/storage.ts and ultra/wake.ts all inline the same mkdir+tmp+rename idiom
-// instead. Two of those have a stated reason (runner/lease.ts's DI seam; the
-// 0o600 + chmodSync in secrets.ts and mcp-oauth.ts); this store has neither, so
-// it takes the import — a reader who greps the neighbours will find seven
-// counter-examples and should find this sentence first. `telarDir` is NOT
+// one other importer (servers.ts), while EIGHT files under packages/core/src
+// inline the same mkdir+tmp+rename idiom instead — watches.ts, accounts.ts,
+// looms.ts, ultra/storage.ts, ultra/wake.ts, runner/lease.ts, secrets.ts and
+// mcp-oauth.ts (measured: files matching both `renameSync` and `.tmp`;
+// sessions.ts renames a DIRECTORY and is not one of them). Three of the eight
+// have a stated reason (runner/lease.ts's DI seam; the 0o600 + chmodSync in
+// secrets.ts and mcp-oauth.ts); this store has none, so it takes the import — a
+// reader who greps the neighbours will find eight counter-examples and should
+// find this sentence first. `telarDir` is NOT
 // optional: INV-3e allows exactly five files to derive the state root from
 // scratch and a sixth fails it.
 import crypto from "node:crypto";
@@ -83,12 +86,21 @@ export function workspaceHomeDir(): string {
   return path.join(workspaceDir(), "home");
 }
 
-const lanesFile = () => path.join(workspaceDir(), "lanes.yaml");
+// The lanes filename, as a value, for the same reason PACKET_FILE below is one:
+// the writer, the reader and every diagnostic that NAMES the file to a human
+// have to agree about it.
+const LANES_FILE = "lanes.yaml";
+const lanesFile = () => path.join(workspaceDir(), LANES_FILE);
 const packetsRoot = () => path.join(workspaceDir(), "packets");
 
 // The traversal guard, copied from looms.ts's loomDir — the REGEX PLUS the
 // containment re-check, which is strictly stronger than ultra/journal.ts's
-// runDir (regex only). This is the one place an item id reaches the filesystem,
+// runDir (regex only), and MEASURED to be rather than asserted: with the regex
+// deleted, `../escaped` still throws on the re-check and the containment test
+// stays green; with BOTH deleted, that test turns red and a readable packet
+// planted outside packets/ is reachable by id. So the re-check cannot FIRE while
+// the regex stands — and it is the half that holds if the regex ever goes.
+// This is the one place an item id reaches the filesystem,
 // so it is the one place the id needs guarding against `../../etc` relocating a
 // packet off-disk. It THROWS; every reader below catches and treats a bad id as
 // not-found, never as a 500 (getUltraManifest's stated idiom).
@@ -183,25 +195,106 @@ export function ensureWorkspace(): void {
 
 // ── lanes.yaml ───────────────────────────────────────────────────────────────
 
-// [] when the file is absent, unreadable or malformed — never a throw. AD-7's
-// tolerant reader, and the reason loadManifest (this repo's one deliberate
+// [] when the file is absent or unreadable — never a throw. AD-7's tolerant
+// reader, and the reason loadManifest (this repo's one deliberate
 // throw-on-absent) is explicitly NOT the model here: a workspace that has never
 // been written is the ordinary first-run state, not an error.
 export function readLanes(): WorkspaceLane[] {
+  return readLanesReport().lanes;
+}
+
+// TOLERANCE IS PER ROW, NOT PER FILE, and the difference is the whole of AD-6's
+// premise. `WorkspaceLane.array().safeParse` — the obvious spelling, and the one
+// this file shipped with — is ALL-OR-NOTHING: a human who hand-edits lanes.yaml
+// and drops `window:` from ONE of five rows gets `[]` back, which means their
+// entire lane structure disappears from every read and every subsequent
+// create_item silently accumulates in no stack at all. Hand-editability is the
+// premise (AD-6), so the store's response to an IMPERFECT hand-edit cannot be to
+// discard the file; AD-7's tolerant reader keeps every row it can make sense of
+// and REPORTS the ones it cannot.
+//
+// THE REPORT IS THE OTHER HALF, and without it "tolerant" would be
+// indistinguishable from "silently lossy". listItems folds `malformed` into its
+// `unreadable` channel, which the MCP server already surfaces to the model — so
+// the human is told which row is wrong instead of watching a lane vanish.
+//
+// `entries` IS THE THIRD HALF, AND IT IS THE ONE THAT MAKES TOLERANCE SAFE. A
+// partial READ that is then written back is a partial DELETE: `createItem` and
+// `updateItem` rewrite the whole file, so handing them `lanes` — which excludes
+// the skipped row — would permanently erase that row and every item id in it on
+// the very next capture, silently, and the report would then go quiet because
+// there is nothing left to report. That is strictly worse than the
+// all-or-nothing read it replaced. So the writers take `entries`, which carries
+// EVERY row in file order — the ones this build understood and the raw bytes of
+// the ones it did not — and they write those RAW rows back. A row this build
+// cannot parse is preserved verbatim; unknown keys on rows it CAN parse survive
+// too, because the raw row is what is written, not the parsed projection.
+export type LaneEntry = { row: unknown; lane: WorkspaceLane | null };
+
+export function readLanesReport(): {
+  lanes: WorkspaceLane[];
+  malformed: UnreadableItem[];
+  entries: LaneEntry[];
+} {
   let raw: string;
   try {
     raw = fs.readFileSync(lanesFile(), "utf8");
   } catch {
-    return [];
+    return { lanes: [], malformed: [], entries: [] }; // absent is the ordinary first-run state
   }
   let data: unknown;
   try {
     data = YAML.parse(raw);
-  } catch {
-    return [];
+  } catch (e) {
+    return {
+      lanes: [],
+      entries: [],
+      malformed: [
+        {
+          id: LANES_FILE,
+          reason: `${LANES_FILE} is not valid YAML (${e instanceof Error ? e.message : String(e)}), so no lane could be read from it. Every item keeps its packet; nothing was rewritten. Fix the file by hand.`,
+        },
+      ],
+    };
   }
-  const parsed = WorkspaceLane.array().safeParse(data);
-  return parsed.success ? parsed.data : [];
+  // An empty file parses to null and is the same state as an absent one.
+  if (data === null || data === undefined) return { lanes: [], malformed: [], entries: [] };
+  if (!Array.isArray(data)) {
+    return {
+      lanes: [],
+      entries: [],
+      malformed: [
+        {
+          id: LANES_FILE,
+          reason: `${LANES_FILE} must be a YAML sequence of lanes, got ${typeof data === "object" ? "a mapping" : typeof data}. No lane could be read from it; nothing was rewritten.`,
+        },
+      ],
+    };
+  }
+
+  const lanes: WorkspaceLane[] = [];
+  const malformed: UnreadableItem[] = [];
+  const entries: LaneEntry[] = [];
+  data.forEach((row, i) => {
+    const parsed = WorkspaceLane.safeParse(row);
+    if (parsed.success) {
+      lanes.push(parsed.data);
+      entries.push({ row, lane: parsed.data });
+      return;
+    }
+    entries.push({ row, lane: null });
+    // The row's own `key` when it still has a readable one, so the human is told
+    // WHICH lane rather than which array index.
+    const key =
+      row !== null && typeof row === "object" && typeof (row as { key?: unknown }).key === "string"
+        ? (row as { key: string }).key
+        : `${LANES_FILE}[${i}]`;
+    malformed.push({
+      id: key,
+      reason: `lane row ${i} in ${LANES_FILE} could not be read (${parsed.error.issues.map((s) => `${s.path.join(".") || "<row>"}: ${s.message}`).join("; ")}); it is SKIPPED and every other lane is unaffected. Its items are in no stack until the row is fixed — nothing was deleted and nothing was rewritten.`,
+    });
+  });
+  return { lanes, malformed, entries };
 }
 
 // Writes the STORED stacks, never a reconciled projection — see "the reconcile
@@ -258,7 +351,7 @@ export function migratePacket(raw: unknown): unknown {
   const version = absent ? ITEM_SCHEMA_VERSION : stamped;
   if (typeof version !== "number" || !Number.isFinite(version)) {
     throw new Error(
-      `AD-7: packet.yaml's \`schemaVersion\` must be a number, got ${JSON.stringify(stamped)}. ` +
+      `AD-7: packet.yaml's \`schemaVersion\` must be a finite number, got ${Number.isNaN(stamped) ? "NaN" : stamped === Infinity || stamped === -Infinity ? String(stamped) : JSON.stringify(stamped)}. ` +
         `The version is what decides whether this build may read the file at all, so an unreadable version means the ` +
         `read cannot be made safe. Set it to ${ITEM_SCHEMA_VERSION} if the file matches this build's shape, or remove the key entirely.`,
     );
@@ -376,6 +469,13 @@ export function getWorkspaceItem(id: string): Item | null {
 // Why the reason is a string and not an enum: it is human-facing diagnosis
 // surfaced through the MCP server's own okResult text, and the set of ways a
 // hand-edited YAML file can be wrong is not enumerable.
+//
+// `id` IS AN ADDRESS, NOT ALWAYS AN ITEM ID. The channel also carries the lane
+// rows readLanesReport had to skip, addressed by the row's own `key` when it
+// still has a readable one and by `lanes.yaml[<index>]` when it does not — a
+// broken lane row has no item id to give, and inventing one would be worse than
+// naming the file. The type is not renamed because the reader of the MCP payload
+// is a model reading English, and "unreadable" is the true word for both.
 export type UnreadableItem = { id: string; reason: string };
 
 // Every readable packet, plus everything the store could not make sense of.
@@ -395,7 +495,16 @@ export type UnreadableItem = { id: string; reason: string };
 export function listItems(): { items: Item[]; unreadable: UnreadableItem[] } {
   let ids: string[] = [];
   try {
-    ids = fs.readdirSync(packetsRoot());
+    // DIRECTORIES ONLY, through the house `withFileTypes` form (bundle.ts,
+    // spec-lint.ts, readPacketAttachments below). AN ITEM IS A DIRECTORY: a
+    // stray FILE in packets/ — `.DS_Store`, a `.tmp` from an interrupted write,
+    // a note someone dropped there — is not a malformed item, and reporting it
+    // to the model as an unreadable ITEM told the user one of their tasks was
+    // corrupt when nothing of theirs was involved.
+    ids = fs
+      .readdirSync(packetsRoot(), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
   } catch {
     return { items: [], unreadable: [] }; // no store yet
   }
@@ -418,19 +527,33 @@ export function listItems(): { items: Item[]; unreadable: UnreadableItem[] } {
     }
   }
 
-  // The two structural faults, reported here and dropped by queueSlice.
+  // The two structural faults, reported here and dropped by queueSlice — plus
+  // any lane ROW the tolerant reader had to skip, which is the diagnostic
+  // channel that keeps readLanesReport's per-row tolerance from being silently
+  // lossy. A lane the human broke is exactly as reportable as a packet they
+  // broke, and this is the one place either gets said out loud.
+  const laneRead = readLanesReport();
+  unreadable.push(...laneRead.malformed);
   const readable = new Set(items.map((i) => i.id));
-  const placed = new Set<string>();
-  for (const lane of readLanes()) {
+  // id → the lane whose stack claimed it FIRST, so the reason text can tell a
+  // duplicate ACROSS two lanes from a line pasted twice inside ONE. The old text
+  // asserted "more than one lane stack" for both, which sent a human looking for
+  // a second lane that does not exist.
+  const placed = new Map<string, string>();
+  for (const lane of laneRead.lanes) {
     for (const id of lane.items) {
-      if (placed.has(id)) {
+      const first = placed.get(id);
+      if (first !== undefined) {
         unreadable.push({
           id,
-          reason: `listed in more than one lane stack (again in "${lane.key}"); the FIRST stack in lanes.yaml order wins and this occurrence is ignored`,
+          reason:
+            first === lane.key
+              ? `listed TWICE in lane "${lane.key}" — one id, two lines in the same stack, not two lanes; the FIRST line wins and this one is ignored`
+              : `listed in more than one lane stack (first in "${first}", again in "${lane.key}"); the FIRST stack in lanes.yaml order wins and this occurrence is ignored`,
         });
         continue;
       }
-      placed.add(id);
+      placed.set(id, lane.key);
       if (!readable.has(id)) {
         unreadable.push({
           id,
@@ -506,6 +629,15 @@ const PATCHABLE = [
 //     writeLanes, the id is still in its old stack, the orphan arm does not
 //     fire, and the move simply did not happen. No duplicate, no ambiguity.
 //
+// THE WRITERS ARE writeLanes, createItem AND updateItem — all three, and the
+// third is not optional. lanes.yaml owning membership, reconciliation being
+// projection-only, and `lane` being patchable cannot all stand with a
+// packet-only updateItem: the tool would report the new lane, every read would
+// keep reporting the old one, and the stale hint would sit in the packet as a
+// LATENT RELOCATION — remove the id from every stack later (a hand-edit, or a
+// lane retired) and arm 1 would adopt the item into a lane no write ever placed
+// it in. So a lane change moves the id in lanes.yaml too, in the order below.
+//
 // WRITE ORDER: packets/<id>/packet.yaml FIRST, lanes.yaml SECOND. A crash in the
 // gap leaves the content intact (NFR-OW-4's "capture raw" is what must survive)
 // with the id not yet in a stack — which the orphan arm then adopts. Written the
@@ -550,6 +682,57 @@ function resolveLane(lanes: WorkspaceLane[], requested?: string): { lane: string
   return { lane: SEED_LANE_KEY, unplaced: true };
 }
 
+// Put `id` in the stack at `targetIndex` and NOWHERE ELSE, returning the rows to
+// write. Operates on the RAW rows so a row this build could not parse survives
+// the write byte-for-byte (see readLanesReport's `entries`).
+//
+// THE FIRST ROW WITH THE TARGET KEY WINS, and appending to every matching row
+// would be the store MANUFACTURING the duplicate-id fault arm 4 exists to report
+// — a hand-edited lanes.yaml with two rows keyed `office` would otherwise make
+// createItem write the same id into both stacks and then blame the human for it.
+// Every other row has the id REMOVED, which is the half that makes a move a move
+// rather than a copy, AND is the half that dedupes a hand-edited paste.
+//
+// THE TARGET ROW KEEPS ITS ORDER IF IT ALREADY HOLDS THE ID. Removing and
+// re-appending would send the item to the BOTTOM of the lane it is already in —
+// a queue-position change nobody asked for, and one that a duplicate elsewhere
+// in the file would otherwise trigger on a call meant to be a no-op.
+//
+// A NEGATIVE targetIndex means no row carries the target key: the id is removed
+// from every stack and added to none, so the item is unfiled (arm 3), a resting
+// state. NO LANE IS CREATED — NFR-OW-10 reserves lane structure to the human,
+// and a store that invented a row here would hand every agent a lane-creation
+// path by side effect. `updateItem` never asks for that case; only createItem's
+// brand-new id can reach it, and a brand-new id is in no stack to be evicted
+// from.
+const rowItems = (row: unknown): unknown[] | null => {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) return null;
+  const items = (row as { items?: unknown }).items;
+  return Array.isArray(items) ? items : null;
+};
+
+function placeIdInRows(entries: LaneEntry[], id: string, targetIndex: number): unknown[] {
+  return entries.map(({ row }, i) => {
+    const items = rowItems(row);
+    if (i === targetIndex) {
+      if (items === null) return row; // cannot append to a row with no stack
+      return items.includes(id) ? row : { ...(row as object), items: [...items, id] };
+    }
+    // The id is removed even from a row this build could not fully parse, as
+    // long as its `items` is a list — the row keeps every one of its own keys,
+    // including the broken or unknown ones, so the human's file is repaired by
+    // them and never by this.
+    if (items === null || !items.includes(id)) return row;
+    return { ...(row as object), items: items.filter((x) => x !== id) };
+  });
+}
+
+// Writes the RAW rows — see placeIdInRows. Separate from writeLanes below, which
+// takes parsed lanes and is the hand-edit/caller-supplied path.
+function writeLaneRows(rows: unknown[]): void {
+  atomicWrite(lanesFile(), YAML.stringify(rows));
+}
+
 // Create an item. Two files, in the order the reconcile rule above pins.
 //
 // `provenance` IS WRITTEN SERVER-SIDE AND IS NEVER READ FROM CALLER INPUT — the
@@ -563,7 +746,8 @@ function resolveLane(lanes: WorkspaceLane[], requested?: string): { lane: string
 // from somewhere else (5.4's brain dump, 5.5's mirror sync) widens NewItem here.
 export function createItem(input: NewItem): Item {
   ensureWorkspace();
-  const lanes = readLanes();
+  const read = readLanesReport();
+  const lanes = read.lanes;
   const { lane, unplaced } = resolveLane(lanes, input.lane);
   const at = capturedLabel(new Date());
 
@@ -596,13 +780,12 @@ export function createItem(input: NewItem): Item {
   // PACKET FIRST.
   writePacket(item);
   // LANES SECOND — the stored stacks plus this one mutation, never a projection.
-  const target = lanes.find((l) => l.key === lane);
-  if (target) {
-    writeLanes(lanes.map((l) => (l.key === lane ? { ...l, items: [...l.items, item.id] } : l)));
-  }
-  // If the seed lane was retired the item is simply unfiled (arm 3). No lane is
-  // created to receive it — that would be the agent lane-structure change
-  // NFR-OW-10 forbids.
+  // If the seed lane was retired there is no row to receive the id and the item
+  // is simply unfiled (arm 3). No lane is created to receive it — that would be
+  // the agent lane-structure change NFR-OW-10 forbids, and no write happens at
+  // all, so a file full of rows this build cannot read is not rewritten either.
+  const targetIndex = read.entries.findIndex((e) => e.lane?.key === lane);
+  if (targetIndex >= 0) writeLaneRows(placeIdInRows(read.entries, item.id, targetIndex));
   return item;
 }
 
@@ -631,11 +814,80 @@ export function updateItem(id: string, patch: ItemPatch): Item | null {
   const current = getWorkspaceItem(id);
   if (!current) return null;
 
+  // THE ADDRESS IS THE DIRECTORY, NEVER THE CONTENT. writePacket resolves its
+  // path from the item's own `id`, so a hand-edited packet.yaml whose `id` no
+  // longer matches the directory it sits in would make this write to a DIFFERENT
+  // item's directory and report success — clobbering a second item the caller
+  // never named. AD-6 invites the hand-edit, so the mismatch has to be diagnosed
+  // rather than assumed away. It THROWS: the surface turns it into an actionable
+  // sentence, where a silent null would read as "no such item".
+  if (current.id !== id) {
+    throw new Error(
+      `AD-6: packets/${id}/${PACKET_FILE} carries \`id: ${JSON.stringify(current.id)}\`, which is not the directory it sits in. ` +
+        `A packet's ADDRESS is its directory; writing this update would rewrite packets/${current.id}/${PACKET_FILE} instead, ` +
+        `clobbering an item nobody named. Nothing was written. Fix the \`id:\` line by hand, or move the directory.`,
+    );
+  }
+
+  // A LANE CHANGE IS A TWO-FILE MOVE, and lanes.yaml is the half that decides.
+  // D9 gives lanes.yaml authority over membership and order; packet.lane is the
+  // recovery hint. A packet-only write would therefore be a PERMANENT SILENT
+  // NO-OP dressed as success — the tool would report the new lane, every read
+  // would keep reporting the old one, and the stale hint would sit there as a
+  // latent relocation waiting for the id to leave its stack.
+  //
+  // AN UNRESOLVABLE LANE KEY NEVER MOVES THE ITEM, and this is where update
+  // deliberately DIVERGES from create. A create has no home yet, so an unknown
+  // key has to resolve somewhere and the seed lane is that somewhere. An update
+  // has a home. Redirecting a typo'd `laneKey` into the seed lane would EVICT an
+  // already-filed item from the user's queue on a model's spelling mistake — and
+  // where the seed lane has been retired it would evict the item into NO stack
+  // at all, where it appears in no queue, on no desk, and in no report. So the
+  // item stays exactly where it is, `unplaced` marks it for the user, and the
+  // surface says which key did not exist.
+  //
+  // A SUCCESSFUL move CLEARS `unplaced`, unless the caller named it in the same
+  // patch. item-model.md's meaning is "the master could not file it and is
+  // asking"; once it IS filed, leaving the flag on would keep the desk asking a
+  // question that has been answered — and deskSlice's hint chain puts `unplaced`
+  // first, so it would mask the item's deadline forever.
+  const read = readLanesReport();
+  const targetIndex =
+    patch.lane === undefined ? -1 : read.entries.findIndex((e) => e.lane?.key === patch.lane);
+  const resolved = patch.lane !== undefined && targetIndex >= 0;
+  const unresolvable = patch.lane !== undefined && targetIndex < 0;
+
   // Spread order matters: `current` first, so every field the patch does not
   // name — including every UNKNOWN key z.looseObject preserved off disk —
   // survives the rewrite untouched.
-  const next = Item.parse({ ...current, ...patch, schemaVersion: ITEM_SCHEMA_VERSION });
+  const next = Item.parse({
+    ...current,
+    ...patch,
+    ...(unresolvable
+      ? {
+          // Stay put. The hint is re-pinned to the stack that actually holds the
+          // item, so the packet and lanes.yaml still agree at this commit point.
+          lane: read.lanes.find((l) => l.items.includes(id))?.key ?? current.lane,
+          unplaced: true,
+        }
+      : {}),
+    ...(resolved ? { lane: patch.lane, unplaced: patch.unplaced ?? false } : {}),
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+
+  // PACKET FIRST, LANES SECOND — the order D9 pins, and the reason a torn write
+  // is safe: the id is still in its old stack, the orphan arm does not fire, and
+  // the move simply did not happen.
   writePacket(next);
+  if (resolved) {
+    const moved = placeIdInRows(read.entries, id, targetIndex);
+    // NOTHING IS REWRITTEN WHEN NOTHING MOVED. placeIdInRows returns the SAME row
+    // reference for a row it did not touch — including the target row when it
+    // already holds the id — so this is an exact "did any stack change" test,
+    // and a move to the lane the item is already in leaves the user's
+    // hand-formatted lanes.yaml byte-identical rather than re-ranking it.
+    if (moved.some((row, i) => row !== read.entries[i]!.row)) writeLaneRows(moved);
+  }
   return next;
 }
 
@@ -667,8 +919,15 @@ export function rankOf(lanes: WorkspaceLane[], itemId: string): number | null {
 export type QueueRow = { lane: string; rank: number; item: Item };
 
 // The reconcile rule's four arms, as a pure join. Returns one row per FILED
-// item, in lane order then stack order, with orphans appended to the stack their
-// packet points at.
+// item: every STACKED item first, in lane order then stack order, and THEN every
+// adopted orphan, appended after all of them and ordered by id.
+//
+// SO THE ROWS ARE NOT GLOBALLY IN LANE ORDER whenever an orphan is adopted — an
+// orphan bound for the first lane still comes after the last lane's stacked
+// rows. The RANKS are correct either way, because ranking runs last and per
+// lane; it is the row SEQUENCE that is two concatenated passes. Said plainly
+// because the previous sentence here promised one order and delivered another,
+// and a caller rendering rows in array order would have got it wrong.
 //
 // NFR-OW-3, THE CONSERVATION LAW: this returns ITEMS, never items-plus-subtasks.
 // Decomposition lives inside the item, so breaking work down never grows the
@@ -723,9 +982,16 @@ export type DeskCard = {
 // Unfiled items appear here too, which is the point: an item the master could
 // not place is exactly the one the human needs to see.
 //
-// 5.1 SHIPS THIS PROJECTION AND NO RAIL. The rail is 5.3's; dismissal is
-// updateItem({desk: false}) and NO TOOL EXPOSES IT in this story — 5.3 reaches
-// dismissal through 5.2's route.
+// 5.1 SHIPS THIS PROJECTION AND NO RAIL. The rail is 5.3's.
+//
+// DISMISSAL IS updateItem({desk: false}) AND update_item DOES EXPOSE IT — a
+// DISCLOSED WIDENING, corrected here because this comment previously claimed the
+// opposite while the tool's own input shape and description said otherwise, and
+// a false negative in a comment is worse than the widening it hides. It is
+// harmless in the way that matters: dismissal DRAINS THE ITEM TO THE QUEUE and
+// deletes nothing (SPEC.md's "No deletion path" is untouched), the item keeps
+// its lane and its rank, and 5.3's rail needs the verb to exist. What 5.1 does
+// not ship is the RAIL that calls it.
 export function deskSlice(items: Item[]): DeskCard[] {
   return items
     .filter((i) => i.desk === true)
@@ -765,11 +1031,19 @@ const MOCKUP_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 // house form (bundle.ts, spec-lint.ts, deliverable-signal.ts), so subdirectories
 // never reach here. packet.yaml itself is excluded here, where the name is
 // known, rather than at every call site.
+// NOT AN ATTACHMENT: this store's OWN crash residue, and the operating system's.
+// atomicWrite writes `<file>.tmp` and renames; a crash between the two leaves the
+// .tmp behind, and the tally would then report the user's own failed write back
+// to them as "1 file". `.DS_Store` is Finder's, and a user who opened the packet
+// directory once should not be told they attached something.
+const isNotAnAttachment = (name: string): boolean =>
+  name === PACKET_FILE || name === ".DS_Store" || name.endsWith(".tmp");
+
 export function attachmentTally(names: string[]): { files: number; mockups: number } {
   let files = 0;
   let mockups = 0;
   for (const name of names) {
-    if (name === PACKET_FILE) continue;
+    if (isNotAnAttachment(name)) continue;
     if (MOCKUP_EXT.has(path.extname(name).toLowerCase())) mockups++;
     else files++;
   }
@@ -790,7 +1064,7 @@ export function readPacketAttachments(id: string): string[] {
       .readdirSync(dir, { withFileTypes: true })
       .filter((d) => d.isFile())
       .map((d) => d.name)
-      .filter((n) => n !== PACKET_FILE)
+      .filter((n) => !isNotAnAttachment(n))
       .sort();
   } catch {
     return [];

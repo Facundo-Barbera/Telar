@@ -15,9 +15,15 @@
 // it is defending is vacuous the moment someone adds a second file.
 //
 // T2 — THIS IS THE FOURTH PROCESS-GLOBAL mock.module("@telar/core", …) IN
-// apps/web, and the snapshot-and-restore ritual below does NOT contain the leak:
-// mock.module runs at module EVALUATION, and under a filtered run bun evaluates
-// every file's module scope before running any test, so afterAll never fires.
+// apps/web, and the snapshot-and-restore ritual below does NOT contain the leak.
+// THE MECHANISM, CORRECTED IN THE REVIEW-FIX ROUND — the first version of this
+// note said "afterAll never fires", which is false: bun evaluates each file's
+// module scope and DOES run this file's afterAll whenever the file has a test
+// that matches. The real hole is narrower and still real: under a filtered run
+// (`bun test -t "…"`) that matches NOTHING here, this module scope is still
+// evaluated — so the mock is installed process-wide — and with no matching test
+// in the file there is nothing for afterAll to hang off. A sibling file that
+// imports @telar/core then gets the double.
 // Repairing the three existing instances is story 1.3's item and is not this
 // story's — but this file does not become a fourth silent one either: the mock
 // is installed in the narrowest form that still works, and the LAST test in this
@@ -80,7 +86,36 @@ const stubUpdateItem = (id: string, patch: Record<string, unknown>) => {
   const item = items.find((i) => i.id === id);
   if (!item) return null;
   Object.assign(item, patch);
-  if (patch.lane !== undefined) item.lane = patch.lane;
+  // A LANE CHANGE IS A TWO-FILE MOVE IN THE REAL STORE, so the double performs
+  // one too: it rewrites the packet's hint AND moves the id between STACKS. A
+  // double that only touched the item would let this suite prove the server
+  // correct against a store that silently no-ops — which is precisely the defect
+  // the real store shipped with. The three branches below mirror the real
+  // `updateItem` clause for clause: unknown key → stay put + unplaced; known key
+  // → move and CLEAR unplaced; already in the target → keep position, drop
+  // duplicates elsewhere. HARNESS FIDELITY is asserted by its own test below.
+  if (patch.lane !== undefined) {
+    const target = lanes.find((l) => l.key === patch.lane);
+    if (!target) {
+      // UNRESOLVABLE: the real store does NOT move the item and does NOT
+      // redirect it into the seed lane — that would evict a filed item on a
+      // model's typo. It stays put, re-pins its hint to the stack that holds it,
+      // and is marked for the user.
+      item.lane = lanes.find((l) => l.items.includes(id))?.key ?? item.lane;
+      item.unplaced = true;
+    } else {
+      item.lane = target.key;
+      // A successful move CLEARS unplaced unless the caller named it.
+      item.unplaced = (patch.unplaced as boolean | undefined) ?? false;
+      if (!target.items.includes(id)) {
+        for (const l of lanes) l.items = l.items.filter((x) => x !== id);
+        target.items.push(id);
+      } else {
+        // Already in the target: keep its position, drop stray duplicates.
+        for (const l of lanes) if (l !== target) l.items = l.items.filter((x) => x !== id);
+      }
+    }
+  }
   return item;
 };
 
@@ -313,10 +348,23 @@ describe("AC5 list_items returns THIS session's project slice", () => {
   });
 
   test("list_items surfaces the unreadable channel so one bad packet never blanks the rest", async () => {
-    unreadable = [{ id: "i-bad", reason: "listed in lane \"aurora\" but has no readable packet" }];
+    // A COUNT under a project scope, because the reason text names ids and lane
+    // keys from EVERY project: an unreadable packet has no readable `project`
+    // field by construction, so the array cannot be filtered, and passing it
+    // through made this the one channel on the surface that leaked across the
+    // scope boundary the rest of the file enforces.
+    unreadable = [{ id: "i-bad", reason: 'listed in lane "office" but has no readable packet' }];
     const out = jsonOf(await toolHandler(makeServer(), "list_items")());
     expect(out.items.length).toBe(1);
-    expect(out.unreadable).toEqual(unreadable);
+    expect(out.unreadable).toBe(1);
+    expect(textOf(await toolHandler(makeServer(), "list_items")())).not.toContain("i-bad");
+    expect(textOf(await toolHandler(makeServer(), "list_items")())).not.toContain("office");
+
+    // …the FULL diagnosis only for the project-less master (5.3's), which is the
+    // one caller already entitled to see every project.
+    const master = jsonOf(await toolHandler(makeServer({ project: undefined }), "list_items")());
+    expect(master.unreadable).toEqual(unreadable);
+
     // …and it is omitted entirely when there is nothing wrong.
     unreadable = [];
     expect(jsonOf(await toolHandler(makeServer(), "list_items")()).unreadable).toBeUndefined();
@@ -342,11 +390,65 @@ describe("AC5 list_items returns THIS session's project slice", () => {
   });
 
   test("an item in NO stack falls back to its packet's hint, then to null", async () => {
-    // The other direction, so the line above is a choice rather than a constant.
+    // THE SECOND TERM OF THE SAME EXPRESSION, and the precise claim is that the
+    // two tests pin the two TERMS — not that both fail under one reversion.
+    // `lanes.find(…)?.key ?? item.lane ?? null` dies twice, differently:
+    //   - drop `lanes.find(…)?.key` (report the hint) → the test ABOVE fails,
+    //     this one passes, because for an item in no stack the authoritative
+    //     lookup returns undefined and both implementations agree by
+    //     construction. Nothing can discriminate that path, and a test claiming
+    //     to would be the claim, not the proof.
+    //   - drop `?? item.lane` (report only the stack) → THIS one fails and the
+    //     one above passes.
+    // Each term therefore has exactly one arm that can kill it.
     lanes = [{ key: "free", label: "Free", window: "whenever", items: [] }];
     const out = jsonOf(await toolHandler(makeServer(), "list_items")());
     expect(out.items[0]!.lane).toBe("aurora"); // the hint, since no stack holds it
     expect(out.items[0]!.rank).toBeNull(); // unfiled — a resting state, not an error
+
+    // …and the THIRD term: an item whose packet names no lane either reports
+    // null rather than inventing one.
+    items = [{ id: "i-a1", title: "hintless", project: "aurora", provenance: "note", captured: "Tue 16:42", schemaVersion: 1 }];
+    expect(jsonOf(await toolHandler(makeServer(), "list_items")()).items[0]!.lane).toBeNull();
+  });
+
+  test("summarise's OUTPUT SHAPE is pinned — the ripening history is not spent on every list call", async () => {
+    // The function's own contract is that `raw`, `fixed`, `acceptance` and
+    // `timeline` are deliberately NOT sent: they are what a packet view renders,
+    // not context every list call should pay tokens for. Nothing asserted it, so
+    // adding `raw` and `timeline` to the model-facing payload left the whole
+    // apps/web suite green — against the stated contract.
+    items = [
+      {
+        id: "i-a1",
+        title: "Everything at once",
+        project: "aurora",
+        lane: "aurora",
+        provenance: "note",
+        captured: "Tue 16:42",
+        schemaVersion: 1,
+        desk: true,
+        unplaced: true,
+        mirrored: "#214",
+        deadline: { label: "Fri", kind: "self" },
+        verdict: "loom",
+        subtasks: [{ id: "st-1", title: "one" }],
+        // Present on the item, and NONE of these may appear in the payload.
+        raw: "the user's own words",
+        rawSource: "Telar Note · Tue 16:42",
+        fixed: "the expert's brief",
+        acceptance: ["it works"],
+        timeline: [{ at: "Tue 16:42", actor: "session", text: "captured" }],
+        promotedFrom: "i-parent",
+        tracking: { loomId: "l-1" },
+      },
+    ];
+    const out = jsonOf(await toolHandler(makeServer(), "list_items")());
+    expect(Object.keys(out.items[0]!).sort()).toEqual(
+      ["deadline", "desk", "id", "lane", "mirrored", "project", "rank", "subtasks", "title", "unplaced", "verdict"].sort(),
+    );
+    // The sub-task channel is a COUNT, not the sub-tasks themselves (NFR-OW-3).
+    expect(out.items[0]!.subtasks).toBe(1);
   });
 
   test("list_lanes reports the user's lanes with counts and never their contents", async () => {
@@ -488,6 +590,38 @@ describe("update_item is narrow by construction", () => {
     expect(out.id).toBe("i-a1");
     expect(out.desk).toBeUndefined(); // off the desk…
     expect(out.rank).toBe(1); // …and still in its lane. There is no delete.
+  });
+
+  test("a lane move is REPORTED from the moved stacks — the new lane and the new rank", async () => {
+    // The surface's half of the store's two-file move. Reading lanes BEFORE the
+    // write would report the rank the item held in the lane it just left.
+    lanes = [
+      { key: "aurora", label: "Aurora", window: "work hours", items: ["i-a1"] },
+      { key: "unfiled", label: "Unfiled", window: "whenever", items: ["i-x", "i-y"] },
+    ];
+    const out = jsonOf(await toolHandler(makeServer(), "update_item")({ itemId: "i-a1", laneKey: "unfiled" }));
+    expect(out.lane).toBe("unfiled");
+    expect(out.rank).toBe(3); // appended at the tail, below what was already there
+    expect(out.note).toBeUndefined(); // a lane that exists gets no note
+    expect(lanes.find((l) => l.key === "aurora")!.items).toEqual([]);
+  });
+
+  test("a laneKey naming NO existing lane says so, and the item does NOT move", async () => {
+    // This surface accepted an unknown laneKey, returned isError:false and said
+    // nothing at all, so a model was told a move succeeded that had not
+    // happened. create_item has always said it; update_item did not. And the
+    // item stays where it is: an update has a home, so a typo must not evict it.
+    const out = jsonOf(
+      await toolHandler(makeServer(), "update_item")({ itemId: "i-a1", laneKey: "a-lane-nobody-made" }),
+    );
+    expect(out.lane).toBe("aurora"); // still where it was
+    expect(out.rank).toBe(1); // …at the rank it held
+    expect(out.unplaced).toBe(true); // …and the user is asked
+    expect(out.note).toContain('No lane named "a-lane-nobody-made" exists');
+    expect(out.note).toContain("did NOT move");
+    expect(out.note).not.toContain('landed in "unfiled"'); // create's sentence, not update's
+    expect(out.note).toContain("Lanes are theirs to create");
+    expect(lanes.find((l) => l.key === "aurora")!.items).toEqual(["i-a1"]);
   });
 
   test("a store-level throw becomes an actionable errResult carrying the diagnosis", async () => {

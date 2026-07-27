@@ -38,6 +38,16 @@
 // z.looseObject({a}).parse({a,unknown}) keeps it. This is the repo's first
 // loose schema; grep for passthrough(/catchall(/looseObject across
 // packages/core/src, apps/web/lib and apps/web/app returned zero before it.
+//
+// IT IS APPLIED AT EVERY LEVEL OF THE PACKET, NOT ONLY THE TOP, and the
+// difference is observable rather than theoretical: with a loose `Item` over
+// strict nested shapes, a key hand-added under `deadline:` is DESTROYED by the
+// next updateItem while a top-level one survives — so "unknown fields survive a
+// round-trip" would be true one level deep and false everywhere else, which is
+// the worst of the three possible states because it looks like the good one.
+// Every shape a packet.yaml nests (Deadline, Subtask, TimelineEvent, LoomRef) is
+// therefore loose too. WorkspaceLane below is deliberately NOT: it is the one
+// shape here that is not part of a packet.
 import { z } from "zod";
 
 // ── the nested shapes ────────────────────────────────────────────────────────
@@ -48,7 +58,7 @@ import { z } from "zod";
 export const DeadlineKind = z.enum(["external", "self"]);
 export type DeadlineKind = z.infer<typeof DeadlineKind>;
 
-export const Deadline = z.object({
+export const Deadline = z.looseObject({
   label: z.string(),
   kind: DeadlineKind,
   // Self-deadlines only: how often this slid. Durable, which is what makes
@@ -65,7 +75,7 @@ export type Deadline = z.infer<typeof Deadline>;
 // addressable, and a title is not an address — a rename or a duplicate title
 // breaks the reference. Story 5.1 adds the field and writes no sub-task; 5.2
 // owns sub-task mutation and the human owns promotion (NFR-OW-15).
-export const Subtask = z.object({
+export const Subtask = z.looseObject({
   id: z.string(),
   title: z.string(),
   done: z.boolean().optional(),
@@ -87,7 +97,7 @@ export type PacketActor = z.infer<typeof PacketActor>;
 // PacketEvent.at is a plain string ("Tue 16:42"), never a comparable stamp.
 // `proposal: true` marks agent output awaiting a human look, which is the
 // prepare-never-commit law (NFR-OW-2) made visible.
-export const TimelineEvent = z.object({
+export const TimelineEvent = z.looseObject({
   at: z.string(),
   actor: PacketActor,
   text: z.string(),
@@ -99,7 +109,7 @@ export type TimelineEvent = z.infer<typeof TimelineEvent>;
 // render without a lookup, so a dangling ref renders as a tombstone and never
 // throws. Set at weave; NO TOOL IN THIS STORY WRITES IT (story 5.5 owns the
 // handoff), and it is absent from ItemPatch so no tool CAN.
-export const LoomRef = z.object({
+export const LoomRef = z.looseObject({
   loomId: z.string(),
   label: z.string().optional(),
 });
