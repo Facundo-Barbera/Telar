@@ -18,6 +18,7 @@ import {
   MODULE_NAMESPACES,
   createItemKindRegistry,
   type ItemKind,
+  type ItemKindId,
   type ItemKindRegistry,
 } from "./registry";
 
@@ -43,6 +44,44 @@ describe("createItemKindRegistry — the five rejections, each with its positive
     expect(createItemKindRegistry([kind("workspace:receipt")]).ids()).toEqual([
       "workspace:receipt",
     ]);
+  });
+
+  test("(3b) a WHITESPACE-PADDED or whitespace-only segment is rejected", () => {
+    // The shadow-kind class: `"conversation:text "` passed every other
+    // rejection, registered, and appeared in ids() — while `get("conversation:
+    // text")` returned undefined, so the shell rendered AD-8's tombstone for a
+    // kind the author could see registered.
+    expect(() => createItemKindRegistry([kind("conversation:text ")])).toThrow(
+      /whitespace around a segment/,
+    );
+    expect(() => createItemKindRegistry([kind(" conversation:text")])).toThrow(
+      /whitespace around a segment/,
+    );
+    expect(() => createItemKindRegistry([kind("conversation :text")])).toThrow(
+      /whitespace around a segment/,
+    );
+    // …and the padded message names the id it MEANT, since that is the fix.
+    expect(() => createItemKindRegistry([kind("loom:gate-card ")])).toThrow(/"loom:gate-card"/);
+    // A whitespace-ONLY half is an empty half, and says so.
+    expect(() => createItemKindRegistry([kind("conversation:   ")])).toThrow(
+      /empty name segment/,
+    );
+    expect(() => createItemKindRegistry([kind("  :card")])).toThrow(/empty module segment/);
+    // the control: the same ids, unpadded, register cleanly
+    expect(createItemKindRegistry([kind("conversation:text")]).ids()).toEqual([
+      "conversation:text",
+    ]);
+    expect(createItemKindRegistry([kind("loom:gate-card")]).ids()).toEqual(["loom:gate-card"]);
+  });
+
+  test("(3c) the shadow kind cannot be minted at all — the miss it caused is unreachable", () => {
+    // The property the rejection buys, asserted from the outside: there is no
+    // registry in which a padded id is registered and the unpadded lookup
+    // tombstones. Before the guard this returned a function for one and
+    // undefined for the other.
+    expect(() => createItemKindRegistry([kind("conversation:text "), kind("loom:a")])).toThrow();
+    const clean = createItemKindRegistry([kind("conversation:text")]);
+    expect(typeof clean.get("conversation:text")).toBe("function");
   });
 
   test("(4) an UNDECLARED module is rejected — a typo cannot open a second namespace", () => {
@@ -113,6 +152,16 @@ describe("the registry itself", () => {
     expect(
       createItemKindRegistry([kind("ultra:a"), kind("loom:b"), kind("workspace:c")]).ids(),
     ).toEqual(["ultra:a", "loom:b", "workspace:c"]);
+  });
+
+  test("ids() hands out a COPY — a caller cannot reorder the registry", () => {
+    // `readonly ItemKindId[]` is a compile-time promise and nothing else; the
+    // gallery lane and these suites both hold this value.
+    const reg = createItemKindRegistry([kind("ultra:a"), kind("loom:b")]);
+    const first = reg.ids() as ItemKindId[];
+    first.splice(0, first.length);
+    expect(reg.ids()).toEqual(["ultra:a", "loom:b"]);
+    expect(reg.ids()).not.toBe(reg.ids());
   });
 
   test("two registries are INDEPENDENT — the registry is a prop, not a singleton", () => {

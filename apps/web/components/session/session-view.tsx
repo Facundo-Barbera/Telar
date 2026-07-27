@@ -1081,8 +1081,11 @@ function SessionViewInner({
   // ParentFlattener, never to this nested id). It still renders inside its
   // ancestor's own tab content — as a plain ToolStepRow, same as any other
   // tool call that tab's subagent made — just without the agent-chip
-  // treatment or a tab of its own; see AgentBucket and renderAgentBucket
-  // (which doesn't pass onSelectAgent/agentSteps into its ToolStepGroup).
+  // treatment or a tab of its own; see AgentBucket and `agentBucketItem`,
+  // which (unlike Main's projection) passes no onSelectAgent/agentSteps into
+  // its `conversation:tools` payloads. (This pointer used to name
+  // `renderAgentBucket` — the second copy of the kind dispatch that story 3.1
+  // deleted; `agentBucketItem` is where that rendering lives now.)
   const agentBuckets = useMemo(() => {
     const order: string[] = [];
     const byId = new Map<string, AgentBucket>();

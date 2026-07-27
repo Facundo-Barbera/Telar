@@ -67,6 +67,15 @@ export {
   type ModuleNamespace,
 } from "./registry";
 export { BUILTIN_KINDS, ThinkingRow, AgentStepRow, permissionPreview } from "./kinds";
+// The payload types' ELEMENT types. `ToolsPayload` is exported below and its
+// `parts` are `ToolPart`s; `agentStatus`/`agentLabel` are exported below and
+// take a `ToolPart`/`AgentInfo`. Without these three a downstream author
+// consuming the exported payload has to reach around the roof to name what is
+// inside it — which is what the first owner adapter already does — and AC1's
+// "one import path" is the property the downstream tracks were promised. Types
+// only: the components they belong to stay where they are.
+export type { AgentInfo, ToolPart } from "@/components/session/tool-step";
+export type { AgentTab, AgentTabStatus } from "@/components/session/agent-tabs";
 export {
   CONVERSATION_KINDS,
   agentLabel,

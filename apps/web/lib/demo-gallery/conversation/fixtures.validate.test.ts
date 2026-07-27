@@ -17,9 +17,10 @@
 
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
-import { BUILTIN_KINDS, createItemKindRegistry } from "@/components/conversation";
+import { BUILTIN_KINDS, CONVERSATION_KINDS, createItemKindRegistry } from "@/components/conversation";
 import { allEntries, demoGroups, getDemoEntry, GROUP_DEFS } from "../registry";
 import { conversationEntries } from "../entries/conversation";
+import { GALLERY_KINDS, READ_ONLY_CONFIG, laneItems } from "./shell";
 import {
   CONVERSATION_CONFIGS,
   CONVERSATION_FIXTURES,
@@ -27,9 +28,12 @@ import {
   flattenItems,
 } from "./fixtures";
 
-// The SAME construction the lane performs — the real factory over the real
-// built-ins, not a copy of the id list.
-const KINDS = createItemKindRegistry([...BUILTIN_KINDS]);
+// THE REGISTRY THE LANE ACTUALLY RENDERS WITH, not a second one built here to
+// the same recipe. A copy would keep passing while the lane rendered tombstones:
+// the guard has to read the same value as the thing it guards (story 3.1's
+// maxim 3). The recipe is still asserted, one test below, so the lane cannot
+// quietly stop being built from the real built-ins either.
+const KINDS = GALLERY_KINDS;
 
 describe("every fixture item resolves in the REAL registry", () => {
   for (const config of CONVERSATION_CONFIGS) {
@@ -87,15 +91,44 @@ describe("the six configurations", () => {
     expect(new Set(shapes).size).toBe(6);
   });
 
-  test("the read-only configuration omits every resolve callback", () => {
+  test("the read-only configuration omits every resolve callback — through the LANE's own decision", () => {
     // This is AC4's visible proof, so it has to be true rather than intended:
     // the same items minus one callback must render as a non-interactive
-    // transcript. A fixture that quietly carried `onRespond` would make the
-    // read-only lane a lie.
-    for (const item of flattenItems(CONVERSATION_FIXTURES["conversation-readonly"])) {
+    // transcript. Note what is called here — `laneItems`, the function the lane
+    // itself uses — rather than the fixture constant. Asserting that a literal
+    // fixture lacks a function is near-tautological and would pass on a
+    // transcript with no approval cards at all; what decides read-only-ness is
+    // the branch below, and it is what is exercised.
+    const noop = () => {};
+    const readOnly = flattenItems([...laneItems(READ_ONLY_CONFIG, {}, noop)]);
+    const permissions = readOnly.filter((i) => i.kind === CONVERSATION_KINDS.permission);
+    // ANTI-VACUITY: there IS something to withhold a callback from.
+    expect(permissions.length).toBeGreaterThan(0);
+    for (const item of readOnly) {
       const payload = item.payload as { onRespond?: unknown };
       expect(payload?.onRespond).toBeUndefined();
     }
+
+    // …AND THE DISCRIMINATOR, which is the half that was missing: the very same
+    // items, taken through any other configuration, DO carry the callback. So
+    // the read-only lane is non-interactive because the lane withholds it, not
+    // because the fixtures were inert to begin with.
+    const interactive = flattenItems([...laneItems("conversation-full", {}, noop)]).filter(
+      (i) => i.kind === CONVERSATION_KINDS.permission,
+    );
+    expect(interactive.length).toBeGreaterThan(0);
+    for (const item of interactive) {
+      expect(typeof (item.payload as { onRespond?: unknown }).onRespond).toBe("function");
+    }
+  });
+
+  test("the lane's registry IS the real built-in set — the recipe, still asserted", () => {
+    // KINDS is the lane's own registry now, so this is what stops that from
+    // meaning less than it did: it must still be exactly the built-ins, with
+    // the tombstone kind still absent.
+    const recipe = createItemKindRegistry([...BUILTIN_KINDS]);
+    expect(KINDS.ids()).toEqual(recipe.ids());
+    expect(KINDS.get(UNREGISTERED_KIND)).toBeUndefined();
   });
 
   test("between them, the configurations exercise EVERY built-in kind", () => {

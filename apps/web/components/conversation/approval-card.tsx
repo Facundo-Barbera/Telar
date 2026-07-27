@@ -31,6 +31,17 @@
 // READ-ONLY. That is not a degraded mode bolted on afterwards: it is the
 // mechanism that lets one kind render on every surface, including a read-only
 // transcript that has no way to answer (story 6.6's TranscriptView).
+//
+// THE HEADER LABELS A MOMENT, NOT A CARD, so it is rendered only while the card
+// is PENDING. Both vocabularies the merge inherited are written in the
+// awaiting-you voice ("tool call — awaiting your approval", "node advance —
+// awaiting your approval"), and a resolved card renders an `Allowed`/`Denied`
+// badge two rows below it: the pair read together as "awaiting your approval …
+// Allowed", which is a false label on the consent surface. A resolved card
+// therefore drops the header and reads exactly like the donor's `PermissionCard`
+// did — which had no header at all. The decision is `approvalHeader` below,
+// a pure function, because there is no DOM harness in this repo and a pure
+// function is the only shape a test can hold.
 
 import { ChevronRightIcon, ShieldAlertIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -59,8 +70,13 @@ export const ADVANCE_APPROVAL_LABELS: ApprovalLabels = {
   deny: "Hold",
 };
 
+/** The default header, in the gate card's own words. It is the PENDING label —
+ *  see `approvalHeader`. */
+export const PENDING_APPROVAL_HEADER = "tool call — awaiting your approval";
+
 export type ApprovalCardProps = {
-  /** Machine-voiced, lower-case, mono-uppercased by the style. */
+  /** Machine-voiced, lower-case, mono-uppercased by the style. Labels the
+   *  moment the card is ASKING about, so it renders only while `pending`. */
   header?: string;
   /** What is being proposed — the tool name, or the node/step being advanced. */
   title: string;
@@ -78,8 +94,21 @@ export type ApprovalCardProps = {
   className?: string;
 };
 
+/**
+ * The header line to render, or `null` for none — a PURE FUNCTION so the rule
+ * above is asserted rather than intended (`approval-card.test.ts`). A resolved
+ * card has no header: its state is carried by the badge, and the header's own
+ * vocabulary contradicts it.
+ */
+export function approvalHeader(
+  status: ApprovalCardProps["status"],
+  header?: string,
+): string | null {
+  return status === "pending" ? (header ?? PENDING_APPROVAL_HEADER) : null;
+}
+
 export function ApprovalCard({
-  header = "tool call — awaiting your approval",
+  header,
   title,
   preview,
   rule,
@@ -98,6 +127,7 @@ export function ApprovalCard({
   const [showOptions, setShowOptions] = useState(false);
   const otherOptions = ruleOptions.filter((o) => o.rule !== rule);
   const canAlways = labels.always !== undefined && rule !== undefined;
+  const headerLine = approvalHeader(status, header);
 
   return (
     <div
@@ -106,9 +136,11 @@ export function ApprovalCard({
         className,
       )}
     >
-      <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">
-        {header}
-      </p>
+      {headerLine !== null && (
+        <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">
+          {headerLine}
+        </p>
+      )}
       <div className="flex items-center gap-1.5 font-medium">
         <ShieldAlertIcon className="size-3.5 text-muted-foreground" />
         {title}

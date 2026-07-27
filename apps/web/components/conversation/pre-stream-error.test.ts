@@ -10,11 +10,24 @@ import { describe, expect, test } from "bun:test";
 import { readPreStreamError } from "./pre-stream-error";
 
 describe("readPreStreamError — the dock stops swallowing a pre-SSE 400", () => {
-  test("an OK response has no error to surface", async () => {
+  test("an OK response WITH A BODY has no error to surface", async () => {
     expect(await readPreStreamError(new Response("", { status: 200 }))).toBeNull();
     expect(await readPreStreamError(new Response('{"error":"ignored"}', { status: 200 }))).toBeNull();
     // 2xx generally, not just 200 — `ok` is the guard, not an equality.
-    expect(await readPreStreamError(new Response(null, { status: 204 }))).toBeNull();
+    expect(await readPreStreamError(new Response("stream", { status: 202 }))).toBeNull();
+  });
+
+  test("an OK response with NO BODY still gets a sentence — the caller's guard is `ok && body`", async () => {
+    // The gap this closes: the dock drains on `if (res.ok && res.body)` and
+    // hands everything else here. When the success test here was the narrower
+    // `res.ok`, a 200 with a null body was drained by neither and explained by
+    // neither — the message vanished with no error at all, which is exactly the
+    // swallow AC9 exists to close.
+    for (const status of [200, 202, 204]) {
+      const got = await readPreStreamError(new Response(null, { status }));
+      expect(got).toBe(`HTTP ${status} — the turn was accepted but no stream arrived.`);
+      expect(got).not.toBeNull();
+    }
   });
 
   test("a 400 carrying {error} returns THAT SENTENCE — the server's own words", async () => {

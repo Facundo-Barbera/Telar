@@ -69,9 +69,15 @@ describe("groupParts — consecutive tool parts coalesce into one group", () => 
     // being true, this key names the wrong slot.
     const items = groupParts("m7", [tool("Read")]);
     expect(items[0].key).toBe("m7:0");
-    // …and the index is the part's position, not the item's.
-    const later = groupParts("m7", [text("hi"), tool("Read")]);
-    expect(later[1].key).toBe("m7:1");
+    // …and the index is the PART's position, not the ITEM's. The fixture makes
+    // the two disagree on purpose: two coalescing tool calls collapse to one
+    // item, so the id-less Read below sits at part index 3 and item index 2.
+    // (With a fixture where the two coincide, this assertion cannot fail for
+    // the reason its title claims — which is what it used to be.)
+    const later = groupParts("m7", [tool("A", "t1"), tool("B", "t2"), text("hi"), tool("Read")]);
+    expect(later.map((i) => i.kind)).toEqual(["tools", "text", "tools"]);
+    expect(later[2].key).toBe("m7:3");
+    expect(later[2].key).not.toBe("m7:2");
   });
 });
 
@@ -102,11 +108,19 @@ describe("groupParts — what breaks a group", () => {
 });
 
 describe("parentOf — one definition of 'main thread'", () => {
-  test("a permission part is ALWAYS main, even though it has no parentId field", () => {
+  test("a permission part is ALWAYS main — even one that arrives CARRYING a parentId", () => {
     // canUseTool gets no parent attribution from the SDK, so a permission card
     // raised by a subagent's tool call still renders on Main. Normalising here
     // is what makes grouping, streaming-merge and bucketing agree.
     expect(parentOf(permission("p1"))).toBeUndefined();
+    // The case that makes this a NORMALISATION rather than a restatement of the
+    // type: a permission part with the field set anyway — which the type
+    // forbids and a live wire payload does not — still reports main. Without
+    // this, `parentOf = (p) => p.parentId` would pass every assertion here,
+    // and a permission card would enter a subagent bucket where the donor
+    // rendered nothing (Completion Note 10(d)'s deleted dead arm).
+    const stray = { ...permission("p2"), parentId: "spawn_9" } as unknown as Part;
+    expect(parentOf(stray)).toBeUndefined();
   });
 
   test("a part with a parentId reports it; one without reports undefined", () => {

@@ -74,8 +74,12 @@ export interface Runtime {
   // sendTurn). It needs a field of its own because nothing else here can carry a
   // sentence: `messages` is CompactMsg, whose three variants are all transcript
   // content, and pushing a rejection through as `{ role: "assistant" }` would
-  // disguise a turn that never ran as a model reply. Cleared the moment the next
-  // send starts.
+  // disguise a turn that never ran as a model reply. Cleared the moment THIS
+  // SESSION's next turn begins — by `sendTurn` for a dock-initiated send, and by
+  // the live tail's first event for a turn started anywhere else (both in
+  // session-runtime-host.tsx). It deliberately survives an idle session, because
+  // a sentence about a turn that never ran has to outlive the click that
+  // provoked it.
   error?: string;
 }
 

@@ -243,6 +243,8 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       liveMsgsRef.current = [{ role: "user", text }];
       // Clear any previous rejection as this attempt starts — a stale sentence
       // sitting above a turn that is now streaming reads as a fresh failure.
+      // This is one of TWO clears; the other is in the live tail below, for a
+      // turn this dock did not start (see the `sawEvent` arm in openTail).
       setRuntime(id, { working: true, error: undefined });
       commitLive();
 
@@ -408,7 +410,17 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           if (!alive) return;
           if (!sawEvent) {
             sawEvent = true;
-            setRuntime(id, { working: true });
+            // A TURN IS NOW STREAMING FOR THIS SESSION — whoever started it.
+            // The rejection banner describes a turn that never ran, so it must
+            // not sit above one that is running: `sendTurn` clears it for
+            // dock-initiated sends, and this clears it for a turn started from
+            // the full session view. Both clears are at the same moment (a turn
+            // begins), which is what keeps the field honest from either side.
+            // It stays put while the session is IDLE — this arm only runs when
+            // the tail actually delivers an event, which the /events route only
+            // does for an in-flight block — so the sentence is still durable
+            // long after the failure, as AC9 requires.
+            setRuntime(id, { working: true, error: undefined });
           }
           applyLiveEvent(event, payload);
         });

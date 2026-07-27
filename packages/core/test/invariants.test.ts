@@ -167,6 +167,7 @@ const EXCLUDED_DIRS = new Set([
   "node_modules",
   ".next",
   ".next-desktop",
+  ".next-build",
   "release",
   "dist",
   "build",
@@ -175,6 +176,22 @@ const EXCLUDED_DIRS = new Set([
   "coverage",
   "_bmad-output",
 ]);
+
+// …AND A PATTERN BESIDE THE LIST, because Next's dist directory is CONFIGURABLE.
+// `apps/web/next.config.ts` sets `distDir: process.env.NEXT_DIST_DIR ?? ".next"`
+// and its own comments advertise `NEXT_DIST_DIR=.next-build` and
+// `NEXT_DIST_DIR=.next-desktop` as the way to run a build beside a dev server.
+// A list of literal names is therefore a list of the dist dirs somebody has
+// already thought of. The moment a developer follows the config's own example
+// with a name nobody added here, the walk reads minified build chunks and the
+// scans over apps/web fail on them — INV-8c reports hundreds of pseudo-contexts
+// (`creates React context "r"`) and a green gate turns red for a reason that has
+// nothing to do with the code. (Not hypothetical: story 3.1's own code review
+// produced exactly that with `NEXT_DIST_DIR=.next-review`.) So the rule is
+// BOTH — the literal set above, plus any `.next-*` sibling of it. INV-8i
+// re-derives the names the config advertises and fails if one is not covered.
+const isExcludedDir = (name: string): boolean =>
+  EXCLUDED_DIRS.has(name) || /^\.next-/.test(name);
 
 // ONE TOKENIZER, two uses. It walks source once and can blank comments, string
 // contents, or both — length and line structure always preserved, so offsets
@@ -353,7 +370,7 @@ function walk(rootRel: string, into: SourceFile[]): void {
   while (stack.length) {
     const dir = stack.pop()!;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (EXCLUDED_DIRS.has(entry.name)) continue;
+      if (isExcludedDir(entry.name)) continue;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(abs);
@@ -3779,11 +3796,63 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
 // useSidebar/useDock call in 100+ client files a violation, and the fix would be
 // to weaken the predicate, which is how a guard becomes a decoration.
 //
+// SESSION-VIEW.TSX IS SCANNED AT THE RIGHT GRAIN, not as a whole file. The
+// adapter's job IS to consume session context, so the file cannot be held to
+// AC4; its REGISTERED KIND RENDERERS can, and INV-8b2 extracts exactly those.
+//
+// The sub-checks: a denylist (8a), ambient context in the shell (8b) and in the
+// donor's own kind renderers (8b2), the re-derived inventory the denylist comes
+// from (8c), the discriminator that keeps 8a/8b/8b2 from passing vacuously (8d),
+// config-over-inheritance (8e), the barrel + kind-id exact sets (8f), the
+// donor's stayed/moved split (8g), the closed prop list (8i), the walk's
+// dist-dir exclusions (8j), and the quarantine floor (8h).
+//
 // KNOWN_VIOLATIONS: INV-8 adds none. See INV-8h.
 
 const SHELL_ROOT = "apps/web/components/conversation/";
 const SHELL_FILES = INDEX.filter((f) => f.rel.startsWith(SHELL_ROOT) && !isTestFile(f.rel));
 const SESSION_VIEW_REL = "apps/web/components/session/session-view.tsx";
+
+// ── the kind renderers that live OUTSIDE the shell directory ────────────────
+// §5.5-D12 bounds INV-8 as scanning `components/conversation/**` AND
+// `session-view.tsx`, and the second half was missing: story 3.1 registered
+// `session:agent-bucket` in the donor, which is a file with `useDockOptional()`
+// and `usePromptInputController()` in lexical scope — §5.6-T4 names that as the
+// exact temptation INV-8b exists to catch, and it is the ONE place in the tree
+// where the temptation is real rather than theoretical.
+//
+// The whole file cannot be scanned, and that is not a compromise: the adapter's
+// JOB is to consume session context. What is scanned is each REGISTERED KIND's
+// renderer, extracted by brace-matching from its `: ItemKind<…> = {` declaration
+// — the renderer is the thing AC4 makes a claim about, and its boundary is
+// exactly where the claim starts applying.
+type KindSlice = { name: string; src: string };
+
+function kindRendererSlices(text: string): KindSlice[] {
+  // Comments AND string bodies blanked first, so a `{` inside either cannot
+  // unbalance the brace match and a kind merely DISCUSSED in prose is not found.
+  const code = tokenize(text, true, true);
+  const out: KindSlice[] = [];
+  const DECL = /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*:\s*ItemKind\s*</g;
+  for (const m of code.matchAll(DECL)) {
+    const open = code.indexOf("{", (m.index ?? 0) + m[0].length);
+    if (open === -1) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < code.length; i++) {
+      if (code[i] === "{") depth++;
+      else if (code[i] === "}" && --depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+    if (end === -1) continue;
+    out.push({ name: m[1]!, src: code.slice(open, end) });
+  }
+  return out;
+}
+
+const DONOR_KIND_SLICES = kindRendererSlices(byRel.get(SESSION_VIEW_REL)?.text ?? "");
 
 // THE CLOSED DENYLIST. This is the executable form of "the shell owns no data
 // fetching and no session semantics" (AD-12). If you legitimately need a term on
@@ -3804,6 +3873,47 @@ const SHELL_DENYLIST: ReadonlyArray<[string, string]> = [
   ["accountEnv", "account resolution"],
 ];
 
+/**
+ * The denylist hits in one source. ONE PREDICATE, so INV-8a and its
+ * discriminator INV-8d cannot drift apart — INV-8d's header promises fixtures go
+ * "through the same scan function the real check uses", and a second copy of the
+ * predicate makes that sentence false for half the check. Reads `.code`
+ * (comments blanked, string bodies KEPT), so a URL in a string is caught and a
+ * URL in a header comment is not.
+ */
+function denylistScan(text: string): ReadonlyArray<[string, string]> {
+  const code = stripComments(text);
+  return SHELL_DENYLIST.filter(([needle]) => code.includes(needle));
+}
+
+// "Config over inheritance" (AD-12), as one predicate for the same reason.
+// RESIDUAL, stated rather than implied: `\bextends\b` cannot tell inheritance
+// from a generic constraint (`<T extends U>`) or an interface extension. No file
+// under the shell has either today, so the guard is exact where it runs; the day
+// a legitimate constraint arrives, narrow the predicate deliberately rather than
+// deleting the check — a guard that fires on correct code gets deleted, which is
+// the failure this note exists to pre-empt.
+const INHERITANCE_WORDS = ["class", "extends"] as const;
+
+function inheritanceScan(rel: string, text: string): string[] {
+  const code = stripComments(text);
+  const out: string[] = [];
+  for (const word of INHERITANCE_WORDS) {
+    // `className` is not a false positive: \b requires a non-word character
+    // after `class`.
+    if (new RegExp(`\\b${word}\\b`).test(code)) {
+      out.push(
+        `${rel} uses \`${word}\`. RULE (AD-12): the shell exposes four slots configured by ` +
+          `PROPS, never by inheritance — no subclassing, no extends, no cloneElement of a ` +
+          `caller's tree. CONSEQUENCE: a surface that must SUBCLASS the shell to change it is ` +
+          `a surface that has forked it, which is exactly the six-copies outcome epic 3 ` +
+          `exists to end. NEXT STEP: add a prop, or take the value through the item payload.`,
+      );
+    }
+  }
+  return out;
+}
+
 // ── the ambient-context scan (shared by INV-8b and its discriminator) ───────
 // CODE-ONLY text: comments AND string bodies are blanked, because the question
 // is "does this file CALL a context hook", not "does it mention one". Every
@@ -3817,6 +3927,31 @@ const SHELL_DENYLIST: ReadonlyArray<[string, string]> = [
 // (`useContextHelper(`, `myuseContext(`) still does not match.
 const USE_CONTEXT_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?useContext\s*\(/;
 
+// REACT 19'S `use(Context)` IS THE SAME READ BY A SHORTER NAME. This repo pins
+// react@19.2.4, where `const v = use(SomeContext)` is a first-class context read
+// — and `use(somePromise)` is a first-class data read, which the shell is
+// equally forbidden from doing (AD-12). A scan that knew only `useContext(`
+// would let AC4's ONLY enforcement be walked around by deleting four characters.
+// Same anchoring as above, so `misuse(`, `.use(` on an object and `useState(`
+// are all left alone.
+const REACT_USE_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?use\s*\(/;
+
+// A NAMED HOOK CALL, qualified or bare. The `<ident>.` prefix is the same one
+// USE_CONTEXT_CALL accepts, and it is here for the same reason: the barrel
+// re-exports the whole PromptInput* family, so `import * as ns from
+// "@/components/conversation"` followed by `ns.usePromptInputController()` is
+// one namespace import away — and until this arm accepted the qualified form,
+// the two halves of one guard disagreed about what a call looks like.
+const hookCall = (hook: string): RegExp =>
+  new RegExp(`(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\\s*\\.\\s*)?${escapeRe(hook)}\\s*\\(`);
+
+// RESIDUALS, STATED RATHER THAN IMPLIED — this is a static scan by NAME:
+//   · a hook reached through a local helper this list does not name is invisible
+//     (the same residual INV-7 records about itself);
+//   · the import arm reads THIS file's own import statements, so a context hook
+//     that arrives through a RE-EXPORTING barrel (`export * from …`) is not seen
+//     as an import edge — only its call site is. The call arm is what catches it,
+//     which is why the call arm must stay the broader of the two.
 function ambientContextScan(
   rel: string,
   text: string,
@@ -3824,6 +3959,17 @@ function ambientContextScan(
 ): string[] {
   const code = tokenize(text, true, true);
   const out: string[] = [];
+  if (REACT_USE_CALL.test(code)) {
+    out.push(
+      `${rel} calls use( directly — React 19's context/resource read. RULE (AD-12, and the fix ` +
+        `architecture review's finding A3 made to it): a registered item kind is a PURE FUNCTION ` +
+        `of (payload, view) and reads nothing from ambient context — and fetches nothing. ` +
+        `CONSEQUENCE: \`use(SomeContext)\` is \`useContext(SomeContext)\` by a shorter name, and ` +
+        `\`use(promise)\` is data fetching inside the shell; either one ends with a transcript ` +
+        `that can only render inside one provider. NEXT STEP: move the value into the item ` +
+        `PAYLOAD, which the owner adapter builds.`,
+    );
+  }
   if (USE_CONTEXT_CALL.test(code)) {
     out.push(
       `${rel} calls useContext( directly. RULE (AD-12, and the fix architecture review's ` +
@@ -3836,8 +3982,7 @@ function ambientContextScan(
     );
   }
   for (const hook of hooks) {
-    const called = new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(hook)}\\s*\\(`);
-    if (called.test(code)) {
+    if (hookCall(hook).test(code)) {
       out.push(
         `${rel} calls ${hook}(), which consumes a React context. RULE: same as above — a kind ` +
           `renderer reads nothing ambient. CONSEQUENCE: this file becomes renderable only inside ` +
@@ -3979,6 +4124,67 @@ const EXPECTED_BUILTIN_KIND_IDS = [
   "conversation:marker",
 ].sort();
 
+// ── the shell's prop list, as an exact set ──────────────────────────────────
+// §5.5-D6 pins FOUR SLOTS plus a CLOSED list of non-slot props, and says in as
+// many words that the list is closed "so INV-8 can assert against it" — which
+// nothing did. The only mechanical check that existed was `registry.test.ts`'s
+// `@ts-expect-error` on an UNKNOWN prop name, and that cannot fail when a KNOWN
+// prop is ADDED: it is the wrong direction for the claim D6 makes. This is the
+// other direction. A fifth non-slot prop (`trailing`, disclosed in Completion
+// Note 5(a)) is in the set deliberately; a SIXTH cannot appear without editing
+// this pin, which is what makes adding one a decision rather than a drift.
+const EXPECTED_CONVERSATION_PROPS = [
+  // the four slots — the transcript is ONE slot with two halves
+  "items",
+  "kinds",
+  "composer",
+  "rail",
+  "header",
+  // view configuration, not slots
+  "live",
+  "empty",
+  "trailing",
+  "className",
+].sort();
+
+function conversationPropNames(code: string): string[] {
+  const at = code.indexOf("type ConversationProps");
+  if (at === -1) return [];
+  const open = code.indexOf("{", at);
+  if (open === -1) return [];
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}" && --depth === 0) {
+      end = i;
+      break;
+    }
+  }
+  if (end === -1) return [];
+  // Members at depth 0 only, so a nested object type contributes its own name
+  // and not its fields.
+  const names: string[] = [];
+  let d = 0;
+  let buf = "";
+  const flush = () => {
+    const m = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/.exec(buf);
+    if (m) names.push(m[1]!);
+    buf = "";
+  };
+  for (const ch of code.slice(open + 1, end)) {
+    if (ch === "{" || ch === "(" || ch === "[") d++;
+    else if (ch === "}" || ch === ")" || ch === "]") d--;
+    if (d === 0 && (ch === ";" || ch === "\n")) {
+      flush();
+      continue;
+    }
+    buf += ch;
+  }
+  flush();
+  return [...new Set(names)].sort();
+}
+
 function builtinKindIds(itemsSrc: string): string[] {
   const at = itemsSrc.indexOf("CONVERSATION_KINDS");
   if (at === -1) return [];
@@ -3992,14 +4198,29 @@ function builtinKindIds(itemsSrc: string): string[] {
 // Both directions in one place, because a carve-out fails in two ways and only
 // checking one of them is how you end up with a shell that quietly learned about
 // sessions, or an adapter that quietly kept its render loop.
-const STAYED_IN_ADAPTER: ReadonlyArray<[string, string]> = [
+// The third element is HOW MANY, and it is not decoration: AC6's own wording is
+// "**both** `new EventSource(` sites", and a bare `includes()` is satisfied by
+// one — so deleting a live subscriber passed the invariant that names it. A
+// count is the only form of that claim that says what it means.
+const STAYED_IN_ADAPTER: ReadonlyArray<[string, string, number?]> = [
   ["applyServerEvent", "the SSE switch"],
   ["consumeSSE", "the wire reader"],
   ['fetch("/api/chat"', "the turn POST"],
-  ["new EventSource(", "the live subscribers"],
+  ["new EventSource(", "the live subscribers — BOTH of them", 2],
   ["setSessionCost", "the ledger readout (story 1.1's set-not-accumulate)"],
 ];
 
+const countOccurrences = (haystack: string, needle: string): number =>
+  needle.length === 0 ? 0 : haystack.split(needle).length - 1;
+
+// ONE ROW HERE CONTRADICTS §5.5-D7's table, deliberately and with the record
+// corrected rather than the invariant bent: D7 lists `AgentStepRow` in the
+// STAYED column, and it MOVED — it is a leaf rendering with no session
+// awareness (it takes `onSelect` as a prop, exactly as `ToolStepGroup` takes
+// `agentSteps`/`onSelectAgent`), and leaving it behind would have split one
+// tool-group rendering across two files. The move is what shipped, this is what
+// asserts it, and story 3.1's Completion Notes now say so — an invariant that
+// asserts the opposite of the design record is a coin-flip for the next reader.
 const MOVED_OUT_OF_ADAPTER: ReadonlyArray<[string, string]> = [
   ["function groupParts", "the transcript projection"],
   ["type RenderItem", "the projection's union"],
@@ -4032,8 +4253,7 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
 
     const violations: string[] = [];
     for (const f of SHELL_FILES) {
-      for (const [needle, what] of SHELL_DENYLIST) {
-        if (!f.code.includes(needle)) continue;
+      for (const [needle, what] of denylistScan(f.text)) {
         violations.push(
           `${f.rel} contains "${needle}" — ${what}. RULE (AD-12): the shell owns scrolling, ` +
             `auto-follow and streaming affordances, and owns NO data fetching and NO session ` +
@@ -4054,6 +4274,33 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     // DERIVED (INV-8c), never restated.
     const violations = SHELL_FILES.flatMap((f) =>
       ambientContextScan(f.rel, f.text, CONTEXT_HOOKS),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  test("INV-8b2 a kind renderer registered OUTSIDE the shell is held to the same rule", () => {
+    // ANTI-VACUITY FIRST, because this scan reads a SLICE rather than a file:
+    // an extractor that finds nothing would assert nothing, and the adapter is
+    // precisely the file where a hook call would compile.
+    if (DONOR_KIND_SLICES.length < 1) {
+      throw new Error(
+        `INV-8b2: no \`: ItemKind<…> = {\` declaration found in ${SESSION_VIEW_REL}, so the ` +
+          `renderer scan below is running over nothing. RULE (§5.5-D12): INV-8 scans ` +
+          `components/conversation/** AND session-view.tsx — the adapter is the one file where a ` +
+          `renderer has useDockOptional() and usePromptInputController() in lexical scope. ` +
+          `CONSEQUENCE: AC4's only enforcement stops covering the only place its failure is ` +
+          `reachable. NEXT STEP: if the donor stopped registering a kind of its own, say so here ` +
+          `deliberately; if the declaration shape changed, fix kindRendererSlices — do not delete ` +
+          `this test.`,
+      );
+    }
+    // The positive control: the extractor really found the story's own kind, and
+    // really captured its BODY rather than an empty match.
+    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("agentBucketKind");
+    expect(DONOR_KIND_SLICES.every((s) => s.src.length > 40)).toBe(true);
+
+    const violations = DONOR_KIND_SLICES.flatMap((s) =>
+      ambientContextScan(`${SESSION_VIEW_REL} :: ${s.name}`, s.src, CONTEXT_HOOKS),
     );
     expect(violations).toEqual([]);
   });
@@ -4137,19 +4384,61 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     expect(scan(`const help = "do not call ${ctxCall}() here";`)).toEqual([]);
     // The QUALIFIED form is a call too — two of the eight contexts in this tree
     // are consumed exactly that way, so a scan blind to it would be blind to a
-    // one-token evasion as well.
+    // one-token evasion as well. BOTH halves of the guard accept it: the
+    // useContext arm and the named-hook arm, which disagreed until the qualified
+    // form was factored into `hookCall`.
     expect(scan(`const v = React.${ctxCall}(SomeCtx);`).length).toBe(1);
+    expect(scan(`const d = ns.${dockHook}();`).length).toBe(1);
+    expect(scan(`const d = ns . ${dockHook} ();`).length).toBe(1);
     // …but a name that merely CONTAINS the word is not.
     expect(scan(`const v = my${ctxCall}(SomeCtx);`)).toEqual([]);
     expect(scan(`const v = ${ctxCall}Helper(SomeCtx);`)).toEqual([]);
+    expect(scan(`const d = ${dockHook}Optional2();`)).toEqual([]);
+    // REACT 19's `use(Context)` is the same read by a shorter name, and it is
+    // reported — bare and qualified — because AC4's only enforcement cannot be
+    // four characters away from being walked around.
+    const useCall = "us" + "e";
+    expect(scan(`const v = ${useCall}(SomeCtx);`).length).toBe(1);
+    expect(scan(`const v = ${useCall}(SomeCtx);`)[0]).toContain("React 19");
+    expect(scan(`const v = React.${useCall}(SomeCtx);`).length).toBe(1);
+    // …and the words that merely contain it are not: useState/useRef/useMemo,
+    // an identifier ending in `use`, and a mention in prose.
+    expect(scan(`const [a, b] = ${useCall}State(0);\nconst r = ${useCall}Ref(null);`)).toEqual([]);
+    expect(scan(`const v = ab${useCall}(x);`)).toEqual([]);
+    expect(scan(`// never call ${useCall}( on a context here\n`)).toEqual([]);
     // …and an ordinary, permitted hook must NOT be reported, or the invariant
     // would be "no hooks at all" and would get deleted rather than fixed.
     expect(scan(`const [a, b] = useState(0);\nconst r = useRef(null);`)).toEqual([]);
 
-    // The DENYLIST scanner, same treatment. It reads `.code` (comments blanked,
-    // strings kept), so a URL in a string is caught and a URL in prose is not.
-    const denyScan = (src: string) =>
-      SHELL_DENYLIST.filter(([needle]) => stripComments(src).includes(needle)).map(([n]) => n);
+    // The KIND-SLICE extractor is a scanner too, so it gets both directions as
+    // well: a renderer registered outside the shell is found and scanned, and a
+    // kind merely MENTIONED in prose is not.
+    const decl = (body: string) => `const probeKind: ItemKind<P> = ${body};`;
+    expect(kindRendererSlices(decl(`{ id: "loom:x", render: () => null }`)).length).toBe(1);
+    expect(kindRendererSlices(decl(`{ id: "loom:x", render: () => null }`))[0]!.name).toBe(
+      "probeKind",
+    );
+    expect(kindRendererSlices(`// const probeKind: ItemKind<P> = { … }\n`)).toEqual([]);
+    // …the slice really carries the renderer's body, so the scan over it is not
+    // running over an empty string…
+    expect(
+      ambientContextScan(
+        "fixture.tsx",
+        kindRendererSlices(decl(`{ id: "loom:x", render: () => ${dockHook}() }`))[0]!.src,
+        CONTEXT_HOOKS,
+      ).length,
+    ).toBe(1);
+    // …and nested braces (every JSX renderer has them) do not truncate it.
+    const nested = kindRendererSlices(
+      decl(`{ id: "loom:x", render: (p) => (<div>{p.items.map((i) => ({ i }))}</div>) }`),
+    );
+    expect(nested.length).toBe(1);
+    expect(nested[0]!.src.endsWith("}")).toBe(true);
+    expect(nested[0]!.src).toContain("items.map");
+
+    // The DENYLIST scanner, same treatment — and through the SAME function the
+    // real check calls, not a second copy of the predicate beside it.
+    const denyScan = (src: string) => denylistScan(src).map(([n]) => n);
     expect(denyScan(`const r = await fetch("/api/chat");`).sort()).toEqual(["/api/", "fetch("]);
     expect(denyScan(`const es = new EventSource(u);`)).toEqual(["new EventSource"]);
     expect(denyScan(`function f(sessionId: string) {}`)).toEqual(["sessionId"]);
@@ -4158,22 +4447,37 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
   });
 
   test("INV-8e the shell is configured by PROPS, never by inheritance", () => {
-    // "Config over inheritance" (AD-12), made mechanical. `className` is not a
-    // false positive: \b requires a non-word character after `class`.
-    const violations: string[] = [];
-    for (const f of SHELL_FILES) {
-      for (const word of ["class", "extends"]) {
-        if (new RegExp(`\\b${word}\\b`).test(f.code)) {
-          violations.push(
-            `${f.rel} uses \`${word}\`. RULE (AD-12): the shell exposes four slots configured by ` +
-              `PROPS, never by inheritance — no subclassing, no extends, no cloneElement of a ` +
-              `caller's tree. CONSEQUENCE: a surface that must SUBCLASS the shell to change it is ` +
-              `a surface that has forked it, which is exactly the six-copies outcome epic 3 ` +
-              `exists to end. NEXT STEP: add a prop, or take the value through the item payload.`,
-          );
-        }
-      }
+    // FLOOR, POSITIVE CONTROL AND DISCRIMINATOR — §5.4-E makes all three
+    // mandatory ("a scan without all three is a decoration"), and this was the
+    // one INV-8 sub-check that shipped with none of them.
+    if (SHELL_FILES.length < 6) {
+      throw new Error(
+        `INV-8e: only ${SHELL_FILES.length} non-test files under ${SHELL_ROOT} (floor 6) — the ` +
+          `walk is broken or the directory moved, and every assertion below would hold over the ` +
+          `empty set. NEXT STEP: fix SHELL_ROOT; do not relax the floor.`,
+      );
     }
+    // POSITIVE CONTROL: the shell's own component file is scanned, and it passes
+    // for the reason claimed — it is full of `className`, which the word
+    // boundary is what excuses.
+    const shell = byRel.get(`${SHELL_ROOT}conversation.tsx`);
+    expect(shell).toBeDefined();
+    expect(shell!.code).toContain("className");
+    expect(inheritanceScan("control", shell!.text)).toEqual([]);
+
+    // DISCRIMINATOR, both directions, through the SAME function — fixtures
+    // assembled at runtime so this file's own text cannot trip the scan it is
+    // testing.
+    const kw = "ex" + "tends";
+    const cls = "cl" + "ass";
+    expect(inheritanceScan("fixture.tsx", `${cls} Shell ${kw} React.Component {}`).length).toBe(2);
+    expect(inheritanceScan("fixture.tsx", `${cls} Shell {}`).length).toBe(1);
+    expect(inheritanceScan("fixture.tsx", `<div ${cls}Name="x" />`)).toEqual([]);
+    // …and a MENTION is not a declaration: comments are blanked before the scan,
+    // which matters because every header in this directory argues the rule.
+    expect(inheritanceScan("fixture.tsx", `// never ${kw} the shell — configure it\n`)).toEqual([]);
+
+    const violations = SHELL_FILES.flatMap((f) => inheritanceScan(f.rel, f.text));
     expect(violations).toEqual([]);
   });
 
@@ -4226,9 +4530,12 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
       );
     }
 
-    const missing = STAYED_IN_ADAPTER.filter(([needle]) => !donor.code.includes(needle)).map(
-      ([needle, what]) =>
-        `${SESSION_VIEW_REL} NO LONGER contains "${needle}" — ${what}. RULE (AC6): the carve-out ` +
+    const missing = STAYED_IN_ADAPTER.filter(
+      ([needle, , min]) => countOccurrences(donor.code, needle) < (min ?? 1),
+    ).map(
+      ([needle, what, min]) =>
+        `${SESSION_VIEW_REL} contains "${needle}" ${countOccurrences(donor.code, needle)} ` +
+        `time(s), expected at least ${min ?? 1} — ${what}. RULE (AC6): the carve-out ` +
           `moved the RENDER SEAM and nothing else; route, state and API stayed in the adapter. ` +
           `CONSEQUENCE: session semantics have followed the transcript into the shell, which ` +
           `INV-8a forbids from the other side — between them the two assertions mean the ` +
@@ -4248,9 +4555,94 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     expect(leftBehind).toEqual([]);
 
     // The positive half of the same claim: the adapter really does render the
-    // shell, through the one import path.
+    // shell, through the one import path. The element test is anchored on the
+    // character AFTER the name, because a bare `toContain("<Conversation")` is
+    // satisfied by `<ConversationEmptyState`, which this adapter also renders —
+    // so the control would have passed with the shell deleted.
     expect(donor.code).toContain('from "@/components/conversation"');
-    expect(donor.code).toContain("<Conversation");
+    expect(/<Conversation[\s/>]/.test(donor.code)).toBe(true);
+    // …and it renders it as a TRANSCRIPT: both halves of the one slot that is a
+    // pair. Either alone would not compile, which is exactly why asserting them
+    // proves the render site is the real one rather than a stray element.
+    expect(donor.code).toContain("items={");
+    expect(donor.code).toContain("kinds={");
+  });
+
+  test("INV-8i ConversationProps is the CLOSED prop list §5.5-D6 declares", () => {
+    const conv = byRel.get(`${SHELL_ROOT}conversation.tsx`);
+    if (!conv) {
+      throw new Error(
+        `INV-8i: ${SHELL_ROOT}conversation.tsx is not in the index — the shell's prop contract ` +
+          `lives there and cannot be checked. NEXT STEP: find where the shell moved and update ` +
+          `the path; do not delete this test.`,
+      );
+    }
+    const found = conversationPropNames(conv.code);
+    // ANTI-VACUITY: a parser that finds nothing would make the equality below a
+    // statement about the empty set, and this claim's whole point is that a
+    // SIXTH non-slot prop cannot land quietly.
+    if (found.length < 9) {
+      throw new Error(
+        `INV-8i: parsed only ${found.length} members out of ConversationProps (floor 9, ` +
+          `measured 9): ${JSON.stringify(found)}. The PARSER is broken, not the contract — ` +
+          `every assertion below would hold over a short list. NEXT STEP: fix ` +
+          `conversationPropNames.`,
+      );
+    }
+    // DISCRIMINATOR, both directions, through the same parser — assembled at
+    // runtime so this file's own text is not what is being read.
+    const fixture = (extra: string) =>
+      `export type ConversationProps = {\n  items: readonly T[];\n  kinds: R;\n${extra}};\n`;
+    expect(conversationPropNames(fixture(""))).toEqual(["items", "kinds"]);
+    expect(conversationPropNames(fixture("  sessionId?: string;\n"))).toEqual([
+      "items",
+      "kinds",
+      "sessionId",
+    ]);
+    // …a nested object type contributes its own name and not its fields, so the
+    // pin cannot be satisfied or broken by something one level down.
+    expect(conversationPropNames(fixture("  view: { live: boolean; busy: boolean };\n"))).toEqual([
+      "items",
+      "kinds",
+      "view",
+    ]);
+
+    expect(found).toEqual(EXPECTED_CONVERSATION_PROPS);
+    // The four slots by name, so the failure says WHICH half of D6 moved: a
+    // renamed slot and an added non-slot prop are different mistakes.
+    for (const slot of ["items", "kinds", "composer", "rail", "header"]) {
+      expect(found).toContain(slot);
+    }
+  });
+
+  test("INV-8j the scan index skips every dist dir next.config.ts advertises", () => {
+    // SF-6's guard, and it is maxim 3 applied to the WALK: the invariant suite
+    // reads a tree whose build-output directory name is configurable, and the
+    // config's own comments are where a developer learns the names. If the two
+    // disagree, INV-8c fails on minified chunks (`creates React context "r"`)
+    // and a green gate turns red for a reason unrelated to the code.
+    const cfgRel = "apps/web/next.config.ts";
+    const cfg = byRel.get(cfgRel);
+    if (!cfg) {
+      throw new Error(
+        `INV-8j: ${cfgRel} is not in the index, so the dist-dir names it advertises cannot be ` +
+          `re-derived. NEXT STEP: update the path; do not delete this test.`,
+      );
+    }
+    // Re-DERIVED from the config's own text (comments included — that is where
+    // the examples live), never restated here.
+    const advertised = [...cfg.text.matchAll(/NEXT_DIST_DIR=([.\w-]+)/g)].map((m) => m[1]!);
+    expect(advertised.length).toBeGreaterThanOrEqual(2);
+    const missed = advertised.filter((name) => !isExcludedDir(name));
+    expect(missed).toEqual([]);
+    // The default, and the shape of every sibling.
+    expect(isExcludedDir(".next")).toBe(true);
+    expect(isExcludedDir(".next-build")).toBe(true);
+    expect(isExcludedDir(".next-anything-a-developer-picks")).toBe(true);
+    // …and the pattern is not a blanket: real source directories still walk.
+    expect(isExcludedDir("components")).toBe(false);
+    expect(isExcludedDir("next")).toBe(false);
+    expect(isExcludedDir(".nextish")).toBe(false);
   });
 
   test("INV-8h the quarantine did not grow — INV-8 added no KNOWN_VIOLATIONS entry", () => {

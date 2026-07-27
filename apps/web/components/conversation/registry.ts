@@ -68,12 +68,20 @@ export type ItemViewState = {
   isOpen: (key: string, fallback?: boolean) => boolean;
   setOpen: (key: string, next: boolean) => void;
   /**
-   * Render a nested item through the SAME registry, optionally overriding view
-   * state for that child. COMPOSITE kinds use this; leaf kinds ignore it. It is
-   * supplied BY THE SHELL — it is shell-provided view state, not ambient
-   * context, so AD-12's purity rule holds. Without it, a kind containing other
-   * items would have to get the registry from "somewhere", and "somewhere" is
-   * exactly the ambient context AC4 forbids.
+   * Render a nested item through the SAME registry. COMPOSITE kinds use this;
+   * leaf kinds ignore it. It is supplied BY THE SHELL — it is shell-provided
+   * view state, not ambient context, so AD-12's purity rule holds. Without it,
+   * a kind containing other items would have to get the registry from
+   * "somewhere", and "somewhere" is exactly the ambient context AC4 forbids.
+   *
+   * `override.live` DEFAULTS TO FALSE, and that is a decision rather than an
+   * omission: liveness is a property of POSITION ("the trailing item of the
+   * turn being streamed into"), which only the composite knows for its own
+   * children. Inheriting the parent's flag would mark every child of a live
+   * turn live — a spinner on every finished tool group. So a composite that
+   * wants per-child liveness computes it, as `conversation:turn` does with
+   * `isTrailingItem`; `view.render(child)` alone renders a child that is
+   * correctly NOT the live tail.
    */
   render: (item: TranscriptItem, override?: { live?: boolean }) => ReactNode;
 };
@@ -99,7 +107,8 @@ export type ItemKindRegistry = {
 type AnyItemKind = ItemKind<never>;
 
 const RULE_HINT =
-  "Ids are `<module>:<name>` with exactly one colon and both halves non-empty, " +
+  "Ids are `<module>:<name>` with exactly one colon, both halves non-empty and " +
+  "neither half padded with whitespace, " +
   `and <module> must be one of: ${MODULE_NAMESPACES.join(", ")}.`;
 
 /**
@@ -140,11 +149,30 @@ export function createItemKindRegistry(entries: readonly AnyItemKind[]): ItemKin
     }
 
     const [moduleSegment, nameSegment] = segments as [string, string];
-    if (moduleSegment.length === 0 || nameSegment.length === 0) {
+    // WHITESPACE IS EMPTINESS HERE, and a padded segment is worse than an empty
+    // one. `"conversation:   "` and `"loom:gate-card "` both pass a bare
+    // `.length === 0` check, register cleanly and appear in `ids()` — while
+    // every item minted as the id the author MEANT misses in the Map and renders
+    // AD-8's tombstone. That is a tombstone for a kind the author can see
+    // registered, which is the hardest possible version of this miss to
+    // diagnose, and it is the same typo class the closed MODULE_NAMESPACES
+    // vocabulary catches on the other half of the id.
+    if (moduleSegment.trim().length === 0 || nameSegment.trim().length === 0) {
       throw new Error(
-        `createItemKindRegistry: kind id "${id}" has an empty ${moduleSegment.length === 0 ? "module" : "name"} ` +
+        `createItemKindRegistry: kind id "${id}" has an empty ${moduleSegment.trim().length === 0 ? "module" : "name"} ` +
           `segment. ${RULE_HINT} CONSEQUENCE: an empty half is indistinguishable from a typo and ` +
-          `defeats the namespace check below it. NEXT STEP: give both halves a real name.`,
+          `defeats the namespace check below it. A whitespace-only half is worse: it LOOKS like a ` +
+          `name and registers as one. NEXT STEP: give both halves a real name.`,
+      );
+    }
+    if (moduleSegment !== moduleSegment.trim() || nameSegment !== nameSegment.trim()) {
+      const cleaned = `${moduleSegment.trim()}:${nameSegment.trim()}`;
+      throw new Error(
+        `createItemKindRegistry: kind id "${id}" has whitespace around a segment. ${RULE_HINT} ` +
+          `CONSEQUENCE: the padded id registers and shows up in ids(), so it reads as a live ` +
+          `registration — while the shell looks up the id your items actually carry, misses, and ` +
+          `renders AD-8's tombstone for a kind you can see in the list. NEXT STEP: register it as ` +
+          `"${cleaned}".`,
       );
     }
     if (!(MODULE_NAMESPACES as readonly string[]).includes(moduleSegment)) {
@@ -174,6 +202,9 @@ export function createItemKindRegistry(entries: readonly AnyItemKind[]): ItemKin
 
   return {
     get: (kind: string) => byId.get(kind),
-    ids: () => order,
+    // A COPY, not the live array. `readonly ItemKindId[]` is a compile-time
+    // promise only, and the gallery and the tests both hold this value — one
+    // `.splice()` on a returned reference would reorder the registry itself.
+    ids: () => [...order],
   };
 }

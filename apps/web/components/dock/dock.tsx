@@ -359,8 +359,11 @@ function DockPanel({ entry }: { entry: DockEntry }) {
       </div>
 
       {/* A turn the route rejected before the stream opened. It sits between the
-          transcript and the composer — next to the message that did not send,
-          not inside the transcript, because it is not something anyone said. */}
+          transcript and the composer — at the seam where the send happened,
+          not inside the transcript, because it is not something anyone said.
+          It is NOT beside the typed text: the live overlay drops that when the
+          tail re-arms (~6s, measured), which is the residual story 3.1 records
+          in deferred-work.md rather than claims to have fixed. */}
       {rt?.error && (
         <div className="shrink-0 border-t border-destructive/30 bg-destructive/10 px-3.5 py-2 text-[11px] text-destructive">
           Message not sent — {rt.error}

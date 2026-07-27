@@ -147,13 +147,34 @@ function withRespond(
   });
 }
 
+/** The one configuration that renders READ-ONLY. */
+export const READ_ONLY_CONFIG = "conversation-readonly" as const;
+
+/**
+ * The items a lane hands the shell — and the decision that makes configuration 3
+ * read-only, in a PURE FUNCTION rather than in a ternary only a rendered tree
+ * could observe. That matters because AC4's visible proof is not "the fixtures
+ * happen to carry no callback" (they are literals; of course they do not) but
+ * "the SAME items, minus one callback, render as a non-interactive transcript".
+ * Asserting the fixture proves the first and nothing about the second; calling
+ * this proves both directions, which is what `fixtures.validate.test.ts` does.
+ */
+export function laneItems(
+  config: ConversationConfig,
+  resolved: Record<string, "allowed" | "denied">,
+  onRespond: PermissionPayload["onRespond"],
+): readonly TranscriptItem[] {
+  const source = CONVERSATION_FIXTURES[config];
+  return config === READ_ONLY_CONFIG ? source : withRespond(source, resolved, onRespond);
+}
+
 function ConversationLane({
   config,
   header,
   composer,
   rail,
   trailing,
-  readOnly,
+  live,
   empty,
 }: {
   config: ConversationConfig;
@@ -161,16 +182,13 @@ function ConversationLane({
   composer?: React.ReactNode;
   rail?: React.ReactNode;
   trailing?: React.ReactNode;
-  readOnly?: boolean;
+  live?: boolean;
   empty?: React.ReactNode;
 }) {
   const [resolved, setResolved] = useState<Record<string, "allowed" | "denied">>({});
-  const source = CONVERSATION_FIXTURES[config];
-  const items = readOnly
-    ? source
-    : withRespond(source, resolved, (id, behavior) =>
-        setResolved((prev) => ({ ...prev, [id]: behavior === "allow" ? "allowed" : "denied" })),
-      );
+  const items = laneItems(config, resolved, (id, behavior) =>
+    setResolved((prev) => ({ ...prev, [id]: behavior === "allow" ? "allowed" : "denied" })),
+  );
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -181,6 +199,7 @@ function ConversationLane({
         composer={composer}
         rail={rail}
         trailing={trailing}
+        live={live}
         empty={empty}
       />
     </div>
@@ -188,11 +207,19 @@ function ConversationLane({
 }
 
 // 1 — the donor: header + full composer + the production rail, every kind.
+//
+// THE ONE LANE THAT STREAMS. `live` is the shell's whole streaming affordance —
+// it marks the LAST top-level item live, the turn renderer derives `isTrailing`
+// from there, and the trailing tool group therefore renders auto-OPEN with its
+// unfinished `Edit` row spinning. Without a lane that sets it, three behaviours
+// (the auto-open default, `isOpen`'s varying fallback, and `isTrailingItem`'s
+// permission-tolerant tail rule) would be invisible until a real session ran.
 export function ConversationFullDemo() {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <ConversationLane
       config="conversation-full"
+      live
       header={<LaneHeader title="Project session" note="header · composer · rail · every kind" />}
       composer={<FullComposer placeholder="Ask about telar… (“/” for commands)" />}
       rail={
@@ -224,8 +251,7 @@ export function ConversationMinimalDemo() {
 export function ConversationReadOnlyDemo() {
   return (
     <ConversationLane
-      config="conversation-readonly"
-      readOnly
+      config={READ_ONLY_CONFIG}
       header={<LaneHeader title="Agent transcript" note="no composer · no rail · read-only approvals" />}
     />
   );

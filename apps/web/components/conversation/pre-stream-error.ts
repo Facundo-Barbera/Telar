@@ -10,11 +10,20 @@
 // WHY IT NEVER THROWS. It is called on the failure path, where a second failure
 // has nowhere to go — a rethrow here would replace one silent loss with a
 // different silent loss. Every branch returns a string a human can read:
-//   · response ok                 → null (there is no error to surface)
+//   · ok AND a body               → null (there is a stream; nothing to surface)
+//   · ok with NO body             → a status-bearing line saying no stream came
 //   · body parses as {error: "…"} → that sentence, the server's own words
 //   · anything else               → a status-bearing line, never undefined
 // A body that rejects on `.json()` (already consumed, truncated, disconnected)
 // lands in the last branch like any other unparseable body.
+//
+// WHY THE SUCCESS TEST IS `ok && body` AND NOT `ok`. It has to match the guard
+// it backstops exactly. The dock drains on `if (res.ok && res.body)` and hands
+// EVERYTHING ELSE here, so a narrower test here leaves a gap between the two:
+// a 200 carrying a null body would be drained by neither and explained by
+// neither, and the user's typed message would disappear with no error — the
+// precise swallow this helper exists to close, surviving on a narrow path. Two
+// guards on one decision must read the same value (story 3.1's maxim 3).
 //
 // WHY IT IS A PURE FUNCTION OF A `Response`. It fetches nothing and resolves no
 // URL — the caller hands it a response it already has. That is what makes it
@@ -29,8 +38,9 @@
 // a shared helper is still a shared helper.
 
 export async function readPreStreamError(res: Response): Promise<string | null> {
-  if (res.ok) return null;
+  if (res.ok && res.body) return null;
   const status = `HTTP ${res.status}`;
+  if (res.ok) return `${status} — the turn was accepted but no stream arrived.`;
   try {
     const body: unknown = await res.json();
     const error = (body as { error?: unknown } | null)?.error;
