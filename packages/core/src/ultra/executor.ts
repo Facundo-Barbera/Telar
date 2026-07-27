@@ -89,11 +89,45 @@ export type UltraEvent =
   | { type: "phase"; title: string }
   | { type: "log"; msg: string }
   | { type: "state"; state: UltraState }
+  // AN ORDINAL HAS BEGUN — new in story 4.2, and the ONLY reason the engine was
+  // opened for a UI story. Before it, an agent emitted NOTHING until it settled,
+  // so a running agent was invisible on `events.ndjson` and the frozen session-UI
+  // contract's per-agent live row had no data source at all. The alternatives
+  // were both forbidden: fabricate the row (hard rule 3, "no placebo") or drop a
+  // clause of a frozen contract.
+  //
+  // EMITTED ONCE PER ORDINAL, IMMEDIATELY BEFORE ITS FIRST LIVE ATTEMPT, AND
+  // NEVER ON THE CACHED-REPLAY PATH — that path returns early, above, having
+  // spent nothing and started nothing. So on a resume a replayed ordinal carries
+  // only its `agent` event, and a projection keyed on `ordinal` sees one row
+  // either way.
+  //
+  // IT CARRIES NO `settleId` AND MUST NOT. A settleId names A BILLING, minted at
+  // the moment the money is spent; nothing has been spent when this fires, and
+  // an id minted here would name a slot (see the `settleId` doc below, which is
+  // the record of a money bug repaired three times). Nothing folds, dedupes or
+  // bills off this event — it is narration.
+  | {
+      type: "agent-start";
+      ordinal: number;
+      label?: string;
+      model: string;
+      // Display metadata, journaled nowhere else. `UltraAgentOpts` accepts it
+      // and the engine deliberately never sees it (see `engineOpts` below and
+      // ultra-executor.test.ts's `expect("effort" in seen[0]!).toBe(false)`),
+      // so before story 4.2 it was accepted and then dropped on the floor. The
+      // rail's `model·effort` chip is the first reader it has ever had.
+      effort?: string;
+    }
   | {
       type: "agent";
       ordinal: number;
       label?: string;
       model: string;
+      // Same field, same reason, on the settle event — so a reader that joined
+      // the stream after an ordinal started (the anchor's SSE tail opens
+      // mid-run) still gets the chip. Still NOT passed to the engine.
+      effort?: string;
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
       costUsd?: number;
       turns?: number;
@@ -269,6 +303,11 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           ordinal,
           ...(uOpts.label ? { label: uOpts.label } : {}),
           model: uOpts.model,
+          // Read off THIS run's opts, not off the journal record — a resume
+          // re-runs the script, so the call that hash-matched supplied it again.
+          // The journal has never carried it and this story does not add it
+          // there: `effort` is display metadata, not part of a settle's identity.
+          ...(uOpts.effort ? { effort: uOpts.effort } : {}),
           ok: cached.result !== null,
           ...(cached.costUsd !== undefined ? { costUsd: cached.costUsd } : {}),
           ...(cached.turns !== undefined ? { turns: cached.turns } : {}),
@@ -296,6 +335,26 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       }
       ctl.cacheValid = false; // first miss invalidates this AND every later ordinal
     }
+
+    // THIS ORDINAL IS ABOUT TO RUN LIVE (story 4.2). Every early return above is
+    // a cache replay that spends nothing and starts nothing, so this is the
+    // first statement on the live path and therefore the honest place to say
+    // "begun". It precedes `engineOpts`, `runOnce` and the retry loop
+    // deliberately: the rail's row must exist for the whole time the agent is
+    // working, not from the moment the first engine event happens to arrive.
+    //
+    // `effort` rides the EVENT and still never reaches `engineOpts` below — that
+    // asymmetry is the child posture NFR-UW-4 fixes and
+    // `ultra-executor.test.ts`'s `expect("effort" in seen[0]!).toBe(false)` pins
+    // it. Emitting it here does not change what the child is told; it changes
+    // what the human is shown.
+    opts.onEvent?.({
+      type: "agent-start",
+      ordinal,
+      ...(uOpts.label ? { label: uOpts.label } : {}),
+      model: uOpts.model,
+      ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+    });
 
     // Only the doc's allowed opts reach the engine. effort/phase are journaled
     // display metadata (no SDK field); isolation → worktree in a later cut.
@@ -392,6 +451,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ordinal,
       ...(uOpts.label ? { label: uOpts.label } : {}),
       model: uOpts.model,
+      ...(uOpts.effort ? { effort: uOpts.effort } : {}),
       ok: result !== null,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),

@@ -81,6 +81,24 @@ export interface Runtime {
   // a sentence about a turn that never ran has to outlive the click that
   // provoked it.
   error?: string;
+  // Story 4.2 / AC7 (FR-UW-6) — this session's LIVE ULTRA RUN summary, as one
+  // already-rendered line: `name · state · spend` for a single run, or
+  // "N runs live" with the summed spend. Written by
+  // `components/common/ultra-dock-signal.tsx` (the app-wide poller, mounted once
+  // in the root layout) and read by the head in `dock.tsx`.
+  //
+  // A STRING AND NOT A STRUCTURE, deliberately. The projection that decides it
+  // is `summarizeRuns` in `@/lib/ultra-runs`, which is pure and tested; the dock
+  // renders what it is given. A shape here would put the 1-vs-N rule and the
+  // spend unit inside a component with no test harness.
+  //
+  // Absent/empty ⇒ the head renders exactly what it renders today. Note this is
+  // the FIRST spend the dock has ever rendered: `cost` above is declared,
+  // defaulted twice, written once and read NOWHERE.
+  ultraSummary?: string;
+  // The run to focus on arrival, appended to the tap's URL as `?run=`. Absent
+  // when several runs are live — there is no single one to focus.
+  ultraFocusRunId?: string;
 }
 
 interface DockCtx {

@@ -154,7 +154,7 @@ describe("Ultra storage — manifest.result carries the terminal outcome (doc §
   });
 });
 
-describe("Ultra storage — events.ndjson tails phase/log/agent/state in order", () => {
+describe("Ultra storage — events.ndjson tails phase/agent-start/log/agent/state in order", () => {
   test("readUltraEvents returns everything from offset 0, then only new lines after", async () => {
     const script = `${META}\nexport default async function ({ agent, phase, log }) {\n  phase("Phase 1");\n  await agent("p", { model: "sonnet" });\n  log("done");\n  return 1;\n}`;
     const res = await launchUltra({ script, agent: costedFake(0.02) });
@@ -163,7 +163,20 @@ describe("Ultra storage — events.ndjson tails phase/log/agent/state in order",
 
     const { events, nextLine } = readUltraEvents(res.runId, 0);
     const types = events.map((e) => e.type);
-    expect(types).toEqual(["phase", "agent", "log", "state"]);
+    // THIS EXPECTATION CHANGED IN STORY 4.2, and so did this describe's title.
+    // It was `["phase", "agent", "log", "state"]`, and that was RIGHT for its
+    // story: before 4.2 an agent emitted NOTHING until it settled, so an
+    // ordinal was literally invisible on this stream while it worked. It is
+    // wrong now because that invisibility was the defect — the frozen session-UI
+    // contract's per-agent LIVE row had no data source, and 4.2's `agent-start`
+    // is the one additive engine change that gives it one.
+    //
+    // KEPT AS AN ORDERED `toEqual` DELIBERATELY. Weakening it to `toContain`, or
+    // making `agent-start` conditional to preserve the old array, would discard
+    // the only claim that matters: that `agent-start` PRECEDES its own `agent`.
+    // An unordered assertion cannot say that, and that ordering is the whole
+    // reason the event exists.
+    expect(types).toEqual(["phase", "agent-start", "agent", "log", "state"]);
     expect(events.every((e) => typeof e.ts === "number")).toBe(true);
 
     const tail = readUltraEvents(res.runId, nextLine);
@@ -186,6 +199,95 @@ describe("Ultra storage — agents/<ordinal>.ndjson per-agent transcript", () =>
     const transcript = readUltraAgentTranscript(res.runId, 0);
     expect(transcript.map((e) => e.type)).toEqual(["text", "result"]);
     expect(transcript.every((e) => e.attempt === 1)).toBe(true);
+  });
+});
+
+// ── story 4.2 / AC3 — the "which ordinals have BEGUN" reader ───────────────
+//
+// THE BARREL IS PROVED, NOT ASSUMED (task B4). `packages/core/src/ultra/index.ts`
+// is a list of `export * from "./…"` lines including `"./storage"`, and
+// `packages/core/src/index.ts` re-exports `./ultra`, so a new `export function`
+// in storage.ts reaches `@telar/core` with NO barrel change. This import is via
+// the PACKAGE SPECIFIER rather than the relative path every other symbol in this
+// file uses, precisely so that claim is executable: if either barrel stopped
+// re-exporting, this line would fail to resolve and the suite would go red
+// instead of the web app discovering it at build time.
+const { listUltraAgentOrdinals } = await import("@telar/core");
+
+describe("Ultra storage — listUltraAgentOrdinals sees an ordinal BEFORE it settles (4.2 AC3)", () => {
+  test("an in-flight ordinal that has streamed but not settled is listed, and `agent-start` precedes its `agent`", async () => {
+    // The fake streams one engine event (which is what creates
+    // `agents/0.ndjson`) and then blocks, so the run is observed at a moment
+    // when ordinal 0 has BEGUN and has NOT SETTLED. Before story 4.2 that
+    // moment was unobservable from outside the executor's own process, which is
+    // the entire reason the executor was opened for a UI story.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const fake: Fake = async (_p, o) => {
+      o.onEvent?.({ type: "text", text: "working…" });
+      await gate;
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: 0.01, turns: 1 });
+      return { text: "ok" };
+    };
+    const script = `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet", effort: "high" }); }`;
+    const res = await launchUltra({ script, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+
+    // Wait for the transcript file to exist rather than sleeping a guessed
+    // interval — a fixed delay is a flake waiting for a slower machine.
+    for (let i = 0; i < 200 && listUltraAgentOrdinals(res.runId).length === 0; i++) {
+      await delay(5);
+    }
+
+    // THE LEG THAT PROVES THE ENGINE CHANGE LANDED rather than merely compiled.
+    expect(listUltraAgentOrdinals(res.runId)).toEqual([0]);
+    // ...and it is genuinely NOT settled yet: settlement IS the `agent`
+    // UltraEvent, which is exactly why `agent-start` had to be added.
+    const mid = readUltraEvents(res.runId, 0).events;
+    expect(mid.some((e) => e.type === "agent-start" && e.ordinal === 0)).toBe(true);
+    expect(mid.some((e) => e.type === "agent")).toBe(false);
+    // `effort` rides the event (AC11 proof 1) — the first reader it has ever had.
+    const start = mid.find((e) => e.type === "agent-start");
+    expect(start && "effort" in start ? start.effort : undefined).toBe("high");
+
+    release();
+    await getLiveUltraRun(res.runId)!.finished;
+
+    const after = readUltraEvents(res.runId, 0).events.map((e) => e.type);
+    expect(after.indexOf("agent-start")).toBeLessThan(after.indexOf("agent"));
+    expect(listUltraAgentOrdinals(res.runId)).toEqual([0]);
+  });
+
+  test("a run that has spawned nothing lists no ordinals, and an unknown runId is empty rather than a throw", async () => {
+    const script = `${META}\nexport default async function () { return 1; }`;
+    const res = await launchUltra({ script, agent: costedFake(0) });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    // The anti-vacuity direction: a reader that returned [0] for everything
+    // would pass the test above and be useless.
+    expect(listUltraAgentOrdinals(res.runId)).toEqual([]);
+    expect(listUltraAgentOrdinals("u-does-not-exist")).toEqual([]);
+  });
+
+  test("ordinals come back numerically sorted, not lexicographically", async () => {
+    // `readdirSync` yields "10.ndjson" before "2.ndjson"; a reader that forgot
+    // to sort numerically would mis-order every run with ten or more agents,
+    // and no run in any other test here has that many.
+    const script =
+      `${META}\nexport default async function ({ agent }) {\n` +
+      `  const out = [];\n` +
+      `  for (let i = 0; i < 12; i++) out.push(await agent("p" + i, { model: "sonnet" }));\n` +
+      `  return out.length;\n}`;
+    const fake: Fake = async (_p, o) => {
+      o.onEvent?.({ type: "text", text: "t" });
+      return { text: "ok" };
+    };
+    const res = await launchUltra({ script, agent: fake });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    expect(listUltraAgentOrdinals(res.runId)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 });
 

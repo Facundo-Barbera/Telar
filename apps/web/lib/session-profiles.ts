@@ -110,9 +110,23 @@ export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   // `sessionId` (story 4.1) carries the completed-Ultra-run block. Undefined on
   // turn 1 of a fresh session, which is correct: the SDK mints the id inside the
   // stream, and a session with no id has no pending wakes by construction.
+  // STORY 4.2 / AC8 — `ctx.provider` REACHES A COMPOSER FOR THE FIRST TIME HERE.
+  // The gate for the script-authoring reference has to live in the BUILDER and
+  // not in the composer, and the reason is mechanical rather than stylistic:
+  // `ctx` is the builder's argument and NOTHING ELSE IN THE TREE HOLDS IT —
+  // `projectAppendix`/`plannerAppendix`/`steererAppendix` take
+  // `{ ultraAnnotated, sessionId, readWake }` and have no provider in scope.
+  //
+  // NO `requiredCapability` IS ADDED for it, deliberately.
+  // `buildProjectProfile.requiredCapabilities` is `[]` and a project session is
+  // asserted to pass the gate on BOTH providers (AC5 of story 2.1); adding one
+  // to "fix" the Codex case would 400 every ordinary Codex session. Codex simply
+  // gets no reference, which is the correct degradation — it is offered no ultra
+  // tools either.
   systemPromptAppendix: projectAppendix({
     ultraAnnotated: ctx.ultraAnnotated,
     sessionId: ctx.sessionId,
+    provider: ctx.provider,
   }),
 });
 
@@ -146,6 +160,8 @@ export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
   systemPromptAppendix: plannerAppendix({
     ultraAnnotated: ctx.ultraAnnotated,
     sessionId: ctx.sessionId,
+    // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
+    provider: ctx.provider,
   }),
 });
 
@@ -178,6 +194,8 @@ export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
     loomId: ctx.loomId,
     ultraAnnotated: ctx.ultraAnnotated,
     sessionId: ctx.sessionId,
+    // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
+    provider: ctx.provider,
   }),
 });
 

@@ -28,10 +28,28 @@ export default async function SessionPage({
   searchParams,
 }: {
   params: Promise<{ name: string; id: string }>;
-  searchParams: Promise<{ role?: string }>;
+  // Story 4.2 / AC7 — `run` joins `role`. THE DOCK'S TAP LANDS HERE with
+  // `?run=<runId>` and SessionView selects that run in the rail's Workflows
+  // section ("focus" is STATE, never a programmatic `element.focus()`).
+  //
+  // WHY A PROP AND NOT `useSearchParams()` IN THE CLIENT COMPONENT. Both shapes
+  // work; this one carries no framework risk. Per
+  // `node_modules/next/dist/docs/01-app/03-api-reference/04-functions/use-search-params.md`:
+  // "If a route is prerendered, calling `useSearchParams` will cause the Client
+  // Component tree up to the closest Suspense boundary to be client-side
+  // rendered", and Next recommends a `<Suspense>` wrapper. This page is
+  // `dynamic = "force-dynamic"` so it is never prerendered TODAY — but that
+  // makes the constraint a property of a route-segment config someone could
+  // change, enforced at `next build`, which this repo's gate does not run.
+  // Threading the value costs one key and cannot break a build.
+  //
+  // SessionView is keyed `${name}:${id}`, so a query-only change does NOT
+  // remount it — the new value arrives as an ordinary re-render, which is the
+  // behaviour AC7 wants (a remount would tear down the live stream).
+  searchParams: Promise<{ role?: string; run?: string }>;
 }) {
   const { name, id } = await params;
-  const { role: roleParam } = await searchParams;
+  const { role: roleParam, run: runParam } = await searchParams;
 
   // The manifest fixes this project's default account. An unknown project is
   // a stable condition (it can't resolve mid-stream), so it's the one case
@@ -151,6 +169,8 @@ export default async function SessionPage({
           // mid-turn session whose transcript hasn't persisted yet — so the
           // reconnect effect can tail the live stream instead of showing empty.
           routeSessionId={id === "new" ? undefined : id}
+          // Story 4.2 / AC7 — the run to focus in the rail on arrival.
+          focusRunId={runParam}
         />
       </div>
     </div>

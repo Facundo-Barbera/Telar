@@ -1,5 +1,5 @@
 # generated: 2026-07-26 00:43
-# last_updated: 2026-07-26
+# last_updated: 2026-07-27
 # project: Telar
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-07-26 00:43
-last_updated: 2026-07-26
+last_updated: 2026-07-27
 project: Telar
 project_key: NOKEY
 tracking_system: file-system
@@ -68,8 +68,8 @@ development_status:
 
   # Epic 4: Ultra Finish
   epic-4: in-progress
-  4-1-completion-wake-and-session-cost-rollup: review
-  4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: backlog
+  4-1-completion-wake-and-session-cost-rollup: done
+  4-2-the-real-session-ui-composer-chip-dock-signal-and-authoring-reference: review
   epic-4-retrospective: optional
 
   # Epic 5: Organization Workspace

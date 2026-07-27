@@ -69,6 +69,7 @@ import {
   STEERING_FILE,
 } from "@telar/core";
 import { formatEscalationContext } from "@/lib/loom-mcp";
+import { ULTRA_AUTHORING_REFERENCE } from "@/lib/ultra-authoring";
 import { formatUltraWakeAppendix } from "@/lib/ultra-wake";
 
 // --- The three static prompts (moved verbatim from route.ts) -----------------
@@ -262,6 +263,33 @@ export function ultraNote(ultraAnnotated: boolean): string {
   return ultraAnnotated ? ULTRA_ANNOTATION_NOTE : "";
 }
 
+// Story 4.2 / AC8 — THE SCRIPT-AUTHORING REFERENCE (CAP-3).
+//
+// SPELLED LOCALLY, not imported as core's `ProviderId`, so this module acquires
+// no new core TYPE edge for a two-member union — exactly how
+// `lib/spend-readout.ts` spells the same thing, and for the same reason.
+type AppendixProvider = "claude" | "codex";
+
+// IT IS STATIC AND NEEDS NO `safeLiveContext`, and that is worth saying out loud
+// because EVERY other block added to this file since story 2.1 has been a live
+// read. There is no disk here, no state root, and nothing that can throw — so
+// wrapping it would only hide a programming error.
+const ULTRA_AUTHORING_BLOCK = `\n\n--- ULTRA SCRIPT AUTHORING (CAP-3) ---\n${ULTRA_AUTHORING_REFERENCE}`;
+
+// CLAUDE ONLY, and ABSENT ⇒ NOTHING. The ultra MCP server is constructed only on
+// the Claude branch of `app/api/chat/route.ts`, and NFR-UW-8 fixes Ultra as
+// Claude-first — so a Codex session would be handed several hundred lines of
+// guidance for a tool it is never offered.
+//
+// The default of "absent means no reference" is what keeps every existing call
+// site's behaviour byte-for-byte unchanged: the composers below all take
+// `provider` as OPTIONAL, so only a caller that deliberately opts in sees any
+// difference. The three callers that do are the three ultra-bearing builders in
+// `lib/session-profiles.ts`, which are the only place `ctx.provider` exists.
+export function ultraAuthoring(provider?: AppendixProvider): string {
+  return provider === "claude" ? ULTRA_AUTHORING_BLOCK : "";
+}
+
 // Wraps the LIVE READ and nothing else, so a failure drops exactly the part
 // that failed. Returns "" on any throw.
 //
@@ -289,12 +317,26 @@ export function safeLiveContext(read: () => string): string {
 // which is exactly what the route's old `ultraAnnotationNote ? {…append} : {…}`
 // fallthrough produced. A plain session with no chip and no finished run has a
 // byte-for-byte unchanged systemPrompt.
+//
+// STORY 4.2 MADE THAT LAST SENTENCE DELIBERATELY FALSE FOR CLAUDE. A Claude
+// project session now carries the authoring reference on every turn (AC8), so
+// its appendix is no longer "". The property SURVIVES UNCHANGED for Codex, where
+// `provider` is not "claude" and the appendix is still "" — and that is the half
+// worth stating, because the original sentence was about "a normal session's
+// systemPrompt is byte-for-byte unchanged after the migration", which is a claim
+// about the 2.2 migration and not a claim this story is allowed to break for
+// every provider.
 export function projectAppendix(opts: {
   ultraAnnotated: boolean;
   sessionId?: string;
+  provider?: AppendixProvider;
   readWake?: (sessionId: string) => string;
 }): string {
-  return ultraNote(opts.ultraAnnotated) + ultraWakeAppendix(opts.sessionId, opts.readWake);
+  return (
+    ultraNote(opts.ultraAnnotated) +
+    ultraWakeAppendix(opts.sessionId, opts.readWake) +
+    ultraAuthoring(opts.provider)
+  );
 }
 
 // planner — static guidance, the Ultra note, then the completed-run block. The
@@ -303,12 +345,14 @@ export function projectAppendix(opts: {
 export function plannerAppendix(opts: {
   ultraAnnotated: boolean;
   sessionId?: string;
+  provider?: AppendixProvider;
   readWake?: (sessionId: string) => string;
 }): string {
   return (
     PLANNER_SYSTEM_PROMPT +
     ultraNote(opts.ultraAnnotated) +
-    ultraWakeAppendix(opts.sessionId, opts.readWake)
+    ultraWakeAppendix(opts.sessionId, opts.readWake) +
+    ultraAuthoring(opts.provider)
   );
 }
 
@@ -326,10 +370,16 @@ export function plannerAppendix(opts: {
 // `read` is injectable for the fail-safe test — production never passes it.
 // `readWake` is its story-4.1 sibling, a SECOND and independent live read (see
 // ultraWakeAppendix above for why they are not folded into one wrapper).
+//
+// STORY 4.2 APPENDED ONE MORE TERM, AND ITS POSITION IS NOW PART OF THE
+// CONTRACT: the order is STEERER + LIVE + NOTE + WAKE + AUTHORING. The reference
+// goes LAST, after the per-turn material, because it is static guidance whose
+// freshness never changes while everything before it is recomputed every turn.
 export function steererAppendix(opts: {
   loomId?: string;
   ultraAnnotated: boolean;
   sessionId?: string;
+  provider?: AppendixProvider;
   read?: (loomId: string) => string;
   readWake?: (sessionId: string) => string;
 }): string {
@@ -339,7 +389,8 @@ export function steererAppendix(opts: {
     STEERER_SYSTEM_PROMPT +
     live +
     ultraNote(opts.ultraAnnotated) +
-    ultraWakeAppendix(opts.sessionId, opts.readWake)
+    ultraWakeAppendix(opts.sessionId, opts.readWake) +
+    ultraAuthoring(opts.provider)
   );
 }
 
@@ -358,6 +409,12 @@ export function steererAppendix(opts: {
 // `ultraAnnotated && !isEscalationSession`, and it is the reason this signature
 // has no `ultraAnnotated` at all — the absence is enforced by the type rather
 // than remembered.
+//
+// STORY 4.2 ADDED NOTHING HERE, for the third time and the same reason: this
+// profile hard-denies all three ultra tools, so a script-authoring reference
+// would be several hundred lines teaching a surface to use something it cannot
+// call. The signature carries no `provider` either, so AC8's "never on
+// escalation" is enforced BY THE TYPE rather than by remembering.
 export function escalationAppendix(opts: {
   loomId?: string;
   cwd: string;

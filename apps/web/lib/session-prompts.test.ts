@@ -50,11 +50,14 @@ import {
   steererAppendix,
   tail,
   safeRead,
+  ultraAuthoring,
   ultraNote,
 } from "./session-prompts";
 // Story 4.1 — the REAL formatter, so the injected read below renders what
 // production renders rather than a stand-in the assertions could not tell apart.
 import { formatUltraWakeAppendix } from "./ultra-wake";
+// Story 4.2 — the REAL reference, for the same reason.
+import { ULTRA_AUTHORING_REFERENCE } from "./ultra-authoring";
 
 const LIVE = "\n\n--- LIVE CONTEXT SENTINEL ---";
 // Story 4.1's second, INDEPENDENT live block. A distinct sentinel so a test can
@@ -344,9 +347,86 @@ describe("THE FAIL-SAFE — a throwing reader degrades the live block, never the
     const bothBroke = steererAppendix({ ...base, read: boom, readWake: boom });
     expect(bothBroke).toBe(STEERER_SYSTEM_PROMPT);
     // And both work: the order is static prompt, loom block, note, wake block.
+    //
+    // STORY 4.2 APPENDED A FIFTH TERM AND ITS POSITION IS PART OF THE CONTRACT.
+    // This assertion is unchanged because `provider` is absent here and absent
+    // means no reference — see the 4.2 block below for the opted-in order.
     expect(
       steererAppendix({ ...base, ultraAnnotated: true, read: () => LIVE, readWake: () => WAKE }),
     ).toBe(STEERER_SYSTEM_PROMPT + LIVE + ULTRA_ANNOTATION_NOTE + WAKE);
+  });
+
+  // ── story 4.2 / AC8 — the script-authoring reference ──────────────────────
+
+  test("4.2 AC8 — the reference is composed into project/planner/steerer on CLAUDE, LAST", () => {
+    // The order is now STEERER + LIVE + NOTE + WAKE + AUTHORING. The reference
+    // goes last because it is STATIC: everything before it is recomputed every
+    // turn, and putting an unchanging several-hundred-line block ahead of the
+    // fresh material would bury the part that actually moved.
+    const base = { loomId: "loom_1", ultraAnnotated: true, sessionId: "sess-1" } as const;
+    const composed = steererAppendix({
+      ...base,
+      provider: "claude",
+      read: () => LIVE,
+      readWake: () => WAKE,
+    });
+    expect(composed).toBe(
+      STEERER_SYSTEM_PROMPT + LIVE + ULTRA_ANNOTATION_NOTE + WAKE + ultraAuthoring("claude"),
+    );
+    expect(composed).toContain(ULTRA_AUTHORING_REFERENCE);
+    expect(projectAppendix({ ultraAnnotated: false, provider: "claude" })).toContain(
+      ULTRA_AUTHORING_REFERENCE,
+    );
+    expect(plannerAppendix({ ultraAnnotated: false, provider: "claude" })).toContain(
+      ULTRA_AUTHORING_REFERENCE,
+    );
+  });
+
+  test("4.2 AC8 — ABSENT `provider` and CODEX both compose to no reference at all", () => {
+    // "Absent ⇒ nothing" is what keeps every pre-4.2 assertion in this file
+    // byte-for-byte true: only a caller that deliberately opts in sees any
+    // difference, and only the three ultra-bearing builders in
+    // `session-profiles.ts` do.
+    for (const provider of [undefined, "codex"] as const) {
+      expect(projectAppendix({ ultraAnnotated: false, provider })).toBe("");
+      expect(plannerAppendix({ ultraAnnotated: false, provider })).toBe(PLANNER_SYSTEM_PROMPT);
+      // `read` is INJECTED even though this call carries no `loomId` and so can
+      // never reach `buildSteererContext`. INV-7 scans BY NAME — it cannot see
+      // that the live branch is unreachable here — and the discipline binds
+      // regardless of whether the guard could tell: this file's sanctioned
+      // mechanism is injection, and an un-injected `steererAppendix` call is one
+      // `loomId` away from resolving the operator's real state root. The
+      // injection is inert: with no `loomId` the live block is "".
+      expect(steererAppendix({ ultraAnnotated: false, provider, read: () => LIVE })).toBe(
+        STEERER_SYSTEM_PROMPT,
+      );
+    }
+    expect(ultraAuthoring(undefined)).toBe("");
+    expect(ultraAuthoring("codex")).toBe("");
+    // Anti-vacuity: the Claude arm is genuinely non-empty, so a
+    // `ultraAuthoring` that always returned "" could not pass both this test and
+    // the one above.
+    expect(ultraAuthoring("claude").length).toBeGreaterThan(2000);
+  });
+
+  test("4.2 AC8 — `escalationAppendix` cannot carry the reference, and that is a TYPE claim", () => {
+    // Hard rule 5: a negative-compile claim is a TYPE ANNOTATION ON A DATA
+    // OBJECT, never a directive above a call — a `@ts-expect-error` above a call
+    // still CALLS, which is how story 2.2 renamed directories under the
+    // operator's real ~/.telar. `apps/web/tsconfig.json` has no test exclusion,
+    // so `bunx tsc --noEmit` genuinely checks this.
+    const opts: Parameters<typeof escalationAppendix>[0] = {
+      loomId: "loom_1",
+      cwd: "/tmp/x",
+      // @ts-expect-error — escalationAppendix's options have NO `provider` key,
+      // which is what enforces "never on escalation" by the type rather than by
+      // remembering. If this directive ever reports "unused", someone widened
+      // the signature and AC8's guarantee became a convention.
+      provider: "claude",
+    };
+    void opts;
+    const appendix = escalationAppendix({ loomId: "loom_1", cwd: "/tmp/x", read: () => LIVE });
+    expect(appendix).not.toContain(ULTRA_AUTHORING_REFERENCE);
   });
 
   test("4.1 AC2 proof 3 — the composed appendix carries the STATE and the result/error, with no ultra_status call", () => {

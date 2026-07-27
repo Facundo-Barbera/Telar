@@ -1,4 +1,12 @@
-import { getAccount, getProject, launchUltra, listUltraRuns, type AccountProfile } from "@telar/core";
+import {
+  getAccount,
+  getProject,
+  launchUltra,
+  listUltraRuns,
+  ultraRunLabel,
+  type AccountProfile,
+} from "@telar/core";
+import { filterRunsBySession } from "@/lib/ultra-runs";
 
 export const dynamic = "force-dynamic";
 
@@ -7,8 +15,56 @@ export const dynamic = "force-dynamic";
 // claiming `running` with no live task in THIS process reconciles to
 // `stopped` on read (doc §3's startup-reconciliation, folded into every
 // getUltraManifest call — see storage.ts).
-export async function GET() {
-  return Response.json({ runs: listUltraRuns() });
+//
+// STORY 4.2 ADDED THREE THINGS AND NOTHING ELSE.
+//
+// 1. `?sessionId=` — filtered SERVER-SIDE. Three reasons in order of weight:
+//    `run.sessionId` is optional (a run launched outside a chat has none) so the
+//    test must be DEFINED-AND-EQUAL and never truthy; a session-scoped payload
+//    is what makes the rail's poll cheap; and it bounds the response without
+//    removing the directory walk (the `sessionId → runIds` storage index stays
+//    an open item — see deferred-work.md).
+//    The decision itself lives in `@/lib/ultra-runs`'s `filterRunsBySession`,
+//    not here, and that is deliberate: THERE IS NO ROUTE-TEST HARNESS IN THIS
+//    REPO (every `apps/web` spec sits under `lib/` or
+//    `components/conversation/`, none under `app/`), so a filter written inline
+//    would be a filter that ships unproven. This handler is a caller.
+//    "Today's behaviour, unchanged, when the parameter is absent" is executable
+//    as `filterRunsBySession(runs, undefined)` returning the input unchanged —
+//    same runs, same order, same `{ runs }` envelope. The only additive
+//    difference is `name` below.
+//
+// 2. `name`, RENDERED HERE. `ultraRunLabel` is a core VALUE export, so a client
+//    that called it would be an INV-4c violation reported by name. Rendering it
+//    server-side is what lets the rail and the dock label a run without one.
+//    (`@/lib/ultra-runs` carries a four-line copy of the same rule for the
+//    stream-only window, because the SSE frames are the bare `UltraManifest` and
+//    carry no `name` at all — the two are pinned against each other by a test.)
+//
+// 3. THE GUARD, copied from `wakes/route.ts`, which was the ONLY route in the
+//    tree that wrapped this read. `listUltraRuns` → `getUltraManifest`'s
+//    self-heal is an unwrapped WRITE inside a function whose contract is "never
+//    a 500", so ONE malformed or unhealable manifest anywhere under
+//    `TELAR_HOME/ultra/` threw for every caller of this route. Degrading to the
+//    empty list says "nothing to show" without the 500; the runs are not lost,
+//    because this is a projection over the manifests and it re-answers the
+//    moment the root is readable again.
+export async function GET(req: Request) {
+  // DEFINED-AND-EQUAL, never truthy, and not trimmed to nothing: an absent
+  // parameter means "every run", while `?sessionId=` present-but-empty means
+  // "the session named by the empty string", which no run belongs to. Those are
+  // different questions and the caller asked a different one each time.
+  const raw = new URL(req.url).searchParams.get("sessionId");
+  const sessionId = raw === null ? undefined : raw;
+  try {
+    const runs = filterRunsBySession(listUltraRuns(), sessionId).map((run) => ({
+      ...run,
+      name: ultraRunLabel(run.meta, run.runId),
+    }));
+    return Response.json({ runs });
+  } catch {
+    return Response.json({ runs: [] });
+  }
 }
 
 // Cut U4-B's launch route (doc §5's `/api/ultra POST` — "validate + create +

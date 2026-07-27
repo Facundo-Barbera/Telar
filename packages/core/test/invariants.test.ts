@@ -3919,7 +3919,42 @@ function kindRendererSlices(text: string): KindSlice[] {
   return out;
 }
 
-const DONOR_KIND_SLICES = kindRendererSlices(byRel.get(SESSION_VIEW_REL)?.text ?? "");
+// THE SCAN SET, WIDENED BY STORY 4.2 FROM ONE FILE TO TWO — and the widening is
+// the sanctioned half of the residual above, not a workaround for it.
+//
+// The residual paragraph names ONE blind spot (a renderer delegated to a
+// top-level function). Story 4.2 measured THREE MORE while registering
+// `ultra:run-anchor`, none of them recorded anywhere before, and the fourth is
+// the one that made this constant a hazard rather than a limitation:
+//
+//   `const k: ItemKind = { … }` — the DECL pattern requires the generic `<`, so
+//     a bare annotation yields NO SLICE AT ALL.
+//   `const k = { … } satisfies ItemKind<P>` — no `: ItemKind<` annotation, so
+//     likewise no slice.
+//   A FILE OUTSIDE THE SET — which was, until this line changed, exactly one
+//     file. A kind registered anywhere else was not scanned at all.
+//
+// THREE OF THOSE FOUR LEAVE THIS INVARIANT GREEN RATHER THAN RED, because the
+// anti-vacuity floor below is satisfied by `agentBucketKind` alone and its
+// `toContain("agentBucketKind")` still holds. A SILENT REMOVAL FROM AD-12
+// ENFORCEMENT is the failure mode, not a build break — which is precisely what
+// maxim 3 ("a guard that cannot fail is worse than no guard") exists to catch.
+//
+// So the set is a LIST, each rel scanned separately and the slices concatenated
+// — not a glob and not a change to SHELL_ROOT. `components/conversation/**` is
+// INV-8a/8b's surface, scanned WHOLE for ambient context and never brace-matched
+// for kinds; these are the files outside it that register a kind.
+//
+// The other three shapes are still undetected for any FUTURE kind, and that is
+// recorded in deferred-work.md rather than claimed as closed.
+const KIND_DONOR_RELS: readonly string[] = [
+  SESSION_VIEW_REL,
+  "apps/web/components/session/ultra-anchor.tsx",
+];
+
+const DONOR_KIND_SLICES = KIND_DONOR_RELS.flatMap((rel) =>
+  kindRendererSlices(byRel.get(rel)?.text ?? "").map((s) => ({ ...s, rel })),
+);
 
 // THE CLOSED DENYLIST. This is the executable form of "the shell owns no data
 // fetching and no session semantics" (AD-12). If you legitimately need a term on
@@ -4354,27 +4389,160 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     // ANTI-VACUITY FIRST, because this scan reads a SLICE rather than a file:
     // an extractor that finds nothing would assert nothing, and the adapter is
     // precisely the file where a hook call would compile.
-    if (DONOR_KIND_SLICES.length < 1) {
+    // THE FLOOR IS PER-FILE, and it has to be: a set-wide `length < 1` would be
+    // satisfied by `agentBucketKind` alone, so deleting the ultra-anchor
+    // declaration — or renaming its file — would silently shrink the scan while
+    // this test stayed green. That is exactly the failure story 4.2 found in the
+    // one-file version of this constant.
+    const missing = KIND_DONOR_RELS.filter(
+      (rel) => !DONOR_KIND_SLICES.some((s) => s.rel === rel),
+    );
+    if (missing.length > 0) {
       throw new Error(
-        `INV-8b2: no \`: ItemKind<…> = {\` declaration found in ${SESSION_VIEW_REL}, so the ` +
-          `renderer scan below is running over nothing. RULE (§5.5-D12): INV-8 scans ` +
-          `components/conversation/** AND session-view.tsx — the adapter is the one file where a ` +
-          `renderer has useDockOptional() and usePromptInputController() in lexical scope. ` +
-          `CONSEQUENCE: AC4's only enforcement stops covering the only place its failure is ` +
-          `reachable. NEXT STEP: if the donor stopped registering a kind of its own, say so here ` +
-          `deliberately; if the declaration shape changed, fix kindRendererSlices — do not delete ` +
-          `this test.`,
+        `INV-8b2: no \`: ItemKind<…> = {\` declaration found in ${missing.join(", ")} — the ` +
+          `renderer scan below is running over less than it claims. The scan set is ` +
+          `[${KIND_DONOR_RELS.join(", ")}]. RULE (§5.5-D12, widened by story 4.2): INV-8 scans ` +
+          `components/conversation/** WHOLE, and brace-matches every registered kind in the ` +
+          `adapter-side files listed above — those are the files where a renderer has ` +
+          `useDockOptional() and usePromptInputController() in lexical scope. CONSEQUENCE: AD-12's ` +
+          `only enforcement stops covering the places its failure is reachable, AND IT DOES SO ` +
+          `SILENTLY — three of the four ways to defeat this extractor leave it GREEN. NEXT STEP: ` +
+          `if a file stopped registering a kind, remove it from KIND_DONOR_RELS deliberately and ` +
+          `say why; if the declaration shape changed (a bare \`: ItemKind\` with no generic, or a ` +
+          `\`satisfies ItemKind<…>\`, both of which yield NO slice), fix kindRendererSlices — do ` +
+          `not delete this test.`,
       );
     }
-    // The positive control: the extractor really found the story's own kind, and
-    // really captured its BODY rather than an empty match.
+    // The positive control: the extractor really found BOTH registered kinds, by
+    // name, and really captured their BODIES rather than empty matches.
     expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("agentBucketKind");
+    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("ultraRunAnchorKind");
     expect(DONOR_KIND_SLICES.every((s) => s.src.length > 40)).toBe(true);
 
     const violations = DONOR_KIND_SLICES.flatMap((s) =>
-      ambientContextScan(`${SESSION_VIEW_REL} :: ${s.name}`, s.src, CONTEXT_HOOKS),
+      ambientContextScan(`${s.rel} :: ${s.name}`, s.src, CONTEXT_HOOKS),
     );
     expect(violations).toEqual([]);
+  });
+
+  test("INV-8b2b the WIDENED scan really sees the new file — a two-direction discriminator", () => {
+    // WIDENING A SCAN SET IS INDISTINGUISHABLE FROM WIDENING IT TO A FILE THAT
+    // HAPPENS TO BE CLEAN, unless the widening is exercised in both directions
+    // through THE SAME FUNCTIONS the real check uses. That is §5.4-F applied to
+    // the one thing story 4.2 changed about this invariant.
+    const rel = "apps/web/components/session/ultra-anchor.tsx";
+    expect(KIND_DONOR_RELS).toContain(rel);
+
+    // DIRECTION 1 — a fixture IN THE SHAPE OF THE NEW FILE, carrying a context
+    // hook inside an inline renderer, IS REPORTED.
+    const dirty =
+      `import type { ItemKind } from "@/components/conversation/registry";\n` +
+      `export const ultraRunAnchorKind: ItemKind<P> = {\n` +
+      `  id: "ultra:run-anchor",\n` +
+      `  render: (payload, view) => {\n` +
+      `    const dock = ${CONTEXT_HOOKS[0]}();\n` +
+      `    return null;\n` +
+      `  },\n` +
+      `};\n`;
+    const dirtySlices = kindRendererSlices(dirty);
+    expect(dirtySlices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
+    expect(
+      dirtySlices.flatMap((s) => ambientContextScan(`${rel} :: ${s.name}`, s.src, CONTEXT_HOOKS)),
+    ).not.toEqual([]);
+
+    // DIRECTION 2 — the same fixture WITHOUT the hook is not reported, so the
+    // scan is discriminating rather than merely alarming.
+    const clean = dirty.replace(`    const dock = ${CONTEXT_HOOKS[0]}();\n`, "");
+    const cleanSlices = kindRendererSlices(clean);
+    expect(cleanSlices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
+    expect(
+      cleanSlices.flatMap((s) => ambientContextScan(`${rel} :: ${s.name}`, s.src, CONTEXT_HOOKS)),
+    ).toEqual([]);
+
+    // AND THE WHOLE FILE, NOT ONLY ITS SLICES. `ambientContextScan`'s IMPORT arm
+    // is STRUCTURALLY INERT under a slice scan — a slice contains no import
+    // statements — so only a whole-file pass catches an
+    // imported-but-not-yet-called context hook, which is precisely the shape a
+    // later edit reaches for first. Both assertions, or the widening is half a
+    // guard.
+    const anchor = byRel.get(rel);
+    if (!anchor) {
+      throw new Error(
+        `INV-8b2b: ${rel} is not in the index, so both halves of this discriminator are ` +
+          `running over nothing. RULE: story 4.2 registered ultra:run-anchor there and widened ` +
+          `KIND_DONOR_RELS to match. NEXT STEP: if the file moved, update KIND_DONOR_RELS and this ` +
+          `rel together — do not delete this test.`,
+      );
+    }
+    expect(ambientContextScan(rel, anchor.code, CONTEXT_HOOKS)).toEqual([]);
+  });
+
+  test("INV-8b2c the FOUR ways to defeat this extractor, each proved separately", () => {
+    // THE POINT OF THIS TEST. Story 4.2 widened KIND_DONOR_RELS by one file.
+    // "The widening is load-bearing" is a claim, and a claim checked against ONE
+    // representative shape is exactly the vacuity these guards exist to prevent
+    // — three of the four shapes below leave INV-8b2 GREEN, so a widening that
+    // happened to be tested against the fourth would prove nothing about the
+    // other three.
+    //
+    // So each shape gets its own assertion, against the SAME functions the real
+    // check uses, and the file's own shape is pinned so it cannot drift into one
+    // of the broken three.
+    const hook = CONTEXT_HOOKS[0]!;
+    const body = `\n  id: "ultra:run-anchor",\n  render: (payload, view) => { const d = ${hook}(); return null; },\n`;
+
+    // ── SHAPE 1: `render: someTopLevelFn` — A SLICE IS FOUND AND IT IS EMPTY OF
+    // HOOK TEXT. This is the residual the file documents in its own words, and
+    // it is STILL OPEN after story 4.2. Asserting it keeps the residual honest:
+    // the day someone "fixes" it, this assertion fails and tells them to update
+    // the record rather than leaving prose claiming a hole that closed.
+    const delegated =
+      `function renderIt(payload, view) { const d = ${hook}(); return null; }\n` +
+      `const probeKind: ItemKind<P> = { id: "ultra:run-anchor", render: renderIt };\n`;
+    const delegatedSlices = kindRendererSlices(delegated);
+    expect(delegatedSlices.map((s) => s.name)).toEqual(["probeKind"]);
+    // A slice IS produced, it clears the 40-character body control, and it
+    // reports NOTHING — the violation walks past every guard below.
+    expect(delegatedSlices[0]!.src.length).toBeGreaterThan(40);
+    expect(
+      delegatedSlices.flatMap((s) => ambientContextScan("probe", s.src, CONTEXT_HOOKS)),
+    ).toEqual([]);
+
+    // ── SHAPE 2: a bare `: ItemKind` with NO GENERIC — NO SLICE AT ALL. The DECL
+    // pattern requires the `<`. Undocumented before story 4.2.
+    expect(kindRendererSlices(`const probeKind: ItemKind = {${body}};\n`)).toEqual([]);
+    // …and the SAME body WITH the generic is found, so the discriminator is the
+    // generic and not something incidental about the fixture.
+    expect(kindRendererSlices(`const probeKind: ItemKind<P> = {${body}};\n`).length).toBe(1);
+
+    // ── SHAPE 3: `satisfies ItemKind<…>` — NO SLICE AT ALL. There is no
+    // `: ItemKind<` annotation to match. Undocumented before story 4.2.
+    expect(kindRendererSlices(`const probeKind = {${body}} satisfies ItemKind<P>;\n`)).toEqual([]);
+
+    // ── SHAPE 4: A FILE OUTSIDE THE SCAN SET — and this is the one story 4.2
+    // CLOSED for this kind, so it is the one that must be shown load-bearing
+    // rather than merely described.
+    //
+    // THE DIRECT PROOF: the PRE-4.2 scan set (session-view.tsx alone) does NOT
+    // contain the new kind, and the widened set DOES. If someone reverts
+    // KIND_DONOR_RELS to one entry, the first assertion still passes and the
+    // second fails — which is the correct direction, because losing the file is
+    // the regression.
+    const preWidening = kindRendererSlices(byRel.get(SESSION_VIEW_REL)?.text ?? "");
+    expect(preWidening.map((s) => s.name)).toContain("agentBucketKind");
+    expect(preWidening.map((s) => s.name)).not.toContain("ultraRunAnchorKind");
+    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("ultraRunAnchorKind");
+
+    // ── AND THE FILE ITSELF USES THE ONE GOOD SHAPE, pinned statically so it
+    // cannot drift into shapes 1–3 while the widening above keeps passing.
+    const anchor = byRel.get("apps/web/components/session/ultra-anchor.tsx");
+    if (!anchor) throw new Error("INV-8b2c: ultra-anchor.tsx is not in the index");
+    expect(anchor.code).toContain("ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {");
+    expect(anchor.code).not.toContain("satisfies ItemKind");
+    // The renderer is INLINE: an arrow follows `render:` rather than a bare
+    // identifier. Shape 1 is what this forbids, and it is the shape story 3.1's
+    // deleted `renderAgentBucket` actually had.
+    expect(/render:\s*\(/.test(anchor.code)).toBe(true);
   });
 
   test("INV-8c the context inventory is RE-DERIVED, so INV-8b's denylist cannot go stale", () => {
@@ -4938,5 +5106,232 @@ describe("INV-9 a module's declared event names and delivery classes are contrac
     // future INV-9 entry appearing here should be an argument someone has, not a
     // line that lands quietly.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-9")).toEqual([]);
+  });
+});
+
+// ── INV-10 (AD-13 / AD-12) ──────────────────────────────────────────────────
+//
+// THE ULTRA RUN ANCHOR'S REGISTRATION IS A CONTRACT, and story 4.2 is when it
+// stopped being a promise in a story file. `ultra:run-anchor` was held
+// UNREGISTERED through stories 3.1 and 4.1 — deliberately, so the demo gallery's
+// configuration 6 could show a real tombstone for a kind that genuinely does not
+// exist — and 4.2 registers it into the ADAPTER's registry alone. This is what
+// keeps that arrangement true afterwards.
+//
+// WHY IT IS WORTH THIS FILE'S BUDGET. Three of the four ways to defeat INV-8b2
+// leave that guard GREEN (see INV-8b2c), so "the kind is registered and pure"
+// cannot rest on INV-8b2 alone: something has to assert the id, the registration
+// SITE, and the non-registration site. And the tombstone is the load-bearing
+// half — `demo-gallery/conversation/shell.tsx`'s own comment says the id "is
+// deliberately absent so configuration 6 can show the tombstone", and two tests
+// in `fixtures.validate.test.ts` pin it. A later story quietly adding the id
+// there would turn an honest demo into a mock, and nothing else would say so.
+//
+// BUDGET, in this file's own terms: a static scan over the index plus a runtime
+// helper on strings. No process, no compiler — INV-*'s standing constraint.
+
+const ULTRA_ANCHOR_REL = "apps/web/components/session/ultra-anchor.tsx";
+const ULTRA_RUNS_REL = "apps/web/lib/ultra-runs.ts";
+const GALLERY_SHELL_REL = "apps/web/lib/demo-gallery/conversation/shell.tsx";
+const ULTRA_ANCHOR_ID = "ultra:run-anchor";
+
+// Is this a legal kind id for the ultra module? A function of a STRING, never of
+// a file, so INV-10d can feed it a runtime-assembled fixture through the SAME
+// function the real check uses — a discriminator that called a different
+// function would prove nothing. Mirrors createItemKindRegistry's own rule:
+// exactly one colon, both halves non-empty and unpadded, module in the declared
+// vocabulary.
+function ultraKindIdViolations(id: string, namespaces: readonly string[]): string[] {
+  const out: string[] = [];
+  const segments = id.split(":");
+  if (segments.length !== 2) {
+    out.push(
+      `AD-13: kind id "${id}" must be exactly \`<module>:<name>\`, one colon. CONSEQUENCE: the ` +
+        `module segment stops being unambiguous, so "who owns this kind" can no longer be ` +
+        `answered by reading the id — the whole property AD-13 buys. NEXT STEP: use a hyphen ` +
+        `inside the name segment.`,
+    );
+    return out;
+  }
+  const [mod, name] = segments as [string, string];
+  if (mod !== mod.trim() || name !== name.trim() || mod.trim() === "" || name.trim() === "") {
+    out.push(
+      `AD-13: kind id "${id}" has an empty or whitespace-padded segment. CONSEQUENCE: a padded ` +
+        `id REGISTERS and shows up in ids(), while every item minted as the id the author meant ` +
+        `misses in the Map and renders AD-8's tombstone — a tombstone for a kind you can see ` +
+        `registered. NEXT STEP: give both halves a real, unpadded name.`,
+    );
+  }
+  if (!namespaces.includes(mod)) {
+    out.push(
+      `AD-13: kind id "${id}" names module "${mod}", which is not in MODULE_NAMESPACES ` +
+        `(${namespaces.join(", ")}). CONSEQUENCE: an undeclared module is almost always a typo of ` +
+        `a declared one, and it would create a second, near-identical namespace nothing flags. ` +
+        `NEXT STEP: fix the spelling, or add the module to registry.ts deliberately.`,
+    );
+  }
+  return out;
+}
+
+describe("INV-10 the ultra run anchor is registered in the adapter and NOWHERE else — AD-13/AD-12", () => {
+  test("INV-10 floor — the anchor file exists and declares exactly ONE ItemKind", () => {
+    // ANTI-VACUITY FIRST. Every arm below reads this file; if it vanished or was
+    // renamed, they would all assert over the empty string and pass.
+    const anchor = byRel.get(ULTRA_ANCHOR_REL);
+    if (!anchor) {
+      throw new Error(
+        `INV-10: ${ULTRA_ANCHOR_REL} is not in the index, so every arm of this invariant is ` +
+          `running over nothing. RULE (story 4.2 / AD-13): the ultra:run-anchor kind lives in its ` +
+          `own file so INV-8b2 can brace-match its renderer without the adapter growing. ` +
+          `CONSEQUENCE: the registration contract stops being checked, silently. NEXT STEP: if the ` +
+          `file moved, update ULTRA_ANCHOR_REL and KIND_DONOR_RELS together — do not delete this ` +
+          `test.`,
+      );
+    }
+    const slices = kindRendererSlices(anchor.text);
+    expect(slices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
+  });
+
+  test("INV-10a the id is exactly `ultra:run-anchor`, and `ultra` is in the declared vocabulary", () => {
+    // The literal lives ONCE, in the pure module, and the component writes
+    // `id: ULTRA_ANCHOR_KIND` — so there is one source for the id and this scan
+    // reads it rather than a copy.
+    const runs = byRel.get(ULTRA_RUNS_REL);
+    if (!runs) throw new Error(`INV-10a: ${ULTRA_RUNS_REL} is not in the index`);
+    expect(runs.code).toContain(`ULTRA_ANCHOR_KIND = "${ULTRA_ANCHOR_ID}"`);
+    const anchor = byRel.get(ULTRA_ANCHOR_REL)!;
+    expect(anchor.code).toContain("id: ULTRA_ANCHOR_KIND");
+
+    // MODULE_NAMESPACES is RE-DERIVED from registry.ts, never restated here: a
+    // restated copy goes stale in silence, and this whole file's third maxim is
+    // that a copy of a measurement indicts nothing.
+    const registry = byRel.get("apps/web/components/conversation/registry.ts");
+    if (!registry) throw new Error("INV-10a: components/conversation/registry.ts is not in the index");
+    const block = /MODULE_NAMESPACES\s*=\s*\[([\s\S]*?)\]/.exec(registry.code);
+    if (!block) {
+      throw new Error(
+        `INV-10a: MODULE_NAMESPACES could not be re-derived from registry.ts, so the vocabulary ` +
+          `check below is running over nothing. NEXT STEP: fix this extractor; do not hardcode the ` +
+          `list here.`,
+      );
+    }
+    const namespaces = [...block[1]!.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!);
+    expect(namespaces.length).toBeGreaterThanOrEqual(5);
+    expect(namespaces).toContain("ultra");
+    expect(ultraKindIdViolations(ULTRA_ANCHOR_ID, namespaces)).toEqual([]);
+  });
+
+  test("INV-10b it is registered in the ADAPTER's registry and NOT in the gallery's", () => {
+    // HARD RULE 4, MADE MECHANICAL. Two registries, two INDEPENDENT INSTANCES
+    // passed as props (never a singleton), so registering in one cannot reach
+    // the other — and that independence is exactly what makes the gallery's
+    // tombstone honest rather than a mock.
+    const donor = byRel.get(SESSION_VIEW_REL);
+    if (!donor) throw new Error(`INV-10b: ${SESSION_VIEW_REL} is not in the index`);
+    expect(donor.code).toContain("ultraRunAnchorKind");
+
+    const gallery = byRel.get(GALLERY_SHELL_REL);
+    if (!gallery) {
+      throw new Error(
+        `INV-10b: ${GALLERY_SHELL_REL} is not in the index, so the NEGATIVE half of this check ` +
+          `is running over nothing — which is the half that matters. RULE: the gallery's ` +
+          `GALLERY_KINDS deliberately omits ultra:run-anchor so configuration 6 shows a REAL ` +
+          `tombstone. CONSEQUENCE: a later story could register it there and turn an honest demo ` +
+          `into a mock, with two of the gallery's own tests as the only thing left to notice. ` +
+          `NEXT STEP: if the gallery shell moved, update GALLERY_SHELL_REL — do not delete this ` +
+          `test.`,
+      );
+    }
+    const galleryKinds = /GALLERY_KINDS\s*=\s*createItemKindRegistry\(\s*\[([\s\S]*?)\]\s*\)/.exec(
+      gallery.code,
+    );
+    if (!galleryKinds) {
+      throw new Error(
+        `INV-10b: GALLERY_KINDS could not be re-derived from ${GALLERY_SHELL_REL}. NEXT STEP: fix ` +
+          `this extractor rather than dropping the assertion — the negative claim is the point.`,
+      );
+    }
+    expect(galleryKinds[1]).not.toContain("ultra");
+    expect(galleryKinds[1]).not.toContain("ultraRunAnchorKind");
+  });
+
+  test("INV-10c the kind never migrated into the frozen shell — and the ONE legitimate mention is named", () => {
+    // AD-12: `components/conversation/**` is frozen and owns no module
+    // semantics. A shell file that knew what an Ultra run WAS would mean the
+    // shell had acquired a domain — the drift INV-8a/8b exist to catch, checked
+    // here from the other side, by name.
+    //
+    // STORY 4.2 WROTE THIS ARM AS "no shell file mentions `ultra` AT ALL" AND
+    // THAT WAS FALSE AGAINST THE TREE, measured the moment it first ran:
+    // `registry.ts`'s MODULE_NAMESPACES has contained the literal `"ultra"`
+    // since story 3.1. That entry is not a leak — IT IS THE VOCABULARY, and it
+    // is precisely why `ultra:run-anchor` is a legal id with NO contract change
+    // (AD-13's closed module list is edited deliberately or not at all). Writing
+    // the loose version would have made this invariant fail on a correct tree,
+    // and "relax it until it passes" is how a guard becomes decoration.
+    //
+    // So the claim is narrowed to what AD-12 actually forbids: the shell must
+    // not know the KIND, its PAYLOAD, or its PROJECTION.
+    const ANCHOR_LEAKS = [
+      ULTRA_ANCHOR_ID,
+      "ultraRunAnchorKind",
+      "UltraAnchorPayload",
+      "RunSnapshot",
+      "ultra-runs",
+      "ultra-anchor",
+    ];
+    const leaked = SHELL_FILES.flatMap((f) =>
+      ANCHOR_LEAKS.filter((needle) => f.code.includes(needle)).map(
+        (needle) =>
+          `AD-12: ${f.rel} mentions "${needle}". RULE: the Conversation shell is frozen and owns ` +
+          `no module semantics — everything a kind needs arrives in its item PAYLOAD, and ` +
+          `ConversationProps is closed at nine names (INV-8i). CONSEQUENCE: the shell acquires a ` +
+          `domain one field at a time, which is the drift AD-12 was frozen to stop. NEXT STEP: ` +
+          `move it into the adapter or into lib/ultra-runs.ts; do not widen the shell.`,
+      ),
+    );
+    expect(leaked).toEqual([]);
+
+    // …and the ONE legitimate mention is ASSERTED PRESENT rather than merely
+    // tolerated, because it is load-bearing: if `"ultra"` ever left
+    // MODULE_NAMESPACES, `createItemKindRegistry` would throw at module scope in
+    // session-view.tsx and the whole session surface would fail to construct.
+    const registry = SHELL_FILES.find(
+      (f) => f.rel === "apps/web/components/conversation/registry.ts",
+    );
+    if (!registry) throw new Error("INV-10c: registry.ts is not among SHELL_FILES");
+    expect(registry.code).toContain('"ultra"');
+    const others = SHELL_FILES.filter(
+      (f) => f.rel !== registry.rel && /\bultra\b/i.test(f.code),
+    ).map((f) => f.rel);
+    expect(others).toEqual([]);
+
+    // The floor SHELL_FILES already carries elsewhere, restated so this arm
+    // cannot pass over an empty set.
+    expect(SHELL_FILES.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("INV-10d the discriminator — a mis-namespaced ultra id IS reported, in both directions", () => {
+    // §5.4-F: the same function the real check uses, fed a runtime-assembled
+    // fixture, in both directions. Without this, "the id is legal" is
+    // indistinguishable from "the checker accepts everything".
+    const namespaces = ["conversation", "ultra", "loom", "workspace", "session"];
+    expect(ultraKindIdViolations("ultra:run-anchor", namespaces)).toEqual([]);
+    // A typo of a declared module.
+    expect(ultraKindIdViolations("ultras:run-anchor", namespaces).length).toBe(1);
+    // No namespace at all.
+    expect(ultraKindIdViolations("run-anchor", namespaces).length).toBe(1);
+    // Two colons — the module segment stops being unambiguous.
+    expect(ultraKindIdViolations("ultra:run:anchor", namespaces).length).toBe(1);
+    // A whitespace-padded half, which REGISTERS and then never matches.
+    expect(ultraKindIdViolations("ultra:run-anchor ", namespaces).length).toBeGreaterThanOrEqual(1);
+    expect(ultraKindIdViolations("ultra:", namespaces).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("INV-10e the quarantine did not grow — INV-10 added no KNOWN_VIOLATIONS entry", () => {
+    // The shape INV-7f / INV-8h / INV-9e already use. KNOWN_VIOLATIONS has held
+    // at exactly ONE entry across eight stories; INV-3f pins its LENGTH and this
+    // pins the fact that INV-10 did not reach for it.
+    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-10")).toEqual([]);
   });
 });

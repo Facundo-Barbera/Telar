@@ -1,0 +1,651 @@
+// Story 4.2 — THE PROJECTION LAYER FOR ULTRA'S REAL SESSION UI, and its whole
+// job is refusing to invent data.
+//
+// WHY THIS IS A MODULE AND NOT JSX. There is no DOM test harness in this repo
+// and story 3.1's hard rule 9 forbids introducing one, so a decision that lives
+// inside a component is a decision that ships unproven. Story 4.1's review round
+// moved three functions out of `session-view.tsx` for exactly this reason and
+// gained sixteen tests by doing it. So everything here is a CHOICE — which form
+// the anchor takes, which agent rows exist, which phase an agent belongs to,
+// which log lines are narration, whether a denominator exists at all, what the
+// dock summary says, whether the composer chip is armed for this send — and
+// every one of them has a test in `ultra-runs.test.ts`. What is left in
+// `ultra-anchor.tsx` / `ultra-rail.tsx` / `ultra-dock-signal.tsx` is layout.
+//
+// PURE AND CLIENT-REACHABLE. No React, no fetch, no `@telar/core` RUNTIME. The
+// only `@telar/core` edge is the `import type` below, which TypeScript erases at
+// build time — this module is reached from `use-ultra-runs.ts`, a "use client"
+// root, and a value edge there is an INV-4c violation reported by name
+// (AD-3 / NFR-X-3, the CLIENT-BUNDLE RULE). Its two runtime imports are
+// `@/lib/spend-readout` (itself importless but for `@/lib/format`) and
+// `@/components/conversation/items`, a pure data module with no core edge of its
+// own — reusing its `CONVERSATION_KINDS` is what keeps the splice from minting a
+// second copy of the shell's vocabulary. Shape lineage:
+// `escalation-kickoff.ts` → `ultra-wake.ts` → `spend-readout.ts` → this.
+//
+// NO PLACEBO (hard rule 3, `ui-contract.md`'s own house rule). The frozen
+// contract names five things the engine does not produce. Two are sourced by
+// story 4.2's declared additive engine change (`effort`, and live agent rows via
+// the `agent-start` event); three are NOT SOURCED AND NOT INVENTED and this file
+// is where that refusal is executable rather than aspirational:
+//   - agents `total` — `RunSnapshot.agentsTotal` is TYPED `undefined`. A script
+//     may spawn any number of agents, in a loop, conditionally; nothing in the
+//     engine knows the total and nothing can. The type itself refuses it.
+//   - the progress sliver — a fraction of DECLARED PHASES, never of agents and
+//     never of money. `progressFraction` returns `undefined` when `meta.phases`
+//     is absent or malformed, and an undefined fraction renders NO sliver — not
+//     an indeterminate bar, not a pulse, not a spinner pretending to be progress.
+//   - per-agent `tokens` — there are no token counts anywhere on the ultra path
+//     (ultra's ledger write passes `costUsd` and no token counts at all), so
+//     `AgentRow` HAS NO `tokens` FIELD. The demo gallery's `agentTokensAt`
+//     interpolates one over wall time; that is theatre.
+//
+// NOT A BUDGET (NFR-UW-7 / AC9). Every money figure here goes through
+// `spendReadout`, whose own header says a readout has no ceiling, no percentage
+// and no reserved headroom. Nothing in ultra gates on money — `storage.ts` says
+// it in its own words: "Ultra's spend is a READOUT, not a cap". The one bar this
+// story renders is the phase sliver above, and it is a fraction of phases.
+
+// TYPE-ONLY, ERASED AT BUILD TIME — the same comment `use-accounts.ts` and
+// `use-ultra-wake.ts` both carry. These are the wire shapes verbatim rather than
+// a hand-written mirror, so a field added to either in `packages/core` cannot
+// drift away from what this file projects.
+import type { UltraEvent, UltraManifest } from "@telar/core";
+import { CONVERSATION_KINDS, type TranscriptItem, type ToolsPayload } from "@/components/conversation/items";
+import type { ToolPart } from "@/components/session/tool-step";
+import { spendReadout, type SpendProvider, type SpendReadout } from "@/lib/spend-readout";
+
+export type UltraEventLike = UltraEvent;
+export type UltraManifestLike = UltraManifest;
+
+// NEVER "completed". The demo gallery's `RunState` declares
+// `running | stopped | completed | failed`; the engine's is this, and `SPEC.md`
+// says outright that "the plan's draft name `completed` is superseded". A
+// `STATE_STYLE` key copied across from the gallery misses silently at runtime
+// rather than failing to compile — which is why this alias exists at all.
+export type UltraRunState = "running" | "done" | "failed" | "stopped";
+
+/** One row of `GET /api/ultra/[id]/agents` — the ONLY source of a live agent's
+ *  snippet. `lastText` is the highest-`attempt` text record: a retried
+ *  ordinal's attempt-1 text is discarded work and showing it shows the wrong
+ *  thing. */
+export type AgentIndexRow = { ordinal: number; settled: boolean; attempt: number; lastText: string };
+
+export type AgentRow = {
+  ordinal: number;
+  label?: string;
+  model: string;
+  effort?: string;
+  /** absent while live; set from the `agent` event's own `ok` once it settles */
+  ok?: boolean;
+  /** cost only — there is deliberately NO `tokens` field (see the header) */
+  costUsd?: number;
+  /** highest-`attempt` text from the agent index; "" while nothing has streamed */
+  snippet: string;
+  settled: boolean;
+};
+
+export type PhaseGroup = { title: string; agents: AgentRow[] };
+
+export type RunSnapshot = {
+  runId: string;
+  /** pre-rendered server-side by the list route, or by `runLabel` below for the
+   *  stream-only window — NEVER by core's `ultraRunLabel`, a VALUE export whose
+   *  import from here would be an INV-4c violation. See `runLabel`'s comment. */
+  name: string;
+  state: UltraRunState;
+  /** `manifest.spend` VERBATIM. Never a sum of `agent.costUsd` deltas: the
+   *  manifest figure is a fold over `usage.ndjson` recomputed on every save, it
+   *  is not monotonic, and a resume re-presents every replayed settle with its
+   *  ORIGINAL cost — so an accumulator double-counts on the first resume
+   *  (AD-18/AD-20). */
+  spendUsd: number;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  /** deduped count of ordinals that have SETTLED */
+  agentsDone: number;
+  /** AC11 proof 3 — the TYPE ITSELF refuses the denominator. Nothing knows how
+   *  many agents a script will spawn. `ultra_status`'s `total` is a count of
+   *  settled agents, so `done/total` through that lens is always 1.0 — a
+   *  denominator always equal to its numerator is worse than none. */
+  agentsTotal: undefined;
+  phases: PhaseGroup[];
+  narrator: string[];
+  /** undefined ⇒ NO SLIVER (AC11 proof 4) */
+  progress?: { seen: number; declared: number };
+  /** true until the first manifest (a `run` SSE frame or a list row) lands. The
+   *  launch is a FACT the moment the tool result carries a `runId`, so the
+   *  anchor renders in a pending form rather than being dropped. */
+  pending: boolean;
+};
+
+export type UltraAnchorPayload = {
+  run: RunSnapshot;
+  /** for `spendReadout()`. The adapter supplies it because the renderer may read
+   *  nothing else — a renderer that decides a unit is a renderer with a domain
+   *  rule in it. */
+  provider: SpendProvider;
+  /** `ui-contract.md` §2: "Clicking it focuses that run in the rail." */
+  onFocus: () => void;
+  onStop: () => void;
+  onResume: () => void;
+  /** disables both affordances between the click and the next manifest snapshot
+   *  (AC5 proof 3 — Resume is NOT idempotent) */
+  busy: boolean;
+};
+
+export type ArmState = { armed: boolean };
+
+export type DockRunSummary = {
+  text: string;
+  /** present only for the single-run case; N>1 has no one state to name */
+  state?: UltraRunState;
+  spend: SpendReadout;
+  focusRunId?: string;
+} | null;
+
+// ── the tool wire name ──────────────────────────────────────────────────────
+
+/** The launch call's wire name. Read off `ULTRA_AUTO_TOOLS`' first entry rather
+ *  than re-derived from `createSdkMcpServer({name:"ultra"})` + `tool("ultra",…)`
+ *  — but spelled as a literal here rather than imported, because
+ *  `lib/ultra-mcp.ts` pulls in the Agent SDK and this module must stay reachable
+ *  from a client root. The two are pinned together by a test. */
+export const ULTRA_TOOL_NAME = "mcp__ultra__ultra";
+
+/** The registered item kind. Declared HERE, in the pure module, so the splice
+ *  that mints items of this kind and the `ItemKind` that renders them cannot
+ *  drift apart — `ultra-anchor.tsx` writes `id: ULTRA_ANCHOR_KIND`. INV-10a
+ *  pins the literal, the module segment, and its membership of
+ *  `MODULE_NAMESPACES`. */
+export const ULTRA_ANCHOR_KIND = "ultra:run-anchor";
+
+// ── T16: ONE envelope adapter, used everywhere ──────────────────────────────
+
+// THREE ENVELOPES FOR ONE OBJECT and that is measured, not asserted: the SSE
+// `run`/`end` frames send the BARE `UltraManifest`; `GET /api/ultra/[id]` sends
+// `{ run }`; `GET /api/ultra` sends `{ runs }`. Unwrapping inline at each call
+// site means unwrapping the wrong level exactly once, in the case tested least.
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A single manifest out of a bare frame OR a `{ run }` envelope. Null when the
+ *  value is neither — a UI that throws on a shape it did not expect is a UI that
+ *  500s the page for one bad row (AD-8: a vanished cross-tree reference renders
+ *  as a tombstone, never a throw). */
+export function unwrapManifest(value: unknown): UltraManifestLike | null {
+  if (!isRecord(value)) return null;
+  const inner = isRecord(value.run) ? value.run : value;
+  return typeof inner.runId === "string" ? (inner as unknown as UltraManifestLike) : null;
+}
+
+/** Many manifests out of a `{ runs }` envelope OR a bare array. Always an array;
+ *  never null, because "no runs" and "malformed" render identically here — an
+ *  empty Workflows section. */
+export function unwrapManifests(value: unknown): UltraManifestLike[] {
+  const raw = Array.isArray(value) ? value : isRecord(value) && Array.isArray(value.runs) ? value.runs : [];
+  return raw.map((r) => unwrapManifest(r)).filter((m): m is UltraManifestLike => m !== null);
+}
+
+// ── D5a: the run label, duplicated from core DELIBERATELY, and it is four lines ─
+
+// `ultraRunLabel` lives in `packages/core/src/ultra/events.ts` and is a RUNTIME
+// VALUE. This module is reached from a "use client" root, so importing it is an
+// INV-4c violation reported by name. And the anchor cannot simply take the
+// server-rendered `name` off the list route either: its per-tick channel is the
+// SSE tail, whose `run`/`end` frames carry the BARE `UltraManifest` — which has
+// `meta` and no `name` field at all. So the rule lives here too: read
+// `meta.name` when it is a NON-EMPTY STRING, else fall back to the runId.
+//
+// THIS IS THE SECOND COPY OF ONE RULE AND IT IS THE CORRECT TRADE. The
+// alternatives are a value edge INV-4 forbids, or an anchor with no label until
+// the first list poll answers. `ultra-runs.test.ts` asserts both copies agree on
+// a `meta` with a name, a `meta` without one, and a `meta` whose `name` is not a
+// string.
+export function runLabel(meta: unknown, runId: string): string {
+  if (isRecord(meta) && typeof meta.name === "string" && meta.name.trim() !== "") return meta.name;
+  return runId;
+}
+
+// ── T6: the narrator's filter ───────────────────────────────────────────────
+
+// A `log` event is NOT always a script's `log()` call. `storage.ts` narrates its
+// own accounting and publish failures through the SAME variant. These four
+// prefixes were re-derived from `packages/core/src/ultra/storage.ts` at
+// `e093a98` (grep the literals; the count moved once already when story 4.1
+// added the fourth). They are diagnostics for a developer reading
+// `events.ndjson` with `tail` at 1am — the logging doctrine
+// `ARCHITECTURE-SPINE.md` states — not narration for a user watching a run.
+export const ACCOUNTING_LOG_PREFIXES = [
+  "spend-read-unavailable:",
+  "spend-record-skipped ordinal=",
+  "spend-record-failed ordinal=",
+  "run-completed-publish-failed:",
+] as const;
+
+const isAccountingLog = (msg: string): boolean =>
+  ACCOUNTING_LOG_PREFIXES.some((p) => msg.startsWith(p));
+
+export function narratorLines(events: readonly UltraEventLike[]): string[] {
+  const out: string[] = [];
+  for (const e of events) {
+    if (e.type === "log" && !isAccountingLog(e.msg)) out.push(e.msg);
+  }
+  return out;
+}
+
+// ── agent rows ──────────────────────────────────────────────────────────────
+
+// DEDUPED BY ORDINAL, LAST-WINS, and that is what makes a resume survivable: a
+// resumed run's `events.ndjson` gains a SECOND `agent` event for every replayed
+// ordinal carrying `cached: true`, so a list-shaped projection doubles its rows
+// on the first resume. Keying on the ordinal cannot.
+//
+// `agent-start` is emitted immediately before an ordinal's first LIVE attempt
+// and never on the cached-replay path, so a replayed ordinal has only its
+// `agent` event — one row either way.
+export function agentRows(
+  events: readonly UltraEventLike[],
+  agentIndex: readonly AgentIndexRow[],
+): AgentRow[] {
+  const byOrdinal = new Map<number, AgentRow>();
+  for (const e of events) {
+    if (e.type === "agent-start") {
+      const prev = byOrdinal.get(e.ordinal);
+      byOrdinal.set(e.ordinal, {
+        ordinal: e.ordinal,
+        ...(e.label !== undefined ? { label: e.label } : {}),
+        model: e.model,
+        ...(e.effort !== undefined ? { effort: e.effort } : {}),
+        snippet: prev?.snippet ?? "",
+        // A re-emitted start for an ordinal that already settled must not
+        // un-settle it. In practice the executor never emits one, but a stream
+        // is append-only and a projection over it should not depend on that.
+        settled: prev?.settled ?? false,
+        ...(prev?.ok !== undefined ? { ok: prev.ok } : {}),
+        ...(prev?.costUsd !== undefined ? { costUsd: prev.costUsd } : {}),
+      });
+    } else if (e.type === "agent") {
+      const prev = byOrdinal.get(e.ordinal);
+      byOrdinal.set(e.ordinal, {
+        ordinal: e.ordinal,
+        // The settle event is authoritative for label/model; `agent-start`'s
+        // copies are the same values read off the same `UltraAgentOpts`.
+        ...(e.label !== undefined ? { label: e.label } : prev?.label !== undefined ? { label: prev.label } : {}),
+        model: e.model,
+        ...(e.effort !== undefined ? { effort: e.effort } : prev?.effort !== undefined ? { effort: prev.effort } : {}),
+        ok: e.ok,
+        ...(e.costUsd !== undefined ? { costUsd: e.costUsd } : {}),
+        snippet: prev?.snippet ?? "",
+        settled: true,
+      });
+    }
+  }
+  // The index carries the live snippet, and it can also see an ordinal whose
+  // `agent-start` has not reached this reader yet (two channels, one truth).
+  for (const row of agentIndex) {
+    const prev = byOrdinal.get(row.ordinal);
+    if (prev) {
+      byOrdinal.set(row.ordinal, {
+        ...prev,
+        snippet: row.lastText,
+        settled: prev.settled || row.settled,
+      });
+    } else {
+      byOrdinal.set(row.ordinal, {
+        ordinal: row.ordinal,
+        // No `agent-start` seen for it yet, so the model is genuinely unknown.
+        // "" renders as no chip at all — never a guessed model name.
+        model: "",
+        snippet: row.lastText,
+        settled: row.settled,
+      });
+    }
+  }
+  return [...byOrdinal.values()].sort((a, b) => a.ordinal - b.ordinal);
+}
+
+// ── phase grouping (T5) ─────────────────────────────────────────────────────
+
+/** Agents seen before any `phase` event. Rendered without a heading. */
+export const UNPHASED = "";
+
+// GROUPED BY STREAM ORDER, because there is no phase id, no `kind` and no
+// agent→phase link anywhere in the data (the demo gallery's `PhaseDef.id` /
+// `AgentDef.phaseId` are fabricated). An agent belongs to the MOST RECENT
+// PRECEDING `phase` event — `ultra_status`'s own idiom, which nothing pinned
+// until now.
+//
+// IDEMPOTENT UNDER A RESUME, which re-emits the whole phase sequence from the
+// cheap re-run: membership is last-assignment-wins over a Map keyed by ordinal,
+// and group identity is the phase TITLE, so replaying the same stream twice
+// produces the same groups rather than doubling them.
+export function phaseGroups(
+  events: readonly UltraEventLike[],
+  rows: readonly AgentRow[],
+): PhaseGroup[] {
+  const titleOrder: string[] = [];
+  const phaseOf = new Map<number, string>();
+  let current = UNPHASED;
+  const note = (title: string) => {
+    if (!titleOrder.includes(title)) titleOrder.push(title);
+  };
+  for (const e of events) {
+    if (e.type === "phase") {
+      current = e.title;
+      note(current);
+    } else if (e.type === "agent-start" || e.type === "agent") {
+      phaseOf.set(e.ordinal, current);
+      note(current);
+    }
+  }
+  const byTitle = new Map<string, AgentRow[]>();
+  for (const title of titleOrder) byTitle.set(title, []);
+  for (const row of rows) {
+    const title = phaseOf.get(row.ordinal) ?? UNPHASED;
+    if (!byTitle.has(title)) {
+      byTitle.set(title, []);
+      note(title);
+    }
+    byTitle.get(title)!.push(row);
+  }
+  // A phase that declared itself but has no agents yet is still a real group —
+  // it is the run telling the user where it is.
+  return titleOrder.map((title) => ({ title, agents: byTitle.get(title) ?? [] }));
+}
+
+// ── the progress sliver (AC11 proof 4) ──────────────────────────────────────
+
+// SOURCED FROM PHASES, NEVER FROM AGENTS OR MONEY. `ULTRA_TOOL_DESCRIPTION`
+// teaches `export const meta = { name, description, phases }`, and
+// `{ type: "phase", title }` events say which one the run is in. So the
+// denominator is `meta.phases.length` and the numerator is the count of DISTINCT
+// phase titles seen.
+//
+// `ScriptMeta` is `Record<string, unknown>` and NOTHING VALIDATES `phases` —
+// `compileScript` checks only that `meta` is a pure object literal. So this
+// reads it ONLY when it is an array whose entries are all strings, exactly as
+// story 4.1's `ultraRunLabel` reads `meta.name` only when it is a non-empty
+// string. Anything else ⇒ `undefined` ⇒ NO SLIVER.
+export function progressFraction(
+  manifest: UltraManifestLike | null,
+  events: readonly UltraEventLike[],
+): { seen: number; declared: number } | undefined {
+  const meta: unknown = manifest === null ? undefined : manifest.meta;
+  const phases = isRecord(meta) ? meta.phases : undefined;
+  if (!Array.isArray(phases) || phases.length === 0) return undefined;
+  if (!phases.every((p) => typeof p === "string")) return undefined;
+  const seen = new Set<string>();
+  for (const e of events) if (e.type === "phase") seen.add(e.title);
+  return { seen: Math.min(seen.size, phases.length), declared: phases.length };
+}
+
+// ── the run snapshot ────────────────────────────────────────────────────────
+
+export function runSnapshot(
+  manifest: UltraManifestLike | null,
+  events: readonly UltraEventLike[],
+  agentIndex: readonly AgentIndexRow[] = [],
+  runId?: string,
+): RunSnapshot {
+  const id = manifest?.runId ?? runId ?? "";
+  const rows = agentRows(events, agentIndex);
+  const progress = progressFraction(manifest, events);
+  return {
+    runId: id,
+    name: runLabel(manifest?.meta, id),
+    // AD-15 / T14: the state comes from the MANIFEST, never from having observed
+    // a `state` event. `getUltraManifest` rewrites a stale `running` to
+    // `stopped` ON READ without going through `settle()`, so a run killed by a
+    // server restart reaches a terminal state with no event, no publish and no
+    // `end` frame anyone will ever see. A UI that waits for an event to declare
+    // a run finished shows a permanently-running anchor for every one of them.
+    state: manifest?.state ?? "running",
+    spendUsd: manifest?.spend ?? 0,
+    ...(manifest?.error !== undefined ? { error: manifest.error } : {}),
+    startedAt: manifest?.startedAt ?? 0,
+    updatedAt: manifest?.updatedAt ?? 0,
+    agentsDone: rows.filter((r) => r.settled).length,
+    agentsTotal: undefined,
+    phases: phaseGroups(events, rows),
+    narrator: narratorLines(events),
+    ...(progress !== undefined ? { progress } : {}),
+    pending: manifest === null,
+  };
+}
+
+/** AC2's honest proof. A rendered HEIGHT cannot be tested without a DOM; the
+ *  claim that THE SHAPE-SELECTING FUNCTION IS CONSTANT WHILE RUNNING can, and
+ *  that is what this is. The renderer consumes it, so the two cannot diverge. */
+export function anchorForm(run: RunSnapshot): "running" | "terminal" {
+  return run.state === "running" ? "running" : "terminal";
+}
+
+// ── the session filter (D5 / C1) ────────────────────────────────────────────
+
+// DEFINED-AND-EQUAL, NEVER TRUTHY. `run.sessionId` is optional — a run launched
+// outside a chat has none — so `sessionId && run.sessionId === sessionId` would
+// silently return everything for the empty string, and `run.sessionId ===
+// sessionId` alone would match every chat-less run against an absent filter.
+//
+// Generic over `{ sessionId?: string }` rather than over `RunSnapshot` because
+// the route filters `UltraManifest[]` server-side and the rail filters snapshots
+// — one rule, and the route is a three-line caller of it. That is the whole
+// mechanism by which a route with no test harness in this repo is still proved.
+export function filterRunsBySession<T extends { sessionId?: string }>(
+  runs: readonly T[],
+  sessionId?: string,
+): readonly T[] {
+  if (sessionId === undefined) return runs;
+  return runs.filter((r) => r.sessionId === sessionId);
+}
+
+// ── the dock summary (AC7 proof 6) ──────────────────────────────────────────
+
+// "One dock signal per session; concurrent live runs summarize" —
+// `ui-contract.md` §9. One run renders its name; N>1 renders "N runs live"; the
+// spend is the SUM of those runs' figures.
+//
+// `provider` is an ARGUMENT, not a hard-coded value, even though every ultra
+// surface passes the Claude one today (see `anchorSpend` below) — the dock's
+// poller has no session provider in scope because `Runtime` carries none, so the
+// unit has to arrive from somewhere and a default would hide the decision.
+export function summarizeRuns(runs: readonly RunSnapshot[], provider: SpendProvider): DockRunSummary {
+  const live = runs.filter((r) => r.state === "running");
+  if (live.length === 0) return null;
+  const usd = live.reduce((sum, r) => sum + r.spendUsd, 0);
+  const spend = anchorSpend(provider, usd);
+  if (live.length === 1) {
+    const only = live[0]!;
+    return { text: only.name, state: only.state, spend, focusRunId: only.runId };
+  }
+  return { text: `${live.length} runs live`, spend };
+}
+
+// D6a — THE SPEND CALL, SPELLED OUT ONCE, because the two halves do not fit.
+// `UltraManifest.spend` is a bare USD number; `spendReadout(provider, {usd,
+// tokens})` wants a pair. There is no tokens figure anywhere on the ultra path
+// and no route that would produce one.
+//
+// A `tokens: 0` HERE IS NOT A READOUT OF ZERO TOKENS; it is the unit that never
+// applies on this path. `provider` is always the Claude value on every ultra
+// surface — anchor, rail card and dock head alike — because the ultra MCP server
+// is constructed only on the Claude branch of the chat route and NFR-UW-8 fixes
+// that. Passing the Codex value would render a confident `0`, which is a
+// fabricated figure (hard rule 3). IF A CODEX ULTRA PATH EVER EXISTS, THIS IS
+// THE ONE PLACE IT CHANGES.
+export function anchorSpend(provider: SpendProvider, usd: number): SpendReadout {
+  return spendReadout(provider, { usd, tokens: 0 });
+}
+
+// ── the composer's arm state (AC6 / D2) ─────────────────────────────────────
+
+// ARMING IS PER-MESSAGE AND IS NOT PERSISTED (T11). `telar:composer:${project}`
+// remembers model, effort and permission mode across sessions; the chip is
+// per-message by NFR-UW-1 ("Opt-in is a request, not a behavior flag"). A
+// remembered chip is a behaviour flag with extra steps.
+//
+// "sent" is distinct from "disarm" so the reducer records WHY it disarmed: the
+// user untoggling and the send consuming the arm are the same end state and
+// different events, and the test that matters — arm → send → next send carries
+// no key — reads the second.
+export function armReducer(state: ArmState, action: "arm" | "disarm" | "sent"): ArmState {
+  switch (action) {
+    case "arm":
+      return { armed: true };
+    case "disarm":
+    case "sent":
+      return { armed: false };
+  }
+}
+
+/** The `POST /api/chat` options for one dispatch. The wire name is `ultra` —
+ *  `app/api/chat/route.ts` destructures that exact key and narrows it with
+ *  `rawUltra === true`. Do NOT invent `ultraAnnotated`, `ultraArmed` or
+ *  `annotateUltra` on the wire. */
+export type ChatSendOptions = { hidden?: boolean; ultra?: boolean };
+
+/** WHICH MESSAGE THE ARM APPLIES TO, decided here rather than inside the body
+ *  literal, and the reason is measured rather than stylistic.
+ *
+ *  `session-view.tsx` has ONE `POST /api/chat` body literal and THREE dispatch
+ *  sources fire it: the user pressing Enter, the message queue draining when the
+ *  agent goes idle, and story 4.1's HIDDEN WAKE TURN. Reading the chip's
+ *  component state inside that literal would annotate all three — including a
+ *  turn with no user message at all, whose appendix would then claim "the user's
+ *  message below is Ultra-annotated" about nothing, and including a queued
+ *  message that would carry whatever the chip happened to say when the queue
+ *  drained rather than when the user pressed Enter.
+ *
+ *  So the arm is read ONCE, at `handleSubmit`, and travels with the dispatch:
+ *  immediately for the idle path, and on the queued item for the busy path.
+ *  The wake's dispatch is not a source here at all — it stays the literal
+ *  `next.hidden ? { hidden: true } : undefined` it already was, and
+ *  `ultra-runs.test.ts` pins that line statically so a later edit cannot quietly
+ *  route it through this function. */
+export type SendSource = { kind: "user"; armed: boolean } | { kind: "queued"; ultra?: boolean };
+
+export function sendOptionsFor(source: SendSource): ChatSendOptions | undefined {
+  const armed = source.kind === "user" ? source.armed : source.ultra === true;
+  return armed ? { ultra: true } : undefined;
+}
+
+// ── the transcript splice (D8 / AC1 proof 2 / AC4) ──────────────────────────
+
+// HOW A LAUNCH IS RECOGNISED, PRECISELY, BECAUSE GETTING IT WRONG IS SILENT.
+// The tool's wire name is `mcp__ultra__ultra`; its `output` is the handler's
+// okResult text, `JSON.stringify({ runId, meta, note }, null, 2)`.
+//
+// AND IT IS TRUNCATED. `app/api/chat/route.ts` passes every tool result through
+// `capToolOutput`, a HEAD-truncate at `TOOL_OUTPUT_CAP`, so a launch whose
+// `meta` is large arrives as a PREFIX OF VALID JSON — which `JSON.parse`
+// rejects outright. Because `runId` is the first key the tool emits, the head
+// survives. So: try `JSON.parse`; on failure fall back to a regex over the same
+// text. Both arms are tested, including a deliberately truncated fixture. A
+// splice that only handles well-formed JSON works on every small script you test
+// by hand and fails on the first real one.
+const RUN_ID_IN_TEXT = /"runId"\s*:\s*"([^"]+)"/;
+
+export function extractRunId(output: string | undefined): string | null {
+  if (typeof output !== "string" || output === "") return null;
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (isRecord(parsed) && typeof parsed.runId === "string" && parsed.runId !== "") return parsed.runId;
+  } catch {
+    // fall through to the truncated-prefix arm
+  }
+  const m = RUN_ID_IN_TEXT.exec(output);
+  return m && m[1] ? m[1] : null;
+}
+
+/** The runId this tool part launched, or null when it is not a launch.
+ *
+ *  TWO MORE RECOGNITION RULES, both from `ui-contract.md` §5. An `isError: true`
+ *  ultra result is a VALIDATION REJECTION (a `model`-less script returning to
+ *  the agent, which re-authors) — there is no run, so it stays an ordinary tool
+ *  row. And a part with NO `output` yet is a launch in flight: leave it a tool
+ *  row until the result lands, then splice. */
+export function launchedRunId(part: ToolPart): string | null {
+  if (part.name !== ULTRA_TOOL_NAME) return null;
+  if (part.isError === true) return null;
+  return extractRunId(part.output);
+}
+
+// THE SPLICE REPLACES THE ULTRA TOOL PART AND SPLITS ITS GROUP. IT NEVER
+// APPENDS. `groupParts` collapses a run of consecutive tool calls into one
+// `conversation:tools` item, so the launch usually arrives inside a group with
+// neighbours. Three shapes were considered and two rejected:
+//   - Append the anchor AFTER the group. REJECTED: the shell marks only the LAST
+//     top-level item live, and `isTrailingItem` is what makes a streaming turn's
+//     trailing tool group auto-open. An item appended after it silently steals
+//     the turn's liveness. The `trailing` prop's own doc says this in the shell's
+//     words, and it is why story 3.1 put the loom rows there instead.
+//   - Leave the tool row and add an anchor BESIDE it. REJECTED: the contract says
+//     "Each run is ONE compact fixed-height tool-style row", and a generic tool
+//     row showing `{script: "…4KB…"}` beside it is the noise the density rule
+//     exists to prevent.
+//   - Replace the part and split the group. CHOSEN.
+//
+// IT IS A TOTAL FUNCTION: items with no ultra call come back unchanged.
+//
+// KEYS NAME THE EVENT, NOT THE SLOT (the house maxim, paid for three times in
+// story 1.1). The anchor's key is derived from the runId — the run IS the event
+// — and the trailing half of a split group is keyed by the launch that split it,
+// never by a loop index.
+export function spliceRunAnchors(
+  items: readonly TranscriptItem[],
+  runs: ReadonlyMap<string, UltraAnchorPayload>,
+  /** Builds the PENDING form (D8) for a runId the caller has no snapshot for
+   *  yet. The launch is a fact the moment the tool result carries a runId, so an
+   *  anchor whose manifest has not arrived renders pending rather than being
+   *  dropped. Omitted ⇒ an unknown runId leaves its tool row alone, which is the
+   *  other honest total-function answer. */
+  pending?: (runId: string) => UltraAnchorPayload,
+): TranscriptItem[] {
+  const out: TranscriptItem[] = [];
+  for (const item of items) {
+    if (item.kind !== CONVERSATION_KINDS.tools) {
+      out.push(item);
+      continue;
+    }
+    const payload = item.payload as ToolsPayload;
+    const parts = payload.parts ?? [];
+    // Cheap negative path: no ultra launch in this group at all.
+    if (!parts.some((p) => launchedRunId(p) !== null)) {
+      out.push(item);
+      continue;
+    }
+    let bucket: ToolPart[] = [];
+    let bucketKey = item.key;
+    let splitCount = 0;
+    const flush = () => {
+      if (bucket.length === 0) return; // drop an empty side rather than emit an empty group
+      out.push({ ...item, key: bucketKey, payload: { ...payload, parts: bucket } satisfies ToolsPayload });
+      bucket = [];
+    };
+    for (const part of parts) {
+      const runId = launchedRunId(part);
+      const anchor = runId === null ? undefined : (runs.get(runId) ?? pending?.(runId));
+      if (runId !== null && anchor) {
+        flush();
+        out.push({ kind: ULTRA_ANCHOR_KIND, key: `ultra:${runId}`, payload: anchor });
+        splitCount += 1;
+        bucketKey = `${item.key}~${runId}`;
+      } else {
+        bucket.push(part);
+      }
+    }
+    if (splitCount === 0) {
+      // Every launch in this group was unresolvable (no snapshot, no pending
+      // factory). Restore the group EXACTLY as it arrived — same object, same
+      // key — rather than re-emitting a structurally-equal copy.
+      bucket = [];
+      out.push(item);
+      continue;
+    }
+    flush();
+  }
+  return out;
+}

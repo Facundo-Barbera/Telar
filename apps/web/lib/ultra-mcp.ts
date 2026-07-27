@@ -82,11 +82,33 @@ const errResult = (message: string) => ({
 });
 const okResult = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-// Condensed authoring reference (doc §4's fuller "single source file"
-// belongs to a later cut — see the file header) — the script format, the
-// injected surface, the explicit-model rule, the determinism bans, and one
-// worked example, so the agent can write a good script on the first try.
-const ULTRA_TOOL_DESCRIPTION = `Launch an ULTRA run: a deterministic fan-out script that spawns real subagents (agent()), fans them out in parallel (parallel()) or per-item (pipeline()), and narrates progress (phase()/log()). Validates synchronously, then returns {runId} IMMEDIATELY — the run detaches and keeps going in the background while you and the user keep talking. Several runs may be live at once. Poll ultra_status(runId) for progress; call ultra_stop(runId) to abort.
+// WHAT A TOOL DESCRIPTION IS FOR, and where the rest of it went (story 4.2).
+//
+// This used to carry a condensed authoring reference: the script format, a
+// walk-through of the injected surface, the explicit-model rule, the determinism
+// bans, the quality patterns and one worked example. Story 4.2 built the fuller
+// version doc §4 always intended — `@/lib/ultra-authoring`'s
+// ULTRA_AUTHORING_REFERENCE — and injects it into every Claude session's
+// system-prompt appendix (`@/lib/session-prompts`'s `ultraAuthoring`).
+//
+// TWO FULL TEXTS WOULD BE A SECOND SOURCE OF TRUTH, which is the failure mode
+// `session-prompts.ts`'s own header says that module exists to prevent. So the
+// split is by JOB rather than by length:
+//
+//   THIS STRING KEEPS what decides whether the CALL IS LEGAL — the opt-in rule,
+//   the non-blocking contract, the script format, the model requirement (a
+//   pre-run rejection), and the determinism bans.
+//
+//   `@/lib/ultra-authoring` OWNS what decides whether the SCRIPT IS GOOD — the
+//   surface API walk-through, the quality patterns and the worked example. Those
+//   now arrive in the appendix on every Claude session, so carrying them on the
+//   tool schema every turn as well would be paying twice.
+//
+// EXPORTED (story 4.2) so `ultra-mcp.test.ts` can pin the two sentences the
+// composer chip's client half depends on BY IDENTIFIER. The only other way to
+// reach the string is `server.instance._registeredTools[…].description` — the
+// SDK's private registry, which breaks on an SDK upgrade for no reason.
+export const ULTRA_TOOL_DESCRIPTION = `Launch an ULTRA run: a deterministic fan-out script that spawns real subagents (agent()), fans them out in parallel (parallel()) or per-item (pipeline()), and narrates progress (phase()/log()). Validates synchronously, then returns {runId} IMMEDIATELY — the run detaches and keeps going in the background while you and the user keep talking. Several runs may be live at once. Poll ultra_status(runId) for progress; call ultra_stop(runId) to abort.
 
 ONLY call this when the user explicitly asked for a large orchestrated/parallel run — they said "ultra", or their message is Ultra-annotated (the composer's Ultra chip, noted in your system context for this turn). Never infer it yourself from an ordinary request.
 
@@ -94,26 +116,9 @@ Script format (plain JS — no TypeScript, no imports):
   export const meta = { name, description, phases };  // a PURE object literal, no function calls
   export default async function ({ agent, parallel, pipeline, phase, log, args }) { ... }
 
-The injected surface is the ONLY thing the script can touch:
-- agent(prompt, opts) spawns ONE subagent and returns its result, or null if it died (never throws for an ordinary failure). opts.model is REQUIRED on EVERY call — a script with even one model-less agent() call is REJECTED before anything runs, naming the offending call site. Optional opts: label (a short display name), effort (display only), schema (a zod object — forces a validated structured result off emit_result; omit it to get the model's final text instead), isolation (a fresh worktree for a parallel mutator).
-- parallel(thunks) runs an array of () => agent(...) thunks concurrently with a barrier; a failed thunk resolves to null in its slot, never rejects the whole run.
-- pipeline(items, ...stages) flows each item through every stage independently (no inter-stage barrier); a stage callback gets (prev, item, index) and a throw drops just that item to null.
-- phase(title) groups progress into a named section; log(msg) narrates a line. args is whatever JSON value you pass at launch.
+opts.model is REQUIRED on EVERY agent() call — a script with even one model-less agent() call is REJECTED before anything runs, naming the offending call site. Your system context for this session carries the full authoring reference: the injected surface API, the quality patterns, and a worked example. Read it there rather than guessing the surface.
 
-Banned inside the script body (throws or is rejected before running): require, import, process, Date / Date.now() / new Date(), Math.random() — no wall-clock, no entropy, no host access; a re-run must be byte-identical. Every child agent() runs NON-INTERACTIVELY under the same fixed tool surface this session has — an action needing approval simply fails that agent() call, it never pauses the run. There is no budget/spend ceiling — bound an open-ended search with loop-until-dry (iterate a queue until it's empty) rather than a count; use an adversarial-verify pattern (a critic agent() checks a builder agent()'s output) for anything you want double-checked.
-
-Worked example:
-  export const meta = { name: "rank-files", description: "summarize then rank a set of files", phases: ["summarize", "rank"] };
-  export default async function ({ agent, parallel, phase, log, args }) {
-    phase("summarize");
-    const summaries = await parallel(
-      args.files.map((f) => () => agent(\`Summarize \${f} in two sentences.\`, { model: "sonnet", label: f })),
-    );
-    const ok = summaries.filter(Boolean);
-    log(\`\${ok.length}/\${args.files.length} files summarized\`);
-    phase("rank");
-    return agent(\`Rank these summaries best-to-worst: \${JSON.stringify(ok)}\`, { model: "opus", label: "rank" });
-  }`;
+Banned inside the script body (throws or is rejected before running): require, import, process, Date / Date.now() / new Date(), Math.random() — no wall-clock, no entropy, no host access; a re-run must be byte-identical. Every child agent() runs NON-INTERACTIVELY under the same fixed tool surface this session has — an action needing approval simply fails that agent() call, it never pauses the run.`;
 
 const ULTRA_STATUS_DESCRIPTION = `Check an Ultra run's live progress: state (running / done / stopped / failed), cost-visibility spend, and a rollup of settled agents/phases/narration so far — call this to poll a run you launched with \`ultra\` instead of blocking on it. Once state is "done" the response also carries the script's returned result.`;
 

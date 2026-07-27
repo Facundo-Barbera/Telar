@@ -62,6 +62,7 @@ import {
   LOOM_START_TOOL,
 } from "./loom-mcp";
 import { ULTRA_AUTO_TOOLS } from "./ultra-mcp";
+import { ULTRA_AUTHORING_REFERENCE } from "./ultra-authoring";
 import { makeGuardrailDecision } from "./permissions";
 import {
   ESCALATION_SYSTEM_PROMPT,
@@ -273,16 +274,75 @@ describe("the four builders carry D11's per-kind decisions", () => {
     });
   }
 
-  test("a plain project session with the Ultra chip OFF has an EMPTY appendix", () => {
-    // The route's old fallthrough arm: `ultraAnnotationNote ? {…append} : {…}`.
-    // "" here is what keeps "a normal session's systemPrompt is byte-for-byte
-    // unchanged" true after the migration — the route branches on emptiness and
-    // passes the bare preset.
-    expect(resolveSessionProfile(ctx({ kind: "project" })).systemPromptAppendix).toBe("");
+  test("a plain CODEX project session with the Ultra chip OFF still has an EMPTY appendix", () => {
+    // THIS ASSERTION USED TO BE ABOUT `ctx({ kind: "project" })`, WHICH DEFAULTS
+    // TO CLAUDE, AND STORY 4.2 MADE IT DELIBERATELY FALSE THERE.
+    //
+    // What it said, and why it was right for its story: "The route's old
+    // fallthrough arm: `ultraAnnotationNote ? {…append} : {…}`. "" here is what
+    // keeps 'a normal session's systemPrompt is byte-for-byte unchanged' true
+    // after the migration — the route branches on emptiness and passes the bare
+    // preset." That claim was about story 2.2's MIGRATION: hoisting the route's
+    // prompt branch into builders had to change no behaviour.
+    //
+    // Why it is wrong now: story 4.2 / AC8 injects the script-authoring
+    // reference into every CLAUDE project/planner/steerer session, on purpose.
+    // The reference is the whole point — CAP-3 says the agent must be taught how
+    // to author a script, and the appendix is the only per-turn channel there
+    // is.
+    //
+    // THE HALF THAT DID NOT CHANGE is what this test now pins, and it is the
+    // half that carries the original property: on CODEX the appendix is STILL
+    // exactly "" with the chip off and STILL exactly the note with it on. Codex
+    // is offered no ultra tools, so it is taught no ultra authoring. The
+    // escalation appendix likewise still contains no ultra text at all — see
+    // "the escalation appendix carries no ultra text on either provider" below.
+    const codex = { kind: "project", provider: "codex" } as const;
+    expect(resolveSessionProfile(ctx(codex)).systemPromptAppendix).toBe("");
     // …and with the chip on it is EXACTLY the note, nothing more.
     expect(
-      resolveSessionProfile(ctx({ kind: "project", ultraAnnotated: true })).systemPromptAppendix,
+      resolveSessionProfile(ctx({ ...codex, ultraAnnotated: true })).systemPromptAppendix,
     ).toBe(ULTRA_ANNOTATION_NOTE);
+  });
+
+  test("4.2 AC8 — a CLAUDE project session carries the authoring reference, and the chip is orthogonal to it", () => {
+    const off = resolveSessionProfile(ctx({ kind: "project" })).systemPromptAppendix;
+    const on = resolveSessionProfile(
+      ctx({ kind: "project", ultraAnnotated: true }),
+    ).systemPromptAppendix;
+    // The reference is UNCONDITIONAL on Claude: it teaches the agent how to
+    // author a script IF it is asked to, which is a different question from
+    // whether this turn was annotated. Gating it on the chip would mean the one
+    // turn the user actually asked for a run is the first turn the agent has
+    // ever seen the surface API.
+    expect(off).toContain(ULTRA_AUTHORING_REFERENCE);
+    expect(on).toContain(ULTRA_AUTHORING_REFERENCE);
+    expect(off).not.toContain(ULTRA_ANNOTATION_NOTE);
+    expect(on).toContain(ULTRA_ANNOTATION_NOTE);
+  });
+
+  test("4.2 AC8 — the reference reaches planner and steerer on Claude and NEITHER of them on Codex", () => {
+    for (const kind of ["project", "planner", "steerer"] as const) {
+      expect(
+        resolveSessionProfile(ctx({ kind, loomId: "l-1" })).systemPromptAppendix,
+      ).toContain(ULTRA_AUTHORING_REFERENCE);
+      expect(
+        resolveSessionProfile(ctx({ kind, provider: "codex", loomId: "l-1" })).systemPromptAppendix,
+      ).not.toContain(ULTRA_AUTHORING_REFERENCE);
+    }
+  });
+
+  test("4.2 AC8 — the escalation appendix carries no ultra text on either provider, enforced by its TYPE", () => {
+    // `escalationAppendix` has neither `ultraAnnotated` nor `provider` in its
+    // signature, so this cannot regress by someone forgetting — it can only
+    // regress by someone widening the type on purpose.
+    for (const provider of ["claude", "codex"] as const) {
+      const appendix = resolveSessionProfile(
+        ctx({ kind: "escalation", provider, loomId: "l-1" }),
+      ).systemPromptAppendix;
+      expect(appendix).not.toContain(ULTRA_AUTHORING_REFERENCE);
+      expect(appendix).not.toContain(ULTRA_ANNOTATION_NOTE);
+    }
   });
 
   test("every builder loads the repo's settings and NOT the user's", () => {

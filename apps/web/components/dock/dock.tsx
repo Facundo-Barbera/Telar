@@ -20,6 +20,7 @@ import {
   PencilIcon,
   SearchIcon,
   SquareIcon,
+  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -174,6 +175,19 @@ function HeadTooltip({
               <span className="opacity-40">·</span>
               <span className={cn(rt?.parked && "text-amber-500")}>{stateLabel}</span>
             </div>
+            {/* Story 4.2 / AC7 proof 4 — `name · state · spend` for this
+                session's live Ultra run(s). Already rendered by
+                `summarizeRuns` in `@/lib/ultra-runs`, so the 1-vs-N rule and
+                the spend unit are decided in a tested pure function rather than
+                here. NO BUDGET UI (NFR-UW-7): a readout, no meter, no ceiling.
+                This is the first spend the dock has ever rendered — `Runtime.cost`
+                is written and never read. */}
+            {rt?.ultraSummary && (
+              <div className="mt-0.5 flex min-w-0 items-center gap-1 font-mono text-[10px] text-muted-foreground">
+                <WorkflowIcon className="size-2.5 shrink-0" />
+                <span className="truncate">{rt.ultraSummary}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -218,6 +232,20 @@ function Head({ entry }: { entry: DockEntry }) {
         {unread > 0 && (
           <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground shadow">
             {unread}
+          </span>
+        )}
+
+        {/* Story 4.2 / AC7 — the AT-A-GLANCE half of the run signal. The head
+            itself is a 44px circle whose whole content is one character, so the
+            full `name · state · spend` line lives in the tooltip above; this
+            marks WHICH head has a run live without a hover. A neutral glyph on
+            the border, never a saturated dot — quiet colour (UX-DR10). */}
+        {rt?.ultraSummary && (
+          <span
+            title={rt.ultraSummary}
+            className="absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm"
+          >
+            <WorkflowIcon className="size-2.5" />
           </span>
         )}
 
@@ -339,7 +367,21 @@ function DockPanel({ entry }: { entry: DockEntry }) {
         <IconBtn
           onClick={() =>
             router.push(
-              `/projects/${encodeURIComponent(rt?.project || entry.project)}/sessions/${encodeURIComponent(entry.id)}`,
+              `/projects/${encodeURIComponent(rt?.project || entry.project)}/sessions/${encodeURIComponent(entry.id)}` +
+                // Story 4.2 / AC7 proof 5 — TAPPING RE-FOCUSES THE RUN. The
+                // session page threads this to `SessionView`, which selects it in
+                // the rail's Workflows section. "Focus" is STATE, never a
+                // programmatic `element.focus()`. Absent when several runs are
+                // live: there is no single one to focus, and guessing would be
+                // worse than landing on the session.
+                //
+                // `rt?.project` (never a manifest's `project`): §5.6-T15 —
+                // `UltraManifest.project` is a filesystem ROOT PATH while this
+                // interpolation wants the SLUG, and a path here produces a dead
+                // URL.
+                (rt?.ultraFocusRunId
+                  ? `?run=${encodeURIComponent(rt.ultraFocusRunId)}`
+                  : ""),
             )
           }
           label="Open full session"

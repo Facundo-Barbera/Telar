@@ -306,6 +306,122 @@ describe("Ultra executor — phase()/log() event emission", () => {
   });
 });
 
+// ── story 4.2 / AC3 + AC11 — the `agent-start` variant and `effort` ────────
+describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never on a cached replay (4.2)", () => {
+  test("a live ordinal emits agent-start BEFORE its agent settle, carrying label/model/effort", async () => {
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("hi", { model: "sonnet", label: "scout", effort: "high" }); }`,
+      { agent: (async () => ({ text: "ok" })) as any, onEvent: (e) => events.push(e) },
+    );
+    expect((await run.finished).state).toBe("done");
+
+    const types = events.map((e) => e.type);
+    // ORDERED, not `toContain`: the whole claim is that "begun" precedes
+    // "settled". An unordered assertion cannot say it.
+    expect(types).toEqual(["agent-start", "agent", "state"]);
+    expect(events[0]).toEqual({
+      type: "agent-start",
+      ordinal: 0,
+      label: "scout",
+      model: "sonnet",
+      effort: "high",
+    });
+    // It carries NO settleId, and must not: a settleId names A BILLING, minted
+    // at the moment money is spent. Nothing has been spent when this fires, and
+    // an id minted here would name a slot — the exact bug the settleId doc
+    // records as repaired three times.
+    expect("settleId" in events[0]!).toBe(false);
+    // `effort` rides the settle event too, so a reader that joined the stream
+    // mid-run (the anchor's SSE tail) still gets the chip.
+    const settle = events[1]!;
+    expect(settle.type === "agent" && settle.effort).toBe("high");
+  });
+
+  test("an agent() call with no effort emits no effort key at all — never an empty string", async () => {
+    // AC11 proof 1's other direction: the rail renders `model·effort` when
+    // effort is present and `model` alone when it is not, so "absent" has to be
+    // genuinely absent rather than falsy.
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("hi", { model: "sonnet" }); }`,
+      { agent: (async () => ({ text: "ok" })) as any, onEvent: (e) => events.push(e) },
+    );
+    await run.finished;
+    expect(events[0]).toEqual({ type: "agent-start", ordinal: 0, model: "sonnet" });
+    expect("effort" in events[0]!).toBe(false);
+  });
+
+  test("`effort` reaches the EVENT and still does not reach engineOpts — the pin, re-asserted beside the new claim", async () => {
+    // The pre-existing pin (`Ultra executor — happy path + opts mapping`) is
+    // re-made HERE, in the same test as the new positive claim, because the two
+    // together are the actual contract: story 4.2 emits `effort` on the event,
+    // NOT into the engine call. Breaking the second half changes the child
+    // posture NFR-UW-4 fixes, and a pin two hundred lines away is a pin the next
+    // editor of this feature will not read.
+    const seen: AgentOpts<any>[] = [];
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("hi", { model: "sonnet", effort: "low" }); }`,
+      {
+        agent: (async (_p: string, o: AgentOpts<any>) => {
+          seen.push(o);
+          return { text: "ok" };
+        }) as any,
+        onEvent: (e) => events.push(e),
+      },
+    );
+    await run.finished;
+    expect("effort" in seen[0]!).toBe(false);
+    expect(events[0]).toEqual({ type: "agent-start", ordinal: 0, model: "sonnet", effort: "low" });
+  });
+
+  test("a resume whose whole prefix is cache-served emits NO agent-start — a replay starts nothing", async () => {
+    const echoFake: Fake = async (p) => ({ text: p });
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a.text, b.text];\n}`;
+    const first: UltraEvent[] = [];
+    const run = startUltra(script, { agent: echoFake, onEvent: (e) => first.push(e) });
+    expect((await run.finished).state).toBe("done");
+    expect(first.filter((e) => e.type === "agent-start").length).toBe(2);
+
+    const replayed: UltraEvent[] = [];
+    const throwingFake: Fake = async () => {
+      throw new Error("must not be called — the full prefix should be cache-served");
+    };
+    const resumed = resumeUltra(run.runId, script, {
+      agent: throwingFake,
+      onEvent: (e) => replayed.push(e),
+    });
+    expect((await resumed.finished).state).toBe("done");
+    // The cache-hit path returns EARLY, having spent nothing and started
+    // nothing, so it re-emits `agent` (the rail's roster must look the same on a
+    // resume as it did live) and NEVER `agent-start`.
+    expect(replayed.filter((e) => e.type === "agent-start").length).toBe(0);
+    expect(replayed.filter((e) => e.type === "agent").length).toBe(2);
+    expect(replayed.every((e) => e.type !== "agent" || e.cached === true)).toBe(true);
+  });
+
+  test("a resume that MISSES the cache re-runs live and emits agent-start again for every re-run ordinal", async () => {
+    // The anti-vacuity control for the test above: a change that simply deleted
+    // the emit would pass "no agent-start on a replay" and fail here.
+    const echoFake: Fake = async (p) => ({ text: p });
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a.text, b.text];\n}`;
+    const run = startUltra(script, { agent: echoFake });
+    await run.finished;
+
+    // An EDITED first call misses at ordinal 0, and `cacheValid` is a one-way
+    // latch, so every later ordinal re-runs live too.
+    const edited = script.replace('agent("p0"', 'agent("p0-edited"');
+    const replayed: UltraEvent[] = [];
+    const resumed = resumeUltra(run.runId, edited, {
+      agent: echoFake,
+      onEvent: (e) => replayed.push(e),
+    });
+    expect((await resumed.finished).state).toBe("done");
+    expect(replayed.filter((e) => e.type === "agent-start").map((e) => e.ordinal)).toEqual([0, 1]);
+  });
+});
+
 describe("Ultra executor — pipeline() no inter-stage barrier", () => {
   test("item A can finish stage 3 while item B is still stuck in stage 1", async () => {
     const completionOrder: string[] = [];

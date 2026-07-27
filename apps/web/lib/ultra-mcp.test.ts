@@ -85,7 +85,7 @@ afterAll(() => {
   mock.module("@telar/core", () => realCoreSnapshot);
 });
 
-const { createUltraMcpServer, ULTRA_AUTO_TOOLS } = await import("./ultra-mcp");
+const { createUltraMcpServer, ULTRA_AUTO_TOOLS, ULTRA_TOOL_DESCRIPTION } = await import("./ultra-mcp");
 
 // Reach into the SDK server's registered tools to invoke a handler directly —
 // identical idiom to loom-mcp.answer-blocked.test.ts's toolHandler.
@@ -279,7 +279,125 @@ describe("ultra_status — state/journal-summary plumbing", () => {
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain("u-missing");
   });
+
+  // Story 4.2 / D7 — THE NEW `agent-start` VARIANT MUST NOT DISTURB THIS TOOL.
+  //
+  // WHY THE PROOF LIVES HERE AND NOWHERE ELSE. `ultra_status` is defined in
+  // `apps/web/lib/ultra-mcp.ts`, and `packages/core` cannot import `apps/web` —
+  // so no core suite can make this claim, however much the change it is about
+  // lives in core.
+  //
+  // Story 4.1 protected `ultra_status` by not touching the file. Story 4.2
+  // touches the STREAM this tool reads, so it owes the equivalent proof: the
+  // rollup keys on `e.type === "agent"` for the done/dead counts and on
+  // `"phase"`/`"log"` for the rest, so a new variant is ignored BY
+  // CONSTRUCTION — and "by construction" is a claim a test can check.
+  test("4.2 D7 — the rollup is BYTE-IDENTICAL with and without agent-start events interleaved", async () => {
+    const manifest = {
+      runId: "u-d7",
+      state: "running",
+      meta: { name: "n" },
+      spend: 0.5,
+      startedAt: 10,
+      updatedAt: 20,
+    };
+    const without = [
+      { type: "phase", title: "summarize" },
+      { type: "agent", ordinal: 0, ok: true, model: "sonnet" },
+      { type: "agent", ordinal: 1, ok: false, model: "sonnet" },
+      { type: "log", msg: "starting" },
+      { type: "phase", title: "rank" },
+      { type: "log", msg: "ranking" },
+    ];
+    // The SAME stream, with `agent-start` where the executor really emits it:
+    // immediately before each ordinal's own settle.
+    const withStart = [
+      { type: "phase", title: "summarize" },
+      { type: "agent-start", ordinal: 0, model: "sonnet", effort: "high" },
+      { type: "agent", ordinal: 0, ok: true, model: "sonnet", effort: "high" },
+      { type: "agent-start", ordinal: 1, model: "sonnet" },
+      { type: "agent", ordinal: 1, ok: false, model: "sonnet" },
+      { type: "log", msg: "starting" },
+      { type: "phase", title: "rank" },
+      { type: "log", msg: "ranking" },
+    ];
+
+    getUltraManifestReturn = { ...manifest };
+    readUltraEventsReturn = { events: without };
+    const before = textOf(await toolHandler(makeServer(), "ultra_status")({ runId: "u-d7" }));
+
+    getUltraManifestReturn = { ...manifest };
+    readUltraEventsReturn = { events: withStart };
+    const after = textOf(await toolHandler(makeServer(), "ultra_status")({ runId: "u-d7" }));
+
+    expect(after).toBe(before);
+    // Anti-vacuity: both really did roll something up, so a tool that returned
+    // the empty string for everything could not pass the equality above.
+    const body = JSON.parse(after);
+    expect(body.agents).toEqual({ done: 1, dead: 1, total: 2 });
+    expect(body.phases).toEqual(["summarize", "rank"]);
+    expect(body.recentLog).toEqual(["starting", "ranking"]);
+  });
 });
+
+// Story 4.2 / AC6 proof 5 — THE CLIENT HALF NOW EXISTS, SO PIN THE SENTENCES IT
+// DEPENDS ON.
+//
+// "A message with neither chip nor explicit keyword never triggers `ultra`" is
+// enforced WHERE IT IS ACTUALLY ENFORCED, and that is PROSE, not code:
+// `ultra-mcp.ts`'s own header says so — "opt-in is a REQUEST enforced by the
+// tool description … never a per-call human click". NO TEST CAN PROVE A MODEL'S
+// RESTRAINT. What a test CAN prove is that the clause the restraint rests on is
+// still in the string, and that is what these are.
+//
+// The two substrings are copied OUT OF THE FILE, not out of the story, and each
+// is a fragment rather than the whole sentence: the pin must survive a re-word
+// of the tail and not survive a deletion of the clause. `"Never infer it
+// yourself"` deliberately carries NO terminal period — the source sentence does
+// not end there ("…yourself from an ordinary request.").
+describe("4.2 AC6 — the ultra tool description still carries the opt-in clause the composer chip depends on", () => {
+  test("it names the composer's Ultra chip", () => {
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("the composer's Ultra chip");
+  });
+
+  test("it still forbids the model inferring the call itself", () => {
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("Never infer it yourself");
+  });
+
+  test("it is pinned BY IDENTIFIER, not through the SDK's private tool registry", () => {
+    // `ULTRA_TOOL_DESCRIPTION` gained `export` in story 4.2 for exactly this.
+    // The alternative — `instance._registeredTools["ultra"].description` — reads
+    // an SDK private and breaks on an upgrade for no reason. The registry is
+    // still checked here, once, so the exported const and the registered tool
+    // cannot silently diverge.
+    const tools = (
+      server_registry(makeServer()) as Record<string, { description?: string }>
+    );
+    expect(tools.ultra?.description).toBe(ULTRA_TOOL_DESCRIPTION);
+  });
+
+  test("D12 — the surface walk-through, the quality patterns and the worked example MOVED OUT", () => {
+    // They live in `@/lib/ultra-authoring` now and arrive in the session's
+    // system-prompt appendix instead. Asserting their ABSENCE here is what stops
+    // a later edit from quietly restoring the second source of truth: two full
+    // authoring texts that can disagree is the failure `session-prompts.ts`'s
+    // header names.
+    expect(ULTRA_TOOL_DESCRIPTION).not.toContain("Worked example:");
+    expect(ULTRA_TOOL_DESCRIPTION).not.toContain("loop-until-dry");
+    expect(ULTRA_TOOL_DESCRIPTION).not.toContain("adversarial-verify");
+    expect(ULTRA_TOOL_DESCRIPTION).not.toContain("The injected surface is the ONLY thing");
+    // …and what it KEEPS: the things that decide whether the call is legal.
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("Script format");
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("opts.model is REQUIRED");
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("Math.random()");
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("returns {runId} IMMEDIATELY");
+  });
+});
+
+function server_registry(server: unknown) {
+  return (server as { instance: { _registeredTools: Record<string, unknown> } }).instance
+    ._registeredTools;
+}
 
 describe("ultra_stop — abort plumbing", () => {
   test("calls stopUltraRun with the given id and reports the resulting state", async () => {

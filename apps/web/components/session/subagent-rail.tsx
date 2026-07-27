@@ -15,7 +15,7 @@
 // line are replaced by the real, available step count. StatusMark reuses the
 // existing agent-tabs StatusDot vocabulary via the WebKit-safe Shimmer.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -27,6 +27,7 @@ import {
   ShieldAlertIcon,
   SparklesIcon,
   TriangleAlertIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import { CheckIcon } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -177,9 +178,36 @@ function HistoryRow({
   );
 }
 
-function EdgeDots({ running, failed, done }: { running: number; failed: number; done: number }) {
+function EdgeDots({
+  running,
+  failed,
+  done,
+  // Story 4.2 — the Workflows count on the collapsed edge. A FOURTH OPTIONAL
+  // PROP WITH A DEFAULT, never a fourth required one: `SubagentRail` has TWO
+  // consumers and the second is the demo gallery's `conversation-full`
+  // configuration, which passes today's seven props and will never pass this
+  // one. Defaulted to 0 so the collapsed rail renders the exact same dot
+  // vocabulary it renders today when nobody supplies it.
+  //
+  // DELIBERATELY NOT FOLDED INTO `running`. That number is
+  // `agents.filter(c => c.status === "running").length` — the SUB-AGENT figure
+  // this edge already publishes — and adding runs to it would make the edge lie
+  // about both.
+  workflows = 0,
+}: {
+  running: number;
+  failed: number;
+  done: number;
+  workflows?: number;
+}) {
   return (
     <div className="flex flex-col items-center gap-1.5">
+      {workflows > 0 && (
+        <span className="inline-flex items-center gap-0.5" title="Ultra runs">
+          <WorkflowIcon className="size-3 text-muted-foreground" />
+          <span className="font-mono text-[10px] text-muted-foreground">{workflows}</span>
+        </span>
+      )}
       {running > 0 && (
         <span className="inline-flex items-center gap-0.5">
           <Shimmer as="span" className="text-[10px] leading-none">
@@ -304,6 +332,20 @@ export function SubagentRail({
   onToggle,
   sessionLabel = "Main conversation",
   mainNeedsAttention,
+  // Story 4.2 — THE WORKFLOWS SECTION AS A SLOT, NOT A WRAPPER.
+  // `ui-contract.md` §3 says "The existing sub-agent rail GAINS a Workflows
+  // section" — inside, sharing this rail's border, its collapse behaviour and
+  // its scroll column. Rendering a sibling in the shell's `rail` slot instead
+  // would give two bordered columns and a Workflows section that vanishes when
+  // the rail collapses.
+  //
+  // BOTH PROPS ARE OPTIONAL AND BOTH RENDER IDENTICALLY TO TODAY WHEN ABSENT.
+  // This component has two consumers — `session-view.tsx` and the demo
+  // gallery's `conversation-full` configuration — and story 4.2 is fenced out
+  // of the gallery, so the gallery must keep passing seven props and getting
+  // exactly what it gets now.
+  workflows,
+  workflowCount,
 }: {
   agents: RailAgent[];
   activeId: string;
@@ -312,6 +354,8 @@ export function SubagentRail({
   onToggle: () => void;
   sessionLabel?: string;
   mainNeedsAttention?: boolean;
+  workflows?: ReactNode;
+  workflowCount?: number;
 }) {
   const live = agents.filter((c) => c.status !== "done");
   const history = agents.filter((c) => c.status === "done");
@@ -351,7 +395,7 @@ export function SubagentRail({
             <MessagesSquareIcon className="size-4" />
           )}
         </button>
-        <EdgeDots running={running} failed={failed} done={done} />
+        <EdgeDots running={running} failed={failed} done={done} workflows={workflowCount} />
       </div>
     );
   }
@@ -384,6 +428,12 @@ export function SubagentRail({
           <PanelRightCloseIcon className="size-4" />
         </button>
       </div>
+
+      {/* Story 4.2's Workflows section, ABOVE the Main anchor's divider so a
+          run the user is watching stays put while the sub-agent list scrolls
+          beneath it. Absent ⇒ nothing renders and the rail is byte-identical to
+          what it was. */}
+      {workflows}
 
       {/* pinned Main anchor — always visible, never scrolls with the cards */}
       <div className="border-b border-border p-2">

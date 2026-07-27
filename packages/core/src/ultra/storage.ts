@@ -215,6 +215,42 @@ export function readUltraAgentTranscript(runId: string, ordinal: number): UltraA
   return out;
 }
 
+// WHICH ORDINALS HAVE BEGUN (story 4.2) — the "is anything running right now"
+// reader the session rail's live agent rows have no other source for.
+//
+// IT ANSWERS A DIFFERENT QUESTION FROM `readUltraEvents`, and that difference is
+// the whole point. An `agent` UltraEvent means an ordinal SETTLED; a file under
+// `agents/` means an ordinal has STREAMED AT LEAST ONE ENGINE EVENT, which
+// happens while it is still working. Before this, a running agent was invisible
+// to every reader outside the executor's own process.
+//
+// A directory listing and not a scan of events.ndjson on purpose: it is O(agents)
+// rather than O(stream), it needs no parsing, and it is correct for a run
+// resumed in a different process (the files are on disk; the in-process registry
+// is not).
+//
+// Tolerant of `agents/` not existing — a run that has not spawned anything yet,
+// or a run whose directory was never created, is EMPTY and never an error. Only
+// `<n>.ndjson` names count: `agentFile` is the sole writer of that directory and
+// this is the exact inverse of its name construction, so a stray file cannot
+// mint a phantom ordinal.
+const AGENT_FILE_RE = /^(\d+)\.ndjson$/;
+
+export function listUltraAgentOrdinals(runId: string): number[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(agentsDir(runId));
+  } catch {
+    return [];
+  }
+  const out: number[] = [];
+  for (const name of names) {
+    const m = AGENT_FILE_RE.exec(name);
+    if (m) out.push(Number(m[1]));
+  }
+  return out.sort((a, b) => a - b);
+}
+
 // ── script.js (the persisted source, so a bare resume round-trips) ─────────
 function persistScript(runId: string, script: string): void {
   const dir = runDir(runId);

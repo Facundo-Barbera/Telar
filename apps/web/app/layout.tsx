@@ -7,6 +7,7 @@ import { DockProvider } from "@/components/dock/dock-provider";
 import { Dock } from "@/components/dock/dock";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/settings/theme-provider";
 import { LoomNotifications } from "@/components/common/loom-notifications";
+import { UltraDockSignal } from "@/components/common/ultra-dock-signal";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -43,6 +44,11 @@ export default function RootLayout({
         <ThemeProvider />
         <LoomNotifications />
         <DockProvider>
+          {/* Story 4.2 / AC7 — INSIDE the provider, unlike LoomNotifications
+              above, because it calls useDock(). It renders nothing; it makes a
+              session's dock bubble show a live Ultra run FROM ANYWHERE,
+              including a session the user never docked. */}
+          <UltraDockSignal />
           <SidebarProvider>
             <AppSidebar />
             <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>

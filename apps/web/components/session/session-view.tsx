@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import Link from "next/link";
+// Story 4.2 / AC7 — clearing the dock tap's `?run=` param once consumed. This
+// file reached for `window.history.replaceState` before (the mid-stream session
+// rename, which must NOT go through the router — it would re-run the server
+// component and tear the live stream down); a deliberate, user-initiated URL
+// cleanup is the router's job.
+import { usePathname, useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   BellIcon,
@@ -119,6 +125,20 @@ import {
 } from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
 import { useUltraWake } from "@/lib/use-ultra-wake";
+// Story 4.2 — the Ultra session surface. `@/lib/ultra-runs` is the pure
+// projection layer (no React, no fetch, no @telar/core runtime); the two
+// components below render it and read nothing else.
+import {
+  armReducer,
+  runSnapshot,
+  sendOptionsFor,
+  spliceRunAnchors,
+  type ArmState,
+  type UltraAnchorPayload,
+} from "@/lib/ultra-runs";
+import { useUltraRuns } from "@/lib/use-ultra-runs";
+import { ultraRunAnchorKind } from "@/components/session/ultra-anchor";
+import { UltraRail } from "@/components/session/ultra-rail";
 import { cn } from "@/lib/utils";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
 
@@ -475,6 +495,13 @@ const agentBucketKind: ItemKind<AgentBucketPayload> = {
 const SESSION_KINDS = createItemKindRegistry([
   ...BUILTIN_KINDS,
   agentBucketKind as unknown as ItemKind<never>,
+  // Story 4.2 — the Ultra run anchor. REGISTERED HERE AND NEVER IN THE
+  // GALLERY'S registry: `lib/demo-gallery/conversation/shell.tsx`'s
+  // GALLERY_KINDS deliberately omits `ultra:run-anchor` so configuration 6 can
+  // show a real tombstone, and two tests pin that. The two registries are
+  // INDEPENDENT INSTANCES passed as props, so registering here cannot reach
+  // there — which is exactly the property that makes the tombstone honest.
+  ultraRunAnchorKind as unknown as ItemKind<never>,
 ]);
 
 // A subagent's own tab, as ONE transcript item: the same rendering path as Main
@@ -614,6 +641,11 @@ export function SessionView(props: {
   // seed sessionId when there's no persisted initialChat yet — the mid-turn
   // cold-reload case; see the sessionId state below.
   routeSessionId?: string;
+  // Story 4.2 / AC7 — the run to select in the rail's Workflows section on
+  // arrival, threaded from the page's `?run=` search param. Undefined on every
+  // other entry, and cleared out of the URL once consumed so a later refresh
+  // does not re-focus a run the user has since navigated away from.
+  focusRunId?: string;
   // Set only for a brand-new session arrived at via the Looms tab's
   // "Plan a loom" front door (?role=planner) — a hint only, see the page's
   // own comment. Drives the empty-state framing below, nothing else.
@@ -664,6 +696,7 @@ function SessionViewInner({
   initialChat,
   initialTitle,
   routeSessionId,
+  focusRunId,
   initialRole,
   planner,
   steerer,
@@ -677,6 +710,7 @@ function SessionViewInner({
   initialChat?: InitialChat;
   initialTitle?: string;
   routeSessionId?: string;
+  focusRunId?: string;
   initialRole?: "planner";
   planner?: boolean;
   steerer?: boolean;
@@ -685,6 +719,9 @@ function SessionViewInner({
   loomId?: string;
 }) {
   const textInput = usePromptInputController().textInput;
+  // Story 4.2 / AC7 — used only to clear the `?run=` param once consumed.
+  const router = useRouter();
+  const pathname = usePathname();
 
   // Seed once from the server-resolved transcript. Later prop changes are
   // ignored on purpose: when a fresh session is minted mid-stream we rewrite
@@ -1033,7 +1070,17 @@ function SessionViewInner({
   // (never dropped, never force-sent mid-turn — the busy guard forbids that).
   // Queued messages render as editable/removable chips above the composer and
   // dispatch in order the moment the turn settles, via the same send() path.
-  const [messageQueue, setMessageQueue] = useState<{ id: string; text: string }[]>([]);
+  // Story 4.2 — `ultra?: boolean` is the queue's armed flag. Widening the item
+  // type by one optional field and threading it through the ONE dispatch
+  // expression is exactly the two-line change story 4.1 made for `hidden`, and
+  // for the same reason: arming the chip and pressing Enter while the agent is
+  // busy must annotate THAT message when it eventually sends — not the next one
+  // the user types, and not none of them.
+  const [messageQueue, setMessageQueue] = useState<
+    { id: string; text: string; ultra?: boolean }[]
+  >([]);
+  // Story 4.2 / AC6 — the composer chip's arm state. NOT persisted (T11).
+  const [ultraArm, setUltraArm] = useState<ArmState>({ armed: false });
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1061,16 +1108,31 @@ function SessionViewInner({
   // auto-dock IFF the turn is still live and this is a real, persisted,
   // non-embedded session. Latest values ride a ref so the cleanup, which runs
   // only at unmount, reads leave-time state rather than a stale closure.
+  //
+  // STORY 4.2 / AC7 WIDENED THE GUARD BY ONE TERM. `busy` is the CHAT TURN's
+  // liveness, and an Ultra run is DETACHED — it routinely outlives the turn that
+  // launched it, so leaving a session with a live run would have left no head
+  // for the very case FR-UW-6 exists to describe. The dock signal
+  // (`components/common/ultra-dock-signal.tsx`) covers the other direction — a
+  // session the user never visited at all — and this covers leaving one.
   const leaveRef = useRef({ busy, chatPersisted, sessionId, title, project, embedded });
   leaveRef.current = { busy, chatPersisted, sessionId, title, project, embedded };
+  // A SEPARATE REF, and not a seventh field on `leaveRef`, for a mechanical
+  // reason: `ultraLiveCount` is derived from the `useUltraRuns` hook further
+  // down this component, so reading it into `leaveRef.current` here would be a
+  // temporal-dead-zone throw on every render. This ref is declared here (where
+  // the cleanup that reads it lives) and ASSIGNED at the hook's own site.
+  const ultraLiveRef = useRef(0);
   useEffect(() => {
     return () => {
       const s = leaveRef.current;
       if (!autoDock) return;
-      // Guards: embedded surfaces never auto-dock; idle sessions never auto-dock
-      // (busy); need a confirmed persisted id to follow. autoDock itself no-ops
-      // if the id is already docked, so no duplicate heads.
-      if (s.embedded || !s.busy || !s.chatPersisted || !s.sessionId) return;
+      // Guards: embedded surfaces never auto-dock; a session with neither a live
+      // turn nor a live Ultra run never auto-docks; need a confirmed persisted id
+      // to follow. autoDock itself no-ops if the id is already docked, so no
+      // duplicate heads.
+      if (s.embedded || (!s.busy && ultraLiveRef.current === 0) || !s.chatPersisted || !s.sessionId)
+        return;
       autoDock({
         id: s.sessionId,
         title: s.title,
@@ -1677,7 +1739,20 @@ function SessionViewInner({
     // kickoff, where `text` is the sentinel route.ts swaps for the real prompt.
     // The agent visibly speaks first: only the assistant message is appended, so
     // the human never appears to have typed the sentinel.
-    async (text: string, opts?: { hidden?: boolean }) => {
+    // Story 4.2 / AC6 — `ultra` is the WIRE NAME: `app/api/chat/route.ts`
+    // destructures that exact key and narrows it with `rawUltra === true`
+    // ("anything but a literal `true` collapses to false"). Do not invent
+    // `ultraAnnotated`, `ultraArmed` or `annotateUltra` on the wire.
+    //
+    // IT IS READ OFF THESE PER-DISPATCH OPTIONS AND NEVER OFF `ultraArm`. The
+    // body literal below is shared by every turn this file fires — including
+    // story 4.1's HIDDEN WAKE TURN and the message-queue drain. Reading
+    // component state here would annotate a turn with no user message at all
+    // with ULTRA_ANNOTATION_NOTE's claim that "the user's message below is
+    // Ultra-annotated", and would annotate a queued message with whatever the
+    // chip happened to say when the queue drained rather than when the user
+    // pressed Enter.
+    async (text: string, opts?: { hidden?: boolean; ultra?: boolean }) => {
       const asstId = `m${nextId.current++}`;
       // Fresh session (no id yet): the first user message names the thread,
       // mirroring the title the store derives on save. A hidden kickoff has no
@@ -1735,6 +1810,9 @@ function SessionViewInner({
                 : escalation
                   ? { role: "escalation", loomId }
                   : {}),
+            // Story 4.2 / AC6 — the composer's Ultra chip, for THIS dispatch
+            // only. See the options type above for why it is read from `opts`.
+            ...(opts?.ultra ? { ultra: true } : {}),
           }),
           signal: abort.signal,
         });
@@ -2001,6 +2079,112 @@ function SessionViewInner({
   // answered on the house cadence. `/api/ultra/[id]/events` exists and is story
   // 4.2's per-run channel for the anchor; a wake does not need a stream per run.
   const { pending: pendingWakes } = useUltraWake(sessionId);
+
+  // ── story 4.2 — the Ultra run surface (D1 items 3, 10) ────────────────────
+  //
+  // One `EventSource` per LIVE run plus a session-scoped list poll, projected
+  // into `RunSnapshot`s by `@/lib/ultra-runs`. Everything that is a DECISION
+  // lives there and is tested there; what follows is wiring.
+  const { runs: ultraRuns, reload: reloadUltraRuns } = useUltraRuns(sessionId);
+  // THE SELECTED RUN LIVES HERE, NOT IN THE RAIL. Its writer is the `?run=`
+  // effect below (the dock's tap lands with that param), story 4.2 adds no React
+  // context — `INV-8c` fails BY NAME on a new provider — and it must not ride
+  // `activeTab`, which is simultaneously the rail's `activeId` AND the
+  // transcript's bucket selector, so a runId in it would silently change what
+  // the transcript renders. Keeping it separate is also what makes the
+  // permission handler's `setActiveTab("main")` unable to reach it.
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  // Disables an anchor's Stop/Resume between the click and the next manifest
+  // snapshot. Resume is NOT idempotent — a second POST while live returns a 400.
+  const [ultraBusyRunId, setUltraBusyRunId] = useState<string | null>(null);
+
+  const ultraAct = useCallback(
+    async (runId: string, verb: "stop" | "resume") => {
+      setUltraBusyRunId(runId);
+      try {
+        // Resume posts an EMPTY BODY: the route replays the persisted script.js
+        // and inherits the original project and account.
+        await fetch(`/api/ultra/${encodeURIComponent(runId)}/${verb}`, { method: "POST" });
+      } catch {
+        // Best-effort. The card and the anchor both reconcile from the next
+        // manifest snapshot, never from this reply — which is also what makes an
+        // agent-initiated `ultra_stop` visible without any extra wiring.
+      } finally {
+        setUltraBusyRunId(null);
+        void reloadUltraRuns();
+      }
+    },
+    [reloadUltraRuns],
+  );
+
+  const ultraAnchorPayloads = useMemo(() => {
+    const map = new Map<string, UltraAnchorPayload>();
+    for (const [runId, run] of ultraRuns) {
+      map.set(runId, {
+        run,
+        // ALWAYS THE CLAUDE VALUE, on every ultra surface (D6a). The ultra MCP
+        // server is constructed only on the Claude branch of the chat route and
+        // NFR-UW-8 fixes Ultra as Claude-first, so the Codex arm of
+        // `spendReadout` is unreachable here — and passing the session's own
+        // `provider` would render a confident "0 tok" the moment anyone flipped
+        // it, which is a fabricated figure. If a Codex ultra path ever exists,
+        // this literal and the dock signal's are where it changes.
+        provider: "claude",
+        onFocus: () => setOpenRunId(runId),
+        onStop: () => void ultraAct(runId, "stop"),
+        onResume: () => void ultraAct(runId, "resume"),
+        busy: ultraBusyRunId === runId,
+      });
+    }
+    return map;
+  }, [ultraRuns, ultraAct, ultraBusyRunId]);
+
+  // D8's PENDING form: a launch whose manifest has not arrived yet. The launch
+  // is a FACT the moment the tool result carries a runId, and the window is real
+  // — `sessionId` is null until the first turn's `session` event, so the very
+  // first turn of a brand-new session can launch a run before the list can
+  // answer. Dropping the anchor for that window would make it blink into
+  // existence a poll later.
+  const pendingUltraAnchor = useCallback(
+    (runId: string): UltraAnchorPayload => ({
+      run: runSnapshot(null, [], [], runId),
+      provider: "claude",
+      onFocus: () => setOpenRunId(runId),
+      onStop: () => void ultraAct(runId, "stop"),
+      onResume: () => void ultraAct(runId, "resume"),
+      busy: ultraBusyRunId === runId,
+    }),
+    [ultraAct, ultraBusyRunId],
+  );
+
+  // AC7 proof 5 — FOCUS ON ARRIVAL. The dock's tap pushes
+  // `/projects/<project>/sessions/<id>?run=<runId>`, and "focus" here means
+  // SELECT THAT RUN IN THE RAIL AND EXPAND IT — state, never a programmatic
+  // `element.focus()`. (The rule is not a repo-wide absence of `.focus()`:
+  // `components/ui/input-group.tsx` and `app/demo-gallery/demo-nav.tsx` both
+  // call it legitimately to focus an input. What is forbidden is using it to
+  // MOVE or SCROLL, which `agent-tabs.tsx`, `subagent-rail.tsx` and this file
+  // each record as a WebKit 26.x hazard.)
+  //
+  // THE EFFECT DEPENDS ON THE PARAM, NEVER ON `[]`: the page renders
+  // `<SessionView key={`${name}:${id}`}>`, so a query-only navigation does NOT
+  // remount this component and a mount-once effect would never see the value.
+  // The param is then cleared so a refresh does not re-focus a run the user has
+  // since navigated away from.
+  useEffect(() => {
+    if (!focusRunId) return;
+    setOpenRunId(focusRunId);
+    router.replace(pathname, { scroll: false });
+  }, [focusRunId, router, pathname]);
+
+  const ultraRunList = useMemo(() => [...ultraRuns.values()], [ultraRuns]);
+  const ultraLiveCount = useMemo(
+    () => ultraRunList.filter((r) => r.state === "running").length,
+    [ultraRunList],
+  );
+  // Published to the unmount auto-dock guard declared above (AC7 proof 3).
+  ultraLiveRef.current = ultraLiveCount;
+
   // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
   // all of them — its formatter takes a list — so three finished runs must not
   // fire three turns. The wakes stay pending until the ROUTE acks them (which it
@@ -2112,16 +2296,27 @@ function SessionViewInner({
     void send(next.text, next.hidden ? { hidden: true } : undefined);
   }, [status, injectionQueue, send, pendingWakes]);
 
+  // Story 4.2 / AC6 — `handleSubmit` IS THE ONE SITE THAT READS `ultraArm`, and
+  // both paths disarm exactly once. The immediate path passes the flag straight
+  // to `send`; the busy path stores it ON THE QUEUED ITEM so it travels with the
+  // message it was armed for (§5.5-D2), which is the same shape story 4.1's
+  // `hidden` precedent took for the same reason.
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();
     if (!text) return;
+    const armed = ultraArm.armed;
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
-      setMessageQueue((q) => [...q, { id: `q${queueSeqRef.current++}`, text }]);
+      setMessageQueue((q) => [
+        ...q,
+        { id: `q${queueSeqRef.current++}`, text, ...(armed ? { ultra: true } : {}) },
+      ]);
+      if (armed) setUltraArm((s) => armReducer(s, "sent"));
       return;
     }
-    void send(text);
+    if (armed) setUltraArm((s) => armReducer(s, "sent"));
+    void send(text, sendOptionsFor({ kind: "user", armed }));
   };
 
   // Dispatch the head of the message queue once the composer is genuinely idle
@@ -2139,7 +2334,9 @@ function SessionViewInner({
       return;
     const [next, ...rest] = messageQueue;
     setMessageQueue(rest);
-    void send(next.text);
+    // Story 4.2 — the queued message carries ITS OWN flag, decided when Enter
+    // was pressed rather than when the queue happened to drain.
+    void send(next.text, sendOptionsFor({ kind: "queued", ultra: next.ultra }));
   }, [status, messageQueue, send]);
 
   // Prefer the fetched catalog (matches what's actually offered in the
@@ -2387,11 +2584,31 @@ function SessionViewInner({
           key: m.id,
           payload: {
             from: m.role,
-            items: toTranscriptItems(groupParts(m.id, mainParts), {
-              onRespond: respondPermission,
-              agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
-              onSelectAgent: setActiveTab,
-            }),
+            // Story 4.2 — THE ANCHOR SPLICE, AND IT WRAPS THIS EXPRESSION AND
+            // NOT `transcriptItems`. Measured: `transcriptItems` is exclusively
+            // `conversation:turn` items (or, on a subagent tab, one
+            // `session:agent-bucket`); `conversation:tools` exists only ONE
+            // LEVEL DOWN, inside `TurnPayload.items`, which is what
+            // `toTranscriptItems(groupParts(...))` produces right here. A
+            // wrapping call around `transcriptItems` would find zero groups and
+            // return its input unchanged — and because `spliceRunAnchors` is a
+            // TOTAL function, that failure would be GREEN. Two consequences
+            // worth writing down rather than rediscovering: the anchor is a
+            // NESTED item rendered through `view.render(child)` by the turn
+            // kind, so it lays out in the assistant bubble's reading column; and
+            // `isTrailingItem` now sees it, so replacing the LAST tools group of
+            // a streaming turn hands the anchor `view.live === true`.
+            // `agentBucketItem`'s own nested list is deliberately NOT spliced —
+            // ultra is called from the main thread.
+            items: spliceRunAnchors(
+              toTranscriptItems(groupParts(m.id, mainParts), {
+                onRespond: respondPermission,
+                agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
+                onSelectAgent: setActiveTab,
+              }),
+              ultraAnchorPayloads,
+              pendingUltraAnchor,
+            ),
             pending:
               mainParts.length === 0 && m.role === "assistant" && busy ? (
                 <Shimmer className="text-sm">
@@ -2640,7 +2857,12 @@ function SessionViewInner({
           ) : undefined
         }
         rail={
-          railAgents.length > 0 ? (
+          // Story 4.2 — THE CONDITION WIDENS BEYOND `railAgents.length > 0`.
+          // An Ultra run that spawns no SESSION sub-agents leaves the session
+          // with no rail at all, which makes the entire Workflows section
+          // unreachable. It is one expression and it is easy to miss, because
+          // every manual test done by hand also happens to spawn a sub-agent.
+          railAgents.length > 0 || ultraRunList.length > 0 ? (
             <SubagentRail
               agents={railAgents}
               activeId={activeTab}
@@ -2649,6 +2871,16 @@ function SessionViewInner({
               onToggle={() => setRailCollapsed((v) => !v)}
               sessionLabel={title}
               mainNeedsAttention={mainNeedsAttention}
+              workflows={
+                <UltraRail
+                  runs={ultraRunList}
+                  openRunId={openRunId}
+                  onOpenRun={setOpenRunId}
+                  provider="claude"
+                  onChanged={() => void reloadUltraRuns()}
+                />
+              }
+              workflowCount={ultraRunList.length}
             />
           ) : undefined
         }
@@ -2945,6 +3177,46 @@ function SessionViewInner({
                     </SelectContent>
                   </Select>
                     </>
+                  )}
+                  {/* Story 4.2 / AC6 — THE ULTRA CHIP. Arming only: no ceiling
+                      editor, no submenu (NFR-UW-7 and `ui-contract.md` §6).
+
+                      A TOGGLE IN `PromptInputTools`, beside the other per-message
+                      controls, and deliberately NOT inside `ComposerSettings` —
+                      that popover is per-project REMEMBERED config, and the AC
+                      forbids a submenu. It is also not persisted anywhere:
+                      `telar:composer:${project}` remembers model, effort and
+                      permission mode across sessions, and a remembered chip
+                      would be the behaviour flag NFR-UW-1 says opt-in must never
+                      become ("Opt-in is a request, not a behavior flag").
+
+                      CLAUDE BRANCH ONLY: `app/api/chat/route.ts` constructs the
+                      ultra MCP server only in the non-Codex fork, so on Codex
+                      the chip would arm a tool that is never offered.
+
+                      THE GLYPH IS `WorkflowIcon`, NOT `SparklesIcon`.
+                      `SparklesIcon` is taken twice over — `composer-settings.tsx`
+                      uses it for the Claude-config chip immediately to the left,
+                      and `subagent-rail.tsx`'s `TOOL_GLYPH` maps it to the
+                      `general-purpose` subagent type in the very rail this story
+                      adds a Workflows section to. */}
+                  {provider !== "codex" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-pressed={ultraArm.armed}
+                      onClick={() => setUltraArm((s) => armReducer(s, s.armed ? "disarm" : "arm"))}
+                      title={
+                        ultraArm.armed
+                          ? "This message is Ultra-annotated — the agent may launch an Ultra run for it"
+                          : "Annotate the next message as an explicit Ultra request"
+                      }
+                      className={cn("h-8 gap-1.5 text-xs", ultraArm.armed && "bg-muted text-foreground")}
+                    >
+                      <WorkflowIcon className="size-3.5" />
+                      Ultra
+                    </Button>
                   )}
                 </PromptInputTools>
                 {/* ml-auto/self-end: when the tools row wraps onto multiple lines
