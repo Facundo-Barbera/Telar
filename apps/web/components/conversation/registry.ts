@@ -78,10 +78,17 @@ export type ItemViewState = {
    * omission: liveness is a property of POSITION ("the trailing item of the
    * turn being streamed into"), which only the composite knows for its own
    * children. Inheriting the parent's flag would mark every child of a live
-   * turn live — a spinner on every finished tool group. So a composite that
-   * wants per-child liveness computes it, as `conversation:turn` does with
-   * `isTrailingItem`; `view.render(child)` alone renders a child that is
-   * correctly NOT the live tail.
+   * turn live, and the visible cost is the DISCLOSURE DEFAULT: the
+   * `conversation:tools` renderer derives its own from liveness
+   * (`view.isOpen("group", view.live)`), so EVERY nested tool group inside a
+   * streaming turn would default OPEN, not just the trailing one. A spinner is
+   * the narrower case rather than the general one: `running` is
+   * `live && output === undefined && !isError`, so a FINISHED part cannot spin
+   * whatever it inherits — only an interrupted, output-less part sitting in a
+   * non-trailing group would. So a composite that wants per-child liveness
+   * computes it, as `conversation:turn` does with `isTrailingItem`;
+   * `view.render(child)` alone renders a child that is correctly NOT the live
+   * tail.
    */
   render: (item: TranscriptItem, override?: { live?: boolean }) => ReactNode;
 };

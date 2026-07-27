@@ -188,7 +188,7 @@ const EXCLUDED_DIRS = new Set([
 // (`creates React context "r"`) and a green gate turns red for a reason that has
 // nothing to do with the code. (Not hypothetical: story 3.1's own code review
 // produced exactly that with `NEXT_DIST_DIR=.next-review`.) So the rule is
-// BOTH — the literal set above, plus any `.next-*` sibling of it. INV-8i
+// BOTH — the literal set above, plus any `.next-*` sibling of it. INV-8j
 // re-derives the names the config advertises and fails if one is not covered.
 const isExcludedDir = (name: string): boolean =>
   EXCLUDED_DIRS.has(name) || /^\.next-/.test(name);
@@ -3828,6 +3828,22 @@ const SESSION_VIEW_REL = "apps/web/components/session/session-view.tsx";
 // exactly where the claim starts applying.
 type KindSlice = { name: string; src: string };
 
+// RESIDUAL, STATED RATHER THAN IMPLIED — the brace match ends at the OBJECT
+// LITERAL, so this extractor sees a renderer only when the renderer is written
+// INLINE. A kind declared `render: someTopLevelFn` yields a slice holding no
+// hook-call text at all: `ambientContextScan` returns `[]` and INV-8b2 passes
+// over the exact violation it exists to catch. Neither guard below closes it —
+// the anti-vacuity floor still counts one slice, the name still comes from the
+// declaration so `toContain("agentBucketKind")` still holds, and a bare
+// `{ id, render: fn }` literal clears the 40-character body control (62 on a
+// probe of that shape). Nor does any sibling: INV-8b is scoped to
+// components/conversation/** by design, and the donor is the one file outside it.
+// NOT HYPOTHETICAL: `renderAgentBucket`, the top-level function story 3.1
+// deleted, was precisely that shape, and session-view.tsx's own comment records
+// it as the file's prior pattern. Recorded, deliberately not fixed here — the
+// day a donor kind delegates to a top-level renderer, follow the identifier and
+// scan that function's body too, rather than widening the brace match or
+// deleting the check.
 function kindRendererSlices(text: string): KindSlice[] {
   // Comments AND string bodies blanked first, so a `{` inside either cannot
   // unbalance the brace match and a kind merely DISCUSSED in prose is not found.
@@ -3932,8 +3948,13 @@ const USE_CONTEXT_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?useContex
 // — and `use(somePromise)` is a first-class data read, which the shell is
 // equally forbidden from doing (AD-12). A scan that knew only `useContext(`
 // would let AC4's ONLY enforcement be walked around by deleting four characters.
-// Same anchoring as above, so `misuse(`, `.use(` on an object and `useState(`
-// are all left alone.
+// Same anchoring as above, so `misuse(`, `abuse(`, `obj.reuse(` and `useState(`
+// are all left alone. What is NOT left alone, stated because the anchoring
+// cannot express it: the optional `<ident>.` prefix that catches `React.use(`
+// cannot tell a namespace from an object, so `app.use(mw)` and `router.use(x)`
+// MATCH. Over-broad by design and harmless here — no such call exists under the
+// shell, and a false positive fails loudly with a named file rather than
+// letting a real context read through silently.
 const REACT_USE_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?use\s*\(/;
 
 // A NAMED HOOK CALL, qualified or bare. The `<ident>.` prefix is the same one
