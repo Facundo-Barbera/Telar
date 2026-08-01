@@ -147,3 +147,34 @@
   scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)
     transparent;
 }
+
+/* SYNTAX HIGHLIGHTING ACTUALLY REACHING THE PIXELS.
+
+   Streamdown highlights fenced code with Shiki and emits, per token, a span
+   carrying its colours as CUSTOM PROPERTIES (`--sdm-c` light, `--shiki-dark`
+   dark) plus Tailwind ARBITRARY-VALUE classes that read them —
+   `text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,…)]`.
+
+   Those classes never existed in the stylesheet. Tailwind v4 builds its CSS by
+   SCANNING SOURCE FILES at build time, and these class strings are generated at
+   RUNTIME, inside node_modules, from whatever the highlighter decided — so the
+   scanner never saw them and emitted no rule for them. Measured in the dev
+   server: every token span carried correct colour variables (`--sdm-c: #D73A49`
+   on `export`, `#005CC5` on an identifier, …) and every one computed to the
+   same near-white inherited foreground. The highlighter was doing its job and
+   the last step threw the answer away, which is why code read as flat
+   monospace everywhere fenced blocks appear — the Ultra script pane, and any
+   assistant message with a code fence.
+
+   Consuming the variables directly is what makes it independent of the scanner:
+   the attribute selectors match the inline `style` Shiki wrote, so no class has
+   to survive a build step. Scoped to `pre` so it can only ever repaint code
+   blocks. `.dark` matches this app's own theme class (see the `@theme` block
+   above); the light value stays the default so an unthemed render is still
+   correct rather than invisible. */
+pre span[style*="--sdm-c"] {
+  color: var(--sdm-c);
+}
+.dark pre span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
