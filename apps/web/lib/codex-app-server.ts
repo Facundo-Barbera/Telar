@@ -15,6 +15,8 @@
 import fs from "fs";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
+import type { HarnessToolNamespace } from "@telar/core";
+import { findTool, toContentItems, toDynamicTools } from "@/lib/harness-tools";
 
 export type CodexNormalizedEvent =
   // `threadId` is present (and non-root) only for events belonging to a
@@ -93,6 +95,24 @@ export type CodexRunOptions = {
     reason?: string;
     kind: "command" | "file";
   }) => Promise<"accept" | "decline">;
+  // TELAR'S OWN TOOLS, reaching Codex as `dynamicTools` on thread/start.
+  //
+  // This is the capability gap that made a Codex session unable to run an
+  // Ultra: the Claude branch registers ultra/loom/workspace as in-process MCP
+  // servers, `runCodexTurn` took no equivalent, and so the model was asked for
+  // a tool that was not in its toolset and narrated using it instead.
+  //
+  // Dynamic tools are the app-server's answer to exactly this: the client
+  // DECLARES {name, description, inputSchema} up front, and the server sends a
+  // `dynamicToolCall` REQUEST back over this same stdio channel when the model
+  // calls one. Same in-process handlers as the Claude path — see
+  // harness-tools.ts for why this beats standing up an HTTP MCP server.
+  tools?: readonly HarnessToolNamespace[];
+  // Appended to the system prompt. Codex's spelling of Claude's
+  // `systemPrompt.append`, and the second capability gap closed here: the
+  // appendix used to be built by route.ts and then silently dropped, which is
+  // what made planner/steerer profiles a non-session on this provider.
+  instructions?: string;
 };
 
 // Resolve the system Codex binary: an explicit override, else the common
@@ -163,6 +183,13 @@ const APPROVAL_METHODS = new Set([
   ...LEGACY_APPROVAL_METHODS,
 ]);
 
+// Server->client request methods that mean "run one of the tools you declared".
+// Both spellings are listed because the app-server's own naming moved and a
+// pinned adapter that recognises only one of them silently loses every tool
+// call on the other side of that bump — which reads exactly like the model
+// choosing not to use its tools.
+const DYNAMIC_TOOL_METHODS = new Set(["dynamicToolCall", "thread/dynamicToolCall"]);
+
 // Owns one `codex app-server` subprocess: request/response id correlation
 // plus a notification channel. Any server->client REQUEST (id + method) for
 // an approval method is routed to `onApproval` (when set) and answered async
@@ -184,6 +211,10 @@ class AppServerClient {
   // possibly be processed — see runCodexTurn) rather than threaded through
   // the constructor, so it can be omitted entirely for approvalPolicy:"never".
   onApproval?: CodexRunOptions["onApproval"];
+  // Set before the first turn, same discipline as onApproval: assigned
+  // synchronously before any await, so no stdout line can be processed (hence
+  // no dynamicToolCall answered) against an empty tool set.
+  tools: readonly HarnessToolNamespace[] = [];
 
   constructor(bin: string, env: Record<string, string>) {
     // Cast: Next.js's global NodeJS.ProcessEnv augmentation marks NODE_ENV as
@@ -212,6 +243,28 @@ class AppServerClient {
         return;
       }
       if (msg.method !== undefined && msg.id !== undefined) {
+        // A TOOL CALL COMING BACK AT US. Same fire-and-forget discipline as an
+        // approval: awaiting the handler inside the readline callback would
+        // stall every subsequent stdout line — including this turn's own text
+        // notifications — until an ultra script finished compiling.
+        if (DYNAMIC_TOOL_METHODS.has(msg.method)) {
+          const id = msg.id;
+          this.answerDynamicTool(id, msg.params).catch((e) => {
+            // A handler that threw is a FAILED TOOL, not a dead turn: answer
+            // with success:false so the model can read the error and carry on.
+            this.write({
+              jsonrpc: "2.0",
+              id,
+              result: {
+                contentItems: [
+                  { type: "inputText", text: e instanceof Error ? e.message : String(e) },
+                ],
+                success: false,
+              },
+            });
+          });
+          return;
+        }
         if (this.onApproval && APPROVAL_METHODS.has(msg.method)) {
           // Fire-and-forget from the readline callback's point of view —
           // awaiting onApproval here would stall every subsequent stdout
@@ -285,6 +338,46 @@ class AppServerClient {
       ? { decision: decision === "accept" ? "approved" : "denied" }
       : { decision };
     this.write({ jsonrpc: "2.0", id, result });
+  }
+
+  // Runs one dynamic tool and writes its DynamicToolCallResponse back.
+  //
+  // AN UNKNOWN TOOL IS ANSWERED, NOT THROWN. A model naming a tool that does
+  // not exist is an ordinary thing to reply to — the alternative (letting it
+  // reject into the catch above) is the same answer with a worse message.
+  private async answerDynamicTool(id: string | number, params: unknown): Promise<void> {
+    // `unknown` rather than this file's usual wire-shaped `any`: every field
+    // read below is type-guarded anyway, so the looser type buys nothing.
+    const p = (params ?? {}) as Record<string, unknown>;
+    const namespace: string | null = typeof p.namespace === "string" ? p.namespace : null;
+    const name: string = typeof p.tool === "string" ? p.tool : "";
+    const descriptor = findTool(this.tools, namespace, name);
+    if (!descriptor) {
+      this.write({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          contentItems: [
+            {
+              type: "inputText",
+              text: `No such tool: ${namespace ? `${namespace}/` : ""}${name || "(unnamed)"}.`,
+            },
+          ],
+          success: false,
+        },
+      });
+      return;
+    }
+    const args = (p.arguments ?? {}) as Record<string, unknown>;
+    // The handler is the SAME function the Claude path calls through MCP.
+    const result = await (descriptor.handler as (a: unknown) => Promise<
+      { content: Array<{ type: string; [k: string]: unknown }>; isError?: boolean }
+    >)(args);
+    this.write({
+      jsonrpc: "2.0",
+      id,
+      result: { contentItems: toContentItems(result), success: !result.isError },
+    });
   }
 
   private write(msg: Record<string, unknown>): void {
@@ -390,6 +483,7 @@ export async function* runCodexTurn(
   // (hence no approval REQUEST answered) until the event loop turns, which
   // can't happen before this assignment runs.
   client.onApproval = opts.onApproval;
+  client.tools = opts.tools ?? [];
   const onAbort = () => client.kill();
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -400,11 +494,21 @@ export async function* runCodexTurn(
     });
     client.notify("initialized");
 
+    // Declared ONCE, on the thread — not per turn. Both fields are omitted
+    // entirely when empty rather than sent as `[]`/`""`: the app-server treats
+    // an explicit empty dynamicTools as "this client has no tools", which is a
+    // different statement from not mentioning tools at all, and the difference
+    // shows up as a resumed thread losing the tools it started with.
+    const harnessParams = {
+      ...(opts.tools?.length ? { dynamicTools: toDynamicTools(opts.tools) } : {}),
+      ...(opts.instructions?.trim() ? { developerInstructions: opts.instructions } : {}),
+    };
     const threadStartParams = {
       cwd: opts.cwd,
       approvalPolicy: opts.approvalPolicy,
       sandbox: opts.sandbox,
       model: opts.model,
+      ...harnessParams,
     };
     const startResult = opts.resume
       ? await client.request<{ thread: { id: string } }>("thread/resume", {
@@ -413,6 +517,11 @@ export async function* runCodexTurn(
           approvalPolicy: opts.approvalPolicy,
           sandbox: opts.sandbox,
           model: opts.model,
+          // A RESUMED thread re-declares them too. The tool set lives in this
+          // process, not in the harness's persisted thread state, so a resume
+          // that stayed silent would hand the model a thread whose tools no
+          // longer exist on the other end of the socket.
+          ...harnessParams,
         })
       : await client.request<{ thread: { id: string } }>("thread/start", threadStartParams);
     const rootThreadId = startResult.thread.id;

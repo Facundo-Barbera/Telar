@@ -176,7 +176,11 @@ const errResult = (message: string) => ({
 });
 const okResult = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
-export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
+// Exported for the same reason as ultraTools — one definition, two harnesses.
+// See harness-tools.ts; the closures below (requireLoomId, resolveLoomId,
+// buildDeps) come with the tools rather than being rebuilt per harness, which
+// is why this stays a function over `opts` instead of a module-level array.
+export function loomTools(opts: LoomMcpOpts) {
   // Shared by every tool below except draft_bundle_file (which lazily
   // creates the draft loom instead of erroring).
   const requireLoomId = (): string | null => opts.link.loomId ?? null;
@@ -194,10 +198,7 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
     policy: loadPolicy(),
   });
 
-  return createSdkMcpServer({
-    name: "loom",
-    version: "1.0.0",
-    tools: [
+  return [
       tool(
         "draft_bundle_file",
         "Write (or overwrite) one file into this session's draft Spec Bundle — the working directory the loom will weave from. Creates the draft loom on first use. Path is relative to the bundle root (e.g. 'objective.md', 'contract.json').",
@@ -513,6 +514,15 @@ export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
           }
         },
       ),
-    ],
+  ];
+}
+
+export const LOOM_MCP_VERSION = "1.0.0";
+
+export function createLoomMcpServer(opts: LoomMcpOpts): McpServerConfig {
+  return createSdkMcpServer({
+    name: "loom",
+    version: LOOM_MCP_VERSION,
+    tools: loomTools(opts),
   });
 }

@@ -20,6 +20,8 @@ import { useSyncExternalStore } from "react";
 import { DEFAULT_MODEL } from "./models";
 import type { ClientPermissionMode } from "./permission-modes";
 import { isValidPermissionMode } from "./permission-modes";
+import type { ProviderSort } from "./provider-order";
+import { isProviderSort } from "./provider-order";
 
 const KEY = "telar-ui-prefs";
 
@@ -40,6 +42,12 @@ export type UiPrefs = {
   // so this is deliberately a visible cost the user sets, not a hidden poll —
   // and it takes effect exactly where it says it does, nowhere else.
   providerCheckIntervalSec: number;
+  // How the Providers list is ordered, and whether switched-off accounts sink
+  // below the rest. Both are VIEW state, not registry state: they change what
+  // this browser shows and nothing about the accounts themselves, which is why
+  // they live here in localStorage rather than in accounts.json.
+  providerSort: ProviderSort;
+  providerDisabledLast: boolean;
 };
 
 // Production has always shipped dark; keep it the default so nothing flashes for
@@ -50,6 +58,12 @@ export const DEFAULT_PREFS: UiPrefs = {
   defaultPermissionMode: "auto",
   notifications: { enabled: false, loomParked: true, loomReady: true },
   providerCheckIntervalSec: 300,
+  // Grouped by provider is the order this list has always had, so it stays the
+  // default. Sinking the disabled rows is new and ON by default — an account
+  // you switched off is one you told Telar not to use, and it should stop
+  // competing with the ones you did.
+  providerSort: "provider",
+  providerDisabledLast: true,
 };
 
 const THEMES: ThemeMode[] = ["system", "light", "dark"];
@@ -68,6 +82,11 @@ function sanitize(raw: unknown): UiPrefs {
       r.providerCheckIntervalSec >= 0
         ? Math.floor(r.providerCheckIntervalSec)
         : DEFAULT_PREFS.providerCheckIntervalSec,
+    providerSort: isProviderSort(r.providerSort) ? r.providerSort : DEFAULT_PREFS.providerSort,
+    providerDisabledLast:
+      typeof r.providerDisabledLast === "boolean"
+        ? r.providerDisabledLast
+        : DEFAULT_PREFS.providerDisabledLast,
     defaultModel:
       typeof r.defaultModel === "string" && r.defaultModel ? r.defaultModel : DEFAULT_PREFS.defaultModel,
     defaultPermissionMode: isValidPermissionMode(r.defaultPermissionMode)

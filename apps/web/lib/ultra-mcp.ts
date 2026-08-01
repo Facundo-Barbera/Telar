@@ -147,11 +147,16 @@ export const ULTRA_STATUS_NOTE =
 
 const ULTRA_STOP_DESCRIPTION = `Abort a live Ultra run: its shared AbortController fires, every in-flight child agent() interrupts, and the run ends state "stopped" with its journal prefix intact (a later resume replays that prefix instantly and runs only what's left live). A no-op (stopped:false) if the run isn't currently live in this process — e.g. already terminal, or the server restarted since it launched.`;
 
-export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
-  return createSdkMcpServer({
-    name: "ultra",
-    version: "1.0.0",
-    tools: [
+// THE TOOLS, EXPORTED — this array is the harness-neutral definition.
+//
+// `tool()` returns a plain {name, description, inputSchema, handler} record,
+// which is structurally the core port's HarnessToolDescriptor, so exporting the
+// array is the entire cost of making these reachable from a second harness:
+// the Claude path wraps them in createSdkMcpServer exactly as before, and the
+// Codex path turns the same records into `dynamicTools` (see harness-tools.ts).
+// No handler is defined twice, and there is no second implementation to drift.
+export function ultraTools(opts: UltraMcpOpts) {
+  return [
       tool(
         "ultra",
         ULTRA_TOOL_DESCRIPTION,
@@ -349,6 +354,15 @@ export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
           return okResult(JSON.stringify({ runId, stopped, state: manifest?.state ?? "unknown" }, null, 2));
         },
       ),
-    ],
+  ];
+}
+
+export const ULTRA_MCP_VERSION = "1.0.0";
+
+export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
+  return createSdkMcpServer({
+    name: "ultra",
+    version: ULTRA_MCP_VERSION,
+    tools: ultraTools(opts),
   });
 }

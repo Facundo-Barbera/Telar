@@ -151,7 +151,10 @@ const CREATE_ITEM_DESCRIPTION = `File a new task into the user's workspace. Give
 
 const UPDATE_ITEM_DESCRIPTION = `Modify an existing workspace task: retitle it, move it to another existing lane (it goes to the BOTTOM of that lane), take it off the desk (desk:false — this drains it to the queue and never deletes it), mark it unplaced, or attach a foreign issue reference. Naming a lane that does not exist lands the item in the unfiled lane and marks it unplaced, exactly as create_item does; NO LANE IS EVER CREATED FOR YOU, so call list_lanes first. Every other field is out of reach on purpose: the user's original words (raw), the sub-task list, the timeline and the promotion link cannot be changed by a tool.`;
 
-export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfig {
+// Exported as the harness-neutral definition — see harness-tools.ts. The scope
+// closure below is built here, with the tools, so a second harness cannot get
+// the tools without also getting the scoping that makes them safe.
+export function workspaceTools(opts: WorkspaceMcpOpts) {
   // The project scope, resolved ONCE from the server's own options. Every
   // handler below reads this and no handler reads anything scope-shaped from
   // its arguments.
@@ -193,15 +196,7 @@ export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfi
     };
   };
 
-  return createSdkMcpServer({
-    // A BARE QUOTED LITERAL IN FIRST POSITION, deliberately: invariants.test.ts's
-    // mcpServerNameLiterals matches only `<factory>({ name: "<literal>"`, while
-    // callsMcpFactory is satisfied by the call alone. A shorthand `{ name, … }`
-    // would put this file in MCP_SURFACES while contributing NO server, and
-    // INV-1a/INV-1b would then fail with a message that does not name the cause.
-    name: "workspace",
-    version: "1.0.0",
-    tools: [
+  return [
       tool(
         "list_items",
         LIST_ITEMS_DESCRIPTION,
@@ -390,6 +385,20 @@ export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfi
           );
         },
       ),
-    ],
+  ];
+}
+
+export const WORKSPACE_MCP_VERSION = "1.0.0";
+
+export function createWorkspaceMcpServer(opts: WorkspaceMcpOpts): McpServerConfig {
+  return createSdkMcpServer({
+    // A BARE QUOTED LITERAL IN FIRST POSITION, deliberately: invariants.test.ts's
+    // mcpServerNameLiterals matches only `<factory>({ name: "<literal>"`, while
+    // callsMcpFactory is satisfied by the call alone. A shorthand `{ name, … }`
+    // would put this file in MCP_SURFACES while contributing NO server, and
+    // INV-1a/INV-1b would then fail with a message that does not name the cause.
+    name: "workspace",
+    version: "1.0.0",
+    tools: workspaceTools(opts),
   });
 }

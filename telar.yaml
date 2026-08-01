@@ -1,5 +1,4 @@
 name: telar
-root: /Users/facundo/Projects/personal/telar
 adapter: plain
 account: personal
 baseBranch: main

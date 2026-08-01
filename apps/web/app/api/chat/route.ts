@@ -64,12 +64,19 @@ import {
 // why.
 import {
   createLoomMcpServer,
+  loomTools,
   LOOM_ANSWER_BLOCKED_TOOL,
+  LOOM_MCP_VERSION,
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
-import { createUltraMcpServer } from "@/lib/ultra-mcp";
-import { createWorkspaceMcpServer } from "@/lib/workspace-mcp";
+import { createUltraMcpServer, ultraTools, ULTRA_MCP_VERSION } from "@/lib/ultra-mcp";
+import {
+  createWorkspaceMcpServer,
+  workspaceTools,
+  WORKSPACE_MCP_VERSION,
+} from "@/lib/workspace-mcp";
+import { namespaceOf } from "@/lib/harness-tools";
 import {
   createPending,
   resolvePending,
@@ -1048,14 +1055,39 @@ export async function POST(req: Request) {
             }
             return decision.behavior === "allow" ? "accept" : "decline";
           };
+          // TELAR'S OWN TOOLS, ON CODEX. The same three tool sets the Claude
+          // branch registers as in-process MCP servers, handed to the
+          // app-server as `dynamicTools` — same definitions, same handlers,
+          // same server-resolved `project`/`account` that are never read from
+          // tool input. See harness-tools.ts for the conversion and why this
+          // is not an HTTP MCP server.
+          //
+          // This is the fix for the session where a user asked Codex to run an
+          // Ultra: there was no ultra tool in its toolset, no error saying so,
+          // and a model that narrated spawning three agents it never spawned.
+          const codexToolNamespaces = [
+            namespaceOf("ultra", ULTRA_MCP_VERSION, ultraTools({
+              project,
+              account: profile,
+              getSessionId: () => capturedSession,
+              getMessageId: () => runId,
+            })),
+            namespaceOf("loom", LOOM_MCP_VERSION, loomTools({
+              project,
+              objectiveSeed: message,
+              account: profile.name,
+              link: loomLink,
+              getSessionId: () => capturedSession,
+            })),
+            namespaceOf("workspace", WORKSPACE_MCP_VERSION, workspaceTools({
+              project,
+              account: profile,
+              getSessionId: () => capturedSession,
+            })),
+          ];
           for await (const nev of runCodexTurn({
             prompt: message,
             // AC2/AC3 — the same profile-resolved cwd the Claude branch uses.
-            // runCodexTurn takes no hooks, no mcpServers, no allow/deny lists,
-            // no settingSources and no systemPrompt, so `cwd` plus the
-            // onCodexApproval guardrail above is the whole of what a profile
-            // can reach on this provider — which is exactly what the capability
-            // gate publishes and what the deferred residual is about.
             cwd: sessionProfile.cwd,
             env: accountEnv(profile),
             model,
@@ -1065,6 +1097,12 @@ export async function POST(req: Request) {
             signal: abort.signal,
             approvalPolicy,
             onApproval: onCodexApproval,
+            tools: codexToolNamespaces,
+            // The same appendix the Claude branch passes as
+            // systemPrompt.append. It used to be built and then dropped on the
+            // floor here, which is what made planner/steerer profiles a
+            // non-session on this provider.
+            instructions: sessionProfile.systemPromptAppendix,
           })) {
             switch (nev.type) {
               case "session": {

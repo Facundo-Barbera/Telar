@@ -678,8 +678,13 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
   test("AC4 unmetCapabilities names what a Codex escalation session is missing", () => {
     registerFourKinds();
     const escalation = resolveSessionProfile(ctx({ kind: "escalation", provider: "codex" }));
+    // `mcp-servers` LEFT THIS LIST when the adapter learned dynamic tools —
+    // Codex now reaches the same ultra/loom/workspace handlers the Claude
+    // branch does, through thread/start's dynamicTools instead of through MCP.
+    // What remains are the two that have no app-server equivalent at all:
+    // Codex governs tool access with sandbox + approvalPolicy, which is a
+    // different mechanism rather than a spelling of hooks and allow/deny lists.
     expect([...unmetCapabilities(escalation, "codex")]).toEqual([
-      "mcp-servers",
       "pre-tool-use-hooks",
       "tool-allow-deny-lists",
     ]);
@@ -693,11 +698,16 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
     }
   });
 
-  test("AC4 a planner or steerer session on Codex is missing exactly system-prompt-append", () => {
+  test("AC4 a planner or steerer session on Codex is now missing NOTHING", () => {
     registerFourKinds();
+    // The inversion is the fix. These two kinds require system-prompt-append
+    // and nothing else, and that appendix used to be built by the route and
+    // then dropped on the floor — which is what made a planner or steerer a
+    // non-session on this provider. It now rides thread/start as
+    // `developerInstructions`, so both kinds resolve clean.
     for (const kind of ["planner", "steerer"] as const) {
       const resolved = resolveSessionProfile(ctx({ kind, provider: "codex" }));
-      expect([...unmetCapabilities(resolved, "codex")]).toEqual(["system-prompt-append"]);
+      expect([...unmetCapabilities(resolved, "codex")]).toEqual([]);
     }
   });
 
@@ -744,13 +754,15 @@ describe("AC4 the provider port publishes what it supports", () => {
     expect(providerPublishes("codex", "interactive-approval")).toBe(true);
   });
 
-  test("AC4 the five Claude-only capabilities are exactly the measured divergences", () => {
+  test("AC4 the three Claude-only capabilities are exactly the measured divergences", () => {
+    // Was five. `mcp-servers` and `system-prompt-append` were closed by the
+    // adapter upgrade (dynamicTools + developerInstructions on thread/start),
+    // which is the point of measuring rather than assuming: this list shrinks
+    // when the adapter genuinely grows, and only then.
     const claudeOnly = PROVIDER_CAPABILITIES.filter((c) => !providerPublishes("codex", c));
     expect([...claudeOnly].sort()).toEqual([
-      "mcp-servers",
       "pre-tool-use-hooks",
       "setting-sources",
-      "system-prompt-append",
       "tool-allow-deny-lists",
     ]);
     // Every one of those is published by Claude, or the list above is naming a
@@ -1065,7 +1077,7 @@ describe("prove-run L6", () => {
     const escalation = resolveSessionProfile(ctx({ kind: "escalation", provider: "codex" }));
     const unmet = unmetCapabilities(escalation, "codex");
     expect(unmet.length).toBeGreaterThan(0);
-    expect([...unmet]).toEqual(["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"]);
+    expect([...unmet]).toEqual(["pre-tool-use-hooks", "tool-allow-deny-lists"]);
 
     // …and the same profile on Claude passes, so the gate is a gate and not a
     // wall.

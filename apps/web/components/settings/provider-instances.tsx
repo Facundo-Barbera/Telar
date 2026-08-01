@@ -34,6 +34,7 @@ import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { CopyCommand } from "@/components/settings/copy-command";
+import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 
 // ── wire shape ─────────────────────────────────────────────────────────────
 export type AccountEnvVarWire = {
@@ -303,14 +304,33 @@ export function ProviderInstanceRow({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {/* provider mark, tinted by the account's accent, with the
-                  status dot riding its corner */}
+              {/* The provider's REAL MARK, not its first letter. Both providers
+                  used to start with the same glyph in the same grey square —
+                  `claude` and `codex` both rendered "c" — so the one thing the
+                  chip existed to say was the one thing it could not say. The
+                  brand mark is legible at 13px and needs no legend.
+                  ProviderIcon is the app's existing one (session/provider-icon).
+
+                  The ACCENT survives as the chip's tint rather than a fill: the
+                  marks carry their own colour (Claude's #d97757, Codex's
+                  currentColor), and painting a user-chosen background behind
+                  them turned a brand mark into a swatch. As a soft wash plus a
+                  ring it still distinguishes two logins of the same provider,
+                  which is the job it was doing. */}
               <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
                 <span
-                  className="flex size-4 items-center justify-center rounded-[4px] text-[9px] font-semibold uppercase text-white"
-                  style={{ backgroundColor: account.accentColor ?? "var(--muted-foreground)" }}
+                  className="flex size-5 items-center justify-center rounded-[5px] ring-1 ring-inset ring-border/60"
+                  style={
+                    account.accentColor
+                      ? {
+                          backgroundColor: `color-mix(in srgb, ${account.accentColor} 22%, transparent)`,
+                          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${account.accentColor} 55%, transparent)`,
+                        }
+                      : undefined
+                  }
+                  title={PROVIDER_LABEL[providerId]}
                 >
-                  {providerId[0]}
+                  <ProviderIcon provider={providerId} size={13} />
                 </span>
                 <span
                   className={cn(
@@ -362,25 +382,32 @@ export function ProviderInstanceRow({
                   Make default
                 </Button>
               )}
-              {/* The main account is detected, not added, and every project
-                  manifest defaults to it — so there is no delete affordance. */}
-              {!account.isMain && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="size-5 text-muted-foreground hover:text-destructive"
-                  onClick={onRemove}
-                  aria-label={`Remove ${account.name}`}
-                >
-                  <Trash2Icon className="size-3" />
-                </Button>
-              )}
             </div>
             <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
               {authLine(account, provider)}
             </p>
           </div>
-          <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          {/* THE ACTION CLUSTER IS FIXED, the title row is not. Everything left
+              of here wraps — the badges are as long as the account names and
+              prefixes people choose, so `proxied · codex-personal` pushed the
+              delete button onto a line of its own, where it hovered above the
+              auth line looking like it belonged to nothing. Controls that act
+              on the ROW live here instead, in the same place on every row
+              whatever the badges do. */}
+          <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
+            {/* The main account is detected, not added, and every project
+                manifest defaults to it — so there is no delete affordance. */}
+            {!account.isMain && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 text-muted-foreground hover:text-destructive"
+                onClick={onRemove}
+                aria-label={`Remove ${account.name}`}
+              >
+                <Trash2Icon className="size-3.5" />
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -393,6 +420,7 @@ export function ProviderInstanceRow({
               />
             </Button>
             <Switch
+              className="ml-1"
               checked={enabled}
               onCheckedChange={(checked) => onPatch({ enabled: Boolean(checked) })}
               aria-label={`Enable ${title}`}

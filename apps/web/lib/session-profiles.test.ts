@@ -898,19 +898,29 @@ describe("the gate these builders feed — the behaviour change this story ships
     }
   });
 
-  test("planner, steerer and escalation all FAIL on Codex — the disclosed behaviour change", () => {
-    // Deliberate, and it is the point of AD-11: today each of these returns a
-    // 200 that silently drops the thing that made it that kind of session.
-    //
-    // Story 2.2 WIDENS who this reaches, and that is AC3's one disclosed
-    // exception: because the route now resolves the kind from the persisted
-    // link as well as the wire role, a RESUMED planner/steerer/escalation chat
-    // on a Codex account whose client omits `role` now takes this 400 instead
-    // of the 200 it used to take. It fails LOUDLY in place of failing silently
-    // — the completion of 2.1's own gate, not a new policy.
-    for (const kind of ["planner", "steerer", "escalation"] as const) {
-      const unmet = unmetCapabilities(resolveSessionProfile(ctx({ kind, provider: "codex" })), "codex");
-      expect(unmet.length).toBeGreaterThan(0);
+  test("planner and steerer now PASS on Codex — the gap the adapter upgrade closed", () => {
+    // These two required exactly one thing Codex could not do: append to the
+    // system prompt. The route built that appendix and `runCodexTurn` dropped
+    // it, so the gate refused the session — correctly, but the refusal was the
+    // symptom, not the goal. `developerInstructions` on thread/start carries it
+    // now, so both kinds resolve clean and the 400 is simply gone.
+    for (const kind of ["planner", "steerer"] as const) {
+      expect(unmetCapabilities(resolveSessionProfile(ctx({ kind, provider: "codex" })), "codex")).toEqual(
+        [],
+      );
     }
+  });
+
+  test("escalation still FAILS on Codex — and this one is not a wiring gap", () => {
+    // Escalation is a read-only discuss wall enforced by PreToolUse hooks and
+    // a tool deny-list. Codex has neither; it governs tool access with sandbox
+    // + approvalPolicy, which is a different mechanism, not a spelling of the
+    // same one. Publishing those capabilities to make this pass would let the
+    // session run UNGUARDED — the gate refusing is the wall working.
+    const unmet = unmetCapabilities(
+      resolveSessionProfile(ctx({ kind: "escalation", provider: "codex" })),
+      "codex",
+    );
+    expect([...unmet]).toEqual(["pre-tool-use-hooks", "tool-allow-deny-lists"]);
   });
 });

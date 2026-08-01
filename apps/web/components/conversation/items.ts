@@ -274,14 +274,32 @@ export type MarkerPayload = { text: string; attention?: boolean };
 // the header heartbeat renders — one derivation, two surfaces.
 export type StatusPayload = { state: WorkState };
 
-// The 1.3 suppression rule, SCOPED TO FINISHED BLOCKS. A persisted turn has no
-// thinking text (the server never persists it), so a whitespace-only FINISHED
-// block must render nothing — an empty "✻ Thought" collapsible after a reload is
-// what this rule was written for. A LIVE block is exempt: between "thinking
-// opened" and the first delta there is no text yet, and suppressing that window
-// leaves the turn with no in-flight affordance at all.
+// The 1.3 suppression rule: A THINKING BLOCK WITH NO TEXT RENDERS NOTHING,
+// live or finished. A persisted turn has no thinking text (the server never
+// persists it), so a whitespace-only finished block must render nothing — the
+// empty "✻ Thought" collapsible after a reload this rule was first written for.
+//
+// THE LIVE EXEMPTION IS GONE, and its removal is the fix rather than the
+// "simplification" the previous comment here warned against. It rested on one
+// premise — that suppressing the window between "thinking opened" and the first
+// delta leaves the turn with no in-flight affordance — and that premise has
+// since stopped holding twice over:
+//
+//   · The live STATUS ROW is now that affordance (showsLiveStatus, below). It
+//     counts data parts, not rendered ones, so a suppressed thinking block still
+//     leaves partCount > 0 and the row still appears. The turn is never mute.
+//   · The window is not a window on every provider. Codex emits the block-start
+//     event and then no reasoning deltas at all, so `{text: "", done: false}` is
+//     not a moment there, it is the whole turn — one permanently empty dashed
+//     box per block start, stacking up as the turn goes on. Measured against a
+//     live codex-personal session: two of them, side by side, under a status row
+//     that was already saying "Thinking 18s".
+//
+// A block that never receives text has nothing to show. The header says the
+// model is thinking; an empty bordered box next to it says only that a renderer
+// ran.
 export function thinkingSuppressed(part: ThinkingPayload): boolean {
-  return part.done && !part.text.trim();
+  return !part.text.trim();
 }
 
 // WHETHER THE STREAMING TURN GETS ITS STATUS ROW — the whole live-only rule, in

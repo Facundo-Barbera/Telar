@@ -90,6 +90,60 @@ describe("manifest", () => {
   });
 });
 
+// telar.yaml is COMMITTED, so an absolute path in it is the one field that
+// cannot be true for two checkouts at once. These pin the replacement rule:
+// the file never carries `root`, and the directory it was read from is the
+// answer. The bug in the room: a manifest saying
+// `/Users/facundo/Projects/personal/telar` on a machine that cloned to
+// ~/Projects/Telar, which put a session in /private/tmp with no workspace.
+describe("root is derived from the directory, never from the file", () => {
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), "telar-shared-"));
+
+  test("writeManifest does not persist root", () => {
+    writeManifest(shared, ProjectManifest.parse({ name: "shared", root: "/somewhere/else" }));
+    const raw = fs.readFileSync(path.join(shared, "telar.yaml"), "utf8");
+    expect(raw).not.toMatch(/^root:/m);
+    expect(raw).toMatch(/^name: shared$/m);
+  });
+
+  test("loadManifest fills root from where the file actually is", () => {
+    expect(loadManifest(shared).root).toBe(path.resolve(shared));
+  });
+
+  test("a teammate's committed root is IGNORED, not honoured", () => {
+    // Exactly the file that caused the incident — another machine's absolute
+    // path, checked in. Reading it here must yield THIS checkout.
+    fs.writeFileSync(
+      path.join(shared, "telar.yaml"),
+      "name: shared\nroot: /Users/someone-else/Projects/personal/telar\n",
+    );
+    expect(loadManifest(shared).root).toBe(path.resolve(shared));
+  });
+
+  test("a manifest with no root at all loads fine", () => {
+    fs.writeFileSync(path.join(shared, "telar.yaml"), "name: shared\n");
+    const m = loadManifest(shared);
+    expect(m.root).toBe(path.resolve(shared));
+    expect(m.name).toBe("shared");
+  });
+
+  test("the roundtrip is stable — load, write, load again", () => {
+    const once = loadManifest(shared);
+    writeManifest(shared, once);
+    expect(loadManifest(shared)).toEqual(once);
+  });
+
+  test("a moved checkout reads as its new location", () => {
+    const moved = fs.mkdtempSync(path.join(os.tmpdir(), "telar-moved-"));
+    fs.copyFileSync(path.join(shared, "telar.yaml"), path.join(moved, "telar.yaml"));
+    expect(loadManifest(moved).root).toBe(path.resolve(moved));
+    expect(loadManifest(shared).root).toBe(path.resolve(shared));
+    fs.rmSync(moved, { recursive: true, force: true });
+  });
+
+  afterAll(() => fs.rmSync(shared, { recursive: true, force: true }));
+});
+
 function loadValid() {
   return ProjectManifest.parse({ name: path.basename(projRoot), root: path.resolve(projRoot) });
 }

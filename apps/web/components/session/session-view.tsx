@@ -116,6 +116,11 @@ import {
 // @/lib/permissions instead would pull loom-mcp -> the Agent SDK
 // (node:async_hooks) into the client bundle.
 import { isValidPermissionMode, type ClientPermissionMode } from "@/lib/permission-modes";
+// Read only inside ComposerSettings' seed effect (via the seedValue thunk),
+// never during render — a localStorage-backed value read at render time is a
+// hydration mismatch by construction.
+import { getUiPrefs } from "@/lib/ui-prefs";
+import { useHydrated } from "@/lib/use-hydrated";
 import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
@@ -859,6 +864,9 @@ function SessionViewInner({
   // "default" = omit `effort` from the POST body entirely (let the model/SDK
   // pick). Any other value is a real EffortLevel string sent as-is.
   const [effort, setEffort] = useState(initialChat?.effort ?? "default");
+  // Gates the composer textarea — see its own comment at the render site, and
+  // lib/use-hydrated.ts for the cmux attribute this closes over.
+  const hydrated = useHydrated();
   // Auto Mode is the DEFAULT for a fresh session (owner-locked 1.2 decision):
   // a classifier approves routine tool calls automatically. A resumed session
   // keeps whatever was last persisted (route.ts's appendTurn), so an existing
@@ -1504,17 +1512,33 @@ function SessionViewInner({
                 // Still drives the turn-wide busy wording (unchanged — see
                 // below), but now ALSO opens a live "thinking" part attributed
                 // to `parent` (main thread when omitted) — the growing muted
-                // italic block ThinkingRow renders while it streams. A block
-                // start always opens a NEW part rather than reopening a
-                // previous one: by the time a second thinking block starts
-                // for the same parent, the first was already closed by
-                // whatever delta/text/tool followed it (see closeThinking).
+                // italic block ThinkingRow renders while it streams.
+                //
+                // A BLOCK START CLOSES THE PREVIOUS OPEN BLOCK for the same
+                // parent before opening its own. This used to assume the close
+                // had already happened — "by the time a second thinking block
+                // starts, the first was closed by whatever delta/text/tool
+                // followed it" — which is true only of a provider that puts
+                // something between two block starts. Codex emits them
+                // back to back with no deltas in between, so nothing ever ran
+                // closeThinking and the open blocks accumulated, one per start,
+                // each stuck at `done: false` for the rest of the turn.
+                //
+                // Closing here makes the invariant hold by construction rather
+                // than by luck: AT MOST ONE thinking part per parent is open at
+                // any moment, whatever the provider sends.
                 setThinking(true);
                 const parent: string | undefined = payload.parent ?? undefined;
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: [...m.parts, { type: "thinking", text: "", done: false, parentId: parent }],
-                }));
+                patch(asstId, (m) => {
+                  const closed = closeThinking(m, parent);
+                  return {
+                    ...closed,
+                    parts: [
+                      ...closed.parts,
+                      { type: "thinking", text: "", done: false, parentId: parent },
+                    ],
+                  };
+                });
                 break;
               }
               case "thinking_delta": {
@@ -3228,16 +3252,33 @@ function SessionViewInner({
             )}
             <PromptInput onSubmit={handleSubmit}>
               <PromptInputBody>
-                <PromptInputTextarea
-                  className="min-h-10"
-                  placeholder={
-                    busy
-                      ? "Agent is working — Enter queues a message…"
-                      : `Ask about ${project}… ("/" for commands)`
-                  }
-                  onKeyDown={handleComposerKeyDown}
-                  onChange={() => setMenuDismissed(false)}
-                />
+                {/* THE TEXTAREA IS CLIENT-ONLY, and that is a fix rather than a
+                    preference. cmux stamps a `data-cmux-addressbar-focus-id`
+                    onto this element between HTML parse and hydration, so a
+                    server-rendered <textarea> is guaranteed to hydrate against
+                    a DOM carrying an attribute no render produced — a mismatch
+                    on every single load. Not rendering one server-side removes
+                    the thing being mutated; React creates the real control
+                    after hydration, where there is nothing left to compare.
+                    See lib/use-hydrated.ts for why not suppressHydrationWarning.
+
+                    The placeholder matches the real control's height and
+                    padding so the swap costs no layout shift, and is inert and
+                    aria-hidden so it is never a focus target or announced. */}
+                {hydrated ? (
+                  <PromptInputTextarea
+                    className="min-h-10"
+                    placeholder={
+                      busy
+                        ? "Agent is working — Enter queues a message…"
+                        : `Ask about ${project}… ("/" for commands)`
+                    }
+                    onKeyDown={handleComposerKeyDown}
+                    onChange={() => setMenuDismissed(false)}
+                  />
+                ) : (
+                  <div className="min-h-10 w-full px-2.5 py-2.5 text-base" aria-hidden />
+                )}
               </PromptInputBody>
               <PromptInputFooter className="flex-wrap">
                 <PromptInputTools className="flex-wrap">
@@ -3309,143 +3350,71 @@ function SessionViewInner({
                       </SelectContent>
                     </Select>
                   )}
-                  {/* Permission (Claude) / approval (Codex) — same styled
-                      label+description row idiom either way. Codex's now drives
-                      an interactive approval preset (sandbox + approvalPolicy)
-                      since the app-server can prompt mid-turn. */}
-                  {provider === "codex" ? (
-                    <Select
-                      value={
-                        CODEX_APPROVAL_PRESETS.find(
-                          (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
-                        )?.id ?? DEFAULT_CODEX_APPROVAL_ID
-                      }
-                      onValueChange={(v) => {
-                        const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
-                        if (!preset) return;
-                        setSandbox(preset.sandbox);
-                        setApprovalPolicy(preset.approvalPolicy);
-                      }}
-                    >
-                      <SelectTrigger className="h-8 w-[130px] text-xs" size="sm">
-                        <SelectValue>
-                          {CODEX_APPROVAL_PRESETS.find(
-                            (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
-                          )?.label ?? "Approval"}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent className="w-[min(260px,calc(100vw-2rem))]">
-                        {CODEX_APPROVAL_PRESETS.map((p) => (
-                          <SelectItem key={p.id} value={p.id} className="py-2">
-                            <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                              <span className="font-medium">{p.label}</span>
-                              <span className="text-xs text-muted-foreground">{p.blurb}</span>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    /* 1.2 — the Claude config trio (permission · model · effort)
-                       collapses into one chip + settings popover. Provider and
-                       account stay as their own pre-session controls above. */
-                    <ComposerSettings
-                      project={project}
-                      open={settingsOpen}
-                      onOpenChange={setSettingsOpen}
-                      model={model}
-                      setModel={setModel}
-                      effort={effort}
-                      setEffort={setEffort}
-                      permissionMode={permissionMode}
-                      setPermissionMode={setPermissionMode}
-                      modelOptions={modelOptions}
-                      effortOptions={effortOptions}
-                      permissionOptions={PERMISSION_MODE_OPTIONS}
-                    />
-                  )}
-                  {/* Codex keeps the explicit model + effort selects — its collapse
-                      isn't part of the 1.2 redesign (the popover is Claude-shaped:
-                      a Claude badge, Claude permission language). */}
-                  {provider === "codex" && (
-                    <>
-                  <Select value={model} onValueChange={(v) => v && setModel(v)}>
-                    <SelectTrigger className="h-8 w-[170px] text-xs" size="sm">
-                      <SelectValue>
-                        <span className="flex items-center gap-1.5">
-                          {activeModel?.name ?? model}
-                          {activeModel && (
-                            <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                              {activeModel.context}
-                            </Badge>
-                          )}
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent className="w-[min(340px,calc(100vw-2rem))]">
-                      {modelOptions.map((m) => (
-                        <SelectItem key={m.id} value={m.id} className="py-2">
-                          <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium">{m.name}</span>
-                              <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                                {m.context} ctx
-                              </Badge>
-                              <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                                {m.maxOutput} out
-                              </Badge>
-                              {m.inputPerMTok > 0 || m.outputPerMTok > 0 ? (
-                                <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                                  ${m.inputPerMTok}/{m.outputPerMTok} MTok
-                                </span>
-                              ) : null}
-                            </div>
-                            <span className="text-xs text-muted-foreground">{m.blurb}</span>
-                            {m.note && (
-                              <span className="text-[10px] text-muted-foreground/70">{m.note}</span>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {/* "default" omits `effort` from the POST body entirely — the
-                      model/SDK picks its own. Editable on every turn, like model
-                      above (not locked to pre-session like the account picker
-                      above): route.ts persists whatever was last sent, same as
-                      model, and restores it on resume via initialChat.effort.
-                      Option set switches with the provider — Codex's reasoning
-                      effort tiers aren't identical to Claude's (no "max", has
-                      "minimal"). */}
-                  <Select value={effort} onValueChange={(v) => v && setEffort(v)}>
-                    <SelectTrigger className="h-8 w-[110px] text-xs" size="sm">
-                      <SelectValue>
-                        {effort === "default"
-                          ? "Effort"
-                          : (effortOptions.find((e) => e.id === effort)?.label ?? effort)}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent className="w-[min(280px,calc(100vw-2rem))]">
-                      <SelectItem value="default" className="py-2">
-                        <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                          <span className="font-medium">Default</span>
-                          <span className="text-xs text-muted-foreground">
-                            Let the model choose its own effort.
-                          </span>
-                        </div>
-                      </SelectItem>
-                      {effortOptions.map((e) => (
-                        <SelectItem key={e.id} value={e.id} className="py-2">
-                          <div className="flex w-full min-w-0 flex-col gap-0.5 whitespace-normal">
-                            <span className="font-medium">{e.label}</span>
-                            <span className="text-xs text-muted-foreground">{e.blurb}</span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                    </>
-                  )}
+                  {/* THE SINGLE AGENT-CONFIGURATION MENU — identical on both
+                      providers. Approval, model and effort are the same three
+                      decisions whichever agent is driving; only the option
+                      VALUES differ, so they arrive as data and the control
+                      stays one control.
+
+                      This replaced a real fork: Claude had this popover while
+                      Codex had three loose selects beside it, so the composer
+                      changed shape with the agent and the same decisions were
+                      made through two vocabularies. `provider` here only names
+                      the badge — nothing below branches on it. */}
+                  <ComposerSettings
+                    project={project}
+                    provider={provider}
+                    open={settingsOpen}
+                    onOpenChange={setSettingsOpen}
+                    model={model}
+                    setModel={setModel}
+                    effort={effort}
+                    setEffort={setEffort}
+                    modelOptions={modelOptions}
+                    effortOptions={effortOptions}
+                    approval={
+                      provider === "codex"
+                        ? {
+                            title: "Approval",
+                            value:
+                              CODEX_APPROVAL_PRESETS.find(
+                                (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
+                              )?.id ?? DEFAULT_CODEX_APPROVAL_ID,
+                            options: CODEX_APPROVAL_PRESETS.map((p) => ({
+                              value: p.id,
+                              label: p.label,
+                              description: p.blurb,
+                            })),
+                            // One id in, two pieces of state out — the pair is
+                            // what the app-server actually takes, and keeping
+                            // the preset as the UI's unit is what lets Codex
+                            // share a single-value control with Claude.
+                            onChange: (v: string) => {
+                              const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
+                              if (!preset) return;
+                              setSandbox(preset.sandbox);
+                              setApprovalPolicy(preset.approvalPolicy);
+                            },
+                            defaultValue: DEFAULT_CODEX_APPROVAL_ID,
+                          }
+                        : {
+                            title: "Permissions",
+                            value: permissionMode,
+                            options: PERMISSION_MODE_OPTIONS.map((p) => ({
+                              value: p.value,
+                              label: p.label,
+                              description: p.description,
+                            })),
+                            onChange: (v: string) => setPermissionMode(v as ClientPermissionMode),
+                            defaultValue: "auto",
+                            // Only Claude seeds from the global Agent-defaults
+                            // preference: that preference is expressed in
+                            // Claude permission modes and means nothing to
+                            // Codex's sandbox presets.
+                            seedValue: () => getUiPrefs().defaultPermissionMode,
+                          }
+                    }
+                  />
                   {/* Story 4.2 / AC6 — THE ULTRA CHIP. Arming only: no ceiling
                       editor, no submenu (NFR-UW-7 and `ui-contract.md` §6).
 

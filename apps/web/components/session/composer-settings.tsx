@@ -2,14 +2,28 @@
 
 // 1.2 — collapse the composer's button crowd (permission · model · effort)
 // into ONE settings popover fronted by a compact config chip that reads back
-// the active model, permission mode and effort at a glance. Auto Mode is the
-// default. Ported from the owner-verdicted demo (lib/demo-gallery/input/
-// settings-popover.tsx + shared.tsx). Provider/account stay as their own
-// pre-session controls in the footer; this chip is the Claude config trio.
+// the active model, approval mode and effort at a glance. Ported from the
+// owner-verdicted demo (lib/demo-gallery/input/settings-popover.tsx +
+// shared.tsx). Provider/account stay as their own pre-session controls in the
+// footer; this chip is the config trio.
+//
+// ONE MENU, BOTH PROVIDERS. This used to be the CLAUDE config trio, and Codex
+// got three loose selects beside it instead — approval preset, model, effort —
+// so the composer changed shape depending on which agent you picked, and the
+// same three decisions were made through two different UIs with two different
+// vocabularies. There is no reason for that: the decisions are identical
+// (how much may it do on its own · which model · how hard should it think),
+// only the option VALUES differ.
+//
+// So the popover is now provider-neutral and every provider-specific thing
+// arrives as data: the approval section takes its own title, options and
+// current value (Claude's permission modes, Codex's sandbox+approval presets),
+// and the header badge names whichever provider is active. Nothing in this file
+// branches on a provider id — if it ever needs to, the abstraction is wrong.
 //
 // Real data only: the model list is the live catalog fetched by the composer
 // (modelOptions), the effort list is the provider's real EFFORT_OPTIONS, and
-// permissions are the real PERMISSION_MODE_OPTIONS — nothing is hardcoded here.
+// the approval options are the provider's real ones — nothing is hardcoded.
 
 import { useEffect, useRef, type ReactNode } from "react";
 import {
@@ -27,19 +41,44 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { DEFAULT_MODEL, type ModelInfo } from "@/lib/models";
-import type { ClientPermissionMode } from "@/lib/permission-modes";
 import { getUiPrefs } from "@/lib/ui-prefs";
+import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 
-type PermOption = { value: ClientPermissionMode; label: string; description: string };
 type EffortOpt = { id: string; label: string; blurb: string };
 
-const permIcon = (v: ClientPermissionMode) =>
-  v === "auto" ? (
+/** One choice in the approval section. Provider-neutral by construction: a
+ *  Claude permission mode and a Codex sandbox+approval preset both flatten to
+ *  this, which is what lets the two share a control instead of a shape. */
+export type ApprovalOption = { value: string; label: string; description: string };
+
+/** Everything the approval section needs, supplied by whoever knows the
+ *  provider. `defaultValue` is the one that reads as "Default for new
+ *  projects"; `seedValue` (optional) is what a project with no remembered
+ *  config should start at, taken from the global Agent-defaults preference.
+ *
+ *  `seedValue` is a FUNCTION, not a value, so the caller never has to read
+ *  localStorage-backed preferences during render — SSR would return the
+ *  defaults and the client the stored ones, which is a hydration mismatch
+ *  waiting to happen. It is called inside the seed effect, client-side only. */
+export type ApprovalConfig = {
+  title: string;
+  value: string;
+  options: readonly ApprovalOption[];
+  onChange: (v: string) => void;
+  defaultValue: string;
+  seedValue?: () => string | undefined;
+};
+
+// Icons are positional, not value-keyed: the first option is the permissive
+// "just do it" one on both providers, the last is the most cautious. Keying on
+// a Claude value here would reintroduce the branch this refactor removed.
+const approvalIcon = (index: number, total: number) =>
+  index === 0 ? (
     <ZapIcon className="size-3.5 text-primary" />
-  ) : v === "acceptEdits" ? (
-    <CheckIcon className="size-3.5" />
-  ) : (
+  ) : index === total - 1 ? (
     <BotIcon className="size-3.5" />
+  ) : (
+    <CheckIcon className="size-3.5" />
   );
 
 function chipClass(active: boolean) {
@@ -132,30 +171,28 @@ function ModelRow({
 
 export function ComposerSettings({
   project,
+  provider,
   open,
   onOpenChange,
   model,
   setModel,
   effort,
   setEffort,
-  permissionMode,
-  setPermissionMode,
+  approval,
   modelOptions,
   effortOptions,
-  permissionOptions,
 }: {
   project: string;
+  provider: "claude" | "codex";
   open: boolean;
   onOpenChange: (v: boolean) => void;
   model: string;
   setModel: (v: string) => void;
   effort: string;
   setEffort: (v: string) => void;
-  permissionMode: ClientPermissionMode;
-  setPermissionMode: (v: ClientPermissionMode) => void;
+  approval: ApprovalConfig;
   modelOptions: ModelInfo[];
   effortOptions: EffortOpt[];
-  permissionOptions: PermOption[];
 }) {
   // New-session fallback: for a project with NO remembered composer config, seed
   // the still-untouched hardcoded defaults from the global UI preference (see
@@ -182,7 +219,10 @@ export function ComposerSettings({
     const prefs = getUiPrefs();
     if (model === DEFAULT_MODEL && modelOptions.some((m) => m.id === prefs.defaultModel)) {
       setModel(prefs.defaultModel);
-      if (permissionMode === "auto") setPermissionMode(prefs.defaultPermissionMode);
+      // Only when the caller supplied one AND the control is still untouched —
+      // a resumed session's own choice is never clobbered.
+      const seed = approval.seedValue?.();
+      if (seed && approval.value === approval.defaultValue) approval.onChange(seed);
     }
     // Seed once per project mount; deliberately not reacting to model changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,9 +230,10 @@ export function ComposerSettings({
 
   const activeModel = modelOptions.find((m) => m.id === model);
   const modelLabel = activeModel?.name ?? model;
-  const permLabel = permissionOptions.find((p) => p.value === permissionMode)?.label ?? "Ask me";
-  const permDescription = permissionOptions.find((p) => p.value === permissionMode)?.description;
-  const auto = permissionMode === "auto";
+  const active = approval.options.find((o) => o.value === approval.value);
+  const approvalLabel = active?.label ?? approval.options[0]?.label ?? "";
+  const approvalDescription = active?.description;
+  const isDefault = approval.value === approval.defaultValue;
   const effortLabel = effortOptions.find((e) => e.id === effort)?.label;
 
   return (
@@ -204,12 +245,12 @@ export function ComposerSettings({
             <span className="text-foreground">{modelLabel}</span>
             <span className="text-muted-foreground/40">·</span>
             <span className="flex items-center gap-1">
-              {auto ? (
+              {isDefault ? (
                 <ZapIcon className="size-3 text-primary" />
               ) : (
                 <ShieldCheckIcon className="size-3" />
               )}
-              {permLabel}
+              {approvalLabel}
             </span>
             {effort !== "default" && effortLabel && (
               <>
@@ -227,27 +268,28 @@ export function ComposerSettings({
             Agent configuration
           </span>
           <Badge variant="outline" className="gap-1 text-[10px]">
-            <BotIcon className="size-3" />
-            Claude
+            <ProviderIcon provider={provider} size={12} />
+            {PROVIDER_LABEL[provider]}
           </Badge>
         </div>
 
         <div className="max-h-[min(66vh,560px)] space-y-4 overflow-y-auto p-3.5">
-          {/* Permissions — Auto is the default and reads as such. */}
+          {/* Approval — whatever the provider calls it, in the provider's own
+              option set. The control is the same on both. */}
           <div className="space-y-2">
-            <SectionLabel icon={<ShieldCheckIcon className="size-3" />}>Permissions</SectionLabel>
-            <Segmented<ClientPermissionMode>
-              value={permissionMode}
-              onChange={setPermissionMode}
-              options={[
-                { value: "auto", label: "Auto", icon: permIcon("auto") },
-                { value: "acceptEdits", label: "Accept edits", icon: permIcon("acceptEdits") },
-                { value: "default", label: "Ask me", icon: permIcon("default") },
-              ]}
+            <SectionLabel icon={<ShieldCheckIcon className="size-3" />}>{approval.title}</SectionLabel>
+            <Segmented<string>
+              value={approval.value}
+              onChange={approval.onChange}
+              options={approval.options.map((o, i) => ({
+                value: o.value,
+                label: o.label,
+                icon: approvalIcon(i, approval.options.length),
+              }))}
             />
             <p className="px-0.5 text-xs text-muted-foreground">
-              {permDescription}
-              {auto && (
+              {approvalDescription}
+              {isDefault && (
                 <span className="ml-1 font-medium text-primary">Default for new projects.</span>
               )}
             </p>

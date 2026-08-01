@@ -1,5 +1,16 @@
 export * from "./schemas";
 export * from "./providers";
+// The provider-neutral harness contract: one event vocabulary and one tool
+// shape that both the Claude Agent SDK adapter and the Codex app-server
+// adapter speak. Exported beside providers.ts because the two are halves of
+// one statement — providers.ts says what a harness CAN do, harness-port.ts
+// says what it says while doing it.
+export * from "./harness-port";
+// How much the agent may do on its own — one enum, translated per harness.
+// Beside harness-port.ts because they answer adjacent halves of the same
+// question: the port says what a harness CAN do, runtime-mode says how much of
+// it the human has agreed to let it do without asking.
+export * from "./runtime-mode";
 export * from "./secrets";
 export * from "./mcp";
 export * from "./mcp-oauth";

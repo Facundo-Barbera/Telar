@@ -169,13 +169,31 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
     proxyEnv: { baseUrl: "OPENAI_BASE_URL", token: "OPENAI_API_KEY" },
     loginArgs: ["login"],
     defaultConfigDir: ".codex",
-    // Measured from runCodexTurn's argument list, which is exactly
-    // {prompt, cwd, env, model, reasoningEffort?, sandbox, resume, signal,
-    // approvalPolicy, onApproval} — no mcpServers, no hooks, no
-    // allowedTools/disallowedTools, no settingSources, no systemPrompt. What
-    // it DOES have is the approval card, via onApproval; that is why
-    // "interactive-approval" appears here and the other five do not.
-    capabilities: ["interactive-approval"],
+    // RE-MEASURED against runCodexTurn's argument list, which now also carries
+    // `tools` and `instructions`. Two of the four gaps this list used to
+    // record are genuinely closed:
+    //
+    //   · "mcp-servers" — the app-server takes `dynamicTools` on thread/start
+    //     and calls back with a `dynamicToolCall` REQUEST, which the adapter
+    //     answers in-process from the SAME handlers the Claude branch reaches
+    //     through MCP. A different transport for the identical capability, so
+    //     it publishes the identical name rather than a Codex-shaped synonym —
+    //     a profile requiring tools must not have to ask which harness it
+    //     landed on.
+    //   · "system-prompt-append" — `developerInstructions` on thread/start.
+    //
+    // THE OTHER THREE REMAIN ABSENT, and are absent for a reason rather than
+    // for want of wiring. `pre-tool-use-hooks` and `tool-allow-deny-lists`
+    // have no app-server equivalent at all: Codex governs tool access with
+    // `sandbox` + `approvalPolicy`, which is a different mechanism, not a
+    // spelling of the same one — publishing them would 400-proof a profile
+    // that then silently ran unguarded. `setting-sources` likewise: Codex
+    // reads its own AGENTS.md, which is not Claude's settingSources tiers.
+    //
+    // Publishing a capability you cannot honour is worse than lacking it: the
+    // gate stops refusing and the model is left to improvise, which is exactly
+    // how a session narrated three Ultra agents it never spawned.
+    capabilities: ["interactive-approval", "mcp-servers", "system-prompt-append"],
   },
 };
 

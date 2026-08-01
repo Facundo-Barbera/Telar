@@ -257,21 +257,31 @@ describe("isTrailingItem — the donor's liveness rule, kept in ONE place", () =
 // to a user. The row AC-L1 appends is the affordance that actually fires there.
 // A dev-server observation of AC-L4 must therefore be done with effort
 // EXPLICITLY enabled; these four cases prove the rule, not a visible change.
-describe("thinkingSuppressed — the 1.3 reload rule, now scoped to FINISHED blocks", () => {
+describe("thinkingSuppressed — no text, no box, live or finished", () => {
   test("a FINISHED block with no text renders nothing — the reload case", () => {
     expect(thinkingSuppressed({ text: "", done: true })).toBe(true);
     expect(thinkingSuppressed({ text: "   \n", done: true })).toBe(true);
   });
 
-  test("a LIVE block with no text yet is EXEMPT — the whole behaviour change", () => {
-    // Between "thinking opened" and the first delta there is no text. The old
-    // rule suppressed that window, leaving the turn with no in-flight
-    // affordance at all; this is the case a "simplification" would revert.
-    expect(thinkingSuppressed({ text: "", done: false })).toBe(false);
+  test("a LIVE block with no text renders nothing EITHER — the Codex case", () => {
+    // This assertion is inverted from what it was, deliberately. The live
+    // exemption existed to keep the turn from going mute between "thinking
+    // opened" and the first delta; the status row (showsLiveStatus) covers
+    // that window now, and it counts DATA parts, so suppressing the render
+    // does not suppress the row.
+    //
+    // What the exemption actually produced: Codex sends the block-start event
+    // and no reasoning deltas, so the block never leaves this state and the
+    // dashed empty box became permanent — one per start, stacked.
+    expect(thinkingSuppressed({ text: "", done: false })).toBe(true);
+    expect(thinkingSuppressed({ text: "  ", done: false })).toBe(true);
   });
 
-  test("a FINISHED block WITH text renders", () => {
+  test("a block WITH text renders, streaming or finished", () => {
     expect(thinkingSuppressed({ text: "reasoning", done: true })).toBe(false);
+    // The live case is the one that matters for Claude, which does stream
+    // reasoning text: the box must appear the moment the first delta lands.
+    expect(thinkingSuppressed({ text: "rea", done: false })).toBe(false);
   });
 });
 

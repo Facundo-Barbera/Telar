@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   BellIcon,
   GaugeIcon,
@@ -15,12 +15,20 @@ import {
 import type { ProviderStatus } from "@telar/core";
 import type { PlanSnapshot, PlanWindow } from "@/lib/store";
 import { formatResetIn, usedWindows } from "@/lib/plan-window";
+import {
+  disabledBoundary,
+  orderAccounts,
+  PROVIDER_SORTS,
+  PROVIDER_SORT_LABELS,
+  type ProviderSort,
+} from "@/lib/provider-order";
 import { getUiPrefs, setUiPrefs, useUiPrefs } from "@/lib/ui-prefs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -216,13 +224,39 @@ export function GeneralSettings() {
   const [active, setActive] = useState("appearance");
   const prefs = useUiPrefs();
 
-  // Open a specific section when linked with a hash (e.g. /settings#doctor from
-  // the dashboard first-run card). Done in an effect (not the initializer) so
-  // the SSR and first client render agree — no hydration mismatch.
+  // THE SECTION LIVES IN THE URL. It used to be read from the hash on mount and
+  // never written back, so /settings#doctor opened Doctor but clicking to
+  // Providers left the address bar saying #doctor — and a refresh (or a
+  // bookmark, or a link pasted to someone else) threw the section away and
+  // landed on Appearance. Selecting a section now pushes it, which makes
+  // reload, back/forward and copy-paste all agree with what is on screen.
+  //
+  // Hash rather than a route segment or a query param: these are panes of one
+  // page, the deep links that already exist (/settings#doctor from the
+  // dashboard first-run card) keep working unchanged, and no navigation or
+  // re-render of the shell is involved in switching pane.
+  const selectSection = useCallback((id: string) => {
+    setActive(id);
+    if (window.location.hash.slice(1) !== id) window.history.pushState(null, "", `#${id}`);
+  }, []);
+
+  // Read the URL on mount AND whenever the history entry changes, so the
+  // browser's own back/forward buttons move between sections instead of
+  // leaving a stale pane on screen. Done in an effect (not the initializer) so
+  // SSR and the first client render agree — no hydration mismatch.
   useEffect(() => {
-    const h = window.location.hash.slice(1);
-    const target = SECTION_ALIASES[h] ?? h;
-    if (SECTIONS.some((s) => s.id === target)) setActive(target);
+    const sync = () => {
+      const h = window.location.hash.slice(1);
+      const target = SECTION_ALIASES[h] ?? h;
+      if (SECTIONS.some((s) => s.id === target)) setActive(target);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    window.addEventListener("hashchange", sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("hashchange", sync);
+    };
   }, []);
 
   const [accounts, setAccounts] = useState<AccountWire[]>([]);
@@ -337,14 +371,11 @@ export function GeneralSettings() {
   const providerOf = (a: AccountWire) =>
     providers.find((p) => p.provider === (a.provider ?? "claude"));
 
-  // Claude first, then Codex; within a provider the detected/base account leads.
-  const ordered = [...accounts].sort((a, b) => {
-    const pa = a.provider ?? "claude";
-    const pb = b.provider ?? "claude";
-    if (pa !== pb) return pa === "claude" ? -1 : 1;
-    if (Boolean(a.isMain) !== Boolean(b.isMain)) return a.isMain ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
+  // Order is a VIEW, driven by the two controls above the list — see
+  // lib/provider-order.ts for the comparator and the reason disabled-last
+  // outranks whichever mode is selected.
+  const ordered = orderAccounts(accounts, prefs.providerSort, prefs.providerDisabledLast);
+  const disabledAt = disabledBoundary(ordered, prefs.providerDisabledLast);
 
   const lastChecked = providers.reduce<string | null>(
     (latest, p) => (!latest || p.checkedAt > latest ? p.checkedAt : latest),
@@ -371,7 +402,7 @@ export function GeneralSettings() {
       subtitle="Appearance, agent defaults, notifications & provider accounts"
       sections={sections}
       active={active}
-      onSelect={setActive}
+      onSelect={selectSection}
       headerActions={
         <>
           {active === "providers" && (
@@ -451,21 +482,80 @@ export function GeneralSettings() {
             </div>
           )}
 
-          <div className="divide-y rounded-xl border">
-            {ordered.map((a) => (
-              <ProviderInstanceRow
-                key={a.name}
-                account={a}
-                provider={providerOf(a)}
-                isDefault={a.name === defaultAccount}
-                expanded={Boolean(expanded[a.name])}
-                onToggleExpanded={(next) => setExpanded((e) => ({ ...e, [a.name]: next }))}
-                onPatch={(patch) => void patchAccount(a, patch)}
-                onMakeDefault={() => void makeDefault(a.name)}
-                onRemove={() => void removeAccount(a)}
-                error={rowError[a.name]}
-                proxyAvailable={Boolean(proxy?.enabled)}
+          {/* Ordering controls. Deliberately ABOVE the list and always visible
+              rather than tucked behind a menu: the list reorders itself the
+              moment one changes, and a control whose effect you cannot see
+              while you use it is a control people stop trusting. */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium">Sort by</span>
+              <Select
+                value={prefs.providerSort}
+                onValueChange={(v) =>
+                  v && setUiPrefs({ ...getUiPrefs(), providerSort: String(v) as ProviderSort })
+                }
+              >
+                <SelectTrigger className="h-7 w-32 text-xs" aria-label="Sort accounts by">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROVIDER_SORTS.map((s) => (
+                    <SelectItem key={s} value={s}>
+                      {PROVIDER_SORT_LABELS[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-[11px] text-muted-foreground">
+                {prefs.providerSort === "status"
+                  ? "Accounts needing attention first."
+                  : prefs.providerSort === "name"
+                    ? "Alphabetical, across providers."
+                    : "Grouped by provider, detected login first."}
+              </span>
+            </div>
+            <label className="flex shrink-0 items-center gap-2">
+              <Switch
+                checked={prefs.providerDisabledLast}
+                onCheckedChange={(c) =>
+                  setUiPrefs({ ...getUiPrefs(), providerDisabledLast: Boolean(c) })
+                }
+                aria-label="Move disabled accounts to the bottom"
               />
+              <span className="text-xs">Disabled at the bottom</span>
+            </label>
+          </div>
+
+          <div className="divide-y rounded-xl border">
+            {ordered.map((a, i) => (
+              <Fragment key={a.name}>
+                {/* The boundary is LABELLED, not just implied by the dimming.
+                    Rows that moved need to say why they moved — otherwise the
+                    account you just switched off appears to have vanished from
+                    where you left it. */}
+                {i === disabledAt && (
+                  <div className="flex items-center gap-2 bg-muted/20 px-3 py-1.5 sm:px-4">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Disabled
+                    </span>
+                    <span className="text-[11px] text-muted-foreground/70">
+                      Switched off — not offered to sessions or counted in usage.
+                    </span>
+                  </div>
+                )}
+                <ProviderInstanceRow
+                  account={a}
+                  provider={providerOf(a)}
+                  isDefault={a.name === defaultAccount}
+                  expanded={Boolean(expanded[a.name])}
+                  onToggleExpanded={(next) => setExpanded((e) => ({ ...e, [a.name]: next }))}
+                  onPatch={(patch) => void patchAccount(a, patch)}
+                  onMakeDefault={() => void makeDefault(a.name)}
+                  onRemove={() => void removeAccount(a)}
+                  error={rowError[a.name]}
+                  proxyAvailable={Boolean(proxy?.enabled)}
+                />
+              </Fragment>
             ))}
           </div>
 

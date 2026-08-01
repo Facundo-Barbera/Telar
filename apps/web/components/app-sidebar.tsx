@@ -427,8 +427,8 @@ function WheelTip({
             <div className="space-y-1 text-[11px] text-muted-foreground">
               {account.unavailable && (
                 <div className="text-[10px] leading-snug text-muted-foreground/80">
-                  Routed through CLIProxyAPI, which doesn&apos;t report plan limits — so there is
-                  no usage figure for this account, not a figure of zero.
+                  The gateway returned no plan limits for this account — so there is no usage
+                  figure, not a figure of zero. Refresh usage to ask again.
                 </div>
               )}
               {!account.unavailable && usedWindows(snap).length === 0 && (
@@ -1124,10 +1124,17 @@ function SidebarBody() {
   // what knows.
   //
   // So the account list drives it, and a missing snapshot becomes a visible,
-  // explained state rather than an absence. That matters most for a
-  // gateway-routed Claude account, which can never have one: CLIProxyAPI does
-  // not forward Anthropic's rate-limit state, so its ring is permanently empty
-  // and saying so is the only honest rendering.
+  // explained state rather than an absence.
+  //
+  // `unavailable` IS A FACT ABOUT THE DATA, NOT A PREDICTION FROM ROUTING. It
+  // used to read `proxied && provider === "claude"`, on the premise that a
+  // gateway-routed Claude account can never have a figure. That premise died
+  // when the refresh learned to ask the PROVIDER through the gateway, as that
+  // credential (proxyUsageForAccounts in api/usage/refresh) — routed accounts
+  // now return real windows, and the tooltip went on insisting there was "no
+  // usage figure for this account" directly above 5-hour and Weekly meters
+  // holding live numbers. A claim about absence has to be read off the
+  // snapshot, so it is: no windows and no model-scoped rows means no figure.
   const wheelAccounts = new Map<string, WheelAccount>(
     accounts
       .map((a) => a.name)
@@ -1143,10 +1150,11 @@ function SidebarBody() {
             label: profile?.displayName?.trim() || name,
             accent: profile?.accentColor,
             proxied,
-            // Stated rather than left blank: a routed Claude account has no
-            // plan usage to report, and an empty ring with no explanation reads
-            // as 0% used.
-            unavailable: proxied && (profile?.provider ?? "claude") === "claude",
+            // Stated rather than left blank: an empty ring with no explanation
+            // reads as 0% used. Only ever true when the snapshot really is
+            // empty — see the note above.
+            unavailable:
+              proxied && usedWindows(snap).length === 0 && !snap?.modelScoped?.length,
             subscription: snap?.subscriptionType ?? null,
             tier: profile?.displayTier,
             five: snap?.fiveHour?.utilization ?? null,

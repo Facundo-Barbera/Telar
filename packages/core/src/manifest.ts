@@ -86,11 +86,18 @@ export function loadManifest(root: string): ProjectManifest {
   }
   const parsed = ProjectManifest.safeParse(data);
   if (!parsed.success) throw new Error(`Invalid telar.yaml at ${file}: ${z.prettifyError(parsed.error)}`);
-  return parsed.data;
+  // THE DIRECTORY WINS, always — over an absent `root:` and over a stale one a
+  // teammate committed from their own machine. See the field's note in
+  // schemas.ts: the manifest is shared, the path is not.
+  return { ...parsed.data, root: path.resolve(root) };
 }
 
+// `root` is stripped rather than written. It is derived on every load from the
+// directory the file lives in, so persisting it can only ever create a second,
+// staler answer to a question that already has a correct one.
 export function writeManifest(root: string, m: ProjectManifest): void {
-  atomicWrite(manifestFile(root), YAML.stringify(m));
+  const { root: _derived, ...persisted } = m;
+  atomicWrite(manifestFile(root), YAML.stringify(persisted));
 }
 
 export function registerProject(root: string): ProjectManifest {
@@ -146,8 +153,12 @@ export function getProject(name: string): { entry: RegistryEntry; manifest: Proj
   // throw (loadManifest surfaces it) — never mask that with a stale cache.
   if (!fs.existsSync(manifestFile(entry.root))) {
     if (entry.manifest) {
-      writeManifest(entry.root, entry.manifest);
-      return { entry, manifest: entry.manifest };
+      // Re-derive `root` here too, so the healed manifest obeys the same rule
+      // as a loaded one: the registry entry says where this project is NOW, and
+      // a cache seeded before a move must not outvote it.
+      const healed = { ...entry.manifest, root: path.resolve(entry.root) };
+      writeManifest(entry.root, healed);
+      return { entry, manifest: healed };
     }
     return { entry, manifest: loadManifest(entry.root) }; // no cache — throws as before
   }

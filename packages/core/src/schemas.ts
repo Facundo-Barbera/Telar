@@ -266,7 +266,26 @@ export type WorkUnit = z.infer<typeof WorkUnit>;
 // exec.yaml / registry entry: everything Telar needs to work on a repo.
 export const ProjectManifest = z.object({
   name: z.string(),
-  root: z.string(),
+  // WHERE THE REPO IS ON *THIS* MACHINE — derived, never persisted.
+  //
+  // telar.yaml is committed and shared, and an absolute path is the one thing
+  // in it that cannot be true for two people at once. It was written as
+  // `/Users/facundo/Projects/personal/telar`; on the machine that later cloned
+  // the repo to ~/Projects/Telar under a different username, that path simply
+  // did not exist, and a Codex session started in /private/tmp and spent a
+  // dozen tool calls hunting the filesystem for its own workspace.
+  //
+  // The registry (~/.telar/projects.json) already owns the per-machine path,
+  // and it is the correct owner: it is local state, not repo content. So this
+  // field stays on the TYPE — some thirty call sites in executor.ts and
+  // verify-thread.ts read `manifest.root` and there is no reason to churn them
+  // — but it is populated by loadManifest from the directory the file was read
+  // from, and stripped by writeManifest before serializing. Correct by
+  // construction: the root is where the manifest actually is.
+  //
+  // The default keeps the inferred type `string` rather than `string |
+  // undefined`; it is overwritten immediately on load and never observed empty.
+  root: z.string().default(""),
   adapter: z.enum(["plain", "bmad"]).default("plain"),
   account: z.string().default("personal"), // AccountProfile.name — routes billing/limits
   // Human-approval policy for a drafted Charter (docs/loom-orchestrator.md §5).
