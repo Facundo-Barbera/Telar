@@ -1,26 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BellIcon,
-  CheckIcon,
-  ExternalLinkIcon,
   GaugeIcon,
-  KeyRoundIcon,
-  Loader2Icon,
-  LogInIcon,
   PaletteIcon,
+  PlugIcon,
   PlusIcon,
   RotateCwIcon,
   SparklesIcon,
   StarIcon,
   StethoscopeIcon,
-  TerminalIcon,
-  Trash2Icon,
-  XIcon,
 } from "lucide-react";
-import type { AccountProfile, AccountHealth, LoginEvent } from "@telar/core";
+import type { ProviderStatus } from "@telar/core";
 import type { PlanSnapshot, PlanWindow } from "@/lib/store";
+import { formatResetIn, usedWindows } from "@/lib/plan-window";
+import { getUiPrefs, setUiPrefs, useUiPrefs } from "@/lib/ui-prefs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,48 +38,51 @@ import { AppearanceSettings } from "@/components/settings/appearance-settings";
 import { AgentDefaultsSettings } from "@/components/settings/agent-defaults-settings";
 import { NotificationsSettings } from "@/components/settings/notifications-settings";
 import { DoctorSettings } from "@/components/settings/doctor-settings";
+import {
+  ProviderInstanceRow,
+  type AccountWire,
+} from "@/components/settings/provider-instances";
+import { ProxyCard, type ProxyStatusWire } from "@/components/settings/proxy-card";
 
-type Provider = "claude" | "codex";
-type AuthMode = "subscription" | "oauth-token" | "api-key";
+// TELAR ADOPTS LOGINS, IT DOES NOT CREATE THEM. There is no login panel here and
+// no login route behind it: signing in happens in the user's own terminal, with
+// their own CLI, and Telar's job is to notice the result.
+//
+// ONE LIST, NOT TWO. A provider and an account are not separate things to
+// configure — an account IS a configured instance of a provider. The first row
+// for each provider is the auto-detected default instance; extra rows are extra
+// logins of the same provider. See provider-instances.tsx for the row anatomy.
+//
+// Multi-account is CLAUDE-ONLY today. Codex swaps its whole config tree via
+// CODEX_HOME — sessions and history along with auth — so a second Codex account
+// needs a shared-home/shadow-home arrangement Telar has not built. The server
+// enforces the limit; this surface states it.
 
-// GET /api/accounts enriches each profile with its on-disk liveness.
-type AccountWithHealth = AccountProfile & { health?: AccountHealth };
-
-// The liveness badge that replaces the old ambiguous copy: a real, honest
-// sign-in signal derived from cheap fs facts server-side (accountHealth).
-// "unknown" is deliberate, not a failure — a base/keychain login can't be
-// verified from disk, so we say so rather than guess.
-function LivenessBadge({ health }: { health?: AccountHealth }) {
-  if (!health) return null;
-  const map = {
-    ok: { label: "Logged in", variant: "default" as const },
-    "missing-config-dir": { label: "Not on this machine", variant: "destructive" as const },
-    "never-logged-in": { label: "Not logged in", variant: "destructive" as const },
-    unknown: { label: "Unknown", variant: "outline" as const },
-  };
-  const { label, variant } = map[health.status];
-  return (
-    <Badge variant={variant} className="text-[10px]" title={health.detail}>
-      {label}
-    </Badge>
-  );
-}
-
-// resets_at is a future ISO instant — show the countdown, not the wall clock.
-const fmtReset = (iso: string | null | undefined): string => {
-  if (!iso) return "—";
-  const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return "now";
-  const h = Math.floor(ms / 3_600_000);
-  const m = Math.floor((ms % 3_600_000) / 60_000);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+const fmtChecked = (iso: string | null | undefined): string => {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
 };
 
+// The attribute value in these variants is QUOTED deliberately. Left bare, the
+// generated attribute selector makes the CSS optimizer emit "Unexpected token
+// Delim" while escaping the class name, which fails the build. Quoting produces
+// the same selector and parses cleanly.
+//
+// AND THE BARE FORM MUST NOT APPEAR ANYWHERE IN THIS FILE — not even in a
+// comment. Tailwind scans sources as PLAIN TEXT rather than parsing them, so a
+// class-shaped string inside a comment is still extracted as a candidate and
+// regenerates the broken rule. That is exactly how this comment reintroduced
+// the bug it was written to explain.
 const meterBar = (pct: number) =>
   pct >= 90
-    ? "[&>[data-slot=progress-indicator]]:bg-destructive"
+    ? "[&>[data-slot='progress-indicator']]:bg-destructive"
     : pct >= 70
-      ? "[&>[data-slot=progress-indicator]]:bg-amber-500"
+      ? "[&>[data-slot='progress-indicator']]:bg-amber-500"
       : "";
 
 function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
@@ -97,7 +95,7 @@ function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
         <span className="font-mono">
           {pct}%
           {w.resets_at && (
-            <span className="text-muted-foreground/60"> · resets in {fmtReset(w.resets_at)}</span>
+            <span className="text-muted-foreground/60"> · resets in {formatResetIn(w.resets_at)}</span>
           )}
         </span>
       </div>
@@ -106,363 +104,21 @@ function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
   );
 }
 
-// One-line utilization hint for the Accounts tab (bars live on the Usage tab).
-function usageHint(snap?: PlanSnapshot): string | null {
-  const five = snap?.fiveHour?.utilization;
-  const week = snap?.sevenDay?.utilization;
-  if (five == null && week == null) return null;
-  const parts: string[] = [];
-  if (five != null) parts.push(`5-hour ${five}%`);
-  if (week != null) parts.push(`weekly ${week}%`);
-  return parts.join(" · ");
-}
-
-// The live login panel. Instead of handing the user a command to copy-paste,
-// the app DRIVES the provider CLI (server-side, with THIS account's config-dir
-// env) and streams its progress here over SSE:
-//
-//   codex  → `codex login --device-auth`: we surface the verification URL and
-//            one-time code; the CLI polls and self-completes, then we re-check
-//            health (auth.json → "Logged in").
-//   claude → `claude auth login --claudeai`: we surface the URL (the CLI also
-//            opens the browser), then collect the authorization code the
-//            callback page shows and POST it back to the CLI's stdin.
-//
-// Neither needs a TTY, so both drive fully; "Open in Terminal" is only an
-// escape hatch (osascript hand-off), never the primary path — still one click,
-// no copy-paste.
-function LoginPanel({
-  account,
-  onDone,
-  onClose,
+// ── add an instance ────────────────────────────────────────────────────────
+// Adding is ADOPTING: the folder must already exist and already hold a login.
+// The server enforces both, plus the reserved-~/.claude rule and the Codex
+// single-account limit, and its refusals are written for the user.
+function AddInstance({
+  hasCodex,
+  onAdded,
+  onCancel,
 }: {
-  account: AccountWithHealth;
-  onDone: () => void;
-  onClose: () => void;
+  hasCodex: boolean;
+  onAdded: () => void;
+  onCancel: () => void;
 }) {
-  const provider = account.provider ?? "claude";
-  const [lines, setLines] = useState<string[]>([]);
-  const [url, setUrl] = useState<string | null>(null);
-  const [code, setCode] = useState<string | null>(null);
-  const [needCode, setNeedCode] = useState(false);
-  const [paste, setPaste] = useState("");
-  const [status, setStatus] = useState<"running" | "done" | "failed">("running");
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const base = `/api/accounts/${encodeURIComponent(account.name)}/login`;
-
-  useEffect(() => {
-    const ac = new AbortController();
-    abortRef.current = ac;
-    (async () => {
-      let res: Response;
-      try {
-        res = await fetch(base, { signal: ac.signal });
-      } catch {
-        if (!ac.signal.aborted) {
-          setStatus("failed");
-          setError("Could not reach the login driver.");
-        }
-        return;
-      }
-      if (!res.ok || !res.body) {
-        const d = await res.json().catch(() => ({}));
-        if (res.status === 409) {
-          // Already logged in — nothing to drive.
-          setStatus("done");
-          onDone();
-        } else {
-          setStatus("failed");
-          setError(d.error ?? "Login is unavailable.");
-        }
-        return;
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let i: number;
-          while ((i = buf.indexOf("\n\n")) >= 0) {
-            const frame = buf.slice(0, i);
-            buf = buf.slice(i + 2);
-            const data = frame.split("\n").find((l) => l.startsWith("data:"));
-            if (!data) continue;
-            const evt = JSON.parse(data.slice(5).trim()) as LoginEvent;
-            switch (evt.type) {
-              case "line":
-                setLines((l) => [...l, evt.text].slice(-200));
-                break;
-              case "url":
-                setUrl(evt.url);
-                break;
-              case "code":
-                setCode(evt.code);
-                break;
-              case "needCode":
-                setNeedCode(true);
-                break;
-              case "done":
-                setStatus("done");
-                onDone();
-                break;
-              case "failed":
-                setStatus("failed");
-                setError(evt.error);
-                break;
-            }
-          }
-        }
-      } catch {
-        if (!ac.signal.aborted) {
-          setStatus("failed");
-          setError("Login stream interrupted.");
-        }
-      }
-    })();
-    return () => ac.abort();
-    // Start exactly once per mount; account.name keys the whole panel.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const submitPaste = async () => {
-    const c = paste.trim();
-    if (!c) return;
-    setNeedCode(false);
-    setPaste("");
-    await fetch(base, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: c }),
-    }).catch(() => {});
-  };
-
-  const openInTerminal = async () => {
-    await fetch(base, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ terminal: true }),
-    }).catch(() => {});
-  };
-
-  const cancel = () => {
-    abortRef.current?.abort();
-    fetch(base, { method: "DELETE" }).catch(() => {});
-    onClose();
-  };
-
-  return (
-    <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-xs">
-      <div className="flex items-center gap-2">
-        {status === "running" && <Loader2Icon className="size-3.5 animate-spin" />}
-        {status === "done" && <CheckIcon className="size-3.5 text-emerald-500" />}
-        <span className="font-medium">
-          {status === "running" && `Signing in to ${provider}…`}
-          {status === "done" && "Login complete."}
-          {status === "failed" && "Login didn't finish."}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto"
-          onClick={status === "running" ? cancel : onClose}
-          aria-label="Close login"
-        >
-          <XIcon className="size-3.5" />
-        </Button>
-      </div>
-
-      {url && status === "running" && (
-        <div className="space-y-2 rounded border bg-background/60 p-2">
-          <p className="text-muted-foreground">
-            {provider === "codex"
-              ? "Open this URL and enter the code below to authorize."
-              : "Finish signing in at this URL (your browser may have opened it already)."}
-          </p>
-          <Button size="sm" onClick={() => window.open(url, "_blank", "noopener")}>
-            <ExternalLinkIcon className="size-3.5" /> Open sign-in page
-          </Button>
-          {code && (
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">Code:</span>
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm tracking-wider">
-                {code}
-              </code>
-            </div>
-          )}
-        </div>
-      )}
-
-      {needCode && status === "running" && (
-        <div className="space-y-1">
-          <p className="text-muted-foreground">
-            Paste the authorization code from your browser:
-          </p>
-          <div className="flex items-center gap-2">
-            <Input
-              value={paste}
-              onChange={(e) => setPaste(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitPaste()}
-              placeholder="authorization code"
-              className="h-7 flex-1 font-mono text-xs"
-              autoFocus
-            />
-            <Button size="sm" onClick={submitPaste} disabled={!paste.trim()}>
-              Submit
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {lines.length > 0 && (
-        <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-background/60 p-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
-          {lines.join("\n")}
-        </pre>
-      )}
-
-      {status === "failed" && (
-        <div className="space-y-2">
-          {error && <p className="text-destructive">{error}</p>}
-          <p className="text-muted-foreground">
-            You can retry, or run the login in a Terminal window instead.
-          </p>
-        </div>
-      )}
-
-      <div className="flex items-center gap-2">
-        {status === "failed" && (
-          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-            <RotateCwIcon className="size-3.5" /> Retry
-          </Button>
-        )}
-        <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={openInTerminal}>
-          <TerminalIcon className="size-3.5" /> Open in Terminal
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function AccountCard({
-  account,
-  snap,
-  isDefault,
-  onChanged,
-}: {
-  account: AccountWithHealth;
-  snap?: PlanSnapshot;
-  isDefault: boolean;
-  onChanged: () => void;
-}) {
-  const [tier, setTier] = useState(account.displayTier ?? "");
-  const [showLogin, setShowLogin] = useState(false);
-  const provider = account.provider ?? "claude";
-  const hint = usageHint(snap);
-
-  const save = async (patch: Partial<AccountProfile>) => {
-    await fetch("/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...account, ...patch }),
-    });
-    onChanged();
-  };
-  const makeDefault = async () => {
-    await fetch(`/api/accounts/${encodeURIComponent(account.name)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ makeDefault: true }),
-    });
-    onChanged();
-  };
-  const remove = async () => {
-    if (!confirm(`Remove "${account.name}"? Its login on disk is left untouched.`)) return;
-    await fetch(`/api/accounts/${encodeURIComponent(account.name)}`, { method: "DELETE" });
-    onChanged();
-  };
-
-  return (
-    <Card size="sm">
-      <CardContent className="space-y-3 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm font-medium">{account.name}</span>
-          <Badge variant="secondary" className="text-[10px] uppercase">{provider}</Badge>
-          <LivenessBadge health={account.health} />
-          {account.displayTier && (
-            <Badge variant="outline" className="text-[10px]">{account.displayTier}</Badge>
-          )}
-          <Badge variant="outline" className="text-[10px]">{account.authMode ?? "subscription"}</Badge>
-          {snap?.subscriptionType && (
-            <Badge variant="outline" className="text-[10px] uppercase">{snap.subscriptionType}</Badge>
-          )}
-          {isDefault ? (
-            <Badge className="gap-1 text-[10px]">
-              <StarIcon className="size-3" /> default
-            </Badge>
-          ) : (
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={makeDefault}>
-              Make default
-            </Button>
-          )}
-          <div className="ml-auto flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 gap-1 text-xs"
-              onClick={() => setShowLogin((s) => !s)}
-            >
-              <LogInIcon className="size-3" /> Log in
-            </Button>
-            <Button variant="ghost" size="icon-sm" onClick={remove} aria-label="Remove account">
-              <Trash2Icon className="size-3.5" />
-            </Button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-          {hint ? (
-            <span className="font-mono text-muted-foreground">{hint}</span>
-          ) : (
-            <span className="text-muted-foreground">No usage captured yet — refresh to fetch it.</span>
-          )}
-          {account.configDir && (
-            <span
-              className="ml-auto truncate font-mono text-[10px] text-muted-foreground/70"
-              title={account.configDir}
-            >
-              {account.configDir}
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-muted-foreground">Plan label</label>
-          <Input
-            value={tier}
-            onChange={(e) => setTier(e.target.value)}
-            onBlur={() =>
-              tier !== (account.displayTier ?? "") && save({ displayTier: tier || undefined })
-            }
-            placeholder="e.g. 20x"
-            className="h-7 w-24 text-xs"
-          />
-        </div>
-
-        {showLogin && (
-          <LoginPanel account={account} onDone={onChanged} onClose={() => setShowLogin(false)} />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function AddAccount({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("");
-  const [provider, setProvider] = useState<Provider>("claude");
-  const [authMode, setAuthMode] = useState<AuthMode>("subscription");
+  const [provider, setProvider] = useState<"claude" | "codex">("claude");
   const [configDir, setConfigDir] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -473,12 +129,17 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
     const r = await fetch("/api/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, provider, authMode, configDir: configDir || undefined }),
+      body: JSON.stringify({
+        name,
+        provider,
+        authMode: "subscription",
+        configDir: configDir.trim() || undefined,
+      }),
     });
     setBusy(false);
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      setErr(d.error ?? "Failed to add account.");
+      setErr(d.error ?? "Failed to add the instance.");
       return;
     }
     setName("");
@@ -489,44 +150,51 @@ function AddAccount({ onAdded }: { onAdded: () => void }) {
   return (
     <Card size="sm">
       <CardContent className="space-y-3 p-4">
-        <div className="text-sm font-medium">Add account</div>
-        <div className="grid gap-2 sm:grid-cols-4">
+        <div className="text-sm font-medium">Add an existing login</div>
+        <p className="text-xs text-muted-foreground">
+          Point Telar at a config folder you have already signed in with:
+          <code className="mx-1 font-mono text-[11px]">
+            CLAUDE_CONFIG_DIR=~/.claude-work claude auth login
+          </code>
+          first, then add it here.
+        </p>
+        <div className="grid gap-2 sm:grid-cols-3">
           <Input
-            placeholder="name"
+            placeholder="key, e.g. work"
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="h-8 text-xs"
           />
-          <Select value={provider} onValueChange={(v) => v && setProvider(String(v) as Provider)}>
+          <Select
+            value={provider}
+            onValueChange={(v) => v && setProvider(String(v) as "claude" | "codex")}
+          >
             <SelectTrigger className="h-8 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="claude">claude</SelectItem>
-              <SelectItem value="codex">codex</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={authMode} onValueChange={(v) => v && setAuthMode(String(v) as AuthMode)}>
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="subscription">subscription</SelectItem>
-              <SelectItem value="oauth-token">oauth-token</SelectItem>
-              <SelectItem value="api-key">api-key</SelectItem>
+              <SelectItem value="codex" disabled={hasCodex}>
+                codex{hasCodex ? " (one account only)" : ""}
+              </SelectItem>
             </SelectContent>
           </Select>
           <Input
-            placeholder="config dir (optional)"
+            placeholder="~/.claude-work"
             value={configDir}
             onChange={(e) => setConfigDir(e.target.value)}
-            className="h-8 text-xs"
+            className="h-8 font-mono text-xs"
           />
         </div>
         {err && <p className="text-xs text-destructive">{err}</p>}
-        <Button size="sm" onClick={submit} disabled={!name.trim() || busy}>
-          <PlusIcon className="size-3.5" /> Add
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={submit} disabled={!name.trim() || busy}>
+            <PlusIcon className="size-3.5" /> Add
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
@@ -536,102 +204,298 @@ const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Preferences" },
   { id: "agent", label: "Agent defaults", icon: SparklesIcon, group: "Preferences" },
   { id: "notifications", label: "Notifications", icon: BellIcon, group: "Preferences" },
-  { id: "accounts", label: "Accounts", icon: KeyRoundIcon, group: "Provider" },
+  { id: "providers", label: "Providers", icon: PlugIcon, group: "Provider" },
   { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
   { id: "doctor", label: "Doctor", icon: StethoscopeIcon, group: "Machine" },
 ];
 
-// The top-level Settings surface. Two families of section: device-local UI
-// PREFERENCES (appearance, new-session agent defaults, notifications) backed by
-// the ui-prefs store, and PROVIDER config (accounts + plan usage) backed by the
-// account registry. Every control takes real effect — the Loom Doctrine forbids
-// placebo switches, and forbids any of these UI prefs from becoming engine
-// behavior (nothing here writes telar.yaml / .telar or an engine env).
+// Legacy deep-links (/settings#accounts) still land somewhere sensible.
+const SECTION_ALIASES: Record<string, string> = { accounts: "providers" };
+
 export function GeneralSettings() {
   const [active, setActive] = useState("appearance");
+  const prefs = useUiPrefs();
 
   // Open a specific section when linked with a hash (e.g. /settings#doctor from
   // the dashboard first-run card). Done in an effect (not the initializer) so
   // the SSR and first client render agree — no hydration mismatch.
   useEffect(() => {
     const h = window.location.hash.slice(1);
-    if (SECTIONS.some((s) => s.id === h)) setActive(h);
+    const target = SECTION_ALIASES[h] ?? h;
+    if (SECTIONS.some((s) => s.id === target)) setActive(target);
   }, []);
-  const [accounts, setAccounts] = useState<AccountWithHealth[]>([]);
+
+  const [accounts, setAccounts] = useState<AccountWire[]>([]);
   const [defaultAccount, setDefaultAccount] = useState("personal");
   const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [proxy, setProxy] = useState<ProxyStatusWire | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Why an account has no usage figure, keyed by account name — returned by the
+  // refresh so the Usage tab can say "no source" instead of showing a blank.
+  const [unavailable, setUnavailable] = useState<Record<string, string>>({});
+  const [detecting, setDetecting] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [rowError, setRowError] = useState<Record<string, string | null>>({});
 
   const load = useCallback(async () => {
-    const [a, u] = await Promise.all([
+    const [a, u, p, x] = await Promise.all([
       fetch("/api/accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetch("/api/usage").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/providers").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/proxy").then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]);
     if (a) {
       setAccounts(a.accounts ?? []);
       setDefaultAccount(a.default ?? "personal");
     }
     if (u) setPlan(u.plan ?? {});
+    if (p) setProviders(p.providers ?? []);
+    if (x) setProxy(x.proxy ?? null);
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const refresh = async () => {
+  const refreshUsage = async () => {
     setRefreshing(true);
-    await fetch("/api/usage/refresh", { method: "POST" }).catch(() => {});
+    const r = await fetch("/api/usage/refresh", { method: "POST" })
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null);
+    setUnavailable(r?.unavailable ?? {});
     await load();
     setRefreshing(false);
     window.dispatchEvent(new Event("telar:refresh"));
   };
 
-  const sections = SECTIONS.map((s) =>
-    s.id === "accounts" ? { ...s, count: accounts.length || undefined } : s,
-  );
+  // Re-detect: one `--version` per provider, plus whatever plan the latest
+  // usage snapshot knows. Cheap enough to be a button, too costly to be a poll
+  // the user didn't ask for — hence the interval control below, default 5m.
+  const redetect = useCallback(async () => {
+    setDetecting(true);
+    const r = await fetch("/api/providers", { method: "POST" })
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null);
+    if (r) setProviders(r.providers ?? []);
+    setDetecting(false);
+  }, []);
 
-  const metered = accounts.filter(
-    (a) => plan[a.name]?.fiveHour?.utilization != null || plan[a.name]?.sevenDay?.utilization != null,
+  // The interval takes effect exactly where the label says: while this page is
+  // open, on the Providers section. Zero disables it. No hidden background poll.
+  // `redetect` is a useCallback with no deps, so it is stable and can be a real
+  // dependency here — no ref needed to dodge the re-subscribe.
+  useEffect(() => {
+    const secs = prefs.providerCheckIntervalSec;
+    if (active !== "providers" || secs <= 0) return;
+    const id = setInterval(() => void redetect(), secs * 1000);
+    return () => clearInterval(id);
+  }, [active, prefs.providerCheckIntervalSec, redetect]);
+
+  const patchAccount = async (account: AccountWire, patch: Partial<AccountWire>) => {
+    setRowError((e) => ({ ...e, [account.name]: null }));
+    // The whole profile round-trips: the wire shape IS the profile plus
+    // server-computed extras, and the server ignores what it did not define.
+    const r = await fetch("/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...account, ...patch }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      setRowError((e) => ({ ...e, [account.name]: d.error ?? "That didn't work." }));
+      // Re-read so the UI shows what the server actually kept, not the rejected
+      // edit — otherwise a refused config dir lingers in the field as if saved.
+      await load();
+      return;
+    }
+    await load();
+  };
+
+  const makeDefault = async (name: string) => {
+    await fetch(`/api/accounts/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ makeDefault: true }),
+    }).catch(() => {});
+    await load();
+  };
+
+  const removeAccount = async (account: AccountWire) => {
+    if (!confirm(`Remove "${account.name}"? Its login on disk is left untouched.`)) return;
+    const r = await fetch(`/api/accounts/${encodeURIComponent(account.name)}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      setRowError((e) => ({ ...e, [account.name]: d.error ?? "Could not remove it." }));
+    }
+    await load();
+  };
+
+  const providerOf = (a: AccountWire) =>
+    providers.find((p) => p.provider === (a.provider ?? "claude"));
+
+  // Claude first, then Codex; within a provider the detected/base account leads.
+  const ordered = [...accounts].sort((a, b) => {
+    const pa = a.provider ?? "claude";
+    const pb = b.provider ?? "claude";
+    if (pa !== pb) return pa === "claude" ? -1 : 1;
+    if (Boolean(a.isMain) !== Boolean(b.isMain)) return a.isMain ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const lastChecked = providers.reduce<string | null>(
+    (latest, p) => (!latest || p.checkedAt > latest ? p.checkedAt : latest),
+    null,
+  );
+  const hasCodex = accounts.some((a) => (a.provider ?? "claude") === "codex");
+  // EVERY ENABLED ACCOUNT gets a row, whether or not it has usage.
+  //
+  // Two bugs lived in the old `accounts.filter(has-windows)`: it listed
+  // accounts the user had switched OFF (the sidebar hid them, this did not —
+  // so the two surfaces disagreed about how many accounts you have), and it
+  // silently omitted any account without a figure, which is indistinguishable
+  // from that account not existing. A missing number is now a stated reason.
+  const metered = accounts.filter((a) => a.enabled !== false);
+  const notInstalled = providers.filter((p) => !p.installed);
+
+  const sections = SECTIONS.map((s) =>
+    s.id === "providers" ? { ...s, count: accounts.length || undefined } : s,
   );
 
   return (
     <SettingsShell
       title="Settings"
-      subtitle="Appearance, agent defaults, notifications & accounts"
+      subtitle="Appearance, agent defaults, notifications & provider accounts"
       sections={sections}
       active={active}
       onSelect={setActive}
       headerActions={
-        (active === "accounts" || active === "usage") && (
-          <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
-            <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
-          </Button>
-        )
+        <>
+          {active === "providers" && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                last checked {fmtChecked(lastChecked)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAdding((v) => !v)}
+                aria-label="Add provider instance"
+              >
+                <PlusIcon />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={redetect}
+                disabled={detecting}
+                aria-label="Re-check providers"
+              >
+                <RotateCwIcon className={detecting ? "animate-spin" : ""} />
+              </Button>
+            </div>
+          )}
+          {active === "usage" && (
+            <Button variant="outline" size="sm" onClick={refreshUsage} disabled={refreshing}>
+              <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
+            </Button>
+          )}
+        </>
       }
     >
       {active === "appearance" && <AppearanceSettings />}
-
       {active === "agent" && <AgentDefaultsSettings />}
-
       {active === "notifications" && <NotificationsSettings />}
-
       {active === "doctor" && <DoctorSettings />}
 
-      {active === "accounts" && (
+      {active === "providers" && (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">
-            Provider logins and the default account. Tokens stay on disk — never in the registry.
+            Each row is one login. Telar runs the CLIs already on this machine and never signs you
+            in — the main Claude account is detected, and additional ones are config folders you
+            point it at. Tokens stay where the CLI put them.
           </p>
-          {accounts.map((a) => (
-            <AccountCard
-              key={a.name}
-              account={a}
-              snap={plan[a.name]}
-              isDefault={a.name === defaultAccount}
-              onChanged={load}
+
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">Re-check interval</div>
+              <div className="text-[11px] text-muted-foreground">
+                Automatically re-check versions and plans while this page is open. 0 = manual only.
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Input
+                type="number"
+                min={0}
+                step={30}
+                value={prefs.providerCheckIntervalSec}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (Number.isFinite(n) && n >= 0)
+                    setUiPrefs({ ...getUiPrefs(), providerCheckIntervalSec: Math.floor(n) });
+                }}
+                className="h-8 w-24 text-xs"
+              />
+              <span className="text-xs text-muted-foreground">seconds</span>
+            </div>
+          </div>
+
+          {notInstalled.length > 0 && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-muted-foreground">
+              {notInstalled.map((p) => p.label).join(" and ")}{" "}
+              {notInstalled.length > 1 ? "are" : "is"} not on this machine&apos;s PATH. Install the
+              CLI to use {notInstalled.length > 1 ? "those accounts" : "that account"}.
+            </div>
+          )}
+
+          <div className="divide-y rounded-xl border">
+            {ordered.map((a) => (
+              <ProviderInstanceRow
+                key={a.name}
+                account={a}
+                provider={providerOf(a)}
+                isDefault={a.name === defaultAccount}
+                expanded={Boolean(expanded[a.name])}
+                onToggleExpanded={(next) => setExpanded((e) => ({ ...e, [a.name]: next }))}
+                onPatch={(patch) => void patchAccount(a, patch)}
+                onMakeDefault={() => void makeDefault(a.name)}
+                onRemove={() => void removeAccount(a)}
+                error={rowError[a.name]}
+                proxyAvailable={Boolean(proxy?.enabled)}
+              />
+            ))}
+          </div>
+
+          {adding && (
+            <AddInstance
+              hasCodex={hasCodex}
+              onAdded={() => {
+                setAdding(false);
+                void load();
+              }}
+              onCancel={() => setAdding(false)}
             />
-          ))}
-          <AddAccount onAdded={load} />
+          )}
+
+          {proxy && (
+            <ProxyCard
+              proxy={proxy}
+              onSaved={setProxy}
+              adoptedPrefixes={accounts.flatMap((a) => (a.proxy?.prefix ? [a.proxy.prefix] : []))}
+              onAdopted={load}
+            />
+          )}
+
+          {hasCodex && (
+            <p className="text-[11px] text-muted-foreground/70">
+              Codex is limited to one account for now. <code className="font-mono">CODEX_HOME</code>{" "}
+              swaps its entire config tree — sessions and history along with auth — so a second
+              Codex login needs work Telar hasn&apos;t done yet.
+            </p>
+          )}
         </div>
       )}
 
@@ -644,8 +508,8 @@ export function GeneralSettings() {
             <EmptyState
               className="border-none py-10"
               icon={GaugeIcon}
-              title="No usage captured yet"
-              description="Refresh usage to fetch the 5-hour and weekly windows for each account."
+              title="No enabled accounts"
+              description="Switch an account on in Providers to see its plan limits here."
             />
           ) : (
             metered.map((a) => {
@@ -653,9 +517,14 @@ export function GeneralSettings() {
               return (
                 <div key={a.name} className="space-y-2 px-4 py-3">
                   <div className="flex items-center gap-2 text-sm">
-                    <span className="font-mono">{a.name}</span>
+                    <span className="font-mono">{a.displayName?.trim() || a.name}</span>
                     {a.displayTier && (
                       <Badge variant="outline" className="text-[10px]">{a.displayTier}</Badge>
+                    )}
+                    {snap?.subscriptionType && (
+                      <Badge variant="outline" className="text-[10px] uppercase">
+                        {snap.subscriptionType}
+                      </Badge>
                     )}
                     {a.name === defaultAccount && (
                       <Badge className="gap-1 text-[10px]">
@@ -663,8 +532,29 @@ export function GeneralSettings() {
                       </Badge>
                     )}
                   </div>
-                  <LimitMeter label="5-hour" w={snap?.fiveHour} />
-                  <LimitMeter label="Weekly" w={snap?.sevenDay} />
+                  {/* One meter per window the provider actually reports, named
+                      by its real duration. A Codex account today shows a single
+                      weekly bar; if the 5-hour window returns, its bar returns
+                      with it and nothing here changes. */}
+                  {usedWindows(snap).map((row) => (
+                    <LimitMeter key={row.key} label={row.label} w={row.window} />
+                  ))}
+                  {/* No windows is a FACT with a reason, not an empty space. */}
+                  {usedWindows(snap).length === 0 && (
+                    <p className="text-[11px] text-muted-foreground/70">
+                      {unavailable[a.name] ??
+                        "No usage captured yet — refresh to fetch it."}
+                    </p>
+                  )}
+                  {snap?.credits?.hasCredits && (
+                    <p className="text-[11px] text-muted-foreground/70">
+                      credits:{" "}
+                      {snap.credits.unlimited ? "unlimited" : (snap.credits.balance ?? "—")}
+                    </p>
+                  )}
+                  {snap?.modelScoped?.map((w) => (
+                    <LimitMeter key={w.display_name} label={`Weekly · ${w.display_name}`} w={w} />
+                  ))}
                 </div>
               );
             })

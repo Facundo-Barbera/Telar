@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import type { Loom, WorkUnitState } from "@telar/core";
 import { useAccounts } from "@/lib/use-accounts";
+import { planRings, RING_RADII, usedWindows } from "@/lib/plan-window";
 import {
   Sidebar,
   SidebarContent,
@@ -52,7 +53,14 @@ const RECENTS_LIMIT = 6;
 const PINNED_KEY = "telar:pinned-projects";
 const WHEEL_ORDER_KEY = "telar:account-wheel-order";
 
-type PlanWindow = { utilization: number | null; resets_at: string | null };
+// Mirrors lib/store's PlanWindow (declared locally so this client bundle never
+// pulls in the fs-backed store). windowMinutes is what lets a meter name itself
+// after the window it really is — see lib/plan-window.ts.
+type PlanWindow = {
+  utilization: number | null;
+  resets_at: string | null;
+  windowMinutes?: number | null;
+};
 
 type PlanSnapshot = {
   capturedAt: number;
@@ -187,24 +195,35 @@ function dotClass(p: number | null): string {
   return "bg-primary";
 }
 
-// ── plan-usage wheel (production PlanRing visuals, kept exact) ──────────────
-// Outer ring = 5h session, inner ring = weekly. Null windows draw only the
-// faint track (no arc) — the app renders before the first probe lands.
+// ── plan-usage wheel ────────────────────────────────────────────────────────
+// ONE RING PER WINDOW THAT EXISTS, outermost first (geometry in
+// lib/plan-window.ts). Two windows keeps the original anatomy exactly: session
+// outside, weekly inside. One window — which is every Codex account since the
+// 5-hour limit was removed in July 2026 — draws that window on the OUTER circle
+// alone, with no inner ring and no inner track. The inner track used to be
+// drawn unconditionally, so a weekly-only account rendered a permanent empty
+// circle inside its meter: a hole that reads as "0% of something" when in fact
+// there is no second window to be at 0% of.
 function AccountWheel({
   five,
   week,
+  accent,
 }: {
   five: number | null;
   week: number | null;
+  // When set, the arcs use the account's own colour instead of the
+  // utilization tone — EXCEPT past 70%, where the warning still wins: a
+  // cosmetic preference must never hide an almost-exhausted window.
+  accent?: string;
 }) {
   const size = 30,
     cxy = size / 2,
-    sw = 3,
-    rOut = 12,
-    rIn = 7;
+    sw = 3;
+  const rings = planRings(five, week);
+  // Before the first probe lands there are no windows at all — draw the outer
+  // track alone so the widget keeps its footprint instead of collapsing.
+  const tracks = rings.length ? rings.map((r) => r.radius) : [RING_RADII[0]];
   const circ = (r: number) => 2 * Math.PI * r;
-  const off = (r: number, p: number | null) =>
-    circ(r) * (1 - Math.min(100, p ?? 0) / 100);
   return (
     <svg
       width={size}
@@ -213,34 +232,32 @@ function AccountWheel({
       className="-rotate-90 shrink-0"
       aria-hidden
     >
-      <circle cx={cxy} cy={cxy} r={rOut} fill="none" strokeWidth={sw} className="stroke-sidebar-foreground/10" />
-      <circle cx={cxy} cy={cxy} r={rIn} fill="none" strokeWidth={sw} className="stroke-sidebar-foreground/10" />
-      {five != null && (
+      {tracks.map((r) => (
         <circle
+          key={`track-${r}`}
           cx={cxy}
           cy={cxy}
-          r={rOut}
+          r={r}
+          fill="none"
+          strokeWidth={sw}
+          className="stroke-sidebar-foreground/10"
+        />
+      ))}
+      {rings.map((ring) => (
+        <circle
+          key={ring.key}
+          cx={cxy}
+          cy={cxy}
+          r={ring.radius}
           fill="none"
           strokeWidth={sw}
           strokeLinecap="round"
-          strokeDasharray={circ(rOut)}
-          strokeDashoffset={off(rOut, five)}
-          className={ringTone(five)}
+          strokeDasharray={circ(ring.radius)}
+          strokeDashoffset={circ(ring.radius) * (1 - Math.min(100, ring.pct) / 100)}
+          className={accent && ring.pct < 70 ? undefined : ringTone(ring.pct)}
+          style={accent && ring.pct < 70 ? { stroke: accent } : undefined}
         />
-      )}
-      {week != null && (
-        <circle
-          cx={cxy}
-          cy={cxy}
-          r={rIn}
-          fill="none"
-          strokeWidth={sw}
-          strokeLinecap="round"
-          strokeDasharray={circ(rIn)}
-          strokeDashoffset={off(rIn, week)}
-          className={ringTone(week)}
-        />
-      )}
+      ))}
     </svg>
   );
 }
@@ -288,11 +305,22 @@ const useIsoLayoutEffect =
 
 type WheelAccount = {
   name: string;
+  // What the user called this account in settings, falling back to its key.
+  label: string;
+  // Routed through the CLIProxyAPI gateway. Shown because two accounts can
+  // differ only by case ("codex" vs "Codex"), and which one is proxied is not
+  // otherwise visible anywhere in the sidebar.
+  proxied?: boolean;
+  // No plan usage EXISTS for this account, as opposed to none fetched yet.
+  unavailable?: boolean;
+  // Per-account swatch from settings. Tints the ring so two accounts are
+  // distinguishable at a glance rather than only by position in the row.
+  accent?: string;
   subscription: string | null;
   tier?: string;
   five: number | null;
   week: number | null;
-  snap: PlanSnapshot;
+  snap: PlanSnapshot | null;
 };
 
 function WheelTip({
@@ -373,7 +401,15 @@ function WheelTip({
         >
           <div className="w-max rounded-md border border-border bg-popover px-2.5 py-2 text-popover-foreground shadow-md">
             <div className="mb-1 flex items-center gap-1.5 font-mono text-xs font-medium">
-              {account.name}
+              {account.label}
+              {account.proxied && (
+                <span
+                  className="rounded bg-muted px-1 text-[9px] text-muted-foreground"
+                  title="Routed through the CLIProxyAPI gateway"
+                >
+                  proxied
+                </span>
+              )}
               {account.subscription && (
                 <span className="rounded bg-muted px-1 text-[9px] uppercase text-muted-foreground">
                   {account.subscription}
@@ -383,17 +419,34 @@ function WheelTip({
                 <span className="text-[9px] text-muted-foreground">{account.tier}</span>
               )}
             </div>
+            {/* Rows come from usedWindows so each one is named by the window it
+                actually is — a Codex account today lists "Weekly" and nothing
+                else, rather than a "5-hour session" row holding weekly data.
+                An account with NO windows says why, because an empty tooltip
+                over an empty ring is the reading that produces "0% used". */}
             <div className="space-y-1 text-[11px] text-muted-foreground">
-              {snap.fiveHour && <TipStat label="5-hour session" window={snap.fiveHour} />}
-              {snap.sevenDay && <TipStat label="Weekly · all" window={snap.sevenDay} />}
-              {snap.sevenDayOpus && <TipStat label="Weekly · Opus" window={snap.sevenDayOpus} />}
-              {snap.sevenDaySonnet && <TipStat label="Weekly · Sonnet" window={snap.sevenDaySonnet} />}
-              {snap.modelScoped?.map((w) => (
+              {account.unavailable && (
+                <div className="text-[10px] leading-snug text-muted-foreground/80">
+                  Routed through CLIProxyAPI, which doesn&apos;t report plan limits — so there is
+                  no usage figure for this account, not a figure of zero.
+                </div>
+              )}
+              {!account.unavailable && usedWindows(snap).length === 0 && (
+                <div className="text-[10px] text-muted-foreground/70">
+                  No usage captured yet — refresh to fetch it.
+                </div>
+              )}
+              {usedWindows(snap).map((row) => (
+                <TipStat key={row.key} label={row.label} window={row.window} />
+              ))}
+              {snap?.modelScoped?.map((w) => (
                 <TipStat key={w.display_name} label={`Weekly · ${w.display_name}`} window={w} />
               ))}
-              {snap.fiveHour?.resets_at && (
+              {/* The reset of the FIRST real window. Reading it off fiveHour
+                  meant a weekly-only account showed no reset time at all. */}
+              {usedWindows(snap)[0]?.window.resets_at && (
                 <div className="pt-0.5 font-mono text-[9px] text-muted-foreground/70">
-                  resets {fmtReset(snap.fiveHour.resets_at)}
+                  resets {fmtReset(usedWindows(snap)[0].window.resets_at)}
                 </div>
               )}
             </div>
@@ -489,13 +542,13 @@ function CompactStrip({
               <DropBar axis="x" show={showBar} />
               <div
                 {...bind(name)}
-                aria-label={`${a.name} plan usage — drag to reorder`}
+                aria-label={`${a.label} plan usage — drag to reorder`}
                 className={`flex cursor-grab items-center justify-center rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                   dragging ? "opacity-40" : ""
                 }`}
               >
                 <WheelTip account={a} dragActive={drag.drag != null} side="top">
-                  <AccountWheel five={a.five} week={a.week} />
+                  <AccountWheel five={a.five} week={a.week} accent={a.accent} />
                 </WheelTip>
               </div>
             </div>
@@ -534,19 +587,19 @@ function ExpandedRow({
       <DropBar axis="y" show={showBar} />
       <div
         {...bind}
-        aria-label={`${account.name} plan usage — drag to reorder`}
+        aria-label={`${account.label} plan usage — drag to reorder`}
         className={`group/row flex cursor-grab items-center gap-2 rounded-md px-1 py-1 transition active:cursor-grabbing hover:bg-sidebar-accent ${
           dragging ? "opacity-40" : ""
         }`}
       >
         <GripVerticalIcon className="size-3.5 shrink-0 text-sidebar-foreground/30 transition-colors group-hover/row:text-sidebar-foreground/60" />
         <WheelTip account={account} dragActive={dragActive} side="top">
-          <AccountWheel five={account.five} week={account.week} />
+          <AccountWheel five={account.five} week={account.week} accent={account.accent} />
         </WheelTip>
         <div className="flex min-w-0 flex-col">
           <span className="flex items-center gap-1.5">
             <span className="truncate font-mono text-xs text-sidebar-foreground/70">
-              {account.name}
+              {account.label}
             </span>
             {account.subscription && (
               <span className="shrink-0 rounded bg-sidebar-accent px-1 font-mono text-[9px] uppercase text-sidebar-accent-foreground">
@@ -661,13 +714,13 @@ function RailWheels({
             <DropBar axis="y" show={drag.drag != null && drag.over === name && !dragging} />
             <div
               {...bind(name)}
-              aria-label={`${a.name} plan usage — drag to reorder`}
+              aria-label={`${a.label} plan usage — drag to reorder`}
               className={`group/wheel relative flex cursor-grab items-center justify-center rounded-full p-0.5 transition active:cursor-grabbing hover:bg-sidebar-accent ${
                 dragging ? "opacity-40" : ""
               }`}
             >
               <WheelTip account={a} dragActive={drag.drag != null} side="right">
-                <AccountWheel five={a.five} week={a.week} />
+                <AccountWheel five={a.five} week={a.week} accent={a.accent} />
               </WheelTip>
             </div>
           </div>
@@ -917,7 +970,7 @@ function TelarSidebarHeader() {
 
 function SidebarBody() {
   const { accounts } = useAccounts();
-  const tierOf = (name: string) => accounts.find((a) => a.name === name)?.displayTier;
+  const profileOf = (name: string) => accounts.find((a) => a.name === name);
 
   const [looms, setLooms] = useState<Loom[]>([]);
   const [chats, setChats] = useState<ChatMeta[]>([]);
@@ -1060,24 +1113,50 @@ function SidebarBody() {
     setPinnedNames(cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]);
   };
 
-  // Wheels: one per account that has a captured snapshot, personal first by
-  // default; user-chosen order persisted and reconciled against the live set.
-  const planEntries = Object.entries(plan).sort(([a], [b]) =>
-    a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
-  );
+  // ONE WHEEL PER ACCOUNT, not per usage snapshot.
+  //
+  // It used to be the other way round — the wheels were built by walking the
+  // usage file — and that got the ownership backwards twice over. A snapshot
+  // could outlive its account and keep rendering a meter for something that no
+  // longer existed; and an account with no snapshot rendered nothing at all,
+  // which is indistinguishable from having no account. Both are the same
+  // mistake: letting the DATA decide which accounts exist, when the registry is
+  // what knows.
+  //
+  // So the account list drives it, and a missing snapshot becomes a visible,
+  // explained state rather than an absence. That matters most for a
+  // gateway-routed Claude account, which can never have one: CLIProxyAPI does
+  // not forward Anthropic's rate-limit state, so its ring is permanently empty
+  // and saying so is the only honest rendering.
   const wheelAccounts = new Map<string, WheelAccount>(
-    planEntries.map(([name, snap]) => [
-      name,
-      {
-        name,
-        subscription: snap.subscriptionType,
-        tier: tierOf(name),
-        five: snap.fiveHour?.utilization ?? null,
-        week: snap.sevenDay?.utilization ?? null,
-        snap,
-      },
-    ]),
+    accounts
+      .map((a) => a.name)
+      .sort((x, y) => (x === "personal" ? -1 : y === "personal" ? 1 : x.localeCompare(y)))
+      .map((name) => {
+        const profile = profileOf(name);
+        const snap = plan[name];
+        const proxied = Boolean(profile?.proxy);
+        return [
+          name,
+          {
+            name,
+            label: profile?.displayName?.trim() || name,
+            accent: profile?.accentColor,
+            proxied,
+            // Stated rather than left blank: a routed Claude account has no
+            // plan usage to report, and an empty ring with no explanation reads
+            // as 0% used.
+            unavailable: proxied && (profile?.provider ?? "claude") === "claude",
+            subscription: snap?.subscriptionType ?? null,
+            tier: profile?.displayTier,
+            five: snap?.fiveHour?.utilization ?? null,
+            week: snap?.sevenDay?.utilization ?? null,
+            snap: snap ?? null,
+          },
+        ];
+      }),
   );
+  const planEntries = [...wheelAccounts.entries()];
   const wheelOrder = reconcile(storedOrder ?? [], planEntries.map(([n]) => n));
 
   return (

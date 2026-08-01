@@ -669,3 +669,38 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
     }
   });
 });
+
+// ── plan-usage lifecycle ────────────────────────────────────────────────────
+// A usage snapshot is keyed by account NAME in a file that core's account
+// registry does not own. Nothing tied the two together, so removing an account
+// left its snapshot behind — and the sidebar draws one usage wheel per key in
+// this file, so the removed account kept a meter on screen that could never be
+// refreshed or removed. Measured on a real state root: registry held
+// [personal, codex] while plan-usage held [personal, work, codex].
+describe("deletePlanUsage — a snapshot must not outlive its account", () => {
+  test("drops only the named account's snapshot", () => {
+    store.savePlanUsage("personal", { subscriptionType: "max" });
+    store.savePlanUsage("work", { subscriptionType: "max" });
+    store.savePlanUsage("codex", { subscriptionType: "prolite" });
+    expect(Object.keys(store.readPlanUsage()).sort()).toEqual(["codex", "personal", "work"]);
+
+    expect(store.deletePlanUsage("work")).toBe(true);
+    expect(Object.keys(store.readPlanUsage()).sort()).toEqual(["codex", "personal"]);
+    // The survivors keep their data, not just their keys.
+    expect(store.readPlanUsage().personal.subscriptionType).toBe("max");
+    expect(store.readPlanUsage().codex.subscriptionType).toBe("prolite");
+  });
+
+  test("removing an absent account is false, not a throw", () => {
+    expect(store.deletePlanUsage("never-existed")).toBe(false);
+  });
+
+  test("the deletion survives a re-read (it is persisted, not in-memory)", () => {
+    store.savePlanUsage("ephemeral", { subscriptionType: "pro" });
+    store.deletePlanUsage("ephemeral");
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(process.env.TELAR_HOME as string, "plan-usage.json"), "utf8"),
+    );
+    expect("ephemeral" in onDisk).toBe(false);
+  });
+});

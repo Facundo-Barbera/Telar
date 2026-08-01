@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { Loom, ProjectManifest, RegistryEntry } from "@telar/core";
 import { cn } from "@/lib/utils";
+import { usedWindows } from "@/lib/plan-window";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
@@ -33,7 +34,11 @@ import { fmtAgo, fmtCost } from "@/lib/format";
 
 // Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
 // dashboard (a client component) never pulls the fs-backed store into the bundle.
-type PlanWindow = { utilization: number | null; resets_at: string | null };
+type PlanWindow = {
+  utilization: number | null;
+  resets_at: string | null;
+  windowMinutes?: number | null;
+};
 type PlanSnapshot = {
   capturedAt: number;
   subscriptionType: string | null;
@@ -343,7 +348,11 @@ export default function DashboardPage() {
     a === "personal" ? -1 : b === "personal" ? 1 : a.localeCompare(b),
   );
   const primaryPlan = planEntries[0]?.[1];
-  const weeklyWindow = primaryPlan?.sevenDayOpus ?? primaryPlan?.sevenDay;
+  // One meter per window the account actually reports, each named after the
+  // window it really is. The old pair of hardcoded "Session · 5h" + "Weekly"
+  // rows showed a 5-hour label over weekly data on any Codex account, and went
+  // blank entirely when only one window came back.
+  const planMeters = usedWindows(primaryPlan);
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
@@ -470,16 +479,10 @@ export default function DashboardPage() {
                 <div className="col-span-2 flex flex-col justify-center gap-2 rounded-xl border border-border bg-card px-3.5 py-3 text-card-foreground sm:col-span-1">
                   {primaryPlan ? (
                     <>
-                      {primaryPlan.fiveHour && (
-                        <UsageMeter
-                          label="Session · 5h"
-                          window={primaryPlan.fiveHour}
-                        />
-                      )}
-                      {weeklyWindow && (
-                        <UsageMeter label="Weekly" window={weeklyWindow} />
-                      )}
-                      {!primaryPlan.fiveHour && !weeklyWindow && (
+                      {planMeters.map((row) => (
+                        <UsageMeter key={row.key} label={row.label} window={row.window} />
+                      ))}
+                      {planMeters.length === 0 && (
                         <p className="text-xs text-muted-foreground">
                           Plan usage appears after your first turn.
                         </p>

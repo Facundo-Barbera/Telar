@@ -16,9 +16,8 @@ import {
   listAccounts,
   accountHealth,
   getDefaultAccountName,
-  providerOf,
+  signInCommand,
   telarDir,
-  type AccountProfile,
   type AccountHealthStatus,
 } from "@telar/core";
 
@@ -137,15 +136,11 @@ async function ghAuthCheck(ghPresent: boolean): Promise<DoctorCheck> {
   }
 }
 
-// ---- provider accounts (reuse core accountHealth + a login remedy) --------
-// The exact command to log this account in. Mirrors the Accounts tab: we hand
-// the user the interactive login command rather than driving OAuth ourselves.
-function loginHint(a: AccountProfile): string {
-  const d = providerOf(a.provider);
-  const cmd = `${a.provider ?? "claude"} ${d.loginArgs.join(" ")}`;
-  return a.configDir ? `${d.configDirEnv}="${a.configDir}" ${cmd}` : cmd;
-}
-
+// ---- provider accounts (reuse core accountHealth + a sign-in remedy) ------
+// The remedy is core's signInCommand — the same string the Accounts surface and
+// the chat preflight hand over — because Telar tells the user how to sign in
+// and never does it for them.
+//
 // accountHealth's four states → doctor severity. "unknown" is deliberately a
 // warn, not a fail: a base/keychain login simply can't be proven from disk, so
 // we say "can't verify" honestly instead of faking a green check or alarming.
@@ -169,7 +164,7 @@ function accountChecks(): DoctorCheck[] {
       status,
       detail: health.detail,
       // A remedy only when a login is genuinely absent — not for "unknown".
-      remedy: status === "fail" ? loginHint(a) : undefined,
+      remedy: status === "fail" ? signInCommand(a) : undefined,
     };
   });
 }

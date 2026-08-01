@@ -4,10 +4,13 @@ import {
   accountHealth,
   getAccount,
   listAccounts,
+  proxyUsageForAccounts,
+  upsertAccount,
   type AccountProfile,
 } from "@telar/core";
 import os from "os";
 import {
+  deletePlanUsage,
   readPlanUsage,
   savePlanUsage,
   type PlanSnapshot,
@@ -125,7 +128,22 @@ export async function POST(req: Request) {
   // init timeout fires. Health tells us that up front, for free.
   const errors: Record<string, string> = {};
   const skipped: Record<string, string> = {};
+  // Accounts whose usage CANNOT be known, as opposed to merely not fetched yet.
+  // A distinct outcome from `skipped`, and reported separately, because the UI
+  // must be able to say "no figure exists" rather than leaving a blank that
+  // reads as zero.
+  const unavailable: Record<string, string> = {};
+  const routed: AccountProfile[] = [];
   for (const profile of profiles) {
+    // A GATEWAY-ROUTED ACCOUNT gets its usage from the PROVIDER, asked through
+    // the gateway as that credential (proxyUsageForAccounts). The local probes
+    // cannot work for it — the SDK handshake terminates at the proxy — so it is
+    // skipped here and handled in one batch below, which also keeps the number
+    // of management calls proportional to accounts rather than to probes.
+    if (profile.proxy) {
+      routed.push(profile);
+      continue;
+    }
     const health = accountHealth(profile);
     if (health.status === "missing-config-dir" || health.status === "never-logged-in") {
       skipped[profile.name] = `Not logged in on this machine — ${health.detail}`;
@@ -144,9 +162,40 @@ export async function POST(req: Request) {
     }
   }
 
+  // Gateway-routed accounts, in one batch. Any credential mapping discovered
+  // along the way is written back to the account so the discovery — several
+  // management calls against a hardcoded lockout — happens once, not per refresh.
+  if (routed.length > 0) {
+    const { usage, resolved, errors: routedErrors } = await proxyUsageForAccounts(
+      routed.map((p) => ({ name: p.name, prefix: p.proxy?.prefix, upstream: p.proxy?.upstream })),
+    );
+    for (const [name, upstream] of Object.entries(resolved)) {
+      const profile = routed.find((p) => p.name === name);
+      if (profile) upsertAccount({ ...profile, proxy: { ...profile.proxy, upstream } });
+    }
+    for (const profile of routed) {
+      const got = usage[profile.name];
+      if (got) {
+        savePlanUsage(profile.name, {
+          ...got.windows,
+          // Only overwrite the plan label when the provider actually stated one:
+          // Anthropic's usage endpoint returns none, and passing null through a
+          // merging write would erase a label another source already resolved.
+          ...(got.planType ? { subscriptionType: got.planType } : {}),
+          ...(got.credits ? { credits: got.credits } : {}),
+        });
+      } else {
+        // No figure obtained — clear rather than leave a stale one standing in.
+        deletePlanUsage(profile.name);
+        unavailable[profile.name] = routedErrors[profile.name] ?? "No usage returned for this account.";
+      }
+    }
+  }
+
   return Response.json({
     plan: readPlanUsage(),
     ...(Object.keys(errors).length ? { errors } : {}),
     ...(Object.keys(skipped).length ? { skipped } : {}),
+    ...(Object.keys(unavailable).length ? { unavailable } : {}),
   });
 }

@@ -19,6 +19,7 @@ import {
   resolveSessionKind,
   resolveSessionProfile,
   sessionRoleFromWire,
+  signInCommand,
   unmetCapabilities,
   type AccountProfile,
   type ProjectManifest,
@@ -111,16 +112,6 @@ import "@/lib/session-profiles";
 
 const toIso = (epoch?: number) =>
   epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
-
-// The exact terminal command to log an account in, mirroring the Accounts UI's
-// hint. Provider-neutral via the descriptor (config-dir env + login argv), so
-// the preflight's "not logged in" 4xx tells the user precisely what to run.
-function loginHint(account: AccountProfile): string {
-  const d = providerOf(account.provider);
-  const bin = d.id === "codex" ? "codex" : "claude";
-  const cmd = `${bin} ${d.loginArgs.join(" ")}`.trim();
-  return account.configDir ? `${d.configDirEnv}="${account.configDir}" ${cmd}` : cmd;
-}
 
 // Hard ceiling on how many tool calls a single turn persists with full
 // input/output detail. capToolInput/capToolOutput bound each part's own
@@ -323,7 +314,7 @@ export async function POST(req: Request) {
   if (health.status === "missing-config-dir" || health.status === "never-logged-in") {
     return Response.json(
       {
-        error: `Account "${profile.name}" is not logged in on this machine — run ${loginHint(profile)}`,
+        error: `Account "${profile.name}" is not logged in on this machine — run ${signInCommand(profile)}`,
       },
       { status: 400 },
     );

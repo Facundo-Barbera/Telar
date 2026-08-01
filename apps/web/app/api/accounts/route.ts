@@ -3,18 +3,41 @@ import {
   AccountProfile,
   accountHealth,
   getDefaultAccountName,
+  isMainAccount,
   listAccounts,
+  readAccountIdentity,
+  signInCommand,
   upsertAccount,
 } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
-// The registry holds no secrets (tokens live in credentials.json), so the whole
-// profile list is safe to hand to the local UI. Each account is enriched with
-// its on-disk liveness (accountHealth) so the UI can show a real Logged-in /
-// Not-on-this-machine / Unknown badge instead of guessing.
+// One account = one provider instance. The registry holds no secrets (tokens
+// live in credentials.json), so the profile list is safe to hand to the local
+// UI — with one exception handled below: a SENSITIVE env var's value never
+// leaves the server. Each account is enriched with
+//   · health   — on-disk liveness (accountHealth), the status dot
+//   · isMain   — the one account Telar detects rather than the user adding
+//   · identity — who is signed in, read from Claude's .claude.json profile
+//                block (a config file, never a credential)
+//   · signInHint — the command to run in a terminal if it isn't signed in
 export async function GET() {
-  const accounts = listAccounts().map((a) => ({ ...a, health: accountHealth(a) }));
+  const accounts = listAccounts().map((a) => ({
+    ...a,
+    // A sensitive value is replaced by a marker, so the client can render "set"
+    // without ever receiving it. Round-tripping this shape back through POST is
+    // safe: an empty sensitive value means "keep what's stored" (accounts.ts).
+    env: a.env?.map((v) =>
+      v.sensitive ? { ...v, value: "", valueRedacted: true } : { ...v, valueRedacted: false },
+    ),
+    health: accountHealth(a),
+    isMain: isMainAccount(a),
+    identity: readAccountIdentity(a),
+    // Computed here, not in the component: the provider descriptor is core
+    // (server) code and the surface is a client component, so the command
+    // travels as a string rather than dragging core into the bundle.
+    signInHint: signInCommand(a),
+  }));
   return Response.json({ accounts, default: getDefaultAccountName() });
 }
 
@@ -34,5 +57,17 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  return Response.json({ account: upsertAccount(parsed.data) });
+  // upsertAccount enforces the adoption rules (a Claude account needs its own
+  // existing config folder, ~/.claude is reserved for the main login, Codex is
+  // single-account for now) and moves sensitive env values into the secret
+  // store. Those messages are written for the user, so they are handed back
+  // verbatim as a 400 rather than collapsed into a generic one.
+  try {
+    return Response.json({ account: upsertAccount(parsed.data) });
+  } catch (e) {
+    return Response.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      { status: 400 },
+    );
+  }
 }

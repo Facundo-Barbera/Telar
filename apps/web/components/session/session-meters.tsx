@@ -33,9 +33,9 @@
 // class utilities so the cards re-theme legibly.
 
 import { useState } from "react";
-import { GaugeIcon, UserRoundIcon } from "lucide-react";
+import { GaugeIcon, UserRoundIcon, WorkflowIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { fmtTokens } from "@/lib/format";
+import { fmtCost, fmtTokens } from "@/lib/format";
 import type { SpendReadout } from "@/lib/spend-readout";
 import { useAnchoredOverlay } from "@/lib/use-anchored-overlay";
 import { cn } from "@/lib/utils";
@@ -101,7 +101,30 @@ function LegendRow({
 // what the projection already decided. Before 4.1 it took `total: number`, and a
 // Codex session was HIDDEN at the call site rather than shown in its own
 // language — see spend-readout.ts's header for the measurement.
-export function CostPill({ readout }: { readout: SpendReadout }) {
+/** WHAT THE LEDGER CAN ACTUALLY ANSWER, and nothing beyond it. `UsageEntry`
+ *  carries `ownerKind` — `"session"` or `"ultra"` — so "this session's own
+ *  turns" and "each Ultra run this session launched" are genuinely attributable
+ *  and the two sets are disjoint (`usage-ledger.ts`). What is NOT attributable
+ *  is main-thread versus sub-agent: the SDK reports cost once per TURN, and a
+ *  turn that spawned six sub-agents reports one figure for all seven. So this
+ *  type has no `subagentUsd` field — inventing one would mean splitting a
+ *  number the engine never split, which is the fabrication NOT SOURCED ⇒ NOT
+ *  RENDERED exists to prevent. */
+export type SpendBreakdown = {
+  /** Total minus the Ultra runs below — this session's own turns, main thread
+   *  and its sub-agents together. */
+  sessionUsd: number;
+  /** One row per Ultra run this session launched, newest first. */
+  runs: readonly { runId: string; name: string; usd: number }[];
+};
+
+export function CostPill({
+  readout,
+  breakdown,
+}: {
+  readout: SpendReadout;
+  breakdown?: SpendBreakdown;
+}) {
   const { open, pinned, bind, toggle } = usePinnableHover();
   const { anchorRef, floatRef, style, ready } = useAnchoredOverlay<
     HTMLDivElement,
@@ -144,20 +167,46 @@ export function CostPill({ readout }: { readout: SpendReadout }) {
               </span>
               <span className="font-mono text-xs font-semibold">{readout.text}</span>
             </div>
-            <ul className="space-y-0.5">
-              <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
-                <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
-                {/* Story 4.1 / AC5 widened the source: this figure now folds the
-                    session's own rows AND the ultra rows its runs wrote, so
-                    "sub-agents" honestly includes a detached Ultra run's agents. */}
-                <span className="min-w-0 flex-1 truncate">Main + all sub-agents</span>
-                <span className="shrink-0 font-mono text-[11px]">{readout.text}</span>
-              </li>
-            </ul>
-            {/* The transcript carries one aggregate cost — per-sub-agent spend
-                isn't attributed yet. Reserved for that split once instrumented. */}
+            {/* THE BREAKDOWN IS BY OWNER, because owner is what the ledger
+                records. Absent breakdown (or a Codex session, which has no
+                Ultra surface and no USD at all) falls back to the single total
+                — the honest answer when there is nothing to decompose. */}
+            {readout.unit === "usd" && breakdown ? (
+              <ul className="space-y-0.5">
+                <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                  <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">This session's turns</span>
+                  <span className="shrink-0 font-mono text-[11px]">
+                    {fmtCost(breakdown.sessionUsd)}
+                  </span>
+                </li>
+                {breakdown.runs.map((r) => (
+                  <li
+                    key={r.runId}
+                    className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50"
+                  >
+                    <WorkflowIcon className="size-2.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{r.name}</span>
+                    <span className="shrink-0 font-mono text-[11px]">{fmtCost(r.usd)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <ul className="space-y-0.5">
+                <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
+                  <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">Everything this session spent</span>
+                  <span className="shrink-0 font-mono text-[11px]">{readout.text}</span>
+                </li>
+              </ul>
+            )}
+            {/* SAID PLAINLY, because the obvious next question is "which part of
+                that was the sub-agents": the engine never answers it. Cost
+                arrives once per turn, and a turn that spawned six sub-agents
+                reports one figure for all seven — so the split does not exist to
+                be shown, rather than existing and being withheld. */}
             <div className="mt-1.5 border-t border-border px-1.5 pt-1.5 text-[10px] text-muted-foreground/70">
-              per-sub-agent breakdown lands when spend is attributed
+              a turn&apos;s sub-agents bill with the turn — they have no separate figure
             </div>
           </div>
         </div>

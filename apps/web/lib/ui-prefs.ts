@@ -35,6 +35,11 @@ export type UiPrefs = {
     loomParked: boolean; // a loom parked and needs you
     loomReady: boolean; // a loom is ready to accept
   };
+  // Seconds between automatic provider re-checks while the Providers settings
+  // page is open. 0 = manual only. Detection spawns a subprocess per provider,
+  // so this is deliberately a visible cost the user sets, not a hidden poll —
+  // and it takes effect exactly where it says it does, nowhere else.
+  providerCheckIntervalSec: number;
 };
 
 // Production has always shipped dark; keep it the default so nothing flashes for
@@ -44,6 +49,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   defaultModel: DEFAULT_MODEL,
   defaultPermissionMode: "auto",
   notifications: { enabled: false, loomParked: true, loomReady: true },
+  providerCheckIntervalSec: 300,
 };
 
 const THEMES: ThemeMode[] = ["system", "light", "dark"];
@@ -56,6 +62,12 @@ function sanitize(raw: unknown): UiPrefs {
   const n = (r.notifications ?? {}) as Record<string, unknown>;
   return {
     theme: THEMES.includes(r.theme as ThemeMode) ? (r.theme as ThemeMode) : DEFAULT_PREFS.theme,
+    providerCheckIntervalSec:
+      typeof r.providerCheckIntervalSec === "number" &&
+      Number.isFinite(r.providerCheckIntervalSec) &&
+      r.providerCheckIntervalSec >= 0
+        ? Math.floor(r.providerCheckIntervalSec)
+        : DEFAULT_PREFS.providerCheckIntervalSec,
     defaultModel:
       typeof r.defaultModel === "string" && r.defaultModel ? r.defaultModel : DEFAULT_PREFS.defaultModel,
     defaultPermissionMode: isValidPermissionMode(r.defaultPermissionMode)

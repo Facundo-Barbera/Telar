@@ -917,14 +917,19 @@ function SessionViewInner({
     if (fromRegistry.length > 0) return fromRegistry;
     return provider === "claude" ? accounts : [];
   }, [accountProfiles, provider, accounts]);
-  // Model catalog for the selected provider, fetched from GET /api/models
-  // (Claude: live Anthropic /v1/models; Codex: the local models_cache.json),
-  // falling back to the curated static list on any hiccup. Refetched whenever
-  // the provider changes.
+  // Model catalog for the selected provider AND ACCOUNT, fetched from
+  // GET /api/models (Claude: the live /v1/models catalog; Codex: the local
+  // models_cache.json), falling back to the curated static list on any hiccup.
+  //
+  // The ACCOUNT is part of the question, not just the provider: an account
+  // routed through the CLIProxyAPI gateway resolves its catalog from that
+  // gateway, which serves a different — cross-harness — set than the provider
+  // does directly. Refetched when either changes, because switching accounts
+  // can change which models this session can actually reach.
   const [modelOptions, setModelOptions] = useState<ModelInfo[]>(() => modelsForProvider("claude"));
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/models?provider=${provider}`)
+    fetch(`/api/models?provider=${provider}&account=${encodeURIComponent(activeAccount)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelled) return;
@@ -937,7 +942,7 @@ function SessionViewInner({
     return () => {
       cancelled = true;
     };
-  }, [provider]);
+  }, [provider, activeAccount]);
   // Switching the agent selector: sets the provider, resets model/effort to
   // that provider's defaults (a Claude model id sent to Codex, or vice versa,
   // is meaningless), and — unless the currently active account already

@@ -1,4 +1,5 @@
 import { removeAccount, setDefaultAccount } from "@telar/core";
+import { deletePlanUsage } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -24,10 +25,23 @@ export async function PATCH(
 
 // Removes the registry entry and any stored token. The account's on-disk login
 // (its config dir) is left untouched — that's the user's data, not ours.
+// Refused for the main Claude login, which is detected rather than added.
 export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ name: string }> },
 ) {
   const { name } = await params;
-  return Response.json({ ok: removeAccount(name) });
+  try {
+    const ok = removeAccount(name);
+    // Two owners, called in turn: core drops the registry entry and its secrets,
+    // this module's store drops the captured usage. Skipping the second left a
+    // usage wheel in the sidebar for an account that no longer existed.
+    if (ok) deletePlanUsage(name);
+    return Response.json({ ok });
+  } catch (e) {
+    return Response.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      { status: 400 },
+    );
+  }
 }
