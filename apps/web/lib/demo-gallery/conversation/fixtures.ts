@@ -21,6 +21,7 @@ import {
   type MarkerPayload,
   type PermissionPart,
   type PermissionPayload,
+  type StatusPayload,
   type TextPayload,
   type ThinkingPayload,
   type ToolsPayload,
@@ -94,6 +95,17 @@ const turn = (
   payload: { from, items } satisfies TurnPayload,
 });
 
+// The live in-flight row. A fixture is a STILL of a moving thing, so this one
+// picks the `tool` arm: it is the only WorkState that carries a name and a
+// target, and a gallery still of "starting"/"working" is an unlabelled spinner
+// no reviewer can judge. `elapsed` is a constant for the same reason every age
+// string here goes through DEMO_NOW — a wall-clock read would hydrate differently.
+const status = (key: string, state: StatusPayload["state"]): TranscriptItem => ({
+  kind: CONVERSATION_KINDS.status,
+  key,
+  payload: { state } satisfies StatusPayload,
+});
+
 const tool = (name: string, id: string, input: Record<string, unknown>, output?: string): ToolPart => ({
   type: "tool",
   name,
@@ -158,6 +170,10 @@ export const CONVERSATION_FIXTURES: Record<ConversationConfig, readonly Transcri
     turn("m4", "assistant", [
       tools("t_edit", [RUNNING]),
       permission("m4:1", PENDING_PERMISSION),
+      // LAST, exactly where the adapter appends it in production: the status row
+      // narrates the turn rather than adding to it, and `isTrailingItem` exempts
+      // it so the running tools group above keeps its liveness and its spinner.
+      status("m4:2", { kind: "tool", tool: "Edit", target: "components/conversation/kinds.tsx", elapsed: 12 }),
     ]),
   ],
 

@@ -158,6 +158,20 @@ export const UltraWakeRecord = z.object({
   // manifest, so such a run is re-stated ONCE. That is the deliberate failure
   // direction: this module tolerates "stated twice" and never "lost".
   deliveredTerminalAt: z.number().default(0),
+  // When the session's agent explicitly asked to be told about THIS run
+  // (`watchUltraRun`, the durable half of the `ultra_watch` tool). 0 means it
+  // never did.
+  //
+  // IT GATES NOTHING. `pendingUltraWakes` is unconditional per session and stays
+  // that way — every terminal run a session launched is delivered whether or not
+  // anyone watched it. This field records INTEREST, so the appendix can say "you
+  // asked about this one"; it is not a subscription, and a projection that
+  // filtered on it would turn an unwatched run's outcome into a lost one.
+  //
+  // Additive and DEFAULTED, so a record written before this field existed still
+  // parses and reads 0 — story 1.1's tolerant-reader rule, and the reason this
+  // is a field on the existing wake record rather than a second file.
+  watchedAt: z.number().default(0),
 });
 export type UltraWakeRecord = z.infer<typeof UltraWakeRecord>;
 
@@ -173,6 +187,22 @@ export type PendingUltraWake = {
   spendUsd: number;
   terminalAt: number;
   result?: unknown;
+  error?: string;
+  // Present only when the agent registered interest in this run. Read off the
+  // record `pendingUltraWakes` ALREADY loads for its delivered check — zero extra
+  // disk reads — and omitted otherwise, so a reader that knows nothing about
+  // watching sees exactly the shape it saw before.
+  watched?: boolean;
+};
+
+// What `watchUltraRun` hands back. A plain struct with nothing awaited attached:
+// registering interest is a stamp, not a subscription.
+export type UltraWatchResult = {
+  ok: boolean;
+  runId: string;
+  state?: UltraManifest["state"];
+  name?: string;
+  alreadyWatching?: boolean;
   error?: string;
 };
 
@@ -222,11 +252,18 @@ function recordUltraWake(payload: UltraRunCompletedPayload): void {
   // seen", and a resume genuinely reaching a new terminal state is a new publish
   // worth recording. Pending-ness does not depend on it either way (see
   // pendingUltraWakes), so this stamp cannot change what is delivered.
+  //
+  // EVERY FIELD MUST BE CARRIED FORWARD HERE AND IN `ackUltraWakes` — both write
+  // a FULL object literal rebuilt from `existing`, so a field one of them forgets
+  // is silently erased by the next publish or the next ack. That is the same
+  // clobber shape `buildManifest` has one level up, and it is exactly why
+  // `watchedAt` cannot live on the manifest either.
   saveWakeRecord({
     runId: payload.runId,
     recordedAt: Date.now(),
     deliveredAt: existing?.deliveredAt ?? 0,
     deliveredTerminalAt: existing?.deliveredTerminalAt ?? 0,
+    watchedAt: existing?.watchedAt ?? 0,
   });
 }
 
@@ -258,9 +295,10 @@ export function ultraWakeChannel(): UltraEventPort {
 
 // ── the projection ──────────────────────────────────────────────────────────
 
-function toPendingWake(m: UltraManifest): PendingUltraWake | null {
+function toPendingWake(m: UltraManifest, rec: UltraWakeRecord | null): PendingUltraWake | null {
   if (!isTerminal(m.state)) return null;
   return {
+    ...(rec && rec.watchedAt > 0 ? { watched: true } : {}),
     runId: m.runId,
     sessionId: m.sessionId ?? "",
     ...(m.messageId ? { messageId: m.messageId } : {}),
@@ -303,13 +341,18 @@ export function pendingUltraWakes(sessionId: string): PendingUltraWake[] {
   const out: PendingUltraWake[] = [];
   for (const m of listUltraRuns()) {
     if (m.sessionId !== sessionId) continue;
-    const wake = toPendingWake(m);
-    if (!wake) continue;
     // DELIVERED IS SCOPED TO A TERMINAL, not to a run — see
     // UltraWakeRecord.deliveredTerminalAt. A run that was delivered and has
     // since been RESUMED to a new terminal state has a fresh `updatedAt`, so it
     // is pending again; a run delivered for the terminal it still holds is not.
+    //
+    // Read ONCE and threaded into toPendingWake, which also reads `watchedAt`
+    // off it — registering interest costs this projection no extra disk read,
+    // and it costs it no extra CONDITION either: watching is additive and never
+    // gates whether a run is pending.
     const rec = readUltraWakeRecord(m.runId);
+    const wake = toPendingWake(m, rec);
+    if (!wake) continue;
     if (rec?.deliveredAt && rec.deliveredTerminalAt === m.updatedAt) continue;
     out.push(wake);
   }
@@ -343,11 +386,14 @@ export function ackUltraWakes(sessionId: string, runIds: readonly string[]): num
     // terminal stamps that new one, because it is a different outcome.
     if (existing?.deliveredAt && existing.deliveredTerminalAt === m.updatedAt) continue;
     try {
+      // Carry EVERY field forward — see recordUltraWake's note; this literal is
+      // the second of the two places a new field gets silently erased.
       saveWakeRecord({
         runId,
         recordedAt: existing?.recordedAt ?? 0,
         deliveredAt: now,
         deliveredTerminalAt: m.updatedAt,
+        watchedAt: existing?.watchedAt ?? 0,
       });
       stamped++;
     } catch {
@@ -357,6 +403,67 @@ export function ackUltraWakes(sessionId: string, runIds: readonly string[]): num
     }
   }
   return stamped;
+}
+
+// REGISTER INTEREST IN ONE RUN — the durable half of the `ultra_watch` tool.
+//
+// WHAT THIS DOES NOT DO, said first because it is the whole design: it does NOT
+// switch delivery on. `pendingUltraWakes` above is unconditional per session —
+// it has no opt-in gate anywhere — so this run's outcome was already going to
+// reach the session's agent through the appendix and the idle poll whether or
+// not anybody called this. The gap owner ruling 1 identifies is DISCOVERABILITY
+// AND TRUST, not delivery: the model does not know it can end its turn and be
+// woken, so it sleeps in a background shell and re-polls instead.
+//
+// So this stamps one timestamp and returns. It BLOCKS NOTHING, registers no
+// callback, attaches to no promise, and declares no new bus event (INV-9a pins
+// ultra's catalogue to the exact set ["ultra:run-completed"], and story 4.2
+// already ruled a second name out on those grounds).
+//
+// Posture copied line for line from `ackUltraWakes`: short-circuit on an empty
+// sessionId; read the manifest inside a try so a malformed id is "not found"
+// rather than a throw on a tool path; refuse and WRITE NOTHING when the manifest
+// is missing or names a different session — a caller must not be able to stamp
+// another session's run, and a typo must not leak an orphaned, un-manifested
+// directory that `listUltraRuns` can never reach or reap.
+export function watchUltraRun(sessionId: string, runId: string): UltraWatchResult {
+  if (!sessionId) return { ok: false, runId, error: "no session" };
+  let m: UltraManifest | null;
+  try {
+    m = getUltraManifest(runId);
+  } catch {
+    m = null;
+  }
+  if (!m || m.sessionId !== sessionId) {
+    return { ok: false, runId, error: `No Ultra run "${runId}" belongs to this session.` };
+  }
+  const existing = readUltraWakeRecord(runId);
+  const alreadyWatching = !!existing && existing.watchedAt > 0;
+  if (!alreadyWatching) {
+    try {
+      // Full literal, every field carried forward — the clobber note on
+      // recordUltraWake applies here too, in the other direction.
+      saveWakeRecord({
+        runId,
+        recordedAt: existing?.recordedAt ?? 0,
+        deliveredAt: existing?.deliveredAt ?? 0,
+        deliveredTerminalAt: existing?.deliveredTerminalAt ?? 0,
+        watchedAt: Date.now(),
+      });
+    } catch {
+      // Unwritable state root. The run's outcome is delivered anyway — the
+      // record only decides whether the appendix says "you asked about this
+      // one" — so this degrades the marker, never the wake.
+    }
+  }
+  return {
+    ok: true,
+    runId,
+    state: m.state,
+    name: ultraRunLabel(m.meta, runId),
+    // The FIRST watchedAt is kept, so a second call reports rather than resets.
+    alreadyWatching,
+  };
 }
 
 // How many of this session's runs are still NON-terminal. The client hook polls

@@ -13,6 +13,10 @@ import { acquireAdmission, type AdmissionClass } from "./admission";
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
   model?: string;
+  // Reasoning effort, handed straight to the SDK — the same option
+  // apps/web/app/api/chat/route.ts passes for a session turn, so a child agent
+  // and a session turn mean the same thing by it. Absent lets the SDK pick.
+  effort?: string;
   label?: string;
   cwd?: string;
   maxTurns?: number;
@@ -46,7 +50,20 @@ export type EngineEvent =
   | { type: "text"; text: string }
   | { type: "tool"; name: string; input?: unknown }
   | { type: "tool-result"; name?: string; ok?: boolean; output?: string }
-  | { type: "result"; subtype: string; costUsd?: number; turns?: number };
+  | {
+      type: "result";
+      subtype: string;
+      costUsd?: number;
+      turns?: number;
+      // The provider's own usage split for this agent's whole run, carried so a
+      // caller can report tokens rather than only dollars. Optional because a
+      // provider (or a stub in a test) may report none — absent means "not
+      // reported", which a reader must not print as a confident 0.
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheCreateTokens?: number;
+    };
 
 // Cap on captured tool_result output so a single fat result (e.g. a big file
 // read) can't bloat the loom event stream / SSE payloads.
@@ -173,6 +190,7 @@ export async function agent<S extends z.ZodRawShape>(
       options: {
         cwd: opts.cwd ?? process.cwd(),
         model: opts.model ?? "sonnet",
+        ...(opts.effort ? { effort: opts.effort as never } : {}),
         maxTurns: opts.maxTurns ?? 30,
         permissionMode: "bypassPermissions",
         env: accountEnv(opts.account),
@@ -222,11 +240,28 @@ export async function agent<S extends z.ZodRawShape>(
           }
         }
       } else if (msg.type === "result") {
+        // TOKENS RIDE ALONGSIDE COST, from the same one-shot `result` message.
+        // The SDK has always sent `usage`; this event dropped it and kept only
+        // the dollar figure, so nothing downstream of an `agent()` call could
+        // ever state a token count — which is why an Ultra's agent rows could
+        // only ever show money. The four fields are the SAME PAIR-PLUS-CACHE
+        // SPLIT `UsageEntry` stores and the chat route already reads off its own
+        // usage payload, so a figure derived here is comparable with one derived
+        // there rather than being a fifth definition of "tokens".
+        //
+        // `?? 0` per field, not a guard on `usage` as a whole: a provider that
+        // reports only part of the split should contribute what it reported, and
+        // absent counts are genuinely zero rather than unknown.
+        const u = (msg as any).usage ?? {};
         opts.onEvent?.({
           type: "result",
           subtype: msg.subtype,
           costUsd: (msg as any).total_cost_usd,
           turns: (msg as any).num_turns,
+          inputTokens: u.input_tokens ?? 0,
+          outputTokens: u.output_tokens ?? 0,
+          cacheReadTokens: u.cache_read_input_tokens ?? 0,
+          cacheCreateTokens: u.cache_creation_input_tokens ?? 0,
         });
       }
     }

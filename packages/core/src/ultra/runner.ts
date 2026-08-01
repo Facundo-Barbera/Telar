@@ -72,6 +72,10 @@ export type UltraRunnerOpts = {
   model: string; // REQUIRED — no fallback, ever (doc §4)
   schema?: z.ZodObject<z.ZodRawShape>; // present -> forced emit_result; absent -> final-text capture
   label?: string; // display-only; never reaches the SDK
+  // Reasoning effort, forwarded to the SDK on BOTH legs below. Not display-only
+  // — see surface.ts's UltraAgentOpts note for why this used to be dropped and
+  // why that was a placebo control.
+  effort?: string;
   cwd?: string; // project root, or the opts.isolation worktree (doc §3) — narrows WHERE, never WHETHER
   account?: AccountProfile; // routes env exactly like engine.ts's accountEnv (doc §2: inherited "for free")
   maxTurns?: number;
@@ -120,6 +124,7 @@ export async function runUltraAgent(promptText: string, opts: UltraRunnerOpts): 
       // a pure-Ultra workload can still borrow the whole ceiling.
       admissionClass: "ultra",
       model: opts.model,
+      ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       cwd: opts.cwd ?? process.cwd(),
       maxTurns: opts.maxTurns ?? 30,
@@ -146,6 +151,7 @@ export async function runUltraAgent(promptText: string, opts: UltraRunnerOpts): 
     options: {
       cwd: opts.cwd ?? process.cwd(),
       model: opts.model,
+      ...(opts.effort ? { effort: opts.effort as never } : {}),
       maxTurns: opts.maxTurns ?? 30,
       permissionMode: "bypassPermissions",
       env: accountEnv(opts.account),

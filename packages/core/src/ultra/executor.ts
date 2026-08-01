@@ -26,8 +26,8 @@ import { z } from "zod";
 import type { EngineEvent } from "../engine";
 import type { AccountProfile } from "../schemas";
 import { compileScript, type ScriptMeta } from "./sandbox";
-import type { UltraAgentOpts, UltraSurface } from "./surface";
-import { MissingModel, LifetimeExceeded, isAbortError, isControlSignal } from "./signals";
+import type { UltraAgentOpts, UltraSurface, UltraTokens } from "./surface";
+import { MissingModel, LifetimeExceeded, BadPrompt, isAbortError, isControlSignal } from "./signals";
 import { appendJournal, readJournal, hashCall, type JournalRecord } from "./journal";
 import { runUltraAgent, type EngineAgentFn, type UltraRunnerOpts } from "./runner";
 
@@ -57,6 +57,12 @@ export const VALIDATE_RETRY_K = 2;
 // itself (runner.ts's schema-less branch is real and directly tested there);
 // changing this executor-level default is out of scope for U4.
 const PASSTHROUGH_SCHEMA = z.object({ text: z.string() });
+
+// The stringification artifacts a prompt can never legitimately need (see the
+// guard in agentFn and signals.ts's BadPrompt). Both are what a template
+// literal renders for a value the author forgot to unwrap — an agent() result
+// object, or the promise of one.
+const STRINGIFIED_ARTIFACTS = ["[object Object]", "[object Promise]"] as const;
 
 // A minimal counting semaphore — the acquire/waiters idiom engine.ts used to
 // carry inline, kept run-local here so it never touches the process-wide gate.
@@ -131,6 +137,10 @@ export type UltraEvent =
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
       costUsd?: number;
       turns?: number;
+      // What this settle actually consumed, as the provider reported it.
+      // ABSENT means "not reported" and must never be rendered as a confident
+      // zero — see the capture site's note.
+      tokens?: UltraTokens;
       // THE BILLING IDENTITY OF THIS SETTLE — a unique id MINTED AT THE MOMENT
       // THE MONEY IS SPENT (`crypto.randomUUID()`, the live-settle path below),
       // written onto that settle's journal record, and re-presented VERBATIM by
@@ -284,6 +294,38 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     if (!uOpts || typeof uOpts.model !== "string" || uOpts.model === "") {
       throw new MissingModel(uOpts?.label);
     }
+    // THE PROMPT MUST BE A USABLE STRING, and this is the ONLY position that
+    // makes "fails before any ordinal is issued and before any spend" literally
+    // true rather than approximately true: it is before `ctl.issued++` (so no
+    // ordinal is burned), before `hashCall` (so no journal/resume-cache key is
+    // minted), before the cache lookup, and before the live path entirely. It
+    // is ALSO before `const schema = uOpts.schema ?? PASSTHROUGH_SCHEMA` below,
+    // which is what makes it cover the schema and schema-less paths by
+    // construction rather than by two copies of the same check.
+    //
+    // "[object Promise]" is here for the same authoring bug one step earlier — a
+    // missing `await` on an agent() call interpolated into a template literal —
+    // and it is equally unrecoverable and equally invisible today.
+    //
+    // NO empty/whitespace rule: `${undefined}` renders "undefined", not "", so an
+    // empty prompt is a different (and un-complained-about) thing.
+    if (!uOpts.allowStringifiedObject) {
+      if (typeof prompt !== "string") {
+        throw new BadPrompt(`a ${typeof prompt} prompt — agent() takes a string`, uOpts.label);
+      }
+      const artifact = STRINGIFIED_ARTIFACTS.find((a) => prompt.includes(a));
+      if (artifact) {
+        throw new BadPrompt(
+          `a prompt containing "${artifact}" — an agent() result is an OBJECT (the default ` +
+            `schema is z.object({ text }), so even a schema-less call resolves to { text }), and ` +
+            `interpolating one into a template literal stringifies it away. Read the field you ` +
+            `want (e.g. result.text) before interpolating. If the artifact is genuinely part of ` +
+            `text you meant to send — an upstream agent quoting a log line, say — pass ` +
+            `{ allowStringifiedObject: true } on this call`,
+          uOpts.label,
+        );
+      }
+    }
     // Lifetime backstop, checked at ISSUE time (deterministic ordinal order).
     if (ctl.issued >= LIFETIME_BACKSTOP) throw new LifetimeExceeded(LIFETIME_BACKSTOP);
     const ordinal = ctl.issued++;
@@ -323,6 +365,10 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           // (those start at 1), so a stray replay would append a visible extra
           // row rather than silently fold real money away.
           settleId: cached.settleId ?? String(ctl.legacyCounts.get(ordinal) ?? 0),
+          // Re-presented from the record, exactly as costUsd/turns are. A
+          // replay that dropped this would make a resumed run's rows report
+          // "not reported" for work whose usage was measured the first time.
+          ...(cached.tokens !== undefined ? { tokens: cached.tokens } : {}),
           // Replayed: not re-made, not re-billed by the provider. This does
           // NOT suppress the ledger write — storage.ts re-records this
           // settle's keyed row (`ultra:<runId>:<ordinal>:<settleId>`) on every
@@ -356,8 +402,16 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ...(uOpts.effort ? { effort: uOpts.effort } : {}),
     });
 
-    // Only the doc's allowed opts reach the engine. effort/phase are journaled
-    // display metadata (no SDK field); isolation → worktree in a later cut.
+    // Only the doc's allowed opts reach the engine. `phase` stays journaled
+    // display metadata; isolation → worktree in a later cut.
+    //
+    // `effort` NOW REACHES THE MODEL, and until this change it did not. The
+    // original note here read "effort/phase are journaled display metadata (no
+    // SDK field)" — true of the SDK it was written against, and false since:
+    // the chat route hands `effort` to the same `query()` options for every
+    // session turn. An Ultra script could therefore ask for an effort, see it
+    // rendered on the agent's chip, and get a model that was never told —
+    // a control that displayed and did nothing.
     const schema = uOpts.schema ?? PASSTHROUGH_SCHEMA;
     // Mutable — set at the top of each retry-loop iteration below, before
     // `runOnce` fires the engine call, so the SAME `engineOpts.onEvent` closure
@@ -373,9 +427,17 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     // run's point of view; overwritten every time a "result" event lands.
     let lastCostUsd: number | undefined;
     let lastTurns: number | undefined;
+    // The provider's usage split for this attempt, captured from the same
+    // one-shot `result` event `costUsd` comes from. ONE FIELD, not four loose
+    // ones: it travels together onto the journal record and the settle event,
+    // and a partial object is how a reader ends up printing an input count with
+    // no output count beside it.
+    let lastTokens: UltraTokens | undefined;
     const engineOpts: UltraRunnerOpts = {
       schema,
       model: uOpts.model,
+      // THE LINE THAT MAKES `effort` REAL — see the note above `schema`.
+      ...(uOpts.effort ? { effort: uOpts.effort } : {}),
       ...(uOpts.label ? { label: uOpts.label } : {}),
       ...(opts.project ? { cwd: opts.project } : {}),
       ...(opts.account ? { account: opts.account } : {}),
@@ -384,6 +446,22 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
         if (e.type === "result") {
           lastCostUsd = e.costUsd;
           lastTurns = e.turns;
+          // ABSENT STAYS ABSENT. A provider that reported no usage at all leaves
+          // this undefined rather than becoming four zeroes, so a reader can
+          // tell "spent nothing" apart from "never told us" — the same
+          // distinction `costUsd` already keeps by being optional.
+          lastTokens =
+            e.inputTokens === undefined &&
+            e.outputTokens === undefined &&
+            e.cacheReadTokens === undefined &&
+            e.cacheCreateTokens === undefined
+              ? undefined
+              : {
+                  input: e.inputTokens ?? 0,
+                  output: e.outputTokens ?? 0,
+                  cacheRead: e.cacheReadTokens ?? 0,
+                  cacheCreate: e.cacheCreateTokens ?? 0,
+                };
         }
         opts.onAgentEvent?.(ordinal, e, attempt);
       },
@@ -445,6 +523,11 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       settleId,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+      // Journaled beside the cost so a RESUME re-presents the same token figure
+      // it re-presents the same cost — a cached replay that dropped tokens would
+      // make a resumed run's rows read as "never reported" for work that was
+      // measured the first time round.
+      ...(lastTokens !== undefined ? { tokens: lastTokens } : {}),
     });
     opts.onEvent?.({
       type: "agent",
@@ -455,6 +538,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ok: result !== null,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+      ...(lastTokens !== undefined ? { tokens: lastTokens } : {}),
       settleId,
     });
     return result;

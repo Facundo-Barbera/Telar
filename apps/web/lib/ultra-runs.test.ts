@@ -27,10 +27,14 @@ import { ultraRunLabel } from "@telar/core";
 import { CONVERSATION_KINDS, type TranscriptItem, type ToolsPayload } from "@/components/conversation/items";
 import type { ConversationProps } from "@/components/conversation/conversation";
 import type { ToolPart } from "@/components/session/tool-step";
+import { LIVE_SNIPPET_CLASS } from "@/components/session/ultra-rail";
+import { cn } from "@/lib/utils";
 import {
   ACCOUNTING_LOG_PREFIXES,
   ULTRA_ANCHOR_KIND,
   ULTRA_TOOL_NAME,
+  ultraTabId,
+  ultraTabRunId,
   UNPHASED,
   agentRows,
   anchorControls,
@@ -1156,16 +1160,24 @@ describe("4.2 AC9 — NO BUDGET UI ANYWHERE, and it is a scan rather than a prom
   // THE ENUMERATED LIST, not a glob: the three new component files plus the ONE
   // edited file this story makes render money (`dock.tsx`, AC7 proof 4). A glob
   // would silently shrink to nothing if a directory were renamed.
+  //
+  // THE TWO NEW ULTRA FILES ARE BOTH IN, and `ultra-run-views.tsx` is in even
+  // though nothing it renders is a number today. "Which half of the new surface
+  // will ever render money" is exactly the judgement that goes stale, and this
+  // list is enumerated rather than globbed so that judgement never has to be
+  // made twice.
   const SCANNED = [
     "apps/web/components/session/ultra-anchor.tsx",
     "apps/web/components/session/ultra-rail.tsx",
+    "apps/web/components/session/ultra-tab.tsx",
+    "apps/web/components/session/ultra-run-views.tsx",
     "apps/web/components/common/ultra-dock-signal.tsx",
     "apps/web/components/dock/dock.tsx",
   ] as const;
 
-  test("all four files are readable — the floor, so a rename fails LOUDLY instead of scanning nothing", () => {
+  test("all six files are readable — the floor, so a rename fails LOUDLY instead of scanning nothing", () => {
     const read = SCANNED.map((rel) => readSource(rel));
-    expect(read.length).toBe(4);
+    expect(read.length).toBe(6);
     // …and each is a real file rather than an empty one.
     expect(read.every((src) => src.length > 500)).toBe(true);
   });
@@ -1379,5 +1391,190 @@ describe("4.2 AC10 proof 5 — `ConversationProps` is still NINE names, and ther
     // names that DO exist still do.
     const real: Partial<ConversationProps> = { items: [], kinds: undefined };
     expect(Array.isArray(real.items)).toBe(true);
+  });
+});
+
+describe("AC-U1 — a LIVE agent snippet is a BLOCK box, so `truncate` can clip it", () => {
+  // ROOT CAUSE, not a string match. `Shimmer` hard-codes `relative inline-block`
+  // on its root, and an inline-block whose `truncate` forces `white-space:nowrap`
+  // is sized by CSS shrink-to-fit — whose preferred MINIMUM width is the full
+  // unwrapped text, so `overflow:hidden` never has anything to clip and the
+  // snippet spills across the 240px rail. What follows measures the class the
+  // component actually composes, through the same `cn` (twMerge) it uses.
+  //
+  // The ELLIPSIS ITSELF is a dev-server observation: there is no DOM harness in
+  // this repo, deliberately, so no test here paints a pixel.
+  const shimmerBase = /cn\("([^"]+)"/.exec(
+    readSource("apps/web/components/ai-elements/shimmer.tsx"),
+  )?.[1];
+
+  test("the SHARED component was not touched — its root is still `inline-block`", () => {
+    // The positive control AND the AC's "every other Shimmer call site renders
+    // exactly as before" half: those sites are all flex children or `as="span"`,
+    // where the default is required or invisible, so leaving it alone is the fix
+    // being local rather than the fix being skipped.
+    expect(shimmerBase).toBeDefined();
+    expect(shimmerBase).toContain("inline-block");
+  });
+
+  test("`block` in the call-site class WINS the display group through twMerge", () => {
+    const composed = cn(shimmerBase!, LIVE_SNIPPET_CLASS);
+    expect(composed).not.toContain("inline-block");
+    expect(composed).toContain("block");
+    expect(composed).toContain("truncate");
+  });
+
+  test("THE DISCRIMINATOR — the PRE-FIX class still yields the broken display", () => {
+    // Without this, the assertion above is indistinguishable from "twMerge drops
+    // inline-block whatever you pass it". The old string is exactly the one that
+    // shipped the bug.
+    expect(cn(shimmerBase!, "min-w-0 truncate px-2 pb-0.5 text-[10px]")).toContain("inline-block");
+  });
+
+  test("the component uses the constant this test measured", () => {
+    expect(readSource("apps/web/components/session/ultra-rail.tsx")).toContain(
+      "className={LIVE_SNIPPET_CLASS}",
+    );
+  });
+});
+
+describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken for anything else", () => {
+  test("it round-trips, including through a runId that itself contains a colon", () => {
+    expect(ultraTabRunId(ultraTabId("u-abc"))).toBe("u-abc");
+    expect(ultraTabRunId(ultraTabId("u:with:colons"))).toBe("u:with:colons");
+  });
+
+  test("the OTHER two vocabularies `activeTab` holds resolve to null", () => {
+    expect(ultraTabRunId("main")).toBeNull();
+    // A spawn tool_use id — the sub-agent tab vocabulary.
+    expect(ultraTabRunId("toolu_01XyZ")).toBeNull();
+  });
+
+  test("an ITEM KIND id is NOT a tab id, and a tab id is not an item key", () => {
+    // The two vocabularies that look alike. `ULTRA_ANCHOR_KIND` is a registered
+    // kind id (INV-10a pins it); `ultra:${runId}` is the item KEY
+    // `spliceRunAnchors` mints. A tab id must collide with neither.
+    expect(ultraTabRunId(ULTRA_ANCHOR_KIND)).toBeNull();
+    expect(ultraTabId("u-abc")).not.toBe(ULTRA_ANCHOR_KIND);
+    expect(ultraTabId("u-abc")).not.toBe("ultra:u-abc");
+  });
+
+  test("session-view.tsx wires the tab through those helpers, not through a local literal", () => {
+    const src = readSource("apps/web/components/session/session-view.tsx");
+    expect(src).toContain("ultraTabKind");
+    expect(src).toContain("SESSION_ULTRA_TAB");
+    expect(src).toContain("ultraTabRunId(activeTab)");
+    expect(src).toContain("ultraTabId(runId)");
+    // INV-10b's positive half: the anchor kind is still registered in the
+    // ADAPTER's registry (and, elsewhere, still absent from the gallery's).
+    expect(src).toContain("ultraRunAnchorKind");
+  });
+
+  test("the rail is the INDEX that opens the pane, and says which run is open", () => {
+    // Comments stripped: this file's own header says "NOT HERE" about its
+    // decisions, and the chip is JSX TEXT rather than a quoted string.
+    const code = stripComments(readSource("apps/web/components/session/ultra-rail.tsx"));
+    expect(code).toContain("activeRunId");
+    expect(code).toContain("Here");
+    expect(code).toContain("text-primary");
+    // `anchorControls(` IS NO LONGER ASSERTED HERE. Stop/Resume moved to the
+    // pane on an owner ruling that the index shows "which runs exist and who is
+    // working, nothing more" — so the rail no longer decides a control's states
+    // and has no rule left to duplicate. The pane still reads `anchorControls`,
+    // and the AC-U3 block above is what pins that.
+    //
+    // WHAT THE INDEX MUST STILL DO, and the reason this test survives: the whole
+    // card opens the pane. A chevron-sized target beside a name that did
+    // something else was the original complaint.
+    expect(code).toContain("onClick={onOpen}");
+  });
+});
+
+describe("AC-U3 — the wide view reuses the projection and the routes, and invents no data path", () => {
+  // STATIC, and that is the honest ceiling: there is no DOM harness in this
+  // repo, so LAYOUT — the thing a "full-pane" view is mostly about — is proved
+  // on the dev server and nowhere else. What IS mechanical is that the pane
+  // reads the SAME projection and the SAME three on-demand routes the rail
+  // already calls, which is precisely the claim that goes quietly false.
+  const tab = () => readSource("apps/web/components/session/ultra-tab.tsx");
+
+  test("it renders the projection's own fields and the tested spend/controls rules", () => {
+    const src = tab();
+    expect(src).toContain("anchorSpend(");
+    expect(src).toContain("anchorControls(");
+    expect(src).toContain("run.phases");
+    // `run.narrator` IS NO LONGER ASSERTED. The narrator window was removed from
+    // the pane on an owner ruling (the lines are a script author's debug prints
+    // and duplicate what the agent rows say). Two things made removing this
+    // assertion necessary rather than optional: it pinned a design decision that
+    // has since been reversed, and — because it greps RAW source — the prose
+    // explaining the removal satisfied it, so it would have stayed green while
+    // measuring a comment. The projection still computes the field for the rail.
+    expect(src).toContain("run.agentsDone !== undefined");
+  });
+
+  test("it shares the three readers rather than writing a fourth copy of the fetch", () => {
+    // The RAIL half of this assertion is gone with the rail's detail: it is now
+    // a glanceable index that renders no transcript, no result and no script, so
+    // it imports none of the three readers. The claim worth keeping is the one
+    // that can still go quietly false — that the PANE reuses them instead of
+    // growing a fourth copy of the same fetch.
+    expect(tab()).toContain('from "@/components/session/ultra-run-views"');
+  });
+
+  test("NO SECOND HOOK, NO SECOND STREAM, NO SECOND LIST POLL", () => {
+    // COMMENTS STRIPPED, for the same reason the budget scan strips them: this
+    // file's header SAYS "no new hook, no second poll", and a rule that forbids
+    // documenting itself gets documented somewhere the scan cannot see.
+    const code = stripComments(tab());
+    expect(code).not.toContain("useUltraRuns");
+    expect(code).not.toContain("new EventSource");
+    expect(code).not.toContain('fetch("/api/ultra?');
+  });
+
+  test("it uses the FOUR-state tone/label tables, never the rail's three-state one", () => {
+    // `RailStatus` is running|done|error and has no honest home for `stopped` —
+    // the state that grows a Resume affordance. Collapsing it would read a
+    // stopped run as done or as a failure.
+    const code = stripComments(tab());
+    expect(code).toContain("STATE_LABEL");
+    expect(code).toContain("ULTRA_STATE_TONE");
+    expect(code).not.toContain("SubagentBanner");
+    expect(code).not.toContain("RailStatus");
+  });
+
+  // THE NARRATOR TEST IS GONE BECAUSE THE NARRATOR IS. It asserted a fixed
+  // `TAB_NARRATOR_H` so the window could not animate the StickToBottom viewport
+  // it renders inside. The owner removed the window itself after reading a real
+  // run in it, which retires the hazard rather than relaxing the guard — there
+  // is no longer a growing-height box in this pane to constrain.
+  test("the pane's on-demand readers are bounded, so none of them can grow unbounded", () => {
+    // What replaced the narrator concern: every reader the pane opens is a
+    // scroll box with an explicit bound. An unbounded one would push the page
+    // taller on every fetch, which is the same layout-shift failure the narrator
+    // rule existed to prevent.
+    //
+    // THE TRANSCRIPT'S BOUND IS A FIXED HEIGHT, NOT A CAP, and the difference is
+    // the owner ruling behind it: under `max-h` each agent's box took whatever
+    // height its own content wanted, so opening a chatty agent and a terse one
+    // moved every row beneath them by hundreds of pixels. A fixed height makes
+    // the page geometry identical whichever agent is open.
+    const code = stripComments(tab());
+    expect(code).toContain("h-96"); // an agent's transcript — standard, scrollable
+    expect(code).toContain("max-h-[40rem]"); // the run's result
+    expect(code).toContain("max-h-[48rem]"); // the script
+  });
+});
+
+describe("AC-U4 — the rail stays w-60; nothing here widened it", () => {
+  test("subagent-rail.tsx still sizes the expanded rail at w-60", () => {
+    const src = readSource("apps/web/components/session/subagent-rail.tsx");
+    expect(src).toContain("w-60");
+    expect(src).not.toContain("w-72");
+    expect(src).not.toContain("w-80");
+  });
+
+  test("ultra-rail.tsx still documents the 240px budget it is built to", () => {
+    expect(readSource("apps/web/components/session/ultra-rail.tsx")).toContain("240px");
   });
 });

@@ -53,6 +53,19 @@ let readUltraEventsReturn: { events: Record<string, unknown>[] } = { events: [] 
 let stopUltraRunReturn = true;
 const stopUltraRunCalls: string[] = [];
 
+// AC-E5 — core's durable "register interest in ONE run". Mocked like every
+// other core edge here: the real one is proven in packages/core's
+// ultra-wake.test.ts, and what THIS file owns is the wiring — that the tool
+// calls it, with the SERVER's own session id, and only when asked.
+let watchUltraRunReturn: Record<string, unknown> = {
+  ok: true,
+  runId: "u-mockrun",
+  state: "running",
+  name: "t",
+  alreadyWatching: false,
+};
+const watchUltraRunCalls: { sessionId: string; runId: string }[] = [];
+
 const getProjectReturn = (project: string) => {
   if (project !== "proj") throw new Error(`unknown project ${project}`);
   return { manifest: { root: "/root/proj" } };
@@ -79,13 +92,18 @@ mock.module("@telar/core", () => ({
     stopUltraRunCalls.push(runId);
     return stopUltraRunReturn;
   },
+  watchUltraRun: (sessionId: string, runId: string) => {
+    watchUltraRunCalls.push({ sessionId, runId });
+    return watchUltraRunReturn;
+  },
 }));
 
 afterAll(() => {
   mock.module("@telar/core", () => realCoreSnapshot);
 });
 
-const { createUltraMcpServer, ULTRA_AUTO_TOOLS, ULTRA_TOOL_DESCRIPTION } = await import("./ultra-mcp");
+const { createUltraMcpServer, ULTRA_AUTO_TOOLS, ULTRA_TOOL_DESCRIPTION, ULTRA_STATUS_NOTE } =
+  await import("./ultra-mcp");
 
 // Reach into the SDK server's registered tools to invoke a handler directly —
 // identical idiom to loom-mcp.answer-blocked.test.ts's toolHandler.
@@ -140,6 +158,8 @@ beforeEach(() => {
   readUltraEventsReturn = { events: [] };
   stopUltraRunReturn = true;
   stopUltraRunCalls.length = 0;
+  watchUltraRunReturn = { ok: true, runId: "u-mockrun", state: "running", name: "t", alreadyWatching: false };
+  watchUltraRunCalls.length = 0;
 });
 
 describe("ultra MCP server — tool registration", () => {
@@ -250,7 +270,12 @@ describe("ultra_status — state/journal-summary plumbing", () => {
     expect(isError(res)).toBe(false);
     const body = JSON.parse(textOf(res));
     expect(body.state).toBe("running");
-    expect(body.spend).toBe(0.5);
+    // NO `spend` IN THE PAYLOAD, and this assertion is the reversal of
+    // `expect(body.spend).toBe(0.5)`. Removed on an owner ruling: the guiding
+    // agent cannot act on a dollar figure, and handing it one only invited it
+    // to narrate money at the user. Asserted ABSENT rather than deleted, so a
+    // future edit cannot quietly put it back.
+    expect(body.spend).toBeUndefined();
     expect(body.agents).toEqual({ done: 1, dead: 1, total: 2 });
     expect(body.phases).toEqual(["summarize", "rank"]);
     expect(body.recentLog).toEqual(["starting", "ranking"]);
@@ -280,63 +305,123 @@ describe("ultra_status — state/journal-summary plumbing", () => {
     expect(textOf(res)).toContain("u-missing");
   });
 
-  // Story 4.2 / D7 — THE NEW `agent-start` VARIANT MUST NOT DISTURB THIS TOOL.
+  // REPLACES story 4.2's "4.2 D7 — the rollup is BYTE-IDENTICAL with and without
+  // agent-start events interleaved". That pin was 4.2 proving it did not disturb
+  // this tool while it touched the stream the tool reads; this story deliberately
+  // MAKES the tool read `agent-start`, which is a contract change rather than a
+  // guard routed around. The replacement pins the NEW contract case by case, and
+  // is strictly stronger: it covers the resume case a naive counter gets wrong.
   //
-  // WHY THE PROOF LIVES HERE AND NOWHERE ELSE. `ultra_status` is defined in
-  // `apps/web/lib/ultra-mcp.ts`, and `packages/core` cannot import `apps/web` —
-  // so no core suite can make this claim, however much the change it is about
-  // lives in core.
-  //
-  // Story 4.1 protected `ultra_status` by not touching the file. Story 4.2
-  // touches the STREAM this tool reads, so it owes the equivalent proof: the
-  // rollup keys on `e.type === "agent"` for the done/dead counts and on
-  // `"phase"`/`"log"` for the rest, so a new variant is ignored BY
-  // CONSTRUCTION — and "by construction" is a claim a test can check.
-  test("4.2 D7 — the rollup is BYTE-IDENTICAL with and without agent-start events interleaved", async () => {
+  // WHY THE PROOF LIVES HERE AND NOWHERE ELSE (carried forward from 4.2's note):
+  // `ultra_status` is defined in `apps/web/lib/ultra-mcp.ts`, and `packages/core`
+  // cannot import `apps/web` — so no core suite can make this claim, however much
+  // the data it is about lives in core.
+  describe("ultra_status now READS agent-start — the exact new contract", () => {
     const manifest = {
-      runId: "u-d7",
+      runId: "u-live",
       state: "running",
       meta: { name: "n" },
-      spend: 0.5,
+      spend: 0,
       startedAt: 10,
       updatedAt: 20,
     };
-    const without = [
-      { type: "phase", title: "summarize" },
-      { type: "agent", ordinal: 0, ok: true, model: "sonnet" },
-      { type: "agent", ordinal: 1, ok: false, model: "sonnet" },
-      { type: "log", msg: "starting" },
-      { type: "phase", title: "rank" },
-      { type: "log", msg: "ranking" },
-    ];
-    // The SAME stream, with `agent-start` where the executor really emits it:
-    // immediately before each ordinal's own settle.
-    const withStart = [
-      { type: "phase", title: "summarize" },
-      { type: "agent-start", ordinal: 0, model: "sonnet", effort: "high" },
-      { type: "agent", ordinal: 0, ok: true, model: "sonnet", effort: "high" },
-      { type: "agent-start", ordinal: 1, model: "sonnet" },
-      { type: "agent", ordinal: 1, ok: false, model: "sonnet" },
-      { type: "log", msg: "starting" },
-      { type: "phase", title: "rank" },
-      { type: "log", msg: "ranking" },
-    ];
+    const status = async (events: Record<string, unknown>[]) => {
+      getUltraManifestReturn = { ...manifest };
+      readUltraEventsReturn = { events };
+      return JSON.parse(textOf(await toolHandler(makeServer(), "ultra_status")({ runId: "u-live" })));
+    };
 
-    getUltraManifestReturn = { ...manifest };
-    readUltraEventsReturn = { events: without };
-    const before = textOf(await toolHandler(makeServer(), "ultra_status")({ runId: "u-d7" }));
+    test("A FAN-OUT MID-FLIGHT reports agents in flight and its phase, where it used to report an unchanged zero", async () => {
+      const body = await status([
+        { type: "phase", title: "survey" },
+        { type: "agent-start", ordinal: 0, model: "sonnet" },
+        { type: "agent-start", ordinal: 1, model: "sonnet" },
+        { type: "agent-start", ordinal: 2, model: "sonnet" },
+      ]);
+      expect(body.inFlight).toBe(3);
+      expect(body.started).toBe(3);
+      expect(body.phase).toBe("survey");
+      expect(body.agents).toEqual({ done: 0, dead: 0, total: 0 });
+    });
 
-    getUltraManifestReturn = { ...manifest };
-    readUltraEventsReturn = { events: withStart };
-    const after = textOf(await toolHandler(makeServer(), "ultra_status")({ runId: "u-d7" }));
+    test("started-then-settled moves one out of flight", async () => {
+      const body = await status([
+        { type: "agent-start", ordinal: 0, model: "sonnet" },
+        { type: "agent-start", ordinal: 1, model: "sonnet" },
+        { type: "agent", ordinal: 0, ok: true, model: "sonnet" },
+      ]);
+      expect(body.inFlight).toBe(1);
+      expect(body.agents).toEqual({ done: 1, dead: 0, total: 1 });
+    });
 
-    expect(after).toBe(before);
-    // Anti-vacuity: both really did roll something up, so a tool that returned
-    // the empty string for everything could not pass the equality above.
-    const body = JSON.parse(after);
-    expect(body.agents).toEqual({ done: 1, dead: 1, total: 2 });
-    expect(body.phases).toEqual(["summarize", "rank"]);
-    expect(body.recentLog).toEqual(["starting", "ranking"]);
+    test("RESUME SAFETY — a settle with NO start (a cache replay) never goes negative or lies", async () => {
+      // THE CASE A NAIVE `startedCount - settledCount` GETS WRONG. `agent-start`
+      // is never emitted on the cached-replay path, so a resume that replays
+      // ordinals and runs others live would compute a negative and, clamped,
+      // report 0 in flight while agents are genuinely burning money.
+      const body = await status([
+        { type: "agent-start", ordinal: 0, model: "sonnet" },
+        { type: "agent", ordinal: 0, ok: true, model: "sonnet" },
+        { type: "agent", ordinal: 1, ok: true, model: "sonnet" }, // replayed, never started
+      ]);
+      expect(body.inFlight).toBe(0);
+      expect(body.agents).toEqual({ done: 2, dead: 0, total: 2 });
+
+      const mixed = await status([
+        { type: "agent", ordinal: 0, ok: true, model: "sonnet" }, // replayed
+        { type: "agent", ordinal: 1, ok: true, model: "sonnet" }, // replayed
+        { type: "agent-start", ordinal: 2, model: "sonnet" }, // live
+        { type: "agent-start", ordinal: 3, model: "sonnet" }, // live
+      ]);
+      expect(mixed.inFlight).toBe(2);
+    });
+
+    test("ADDITIVE ONLY — a stream with no agent-start events keeps every existing figure", async () => {
+      const body = await status([
+        { type: "phase", title: "summarize" },
+        { type: "agent", ordinal: 0, ok: true, model: "sonnet" },
+        { type: "agent", ordinal: 1, ok: false, model: "sonnet" },
+        { type: "log", msg: "starting" },
+        { type: "phase", title: "rank" },
+        { type: "log", msg: "ranking" },
+      ]);
+      expect(body.agents).toEqual({ done: 1, dead: 1, total: 2 });
+      expect(body.phases).toEqual(["summarize", "rank"]);
+      expect(body.recentLog).toEqual(["starting", "ranking"]);
+      expect(body.inFlight).toBe(0);
+      expect(body.started).toBe(0);
+    });
+
+    test("NO DENOMINATOR — nothing in the payload claims a total-agents figure", async () => {
+      // Story 4.2 AC11: agents `total-planned` is NOT SOURCED and must not be
+      // invented. `agents.total` is the SETTLED count and keeps that meaning.
+      const body = await status([{ type: "agent-start", ordinal: 0, model: "sonnet" }]);
+      expect(body.agents.expected).toBeUndefined();
+      expect(body.agentsTotal).toBeUndefined();
+      expect(body.progress).toBeUndefined();
+      expect(Object.keys(body.agents).sort()).toEqual(["dead", "done", "total"]);
+    });
+
+    test("the honesty note is present and says the snapshot carries no cost", async () => {
+      // Was "names cost-at-settle" and asserted "SETTLED agents only" — prose
+      // explaining a `spend` field that no longer ships. The note now has to
+      // say the opposite thing (there is no cost figure here, on purpose), so
+      // the assertion follows it rather than pinning the retired wording.
+      const body = await status([]);
+      expect(body.note).toBe(ULTRA_STATUS_NOTE);
+      expect(body.note).toContain("NO cost figure");
+      expect(body.note).toContain("no total-agents denominator");
+    });
+
+    test("lastEventAt tolerates events with no `ts` — absent rather than NaN", async () => {
+      const untimed = await status([{ type: "agent-start", ordinal: 0, model: "sonnet" }]);
+      expect(untimed.lastEventAt).toBeUndefined();
+      const timed = await status([
+        { type: "agent-start", ordinal: 0, model: "sonnet", ts: 111 },
+        { type: "log", msg: "x", ts: 222 },
+      ]);
+      expect(timed.lastEventAt).toBe(222);
+    });
   });
 });
 
@@ -394,6 +479,51 @@ describe("4.2 AC6 — the ultra tool description still carries the opt-in clause
   });
 });
 
+// AC-E5's first clause — the tool surface TEACHES the non-blocking wake.
+describe("the ultra tool surface teaches ending the turn, not sleeping and polling", () => {
+  test("the sentence that taught polling is GONE", () => {
+    // The exact textual root of the observed sleep-and-poll habit. A negative
+    // assertion on the sentence itself, so a re-word that reintroduces it fails.
+    expect(ULTRA_TOOL_DESCRIPTION).not.toContain("Poll ultra_status(runId) for progress");
+  });
+
+  test("it tells the model the outcome arrives automatically and the way to wait is to END THE TURN", () => {
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("AUTOMATICALLY");
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("END YOUR TURN");
+  });
+
+  test("it NAMES the anti-pattern — a model not told what to avoid invents it", () => {
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("background shell");
+    expect(ULTRA_TOOL_DESCRIPTION).toContain("busy-poll");
+  });
+
+  test("ultra_status reframes itself as a SNAPSHOT, not as the way to wait", () => {
+    const desc = (server_registry(makeServer()) as Record<string, { description?: string }>)
+      .ultra_status?.description;
+    expect(desc).toContain("SNAPSHOT");
+    // It names the E4/E5 recovery leg — the one case a wake turn SHOULD poll.
+    expect(desc).toContain("had to truncate");
+    expect(desc).not.toContain("instead of blocking on it");
+  });
+
+  test("the LAUNCH RESULT the model actually receives carries the same protocol", async () => {
+    // Pinned on the parsed handler output rather than on a constant: this is the
+    // string that drives the very next tool call.
+    const res = await toolHandler(makeServer(), "ultra")({ script: "s" });
+    const note = JSON.parse(textOf(res)).note as string;
+    expect(note).toContain("END YOUR TURN");
+    expect(note).toContain("AUTOMATICALLY");
+    expect(note).not.toContain("poll progress");
+  });
+
+  test("ultra_stop's description is untouched — this task did not widen", () => {
+    const desc = (server_registry(makeServer()) as Record<string, { description?: string }>)
+      .ultra_stop?.description;
+    expect(desc).toContain("Abort a live Ultra run");
+    expect(desc).toContain("stopped:false");
+  });
+});
+
 function server_registry(server: unknown) {
   return (server as { instance: { _registeredTools: Record<string, unknown> } }).instance
     ._registeredTools;
@@ -417,5 +547,137 @@ describe("ultra_stop — abort plumbing", () => {
     expect(isError(res)).toBe(false);
     const body = JSON.parse(textOf(res));
     expect(body).toEqual({ runId: "u-4", stopped: false, state: "done" });
+  });
+});
+
+// AC-E5's SECOND clause — the guiding agent can register interest in ONE run and
+// have it delivered through the EXISTING story-4.1 durable mailbox.
+//
+// WHY THESE TESTS ARE ABOUT A FLAG AND NOT A FOURTH TOOL. Owner ruling 1 named a
+// separate watch_loom-shaped tool as the preferred shape. Registering a fourth
+// ultra tool NAME requires the same commit to edit four count-pinned files no
+// lane owns (invariants.test.ts's MCP_INVENTORY — an ORDERED comparison, so
+// register-without-pin reports GAINED and pin-without-register reports LOST —
+// core's ULTRA_AUTO_TOOL_NAMES, and the two BASE_ALLOWED_TOOLS counts), and no
+// ordering of those edits avoids a red window. The flag rides the tool that
+// already takes exactly this one runId, so the registered NAME SET is untouched
+// and every one of those pins stays green. ultra-mcp.ts carries the same note.
+describe("AC-E5 — ultra_status can register interest in ONE run, without becoming a fourth tool", () => {
+  test("the registered tool NAME SET is still exactly three — the pins in four unowned files stay green", () => {
+    // The whole reason the capability is a flag. If this ever grows a fourth
+    // name, MCP_INVENTORY / ULTRA_AUTO_TOOL_NAMES / both BASE_ALLOWED_TOOLS
+    // counts must move in the SAME commit.
+    const tools = server_registry(makeServer()) as Record<string, unknown>;
+    expect(new Set(Object.keys(tools))).toEqual(new Set(["ultra", "ultra_status", "ultra_stop"]));
+    expect(ULTRA_AUTO_TOOLS.length).toBe(3);
+  });
+
+  test("ultra_status's input schema gained `watch` and nothing else", () => {
+    expect(new Set(inputSchemaKeys(makeServer(), "ultra_status"))).toEqual(new Set(["runId", "watch"]));
+    // No session/project/identity field: same rule the `ultra` tool's own schema
+    // test states — a script narrows work, it never grants capability.
+    expect(inputSchemaKeys(makeServer(), "ultra_status")).not.toContain("sessionId");
+  });
+
+  test("`watch: true` stamps interest through core's DURABLE watchUltraRun", async () => {
+    const res = await toolHandler(makeServer(), "ultra_status")({ runId: "u-1", watch: true });
+    expect(isError(res)).toBe(false);
+    expect(watchUltraRunCalls).toEqual([{ sessionId: "sess-1", runId: "u-1" }]);
+    const body = JSON.parse(textOf(res));
+    expect(body.watching).toEqual({
+      ok: true,
+      runId: "u-mockrun",
+      state: "running",
+      name: "t",
+      alreadyWatching: false,
+    });
+  });
+
+  test("it uses the SERVER's own session id, never anything from tool input", async () => {
+    const call = toolHandler(makeServer({ getSessionId: () => "sess-42" }), "ultra_status");
+    await call({ runId: "u-1", watch: true, sessionId: "EVIL" } as Record<string, unknown>);
+    expect(watchUltraRunCalls).toEqual([{ sessionId: "sess-42", runId: "u-1" }]);
+  });
+
+  test("no session id yet is passed through as empty — core refuses it, this file does not invent one", async () => {
+    const call = toolHandler(makeServer({ getSessionId: () => null }), "ultra_status");
+    await call({ runId: "u-1", watch: true });
+    expect(watchUltraRunCalls).toEqual([{ sessionId: "", runId: "u-1" }]);
+  });
+
+  test("ANTI-VACUITY — omitting `watch` registers NOTHING and returns a byte-identical payload", async () => {
+    // The discriminator for the two tests above: if the tool stamped on every
+    // call, they would pass and the flag would be a lie.
+    readUltraEventsReturn = { events: [{ type: "phase", title: "survey", ts: 5 }] };
+    const plain = await toolHandler(makeServer(), "ultra_status")({ runId: "u-1" });
+    expect(watchUltraRunCalls).toEqual([]);
+    const body = JSON.parse(textOf(plain));
+    expect(body.watching).toBeUndefined();
+    expect(Object.keys(body)).not.toContain("watching");
+
+    // …and the payload is the SAME TEXT a pre-`watch` caller received. Compared
+    // as the serialized string, not field by field, so an added key anywhere
+    // fails rather than only an added `watching`.
+    const again = await toolHandler(makeServer(), "ultra_status")({ runId: "u-1" });
+    expect(textOf(again)).toBe(textOf(plain));
+  });
+
+  test("`watch: false` is a no-op too — only an explicit true registers", async () => {
+    await toolHandler(makeServer(), "ultra_status")({ runId: "u-1", watch: false });
+    expect(watchUltraRunCalls).toEqual([]);
+  });
+
+  test("THE NON-GATE — a REFUSED watch still returns the full snapshot", async () => {
+    // Registering interest changes what the appendix SAYS about a run, never
+    // whether the run is delivered. A cross-session refusal must therefore
+    // degrade the marker and nothing else — it is not an error result.
+    watchUltraRunReturn = { ok: false, runId: "u-1", error: 'No Ultra run "u-1" belongs to this session.' };
+    readUltraEventsReturn = {
+      events: [
+        { type: "agent-start", ordinal: 0, model: "sonnet", ts: 1 },
+        { type: "phase", title: "survey", ts: 2 },
+      ],
+    };
+    const res = await toolHandler(makeServer(), "ultra_status")({ runId: "u-1", watch: true });
+    expect(isError(res)).toBe(false);
+    const body = JSON.parse(textOf(res));
+    expect(body.watching.ok).toBe(false);
+    expect(body.watching.error).toContain("belongs to this session");
+    // Every existing figure still there, unchanged by the refusal.
+    expect(body.state).toBe("running");
+    expect(body.inFlight).toBe(1);
+    expect(body.phase).toBe("survey");
+    expect(body.agents).toEqual({ done: 0, dead: 0, total: 0 });
+  });
+
+  test("an unknown runId errors BEFORE anything is stamped", async () => {
+    getUltraManifestReturn = null;
+    const res = await toolHandler(makeServer(), "ultra_status")({ runId: "u-missing", watch: true });
+    expect(isError(res)).toBe(true);
+    expect(watchUltraRunCalls).toEqual([]);
+  });
+
+  test("the description TEACHES the registration, and still teaches ending the turn", async () => {
+    const desc = (server_registry(makeServer()) as Record<string, { description?: string }>).ultra_status
+      ?.description as string;
+    expect(desc).toContain("watch: true");
+    expect(desc).toContain("END YOUR TURN");
+    // The two claims that keep it from reading as a subscription or a gate.
+    expect(desc).toContain("blocks nothing");
+    expect(desc).toContain("does NOT switch delivery on");
+    // …and the snapshot framing the E4/E5 recovery leg depends on is intact.
+    expect(desc).toContain("SNAPSHOT");
+    expect(desc).toContain("had to truncate");
+  });
+
+  test("the LAUNCH RESULT names it at the moment the model first holds the runId", async () => {
+    // Discoverability is the entire point of AC-E5: a capability the model is
+    // told about only in a description it may never re-read is one it will not
+    // use. This is the string it reads while deciding what to do next.
+    const res = await toolHandler(makeServer(), "ultra")({ script: "s" });
+    const note = JSON.parse(textOf(res)).note as string;
+    expect(note).toContain("watch: true");
+    expect(note).toContain("END YOUR TURN");
+    expect(note).not.toContain("poll progress");
   });
 });

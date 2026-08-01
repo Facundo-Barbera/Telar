@@ -15,6 +15,10 @@ import {
   shouldEnqueueUltraWake,
   isUltraWakeTrigger,
   resolveUltraWakeMessage,
+  wakeOutcomeAllowance,
+  WAKE_OUTCOME_BUDGET,
+  WAKE_OUTCOME_CEILING,
+  WAKE_OUTCOME_FLOOR,
   type UltraWakeSummary,
 } from "./ultra-wake";
 
@@ -69,9 +73,18 @@ describe("ultra wake — the recognizer (AC1)", () => {
     expect(ULTRA_WAKE_SENTINEL).not.toBe("__telar_escalation_kickoff__");
   });
 
-  test("the server-authored prompt tells the model NOT to poll — AC2's 'without calling ultra_status'", () => {
+  test("the server-authored prompt tells the model NOT to poll — AC2's 'without calling ultra_status' — with ONE named exception", () => {
+    // The default is unchanged: do not re-read an outcome you already have.
     expect(ULTRA_WAKE_PROMPT).toContain("ultra_status");
     expect(ULTRA_WAKE_PROMPT.toLowerCase()).toContain("do not call");
+    // The exception is NAMED, because the appendix now clips a large outcome
+    // and says so — an unconditional ban would make that truncation permanent.
+    expect(ULTRA_WAKE_PROMPT).toContain("truncated");
+    // …and it comes AFTER the discouragement, in ONE string, so a model reading
+    // only the first half cannot conclude the exception does not exist.
+    expect(ULTRA_WAKE_PROMPT.indexOf("truncated")).toBeGreaterThan(
+      ULTRA_WAKE_PROMPT.toLowerCase().indexOf("do not call"),
+    );
   });
 });
 
@@ -149,17 +162,62 @@ describe("ultra wake — the appendix formatter (AC1 proof 5, AC2)", () => {
   });
 
   test("the block is BOUNDED — a huge result cannot swell every turn's system prompt", () => {
+    // RE-PINNED DELIBERATELY, name and intent unchanged. The flat 1200-char clip
+    // became a shared budget (WAKE_OUTCOME_BUDGET split across the runs present,
+    // clamped to [FLOOR, CEILING]), so the numbers moved and the property did
+    // not: one huge run is bounded, and three huge runs are bounded by the SAME
+    // total rather than by three times a per-run constant.
     const huge = "x".repeat(500_000);
     const out = formatUltraWakeAppendix([wake({ result: huge })]);
     expect(out).toContain("truncated");
-    expect(out.length).toBeLessThan(3_000);
-    // …and the bound is per run, so three huge runs stay bounded too.
+    expect(out.length).toBeLessThan(WAKE_OUTCOME_CEILING + 1_000);
     const three = formatUltraWakeAppendix([
       wake({ runId: "a", result: huge }),
       wake({ runId: "b", result: huge }),
       wake({ runId: "c", result: huge }),
     ]);
-    expect(three.length).toBeLessThan(7_000);
+    expect(three.length).toBeLessThan(WAKE_OUTCOME_BUDGET + 2_000);
+  });
+
+  test("the truncation notice names the omitted count AND how to recover the text", () => {
+    // AC-E1: when clipping happens the block must SAY SO and say how to get the
+    // rest — the old `…(truncated)` said neither, and ULTRA_WAKE_PROMPT then
+    // forbade the only recovery there is.
+    const out = formatUltraWakeAppendix([wake({ result: "x".repeat(500_000) })]);
+    expect(out).toContain("characters omitted");
+    expect(out).toContain('ultra_status("run_1")'); // the run's OWN id, not a generic word
+  });
+
+  test("a result that FITS is not truncated at all — the raise is real, not a re-worded clip", () => {
+    // 4000 chars was cut mid-sentence under the old flat 1200 cap.
+    const body = "y".repeat(4_000);
+    const out = formatUltraWakeAppendix([wake({ result: body })]);
+    expect(out).toContain(body);
+    // The header now NAMES truncation as an exception, so the bare word is not
+    // the discriminator — the NOTICE is.
+    expect(out).not.toContain("characters omitted");
+  });
+
+  test("the per-run allowance SHRINKS as the mailbox grows, and never below the old 1200 floor", () => {
+    const huge = "z".repeat(500_000);
+    const rendered = (n: number) => {
+      const list = Array.from({ length: n }, (_, i) => wake({ runId: `r${i}`, result: huge }));
+      return formatUltraWakeAppendix(list).length / n;
+    };
+    expect(rendered(1)).toBeGreaterThan(rendered(3));
+    expect(rendered(3)).toBeGreaterThan(rendered(20));
+    expect(wakeOutcomeAllowance(1)).toBe(WAKE_OUTCOME_CEILING);
+    expect(wakeOutcomeAllowance(20)).toBe(WAKE_OUTCOME_FLOOR);
+    expect(wakeOutcomeAllowance(1_000)).toBe(WAKE_OUTCOME_FLOOR); // never worse than today
+  });
+
+  test("a WATCHED run is marked; an unwatched one renders exactly as before", () => {
+    // The visible half of ultra_watch — without it the tool would be a placebo.
+    const watched = formatUltraWakeAppendix([wake({ watched: true })]);
+    expect(watched).toContain("you asked to be told about this one");
+    const plain = formatUltraWakeAppendix([wake()]);
+    expect(plain).not.toContain("you asked to be told");
+    expect(plain).toBe(formatUltraWakeAppendix([wake({ watched: false })]));
   });
 
   test("an unserializable result degrades to a note rather than throwing", () => {
@@ -239,6 +297,26 @@ describe("ultra wake — the delivery gate (review SF-3)", () => {
     ]);
     expect(appendixCarriesUltraWake(appendix, "u-real")).toBe(true);
     expect(appendixCarriesUltraWake(appendix, "u-ghost")).toBe(false);
+  });
+
+  test("a TRUNCATION NOTICE can never make a run look carried", () => {
+    // THE REGRESSION GUARD FOR THE E4 RAISE. The notice names a runId and sits
+    // inside a bullet's sub-lines; if it ever started with the BULLET and carried
+    // a `(run …)` marker, one run's truncation would ack another run's delivery.
+    const appendix = formatUltraWakeAppendix([
+      wake({ runId: "run_a", result: "q".repeat(500_000) }),
+    ]);
+    expect(appendix).toContain("truncated");
+    expect(appendixCarriesUltraWake(appendix, "run_b")).toBe(false);
+    // …and the run whose bullet IS present stays carried, truncated or not —
+    // that is what route.ts acks on.
+    expect(appendixCarriesUltraWake(appendix, "run_a")).toBe(true);
+  });
+
+  test("a WATCHED marker does not disturb the ack predicate either", () => {
+    const appendix = formatUltraWakeAppendix([wake({ runId: "run_w", watched: true })]);
+    expect(appendixCarriesUltraWake(appendix, "run_w")).toBe(true);
+    expect(appendixCarriesUltraWake(appendix, "run_x")).toBe(false);
   });
 
   test("the marker is anchored, so one run id cannot answer for another", () => {

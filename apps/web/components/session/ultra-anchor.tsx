@@ -123,11 +123,20 @@ export const ULTRA_TONE_CLASS: Record<UltraTone, string> = {
   active: "text-foreground",
 };
 
-const STATE_LABEL: Record<UltraRunState, string> = {
+// Exported for the full-pane tab, which needs the SAME four-state vocabulary.
+// `subagent-rail.tsx`'s `RailStatus` is three states (running|done|error) and
+// has no honest home for `stopped` — reusing it there would silently read a
+// stopped run as done or as a failure.
+export const STATE_LABEL: Record<UltraRunState, string> = {
   running: "running",
   done: "done",
   failed: "failed",
-  stopped: "stopped",
+  // "cancelled", NOT "stopped" (owner ruling). The core state name stays
+  // `stopped` — this is the projection's word for it, and the two need not
+  // match. What a human wants to know is that the run ended because someone
+  // ended it, which is categorically different from the failure it used to be
+  // reported as (see signals.ts's isAbortError for the other half of that fix).
+  stopped: "cancelled",
 };
 
 /** Stops a control's click from reaching the anchor's own focus handler.

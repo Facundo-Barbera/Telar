@@ -25,6 +25,7 @@
 import type { ReactNode } from "react";
 import type { AgentTab } from "@/components/session/agent-tabs";
 import type { AgentInfo, ToolPart } from "@/components/session/tool-step";
+import type { WorkState } from "@/components/session/working-indicator";
 import type { ItemKindId } from "./registry";
 
 // ── the wire + store shapes, moved verbatim from session-view.tsx ───────────
@@ -223,7 +224,7 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
 // reordered. The day parts reorder, that fallback names the wrong slot.
 export type TranscriptItem = { kind: ItemKindId; key: string; payload: unknown };
 
-// The six built-in ids. Namespaced (`conversation:*`) like every other kind,
+// The seven built-in ids. Namespaced (`conversation:*`) like every other kind,
 // because AD-13 admits no unnamespaced ids and a bare `text` would be exactly
 // the collision the rule exists to prevent. INV-8f pins this set exactly.
 export const CONVERSATION_KINDS = {
@@ -233,6 +234,7 @@ export const CONVERSATION_KINDS = {
   tools: "conversation:tools",
   permission: "conversation:permission",
   marker: "conversation:marker",
+  status: "conversation:status",
 } as const;
 
 export type PermissionRespond = (
@@ -267,6 +269,36 @@ export type PermissionPayload = {
   onRespond?: PermissionRespond;
 };
 export type MarkerPayload = { text: string; attention?: boolean };
+// Live-only, like thinking parts: the adapter appends one status item to the
+// turn currently streaming and never persists it. `state` is the SAME WorkState
+// the header heartbeat renders — one derivation, two surfaces.
+export type StatusPayload = { state: WorkState };
+
+// The 1.3 suppression rule, SCOPED TO FINISHED BLOCKS. A persisted turn has no
+// thinking text (the server never persists it), so a whitespace-only FINISHED
+// block must render nothing — an empty "✻ Thought" collapsible after a reload is
+// what this rule was written for. A LIVE block is exempt: between "thinking
+// opened" and the first delta there is no text yet, and suppressing that window
+// leaves the turn with no in-flight affordance at all.
+export function thinkingSuppressed(part: ThinkingPayload): boolean {
+  return part.done && !part.text.trim();
+}
+
+// WHETHER THE STREAMING TURN GETS ITS STATUS ROW — the whole live-only rule, in
+// one predicate, because the four clauses are what make the row live-only and a
+// four-clause conditional buried in a `.map` has no test surface at all. It is
+// the ASSISTANT'S turn, it is the LAST message, real parts already exist (an
+// empty turn keeps `pending`'s shimmer — the shell renders items OR pending,
+// never both), and the owner still has live work. `hasLiveWork` false is the
+// case this exists for: a finished turn, and every turn after a reload, has none.
+export function showsLiveStatus(turn: {
+  role: string;
+  hasLiveWork: boolean;
+  partCount: number;
+  isLast: boolean;
+}): boolean {
+  return turn.role === "assistant" && turn.hasLiveWork && turn.partCount > 0 && turn.isLast;
+}
 
 // Owner-supplied behaviour reaches a renderer THROUGH THE PAYLOAD, never through
 // ambient context (AC4, and the fix architecture review's finding A3 made to
@@ -322,7 +354,15 @@ export const toTranscriptItems = (
 //
 // A pending/just-resolved permission card is not a new unit of finished work —
 // it's the same blocked tool call waiting on the user, so a trailing run of
-// permission items doesn't end a group's liveness.
+// permission items doesn't end a group's liveness. The live status row is the
+// same class of non-work: it narrates the turn rather than adding to it, so it
+// must not demote the real last item (a streaming tools group would collapse
+// and lose its spinner the moment the status row appears after it).
 export function isTrailingItem(items: readonly TranscriptItem[], index: number): boolean {
-  return items.slice(index + 1).every((it) => it.kind === CONVERSATION_KINDS.permission);
+  return items
+    .slice(index + 1)
+    .every(
+      (it) =>
+        it.kind === CONVERSATION_KINDS.permission || it.kind === CONVERSATION_KINDS.status,
+    );
 }

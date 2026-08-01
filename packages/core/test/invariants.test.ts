@@ -4359,6 +4359,7 @@ const EXPECTED_BUILTIN_KIND_IDS = [
   "conversation:thinking",
   "conversation:tools",
   "conversation:permission",
+  "conversation:status",
   "conversation:marker",
 ].sort();
 
@@ -4852,7 +4853,7 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     expect(violations).toEqual([]);
   });
 
-  test("INV-8f the barrel's PRIMITIVES and the SIX built-in kind ids are exact-set pinned", () => {
+  test("INV-8f the barrel's PRIMITIVES and the SEVEN built-in kind ids are exact-set pinned", () => {
     const barrel = byRel.get(BARREL_REL);
     if (!barrel) {
       throw new Error(
@@ -4877,7 +4878,7 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
           `and cannot be checked. NEXT STEP: update the path.`,
       );
     }
-    // An exact-set equality, so a SEVENTH built-in kind cannot appear without a
+    // An exact-set equality, so an EIGHTH built-in kind cannot appear without a
     // deliberate edit to this pin. AD-13: every id is namespaced, including the
     // built-ins — a bare "text" would be exactly the collision the rule prevents.
     expect(builtinKindIds(items.code)).toEqual(EXPECTED_BUILTIN_KIND_IDS);

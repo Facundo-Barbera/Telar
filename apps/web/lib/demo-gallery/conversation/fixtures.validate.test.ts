@@ -138,7 +138,10 @@ describe("the six configurations", () => {
       ),
     );
     for (const id of KINDS.ids()) expect(seen.has(id)).toBe(true);
-    expect(KINDS.ids().length).toBe(6);
+    // SEVEN since the live status row joined the built-ins. The count is pinned
+    // so an eighth kind cannot arrive without a fixture exercising it — which is
+    // the whole point of this test and why the number is edited, not derived.
+    expect(KINDS.ids().length).toBe(7);
   });
 });
 

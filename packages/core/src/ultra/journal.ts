@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { telarDir } from "../manifest";
+import type { UltraTokens } from "./surface";
 
 export const ultraDir = (): string => path.join(telarDir(), "ultra");
 
@@ -38,6 +39,11 @@ export type JournalRecord = {
   // missing key, same as never provided).
   costUsd?: number;
   turns?: number;
+  // The settle's token usage, journaled beside its cost and for the same
+  // reason: a RESUME replays this record verbatim, so a figure missing here is
+  // a figure a resumed run can never state again. Optional exactly as costUsd
+  // is — an older record simply parses without it.
+  tokens?: UltraTokens;
   // THE BILLING IDENTITY OF THE SETTLE THIS RECORD IS (executor.ts's
   // UltraEvent.settleId): a unique id minted at the moment the money was
   // spent, carried here so every later replay of this record re-presents the

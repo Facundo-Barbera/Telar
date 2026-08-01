@@ -118,19 +118,30 @@ export function Conversation({
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       {header}
+      {/* THE COMPOSER BELONGS TO THE CHAT COLUMN, NOT TO THE WINDOW. It used to
+          be a sibling of this row, so it spanned the full width and ran along
+          the bottom of the RAIL as well — which read as one input box for two
+          unrelated things, and pinched the rail into a column that stopped
+          short of the floor for no reason. Nesting it beside the viewport makes
+          the geometry say what is true: you type INTO the conversation, and the
+          rail is its own full-height column next to it. The `min-w-0` is what
+          keeps a long unbroken line in either child from widening the whole
+          row instead of scrolling inside its own box. */}
       <div className="flex min-h-0 flex-1">
-        <ConversationViewport className="min-w-0 flex-1">
-          <ConversationViewportContent className="px-4">
-            {items.length === 0
-              ? empty
-              : items.map((item, i) => renderItem(item, live && i === items.length - 1))}
-            {trailing}
-          </ConversationViewportContent>
-          <ConversationViewportScrollButton />
-        </ConversationViewport>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <ConversationViewport className="min-w-0 flex-1">
+            <ConversationViewportContent className="px-4">
+              {items.length === 0
+                ? empty
+                : items.map((item, i) => renderItem(item, live && i === items.length - 1))}
+              {trailing}
+            </ConversationViewportContent>
+            <ConversationViewportScrollButton />
+          </ConversationViewport>
+          {composer}
+        </div>
         {rail}
       </div>
-      {composer}
     </div>
   );
 }

@@ -36,6 +36,7 @@ const {
   ultraWakeChannel,
   pendingUltraWakes,
   ackUltraWakes,
+  watchUltraRun,
   readUltraWakeRecord,
   liveUltraRunCount,
   ULTRA_RUN_COMPLETED,
@@ -464,6 +465,9 @@ describe("ultra completion wake (FR-UW-1)", () => {
       recordedAt: 0,
       deliveredAt: 0,
       deliveredTerminalAt: 0,
+      // Added by the per-run watch record; defaulted, so a wake.json written
+      // before the field existed still parses (story 1.1's tolerant reader).
+      watchedAt: 0,
     });
   });
 
@@ -478,6 +482,115 @@ describe("ultra completion wake (FR-UW-1)", () => {
     expect(pendingUltraWakes(sid).map((w) => w.runId)).toEqual([runId]);
     expect(ackUltraWakes(sid, [runId])).toBe(1);
     expect(pendingUltraWakes(sid)).toEqual([]);
+  });
+
+  // ── the per-run watch record (AC-E5) ──────────────────────────────────────
+  //
+  // THE ONE SENTENCE: watching records INTEREST, it does not switch delivery on.
+  // pendingUltraWakes has no opt-in gate and must never grow one.
+  describe("watchUltraRun — register interest in ONE run, additive, never a gate", () => {
+    test("it stamps watchedAt and returns the run's CURRENT state, without waiting for a terminal", async () => {
+      const sid = SID("watch-live");
+      const hanging: Fake = (_p, o) =>
+        new Promise((_res, rej) => {
+          o.abort!.signal.addEventListener("abort", () => rej(new Error("stopped")), { once: true });
+        });
+      const res = await launchUltra({
+        script: `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`,
+        agent: hanging,
+        sessionId: sid,
+      });
+      if (!res.ok) throw new Error("unreachable");
+      const watched = watchUltraRun(sid, res.runId);
+      expect(watched.ok).toBe(true);
+      expect(watched.state).toBe("running"); // it returned BEFORE the run was terminal
+      expect(watched.alreadyWatching).toBe(false);
+      expect(readUltraWakeRecord(res.runId)!.watchedAt).toBeGreaterThan(0);
+      getLiveUltraRun(res.runId)!.stop();
+      await getLiveUltraRun(res.runId)!.finished;
+    });
+
+    test("IDEMPOTENT — a second watch keeps the FIRST stamp and reports alreadyWatching", () => {
+      const sid = SID("watch-idem");
+      plantManifest("run_watch_idem", { sessionId: sid, state: "done" });
+      expect(watchUltraRun(sid, "run_watch_idem").alreadyWatching).toBe(false);
+      const first = readUltraWakeRecord("run_watch_idem")!.watchedAt;
+      const second = watchUltraRun(sid, "run_watch_idem");
+      expect(second.alreadyWatching).toBe(true);
+      expect(readUltraWakeRecord("run_watch_idem")!.watchedAt).toBe(first);
+    });
+
+    test("SESSION-CHECKED — watching another session's run is refused and writes NOTHING", () => {
+      plantManifest("run_watch_other", { sessionId: SID("watch-owner"), state: "done" });
+      const res = watchUltraRun(SID("watch-intruder"), "run_watch_other");
+      expect(res.ok).toBe(false);
+      expect(readUltraWakeRecord("run_watch_other")).toBeNull();
+      // An empty session is refused the same way, and never scans.
+      expect(watchUltraRun("", "run_watch_other").ok).toBe(false);
+    });
+
+    test("an UNKNOWN runId is refused and leaves no orphaned directory behind", () => {
+      // A typo must not mkdir a run directory that has no manifest — nothing
+      // reaps such a directory and listUltraRuns can never reach it.
+      const res = watchUltraRun(SID("watch-typo"), "run_watch_typo");
+      expect(res.ok).toBe(false);
+      expect(fs.existsSync(runDir("run_watch_typo"))).toBe(false);
+    });
+
+    test("THE NON-GATE — a terminal run that was NEVER watched is STILL pending", () => {
+      // Watching is additive; it never gates delivery. If a later change
+      // "optimises" pendingUltraWakes by filtering on watchedAt, this fails.
+      const sid = SID("watch-nongate");
+      plantManifest("run_watch_unwatched", { sessionId: sid, state: "done" });
+      plantManifest("run_watch_watched", { sessionId: sid, state: "done", updatedAt: 3 });
+      watchUltraRun(sid, "run_watch_watched");
+      const pending = pendingUltraWakes(sid);
+      expect(pending.map((w) => w.runId).sort()).toEqual([
+        "run_watch_unwatched",
+        "run_watch_watched",
+      ]);
+      // …and `watched` is surfaced only for the one that was.
+      expect(pending.find((w) => w.runId === "run_watch_watched")!.watched).toBe(true);
+      expect(pending.find((w) => w.runId === "run_watch_unwatched")!.watched).toBeUndefined();
+    });
+
+    test("CARRY-FORWARD — watchedAt survives a publish AND an ack", () => {
+      // THE SHAPE BUG THIS DESIGN INVITES. recordUltraWake and ackUltraWakes each
+      // rebuild the record from a FULL object literal, so a field either of them
+      // forgets is erased by the next publish or the next ack — the same clobber
+      // buildManifest has one level up. Every single-step test passes without
+      // this one.
+      const sid = SID("watch-carry");
+      plantManifest("run_watch_carry", { sessionId: sid, state: "done", updatedAt: 42 });
+      watchUltraRun(sid, "run_watch_carry");
+      const stamped = readUltraWakeRecord("run_watch_carry")!.watchedAt;
+      expect(stamped).toBeGreaterThan(0);
+
+      ultraWakeChannel().publish("run-completed", {
+        runId: "run_watch_carry",
+        sessionId: sid,
+        messageId: "",
+        state: "done",
+        name: "planted",
+        spendUsd: 0,
+        terminalAt: 42,
+      });
+      expect(readUltraWakeRecord("run_watch_carry")!.watchedAt).toBe(stamped);
+
+      expect(ackUltraWakes(sid, ["run_watch_carry"])).toBe(1);
+      expect(readUltraWakeRecord("run_watch_carry")!.watchedAt).toBe(stamped);
+    });
+
+    test("TOLERANT READER — a wake.json written before watchedAt existed is unwatched, not rejected", () => {
+      const sid = SID("watch-tolerant");
+      plantManifest("run_watch_old", { sessionId: sid, state: "done", updatedAt: 7 });
+      fs.writeFileSync(
+        path.join(runDir("run_watch_old"), "wake.json"),
+        JSON.stringify({ runId: "run_watch_old", recordedAt: 1, deliveredAt: 0, deliveredTerminalAt: 0 }),
+      );
+      expect(readUltraWakeRecord("run_watch_old")!.watchedAt).toBe(0);
+      expect(pendingUltraWakes(sid).find((w) => w.runId === "run_watch_old")!.watched).toBeUndefined();
+    });
   });
 
   test("the record lives under ultra's OWN subtree and nowhere else — AD-5", () => {

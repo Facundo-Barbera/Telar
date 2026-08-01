@@ -12,6 +12,7 @@ import {
   type UltraEvent,
 } from "../src/ultra/executor";
 import { readJournal } from "../src/ultra/journal";
+import { BadPrompt, isControlSignal } from "../src/ultra/signals";
 
 // Never the real ~/.telar: every successful agent() call now journals through
 // telarDir() (manifest.ts:17) — appendJournal on a live call, readJournalMap
@@ -51,11 +52,18 @@ describe("Ultra executor — happy path + opts mapping", () => {
     const res = await run.finished;
     expect(res.state).toBe("done");
     expect(res.result).toEqual({ text: "ok" });
-    // Passthrough schema injected; model + shared abort passed; effort NOT sent to the engine.
+    // Passthrough schema injected; model + shared abort passed — AND effort,
+    // which this assertion used to pin as ABSENT ("effort NOT sent to the
+    // engine"). That pin encoded a real limitation of the SDK this code was
+    // written against, and the limitation is gone: the chat route passes
+    // `effort` into the same `query()` options for every session turn. Keeping
+    // the pin meant an Ultra script could name an effort, see it on the agent's
+    // chip, and get a model that was never told — a control that displayed and
+    // did nothing. Reversed on an owner ruling.
     expect(seen[0]!.schema).toBeDefined();
     expect(seen[0]!.model).toBe("sonnet");
     expect(seen[0]!.abort).toBeInstanceOf(AbortController);
-    expect("effort" in seen[0]!).toBe(false);
+    expect(seen[0]!.effort).toBe("high");
   });
 });
 
@@ -82,6 +90,121 @@ describe("Ultra executor — MissingModel is a control signal, never a null resu
     const res = await run.finished;
     expect(res.state).toBe("failed");
     expect(res.error).toContain("model");
+  });
+});
+
+describe("Ultra executor — BadPrompt is a control signal, rejected before any ordinal or spend", () => {
+  // THE DEFECT THIS BLOCK EXISTS FOR. Every agent() resolves to an OBJECT —
+  // PASSTHROUGH_SCHEMA is the default, so even a schema-less call resolves to
+  // `{ text }` — and Ultra scripts are untyped JS in a vm sandbox. So
+  // `agent(\`summary: ${result}\`, …)` silently sends the child the literal text
+  // "[object Object]", the object-ness is gone by the time anything can notice,
+  // and the run burns a real billed call on a prompt that says nothing.
+  // Deterministic authoring error → reject, exactly as MissingModel does.
+  const seenPrompts = (calls: string[]): Fake =>
+    (async (p: string) => {
+      calls.push(p);
+      return { text: "ok" };
+    }) as Fake;
+
+  test("a prompt carrying the '[object Object]' artifact ends the run `failed` with ZERO engine calls", async () => {
+    const calls: string[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) {\n  const a = await agent("first", { model: "sonnet" });\n  return agent(\`summary: \${a}\`, { model: "sonnet" });\n}`,
+      { agent: seenPrompts(calls) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(res.error).toContain("BadPrompt");
+    expect(res.error).toContain("[object Object]");
+    // The message names the LIKELY CAUSE, not just the symptom.
+    expect(res.error).toContain("result.text");
+    // The first (legitimate) call ran; the artifact call never reached the engine.
+    expect(calls).toEqual(["first"]);
+  });
+
+  test("a NON-STRING prompt is rejected the same way", async () => {
+    const calls: string[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent({ text: "x" }, { model: "sonnet" }); }`,
+      { agent: seenPrompts(calls) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(res.error).toContain("BadPrompt");
+    expect(calls).toEqual([]);
+  });
+
+  test("'[object Promise]' — the same bug one step earlier (a missing await) — is rejected too", async () => {
+    const calls: string[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) {\n  const p = agent("first", { model: "sonnet" });\n  return agent(\`about: \${p}\`, { model: "sonnet" });\n}`,
+      { agent: seenPrompts(calls) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(res.error).toContain("[object Promise]");
+  });
+
+  test("NO ordinal was issued and no journal record was written — the 'before any spend' half", async () => {
+    // THIS is what distinguishes a rejection from a dead-agent null. A null
+    // settles an ordinal, journals it, and (on a real runner) has already been
+    // billed. A BadPrompt never gets that far, so the journal for the whole run
+    // holds only the calls that genuinely ran.
+    const runId = "u-badprompt-journal";
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) {\n  await agent("first", { model: "sonnet" });\n  return agent("x [object Object] y", { model: "sonnet" });\n}`,
+      { runId, agent: (async () => ({ text: "ok" })) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    const journal = readJournal(runId);
+    expect(journal.map((r) => r.ordinal)).toEqual([0]); // ordinal 1 was never issued
+  });
+
+  test("BadPrompt thrown inside parallel() propagates past the barrier (not swallowed to null)", async () => {
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent, parallel }) { return parallel([() => agent("ok", { model: "sonnet" }), () => agent("bad [object Object]", { model: "sonnet" })]); }`,
+      { agent: (async () => ({ text: "ok" })) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(res.error).toContain("BadPrompt");
+  });
+
+  test("the SCHEMA-LESS path is covered by the same guard (NFR-UW-6)", async () => {
+    // The guard sits ABOVE `schema = uOpts.schema ?? PASSTHROUGH_SCHEMA`, so
+    // there is one check rather than two copies. A call passing no schema at all
+    // still rejects.
+    const calls: string[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("[object Object]", { model: "sonnet" }); }`,
+      { agent: seenPrompts(calls) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("failed");
+    expect(calls).toEqual([]);
+  });
+
+  test("the documented escape lets a legitimate quote through", async () => {
+    // The REAL false positive is a synthesis prompt embedding an upstream
+    // agent's own text that happens to quote a log line containing the
+    // artifact — and it fires AFTER the fan-out is paid for. Explicit opt-out,
+    // MissingModel's posture, rather than a clever guard that tries to tell
+    // quoted text from interpolated text.
+    const calls: string[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("the log said [object Object]", { model: "sonnet", allowStringifiedObject: true }); }`,
+      { agent: seenPrompts(calls) as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(calls).toEqual(["the log said [object Object]"]);
+  });
+
+  test("isControlSignal(new BadPrompt(...)) is true", () => {
+    expect(isControlSignal(new BadPrompt("a thing", "lbl"))).toBe(true);
+    expect(new BadPrompt("a thing", "lbl").message).toContain('agent "lbl"');
   });
 });
 
@@ -352,13 +475,15 @@ describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never
     expect("effort" in events[0]!).toBe(false);
   });
 
-  test("`effort` reaches the EVENT and still does not reach engineOpts — the pin, re-asserted beside the new claim", async () => {
-    // The pre-existing pin (`Ultra executor — happy path + opts mapping`) is
-    // re-made HERE, in the same test as the new positive claim, because the two
-    // together are the actual contract: story 4.2 emits `effort` on the event,
-    // NOT into the engine call. Breaking the second half changes the child
-    // posture NFR-UW-4 fixes, and a pin two hundred lines away is a pin the next
-    // editor of this feature will not read.
+  test("`effort` reaches BOTH the event and engineOpts — the display and the model agree", async () => {
+    // THIS TEST REVERSED. It used to assert `effort` reached the EVENT and
+    // deliberately NOT `engineOpts`, on the reasoning that the SDK had no
+    // reasoning-effort field. It has one, and the chat route has been passing it
+    // for every session turn, so the old contract meant the chip and the model
+    // could disagree: the row said `sonnet·high` and the child ran at the
+    // SDK default. Both halves are asserted together for the same reason the
+    // original kept them together — the contract is that what is DISPLAYED is
+    // what was REQUESTED, and splitting the assertions is how the two drift.
     const seen: AgentOpts<any>[] = [];
     const events: UltraEvent[] = [];
     const run = startUltra(
@@ -372,7 +497,7 @@ describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never
       },
     );
     await run.finished;
-    expect("effort" in seen[0]!).toBe(false);
+    expect(seen[0]!.effort).toBe("low");
     expect(events[0]).toEqual({ type: "agent-start", ordinal: 0, model: "sonnet", effort: "low" });
   });
 

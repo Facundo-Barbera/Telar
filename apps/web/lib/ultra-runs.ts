@@ -35,10 +35,17 @@
 //     never of money. `progressFraction` returns `undefined` when `meta.phases`
 //     is absent or malformed, and an undefined fraction renders NO sliver — not
 //     an indeterminate bar, not a pulse, not a spinner pretending to be progress.
-//   - per-agent `tokens` — there are no token counts anywhere on the ultra path
-//     (ultra's ledger write passes `costUsd` and no token counts at all), so
-//     `AgentRow` HAS NO `tokens` FIELD. The demo gallery's `agentTokensAt`
-//     interpolates one over wall time; that is theatre.
+//   - per-agent `tokens` — THE ENGINE NOW PRODUCES THESE, so the refusal that
+//     stood here is retired rather than relaxed. The note read "there are no
+//     token counts anywhere on the ultra path (ultra's ledger write passes
+//     `costUsd` and no token counts at all), so `AgentRow` HAS NO `tokens`
+//     FIELD" — accurate then: `engine.ts` discarded the SDK result's `usage`
+//     and kept only the dollar figure. It is captured now, journaled beside the
+//     cost (so a resume re-presents it) and carried on the settle event, which
+//     is what this reader reads. The refusal it encoded still binds everything
+//     it was written about: an ABSENT count renders as absent, never as a
+//     confident 0, and the demo gallery's `agentTokensAt` — which interpolates
+//     one over wall time — is still theatre and is still not a source.
 //
 // REVIEW ROUND 1 EXTENDED THAT REFUSAL FROM "WHAT THE ENGINE CANNOT PRODUCE" TO
 // "WHAT THIS READER HAS NOT READ" (B1), which is the same rule and was the
@@ -63,6 +70,10 @@ import type { UltraEvent, UltraManifest } from "@telar/core";
 import { CONVERSATION_KINDS, type TranscriptItem, type ToolsPayload } from "@/components/conversation/items";
 import type { ToolPart } from "@/components/session/tool-step";
 import { spendReadout, type SpendProvider, type SpendReadout } from "@/lib/spend-readout";
+// The registry the composer's own model picker renders — imported so an Ultra
+// agent's model is named the way the rest of the product names it, rather than
+// by whatever alias the script happened to type.
+import { MODELS } from "@/lib/models";
 
 export type UltraEventLike = UltraEvent;
 export type UltraManifestLike = UltraManifest;
@@ -87,8 +98,13 @@ export type AgentRow = {
   effort?: string;
   /** absent while live; set from the `agent` event's own `ok` once it settles */
   ok?: boolean;
-  /** cost only — there is deliberately NO `tokens` field (see the header) */
+  /** What the provider billed. Kept on the row because the run header and the
+   *  session breakdown still speak dollars; the per-agent UI shows `tokens`. */
   costUsd?: number;
+  /** The provider's own usage split for this agent, or ABSENT when it reported
+   *  none. Absent is not zero: a row with no counts says so rather than
+   *  claiming the agent consumed nothing. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheCreate: number };
   /** highest-`attempt` text from the agent index; "" while nothing has streamed */
   snippet: string;
   /** an `agent` settle event (or the index's own `settled`) was seen for this
@@ -193,6 +209,18 @@ export const ULTRA_TOOL_NAME = "mcp__ultra__ultra";
  *  pins the literal, the module segment, and its membership of
  *  `MODULE_NAMESPACES`. */
 export const ULTRA_ANCHOR_KIND = "ultra:run-anchor";
+
+/** THE TAB SELECTOR PREFIX — a different vocabulary from an item-kind id, and
+ *  deliberately not spelled like one. `ultra:` is already taken TWICE: it is the
+ *  kind id's module segment (`ULTRA_ANCHOR_KIND`, pinned to exactly one id by
+ *  INV-10a/c) and it is the item KEY `spliceRunAnchors` mints (`ultra:${runId}`).
+ *  A third meaning on the same string is how two lookups start answering each
+ *  other's questions. `activeTab` holds this, `"main"`, or a spawn tool_use id —
+ *  three vocabularies in one field, kept apart by this prefix and nothing else. */
+export const ULTRA_TAB_PREFIX = "ultra-run:";
+export const ultraTabId = (runId: string) => `${ULTRA_TAB_PREFIX}${runId}`;
+export const ultraTabRunId = (tab: string): string | null =>
+  tab.startsWith(ULTRA_TAB_PREFIX) ? tab.slice(ULTRA_TAB_PREFIX.length) : null;
 
 // ── T16: ONE envelope adapter, used everywhere ──────────────────────────────
 
@@ -304,6 +332,7 @@ export function agentRows(
         settled: prev?.settled ?? false,
         ...(prev?.ok !== undefined ? { ok: prev.ok } : {}),
         ...(prev?.costUsd !== undefined ? { costUsd: prev.costUsd } : {}),
+        ...(prev?.tokens !== undefined ? { tokens: prev.tokens } : {}),
       });
     } else if (e.type === "agent") {
       const prev = byOrdinal.get(e.ordinal);
@@ -316,6 +345,7 @@ export function agentRows(
         ...(e.effort !== undefined ? { effort: e.effort } : prev?.effort !== undefined ? { effort: prev.effort } : {}),
         ok: e.ok,
         ...(e.costUsd !== undefined ? { costUsd: e.costUsd } : {}),
+        ...(e.tokens !== undefined ? { tokens: e.tokens } : {}),
         snippet: prev?.snippet ?? "",
         settled: true,
       });
@@ -857,4 +887,71 @@ export function spliceRunAnchors(
     flush();
   }
   return out;
+}
+
+// ── the agent row's three derived fields (owner ruling, 2026-07-31) ──────────
+//
+// All three live HERE and not in the component for this file's stated reason:
+// what a row SAYS is a decision and gets a test; what it looks like is layout
+// and does not. The component that renders them owns no rule at all.
+
+/** THE ROW'S STATUS, as one closed vocabulary. `AgentRow` carries three
+ *  independent booleans (`live`, `settled`, `ok`) whose combinations a renderer
+ *  was reading ad hoc, and one of those combinations is genuinely not
+ *  "running": `stopUltraRun` aborts its in-flight agents, so an ordinal on an
+ *  ENDED run can be neither settled nor live — it was terminated before it
+ *  began, which reads as "not started" rather than as a failure it never had. */
+export type AgentRunStatus = "not-started" | "running" | "done" | "failed";
+
+export function agentRunStatus(agent: {
+  live?: boolean;
+  settled?: boolean;
+  ok?: boolean;
+}): AgentRunStatus {
+  if (agent.live) return "running";
+  if (!agent.settled) return "not-started";
+  return agent.ok === false ? "failed" : "done";
+}
+
+export const AGENT_STATUS_LABEL: Record<AgentRunStatus, string> = {
+  "not-started": "not started",
+  running: "running",
+  done: "done",
+  failed: "failed",
+};
+
+/** THE MODEL, NAMED THE WAY THE PRODUCT NAMES IT. A script passes a bare alias
+ *  (`"sonnet"`, `"opus"`) straight to `agent()`, and the row printed that alias
+ *  — so an Ultra said `sonnet` where every other surface in the app says
+ *  "Sonnet 5 1M". Resolved against `lib/models.ts`, the same registry the
+ *  composer's picker renders, by exact id first and then by TIER so the aliases
+ *  scripts actually use resolve too.
+ *
+ *  AN UNRECOGNISED STRING IS RETURNED VERBATIM. A model this build has never
+ *  heard of is still what the run was told to use, and inventing a prettier
+ *  name for it would misreport which model ran. */
+export function agentModelLabel(model: string): string {
+  const raw = model.trim();
+  if (raw === "") return "";
+  const exact = MODELS.find((m) => m.id === raw);
+  const byTier = exact ?? MODELS.find((m) => m.tier === raw.toLowerCase());
+  if (!byTier) return raw;
+  return byTier.context ? `${byTier.name} ${byTier.context}` : byTier.name;
+}
+
+/** TOKENS, NOT MONEY, for a sub-agent (owner ruling): what a run consumed is
+ *  the useful per-agent figure, and the dollar total already has one home in
+ *  the run header and another in the session breakdown.
+ *
+ *  ABSENT IS NOT ZERO, and the caller must keep them apart — this returns
+ *  `undefined` when the provider reported no usage, and the row renders that as
+ *  a placeholder rather than as a confident `0`. Cache reads and cache writes
+ *  are INCLUDED: they are tokens the provider processed and billed for, and the
+ *  session's own context readout already counts them the same way. */
+export function agentTokenTotal(agent: {
+  tokens?: { input: number; output: number; cacheRead: number; cacheCreate: number };
+}): number | undefined {
+  const t = agent.tokens;
+  if (!t) return undefined;
+  return t.input + t.output + t.cacheRead + t.cacheCreate;
 }

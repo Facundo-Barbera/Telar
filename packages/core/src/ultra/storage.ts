@@ -87,6 +87,27 @@ function saveManifest(m: UltraManifest): void {
   fs.renameSync(tmp, file);
 }
 
+// A script's return value is ARBITRARY — a BigInt, a circular object, anything
+// JSON.stringify refuses — and it is written verbatim onto the manifest. So the
+// serialization class of terminal-write failure is removed AT SOURCE here rather
+// than recovered from below: round-trip it once, and on a throw substitute a
+// TOMBSTONE STRING.
+//
+// A tombstone rather than dropping `result`: a `done` manifest with no result
+// makes the wake appendix say "the run completed and returned nothing", which is
+// a LIE about a run that returned a BigInt. The tombstone is true, survives to
+// the appendix verbatim, and needs no second write. Mirrors ultra-wake.ts's own
+// safeJson posture, one layer down.
+function safeManifestResult(v: unknown): unknown {
+  if (v === undefined) return v;
+  try {
+    JSON.stringify(v);
+    return v;
+  } catch (err) {
+    return `(the script returned a value that could not be serialized: ${err instanceof Error ? err.message : String(err)})`;
+  }
+}
+
 // The spend figure ALREADY ON DISK for this run, read with no side effect —
 // deliberately NOT via getUltraManifest, whose self-healing `running` →
 // `stopped` rewrite would fire from inside a live run's own manifest write. It
@@ -127,8 +148,33 @@ export function getUltraManifest(runId: string): UltraManifest | null {
     return null;
   }
   if (m.state === "running" && !registry().has(m.runId)) {
+    // THE RETURN IS THE CONTRACT; THE WRITE IS AN OPTIMISATION. Heal in memory
+    // first, then TRY to persist — a heal that could not be persisted is
+    // recomputed identically on the next read, because the condition it keys on
+    // (`running` with no live registry entry) is still true.
+    //
+    // The write was unwrapped until this story, and it is a WRITE ON A READ
+    // PATH: `listUltraRuns()` calls this for EVERY run directory and
+    // `pendingUltraWakes` calls that on every chat POST for every session — so
+    // ONE bad manifest anywhere 500'd every chat turn in the app, including
+    // sessions that had never touched Ultra. Both reproduced escapes are real: a
+    // `running` manifest with no `runId` key throws `invalid ultra runId:
+    // undefined` out of runDir inside saveManifest, and a well-formed stale
+    // manifest whose root refuses the write throws that write's errno.
+    //
+    // NOTHING IS LOGGED HERE, deliberately. The obvious "best-effort append to
+    // the run's own events.ndjson" would fire on every chat turn of every
+    // session for as long as the path stays unwritable, and events.ndjson is
+    // read WHOLE by ultra_status, by the per-run SSE route and by the rail —
+    // so the log would grow without bound and make every reader of that run
+    // slower, forever, as the price of a failure that is already observable
+    // (the on-disk manifest still says `running`).
     m = { ...m, state: "stopped", updatedAt: Date.now() };
-    saveManifest(m);
+    try {
+      saveManifest(m);
+    } catch {
+      // Unpersisted, but healed for this reader — and re-healed on the next.
+    }
   }
   return m;
 }
@@ -158,6 +204,24 @@ function appendUltraEvent(runId: string, ev: UltraEvent): void {
   const dir = runDir(runId);
   fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(eventsFile(runId), JSON.stringify({ ...ev, ts: Date.now() }) + "\n");
+}
+
+// A `log` line into the run's OWN durable stream, contained: the caller is
+// always already handling a failure, so the reporter must never become a second
+// one. A `log` event rather than a new UltraEvent variant on purpose — that
+// union is executor.ts's, and a variant no reader knows about would record the
+// failure exactly as invisibly as swallowing it.
+//
+// NOT for the read path (getUltraManifest's self-heal deliberately logs
+// nothing) — see the comment there. This is for the WRITE path, where the
+// caller is one run doing one thing once.
+function appendUltraLog(runId: string, msg: string): void {
+  try {
+    appendUltraEvent(runId, { type: "log", msg });
+  } catch {
+    // the run's own event log is unwritable too — nothing left to report to,
+    // and still not a reason to fail a run.
+  }
 }
 
 // Line-by-line, tolerant of a torn trailing line — same idiom as
@@ -510,6 +574,22 @@ async function launch(
                 // ultra caller that already existed.
                 messageId: opts.messageId ?? "",
                 costUsd: e.costUsd,
+                // THE LEDGER HAS ALWAYS HAD THESE FIELDS; this caller passed
+                // none, so every ultra row banked its dollars and defaulted its
+                // token counts to 0. Nothing downstream could then state an
+                // Ultra's token usage — not the agent rows, not any per-run
+                // rollup — while the identical session-owned rows carried it.
+                // Absent usage stays 0 here because `UsageEntry` defaults it so;
+                // the "not reported" distinction is kept where it can be
+                // expressed, on the settle event and the journal record.
+                ...(e.tokens
+                  ? {
+                      inputTokens: e.tokens.input,
+                      outputTokens: e.tokens.output,
+                      cacheReadTokens: e.tokens.cacheRead,
+                      cacheCreateTokens: e.tokens.cacheCreate,
+                    }
+                  : {}),
                 // A KEY NAMES A BILLABLE EVENT, NOT A SLOT. (runId, ordinal)
                 // names a slot: `ordinal` is issued from a per-run counter that
                 // RESTARTS AT 0 on every re-run, so that name covers every call
@@ -570,7 +650,21 @@ async function launch(
             }
           }
         }
-        saveManifest(buildManifest("running"));
+        // ACCOUNTING IS BEST-EFFORT, THE RUN IS NOT — the sentence twelve lines
+        // above, finally applied to the line it did not cover. This callback is
+        // invoked from inside the script's own `await agent()`, so a throw
+        // escaping here fails a run that was ALREADY BILLED; the argument that
+        // contained logUsage applies unchanged to the write that follows it.
+        // buildManifest is inside the try too: it calls projectedSpend() →
+        // ledgerSpendUsd(), which can throw.
+        try {
+          saveManifest(buildManifest("running"));
+        } catch (err) {
+          appendUltraLog(
+            runId,
+            `settle-manifest-write-failed ordinal=${e.ordinal}: ${err instanceof Error ? err.message : String(err)} — this settle's spend/state did not reach manifest.json; the run continues and the next successful write (a later settle, or the terminal one) carries the whole projection anyway`,
+          );
+        }
       }
     },
     onAgentEvent: (ordinal, e, attempt) => appendAgentEvent(runId, ordinal, e, attempt),
@@ -588,6 +682,11 @@ async function launch(
   }
 
   registry().set(runId, run);
+  // DELIBERATELY UNWRAPPED, unlike the settle and terminal writes below. If the
+  // manifest cannot be written at launch the CALLER must learn about it: a run
+  // live in the registry with no manifest is invisible to getUltraManifest,
+  // listUltraRuns, the wake projection and every route — there is nothing to
+  // degrade to.
   saveManifest(buildManifest("running"));
 
   // Fire-and-forget (doc §4 "non-blocking"): NOT awaited by the caller. The
@@ -595,8 +694,58 @@ async function launch(
   // just persists the terminal outcome whenever it lands.
   run.finished
     .then((result) => {
-      const manifest = buildManifest(result.state, result.error, result.result);
-      saveManifest(manifest);
+      // THE TERMINAL WRITE, WRAPPED — recorded three times (deferred-work.md,
+      // story 4.1's completion note 17, story 4.2's scope-fence table) with the
+      // standing owner "whichever story next opens ultra's terminal write path
+      // deliberately". This is that story, so this closes it rather than
+      // re-deferring it.
+      //
+      // buildManifest is INSIDE the try: it calls projectedSpend() →
+      // ledgerSpendUsd(), which can throw, and it is where the result is
+      // serialized. `safeManifestResult` has already removed the serialization
+      // class (a BigInt/circular return value) at source, so what remains here
+      // is the fs class — ENOSPC, EROFS, EACCES, a blocked temp path.
+      let manifest: UltraManifest;
+      try {
+        manifest = buildManifest(result.state, result.error, safeManifestResult(result.result));
+        saveManifest(manifest);
+      } catch (err) {
+        // THE RECOVERY IS `registry().delete`, and it is why this catch is more
+        // than a log. getUltraManifest's self-heal is gated on
+        // `!registry().has(runId)`, and nothing in this file ever deleted from
+        // the registry — so a run whose terminal write failed kept BOTH a
+        // `running` manifest AND a live handle, which is precisely why its heal
+        // "cannot fire until the process restarts" and its completion wake was
+        // unreachable. Releasing the handle turns "stranded forever" into
+        // "reconciles to `stopped` on the next read", and because
+        // pendingUltraWakes derives pending from the manifest, that IS "the wake
+        // becomes reachable".
+        //
+        // THE HONEST CEILING, stated because a reader will otherwise assume
+        // more: the wake becomes REACHABLE, not ACCURATE. A run that genuinely
+        // finished `done` with a real result is reported as `stopped` with no
+        // result, and the appendix will say "stopped before finishing". A
+        // recovery that cannot write to disk cannot preserve an outcome; what it
+        // can do is stop the run lying about being alive.
+        //
+        // ONLY IN THIS CATCH, never on the happy path: a successful terminal
+        // write leaves a terminal manifest, so the self-heal can never fire for
+        // it anyway, and deleting unconditionally would change what
+        // stopUltraRun() and getLiveUltraRun() answer for a completed run.
+        appendUltraLog(
+          runId,
+          `terminal-manifest-write-failed: ${err instanceof Error ? err.message : String(err)}` +
+            ` — this run's terminal state is NOT on disk; its live handle has been released so the` +
+            ` next read reconciles it to "stopped" and its completion wake becomes reachable (the` +
+            ` real outcome is lost — a wake that cannot be written cannot be preserved)`,
+        );
+        registry().delete(runId);
+        // The publish is SKIPPED: announcing `run-completed` for a terminal the
+        // durable projection contradicts would put the fast path ahead of the
+        // guarantee. It only ever stamps `recordedAt`, which pending-ness does
+        // not depend on, so skipping it costs nothing.
+        return;
+      }
       // Story 4.1 / AC4 — announce the terminal state on the one event bus, as
       // an `agent-facing` event (AD-14). THE ORDER IS LOAD-BEARING: the durable
       // write happens first, so if only one of the two survives it is the one
@@ -660,6 +809,10 @@ async function launch(
     .catch(() => {
       // startUltra's own finished promise never rejects (every path settles
       // via settle()) — this catch is defense-in-depth only, never expected.
+      // The `.then` body above is now fully wrapped (the terminal write and the
+      // publish each have their own catch), so this is genuinely unreachable
+      // rather than the silent backstop that swallowed the terminal write until
+      // this story.
     });
 
   return { ok: true, runId, meta: run.meta };

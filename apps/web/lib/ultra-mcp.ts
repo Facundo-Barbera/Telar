@@ -31,6 +31,7 @@ import {
   launchUltra,
   readUltraEvents,
   stopUltraRun,
+  watchUltraRun,
   type AccountProfile,
 } from "@telar/core";
 
@@ -108,7 +109,20 @@ const okResult = (text: string) => ({ content: [{ type: "text" as const, text }]
 // composer chip's client half depends on BY IDENTIFIER. The only other way to
 // reach the string is `server.instance._registeredTools[…].description` — the
 // SDK's private registry, which breaks on an SDK upgrade for no reason.
-export const ULTRA_TOOL_DESCRIPTION = `Launch an ULTRA run: a deterministic fan-out script that spawns real subagents (agent()), fans them out in parallel (parallel()) or per-item (pipeline()), and narrates progress (phase()/log()). Validates synchronously, then returns {runId} IMMEDIATELY — the run detaches and keeps going in the background while you and the user keep talking. Several runs may be live at once. Poll ultra_status(runId) for progress; call ultra_stop(runId) to abort.
+//
+// WHY THE WAITING PROTOCOL IS IN THE DESCRIPTION (story 4.1's AC3 proved this
+// file untouched; owner ruling 1 is what authorises the edit). The sentence this
+// replaces was "Poll ultra_status(runId) for progress", and it was the textual
+// root of a real, observed habit: a guiding agent reads it, finds no
+// non-blocking protocol offered, and falls back to sleeping in a background
+// shell and re-polling — with tools that are not in BASE_ALLOWED_TOOLS at all,
+// so each call can hit a permission gate. The completion wake (story 4.1) has
+// been durable and unconditional since it shipped; nothing told the model it
+// existed. The anti-pattern is NAMED because a model that is not told what not
+// to do invents it.
+export const ULTRA_TOOL_DESCRIPTION = `Launch an ULTRA run: a deterministic fan-out script that spawns real subagents (agent()), fans them out in parallel (parallel()) or per-item (pipeline()), and narrates progress (phase()/log()). Validates synchronously, then returns {runId} IMMEDIATELY — the run detaches and keeps going in the background while you and the user keep talking. Several runs may be live at once.
+
+HOW TO WAIT FOR A RUN: you don't. Its outcome is delivered to you AUTOMATICALLY on a later turn, as a COMPLETED ULTRA RUNS block in your context — you do not have to be listening for it, and it survives a server restart. So the correct way to wait for a run is TO END YOUR TURN. Do not sleep in a background shell, do not busy-poll, do not hold the turn open: nothing makes the result arrive sooner, and a turn spent waiting is a turn the user cannot use. Call ultra_status(runId) if the USER asks what a run is doing right now; call ultra_stop(runId) to abort.
 
 ONLY call this when the user explicitly asked for a large orchestrated/parallel run — they said "ultra", or their message is Ultra-annotated (the composer's Ultra chip, noted in your system context for this turn). Never infer it yourself from an ordinary request.
 
@@ -120,7 +134,16 @@ opts.model is REQUIRED on EVERY agent() call — a script with even one model-le
 
 Banned inside the script body (throws or is rejected before running): require, import, process, Date / Date.now() / new Date(), Math.random() — no wall-clock, no entropy, no host access; a re-run must be byte-identical. Every child agent() runs NON-INTERACTIVELY under the same fixed tool surface this session has — an action needing approval simply fails that agent() call, it never pauses the run.`;
 
-const ULTRA_STATUS_DESCRIPTION = `Check an Ultra run's live progress: state (running / done / stopped / failed), cost-visibility spend, and a rollup of settled agents/phases/narration so far — call this to poll a run you launched with \`ultra\` instead of blocking on it. Once state is "done" the response also carries the script's returned result.`;
+const ULTRA_STATUS_DESCRIPTION = `A one-shot SNAPSHOT of an Ultra run, returned immediately: state (running / done / stopped / failed), agents in flight / started / settled, the current phase, the last event's timestamp, and a rollup of phases and narration so far. Once state is "done" it also carries the script's returned result — in full, uncapped.
+
+Reach for it in exactly four cases: the USER asked what a run is doing right now; you need the full text of an outcome the completion wake had to truncate; you are deciding whether to stop it; or you want to register interest in this ONE run (pass watch: true). Calling it in a loop tells you nothing the completion wake will not tell you anyway — the run's outcome reaches you automatically on a later turn.
+
+watch: true records — durably, surviving a server restart — that THIS run is the one you are waiting on, and returns immediately with the same snapshot. It starts nothing, blocks nothing, subscribes to nothing, and it does NOT switch delivery on: every run this session launched is delivered to you anyway. What it changes is that the run you asked about is marked as yours in the COMPLETED ULTRA RUNS block, so you can wait on one named run instead of re-reading the whole session's mailbox. Set it once, then END YOUR TURN.`;
+
+// WHAT THE SNAPSHOT CAN AND CANNOT SEE, stated in the payload rather than left
+// for a reader to infer from a zero. Exported so a test can pin it.
+export const ULTRA_STATUS_NOTE =
+  "This snapshot carries NO cost figure, deliberately: spend is a human-facing readout and there is nothing you can do with it. `updatedAt` moves only at agent settles and at the terminal, because that is when a run's durable record is rewritten. `inFlight`, `started`, `phase` and `lastEventAt` come from the run's own event stream and ARE live. There is no total-agents denominator because the script decides how many agents to spawn as it runs; do not infer progress from a ratio.";
 
 const ULTRA_STOP_DESCRIPTION = `Abort a live Ultra run: its shared AbortController fires, every in-flight child agent() interrupts, and the run ends state "stopped" with its journal prefix intact (a later resume replays that prefix instantly and runs only what's left live). A no-op (stopped:false) if the run isn't currently live in this process — e.g. already terminal, or the server restarted since it launched.`;
 
@@ -175,7 +198,11 @@ export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
               {
                 runId: result.runId,
                 meta: result.meta,
-                note: "Launched — non-blocking. The run continues in the background; call ultra_status(runId) to poll progress or ultra_stop(runId) to abort.",
+                // THE STRING THE MODEL READS AT THE MOMENT IT DECIDES WHAT TO DO
+                // NEXT, so it carries the same protocol the tool description
+                // does — a note that still said "poll progress" here would drive
+                // the very next tool call regardless of what the description says.
+                note: "Launched — non-blocking. The run continues in the background and its outcome will be delivered to you AUTOMATICALLY on a later turn (a COMPLETED ULTRA RUNS block in your context). The right way to wait is to END YOUR TURN — do not sleep in a background shell and do not busy-poll. To wait on THIS run in particular, call ultra_status(runId, watch: true) once — it returns immediately and marks this run as the one you are waiting on — then end your turn. Call ultra_status(runId) if the user asks what it is doing right now, or ultra_stop(runId) to abort.",
               },
               null,
               2,
@@ -186,8 +213,11 @@ export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
       tool(
         "ultra_status",
         ULTRA_STATUS_DESCRIPTION,
-        { runId: z.string().min(1) },
-        async ({ runId }) => {
+        // `watch` is OPTIONAL and defaults to absent rather than to false, so a
+        // caller that predates it — or a model that never reads that far — sends
+        // the exact same input object it always sent.
+        { runId: z.string().min(1), watch: z.boolean().optional() },
+        async ({ runId, watch }) => {
           const manifest = getUltraManifest(runId);
           if (!manifest) return errResult(`No Ultra run found with id "${runId}".`);
 
@@ -201,16 +231,68 @@ export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
           let agentsDead = 0;
           const phases: string[] = [];
           const recentLog: string[] = [];
+          // AGENTS IN FLIGHT, from the stream this tool ALREADY reads. The data
+          // was here all along — `agent-start` is appended to events.ndjson
+          // unconditionally (storage.ts's onEvent), only the MANIFEST write is
+          // gated on the settle — and it was being dropped on the floor, so a
+          // parallel fan-out that had started and not settled reported an
+          // unchanged zero for its whole survey phase.
+          const started = new Set<number>();
+          const settled = new Set<number>();
+          let phase: string | undefined;
+          let lastEventAt: number | undefined;
           for (const e of events) {
+            if (typeof e.ts === "number") lastEventAt = e.ts;
             if (e.type === "agent") {
+              settled.add(e.ordinal);
               if (e.ok) agentsDone++;
               else agentsDead++;
+            } else if (e.type === "agent-start") {
+              started.add(e.ordinal);
             } else if (e.type === "phase") {
               if (phases[phases.length - 1] !== e.title) phases.push(e.title);
+              phase = e.title;
             } else if (e.type === "log") {
               recentLog.push(e.msg);
             }
           }
+          // A SET DIFFERENCE, NEVER A SUBTRACTION OF COUNTS, and this is the one
+          // thing here that is easy to get wrong and impossible to see
+          // afterwards. `agent-start` is NEVER emitted on the cached-replay path
+          // (executor.ts returns early before it) while that ordinal's settle IS
+          // re-emitted — so on a RESUME `startedCount - settledCount` goes
+          // negative, and clamped at zero it would report "nothing in flight"
+          // while agents are genuinely burning money. The difference over
+          // ORDINALS is exact on both paths.
+          let inFlight = 0;
+          for (const ordinal of started) if (!settled.has(ordinal)) inFlight++;
+
+          // REGISTER INTEREST IN ONE RUN — the agent-facing half of core's
+          // `watchUltraRun`, on the tool the model is already holding.
+          //
+          // WHY IT IS A FLAG HERE AND NOT A FOURTH TOOL, because the shape is a
+          // deviation and a later reader deserves the reason rather than a
+          // guess. Owner ruling 1 named a separate `watch_loom`-shaped tool as
+          // the PREFERRED shape, and it still is. But a fourth ultra tool NAME
+          // cannot be registered without the same commit also editing four
+          // count-pinned files that no lane owns — invariants.test.ts's
+          // MCP_INVENTORY (compared as an ORDERED list, so registering without
+          // the pin reports GAINED and pinning without registering reports
+          // LOST), core's ULTRA_AUTO_TOOL_NAMES (without which the tool is
+          // silently filtered out of allowedTools at runtime), and the two
+          // BASE_ALLOWED_TOOLS counts. There is no ordering of those edits that
+          // does not open a red window. A flag on the tool that ALREADY takes
+          // exactly this one runId costs none of it: the registered tool-name
+          // set is unchanged, so every one of those pins stays green untouched.
+          //
+          // The capability is identical either way. `watchUltraRun` stamps one
+          // timestamp into the run's OWN wake.json and returns: it awaits
+          // nothing, registers no callback, declares no bus event, and GATES
+          // NOTHING — `pendingUltraWakes` is unconditional per session, so this
+          // changes what the appendix SAYS about a run, never whether it is
+          // delivered. It also refuses, and writes nothing, for a run belonging
+          // to another session.
+          const watching = watch === true ? watchUltraRun(opts.getSessionId() ?? "", runId) : undefined;
 
           return okResult(
             JSON.stringify(
@@ -218,10 +300,34 @@ export function createUltraMcpServer(opts: UltraMcpOpts): McpServerConfig {
                 runId: manifest.runId,
                 state: manifest.state,
                 meta: manifest.meta,
-                spend: manifest.spend,
+                // NO `spend` (owner ruling). A guiding agent cannot act on the
+                // dollar figure — it does not choose to spend less, and telling
+                // it what a run cost only invited it to narrate money at the
+                // user, which the transcript screenshots showed it doing. Cost
+                // belongs to the surfaces a HUMAN reads: the run pane and the
+                // session's own breakdown, both of which project the same
+                // ledger this field used to copy. Removed from the payload, not
+                // from the manifest — nothing about accounting changed.
                 startedAt: manifest.startedAt,
                 updatedAt: manifest.updatedAt,
+                // UNCHANGED, deliberately: `total` is the SETTLED count
+                // (done+dead) and stays that. The new figures ride BESIDE this
+                // object rather than inside it, so every existing reader — and
+                // every existing assertion — sees exactly what it saw before.
                 agents: { done: agentsDone, dead: agentsDead, total: agentsDone + agentsDead },
+                // …and the new, live ones. No `expected`/`total-planned`
+                // denominator anywhere: a script decides how many agents to
+                // spawn as it runs, so a total would be fabricated, which story
+                // 4.2's AC11 forbids.
+                inFlight,
+                started: started.size,
+                ...(phase ? { phase } : {}),
+                ...(lastEventAt !== undefined ? { lastEventAt } : {}),
+                // CONDITIONAL SPREAD, like the two above it: a call that did not
+                // ask to watch gets a payload byte-identical to the one it got
+                // before this field existed.
+                ...(watching ? { watching } : {}),
+                note: ULTRA_STATUS_NOTE,
                 phases,
                 recentLog: recentLog.slice(-20),
                 ...(manifest.error ? { error: manifest.error } : {}),

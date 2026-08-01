@@ -19,6 +19,8 @@ import {
   groupParts,
   isTrailingItem,
   parentOf,
+  showsLiveStatus,
+  thinkingSuppressed,
   toTranscriptItem,
   toTranscriptItems,
   type Part,
@@ -211,6 +213,98 @@ describe("isTrailingItem — the donor's liveness rule, kept in ONE place", () =
   test("the last item is always trailing", () => {
     expect(isTrailingItem(items, items.length - 1)).toBe(true);
     expect(isTrailingItem([], 0)).toBe(true);
+  });
+
+  // AC-L3. This function is the ONLY part of that AC a test in this repo can
+  // reach: `view.live` arriving at the tools renderer, the auto-expand and the
+  // row spinner are all JSX, and there is no DOM harness here (deliberately).
+  // What is proven is the decision; the pixels are a dev-server observation.
+  const status = (key: string): TranscriptItem => ({
+    kind: CONVERSATION_KINDS.status,
+    key,
+    payload: {},
+  });
+
+  test("a trailing status row does NOT demote the tools group ahead of it", () => {
+    // The exact production shape: the adapter appends one status item last.
+    expect(isTrailingItem([items[0], status("s")], 0)).toBe(true);
+  });
+
+  test("the two exemptions COMPOSE — a blocked tool call plus the live row", () => {
+    // Neither exemption alone covers this, and it is a shape a real turn hits.
+    expect(isTrailingItem([items[0], items[1], status("s")], 0)).toBe(true);
+  });
+
+  test("status is a TRAILING-RUN exemption, not 'status is ignorable anywhere'", () => {
+    // Without this case the new branch is indistinguishable from a filter that
+    // drops status items wherever they sit.
+    const withTextAfter: TranscriptItem[] = [
+      items[0],
+      status("s"),
+      { kind: CONVERSATION_KINDS.text, key: "t", payload: {} },
+    ];
+    expect(isTrailingItem(withTextAfter, 0)).toBe(false);
+  });
+
+  test("a lone status item is trailing — it IS the last item in production", () => {
+    expect(isTrailingItem([status("s")], 0)).toBe(true);
+  });
+});
+
+// AC-L4. NOTE ON WHAT A GREEN RESULT HERE MEANS: extended thinking only turns
+// on when the SDK is given `effort`, and the composer's default omits it — so on
+// a default session no thinking part is ever created and none of this is visible
+// to a user. The row AC-L1 appends is the affordance that actually fires there.
+// A dev-server observation of AC-L4 must therefore be done with effort
+// EXPLICITLY enabled; these four cases prove the rule, not a visible change.
+describe("thinkingSuppressed — the 1.3 reload rule, now scoped to FINISHED blocks", () => {
+  test("a FINISHED block with no text renders nothing — the reload case", () => {
+    expect(thinkingSuppressed({ text: "", done: true })).toBe(true);
+    expect(thinkingSuppressed({ text: "   \n", done: true })).toBe(true);
+  });
+
+  test("a LIVE block with no text yet is EXEMPT — the whole behaviour change", () => {
+    // Between "thinking opened" and the first delta there is no text. The old
+    // rule suppressed that window, leaving the turn with no in-flight
+    // affordance at all; this is the case a "simplification" would revert.
+    expect(thinkingSuppressed({ text: "", done: false })).toBe(false);
+  });
+
+  test("a FINISHED block WITH text renders", () => {
+    expect(thinkingSuppressed({ text: "reasoning", done: true })).toBe(false);
+  });
+});
+
+// AC-L2 — "live-only: never on a finished turn, never on a non-last message,
+// never after reload, nothing persisted". The last two are the same clause
+// mechanically: a reloaded transcript has no live work, so `hasLiveWork` is
+// false and no status item is ever built. Nothing persists because the item is
+// minted inside the render projection and never enters the store.
+describe("showsLiveStatus — the status row's live-only rule", () => {
+  const streaming = { role: "assistant", hasLiveWork: true, partCount: 2, isLast: true };
+
+  test("a streaming LAST assistant turn with real parts gets the row", () => {
+    expect(showsLiveStatus(streaming)).toBe(true);
+  });
+
+  test("a FINISHED turn does not — and neither does anything after a reload", () => {
+    // `hasLiveWork` is the reload case: the store replays parts, the owner has
+    // no live work, and no status item exists to be stale.
+    expect(showsLiveStatus({ ...streaming, hasLiveWork: false })).toBe(false);
+  });
+
+  test("a non-last message does not, even mid-stream", () => {
+    expect(showsLiveStatus({ ...streaming, isLast: false })).toBe(false);
+  });
+
+  test("an EMPTY turn does not — that window belongs to `pending`'s shimmer", () => {
+    // The shell renders items OR pending, never both, so a status item here
+    // would silently delete the empty-turn affordance it is meant to extend.
+    expect(showsLiveStatus({ ...streaming, partCount: 0 })).toBe(false);
+  });
+
+  test("a user turn never does", () => {
+    expect(showsLiveStatus({ ...streaming, role: "user" })).toBe(false);
   });
 });
 

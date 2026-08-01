@@ -33,6 +33,7 @@ const {
   readJournal,
   hashCall,
   runDir,
+  pendingUltraWakes,
 } = await import("../src/ultra");
 
 afterAll(() => {
@@ -379,6 +380,155 @@ describe("Ultra storage — stopUltraRun", () => {
 
     expect(stopUltraRun(res.runId)).toBe(false); // already terminal
     expect(stopUltraRun("u-not-a-real-run")).toBe(false);
+  });
+});
+
+// ── The terminal write path, opened deliberately ────────────────────────────
+//
+// Both bugs below were RECORDED and re-deferred three times (deferred-work.md
+// L143/L172/L186, story 4.1's completion note 17, story 4.2's scope-fence
+// table), each time to "whichever story next opens ultra's terminal write path
+// deliberately". These tests are the close-out.
+//
+// The fs-failure class is reproduced WITHOUT mocking fs: saveManifest writes
+// `manifest.json.tmp` then renames it, so making that exact path a DIRECTORY
+// makes writeFileSync throw EISDIR — deterministic, platform-independent, and it
+// leaves every other write in the run alone.
+const blockManifestWrite = (runId: string) =>
+  fs.mkdirSync(path.join(runDir(runId), "manifest.json.tmp"), { recursive: true });
+
+describe("Ultra storage — an unserializable return value is a tombstone, never a stranded run", () => {
+  test("a BigInt return value settles `done` on disk with a tombstone result", async () => {
+    // BigInt(1) rather than a `1n` literal: this workspace's tsconfig target
+    // rejects the literal form (ultra-wake.test.ts notes the same for the same
+    // reason), and the sandbox's deterministic globals include BigInt.
+    const script = `${META}\nexport default async function () { return { n: BigInt(1) }; }`;
+    const res = await launchUltra({ script, agent: costedFake(0) });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    const m = getUltraManifest(res.runId);
+    expect(m?.state).toBe("done"); // NOT "running", NOT "stopped"
+    expect(typeof m?.result).toBe("string");
+    expect(m?.result as string).toContain("could not be serialized");
+  });
+
+  test("a circular return value settles `done` the same way", async () => {
+    const script = `${META}\nexport default async function () { const o = {}; o.self = o; return o; }`;
+    const res = await launchUltra({ script, agent: costedFake(0) });
+    if (!res.ok) throw new Error("unreachable");
+    await getLiveUltraRun(res.runId)!.finished;
+    const m = getUltraManifest(res.runId);
+    expect(m?.state).toBe("done");
+    expect(m?.result as string).toContain("could not be serialized");
+  });
+});
+
+describe("Ultra storage — a terminal write that CANNOT land releases the run instead of stranding it", () => {
+  test("the wake becomes REACHABLE (it is not accurate): the handle is released and the next read says `stopped`", async () => {
+    const runId = "u-terminal-write-blocked";
+    const sessionId = "sess-terminal-blocked";
+    const script = `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`;
+    // Block from INSIDE the agent: after launch()'s own manifest write, before
+    // the terminal one.
+    const blockingFake: Fake = async (p, o) => {
+      blockManifestWrite(runId);
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: 0.01, turns: 1 });
+      return { text: p };
+    };
+    const res = await launchUltra({ runId, script, sessionId, agent: blockingFake });
+    if (!res.ok) throw new Error("unreachable");
+    const live = getLiveUltraRun(runId)!;
+    const finished = await live.finished;
+    // The RUN itself finished normally — a bookkeeping write never fails a run.
+    expect(finished.state).toBe("done");
+    await delay(5); // let the fire-and-forget terminal .then() run
+
+    const { events } = readUltraEvents(runId, 0);
+    const logs = events.filter((e) => e.type === "log").map((e) => (e as { msg: string }).msg);
+    expect(logs.some((m) => m.startsWith("terminal-manifest-write-failed"))).toBe(true);
+
+    // THE RECOVERY. The handle is gone, so getUltraManifest's self-heal — which
+    // is gated on exactly that — can finally fire.
+    expect(getLiveUltraRun(runId)).toBeUndefined();
+    const m = getUltraManifest(runId);
+    expect(m?.state).toBe("stopped"); // never "running"
+
+    // …and THAT is what makes the completion wake reachable, which is the AC.
+    expect(pendingUltraWakes(sessionId).map((w) => w.runId)).toContain(runId);
+  });
+
+  test("the SETTLE write is contained too — a second agent still runs and the script still returns", async () => {
+    const runId = "u-settle-write-blocked";
+    const script = `${META}\nexport default async function ({ agent }) {\n  await agent("a", { model: "sonnet" });\n  await agent("b", { model: "sonnet" });\n  return "finished anyway";\n}`;
+    let call = 0;
+    const blockingFake: Fake = async (p, o) => {
+      if (++call === 1) blockManifestWrite(runId);
+      o.onEvent?.({ type: "result", subtype: "success", costUsd: 0.01, turns: 1 });
+      return { text: p };
+    };
+    const res = await launchUltra({ runId, script, agent: blockingFake });
+    if (!res.ok) throw new Error("unreachable");
+    const finished = await getLiveUltraRun(runId)!.finished;
+    expect(finished.state).toBe("done");
+    expect(finished.result).toBe("finished anyway");
+    expect(call).toBe(2); // the second agent really did run
+
+    const { events } = readUltraEvents(runId, 0);
+    const logs = events.filter((e) => e.type === "log").map((e) => (e as { msg: string }).msg);
+    expect(logs.some((m) => m.startsWith("settle-manifest-write-failed ordinal=0"))).toBe(true);
+  });
+});
+
+describe("Ultra storage — the self-heal write can no longer throw on a READ path", () => {
+  // getUltraManifest is called by listUltraRuns for EVERY run directory, and
+  // pendingUltraWakes calls that on every chat POST for every session — so one
+  // bad manifest anywhere used to 500 every chat turn in the app, including
+  // sessions that had never touched Ultra. Both escapes below are reproductions
+  // of the two apps/web/app/api/chat/route.ts's own comment names.
+  test("a stale `running` manifest whose heal cannot be PERSISTED is still healed for the reader", async () => {
+    const runId = "u-selfheal-blocked";
+    const dir = runDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ runId, meta: {}, state: "running", spend: 0, startedAt: 1, updatedAt: 1 }),
+    );
+    blockManifestWrite(runId);
+    const read = getUltraManifest(runId);
+    expect(read?.state).toBe("stopped");
+    // Nothing was persisted — the RETURN is the contract, the write is an
+    // optimisation, and the same condition re-heals identically next read.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    expect(onDisk.state).toBe("running");
+    expect(getUltraManifest(runId)?.state).toBe("stopped");
+  });
+
+  test("a `running` manifest with NO runId key heals instead of throwing `invalid ultra runId: undefined`", async () => {
+    const runId = "u-selfheal-no-runid";
+    const dir = runDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ meta: {}, state: "running", spend: 0, startedAt: 1, updatedAt: 1 }),
+    );
+    expect(() => getUltraManifest(runId)).not.toThrow();
+    expect(getUltraManifest(runId)?.state).toBe("stopped");
+    // …and the whole-directory scan every chat turn performs survives it.
+    expect(() => listUltraRuns()).not.toThrow();
+  });
+
+  test("ANTI-VACUITY — an ordinary stale `running` manifest still gets its heal PERSISTED", async () => {
+    // The fix must not degrade into "never persist the heal".
+    const runId = "u-selfheal-persists";
+    const dir = runDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ runId, meta: {}, state: "running", spend: 0, startedAt: 1, updatedAt: 1 }),
+    );
+    expect(getUltraManifest(runId)?.state).toBe("stopped");
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    expect(onDisk.state).toBe("stopped");
   });
 });
 

@@ -51,13 +51,16 @@ import {
   isAsyncLaunchAck,
   isTrailingItem,
   parentOf,
+  showsLiveStatus,
   toTranscriptItems,
   usePromptInputController,
   type AgentBucket,
   type ChatMessage,
   type ItemKind,
+  type MarkerPayload,
   type PermissionPart,
   type PromptInputMessage,
+  type StatusPayload,
   type StoreMessage,
   type TranscriptItem,
   type TurnPayload,
@@ -133,12 +136,20 @@ import {
   runSnapshot,
   sendOptionsFor,
   spliceRunAnchors,
+  ultraTabId,
+  ultraTabRunId,
   type ArmState,
+  type RunSnapshot,
   type UltraAnchorPayload,
 } from "@/lib/ultra-runs";
 import { useUltraRuns } from "@/lib/use-ultra-runs";
 import { ultraRunAnchorKind } from "@/components/session/ultra-anchor";
 import { UltraRail } from "@/components/session/ultra-rail";
+import {
+  UltraTabBanner,
+  UltraTabView,
+  type UltraTabViewProps,
+} from "@/components/session/ultra-tab";
 import { cn } from "@/lib/utils";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
 
@@ -473,7 +484,11 @@ const agentBucketKind: ItemKind<AgentBucketPayload> = {
   id: SESSION_AGENT_BUCKET,
   render: (payload, view) => (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-3">
-      {payload.banner}
+      {/* Sticky for the same reason the Ultra tab's is: a long sub-agent
+          transcript scrolled the only Back affordance off the top. */}
+      <div className="sticky top-0 z-20 -mx-1 bg-background px-1 pb-1.5 pt-1">
+        {payload.banner}
+      </div>
       {/* Same reading column as the main transcript's <Message> wrapper, so a
           subagent tab lines up with Main instead of spanning the whole pane. */}
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 text-sm">
@@ -483,6 +498,81 @@ const agentBucketKind: ItemKind<AgentBucketPayload> = {
           view.render(child, { live: view.live && isTrailingItem(payload.items, i) }),
         )}
         {payload.result}
+      </div>
+    </div>
+  ),
+};
+
+// THE FULL-PANE ULTRA TAB, as ONE composite item — the same mechanism a
+// sub-agent tab uses, and deliberately not a second one. `ConversationProps` is
+// CLOSED at nine names (INV-8i has a `@ts-expect-error` that fails if a tenth
+// compiles), so the only ways into the pane are an item, `empty`, `trailing`, or
+// bypassing the shell entirely; bypassing loses the rail, the composer and the
+// scroll column, `trailing` is documented as the wrong slot for anything that
+// must not steal liveness, and `empty` already holds three real empty states.
+// An item it is, exactly as `agentBucketKind` above already is.
+//
+// DECLARED HERE AND NOT IN `ultra-anchor.tsx`: INV-10's floor asserts that file
+// declares EXACTLY ONE `ItemKind`. Declaring it here costs nothing — `session`
+// is already a `MODULE_NAMESPACES` entry, and `KIND_DONOR_RELS` already scans
+// this file for renderer purity — so the new kind needs no invariants edit.
+// `pane` is the WHOLE data half, built by the adapter — run snapshot, spend
+// provider, the two controls, the busy flag. `isOpen`/`setOpen` are the only
+// things the renderer supplies, and they are SHELL-PROVIDED VIEW STATE rather
+// than ambient context: threading them down is what lets each agent's
+// transcript disclose independently without the pane owning local state that a
+// pure renderer may not have.
+type UltraTabPayload = {
+  banner: ReactNode;
+  pane: Omit<UltraTabViewProps, "isOpen" | "setOpen">;
+};
+
+const SESSION_ULTRA_TAB = "session:ultra-tab";
+
+const ultraTabKind: ItemKind<UltraTabPayload> = {
+  id: SESSION_ULTRA_TAB,
+  // THE PANE OWNS ITS OWN SCROLL, and that is what stops the viewport from
+  // lurching. This kind renders inside `ConversationViewport`, which is
+  // `StickToBottom(initial="smooth", resize="smooth")` — correct for a chat,
+  // where new content SHOULD pull the view down. But it means any height change
+  // inside this pane reads as "the transcript grew", so opening one agent's
+  // ~384px transcript smoothly scrolled the whole page to the bottom, past the
+  // very thing that had just been opened.
+  //
+  // Fixing it by relaxing `resize` was not an option: that setting belongs to
+  // every conversational surface in the app and chat depends on it. Instead the
+  // pane is given a FIXED height and its own `overflow-y-auto`, so the outer
+  // content height NEVER CHANGES no matter what is expanded in here — there is
+  // no resize for StickToBottom to react to. The transcript's own box scrolls
+  // inside this one.
+  //
+  // The banner sits OUTSIDE the scrolling half rather than `sticky` within it,
+  // which is strictly better than the sticky strip it replaces: the way out is
+  // now always visible and cannot be scrolled under anything.
+  //
+  // THE UNDERSCORES IN THE HEIGHT ARE LOAD-BEARING. `calc()` requires whitespace
+  // around its `-`, and a Tailwind arbitrary value cannot contain literal
+  // spaces — so `h-[calc(100vh-13rem)]` compiles to `height: calc(100vh-13rem)`,
+  // which is invalid CSS, is dropped by the parser, and leaves the pane free to
+  // grow to its content. Measured exactly that way before the fix: the box
+  // reported 878px inside a 656px viewport and the banner sat 110px above the
+  // fold, which is the bug this whole block exists to prevent.
+  render: (payload, view) => (
+    <div
+      // AN INLINE STYLE, NOT AN ARBITRARY CLASS, and deliberately. Two spellings
+      // of this height were tried as Tailwind arbitrary values and NEITHER
+      // reached the element: `h-[calc(100vh-13rem)]` compiles to invalid CSS
+      // (calc needs whitespace around its `-`), and the underscore form did not
+      // produce a rule either. Both were measured the same way — the pane
+      // reported 878px inside a 656px scroller, so the height was simply not
+      // being applied — and the second attempt was indistinguishable from the
+      // first from the user's side. A style attribute cannot fail to generate.
+      style={{ height: "calc(100vh - 13rem)", minHeight: "24rem" }}
+      className="mx-auto flex w-full max-w-7xl flex-col gap-2"
+    >
+      <div className="shrink-0">{payload.banner}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <UltraTabView {...payload.pane} isOpen={view.isOpen} setOpen={view.setOpen} />
       </div>
     </div>
   ),
@@ -502,6 +592,7 @@ const SESSION_KINDS = createItemKindRegistry([
   // INDEPENDENT INSTANCES passed as props, so registering here cannot reach
   // there — which is exactly the property that makes the tombstone honest.
   ultraRunAnchorKind as unknown as ItemKind<never>,
+  ultraTabKind as unknown as ItemKind<never>,
 ]);
 
 // A subagent's own tab, as ONE transcript item: the same rendering path as Main
@@ -515,6 +606,30 @@ const SESSION_KINDS = createItemKindRegistry([
 // The bucket's items get NO `agentSteps`/`onSelectAgent`: v1 doesn't track
 // sub-subagents, so a subagent's own tab renders nested tool calls as plain tool
 // rows — exactly as the donor's bucket did by omitting those props.
+// THE RUN TAB, as one item. Mirrors `agentBucketItem` deliberately: the adapter
+// builds the banner and the whole data half, the renderer places nodes and
+// threads the shell's disclosure map. `provider` is HARD-CODED "claude" for the
+// reason `ultraAnchorPayloads` states — the Ultra MCP server exists only on that
+// branch, and a session-level provider prop here would render a fabricated
+// figure the moment anyone flipped it.
+function ultraTabItem(
+  run: RunSnapshot,
+  onBack: () => void,
+  onStop: () => void,
+  busy: boolean,
+): TranscriptItem {
+  return {
+    kind: SESSION_ULTRA_TAB,
+    // The KEY NAMES THE RUN, not the slot: switching tabs must remount the pane
+    // rather than reuse the previous run's disclosure map.
+    key: `${SESSION_ULTRA_TAB}:${run.runId}`,
+    payload: {
+      banner: <UltraTabBanner run={run} onBack={onBack} />,
+      pane: { run, provider: "claude", onStop, busy },
+    } satisfies UltraTabPayload,
+  };
+}
+
 function agentBucketItem(bucket: AgentBucket, onBack: () => void): TranscriptItem {
   const agent = bucket.spawn.agent ?? { type: null, description: "" };
   const status = agentStatus(bucket.spawn);
@@ -1081,6 +1196,11 @@ function SessionViewInner({
   >([]);
   // Story 4.2 / AC6 — the composer chip's arm state. NOT persisted (T11).
   const [ultraArm, setUltraArm] = useState<ArmState>({ armed: false });
+  // Which user turns went out Ultra-annotated. LIVE-ONLY, like the thinking
+  // parts: `StoreMessage` has no such field and this is a property of the
+  // REQUEST rather than of anything anyone said, so a reloaded transcript
+  // simply shows the message without the marker.
+  const [ultraAnnotated, setUltraAnnotated] = useState<ReadonlySet<string>>(new Set());
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1754,6 +1874,14 @@ function SessionViewInner({
     // pressed Enter.
     async (text: string, opts?: { hidden?: boolean; ultra?: boolean }) => {
       const asstId = `m${nextId.current++}`;
+      // Named before the array literal below so the Ultra annotation can be
+      // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
+      // MESSAGE: `ChatMessage` belongs to the frozen Conversation shell, and
+      // INV-10c fails by name the moment a shell file learns the word "ultra" —
+      // that is AD-12's "the shell acquires a domain one field at a time" drift,
+      // and it caught this exact attempt. A set of ids owned here says the same
+      // thing without widening anything the shell has to know.
+      const userId = `m${nextId.current++}`;
       // Fresh session (no id yet): the first user message names the thread,
       // mirroring the title the store derives on save. A hidden kickoff has no
       // user text to title from, so it seeds a fixed escalation label instead.
@@ -1764,13 +1892,22 @@ function SessionViewInner({
           ? []
           : [
               {
-                id: `m${nextId.current++}`,
+                id: userId,
                 role: "user" as const,
                 parts: [{ type: "text" as const, text, done: true }],
               },
             ]),
         { id: asstId, role: "assistant", parts: [] },
       ]);
+      // THE CHIP'S ONLY VISIBLE PROOF. `ultra: true` reaches the route and
+      // becomes a system-prompt note — a REQUEST the agent may act on, not a
+      // behaviour flag (see the options doc above). That is the right semantics
+      // and it is also exactly why the control read as dead: arming it, sending,
+      // and watching nothing change is indistinguishable from a no-op. Recorded
+      // against the turn it was armed for, so the transcript can say so.
+      if (opts?.ultra && !opts.hidden) {
+        setUltraAnnotated((prev) => new Set(prev).add(userId));
+      }
       setStatus("submitted");
       setThinking(false);
 
@@ -2086,13 +2223,27 @@ function SessionViewInner({
   // into `RunSnapshot`s by `@/lib/ultra-runs`. Everything that is a DECISION
   // lives there and is tested there; what follows is wiring.
   const { runs: ultraRuns, reload: reloadUltraRuns } = useUltraRuns(sessionId);
-  // THE SELECTED RUN LIVES HERE, NOT IN THE RAIL. Its writer is the `?run=`
-  // effect below (the dock's tap lands with that param), story 4.2 adds no React
-  // context — `INV-8c` fails BY NAME on a new provider — and it must not ride
-  // `activeTab`, which is simultaneously the rail's `activeId` AND the
-  // transcript's bucket selector, so a runId in it would silently change what
-  // the transcript renders. Keeping it separate is also what makes the
-  // permission handler's `setActiveTab("main")` unable to reach it.
+  // THE RAIL CARD'S OWN INLINE DISCLOSURE — and NOTHING MORE, since the full-pane
+  // tab landed. It lives here rather than in the rail because its writer is the
+  // `?run=` effect below (the dock's tap lands with that param) and story 4.2
+  // adds no React context (`INV-8c` fails BY NAME on a new provider).
+  //
+  // THE RULE THIS COMMENT USED TO STATE IS SUPERSEDED, deliberately. It said a
+  // runId "must not ride `activeTab` … so a runId in it would silently change
+  // what the transcript renders". That was right when "focus" could only mean
+  // "expand this card inside 240px": changing the pane would have been a side
+  // effect nobody asked for. A run tab in `activeTab` changing what the
+  // transcript renders IS NOW THE FEATURE. Three vocabularies share that one
+  // string — `"main"`, a spawn tool_use id, and `ultraTabId(runId)` — and the
+  // `ultra-run:` prefix (`lib/ultra-runs.ts`) is the only thing keeping them
+  // apart, which is why the prefix is declared beside the projection with its
+  // own test rather than spelled inline here.
+  //
+  // TWO "IS THIS RUN OPEN" SIGNALS, ORTHOGONAL BY CHOICE, not by accident:
+  // `openRunId` is the rail card's small expander, `activeTab` is the pane. A
+  // run can be both, and neither implies the other. Collapsing them would mean
+  // deleting the rail card's expanded block — which is where the live agent
+  // rows live — and the owner's ruling is "polish what is there", not delete it.
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   // Disables an anchor's Stop/Resume between the click and the next manifest
   // snapshot. Resume is NOT idempotent — a second POST while live returns a 400.
@@ -2130,7 +2281,13 @@ function SessionViewInner({
         // it, which is a fabricated figure. If a Codex ultra path ever exists,
         // this literal and the dock signal's are where it changes.
         provider: "claude",
-        onFocus: () => setOpenRunId(runId),
+        // OPEN THE FULL PANE, and expand the rail card alongside it. Both,
+        // because they answer different questions: the pane is where the run is
+        // read, the rail card is the index entry that stays visible while it is.
+        onFocus: () => {
+          setActiveTab(ultraTabId(runId));
+          setOpenRunId(runId);
+        },
         onStop: () => void ultraAct(runId, "stop"),
         onResume: () => void ultraAct(runId, "resume"),
         busy: ultraBusyRunId === runId,
@@ -2158,7 +2315,10 @@ function SessionViewInner({
     (runId: string): UltraAnchorPayload => ({
       run: runSnapshot(null, null, [], runId),
       provider: "claude",
-      onFocus: () => setOpenRunId(runId),
+      onFocus: () => {
+        setActiveTab(ultraTabId(runId));
+        setOpenRunId(runId);
+      },
       onStop: () => void ultraAct(runId, "stop"),
       onResume: () => void ultraAct(runId, "resume"),
       busy: ultraBusyRunId === runId,
@@ -2182,11 +2342,43 @@ function SessionViewInner({
   // since navigated away from.
   useEffect(() => {
     if (!focusRunId) return;
+    // ARRIVAL OPENS THE PANE, not just the rail card. The dock tap's whole
+    // premise is "come and look at this run", and the 240px card was only ever
+    // the best answer available before a pane existed.
+    setActiveTab(ultraTabId(focusRunId));
     setOpenRunId(focusRunId);
     router.replace(pathname, { scroll: false });
   }, [focusRunId, router, pathname]);
 
   const ultraRunList = useMemo(() => [...ultraRuns.values()], [ultraRuns]);
+
+  // THE COST BREAKDOWN, decomposed BY OWNER because that is what the ledger
+  // records. `sessionCost` is already the projection `sessionSpendUsd` returns —
+  // this session's own rows PLUS the `ownerKind: "ultra"` rows its runs wrote,
+  // and the two sets are disjoint (`packages/core/src/usage-ledger.ts`). So the
+  // per-run figures are read directly and the session's own turns are what is
+  // left over. The clamp is not cosmetic: the run list and the ledger fold are
+  // read through different paths and can disagree for one poll interval, and a
+  // negative dollar figure beside a real transcript reads as a bug in the
+  // ledger rather than as the rounding artefact it is.
+  const spendBreakdown = useMemo(() => {
+    const runs = ultraRunList.map((r) => ({ runId: r.runId, name: r.name, usd: r.spendUsd }));
+    const ultraTotal = runs.reduce((sum, r) => sum + r.usd, 0);
+    return { sessionUsd: Math.max(0, sessionCost - ultraTotal), runs };
+  }, [ultraRunList, sessionCost]);
+  // THE THIRD BRANCH OF `activeTab`, beside `"main"` and a spawn tool_use id.
+  // It reads the SAME map `useUltraRuns` already produces — no second fetch, no
+  // second hook, no second EventSource. Declared here rather than beside
+  // `activeBucket` for one boring reason: `ultraRuns` does not exist yet up
+  // there, and hook order is not negotiable.
+  //
+  // A run tab whose run has fallen out of the map resolves to null and the pane
+  // falls back to Main, which is the same tombstone posture `activeBucket` takes
+  // for a vanished bucket (AD-8: a vanished reference is never a throw).
+  const activeRunTab = useMemo(() => {
+    const id = ultraTabRunId(activeTab);
+    return id ? (ultraRuns.get(id) ?? null) : null;
+  }, [activeTab, ultraRuns]);
   const ultraLiveCount = useMemo(
     () => ultraRunList.filter((r) => r.state === "running").length,
     [ultraRunList],
@@ -2580,7 +2772,19 @@ function SessionViewInner({
   // of a live turn, so a memo would recompute anyway while adding a dependency
   // list to keep correct. The donor computed `groupParts` inline in its render
   // loop for the same reason.
-  const transcriptItems: TranscriptItem[] = activeBucket
+  // THE RUN-TAB ARM COMES FIRST so the two selectors cannot both resolve: an
+  // `ultra-run:` id can never also be a bucket id, but ordering says so
+  // structurally rather than relying on that.
+  const transcriptItems: TranscriptItem[] = activeRunTab
+    ? [
+        ultraTabItem(
+          activeRunTab,
+          () => setActiveTab("main"),
+          () => void ultraAct(activeRunTab.runId, "stop"),
+          ultraBusyRunId === activeRunTab.runId,
+        ),
+      ]
+    : activeBucket
     ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
     : messages.map((m) => {
         // Main renders only this message's OWN parts — anything a subagent
@@ -2588,6 +2792,30 @@ function SessionViewInner({
         // here even though it rode in on the same SSE stream and the same
         // message's parts array.
         const mainParts = m.parts.filter((p) => parentOf(p) === undefined);
+        // The persistent in-flight row rides the STREAMING turn's items, after
+        // the anchor splice, so it always renders last inside the bubble. Only
+        // once real parts exist — the empty turn keeps `pending`'s shimmer
+        // (items must stay empty for the shell to render it at all). Live-only,
+        // like thinking parts: nothing here persists, so a reload of a finished
+        // turn can never grow a stale status row. isTrailingItem exempts it, so
+        // the tools group ahead of it keeps its liveness (and its spinner).
+        // The RULE is `showsLiveStatus`, in items.ts, where a test can drive it.
+        // The trailing `&& liveWork` is narrowing and nothing else — the
+        // predicate already answered the question, but TypeScript cannot carry
+        // `liveWork !== null` back out of a call.
+        const statusItem: TranscriptItem | null =
+          showsLiveStatus({
+            role: m.role,
+            hasLiveWork: liveWork !== null,
+            partCount: mainParts.length,
+            isLast: m.id === messages[messages.length - 1]?.id,
+          }) && liveWork
+            ? {
+                kind: CONVERSATION_KINDS.status,
+                key: `${m.id}:status`,
+                payload: { state: liveWork } satisfies StatusPayload,
+              }
+            : null;
         return {
           kind: CONVERSATION_KINDS.turn,
           key: m.id,
@@ -2609,15 +2837,33 @@ function SessionViewInner({
             // a streaming turn hands the anchor `view.live === true`.
             // `agentBucketItem`'s own nested list is deliberately NOT spliced —
             // ultra is called from the main thread.
-            items: spliceRunAnchors(
-              toTranscriptItems(groupParts(m.id, mainParts), {
-                onRespond: respondPermission,
-                agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
-                onSelectAgent: setActiveTab,
-              }),
-              ultraAnchorPayloads,
-              pendingUltraAnchor,
-            ),
+            items: [
+              ...spliceRunAnchors(
+                toTranscriptItems(groupParts(m.id, mainParts), {
+                  onRespond: respondPermission,
+                  agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
+                  onSelectAgent: setActiveTab,
+                }),
+                ultraAnchorPayloads,
+                pendingUltraAnchor,
+              ),
+              // The armed chip, said out loud on the turn it applied to. A
+              // MARKER rather than a new kind: this is exactly what markers are
+              // — a one-line statement about the conversation that is not
+              // something anyone said — and `conversation:marker` already ships.
+              ...(ultraAnnotated.has(m.id)
+                ? [
+                    {
+                      kind: CONVERSATION_KINDS.marker,
+                      key: `${m.id}:ultra`,
+                      payload: {
+                        text: "sent as an Ultra request",
+                      } satisfies MarkerPayload,
+                    },
+                  ]
+                : []),
+              ...(statusItem ? [statusItem] : []),
+            ],
             pending:
               mainParts.length === 0 && m.role === "assistant" && busy ? (
                 <Shimmer className="text-sm">
@@ -2747,6 +2993,7 @@ function SessionViewInner({
               usd: sessionCost,
               tokens: tokens.input + tokens.output,
             })}
+            breakdown={spendBreakdown}
           />
           {/* Minimize this session to the mini-dock — the dock's natural entry
               point. Only once a real, persisted session id exists to follow. */}
@@ -2839,7 +3086,13 @@ function SessionViewInner({
         // `isTrailing` from there. On a subagent tab, "the spawn hasn't
         // produced a result yet" stands in for "currently streaming" — exactly
         // what the bucket's own `bucketLive` meant.
-        live={activeBucket ? agentStatus(activeBucket.spawn) === "running" : busy}
+        live={
+          activeRunTab
+            ? activeRunTab.state === "running"
+            : activeBucket
+              ? agentStatus(activeBucket.spawn) === "running"
+              : busy
+        }
         empty={emptyState}
         // Durable in-stream loom record (replaces the banner): a compact row
         // per lifecycle transition — started/parked/resumed/ready — carrying
@@ -2851,7 +3104,7 @@ function SessionViewInner({
         // streaming turn would silently steal its liveness and the trailing
         // tool group would stop auto-opening mid-turn.
         trailing={
-          !activeBucket && loomEvents.length > 0 ? (
+          !activeBucket && !activeRunTab && loomEvents.length > 0 ? (
             <div className="mx-auto flex w-full max-w-7xl flex-col gap-2 pt-3">
               {loomEvents.map((r) => (
                 <InlineLoomRow
@@ -2883,10 +3136,11 @@ function SessionViewInner({
               workflows={
                 <UltraRail
                   runs={ultraRunList}
-                  openRunId={openRunId}
-                  onOpenRun={setOpenRunId}
-                  provider="claude"
-                  onChanged={() => void reloadUltraRuns()}
+                  // The HERE chip and the pane share ONE source of truth: the
+                  // run id `activeTab` is currently carrying. The rail never
+                  // holds its own copy of "what is open".
+                  activeRunId={ultraTabRunId(activeTab)}
+                  onOpen={(id) => setActiveTab(ultraTabId(id))}
                 />
               }
               workflowCount={ultraRunList.length}

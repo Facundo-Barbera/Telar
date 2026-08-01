@@ -1,6 +1,6 @@
 "use client";
 
-// THE SIX BUILT-IN ITEM KINDS, and the leaf renderings they wrap.
+// THE SEVEN BUILT-IN ITEM KINDS, and the leaf renderings they wrap.
 //
 // WHY A RENDERER TAKES (payload, view) AND NOT PROPS. A registered kind is a
 // PURE FUNCTION of its item's payload and the view state the shell hands it —
@@ -32,6 +32,7 @@ import { Message, MessageContent, MessageResponse } from "@/components/ai-elemen
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { StatusDot } from "@/components/session/agent-tabs";
 import { ToolStepRow, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
+import { WorkingIndicator } from "@/components/session/working-indicator";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./approval-card";
 import {
@@ -39,8 +40,10 @@ import {
   agentLabel,
   agentStatus,
   isTrailingItem,
+  thinkingSuppressed,
   type MarkerPayload,
   type PermissionPayload,
+  type StatusPayload,
   type TextPayload,
   type ThinkingPayload,
   type ToolsPayload,
@@ -78,10 +81,10 @@ export function ThinkingRow({
   open: boolean;
   onToggle: () => void;
 }) {
-  // Suppression rule (1.3): whitespace-only content renders NOTHING, so an empty
-  // "✻ Thought" collapsible is structurally impossible — this is the durable fix
-  // for the reload case where the server persists no thinking text.
-  if (!part.text.trim()) return null;
+  // The suppression rule itself lives in items.ts, where a test can drive it —
+  // the LIVE exemption is the whole behaviour change and is exactly the sort a
+  // later "simplification" back to `!part.text.trim()` would silently revert.
+  if (thinkingSuppressed(part)) return null;
 
   if (!part.done) {
     // Live stream: a growing muted italic block with a ✻ + shimmering "Thinking"
@@ -281,7 +284,7 @@ export function ToolStepGroup({
   );
 }
 
-// ── the six kinds ───────────────────────────────────────────────────────────
+// ── the seven kinds ─────────────────────────────────────────────────────────
 
 // THE COMPOSITE. The donor's transcript is two levels, not one, and BOTH carry
 // visible styling: ConversationContent's `gap-8` spaces turns apart, Message's
@@ -379,7 +382,19 @@ const markerKind: ItemKind<MarkerPayload> = {
   render: (payload) => <Marker attention={payload.attention}>{payload.text}</Marker>,
 };
 
-/** The six built-ins, ready to spread into an owner adapter's own registry. */
+// The persistent in-flight row. The turn's other liveness signals each cover a
+// narrow window (empty-turn shimmer dies at the first part; the thinking block
+// needs thinking enabled; a tool spinner dies at its tool_result) and the gaps
+// between them are pixel-identical to a finished turn. This row is appended by
+// the adapter to the streaming turn only, bound to the same WorkState the
+// header heartbeat derives, so an in-flight turn always shows motion at its
+// tail — including on embedded surfaces, which have no header bar at all.
+const statusKind: ItemKind<StatusPayload> = {
+  id: CONVERSATION_KINDS.status,
+  render: (payload) => <WorkingIndicator state={payload.state} className="w-fit" />,
+};
+
+/** The seven built-ins, ready to spread into an owner adapter's own registry. */
 export const BUILTIN_KINDS: readonly ItemKind<never>[] = [
   turnKind,
   textKind,
@@ -387,4 +402,5 @@ export const BUILTIN_KINDS: readonly ItemKind<never>[] = [
   toolsKind,
   permissionKind,
   markerKind,
+  statusKind,
 ] as unknown as readonly ItemKind<never>[];
