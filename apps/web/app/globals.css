@@ -2,16 +2,20 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-/* The `:not(:is(.light *))` half exists for the demo gallery. Light is on
-   `:root`, which only ever matches <html>, so a gallery stage that wants to
-   show the light palette while the shell is dark has to re-declare the tokens
-   on its own wrapper (lib/demo-gallery/theme-island.ts). That wrapper is still
-   a descendant of html.dark, so without this every `dark:` utility inside it
-   kept firing — a stage whose tokens said light and whose variant overrides
-   said dark, which is precisely the misreport the gallery exists to prevent.
-   The island marks itself `.light`; this excludes it. Nothing else in the app
-   ever carries that class, so outside the gallery the variant is unchanged. */
-@custom-variant dark (&:is(.dark *):not(:is(.light *)));
+/* Plain, and staying plain. This briefly carried a `:not(:is(.light *))` half
+   so the demo gallery's light stages could suppress `dark:` utilities inside a
+   light island — the island re-declares the tokens on its own wrapper but is
+   still a descendant of html.dark, so those utilities kept firing.
+
+   That bought a dev-only surface a little fidelity and charged the whole app
+   for it: every `dark:` rule went from (0,1,0) to (0,2,0), and any element
+   anywhere that ever wore a bare `light` class would silently lose dark mode
+   inside it. A footgun in the shipping app is not worth a gallery stage
+   rendering slightly wrong. The gallery's light stages get their tokens from
+   the island's inline style, which is what actually makes them light; what they
+   lose is `dark:`-scoped overrides, and that limitation is documented at
+   lib/demo-gallery/theme-island.ts rather than paid for here. */
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);

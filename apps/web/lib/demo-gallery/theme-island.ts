@@ -14,6 +14,17 @@
 //
 // So read the same two rules back out of the loaded stylesheet instead. A
 // palette change lands here for free, and there is no copy left to keep in sync.
+//
+// WHAT AN ISLAND STILL CANNOT DO, on purpose. A light island gets its TOKENS
+// from the inline style below, but `dark:`-scoped utility overrides inside it
+// keep firing, because the wrapper is still a descendant of html.dark. The fix
+// for that was a `:not(:is(.light *))` clause on the app's `dark` variant, and
+// it was reverted: it raised the specificity of every `dark:` rule in the
+// shipping app and made a bare `light` class anywhere a silent dark-mode hole,
+// which is a bad trade for a surface only developers open. So a light stage is
+// accurate about the palette and approximate about `dark:` overrides. If that
+// ever matters more than it does today, the answer is to scope the clause to
+// the gallery's own stylesheet, not to widen the app's.
 
 import { useState, type CSSProperties } from "react";
 
