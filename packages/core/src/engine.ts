@@ -7,7 +7,8 @@ import path from "node:path";
 import { z } from "zod";
 import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
-import { readSecret } from "./secrets";
+import { accountEnvSecretKey, readSecret } from "./secrets";
+import { getProxyKey, readProxyConfig } from "./proxy";
 import { acquireAdmission, type AdmissionClass } from "./admission";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
@@ -142,6 +143,24 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
     // DIFFERENT login. That is the "personal silently resolves to work" bug.
     delete env[p.configDirEnv];
   }
+
+  // THE SAME RULE, GENERALIZED: an account owns where its requests go and who
+  // they go as, so every env var in the provider's ownedEnv is deleted here
+  // before anything below sets one deliberately. Without this, whichever shell
+  // launched the Telar server decides — and it decides for EVERY account at
+  // once, silently. Two concrete ways that bites:
+  //
+  //   · A terminal spawned by Claude Code exports its settings.json `env`
+  //     block, so a server started there inherits ANTHROPIC_BASE_URL and every
+  //     account quietly runs through a local proxy it never declared.
+  //   · An ambient ANTHROPIC_API_KEY moves a "subscription" account onto
+  //     metered API billing while the registry still says subscription.
+  //
+  // Deleting is not the same as forbidding: the account's own env (applied at
+  // the bottom of this function) sets these deliberately, and non-subscription
+  // auth modes set their token just below. What stops is INHERITANCE.
+  for (const name of p.ownedEnv) delete env[name];
+
   const mode = account.authMode ?? "subscription";
   if (mode !== "subscription") {
     const target = p.tokenEnvByMode[mode];
@@ -149,6 +168,37 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
     // disk), fall back to the Telar-managed secret store keyed by account name.
     const value = (account.tokenEnv && process.env[account.tokenEnv]) || readSecret(account.name);
     if (target && value) env[target] = value;
+  }
+
+  // OPT-IN proxy routing. Only an account that DECLARES `proxy` is routed, and
+  // only while the gateway is enabled — so switching CLIProxyAPI off in
+  // settings returns every account to talking to its provider directly without
+  // touching a single account profile. The token is the proxy's API key from
+  // the secret store; without one we deliberately set the base URL anyway, so
+  // the failure is a loud 401 from a reachable proxy rather than a silent
+  // fallback to Anthropic on an account the user believes is proxied.
+  if (account.proxy) {
+    const proxy = readProxyConfig();
+    if (proxy.enabled) {
+      env[p.proxyEnv.baseUrl] = proxy.url;
+      const key = getProxyKey("api");
+      if (key) env[p.proxyEnv.token] = key;
+    }
+  }
+
+  // Per-account extra env, applied LAST so an account can deliberately override
+  // anything above it (a router base-URL, a proxy, a model override). A
+  // `sensitive` var keeps its value in the secret store rather than the
+  // registry, so accounts.json stays free of tokens exactly as it always was —
+  // and a var whose secret has gone missing is SKIPPED, never exported empty:
+  // an empty API key reads to a provider as a malformed credential, which is a
+  // worse failure than the variable simply being absent.
+  for (const v of account.env ?? []) {
+    const name = v.name.trim();
+    if (!name) continue;
+    const value = v.sensitive ? readSecret(accountEnvSecretKey(account.name, name)) : v.value;
+    if (value === undefined || value === "") continue;
+    env[name] = value;
   }
   return env;
 }

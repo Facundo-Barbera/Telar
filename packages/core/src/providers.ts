@@ -85,6 +85,33 @@ export interface ProviderDescriptor {
   configDirEnv: string;
   // Which env var carries the credential for each non-subscription auth mode.
   tokenEnvByMode: Partial<Record<AuthMode, string>>;
+  // THE ENV VARS AN ACCOUNT OWNS: the ones that decide WHERE this provider's
+  // requests go and WHO they go as. accountEnv DELETES every one of them before
+  // building the subprocess env, so an ambient value inherited from whatever
+  // shell launched the Telar server can never decide either question.
+  //
+  // This is the same rule configDirEnv already has, generalized. The config-dir
+  // guard exists because an inherited CLAUDE_CONFIG_DIR silently put `personal`
+  // on the work login; an inherited ANTHROPIC_BASE_URL silently puts EVERY
+  // account behind a local proxy, and an inherited ANTHROPIC_API_KEY silently
+  // moves a subscription account onto metered API billing. Same failure, same
+  // fix: the account declares, the environment does not.
+  //
+  // An account that WANTS one of these sets it explicitly (AccountProfile.env),
+  // which accountEnv applies after the deletion — so declaring still works and
+  // only inheriting stops.
+  //
+  // KNOWN GAP, stated rather than papered over: CLAUDE_CODE_USE_BEDROCK and
+  // CLAUDE_CODE_USE_VERTEX also reroute a session, and are NOT listed. Telar has
+  // no way to express a Bedrock/Vertex account today, so deleting them would
+  // remove the only way to use one rather than protect anybody. When an account
+  // can name that routing, they belong here.
+  ownedEnv: readonly string[];
+  // Where a proxy-routed account's endpoint and bearer token go for this
+  // provider. Both names MUST also appear in ownedEnv above — otherwise an
+  // ambient value could survive on an account that never opted in, which is the
+  // whole hole ownedEnv closes. The invariant suite pins that.
+  proxyEnv: { readonly baseUrl: string; readonly token: string };
   // Argv (after the binary) that starts an interactive login for this provider.
   loginArgs: string[];
   // Default config-dir location (home-relative), used to detect existing logins.
@@ -107,6 +134,21 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
       "oauth-token": "CLAUDE_CODE_OAUTH_TOKEN", // `claude setup-token`, subscription-billed
       "api-key": "ANTHROPIC_API_KEY", // Console key, API-billed
     },
+    // Endpoint + identity. BASE_URL redirects every request (a local proxy such
+    // as CLIProxyAPI, a router, a relay); the three credential vars each
+    // override the Keychain subscription login with a different identity —
+    // CLAUDE_CODE_OAUTH_TOKEN silently, since it is still subscription-billed
+    // and so produces no billing signal that anything was substituted.
+    ownedEnv: [
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+    ],
+    // ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY: the proxy's key is a bearer
+    // token for a local server, and API_KEY additionally flips Claude Code onto
+    // metered-API semantics, which is not what a proxied subscription is.
+    proxyEnv: { baseUrl: "ANTHROPIC_BASE_URL", token: "ANTHROPIC_AUTH_TOKEN" },
     loginArgs: ["auth", "login"],
     defaultConfigDir: ".claude",
     // The Agent SDK's query() takes every one of these. Measured against the
@@ -122,6 +164,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
     tokenEnvByMode: {
       "api-key": "OPENAI_API_KEY", // Codex has no subscription setup-token analogue
     },
+    // Same two questions, Codex's spelling of them.
+    ownedEnv: ["OPENAI_BASE_URL", "OPENAI_API_KEY"],
+    proxyEnv: { baseUrl: "OPENAI_BASE_URL", token: "OPENAI_API_KEY" },
     loginArgs: ["login"],
     defaultConfigDir: ".codex",
     // Measured from runCodexTurn's argument list, which is exactly

@@ -29,6 +29,14 @@ function write(data: SecretFile) {
   fs.chmodSync(file, 0o600);
 }
 
+// Secret-store key for one account's sensitive env var. Namespaced by account
+// so two accounts can each hold their own value for the same variable name.
+// Lives here rather than beside accountEnv so that accounts.ts (which stashes
+// these on write) and engine.ts (which resolves them on read) can each reach it
+// without importing the other.
+export const accountEnvSecretKey = (account: string, varName: string): string =>
+  `env:${account}:${varName}`;
+
 export function readSecret(name: string): string | undefined {
   return read().tokens[name];
 }

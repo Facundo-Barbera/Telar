@@ -20,6 +20,17 @@ export type AuthMode = z.infer<typeof AuthMode>;
 // run/session) and injected into the agent subprocess env — see accountEnv in
 // engine.ts. Fields past `name` are optional so the registry can grow
 // incrementally; the provider descriptor maps them to concrete env vars.
+// One extra environment variable handed to this account's agent subprocess.
+// `sensitive` marks a value that must NOT round-trip to the client: it lives in
+// the secret store keyed `env:<account>:<name>`, and the API sends back only
+// the fact that a value exists (see valueRedacted on the wire shape).
+export const AccountEnvVar = z.object({
+  name: z.string(),
+  value: z.string().default(""),
+  sensitive: z.boolean().default(false),
+});
+export type AccountEnvVar = z.infer<typeof AccountEnvVar>;
+
 export const AccountProfile = z.object({
   name: z.string(), // "personal" | "work" | "codex" | ...
   provider: ProviderId.optional(), // defaults to "claude" when absent
@@ -27,6 +38,35 @@ export const AccountProfile = z.object({
   configDir: z.string().optional(), // → provider config dir env, that account logged in
   tokenEnv: z.string().optional(), // env var name holding the token/key (else the secret store)
   displayTier: z.string().optional(), // cosmetic plan label, e.g. "5x" / "20x"
+  // --- presentation & lifecycle -------------------------------------------
+  // Human label for the pickers. `name` stays the stable key that manifests and
+  // the ledger reference; renaming an account in the UI must never rewrite it.
+  displayName: z.string().optional(),
+  // Hex swatch (#rrggbb) that distinguishes this account across the pickers,
+  // the sidebar wheel and the composer chip. Cosmetic only.
+  accentColor: z.string().optional(),
+  // Off = keep the account and its settings, but hide it from every picker and
+  // refuse to start new work on it. Absent means enabled — an older registry
+  // must not read as "everything is switched off".
+  enabled: z.boolean().optional(),
+  env: z.array(AccountEnvVar).optional(),
+  // OPT-IN routing through the local CLIProxyAPI gateway (proxy.ts). PRESENCE
+  // is the switch: an account without this field talks to its provider
+  // directly, and accountEnv proves it by clearing every routing var first.
+  // `prefix` pins the request to ONE upstream credential in the proxy's pool
+  // (the proxy resolves "prefix/model"); absent means the proxy's own routing
+  // strategy picks — round-robin, fill-first or weighted, its choice not ours.
+  proxy: z
+    .object({
+      prefix: z.string().optional(),
+      // The gateway credential this account is pinned to, by auth-file name.
+      // RESOLVED ONCE and cached here: `/auth-files` does not project `prefix`,
+      // so the mapping has to be discovered from the credential's model catalog,
+      // and doing that on every usage refresh would be several management calls
+      // per account against a hardcoded lockout.
+      upstream: z.string().optional(),
+    })
+    .optional(),
 });
 export type AccountProfile = z.infer<typeof AccountProfile>;
 

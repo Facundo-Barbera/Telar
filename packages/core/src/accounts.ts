@@ -13,7 +13,7 @@ import {
   registerProject,
   unregisterProject,
 } from "./manifest";
-import { deleteSecret } from "./secrets";
+import { accountEnvSecretKey, deleteSecret, writeSecret } from "./secrets";
 
 export interface AccountRegistry {
   version: number;
@@ -42,20 +42,33 @@ function toHomeRelative(p: string): string {
   return p.startsWith(prefix) ? "~/" + p.slice(prefix.length) : p;
 }
 
+// AUTO-DETECTED vs MANUAL, and the line between them. Telar no longer drives a
+// login (there is no login.ts any more — see the Providers surface): it adopts
+// what the machine already has. Exactly ONE Claude account is automatic — the
+// MAIN one, the provider's base login — and every additional Claude account is
+// a config folder the user points us at by hand. Codex gets its one default
+// home; multi-account Codex is not supported yet (see assertAdmissible).
 function seed(): AccountRegistry {
-  // personal = the system Claude login. IMPORTANT: no configDir. Setting
-  // CLAUDE_CONFIG_DIR explicitly (even to ~/.claude) hashes to a different,
-  // empty macOS Keychain entry and 401s — only an unset var uses the base login.
+  // personal = the system Claude login, and it is seeded UNCONDITIONALLY rather
+  // than gated on `claude` being detectable. Two reasons, both load-bearing:
+  // ProjectManifest.account defaults to the literal "personal" (schemas.ts), so
+  // a registry without it would leave every project pointing at an account that
+  // does not exist; and whether Claude is actually installed and signed in is a
+  // question the Providers probe (detect.ts) and accountHealth answer honestly,
+  // which is better than a row that silently fails to exist.
+  //
+  // IMPORTANT: no configDir. Setting CLAUDE_CONFIG_DIR explicitly (even to
+  // ~/.claude) hashes to a different, empty macOS Keychain entry and 401s —
+  // only an unset var uses the base login. This is also why MAIN_CLAUDE_DIR
+  // below is a REJECTED value for a manually added account.
   const accounts: AccountProfile[] = [
     { name: "personal", provider: "claude", authMode: "subscription" },
   ];
-  // Store configDirs home-RELATIVE ("~/.claude-work") so the registry is
-  // portable across machines/homes — expandHome resolves them at use time.
-  // The existsSync gate still probes the concrete current-home path.
-  if (fs.existsSync(path.join(os.homedir(), ".claude-work")))
-    accounts.push({ name: "work", provider: "claude", authMode: "subscription", configDir: "~/.claude-work" });
   // Codex creds are file-based (auth.json), so pointing CODEX_HOME at the
-  // existing ~/.codex login is safe and works immediately.
+  // existing ~/.codex login is safe and works immediately. Store configDirs
+  // home-RELATIVE ("~/.codex") so the registry is portable across
+  // machines/homes — expandHome resolves them at use time, while the existsSync
+  // gate probes the concrete current-home path.
   if (fs.existsSync(path.join(os.homedir(), ".codex")))
     accounts.push({ name: "codex", provider: "codex", authMode: "subscription", configDir: "~/.codex" });
   return { version: 1, default: "personal", accounts };
@@ -129,9 +142,118 @@ export function setDefaultAccount(name: string): void {
   persist(reg);
 }
 
+// The main Claude login's own config folder. RESERVED, never adoptable as a
+// manual account: CLAUDE_CONFIG_DIR pointing here resolves to a different,
+// empty Keychain entry than the unset var does, so an account pinned to it
+// 401s while looking, in the registry, exactly like the working main account.
+const MAIN_CLAUDE_DIR = "~/.claude";
+
+// The one auto-detected account: Claude's base login, identified by having no
+// configDir at all. Everything else in the registry was added by hand.
+//
+// `!a.proxy` is load-bearing, not belt-and-braces. A gateway-routed account also
+// carries no configDir — its login lives in the proxy, not in a folder — so
+// without this clause every adopted account would read as the main one: badged
+// "detected" and refused deletion, which is exactly backwards for an account the
+// user explicitly created.
+export const isMainAccount = (a: AccountProfile): boolean =>
+  (a.provider ?? "claude") === "claude" && !a.configDir && !a.proxy;
+
+const sameDir = (a?: string, b?: string): boolean =>
+  !!a && !!b && path.resolve(expandHome(a)) === path.resolve(expandHome(b));
+
+// Can this profile join the registry? Throws with a message written FOR THE
+// USER (the API hands it straight back as a 400). Every rule here exists
+// because Telar adopts logins rather than creating them: an account that names
+// a folder with no login in it, or that shadows another account's folder, is a
+// silent mis-route at turn time rather than an error at add time.
+//
+// Deliberately NOT a blanket re-validation: an account that already exists and
+// is not moving its config dir passes untouched, so editing a plan label can
+// never trip a rule about paths (and `personal`, the one configDir-less Claude
+// account, stays editable forever).
+function assertAdmissible(reg: AccountRegistry, next: AccountProfile): void {
+  const prev = reg.accounts.find((a) => a.name === next.name);
+  const provider: ProviderId = next.provider ?? "claude";
+
+  // Codex is single-account FOR NOW. CODEX_HOME swaps the entire config tree —
+  // sessions, history and auth together — so a second Codex account is not the
+  // one-line change it is for Claude, and the investigation is still open.
+  // The Codex single-account limit is about CODEX_HOME swapping a whole config
+  // tree on this machine. A gateway-routed Codex account swaps nothing — the
+  // proxy holds the login — so routed accounts are counted out of the limit on
+  // both sides of the comparison.
+  if (provider === "codex" && !next.proxy) {
+    const other = reg.accounts.find(
+      (a) => (a.provider ?? "claude") === "codex" && a.name !== next.name && !a.proxy,
+    );
+    if (other)
+      throw new Error(
+        `Codex supports one account for now — "${other.name}" already holds it. Multi-account Codex is still being investigated.`,
+      );
+  }
+
+  if (prev && prev.configDir === next.configDir) return;
+
+  // A GATEWAY-ROUTED account is exempt from the config-folder rule, because the
+  // rule exists to locate a login on THIS machine and a routed account's login
+  // is not on this machine at all — it lives in the proxy's credential pool,
+  // reached by prefix. Requiring a folder it will never read would make adopting
+  // an upstream impossible.
+  if (provider === "claude" && !next.proxy) {
+    if (!next.configDir)
+      throw new Error(
+        "A Claude account needs its own config folder. The main login is the only account without one, and it is detected automatically.",
+      );
+    if (sameDir(next.configDir, MAIN_CLAUDE_DIR))
+      throw new Error(
+        `${MAIN_CLAUDE_DIR} belongs to the main Claude login. Pointing CLAUDE_CONFIG_DIR at it reaches a different, empty Keychain entry — use the main account, or a separate folder.`,
+      );
+  }
+
+  if (next.configDir && !fs.existsSync(expandHome(next.configDir)))
+    throw new Error(
+      `No such folder on this machine: ${next.configDir}. Sign in with that folder first, then add it here.`,
+    );
+
+  const clash = reg.accounts.find(
+    (a) => a.name !== next.name && sameDir(a.configDir, next.configDir),
+  );
+  if (clash) throw new Error(`"${clash.name}" already uses that config folder.`);
+}
+
+// An account is usable unless it was explicitly switched off. Absent ⇒ enabled,
+// so a registry written before the switch existed doesn't read as all-off.
+export const isAccountEnabled = (a: AccountProfile): boolean => a.enabled !== false;
+
+// Move every sensitive env value OFF the profile and INTO the secret store, so
+// the registry keeps names and a marker but never a token. A sensitive var
+// submitted with an empty value keeps whatever is already stored — that is how
+// the UI round-trips a redacted field it never received the value for.
+function stashSensitiveEnv(profile: AccountProfile): AccountProfile {
+  if (!profile.env?.length) return profile;
+  const env = profile.env.map((v) => {
+    if (!v.sensitive) return v;
+    const key = accountEnvSecretKey(profile.name, v.name);
+    if (v.value) writeSecret(key, v.value);
+    return { ...v, value: "" };
+  });
+  return { ...profile, env };
+}
+
 export function upsertAccount(profile: AccountProfile): AccountProfile {
-  const parsed = AccountProfile.parse(profile);
+  const parsed = stashSensitiveEnv(AccountProfile.parse(profile));
   const reg = load();
+  assertAdmissible(reg, parsed);
+  // Secrets for env vars this update DROPPED are deleted — otherwise removing a
+  // variable from the UI would leave its value behind in the secret store,
+  // invisible and still resolvable if the name were ever re-added.
+  const prev = reg.accounts.find((a) => a.name === parsed.name);
+  for (const old of prev?.env ?? []) {
+    if (!old.sensitive) continue;
+    if (parsed.env?.some((v) => v.name === old.name && v.sensitive)) continue;
+    deleteSecret(accountEnvSecretKey(parsed.name, old.name));
+  }
   const i = reg.accounts.findIndex((a) => a.name === parsed.name);
   if (i >= 0) reg.accounts[i] = parsed;
   else reg.accounts.push(parsed);
@@ -141,14 +263,27 @@ export function upsertAccount(profile: AccountProfile): AccountProfile {
 
 // Removes the registry entry and any stored token. Never touches the account's
 // configDir on disk — that's the user's login data, not ours to delete.
+//
+// Refuses on the MAIN account: it is the one entry Telar detects rather than
+// the user adding, ProjectManifest.account defaults to its name, and seed()
+// only runs when accounts.json is absent entirely — so removing it would strand
+// every project on an account that no longer exists and never come back.
 export function removeAccount(name: string): boolean {
   const reg = load();
   const i = reg.accounts.findIndex((a) => a.name === name);
   if (i < 0) return false;
-  reg.accounts.splice(i, 1);
+  if (isMainAccount(reg.accounts[i]))
+    throw new Error(
+      `"${name}" is the main Claude login — it is detected, not added, so it can't be removed. Sign out with the Claude CLI instead.`,
+    );
+  const [removed] = reg.accounts.splice(i, 1);
   if (reg.default === name) reg.default = reg.accounts[0]?.name ?? "personal";
   persist(reg);
   deleteSecret(name);
+  // Its sensitive env values go too — a removed account must not leave secrets
+  // behind that a later account of the same name would silently inherit.
+  for (const v of removed?.env ?? [])
+    if (v.sensitive) deleteSecret(accountEnvSecretKey(name, v.name));
   return true;
 }
 

@@ -1766,12 +1766,14 @@ const AD5_SITES = [
   "apps/web/lib/store.ts :: chats.json",
   "apps/web/lib/store.ts :: plan-usage.json",
   "packages/core/src/accounts.ts :: accounts.json",
+  "packages/core/src/detect.ts :: providers.json",
   "packages/core/src/dispatcher.ts :: policy.json",
   "packages/core/src/dispatcher.ts :: roster.json",
   "packages/core/src/looms.ts :: looms",
   "packages/core/src/looms.ts :: runs",
   "packages/core/src/manifest.ts :: projects.json",
   "packages/core/src/mcp-oauth.ts :: mcp-oauth.json",
+  "packages/core/src/proxy.ts :: proxy.json",
   "packages/core/src/secrets.ts :: credentials.json",
   "packages/core/src/sessions.ts :: sessions",
   "packages/core/src/ultra/journal.ts :: ultra",
@@ -1794,6 +1796,20 @@ const AD5_OWNERS: Record<string, string[]> = {
   "projects.json": ["packages/core/src/manifest.ts"],
   "accounts.json": ["packages/core/src/accounts.ts"],
   "credentials.json": ["packages/core/src/secrets.ts"],
+  // Provider DETECTION's cache — the last `<bin> --version` + reported-plan
+  // answer per provider, so the settings surface can render without re-probing
+  // on every paint. A root-level FILE with a single writer: detect.ts is the
+  // only module that composes it, and apps/web reaches it through the
+  // /api/providers route calling readProviderCache/writeProviderCache, never by
+  // path. It holds no credential — detection reads a version string and takes
+  // the plan as data from the usage snapshots (see the module header).
+  "providers.json": ["packages/core/src/detect.ts"],
+  // The OPTIONAL CLIProxyAPI gateway's own config — url + enabled flag, and
+  // nothing else: both of its keys live in credentials.json (secrets.ts), so
+  // this file is as safe to read as accounts.json is. One writer; apps/web
+  // reaches it through the /api/proxy route calling read/writeProxyConfig,
+  // never by path.
+  "proxy.json": ["packages/core/src/proxy.ts"],
   "watches.json": ["packages/core/src/watches.ts"],
   "mcp-oauth.json": ["packages/core/src/mcp-oauth.ts"],
   "policy.json": ["packages/core/src/dispatcher.ts"],
