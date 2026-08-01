@@ -1,6 +1,8 @@
 node_modules/
 .next/
 .next-desktop/
+# Turborepo's local task cache — regenerated per run, machine-specific.
+.turbo/
 .env*
 !.env.example
 .DS_Store
