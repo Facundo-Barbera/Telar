@@ -26,13 +26,17 @@ import {
   GroupHeader,
   SearchField,
   SortSelect,
-  isLoomNeedsYou,
-  isLoomRunning,
 } from "@/components/common/list-controls";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { UnregisterButton } from "@/components/projects/project-card";
 import { cn } from "@/lib/utils";
 import { fmtAgo } from "@/lib/format";
+import {
+  byLastActivity,
+  byOpenWork,
+  deriveProjectSignals,
+  type ProjectSignal,
+} from "@/lib/project-signal";
 
 type ProjectEntry = {
   entry: RegistryEntry;
@@ -45,7 +49,10 @@ type ProjectEntry = {
 type ChatMeta = { id: string; project?: string; updatedAt: number };
 
 // A registry entry fused with the live signal derived from looms + chats, so a
-// dense row can show which repo is busy at a glance.
+// dense row can show which repo is busy at a glance. The counts come straight
+// off lib/project-signal; what stays local is the manifest presentation — the
+// em-dash fallbacks and the gate tally are how this row reads a telar.yaml, not
+// how the app decides a project is busy.
 type ProjectRow = {
   entry: RegistryEntry;
   manifest: ProjectManifest | null;
@@ -53,20 +60,20 @@ type ProjectRow = {
   account: string;
   adapter: string;
   gates: number;
-  running: number;
-  openLooms: number;
+  counts: ProjectSignal["counts"];
   sessionsToday: number;
-  lastActive: number;
+  lastActivity: number;
 };
 
 type Sort = "activity" | "name" | "work";
 
 const PINNED_KEY = "telar:pinnedProjects";
-const startOfToday = () => {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-};
+
+// One repo is worth the reader's attention when there is open work in it or
+// somebody sat down with it today. `counts.open` already contains the in-flight
+// looms, so it is the only loom number this question needs.
+const isBusy = (r: ProjectRow): boolean =>
+  r.counts.open > 0 || r.sessionsToday > 0;
 
 function LiveDot() {
   return (
@@ -138,7 +145,7 @@ function ProjectRowItem({
         className="flex min-w-0 flex-1 items-center gap-3 py-2.5"
       >
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {row.running > 0 && <LiveDot />}
+          {row.counts.inFlight > 0 && <LiveDot />}
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               {row.broken ? (
@@ -172,7 +179,7 @@ function ProjectRowItem({
         <div className="flex shrink-0 items-center gap-1">
           <Metric
             icon={ActivityIcon}
-            value={row.running}
+            value={row.counts.inFlight}
             label="running looms"
             tint="text-sky-400"
           />
@@ -184,7 +191,7 @@ function ProjectRowItem({
           />
           <Metric
             icon={WorkflowIcon}
-            value={row.openLooms}
+            value={row.counts.open}
             label="open looms"
             tint="text-indigo-300"
           />
@@ -197,7 +204,7 @@ function ProjectRowItem({
         </div>
 
         <span className="w-14 shrink-0 text-right text-[11px] text-muted-foreground">
-          {fmtAgo(row.lastActive)}
+          {fmtAgo(row.lastActivity)}
         </span>
       </Link>
 
@@ -328,38 +335,22 @@ export default function ProjectsPage() {
 
   const rows = useMemo<ProjectRow[]>(() => {
     if (!entries) return [];
-    const today = startOfToday();
-    return entries.map(({ entry, manifest, error: manifestError }) => {
-      const broken = !manifest || !!manifestError;
-      const projectLooms = looms.filter((l) => l.project === entry.name);
-      const projectChats = chats.filter((c) => c.project === entry.name);
-      const running = projectLooms.filter((l) =>
-        isLoomRunning(l.state),
-      ).length;
-      const openLooms = projectLooms.filter(
-        (l) => isLoomRunning(l.state) || isLoomNeedsYou(l.state),
-      ).length;
-      const sessionsToday = projectChats.filter(
-        (c) => c.updatedAt >= today,
-      ).length;
-      const lastActive = Math.max(
-        entry.addedAt,
-        ...projectLooms.map((l) => l.updatedAt),
-        ...projectChats.map((c) => c.updatedAt),
-      );
-      return {
-        entry,
-        manifest,
-        broken,
-        account: manifest?.account ?? "—",
-        adapter: manifest?.adapter ?? "—",
-        gates: manifest?.gates.length ?? 0,
-        running,
-        openLooms,
-        sessionsToday,
-        lastActive,
-      };
-    });
+    return deriveProjectSignals({ projects: entries, looms, chats }).map(
+      (signal) => {
+        const { entry, manifest, error: manifestError } = signal.project;
+        return {
+          entry,
+          manifest,
+          broken: !manifest || !!manifestError,
+          account: manifest?.account ?? "—",
+          adapter: manifest?.adapter ?? "—",
+          gates: manifest?.gates.length ?? 0,
+          counts: signal.counts,
+          sessionsToday: signal.chatsToday.length,
+          lastActivity: signal.lastActivity,
+        };
+      },
+    );
   }, [entries, looms, chats]);
 
   const accountOptions = useMemo(() => {
@@ -378,23 +369,19 @@ export default function ProjectsPage() {
     );
     if (account !== "all") out = out.filter((r) => r.account === account);
     const cmp: Record<Sort, (a: ProjectRow, b: ProjectRow) => number> = {
-      activity: (a, b) => b.lastActive - a.lastActive,
+      activity: byLastActivity,
       name: (a, b) => a.entry.name.localeCompare(b.entry.name),
-      work: (a, b) => b.running + b.openLooms - (a.running + a.openLooms),
+      work: byOpenWork,
     };
     return [...out].sort(cmp[sort]);
   }, [rows, q, account, sort]);
 
   const pinnedList = filtered.filter((r) => pinned.has(r.entry.name));
   const rest = filtered.filter((r) => !pinned.has(r.entry.name));
-  const active = rest.filter(
-    (r) => r.running > 0 || r.sessionsToday > 0 || r.openLooms > 0,
-  );
-  const idle = rest.filter(
-    (r) => !(r.running > 0 || r.sessionsToday > 0 || r.openLooms > 0),
-  );
+  const active = rest.filter(isBusy);
+  const idle = rest.filter((r) => !isBusy(r));
 
-  const activeNow = rows.filter((r) => r.running > 0).length;
+  const activeNow = rows.filter((r) => r.counts.inFlight > 0).length;
   const populated = entries !== null && entries.length > 0;
 
   return (

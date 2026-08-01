@@ -13,36 +13,17 @@ import {
   WorkflowIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { Loom, WorkUnitState } from "@telar/core";
+import type { Loom } from "@telar/core";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { loomRole, threadCount } from "@/components/looms/utils";
 
-// Index-surface grouping vocabulary. Distinct from looms/utils' isTerminal
-// (which folds needs-review + failed into "terminal"): the indexes want those
-// two in a "Needs you" bucket, not tucked into "Recent". Together these three
-// partition every WorkUnitState.
-//   running  — autonomous work in flight (queued/scoping/preparing/running/verifying)
-//   needsYou — waiting on a human decision (charter-review/ready/needs-review/blocked/failed)
-//   recent   — closed (done/halted/skipped)
-const RUNNING: readonly WorkUnitState[] = [
-  "queued",
-  "scoping",
-  "preparing",
-  "running",
-  "verifying",
-];
-const NEEDS_YOU: readonly WorkUnitState[] = [
-  "charter-review",
-  "ready",
-  "needs-review",
-  "blocked",
-  "failed",
-];
-export const isLoomRunning = (s: WorkUnitState) => RUNNING.includes(s);
-export const isLoomNeedsYou = (s: WorkUnitState) => NEEDS_YOU.includes(s);
-export const isLoomRecent = (s: WorkUnitState) =>
-  !isLoomRunning(s) && !isLoomNeedsYou(s);
+// The index grouping vocabulary — running / needsYou / recent — now lives in
+// lib/project-signal, which owns the whole partition and is pure enough to
+// test. Re-exported here because it is what an index imports alongside the
+// controls it groups with, and because a "use client" file cannot be the home
+// of a model that a lib module has to read.
+export { isLoomNeedsYou, isLoomRecent, isLoomRunning } from "@/lib/project-signal";
 
 // Search-first field — the header element that anchors every redesigned index.
 export function SearchField({

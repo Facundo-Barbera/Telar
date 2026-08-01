@@ -76,8 +76,13 @@ import {
   GroupHeader,
   SearchField,
   WeaveChip,
-  isLoomRunning,
 } from "@/components/common/list-controls";
+import {
+  isLoomAwaitingAccept,
+  isLoomAwaitingDecision,
+  isLoomClosed,
+  isLoomRunning,
+} from "@/lib/project-signal";
 import { ArchiveButton } from "@/components/session/archive-button";
 import { isTerminal, stateRailClass, sumCost } from "@/components/looms/utils";
 import { ProjectSettings } from "@/components/projects/settings-view";
@@ -93,20 +98,6 @@ type ChatMeta = ChatSummary;
 type Status = "loading" | "ready" | "missing" | "error";
 type Tab = "sessions" | "looms" | "git" | "settings";
 type StateFilter = "any" | "active" | "needs-you" | "done";
-
-/* -------------------------------------------------------------- state vocab */
-
-// A four-way partition of every WorkUnitState for the Looms tab groups
-// (Running / Needs you / Ready / Done). isLoomRunning (list-controls) owns the
-// in-flight set; the rest split needs-you / ready / closed.
-const isNeedsYou = (s: WorkUnitState) =>
-  s === "charter-review" ||
-  s === "needs-review" ||
-  s === "blocked" ||
-  s === "failed";
-const isReady = (s: WorkUnitState) => s === "ready";
-const isDoneish = (s: WorkUnitState) =>
-  s === "done" || s === "halted" || s === "skipped";
 
 /* ---------------------------------------------------------------- age helpers */
 
@@ -414,8 +405,8 @@ function sessionPassesState(
   if (f === "any") return true;
   if (!loom) return false;
   if (f === "active") return isLoomRunning(loom.state);
-  if (f === "needs-you") return isNeedsYou(loom.state);
-  return isReady(loom.state) || isDoneish(loom.state);
+  if (f === "needs-you") return isLoomAwaitingDecision(loom.state);
+  return isLoomAwaitingAccept(loom.state) || isLoomClosed(loom.state);
 }
 
 function SessionsTab({
@@ -462,7 +453,7 @@ function SessionsTab({
     if (!chats) return 0;
     return chats.filter((c) => {
       const l = c.loomId ? loomById.get(c.loomId) : undefined;
-      return l && isNeedsYou(l.state);
+      return l && isLoomAwaitingDecision(l.state);
     }).length;
   }, [chats, loomById]);
 
@@ -647,6 +638,10 @@ function ArchivedSessions({ name }: { name: string }) {
 
 /* ----------------------------------------------------------------- looms tab */
 
+// The four groups are lib/project-signal's four buckets, in its order: this tab
+// is the surface that shows `ready` apart from the rest, because a verified
+// loom waiting to be accepted is a different ask from one waiting to be
+// unblocked. The indexes fold the two together; both read the same partition.
 type LoomGroupKey = "running" | "needs-you" | "ready" | "done";
 const LOOM_GROUPS: {
   key: LoomGroupKey;
@@ -667,21 +662,21 @@ const LOOM_GROUPS: {
     label: "Needs you",
     icon: TriangleAlertIcon,
     tint: "text-amber-400",
-    match: isNeedsYou,
+    match: isLoomAwaitingDecision,
   },
   {
     key: "ready",
     label: "Ready",
     icon: CircleCheckIcon,
     tint: "text-emerald-400",
-    match: isReady,
+    match: isLoomAwaitingAccept,
   },
   {
     key: "done",
     label: "Done",
     icon: CheckCheckIcon,
     tint: "text-muted-foreground",
-    match: isDoneish,
+    match: isLoomClosed,
   },
 ];
 
@@ -1118,7 +1113,9 @@ function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
 
   const runningCount = (looms ?? []).filter((l) => isLoomRunning(l.state))
     .length;
-  const needsYouCount = (looms ?? []).filter((l) => isNeedsYou(l.state)).length;
+  const needsYouCount = (looms ?? []).filter((l) =>
+    isLoomAwaitingDecision(l.state),
+  ).length;
 
   const tabs: { key: Tab; label: string; icon: LucideIcon; count?: number }[] =
     [

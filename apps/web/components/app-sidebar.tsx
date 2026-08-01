@@ -26,6 +26,17 @@ import type { Loom, WorkUnitState } from "@telar/core";
 import { useAccounts } from "@/lib/use-accounts";
 import { planRings, RING_RADII, usedWindows } from "@/lib/plan-window";
 import {
+  highlightedProject,
+  moveByName,
+  parseStoredList,
+  PINNED_KEY,
+  pinnedProjects,
+  reconcileOrder,
+  recentProjects,
+  togglePinned,
+  WHEEL_ORDER_KEY,
+} from "@/lib/sidebar-order";
+import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -41,17 +52,11 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { StateBadge } from "@/components/common/state-badge";
-import { isTerminal } from "@/components/looms/utils";
+import { deriveProjectSignals, isLoomLegacyActive } from "@/lib/project-signal";
 
 // Auto-refresh plan usage on mount when a snapshot is missing or older than
 // this — keeps the sidebar honest without a manual click.
 const PLAN_STALE_MS = 30 * 60 * 1000;
-// How many non-pinned recent projects to surface (active-first, then recency).
-const RECENTS_LIMIT = 6;
-// localStorage keys — the only UI-prefs persistence in the app (no server store
-// exists yet, per recon). Reads are hydration-guarded (see useStoredList).
-const PINNED_KEY = "telar:pinned-projects";
-const WHEEL_ORDER_KEY = "telar:account-wheel-order";
 
 // Mirrors lib/store's PlanWindow (declared locally so this client bundle never
 // pulls in the fs-backed store). windowMinutes is what lets a meter name itself
@@ -99,23 +104,12 @@ type SidebarProject = {
   todayChats: ChatMeta[];
 };
 
-// Parse a raw localStorage value into a string[], dropping anything that
-// isn't one (wrong shape, e.g. `false`/`{}` from a stale or hand-edited key)
-// instead of blindly casting it — callers must always get a real array.
-function parseStoredList(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const v: unknown = JSON.parse(raw);
-    return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : [];
-  } catch {
-    return [];
-  }
-}
-
 // ── localStorage-backed ordered list (hydration-safe) ──────────────────────
 // First render always yields `null` (server + first client paint agree), then
 // an effect reads the stored value — so no SSR hydration mismatch. Writers
-// persist synchronously.
+// persist synchronously. This is the only persistence pins and wheel order
+// have; the keys, the parser and every rule about what the stored arrays MEAN
+// live together in lib/sidebar-order.ts, so nothing below decides an order.
 function useStoredList(
   key: string,
 ): [string[] | null, (v: string[]) => void] {
@@ -149,14 +143,6 @@ function useStoredList(
   return [value, set];
 }
 
-// Keep a stored order aligned with the live set: drop names that vanished,
-// append newcomers in their canonical order at the end.
-function reconcile(stored: string[], actual: string[]): string[] {
-  const kept = stored.filter((n) => actual.includes(n));
-  const added = actual.filter((n) => !kept.includes(n));
-  return [...kept, ...added];
-}
-
 function fmtReset(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -177,6 +163,13 @@ function fmtShort(ts: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+// The sidebar's own "today", kept alive on purpose. project-signal's chatsToday
+// is everything since local midnight, which admits a session the filesystem
+// dates in the future; this compares calendar days, which does not. The two
+// answers differ only for future timestamps, and for a past one this filter is
+// a no-op — so re-applying it here holds the nested list exactly where phase 1
+// left it while the module keeps the honest boundary the Projects index has
+// always used. Phase 2b deletes this and lets the sidebar move, deliberately.
 function isToday(ts: number): boolean {
   return new Date(ts).toDateString() === new Date().toDateString();
 }
@@ -458,15 +451,8 @@ function WheelTip({
 }
 
 // ── reorder plumbing (HTML5 drag, no new deps) ─────────────────────────────
-function moveByName(order: string[], from: string, to: string): string[] {
-  if (from === to) return order;
-  const next = order.filter((n) => n !== from);
-  const at = next.indexOf(to);
-  if (at === -1) return order;
-  next.splice(at, 0, from);
-  return next;
-}
-
+// Where a dragged wheel LANDS is moveByName in lib/sidebar-order.ts; what is
+// left here is the event bookkeeping that decides when to ask it.
 type DragState = { drag: string | null; over: string | null };
 
 function useDrag(
@@ -1067,51 +1053,55 @@ function SidebarBody() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
 
-  const activeLooms = looms.filter((r) => !isTerminal(r.state));
-  const activeProjectNames = new Set(activeLooms.map((r) => r.project));
+  // The /looms badge asks the same question the project rows below it ask, so
+  // it reads the same predicate — `isLoomLegacyActive` is spelled out as the
+  // complement of looms/utils' isTerminal and pinned state-by-state, so this is
+  // the identical count by a shorter route. It matters that they share one name:
+  // when 2b corrects the sidebar's notion of busy, the badge moves with the rows
+  // instead of being left behind saying "5 weaving" over five that read three.
+  const activeLooms = looms.filter((r) => isLoomLegacyActive(r.state));
 
-  // Per-project recency = the freshest touch (chat or loom); fall back to when
-  // the project was registered.
-  const recency = new Map<string, number>();
-  const bump = (name: string, ts: number) =>
-    recency.set(name, Math.max(recency.get(name) ?? 0, ts));
-  for (const c of chats) if (c.project) bump(c.project, c.updatedAt);
-  for (const r of looms) bump(r.project, r.updatedAt);
+  // What a project row knows about itself now comes off lib/project-signal —
+  // the same derivation the Projects index and the dashboard read, so the three
+  // surfaces can no longer drift apart by accident.
+  //
+  // WITH ONE EXCEPTION, kept on purpose. `legacyActive` is this sidebar's own
+  // idea of busy (the complement of looms/utils' isTerminal, written to answer
+  // "has the event stream closed?"). Read as project busyness it pulses
+  // charter-review, ready and blocked as though a runner were live, and hides
+  // needs-review and failed — the two states that most need someone. Every
+  // other surface disagrees and every other surface is right, but correcting it
+  // moves pixels: the pulse, the nested list, the Recents order and therefore
+  // which six projects survive the cut. That is phase 2b's change to make with
+  // its eyes open. Until then the divergence at least lives in one tested file
+  // instead of four.
+  const derived: SidebarProject[] = deriveProjectSignals({
+    projects,
+    looms,
+    chats,
+  }).map((s) => ({
+    name: s.name,
+    recency: s.lastTouch ?? s.project.entry.addedAt,
+    active: s.legacyActive.length > 0,
+    looms: s.legacyActive,
+    // chatsToday is a superset: identical for every past timestamp, wider for a
+    // future one. isToday narrows it back to what this sidebar showed before —
+    // see the helper for why that is worth a line.
+    todayChats: s.chatsToday.filter((c) => isToday(c.updatedAt)),
+  }));
 
-  const derived: SidebarProject[] = projects.map((p) => {
-    const name = p.entry.name;
-    return {
-      name,
-      recency: recency.get(name) ?? p.entry.addedAt,
-      active: activeProjectNames.has(name),
-      looms: activeLooms.filter((l) => l.project === name),
-      todayChats: chats
-        .filter((c) => c.project === name && isToday(c.updatedAt))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
-    };
-  });
-  const byName = new Map(derived.map((d) => [d.name, d]));
+  // Pinned in the user's own order, recents in the sidebar's — both decided in
+  // lib/sidebar-order.ts, which is also where the reasons live. The one thing
+  // this call site owes them is `derived` in REGISTRY order: recents sorts it
+  // stably, so that order is the tie-break between projects of equal recency.
+  const pinnedList = pinnedProjects(pinnedNames ?? [], derived);
+  const recents = recentProjects(derived, pinnedList);
+  const highlightName = highlightedProject(recents);
 
-  // Pinned: user's order, preserved, only those that still exist.
-  const pinnedList = (pinnedNames ?? [])
-    .map((n) => byName.get(n))
-    .filter((d): d is SidebarProject => d != null);
-  const pinnedSet = new Set(pinnedList.map((d) => d.name));
-
-  // Recents: everything not pinned, active-first then by recency, capped.
-  const recents = derived
-    .filter((d) => !pinnedSet.has(d.name))
-    .sort((a, b) => {
-      if (a.active !== b.active) return a.active ? -1 : 1;
-      return b.recency - a.recency;
-    })
-    .slice(0, RECENTS_LIMIT);
-  const highlightName = recents.find((d) => d.active)?.name;
-
-  const togglePin = (name: string) => {
-    const cur = pinnedNames ?? [];
-    setPinnedNames(cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]);
-  };
+  // `?? []` is the pre-hydration coalesce. A toggle that beat the mount effect
+  // would write a one-name list over whatever is really stored; it cannot,
+  // because the effect commits before a hover can reveal the pin button.
+  const togglePin = (name: string) => setPinnedNames(togglePinned(pinnedNames ?? [], name));
 
   // ONE WHEEL PER ACCOUNT, not per usage snapshot.
   //
@@ -1165,7 +1155,7 @@ function SidebarBody() {
       }),
   );
   const planEntries = [...wheelAccounts.entries()];
-  const wheelOrder = reconcile(storedOrder ?? [], planEntries.map(([n]) => n));
+  const wheelOrder = reconcileOrder(storedOrder ?? [], planEntries.map(([n]) => n));
 
   return (
     <>

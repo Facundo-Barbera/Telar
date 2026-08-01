@@ -26,11 +26,15 @@ import {
   SearchField,
   StatTile,
   WeaveChip,
-  isLoomNeedsYou,
-  isLoomRunning,
 } from "@/components/common/list-controls";
 import { loomRole, stateRailClass, sumCost, threadCount } from "@/components/looms/utils";
 import { fmtAgo, fmtCost } from "@/lib/format";
+import {
+  byOpenWork,
+  deriveProjectSignals,
+  isLoomNeedsYou,
+  isLoomRunning,
+} from "@/lib/project-signal";
 
 // Plan-usage shapes mirror lib/store's PlanSnapshot. Declared locally so the
 // dashboard (a client component) never pulls the fs-backed store into the bundle.
@@ -314,32 +318,19 @@ export default function DashboardPage() {
     [sessions, needle],
   );
 
-  // Hot projects — busiest repos by derived running + open looms.
+  // Hot projects — the busiest repos by open work, off the same derivation the
+  // Projects index and the sidebar read (lib/project-signal). Looms only, no
+  // chats: this panel answers "where is work piled up", and the Recent sessions
+  // panel beside it already answers "where has someone been sitting".
   const hotProjects = useMemo(() => {
     if (!looms) return [];
-    const stat = new Map<string, { running: number; open: number }>();
-    for (const l of looms) {
-      const s = stat.get(l.project) ?? { running: 0, open: 0 };
-      if (isLoomRunning(l.state)) {
-        s.running += 1;
-        s.open += 1;
-      } else if (isLoomNeedsYou(l.state)) {
-        s.open += 1;
-      }
-      stat.set(l.project, s);
-    }
-    return projects
-      .map((p) => ({
-        name: p.entry.name,
-        running: stat.get(p.entry.name)?.running ?? 0,
-        open: stat.get(p.entry.name)?.open ?? 0,
-      }))
+    return deriveProjectSignals({ projects, looms, chats: [] })
       .filter(
         (p) =>
-          (p.running > 0 || p.open > 0) &&
+          p.counts.open > 0 &&
           (!needle || p.name.toLowerCase().includes(needle)),
       )
-      .sort((a, b) => b.running + b.open - (a.running + a.open))
+      .sort(byOpenWork)
       .slice(0, 5);
   }, [looms, projects, needle]);
 
@@ -603,14 +594,14 @@ export default function DashboardPage() {
                             <span className="min-w-0 flex-1 truncate text-sm">
                               {p.name}
                             </span>
-                            {p.running > 0 && (
+                            {p.counts.inFlight > 0 && (
                               <span className="flex items-center gap-1 font-mono text-[11px] text-sky-400 tabular-nums">
                                 <ClockIcon className="size-3" />
-                                {p.running}
+                                {p.counts.inFlight}
                               </span>
                             )}
                             <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
-                              {p.open} open
+                              {p.counts.open} open
                             </span>
                           </Link>
                         ))}
