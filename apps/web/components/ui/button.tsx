@@ -8,15 +8,39 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        // The hover deepens the fill rather than fading it. `bg-primary/80`
+        // composites the primary toward whatever is behind the button, and
+        // since the label is --primary-foreground the fill walking toward the
+        // page walks toward the label: white on primary/80 was 4.22:1 light
+        // and 4.49:1 dark, i.e. the app's main CTA dropped under AA exactly
+        // while the pointer was on it. Mixing toward --foreground instead is
+        // opaque (no backdrop to fade into) and self-correcting, because
+        // --foreground and --primary-foreground sit on opposite sides of
+        // --primary in each theme: light darkens, dark lightens, both land
+        // near 7.2:1. Same shape the secondary variant below already uses.
+        default:
+          "bg-primary text-primary-foreground hover:bg-[color-mix(in_oklch,var(--primary),var(--foreground)_10%)]",
         outline:
           "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
           "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+        // Same trap as `default`, one layer down: here the label IS the token
+        // the fill is made of, so every step of alpha moves the fill toward
+        // the label. The old ladder (/10 -> /20 light, /20 -> /30 dark) put
+        // the hovered state at 3.89:1 light and 3.86:1 dark on a card — under
+        // AA on the delete button, exactly while it is being read.
+        //
+        // One ladder now serves both themes, which is why the dark fill
+        // overrides are gone: /10 to /15 clears 4.5:1 on canvas, card AND
+        // popover in light and dark alike. Popover is the one that forced it —
+        // dialog.tsx is `bg-popover`, so a confirm dialog is where this button
+        // most often lives, and dark /20 there was 4.38:1. The smaller fill
+        // step gives up some hover punch; the border takes it back, using the
+        // `border border-transparent` the base class already reserves.
         destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
+          "bg-destructive/10 text-destructive hover:border-destructive/40 hover:bg-destructive/15 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

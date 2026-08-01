@@ -96,7 +96,9 @@ function Dot({ tone }: { tone: "amber" | "idle" }) {
       className={cn(
         "size-[7px] shrink-0 rounded-full",
         tone === "amber"
-          ? "animate-pulse bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]"
+          // The halo is the dot's own colour at 18%. Spelled as a shadow colour
+          // rather than an rgba() literal so the two can't drift apart.
+          ? "animate-pulse bg-amber-500 shadow-[0_0_0_3px] shadow-amber-500/18"
           : "bg-muted-foreground/50",
       )}
     />

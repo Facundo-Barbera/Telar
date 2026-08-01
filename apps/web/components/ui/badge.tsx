@@ -9,11 +9,19 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
+        // The three tinted variants all hover by mixing rather than by fading,
+        // for the reason spelled out in button.tsx: `/80` composites the fill
+        // toward the page, and for `default` the page is where the label's
+        // colour lives, so the linked badge lost contrast on hover instead of
+        // gaining it. For `secondary` the same fade made the chip fainter than
+        // at rest. Mixing toward --foreground moves the right way in both
+        // themes and does not depend on what is behind the badge.
+        default:
+          "bg-primary text-primary-foreground [a]:hover:bg-[color-mix(in_oklch,var(--primary),var(--foreground)_10%)]",
         secondary:
-          "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+          "bg-secondary text-secondary-foreground [a]:hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)]",
         destructive:
-          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:border-destructive/40 [a]:hover:bg-destructive/15",
         outline:
           "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
         ghost:

@@ -72,7 +72,14 @@ function CommandInput({
 }: React.ComponentProps<typeof CommandPrimitive.Input>) {
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
-      <InputGroup className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">
+      {/* No border/fill overrides: InputGroup already ships `border-input`
+          plus `dark:bg-input/30`, which is what this was restating. It also
+          weakened the border to /30, and once --input moved to a real control
+          value that unscoped /30 fill put a grey box in the LIGHT palette and
+          took the placeholder to 4.03:1. At full strength the border is the
+          3:1 WCAG 1.4.11 asks of a control boundary and the placeholder reads
+          against --popover at 5.41:1. */}
+      <InputGroup className="h-8! rounded-lg! shadow-none! *:data-[slot=input-group-addon]:pl-2!">
         <CommandPrimitive.Input
           data-slot="command-input"
           className={cn(

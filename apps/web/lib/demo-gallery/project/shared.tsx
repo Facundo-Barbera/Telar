@@ -7,12 +7,9 @@
 // grouped rows, sticky toolbars, state rails, quiet mono metadata — rather than
 // reaching across lane fences. Only StateBadge + fmtAgo/fmtCost are shared prod
 // code (same as the lists lane). No `dark:` utilities anywhere: theming is done
-// by re-declaring the token set on a wrapper so both themes render in-page.
-import {
-  useState,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
+// by scoping the token set to a wrapper (../theme-island) so both themes render
+// in-page.
+import type { ReactNode } from "react";
 import {
   ChevronRightIcon,
   MoonIcon,
@@ -26,66 +23,18 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { StateBadge } from "@/components/common/state-badge";
 import { fmtAgo, fmtCost, DEMO_NOW } from "../now";
+import { useThemeIsland, type Theme } from "../theme-island";
 import type { DemoLoom, DemoSession } from "./fixtures";
 
 /* ------------------------------------------------------------------ theming */
 
-type Vars = Record<string, string>;
-
-// Token values lifted verbatim from app/globals.css. The app shell hard-codes
-// `.dark` on <html>; setting these on a wrapper lets a preview render LIGHT (or
-// an explicit DARK island) regardless of the surrounding shell.
-const DARK: Vars = {
-  "--background": "oklch(0.145 0 0)",
-  "--foreground": "oklch(0.985 0 0)",
-  "--card": "oklch(0.205 0 0)",
-  "--card-foreground": "oklch(0.985 0 0)",
-  "--popover": "oklch(0.205 0 0)",
-  "--popover-foreground": "oklch(0.985 0 0)",
-  "--primary": "oklch(0.922 0 0)",
-  "--primary-foreground": "oklch(0.205 0 0)",
-  "--secondary": "oklch(0.269 0 0)",
-  "--secondary-foreground": "oklch(0.985 0 0)",
-  "--muted": "oklch(0.269 0 0)",
-  "--muted-foreground": "oklch(0.708 0 0)",
-  "--accent": "oklch(0.269 0 0)",
-  "--accent-foreground": "oklch(0.985 0 0)",
-  "--destructive": "oklch(0.704 0.191 22.216)",
-  "--border": "oklch(1 0 0 / 10%)",
-  "--input": "oklch(1 0 0 / 15%)",
-  "--ring": "oklch(0.556 0 0)",
-  // sidebar tokens — so the embedded Settings side-nav (bg-sidebar) themes with
-  // the stage instead of inheriting the shell's dark value in a LIGHT island.
-  "--sidebar": "oklch(0.205 0 0)",
-  "--sidebar-foreground": "oklch(0.985 0 0)",
-  "--sidebar-border": "oklch(1 0 0 / 10%)",
-};
-
-const LIGHT: Vars = {
-  "--background": "oklch(1 0 0)",
-  "--foreground": "oklch(0.145 0 0)",
-  "--card": "oklch(1 0 0)",
-  "--card-foreground": "oklch(0.145 0 0)",
-  "--popover": "oklch(1 0 0)",
-  "--popover-foreground": "oklch(0.145 0 0)",
-  "--primary": "oklch(0.205 0 0)",
-  "--primary-foreground": "oklch(0.985 0 0)",
-  "--secondary": "oklch(0.97 0 0)",
-  "--secondary-foreground": "oklch(0.205 0 0)",
-  "--muted": "oklch(0.97 0 0)",
-  "--muted-foreground": "oklch(0.556 0 0)",
-  "--accent": "oklch(0.97 0 0)",
-  "--accent-foreground": "oklch(0.205 0 0)",
-  "--destructive": "oklch(0.577 0.245 27.325)",
-  "--border": "oklch(0.922 0 0)",
-  "--input": "oklch(0.922 0 0)",
-  "--ring": "oklch(0.708 0 0)",
-  "--sidebar": "oklch(0.985 0 0)",
-  "--sidebar-foreground": "oklch(0.145 0 0)",
-  "--sidebar-border": "oklch(0.922 0 0)",
-};
-
-export type Theme = "dark" | "light";
+// The token block this lane used to transcribe out of globals.css now comes from
+// the stylesheet itself — see ../theme-island for why an island is needed at all
+// and why it must not be a copy. It carries every token `.dark` overrides, so
+// the sidebar set the embedded Settings side-nav needs (`bg-sidebar`) comes
+// along without this lane having to name it. Re-exported so lane files keep one
+// import site.
+export type { Theme };
 
 // A full-height stage: a thin toolbar (theme toggle + any extra controls) over a
 // token-scoped surface that fills the gallery's scroll container. `text-
@@ -98,12 +47,11 @@ export function StageFrame({
   controls?: (theme: Theme) => ReactNode;
   children: (theme: Theme) => ReactNode;
 }) {
-  const [theme, setTheme] = useState<Theme>("dark");
-  const vars = theme === "dark" ? DARK : LIGHT;
+  const { theme, setTheme, className, style } = useThemeIsland();
   return (
     <div
-      className="flex h-full flex-col bg-background text-foreground"
-      style={vars as CSSProperties}
+      className={cn("flex h-full flex-col bg-background text-foreground", className)}
+      style={style}
     >
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
         <ThemeToggle theme={theme} onChange={setTheme} />

@@ -646,7 +646,7 @@ export function SessionUltraDemo() {
                 <button
                   type="button"
                   onClick={() => stopRun(run.id)}
-                  className="inline-flex items-center gap-1 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20"
+                  className="inline-flex items-center gap-1 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/15"
                 >
                   <SquareIcon className="size-2.5" /> Stop
                 </button>
