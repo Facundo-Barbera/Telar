@@ -22,6 +22,31 @@ const nextConfig: NextConfig = {
   // a dependency is not a name — §0's citation policy applies to node_modules
   // too.)
   transpilePackages: ["@telar/core", "shiki"],
+  // REACHING THE DEV SERVER FROM ANOTHER MACHINE ON THE TAILNET.
+  //
+  // Next's dev server refuses `/_next/*` requests whose Origin it does not
+  // recognize. The failure is quietly asymmetric and that is what makes it hard
+  // to read: the SSR'd HTML and every `/api/*` route answer 200 as usual, so the
+  // page PAINTS — but each `/_next/static/**` chunk comes back 403, React never
+  // hydrates, and the client-side fetches that fill the UI never run. The
+  // symptom is "it loads but there is no data", which points at the API, and the
+  // API is fine. Measured directly: over the tailnet a chunk returned 403 while
+  // `/api/chats` returned 200 with real rows.
+  //
+  // Both spellings are listed because either can reach this host, and an origin
+  // is matched as sent: the MagicDNS name for `http://mini-fbarbera…:3000`, the
+  // bare tailnet IP for `http://100.110.136.102:3000`. The wildcard covers the
+  // other machines on this tailnet without needing an entry each.
+  //
+  // DEV-ONLY, and scoped on purpose. This setting has no effect on a production
+  // build, and `*.snakebird-cardassian.ts.net` is one private tailnet rather
+  // than a blanket allow — do NOT widen it to `*`, which would let any origin
+  // drive the dev server's HMR endpoints.
+  allowedDevOrigins: [
+    "100.110.136.102",
+    "mini-fbarbera.snakebird-cardassian.ts.net",
+    "*.snakebird-cardassian.ts.net",
+  ],
   // Lets a production build run beside the always-on dev server without the
   // two fighting over .next (e.g. NEXT_DIST_DIR=.next-build bunx next build).
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
