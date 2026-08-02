@@ -54,7 +54,7 @@ const Usage = z.object({
 export type Usage = z.infer<typeof Usage>;
 
 // A single rate-limit window as the harness reported it, RAW. The port relays;
-// it does not shape. Mapping a window onto a five-hour/seven-day PlanSnapshot is
+// it does not shape. Mapping provider quota windows into product UI is
 // a surface concern and differs per provider, so doing it here would bake one
 // provider's window vocabulary into the neutral layer.
 const RateWindow = z

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { accountEnv } from "../src/engine";
+
+const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-claude-runtime-"));
+const runtimeSettings = path.join(runtimeDir, "settings.json");
+process.env.TELAR_CLAUDE_SETTINGS_PATH = runtimeSettings;
 
 // Account isolation (the "both accounts point to work" bug): a subscription
 // account with NO configDir must land on the provider's BASE login regardless
@@ -7,6 +14,7 @@ import { accountEnv } from "../src/engine";
 let prev: string | undefined;
 beforeEach(() => {
   prev = process.env.CLAUDE_CONFIG_DIR;
+  fs.writeFileSync(runtimeSettings, JSON.stringify({ env: {} }));
 });
 afterEach(() => {
   if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -63,26 +71,38 @@ afterEach(() => {
   }
 });
 
-test("an ambient ANTHROPIC_BASE_URL never reaches a plain account", () => {
-  // The CLIProxyAPI case: the proxy is a real, working setup — but an account
-  // that never asked for it must not be silently routed through it.
+test("the native Claude account inherits its ambient runtime route", () => {
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8317";
   const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
-  expect("ANTHROPIC_BASE_URL" in env).toBe(false);
+  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
 });
 
-test("an ambient ANTHROPIC_API_KEY cannot re-bill a subscription account", () => {
-  // Silently swapping a Max subscription onto metered API billing is the same
-  // class of bug as landing `personal` on the work login.
+test("the native Claude account inherits its explicitly configured API identity", () => {
   process.env.ANTHROPIC_API_KEY = "sk-ant-ambient";
   const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
-  expect("ANTHROPIC_API_KEY" in env).toBe(false);
+  expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-ambient");
 });
 
-test("an ambient ANTHROPIC_AUTH_TOKEN cannot replace the Keychain identity", () => {
+test("the native Claude account inherits its configured router token", () => {
   process.env.ANTHROPIC_AUTH_TOKEN = "sk-local-ambient";
   const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
-  expect("ANTHROPIC_AUTH_TOKEN" in env).toBe(false);
+  expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-local-ambient");
+});
+
+test("Claude settings contribute routing and model aliases without loading the user tier", () => {
+  fs.writeFileSync(runtimeSettings, JSON.stringify({
+    env: {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
+      ANTHROPIC_AUTH_TOKEN: "router-token",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-routed-mini",
+      UNRELATED_TOOL_ENV: "must-not-leak-from-settings",
+    },
+  }));
+  const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
+  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
+  expect(env.ANTHROPIC_AUTH_TOKEN).toBe("router-token");
+  expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("gpt-routed-mini");
+  expect(env.UNRELATED_TOOL_ENV).toBeUndefined();
 });
 
 test("codex accounts get the same guard in their own spelling", () => {
@@ -94,8 +114,7 @@ test("codex accounts get the same guard in their own spelling", () => {
 });
 
 test("DECLARING still works — the guard stops inheriting, not choosing", () => {
-  // A proxy-backed account: it says so, so it gets it. This is the supported
-  // way to run Telar through CLIProxyAPI.
+  // An explicitly routed account says so, so it gets the declared environment.
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:9999"; // ambient, must lose
   const env = accountEnv({
     name: "proxied",
@@ -125,14 +144,10 @@ test("api-key auth mode still sets its token after the guard runs", () => {
   delete process.env.MY_KEY_SRC;
 });
 
-test("two accounts, one ambient proxy: only the declaring one is routed", () => {
+test("an isolated config-dir account does not inherit the native runtime route", () => {
   process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8317";
-  const plain = accountEnv({ name: "direct", provider: "claude" });
-  const proxied = accountEnv({
-    name: "proxied",
-    provider: "claude",
-    env: [{ name: "ANTHROPIC_BASE_URL", value: "http://127.0.0.1:8317", sensitive: false }],
-  });
-  expect(plain.ANTHROPIC_BASE_URL).toBeUndefined();
-  expect(proxied.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
+  const native = accountEnv({ name: "personal", provider: "claude" });
+  const isolated = accountEnv({ name: "work", provider: "claude", configDir: "/tmp/claude-work" });
+  expect(native.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
+  expect(isolated.ANTHROPIC_BASE_URL).toBeUndefined();
 });

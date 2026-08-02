@@ -1,14 +1,17 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { claudeExecutableOptions } from "@/lib/claude-executable";
 import { accountEnv, type AccountProfile } from "@telar/core";
 import os from "os";
 
-const MODEL = "claude-haiku-4-5";
+// Native slot, not a concrete model id: this honors the user's
+// ANTHROPIC_DEFAULT_HAIKU_MODEL mapping (including routed installations).
+const MODEL = "haiku";
 const MESSAGE_TRUNCATE_CODEPOINTS = 500;
 const TITLE_MAX_CODEPOINTS = 60;
 // Guards the wait for the *first* SDK message: if the subprocess never emits
 // anything — e.g. it's stuck on an interactive re-auth prompt for a stale/
 // expired token — the `for await` loop below would hang forever. Mirrors the
-// init-timeout hygiene in apps/web/app/api/usage/refresh/route.ts.
+// the same timeout hygiene used by other short-lived SDK helpers.
 const INIT_TIMEOUT_MS = 10_000;
 
 // A single layer of wrapping quotes models sometimes add despite being told
@@ -106,7 +109,7 @@ function buildPrompt(message: string): string {
 }
 
 // Generates a short title for a conversation opening with `message`, running
-// on `claude-haiku-4-5` under the given account profile. Never throws —
+// on Claude's `haiku` slot under the given account profile. Never throws —
 // returns null on any failure (spawn error, timeout, abort, refusal-looking
 // or unusable output).
 export async function generateTitle(
@@ -137,6 +140,7 @@ export async function generateTitle(
     const q = query({
       prompt: buildPrompt(message),
       options: {
+        ...claudeExecutableOptions(),
         model: MODEL,
         maxTurns: 1,
         allowedTools: [],

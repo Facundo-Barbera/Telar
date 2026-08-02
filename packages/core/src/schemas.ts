@@ -50,23 +50,6 @@ export const AccountProfile = z.object({
   // must not read as "everything is switched off".
   enabled: z.boolean().optional(),
   env: z.array(AccountEnvVar).optional(),
-  // OPT-IN routing through the local CLIProxyAPI gateway (proxy.ts). PRESENCE
-  // is the switch: an account without this field talks to its provider
-  // directly, and accountEnv proves it by clearing every routing var first.
-  // `prefix` pins the request to ONE upstream credential in the proxy's pool
-  // (the proxy resolves "prefix/model"); absent means the proxy's own routing
-  // strategy picks — round-robin, fill-first or weighted, its choice not ours.
-  proxy: z
-    .object({
-      prefix: z.string().optional(),
-      // The gateway credential this account is pinned to, by auth-file name.
-      // RESOLVED ONCE and cached here: `/auth-files` does not project `prefix`,
-      // so the mapping has to be discovered from the credential's model catalog,
-      // and doing that on every usage refresh would be several management calls
-      // per account against a hardcoded lockout.
-      upstream: z.string().optional(),
-    })
-    .optional(),
 });
 export type AccountProfile = z.infer<typeof AccountProfile>;
 

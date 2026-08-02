@@ -1,5 +1,4 @@
 import { removeAccount, setDefaultAccount } from "@telar/core";
-import { deletePlanUsage } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -33,10 +32,6 @@ export async function DELETE(
   const { name } = await params;
   try {
     const ok = removeAccount(name);
-    // Two owners, called in turn: core drops the registry entry and its secrets,
-    // this module's store drops the captured usage. Skipping the second left a
-    // usage wheel in the sidebar for an account that no longer existed.
-    if (ok) deletePlanUsage(name);
     return Response.json({ ok });
   } catch (e) {
     return Response.json(

@@ -41,7 +41,7 @@ export type CodexNormalizedEvent =
     }
   | { type: "error"; message: string; threadId?: string }
   // Raw fields off a `account/rateLimits/updated` notification's
-  // RateLimitSnapshot — route.ts does the fiveHour/sevenDay/PlanSnapshot
+  // RateLimitSnapshot — consumers decide whether to display provider limits
   // shaping (mirroring the Claude branch's own "rate_limit_event" handling),
   // this adapter just relays what the wire sent.
   | {

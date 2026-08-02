@@ -22,7 +22,7 @@ import type {
   ProjectManifest,
   RegistryEntry,
 } from "@telar/core";
-import type { ChatSummary, PlanSnapshot } from "@/lib/store";
+import type { ChatSummary } from "@/lib/store";
 import type { HttpStatus } from "@/components/settings/mcp-health";
 import type { GalleryFetchResult } from "./index";
 
@@ -46,7 +46,7 @@ export type GalleryScene = {
     }>;
   }>;
   chats?: GalleryEndpoint<{ chats: ChatSummary[] }>;
-  usage?: GalleryEndpoint<{ plan: Record<string, PlanSnapshot>; ledger?: unknown }>;
+  usage?: GalleryEndpoint<{ ledger: unknown }>;
   accounts?: GalleryEndpoint<{ accounts: AccountProfile[]; default: string }>;
   // /api/mcp/oauth/status — wire shape is { servers: {...} } (normalizeStatus
   // reads `.servers`), so the endpoint body carries that envelope verbatim.

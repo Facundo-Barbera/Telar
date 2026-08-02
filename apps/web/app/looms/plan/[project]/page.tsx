@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { ArrowLeftIcon, FolderGitIcon, WorkflowIcon } from "lucide-react";
-import { getProject, listAccounts } from "@telar/core";
+import {
+  isAccountAvailableForSessions,
+  listAccounts,
+  resolveEnabledAccount,
+} from "@telar/core/accounts";
+import { getProject } from "@telar/core/manifest";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
@@ -75,10 +80,30 @@ export default async function LoomPlanPage({
   // Display-only account metadata for the client picker (see SessionView) —
   // passed as plain data so the client component never imports the
   // server-only registry.
-  const accounts = listAccounts().map((a) => ({
-    name: a.name,
-    displayTier: a.displayTier,
-  }));
+  const account = resolveEnabledAccount(manifest.account);
+  if (!account) {
+    return (
+      <div className="flex h-dvh items-center justify-center p-6">
+        <EmptyState
+          icon={FolderGitIcon}
+          title="No enabled account"
+          description="Enable an account in Settings before starting a loom session."
+          action={
+            <Button variant="outline" size="sm" render={<Link href="/settings?section=providers" />}>
+              Open provider settings
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+  const accounts = listAccounts()
+    .filter(isAccountAvailableForSessions)
+    .map((a) => ({
+      name: a.name,
+      provider: a.provider ?? "claude",
+      displayTier: a.displayTier,
+    }));
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
@@ -101,7 +126,7 @@ export default async function LoomPlanPage({
         <SessionView
           key={project}
           project={project}
-          account={manifest.account}
+          account={account.name}
           accounts={accounts}
           initialRole="planner"
           planner

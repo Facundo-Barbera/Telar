@@ -25,11 +25,12 @@
 // (modelOptions), the effort list is the provider's real EFFORT_OPTIONS, and
 // the approval options are the provider's real ones — nothing is hardcoded.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   BotIcon,
   CheckIcon,
   GaugeIcon,
+  SearchIcon,
   SettingsIcon,
   ShieldCheckIcon,
   SparklesIcon,
@@ -38,9 +39,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import { DEFAULT_MODEL, type ModelInfo } from "@/lib/models";
+import { DEFAULT_MODEL, modelsForProvider, type ModelInfo } from "@/lib/models";
 import { getUiPrefs } from "@/lib/ui-prefs";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 
@@ -194,6 +196,7 @@ export function ComposerSettings({
   modelOptions: ModelInfo[];
   effortOptions: EffortOpt[];
 }) {
+  const [modelQuery, setModelQuery] = useState("");
   // New-session fallback: for a project with NO remembered composer config, seed
   // the still-untouched hardcoded defaults from the global UI preference (see
   // settings › Agent defaults). Per-project memory (telar:composer:<project>)
@@ -217,7 +220,10 @@ export function ComposerSettings({
       return;
     }
     const prefs = getUiPrefs();
-    if (model === DEFAULT_MODEL && modelOptions.some((m) => m.id === prefs.defaultModel)) {
+    if (
+      model === DEFAULT_MODEL &&
+      modelsForProvider("claude").some((m) => m.id === prefs.defaultModel)
+    ) {
       setModel(prefs.defaultModel);
       // Only when the caller supplied one AND the control is still untouched —
       // a resumed session's own choice is never clobbered.
@@ -235,6 +241,14 @@ export function ComposerSettings({
   const approvalDescription = active?.description;
   const isDefault = approval.value === approval.defaultValue;
   const effortLabel = effortOptions.find((e) => e.id === effort)?.label;
+  const visibleModels = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    return query
+      ? modelOptions.filter((option) =>
+          `${option.name} ${option.id} ${option.tier}`.toLowerCase().includes(query),
+        )
+      : modelOptions;
+  }, [modelOptions, modelQuery]);
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -300,8 +314,20 @@ export function ComposerSettings({
           {/* Model list — the live catalog. */}
           <div className="space-y-1.5">
             <SectionLabel icon={<SparklesIcon className="size-3" />}>Model</SectionLabel>
+            {modelOptions.length > 6 && (
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={modelQuery}
+                  onChange={(event) => setModelQuery(event.target.value)}
+                  placeholder="Search models"
+                  aria-label="Search models"
+                  className="h-8 pl-8 text-xs"
+                />
+              </div>
+            )}
             <div className="space-y-0.5">
-              {modelOptions.map((m) => (
+              {visibleModels.map((m) => (
                 <ModelRow
                   key={m.id}
                   model={m}
@@ -309,6 +335,11 @@ export function ComposerSettings({
                   onClick={() => setModel(m.id)}
                 />
               ))}
+              {visibleModels.length === 0 && (
+                <p className="px-2.5 py-4 text-center text-xs text-muted-foreground">
+                  No models match “{modelQuery}”.
+                </p>
+              )}
             </div>
           </div>
 

@@ -12,6 +12,9 @@ export type ModelInfo = {
   cacheReadPerMTok: number; // ~0.1x input
   blurb: string;
   note?: string;
+  // Offered by a router behind this harness rather than one of the harness's
+  // native model slots. The composer hides these until the user opts in.
+  routed?: boolean;
 };
 
 // Curated FALLBACK list only. The composer fetches the live catalog from
@@ -19,8 +22,8 @@ export type ModelInfo = {
 // back to modelsForProvider() below when the live source is unavailable.
 export const MODELS: ModelInfo[] = [
   {
-    id: "claude-fable-5",
-    name: "Fable 5",
+    id: "fable",
+    name: "Fable",
     tier: "frontier",
     context: "1M",
     maxOutput: "128K",
@@ -28,22 +31,23 @@ export const MODELS: ModelInfo[] = [
     outputPerMTok: 50,
     cacheReadPerMTok: 1,
     blurb: "Most capable — demanding reasoning, long-horizon agentic work",
-    note: "Thinking always on. Turns can run minutes.",
+    note: "Native Claude slot; your system configuration chooses the concrete model.",
   },
   {
-    id: "claude-opus-4-8",
-    name: "Opus 4.8",
+    id: "opus",
+    name: "Opus",
     tier: "opus",
     context: "1M",
     maxOutput: "128K",
     inputPerMTok: 5,
     outputPerMTok: 25,
     cacheReadPerMTok: 0.5,
-    blurb: "Highly autonomous — long-horizon agents, knowledge work, memory",
+    blurb: "Highly autonomous — resolved by Claude's system model mapping",
+    note: "Native Claude slot; your system configuration chooses the concrete model.",
   },
   {
-    id: "claude-sonnet-5",
-    name: "Sonnet 5",
+    id: "sonnet",
+    name: "Sonnet",
     tier: "sonnet",
     context: "1M",
     maxOutput: "128K",
@@ -51,21 +55,22 @@ export const MODELS: ModelInfo[] = [
     outputPerMTok: 15,
     cacheReadPerMTok: 0.3,
     blurb: "Near-Opus coding & agentic quality at Sonnet cost — the dev workhorse",
-    note: "Intro pricing $2/$10 through 2026-08-31.",
+    note: "Native Claude slot; your system configuration chooses the concrete model.",
   },
   {
-    id: "claude-haiku-4-5",
-    name: "Haiku 4.5",
+    id: "haiku",
+    name: "Haiku",
     tier: "haiku",
     context: "200K",
     maxOutput: "64K",
     inputPerMTok: 1,
     outputPerMTok: 5,
     cacheReadPerMTok: 0.1,
-    blurb: "Fastest and cheapest — triage, mechanical edits, quick lookups",
+    blurb: "Fastest slot — resolved by Claude's system model mapping",
+    note: "Native Claude slot; your system configuration chooses the concrete model.",
   },
   // Codex models (OpenAI). Priced via the ChatGPT subscription, so per-token
-  // figures are 0 here — the plan-usage rings track the real limits instead.
+  // figures are 0 here because subscription sessions do not expose token prices.
   {
     id: "gpt-5.5",
     name: "GPT-5.5",
@@ -107,7 +112,7 @@ export const MODELS: ModelInfo[] = [
   },
 ];
 
-export const DEFAULT_MODEL = "claude-sonnet-5";
+export const DEFAULT_MODEL = "sonnet";
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 
 export const modelById = (id: string): ModelInfo | undefined =>
@@ -115,6 +120,23 @@ export const modelById = (id: string): ModelInfo | undefined =>
 
 export const modelsForProvider = (p: "claude" | "codex"): ModelInfo[] =>
   MODELS.filter((m) => (m.provider ?? "claude") === p);
+
+/** Resolve context metadata for persisted concrete Claude ids. New sessions
+ * use stable slot aliases, while older chats legitimately store the concrete
+ * id reported by the harness. Both must produce the same context wheel. */
+export function contextLabelForModel(
+  id: string,
+  provider?: "claude" | "codex",
+): string | undefined {
+  const exact = modelById(id);
+  if (exact?.context && exact.context !== "—") return exact.context;
+  if (provider === "codex") return undefined;
+  const lower = id.toLowerCase();
+  const family = (["fable", "opus", "sonnet", "haiku"] as const).find((name) =>
+    lower.includes(name),
+  );
+  return family ? modelById(family)?.context : undefined;
+}
 
 // Mirrors the SDK's own EffortLevel union exactly (see @anthropic-ai/claude-agent-sdk's
 // `EffortLevel` export) — kept as a local literal type rather than importing it so this

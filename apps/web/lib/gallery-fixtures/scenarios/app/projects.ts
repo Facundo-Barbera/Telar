@@ -11,8 +11,6 @@ import {
   makeAccount,
   makeChatSummary,
   makeManifest,
-  makePlanSnapshot,
-  makePlanWindow,
   makeProjectEntry,
 } from "../../builders";
 import { allLooms, auroraLooms, finchLooms } from "./looms";
@@ -109,23 +107,14 @@ export const accountsScene = {
   body: { accounts: accountsList, default: "personal" },
 };
 
-// --- Plan usage (/api/usage) -----------------------------------------------
+// --- Telar-recorded usage (/api/usage) -------------------------------------
 
-export const planByAccount: Record<string, ReturnType<typeof makePlanSnapshot>> = {
-  personal: makePlanSnapshot({
-    subscriptionType: "max",
-    fiveHour: makePlanWindow({ utilization: 38 }),
-    sevenDay: makePlanWindow({ utilization: 54, resets_at: new Date(at(500_000)).toISOString() }),
-    sevenDayOpus: makePlanWindow({ utilization: 72, resets_at: new Date(at(500_000)).toISOString() }),
-  }),
-  work: makePlanSnapshot({
-    subscriptionType: "team",
-    fiveHour: makePlanWindow({ utilization: 12 }),
-    sevenDay: makePlanWindow({ utilization: 29, resets_at: new Date(at(600_000)).toISOString() }),
-  }),
+const usageTotals = { costUsd: 1.24, inputTokens: 18_400, outputTokens: 3_200, requests: 14 };
+export const usageScene = {
+  body: {
+    ledger: { session: usageTotals, weekly: usageTotals, byAccount: {} },
+  },
 };
-
-export const usageScene = { body: { plan: planByAccount, ledger: [] as unknown[] } };
 
 // --- Chats (/api/chats) ----------------------------------------------------
 

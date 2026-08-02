@@ -215,9 +215,7 @@ Every element of both components, accounted for. "Deleted" means no successor ex
 | `ProjectRow` pin toggle (hover-revealed) | 866-875 | **Deleted** with pins. |
 | Collapsed icon-rail branch: `RailProject`, `ProjectGlyph`, the divider | 1175-1190, 780-810 | **Deleted.** Collapse becomes offcanvas, not an icon strip. §6. |
 | `RailWheels` (vertical wheels for the collapsed rail) | 696-733 | **Deleted** for the same reason — there is no collapsed strip left to render into. |
-| `AccountWheels` / `CompactStrip` / `ExpandedList` / `ExpandedRow` / `AccountWheel` | 207-694, 735-778 | **Kept**, in the footer, unchanged in behaviour. Drops one of its three modes (see above). |
-| `WheelTip` + its viewport-clamping measurement | 326-458 | **Kept** verbatim. It is fiddly, correct, and nothing about it is coupled to the list. |
-| Wheel drag-reorder: `useDrag`, `moveByName`, `reconcile`, `DropBar`, `WHEEL_ORDER_KEY` | 461-518, 154-158, 54 | **Kept.** 2a extracts them to a pure module; 2b leaves them alone. This is the one drag-reorder in the app and it survives. |
+| Usage wheel components and drag-reorder helpers | 207-778 | Removed when external quota indicators were retired; the footer now contains Settings only. |
 | Refresh button + `refreshing` + `telar:refresh` dispatch | 1000-1011 | **Kept.** The dispatch is the app's only cross-surface invalidation convention and phase 3 depends on it. |
 | Ledger line (session / weekly telar-measured spend) | in `ExpandedList` | **Kept.** |
 | Auto-refresh-if-stale + `autoRefreshed` ref | 1053-1066, 981 | **Kept**, moved intact by 2a. Its dep array changes every render and the ref is the only thing stopping a refresh storm; do not "clean it up". |
@@ -583,4 +581,3 @@ document until they land.
     convergence plan. `app-sidebar.tsx` is not itself a gallery-specced surface, but the session row
     and the empty states are exactly the kind of thing the gallery has opinions about, and 12+
     production files cite it in header comments. — *blocks / accepted loss*
-

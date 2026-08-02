@@ -1,5 +1,6 @@
 export * from "./schemas";
 export * from "./providers";
+export * from "./claude-runtime";
 // The provider-neutral harness contract: one event vocabulary and one tool
 // shape that both the Claude Agent SDK adapter and the Codex app-server
 // adapter speak. Exported beside providers.ts because the two are halves of
@@ -24,10 +25,6 @@ export * from "./detect";
 // Who is signed in on an account, read from Claude's `.claude.json` profile
 // block — a config file, never a credential. See the module header.
 export * from "./account-identity";
-// The OPTIONAL local CLIProxyAPI gateway. Nothing depends on it: an account
-// routes through it only by declaring `proxy`, and accountEnv clears every
-// routing var first, so a machine without a proxy behaves as if this were absent.
-export * from "./proxy";
 export * from "./engine";
 // AD-17 — the one admission controller for agent() concurrency: the single
 // visible process ceiling (TELAR_MAX_AGENTS) and its per-class shares. Exported

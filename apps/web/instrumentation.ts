@@ -3,14 +3,14 @@
 // experimental `instrumentationHook` flag is needed). We use it to auto-recover
 // looms left "stuck" by a previous process crash/restart.
 //
-// The @telar/core barrel pulls in Node-only modules (fs, child_process, the
-// agent SDK), so the import is BOTH dynamic and guarded to the Node.js runtime —
-// it must never be pulled into an edge/client bundle.
+// Keep the import on the dispatcher subpath. Importing the package barrel here
+// makes every server boot compile unrelated provider detection, usage, and SDK
+// modules before the first request can be served.
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
   try {
-    const { reconcileStuckLooms } = await import("@telar/core");
+    const { reconcileStuckLooms } = await import("@telar/core/dispatcher");
     // Synchronous; returns the reconciled list. Log its length as the count.
     const recovered = reconcileStuckLooms();
     console.info(`[instrumentation] recovered ${recovered.length} stuck loom(s) on boot`);

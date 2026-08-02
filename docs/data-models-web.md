@@ -20,7 +20,7 @@ See also: [./architecture-core.md](./architecture-core.md) for the engine/execut
 
 Every core store resolves the root the same way — `process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar")` (`packages/core/src/manifest.ts:telarDir()`, re-implemented identically in `looms.ts`, `secrets.ts` imports it from `manifest.ts`, `accounts.ts`, `watches.ts`, `mcp-oauth.ts`). `apps/web/lib/permissions.ts` and `apps/web/lib/session-log.ts` mirror this same `process.env.TELAR_HOME ?? path.join(os.homedir(), ".telar")` expression locally.
 
-**Exception, verified in code:** `apps/web/lib/store.ts` (chats, usage, plan-usage) hardcodes `const DIR = path.join(os.homedir(), ".telar")` — it does **not** read `TELAR_HOME`. A developer who points `TELAR_HOME` at a sandbox (the dev script's `~/.telar-dev`, per `apps/web/lib/server/doctor.ts`'s `telarHomeCheck`) gets looms/projects/accounts redirected there, but chat history/usage/plan-usage always land in the real `~/.telar` regardless. This is a real divergence in the current code, not a doc simplification.
+`apps/web/lib/store.ts` follows the same root contract for chat history and the usage ledger, so an isolated `TELAR_HOME` keeps all of those writes together.
 
 ### Directory layout
 
@@ -44,7 +44,6 @@ Every core store resolves the root the same way — `process.env.TELAR_HOME ?? p
 | `ultra/<runId>/manifest.json`, `events.ndjson`, `agents/<ordinal>.ndjson`, `journal.jsonl`, `script.js` | core (Ultra sub-engine) | JSON/NDJSON/JS | `ultra/storage.ts`, `ultra/journal.ts` |
 | `chats.json` | **web** | JSON | `apps/web/lib/store.ts` |
 | `usage.ndjson` | **web** | NDJSON, append-only | `apps/web/lib/store.ts` (`logUsage`) |
-| `plan-usage.json` | **web** | JSON | `apps/web/lib/store.ts` (`savePlanUsage`) |
 | `sessions/<sessionId>/live.ndjson` | **web** | NDJSON, truncated per turn | `apps/web/lib/session-log.ts` |
 | `runs/` (legacy) | core | — | migrated once to `looms/` by `looms.ts:ensureMigrated` |
 
@@ -181,10 +180,6 @@ Type `Chat` (`apps/web/lib/store.ts:61`): `{ id, title, customTitle?, model, eff
 #### `UsageEntry` — `usage.ndjson`
 
 Type `UsageEntry` (`store.ts:111`) = `{ ts, account, model, sessionId, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, costUsd }`. Append-only via `logUsage()`; read back per-session via `usageLogBySession()` (mtime-cached).
-
-#### `PlanSnapshot` — `plan-usage.json`
-
-Type `PlanSnapshot` (`store.ts:466`) = `{ capturedAt, subscriptionType, fiveHour?, sevenDay?, sevenDayOpus?, sevenDaySonnet?, modelScoped? }` (Claude subscription rate-limit windows, the same data the Claude Code `/usage` dialog shows). Keyed by account name in the file; read/written via `readPlanUsage`/`savePlanUsage`.
 
 #### Permission rules — `permissions.json`
 

@@ -61,8 +61,10 @@ function Field({
 
 export function RegisterProjectDialog({
   onRegistered,
+  compact = false,
 }: {
   onRegistered: () => void;
+  compact?: boolean;
 }) {
   const router = useRouter();
   const { accounts } = useAccounts();
@@ -166,9 +168,19 @@ export function RegisterProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger render={<Button id="register-project-btn" size="sm" />}>
+      <DialogTrigger
+        render={
+          <Button
+            id={compact ? "sidebar-new-project-btn" : "register-project-btn"}
+            size={compact ? "icon-sm" : "sm"}
+            variant={compact ? "ghost" : "default"}
+            aria-label={compact ? "New project" : undefined}
+            title={compact ? "New project" : undefined}
+          />
+        }
+      >
         <FolderPlusIcon />
-        Register project
+        {!compact && "Register project"}
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>

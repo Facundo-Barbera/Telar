@@ -65,7 +65,6 @@ export const stateRoot = () => {
   return v ? path.resolve(v) : path.join(os.homedir(), ".telar");
 };
 const chatsFile = () => path.join(stateRoot(), "chats.json");
-const planFile = () => path.join(stateRoot(), "plan-usage.json");
 
 export type Part =
   | { type: "text"; text: string; parentId?: string }
@@ -563,70 +562,4 @@ export function appendTurn(opts: {
   if (opts.role !== undefined) chat.role = opts.role;
   chat.updatedAt = now;
   writeChats(chats);
-}
-
-// Real subscription rate-limit state, captured from the SDK per account.
-// This is the same data Claude Code's /usage dialog shows.
-export type PlanWindow = {
-  utilization: number | null; // 0-100
-  resets_at: string | null; // ISO 8601
-  // How long the window actually is, when the provider says so. Codex reports
-  // it per window and has already MOVED which slot the weekly one arrives in
-  // (see lib/codex-usage.ts), so a meter that wants to label itself truthfully
-  // has to read the duration rather than trust the field it was parsed into.
-  // Absent for Claude, whose windows are named by the SDK (five_hour/seven_day).
-  windowMinutes?: number | null;
-};
-
-export type PlanSnapshot = {
-  capturedAt: number;
-  subscriptionType: string | null; // pro | max | team | enterprise | plus | prolite
-  fiveHour?: PlanWindow | null;
-  sevenDay?: PlanWindow | null;
-  sevenDayOpus?: PlanWindow | null;
-  sevenDaySonnet?: PlanWindow | null;
-  modelScoped?: { display_name: string; utilization: number | null; resets_at: string | null }[];
-  // Codex-only: prepaid credit state that sits alongside the rate limits.
-  credits?: { hasCredits: boolean; unlimited: boolean; balance: string | null } | null;
-};
-
-export function readPlanUsage(): Record<string, PlanSnapshot> {
-  try {
-    return JSON.parse(fs.readFileSync(planFile(), "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-export function savePlanUsage(account: string, snapshot: Partial<PlanSnapshot>) {
-  ensureDir();
-  const all = readPlanUsage();
-  all[account] = { ...all[account], ...snapshot, capturedAt: Date.now() } as PlanSnapshot;
-  writePlanUsage(all);
-}
-
-function writePlanUsage(all: Record<string, PlanSnapshot>) {
-  const file = planFile();
-  const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(all, null, 2));
-  fs.renameSync(tmp, file);
-}
-
-// Drop an account's captured usage. Called when the account is REMOVED, because
-// a snapshot outliving its account is not merely stale data — the sidebar builds
-// one usage wheel per key in this file, so an orphaned entry renders a meter for
-// an account that no longer exists and cannot be refreshed, removed, or clicked
-// through to anything. Returns false when there was nothing to drop.
-//
-// This lives here, not in core's removeAccount, because AD-5 gives this file one
-// owner: core owns accounts.json and this module owns plan-usage.json, and
-// neither reaches into the other's file by path. The API route that deletes an
-// account calls both owners in turn.
-export function deletePlanUsage(account: string): boolean {
-  const all = readPlanUsage();
-  if (!(account in all)) return false;
-  delete all[account];
-  ensureDir();
-  writePlanUsage(all);
-  return true;
 }

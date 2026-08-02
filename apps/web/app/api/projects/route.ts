@@ -2,8 +2,8 @@ import {
   createProject,
   listProjects,
   registerProject,
-  type ProjectManifest,
-} from "@telar/core";
+} from "@telar/core/manifest";
+import type { ProjectManifest } from "@telar/core/schemas";
 
 export const dynamic = "force-dynamic";
 

@@ -107,15 +107,14 @@ export interface ProviderDescriptor {
   // remove the only way to use one rather than protect anybody. When an account
   // can name that routing, they belong here.
   ownedEnv: readonly string[];
-  // Where a proxy-routed account's endpoint and bearer token go for this
-  // provider. Both names MUST also appear in ownedEnv above — otherwise an
-  // ambient value could survive on an account that never opted in, which is the
-  // whole hole ownedEnv closes. The invariant suite pins that.
-  proxyEnv: { readonly baseUrl: string; readonly token: string };
   // Argv (after the binary) that starts an interactive login for this provider.
   loginArgs: string[];
   // Default config-dir location (home-relative), used to detect existing logins.
   defaultConfigDir: string;
+  // Model choices come from the harness boundary, never from an optional
+  // transport/integration catalog. Claude exposes stable native slots; Codex
+  // publishes a local cache maintained by its own harness.
+  modelCatalog: "native-slots" | "harness-cache";
   // What this provider's harness can be asked to do (AD-11). REQUIRED, not
   // optional: an absent list would read as "publishes nothing" and 400 every
   // session, while `?? []` would read as "publishes nothing" silently — both
@@ -134,8 +133,8 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
       "oauth-token": "CLAUDE_CODE_OAUTH_TOKEN", // `claude setup-token`, subscription-billed
       "api-key": "ANTHROPIC_API_KEY", // Console key, API-billed
     },
-    // Endpoint + identity. BASE_URL redirects every request (a local proxy such
-    // as CLIProxyAPI, a router, a relay); the three credential vars each
+    // Endpoint + identity. BASE_URL redirects every request (a router or relay);
+    // the three credential vars each
     // override the Keychain subscription login with a different identity —
     // CLAUDE_CODE_OAUTH_TOKEN silently, since it is still subscription-billed
     // and so produces no billing signal that anything was substituted.
@@ -145,12 +144,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
     ],
-    // ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY: the proxy's key is a bearer
-    // token for a local server, and API_KEY additionally flips Claude Code onto
-    // metered-API semantics, which is not what a proxied subscription is.
-    proxyEnv: { baseUrl: "ANTHROPIC_BASE_URL", token: "ANTHROPIC_AUTH_TOKEN" },
     loginArgs: ["auth", "login"],
     defaultConfigDir: ".claude",
+    modelCatalog: "native-slots",
     // The Agent SDK's query() takes every one of these. Measured against the
     // route's options object: systemPrompt.append, settingSources,
     // allowedTools/disallowedTools, mcpServers, hooks.PreToolUse, plus
@@ -166,9 +162,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
     },
     // Same two questions, Codex's spelling of them.
     ownedEnv: ["OPENAI_BASE_URL", "OPENAI_API_KEY"],
-    proxyEnv: { baseUrl: "OPENAI_BASE_URL", token: "OPENAI_API_KEY" },
     loginArgs: ["login"],
     defaultConfigDir: ".codex",
+    modelCatalog: "harness-cache",
     // RE-MEASURED against runCodexTurn's argument list, which now also carries
     // `tools` and `instructions`. Two of the four gaps this list used to
     // record are genuinely closed:

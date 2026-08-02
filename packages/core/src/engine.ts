@@ -8,8 +8,8 @@ import { z } from "zod";
 import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
 import { accountEnvSecretKey, readSecret } from "./secrets";
-import { getProxyKey, readProxyConfig } from "./proxy";
 import { acquireAdmission, type AdmissionClass } from "./admission";
+import { CLAUDE_RUNTIME_ENV_KEYS, readClaudeRuntimeEnv } from "./claude-runtime";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -132,6 +132,12 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
   const env: Record<string, string | undefined> = { ...process.env };
   if (!account) return env;
   const p = providerOf(account.provider);
+  const provider = account.provider ?? "claude";
+  const systemClaude =
+    provider === "claude" &&
+    !account.configDir &&
+    (account.authMode ?? "subscription") === "subscription";
+  const nativeClaudeEnv = systemClaude ? readClaudeRuntimeEnv() : {};
   if (account.configDir) {
     env[p.configDirEnv] = expandHome(account.configDir);
   } else {
@@ -160,6 +166,12 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
   // the bottom of this function) sets these deliberately, and non-subscription
   // auth modes set their token just below. What stops is INHERITANCE.
   for (const name of p.ownedEnv) delete env[name];
+  // Model-slot overrides are part of the same runtime identity. A manually
+  // isolated account must not inherit the main Claude installation's routing.
+  if (provider === "claude") {
+    for (const name of CLAUDE_RUNTIME_ENV_KEYS) delete env[name];
+    if (systemClaude) Object.assign(env, nativeClaudeEnv);
+  }
 
   const mode = account.authMode ?? "subscription";
   if (mode !== "subscription") {
@@ -168,22 +180,6 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
     // disk), fall back to the Telar-managed secret store keyed by account name.
     const value = (account.tokenEnv && process.env[account.tokenEnv]) || readSecret(account.name);
     if (target && value) env[target] = value;
-  }
-
-  // OPT-IN proxy routing. Only an account that DECLARES `proxy` is routed, and
-  // only while the gateway is enabled — so switching CLIProxyAPI off in
-  // settings returns every account to talking to its provider directly without
-  // touching a single account profile. The token is the proxy's API key from
-  // the secret store; without one we deliberately set the base URL anyway, so
-  // the failure is a loud 401 from a reachable proxy rather than a silent
-  // fallback to Anthropic on an account the user believes is proxied.
-  if (account.proxy) {
-    const proxy = readProxyConfig();
-    if (proxy.enabled) {
-      env[p.proxyEnv.baseUrl] = proxy.url;
-      const key = getProxyKey("api");
-      if (key) env[p.proxyEnv.token] = key;
-    }
   }
 
   // Per-account extra env, applied LAST so an account can deliberately override

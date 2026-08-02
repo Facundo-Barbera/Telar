@@ -90,8 +90,7 @@ Every endpoint below was verified by reading its route file directly (not solely
 | GET | `/api/ultra/[id]/events` | SSE poll-tail of an Ultra run | SSE (`run`/`ev`/`end`) |
 | POST | `/api/ultra/[id]/resume` | Re-run an (optionally edited) script | No |
 | POST | `/api/ultra/[id]/stop` | Abort a live Ultra run | No |
-| GET | `/api/usage` | Plan-usage snapshot + local API-cost ledger | No |
-| POST | `/api/usage/refresh` | Refresh one or all accounts' plan-usage snapshot | No |
+| GET | `/api/usage` | Telar-recorded request, token, and cost summary | No |
 
 **Server actions**: None found — no `"use server"` directive exists anywhere under `apps/web`.
 
@@ -179,7 +178,6 @@ Selected payload shapes (read from source, not inferred):
 - `saved` — `{ chatId }`, sent once at register-at-create (a stub chat row is persisted the instant the session id is known, via `upsertChatStub`) and again after final persistence.
 - `permission` — `{ id, toolName, input, rule, ruleOptions }` for an interactive `canUseTool` prompt; answered by `POST /api/chat/permission`.
 - `permission_result` — `{ id, behavior }`.
-- `plan` — a `PlanSnapshot`-shaped rate-limit/usage snapshot, `{ account, ...snapshot }`, also persisted via `savePlanUsage`.
 - `done` — `{ subtype, costUsd, turns, usage, context }`, the terminal per-POST summary (`context` is real final context-window occupancy, not a running sum).
 - `title` — `{ title }`, sent only if a background title-generation job (`generateTitle`) resolves within `TITLE_RACE_MS`.
 
@@ -187,7 +185,7 @@ Selected payload shapes (read from source, not inferred):
 
 In-process MCP servers wired per turn: `loom` (`createLoomMcpServer`, from [`apps/web/lib/loom-mcp.ts`](../apps/web/lib/loom-mcp.ts) — 13 tools: `draft_bundle_file`, `propose_contract`, `read_bundle`, `list_looms`, `get_loom`, `start_loom`, `steer_loom`, `reject_loom`, `answer_loom`, `answer_blocked`, `resume_loom`, `cancel_loom`, `watch_loom`), `ultra` (`createUltraMcpServer`, from [`apps/web/lib/ultra-mcp.ts`](../apps/web/lib/ultra-mcp.ts) — `ultra`/`ultra_status`/`ultra_stop`), plus any project-declared MCP servers via `resolveProjectMcpServers` with `strictMcpConfig: true` (the repo's own `.mcp.json`/user-level config is never pulled in).
 
-Persistence at teardown (`finally` block — the turn is not bound to the HTTP request lifetime, so it survives client disconnect): `appendTurn`, `logUsage`, `savePlanUsage` (all `apps/web/lib/store.ts`). Background execution is tracked via `registerChatRun(runId, abort)` (`apps/web/lib/chat-runs.ts`) — only `POST /api/chat/stop` or natural completion aborts it.
+Persistence at teardown (`finally` block — the turn is not bound to the HTTP request lifetime, so it survives client disconnect): `appendTurn` and `logUsage` (both `apps/web/lib/store.ts`). Background execution is tracked via `registerChatRun(runId, abort)` (`apps/web/lib/chat-runs.ts`) — only `POST /api/chat/stop` or natural completion aborts it.
 
 Core (`@telar/core`): `accountEnv`, `accountHealth`, `deriveDeliverableSignal`, `getAccount`, `getLoom`, `getProject`, `providerOf`, `readBundleFile`, `readContract`, `resolveProjectMcpServers`, `STEERING_FILE`.
 
@@ -506,23 +504,15 @@ File: [`apps/web/app/api/ultra/[id]/stop/route.ts`](../apps/web/app/api/ultra/[i
 
 #### `GET /api/usage`
 File: [`apps/web/app/api/usage/route.ts`](../apps/web/app/api/usage/route.ts)
-- Response `{ plan: readPlanUsage(), ledger: usageSummary() }` — real subscription rate-limit windows per account, plus Telar's own measured API-equivalent-$ ledger (secondary/informational).
-- Uses `apps/web/lib/store.ts` only (`readPlanUsage`, `usageSummary`) — no `@telar/core`.
-
-#### `POST /api/usage/refresh`
-File: [`apps/web/app/api/usage/refresh/route.ts`](../apps/web/app/api/usage/refresh/route.ts)
-- Refreshes one account's (or, if body is omitted, **all** accounts') real plan-usage snapshot without spending inference — spawns a minimal SDK subprocess, reads the rate limits off the `system:init` handshake's experimental usage control call, then aborts before any prompt executes (10s init timeout). For Codex accounts, reads limits from cached session rollouts instead (zero-cost, no subprocess) via `codexUsageSnapshot`.
-- Body: `{ account?: string }`, optional; validated via `getAccount` if present (`400` if unknown).
-- Skips (never spawns) accounts whose `accountHealth` is `missing-config-dir`/`never-logged-in` — reported under `skipped`, not `errors`.
-- Response `{ plan, errors?: Record<name,message>, skipped?: Record<name,reason> }`.
-- Core: `accountEnv`, `accountHealth`, `getAccount`, `listAccounts`, `AccountProfile` type.
+- Response `{ ledger: usageSummary() }` — Telar's own recorded 5-hour and 7-day request, token, and cost totals, including per-account breakdowns.
+- Uses `apps/web/lib/store.ts` only (`usageSummary`) — no provider quota probing.
 
 ## Streaming Protocols
 
 None of the streaming routes use the Vercel AI SDK's data-stream protocol — every one is a hand-rolled `text/event-stream` response built directly from a `ReadableStream`, with headers `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`. There are **5 SSE endpoints** in total, in three distinct shapes:
 
 ### 1. Chat turn stream — `POST /api/chat`
-The richest protocol: 17 named event types (`session`, `saved`, `thinking`, `thinking_delta`, `delta`, `text`, `tool`, `tool_result`, `task_status`, `permission`, `permission_result`, `permission_denied`, `plan`, `error`, `interrupted`, `done`, `title`), each written as a standard named SSE frame:
+The richest protocol: 16 named event types (`session`, `saved`, `thinking`, `thinking_delta`, `delta`, `text`, `tool`, `tool_result`, `task_status`, `permission`, `permission_result`, `permission_denied`, `error`, `interrupted`, `done`, `title`), each written as a standard named SSE frame:
 ```
 event: <name>
 data: <json>

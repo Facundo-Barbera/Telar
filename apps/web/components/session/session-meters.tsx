@@ -33,7 +33,7 @@
 // class utilities so the cards re-theme legibly.
 
 import { useState } from "react";
-import { GaugeIcon, UserRoundIcon, WorkflowIcon } from "lucide-react";
+import { UserRoundIcon, WorkflowIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { fmtCost, fmtTokens } from "@/lib/format";
 import type { SpendReadout } from "@/lib/spend-readout";
@@ -175,7 +175,7 @@ export function CostPill({
               <ul className="space-y-0.5">
                 <li className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50">
                   <UserRoundIcon className="size-2.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate">This session's turns</span>
+                  <span className="min-w-0 flex-1 truncate">This session&apos;s turns</span>
                   <span className="shrink-0 font-mono text-[11px]">
                     {fmtCost(breakdown.sessionUsd)}
                   </span>
@@ -220,6 +220,7 @@ export function ContextPill({
   windowTokens,
   lifetime,
   messagesEst,
+  spend,
 }: {
   used: number;
   windowTokens?: number;
@@ -227,6 +228,7 @@ export function ContextPill({
   // Tilde estimate (chars/4) of the transcript actually sent — a REAL source for
   // the Messages bucket. Omit to drop the per-bucket split entirely.
   messagesEst?: number;
+  spend?: { readout: SpendReadout; breakdown?: SpendBreakdown };
 }) {
   const { open, pinned, bind, toggle } = usePinnableHover();
   const { anchorRef, floatRef, style, ready } = useAnchoredOverlay<
@@ -255,20 +257,30 @@ export function ContextPill({
       <button
         type="button"
         onClick={toggle}
-        className="flex items-center"
+        className={cn(
+          "relative flex size-8 items-center justify-center rounded-full text-[9px] font-medium tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+          pinned && "bg-muted text-foreground",
+        )}
         aria-expanded={open}
+        aria-label={`Context window${usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
         title={pinned ? "Click to unpin" : "Hover to preview · click to pin"}
       >
-        <Badge
-          variant="outline"
-          className={cn(
-            "cursor-pointer gap-1.5 font-mono text-xs hover:bg-muted",
-            pinned && "ring-1 ring-ring",
-          )}
-        >
-          <GaugeIcon className="size-3 text-muted-foreground" />
-          CTX {fmtTokens(used)}
-        </Badge>
+        <svg className="absolute inset-0 size-8 -rotate-90" viewBox="0 0 32 32" aria-hidden>
+          <circle cx="16" cy="16" r="11" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-border" />
+          <circle
+            cx="16"
+            cy="16"
+            r="11"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeDasharray={2 * Math.PI * 11}
+            strokeDashoffset={(2 * Math.PI * 11) * (1 - (usedPct ?? 0) / 100)}
+            className="text-primary"
+          />
+        </svg>
+        <span>{usedPct === null ? (used >= 1000 ? `${Math.round(used / 1000)}k` : used) : `${Math.round(usedPct)}%`}</span>
       </button>
       {open && (
         <div
@@ -373,6 +385,31 @@ export function ContextPill({
                 <LegendRow key={label} label={`${label} · lifetime`} value={fmtTokens(tok)} pct={null} muted />
               ))}
             </ul>
+
+            {spend && (
+              <div className="mt-1.5 border-t border-border px-1.5 pt-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Conversation spend</span>
+                  <span className="font-mono font-semibold">{spend.readout.text}</span>
+                </div>
+                {spend.readout.unit === "usd" && spend.breakdown && spend.breakdown.runs.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    <li className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
+                      <UserRoundIcon className="size-3" />
+                      <span className="min-w-0 flex-1 truncate">Session turns</span>
+                      <span className="font-mono">{fmtCost(spend.breakdown.sessionUsd)}</span>
+                    </li>
+                    {spend.breakdown.runs.map((run) => (
+                      <li key={run.runId} className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
+                        <WorkflowIcon className="size-3" />
+                        <span className="min-w-0 flex-1 truncate">{run.name}</span>
+                        <span className="font-mono">{fmtCost(run.usd)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             <div className="mt-1.5 border-t border-border px-1.5 pt-1.5 text-[10px] text-muted-foreground/70">
               per-category window attribution lands when the SDK reports it

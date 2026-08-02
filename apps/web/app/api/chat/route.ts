@@ -6,6 +6,7 @@ import {
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
+import { claudeExecutableOptions } from "@/lib/claude-executable";
 import {
   accountEnv,
   accountHealth,
@@ -16,6 +17,7 @@ import {
   pendingUltraWakes,
   providerOf,
   resolveProjectMcpServers,
+  resolveEnabledAccount,
   resolveSessionKind,
   resolveSessionProfile,
   sessionRoleFromWire,
@@ -94,11 +96,9 @@ import {
   appendTurn,
   getChat,
   logUsage,
-  savePlanUsage,
   sessionSpendUsd,
   upsertChatStub,
   type Part,
-  type PlanSnapshot,
 } from "@/lib/store";
 import {
   agentMetaFromInput,
@@ -116,9 +116,6 @@ import {
 // no test file for this route anywhere in the tree, so bun test / tsc / lint
 // all stay green while the app is broken. Do not "tidy" it away as unused.
 import "@/lib/session-profiles";
-
-const toIso = (epoch?: number) =>
-  epoch ? new Date(epoch < 1e12 ? epoch * 1000 : epoch).toISOString() : null;
 
 // Hard ceiling on how many tool calls a single turn persists with full
 // input/output detail. capToolInput/capToolOutput bound each part's own
@@ -300,11 +297,11 @@ export async function POST(req: Request) {
   if (account) {
     profile = getAccount(account)!;
   } else {
-    const named = getAccount(manifest.account);
+    const named = resolveEnabledAccount(manifest.account);
     if (!named) {
       return Response.json(
         {
-          error: `Project "${project ?? manifest.name}" is set to account "${manifest.account}", which isn't registered on this machine. Add it in Settings → Accounts, or point the project at an account you have.`,
+          error: `Project "${project ?? manifest.name}" cannot start with account "${manifest.account}" because it is missing or no compatible account is enabled. Check Settings → Accounts, or point the project at an enabled account.`,
         },
         { status: 400 },
       );
@@ -328,6 +325,8 @@ export async function POST(req: Request) {
   }
 
   const provider = profile.provider ?? "claude";
+  // Resolve the subprocess environment once. Besides preventing three reads
+  const runtimeEnv = accountEnv(profile);
 
   // Omitting effort means "let the model/SDK pick its own default" — only a
   // present-but-invalid value is rejected. Validated up front, alongside
@@ -473,7 +472,7 @@ export async function POST(req: Request) {
   //
   // Named `sessionProfile`, NEVER `profile`: `profile` in this scope is the
   // AccountProfile resolved above, which feeds accountEnv, accountHealth,
-  // generateTitle, savePlanUsage, logUsage's `account` and the chat stub's
+  // generateTitle, logUsage's `account` and the chat stub's
   // `account` field. Shadowing it is a silent billing bug.
   //
   // The kind comes from resolveSessionKind, which reproduces the precedence the
@@ -1089,7 +1088,7 @@ export async function POST(req: Request) {
             prompt: message,
             // AC2/AC3 — the same profile-resolved cwd the Claude branch uses.
             cwd: sessionProfile.cwd,
-            env: accountEnv(profile),
+            env: runtimeEnv,
             model,
             ...(effort ? { reasoningEffort: effort as CodexReasoningEffort } : {}),
             sandbox,
@@ -1261,27 +1260,8 @@ export async function POST(req: Request) {
                 break;
               }
               case "rate_limits": {
-                // Same account-scoped snapshot idiom as the Claude branch's
-                // "rate_limit_event" handling below (savePlanUsage + send
-                // "plan", generic client refresh() on that event) — primary
-                // is the 5-hour window, secondary the weekly one (see
-                // lib/codex-app-server.ts's account/rateLimits/updated case).
-                const toWindow = (
-                  w: { usedPercent: number; resetsAt: number | null } | null,
-                ) =>
-                  w
-                    ? {
-                        utilization: Math.round(w.usedPercent),
-                        resets_at: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null,
-                      }
-                    : null;
-                const snapshot: Partial<PlanSnapshot> = {
-                  subscriptionType: nev.planType,
-                  fiveHour: toWindow(nev.primary),
-                  sevenDay: toWindow(nev.secondary),
-                };
-                savePlanUsage(profile.name, snapshot);
-                send("plan", { account: profile.name, ...snapshot });
+                // Provider quota events are intentionally ignored. Telar records
+                // only the session usage it can attribute to this turn.
                 break;
               }
               case "error": {
@@ -1361,6 +1341,7 @@ export async function POST(req: Request) {
         const q = query({
           prompt: message,
           options: {
+            ...claudeExecutableOptions(),
             // AC2 — `cwd` arrives BY CONSTRUCTION. The fold sets it from
             // `ctx.manifest.root`, which is exactly what `const workspace =
             // manifest.root` used to compute here, so this is the removal of a
@@ -1374,7 +1355,7 @@ export async function POST(req: Request) {
             // two names are one character apart and a mix-up bills the wrong
             // account; the whole neighbourhood was edited by story 2.2, which is
             // exactly the context in which such a slip happens.
-            env: accountEnv(profile),
+            env: runtimeEnv,
             // Kind-specific guidance (docs/loom-model.md §5, adaptive-
             // verification.md §8) is ADDITIVE via the preset's own `append`, and
             // WHICH text that is has stopped being decided here: the profile's
@@ -1564,8 +1545,9 @@ export async function POST(req: Request) {
               userText: displayText,
             });
             send("saved", { chatId: capturedSession });
-            // Fire the plan-usage control call now — the subprocess must still
-            // be alive when it resolves; awaiting it at result-time is too late.
+            // Capture the live session totals while the subprocess is still
+            // alive; this is the fallback when navigation interrupts a final
+            // result event.
             const usageFn = (q as unknown as Record<string, () => Promise<any>>)
               .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
             usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
@@ -1793,28 +1775,8 @@ export async function POST(req: Request) {
               });
               partOrigin.push(undefined);
             }
-          } else if (msg.type === "rate_limit_event") {
-            // Streamed mid-turn — single-window update, merge into the snapshot
-            const info = (msg as { rate_limit_info?: Record<string, any> }).rate_limit_info;
-            if (info?.rateLimitType && info.utilization != null) {
-              const window = { utilization: info.utilization, resets_at: toIso(info.resetsAt) };
-              const key =
-                info.rateLimitType === "five_hour"
-                  ? "fiveHour"
-                  : info.rateLimitType === "seven_day"
-                    ? "sevenDay"
-                    : info.rateLimitType === "seven_day_opus"
-                      ? "sevenDayOpus"
-                      : info.rateLimitType === "seven_day_sonnet"
-                        ? "sevenDaySonnet"
-                        : null;
-              if (key) {
-                savePlanUsage(profile.name, { [key]: window });
-                send("plan", { account: profile.name, [key]: window });
-              }
-            }
           } else if (msg.type === "result") {
-            // Capture only — do NOT log usage / save plan snapshot / send
+            // Capture only — do NOT log usage / send
             // "done" here. A backgrounded subagent can wake an SDK
             // auto-continuation that produces a second "result" later in
             // this same stream, and these fields are running totals for the
@@ -1919,21 +1881,9 @@ export async function POST(req: Request) {
                 new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
               ]);
             } catch {
-              // experimental API — degrade silently, rate_limit_events still cover us
+              // Experimental API — degrade silently. Final SDK result usage is
+              // still the primary accounting path.
             }
-          }
-          if (u?.rate_limits_available && u.rate_limits) {
-            const rl = u.rate_limits;
-            const snapshot: Partial<PlanSnapshot> = {
-              subscriptionType: u.subscription_type ?? null,
-              fiveHour: rl.five_hour ?? null,
-              sevenDay: rl.seven_day ?? null,
-              sevenDayOpus: rl.seven_day_opus ?? null,
-              sevenDaySonnet: rl.seven_day_sonnet ?? null,
-              modelScoped: rl.model_scoped ?? [],
-            };
-            savePlanUsage(profile.name, snapshot);
-            send("plan", { account: profile.name, ...snapshot });
           }
           // No "result" message ever arrived for this POST (aborted/errored
           // mid-flight) but the session did initialize, so `u.session` — the
@@ -1973,8 +1923,8 @@ export async function POST(req: Request) {
           }
           // Act on the LAST "result" message — real or, absent one, the
           // synthesized fallback above (see the "result" case for why only
-          // the last one is ever used) — plan-usage snapshot, the
-          // usage.ndjson entry, and the "done" broadcast all fire at most
+          // the last one is ever used) — the usage.ndjson entry and the
+          // "done" broadcast both fire at most
           // once per POST.
           if (lastResult) {
             if (capturedSession) {

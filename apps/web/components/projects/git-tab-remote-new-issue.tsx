@@ -12,6 +12,7 @@ import { LoaderCircleIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { dispatchTelarRefresh } from "@/lib/telar-refresh";
 import {
   Dialog,
   DialogContent,
@@ -77,6 +78,7 @@ export function NewIssueDialog({
         return;
       }
       const created = data.issue.number;
+      dispatchTelarRefresh({ domains: ["git"], project: name });
       reset();
       onOpenChange(false);
       onCreated(created);

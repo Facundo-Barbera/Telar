@@ -8,7 +8,7 @@
 //                    green the suite is.
 //   2. RUNTIME ONLY — sessionDir() resolves under TELAR_HOME, is created on
 //                    demand, and writing a session lease creates nothing named
-//                    chats.json / usage.ndjson / plan-usage.json anywhere and
+//                    chats.json / usage.ndjson anywhere and
 //                    does not touch the root-level store.
 //   3. NEVER AUTO-DONE — the reclaim decision is a pure function whose return
 //                    union has no member that can express a terminal success.
@@ -182,13 +182,12 @@ describe("AC11.2 — the session tree exists and holds RUNTIME state only", () =
     expect(() => sessions.sessionDir("0f9c2e14-8b7a-4d61-9a02-3f5b6c7d8e90")).not.toThrow();
   });
 
-  test("AC11 a session lease creates NO chats.json / usage.ndjson / plan-usage.json and leaves the root store untouched", () => {
+  test("AC11 a session lease creates NO chats.json / usage.ndjson and leaves the root store untouched", () => {
     // Plant the root-level store first: "nothing new appeared" is not enough on
     // its own — a leak can be a CONTENT change rather than a new file.
     const planted: Record<string, string> = {
       "chats.json": JSON.stringify({ planted: "chats" }),
       "usage.ndjson": JSON.stringify({ planted: "usage" }) + "\n",
-      "plan-usage.json": JSON.stringify({ planted: "plan" }),
     };
     for (const [name, body] of Object.entries(planted)) {
       fs.writeFileSync(path.join(home, name), body);
@@ -207,7 +206,7 @@ describe("AC11.2 — the session tree exists and holds RUNTIME state only", () =
     }
     // Nothing by those names appeared ANYWHERE in the tree beyond the plants.
     const after = tree(home);
-    const forbidden = ["chats.json", "usage.ndjson", "plan-usage.json"];
+    const forbidden = ["chats.json", "usage.ndjson"];
     const created = after.filter((p) => !before.includes(p));
     expect(created.filter((p) => forbidden.includes(path.basename(p)))).toEqual([]);
     // What the session lease DID create is exactly its own directory + file.

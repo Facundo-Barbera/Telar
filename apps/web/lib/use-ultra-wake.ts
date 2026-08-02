@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { PendingUltraWake } from "@telar/core";
+import { refreshIncludes } from "@/lib/telar-refresh";
+import { cachedJson } from "@/lib/client-json-cache";
 
 // Story 4.1 / AC1 — the client half of the completion wake.
 //
@@ -41,9 +43,10 @@ export function useUltraWake(sessionId: string | null) {
       return;
     }
     try {
-      const r = await fetch(`/api/ultra/wakes?sessionId=${encodeURIComponent(sessionId)}`);
-      if (!r.ok) return;
-      const d = await r.json();
+      const d = await cachedJson<{
+        pending?: PendingUltraWake[];
+        live?: number;
+      }>(`/api/ultra/wakes?sessionId=${encodeURIComponent(sessionId)}`, { force: true });
       setPending(Array.isArray(d.pending) ? d.pending : []);
       setLive(typeof d.live === "number" ? d.live : 0);
     } catch {
@@ -81,7 +84,9 @@ export function useUltraWake(sessionId: string | null) {
   // The app-wide refresh signal every other client surface listens to, so a
   // manual refresh picks up a run that settled while the tab was backgrounded.
   useEffect(() => {
-    const onRefresh = () => void reload();
+    const onRefresh = (event: Event) => {
+      if (refreshIncludes(event, "ultra")) void reload();
+    };
     window.addEventListener("telar:refresh", onRefresh);
     return () => window.removeEventListener("telar:refresh", onRefresh);
   }, [reload]);

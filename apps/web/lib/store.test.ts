@@ -1,4 +1,4 @@
-// Story 1.1 / CAP-1 — TELAR_HOME isolation for the chat + usage + plan stores.
+// Story 1.1 / CAP-1 — TELAR_HOME isolation for the chat and usage stores.
 //
 // The point of this file is AC1's "asserted by a test, not by inspection": the
 // real ~/.telar must be provably untouched by a TELAR_HOME-scoped run. It is
@@ -32,12 +32,12 @@ const store = await import("./store");
 
 const REAL_HOME = path.join(os.homedir(), ".telar");
 
-// {exists, sha256} of the real home's three files. Read-only: never creates the
+// {exists, sha256} of the real home's files. Read-only: never creates the
 // directory, never stats into existence. Existence alone is not enough — an
 // append to an already-present usage.ndjson leaves existence unchanged.
 function realHomeFingerprint() {
   const snap: Record<string, string> = {};
-  for (const name of ["chats.json", "usage.ndjson", "plan-usage.json"]) {
+  for (const name of ["chats.json", "usage.ndjson"]) {
     const file = path.join(REAL_HOME, name);
     try {
       snap[name] = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -68,7 +68,7 @@ afterAll(() => {
 });
 
 describe("store TELAR_HOME isolation (CAP-1)", () => {
-  test("TELAR_HOME isolates chats.json, usage.ndjson and plan-usage.json", () => {
+  test("TELAR_HOME isolates chats.json and usage.ndjson", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-ac1-"));
     process.env.TELAR_HOME = root;
     try {
@@ -79,11 +79,8 @@ describe("store TELAR_HOME isolation (CAP-1)", () => {
         userText: "hello",
       });
       store.logUsage(ledgerLine({ sessionId: "ac1-session" }));
-      store.savePlanUsage("personal", { subscriptionType: "max" });
-
       expect(fs.existsSync(path.join(root, "chats.json"))).toBe(true);
       expect(fs.existsSync(path.join(root, "usage.ndjson"))).toBe(true);
-      expect(fs.existsSync(path.join(root, "plan-usage.json"))).toBe(true);
     } finally {
       process.env.TELAR_HOME = TMP;
       fs.rmSync(root, { recursive: true, force: true });
@@ -106,7 +103,6 @@ describe("store TELAR_HOME isolation (CAP-1)", () => {
         userText: "hi",
       });
       store.logUsage(ledgerLine({ sessionId: "untouched-session" }));
-      store.savePlanUsage("personal", { subscriptionType: "pro" });
       store.listChats();
       store.usageSummary();
     } finally {
@@ -667,40 +663,5 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
       process.env.TELAR_HOME = TMP;
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-// ── plan-usage lifecycle ────────────────────────────────────────────────────
-// A usage snapshot is keyed by account NAME in a file that core's account
-// registry does not own. Nothing tied the two together, so removing an account
-// left its snapshot behind — and the sidebar draws one usage wheel per key in
-// this file, so the removed account kept a meter on screen that could never be
-// refreshed or removed. Measured on a real state root: registry held
-// [personal, codex] while plan-usage held [personal, work, codex].
-describe("deletePlanUsage — a snapshot must not outlive its account", () => {
-  test("drops only the named account's snapshot", () => {
-    store.savePlanUsage("personal", { subscriptionType: "max" });
-    store.savePlanUsage("work", { subscriptionType: "max" });
-    store.savePlanUsage("codex", { subscriptionType: "prolite" });
-    expect(Object.keys(store.readPlanUsage()).sort()).toEqual(["codex", "personal", "work"]);
-
-    expect(store.deletePlanUsage("work")).toBe(true);
-    expect(Object.keys(store.readPlanUsage()).sort()).toEqual(["codex", "personal"]);
-    // The survivors keep their data, not just their keys.
-    expect(store.readPlanUsage().personal.subscriptionType).toBe("max");
-    expect(store.readPlanUsage().codex.subscriptionType).toBe("prolite");
-  });
-
-  test("removing an absent account is false, not a throw", () => {
-    expect(store.deletePlanUsage("never-existed")).toBe(false);
-  });
-
-  test("the deletion survives a re-read (it is persisted, not in-memory)", () => {
-    store.savePlanUsage("ephemeral", { subscriptionType: "pro" });
-    store.deletePlanUsage("ephemeral");
-    const onDisk = JSON.parse(
-      fs.readFileSync(path.join(process.env.TELAR_HOME as string, "plan-usage.json"), "utf8"),
-    );
-    expect("ephemeral" in onDisk).toBe(false);
   });
 });

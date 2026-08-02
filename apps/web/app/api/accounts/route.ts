@@ -1,14 +1,9 @@
 import { z } from "zod";
 import {
-  AccountProfile,
-  accountHealth,
-  getDefaultAccountName,
-  isMainAccount,
-  listAccounts,
-  readAccountIdentity,
-  signInCommand,
   upsertAccount,
-} from "@telar/core";
+} from "@telar/core/accounts";
+import { AccountProfile } from "@telar/core/schemas";
+import { readAccountsEnvelope } from "@/lib/accounts-server";
 
 export const dynamic = "force-dynamic";
 
@@ -22,23 +17,7 @@ export const dynamic = "force-dynamic";
 //                block (a config file, never a credential)
 //   · signInHint — the command to run in a terminal if it isn't signed in
 export async function GET() {
-  const accounts = listAccounts().map((a) => ({
-    ...a,
-    // A sensitive value is replaced by a marker, so the client can render "set"
-    // without ever receiving it. Round-tripping this shape back through POST is
-    // safe: an empty sensitive value means "keep what's stored" (accounts.ts).
-    env: a.env?.map((v) =>
-      v.sensitive ? { ...v, value: "", valueRedacted: true } : { ...v, valueRedacted: false },
-    ),
-    health: accountHealth(a),
-    isMain: isMainAccount(a),
-    identity: readAccountIdentity(a),
-    // Computed here, not in the component: the provider descriptor is core
-    // (server) code and the surface is a client component, so the command
-    // travels as a string rather than dragging core into the bundle.
-    signInHint: signInCommand(a),
-  }));
-  return Response.json({ accounts, default: getDefaultAccountName() });
+  return Response.json(readAccountsEnvelope());
 }
 
 // Account names key the secret store and can seed a config-dir path, so keep

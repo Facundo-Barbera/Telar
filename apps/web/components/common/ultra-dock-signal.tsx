@@ -39,6 +39,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import type { UltraManifest } from "@telar/core";
+import { refreshIncludes } from "@/lib/telar-refresh";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import {
   isSessionRoute,
@@ -47,12 +48,12 @@ import {
   unwrapManifests,
   type RunSnapshot,
 } from "@/lib/ultra-runs";
+import { cachedJson } from "@/lib/client-json-cache";
 
-// The house cadence for a background list poll. `loom-notifications.tsx` uses
-// 30s for the same shape of question; a dock bubble that lags a finished run by
-// a few seconds is fine, and a run that STARTS is what the user is waiting to
-// see, so this sits between that and the session's own 4s.
-const POLL_MS = 8000;
+// Discovery can be leisurely while the app is idle. Once a run is live, tighten
+// the cadence so the dock remains a useful status surface.
+const IDLE_POLL_MS = 30_000;
+const LIVE_POLL_MS = 8_000;
 
 type ChatRow = { id: string; title?: string; project?: string };
 
@@ -69,16 +70,18 @@ export function UltraDockSignal() {
   // Session ids whose summary is currently non-empty, so a run going terminal
   // clears the head's line instead of leaving a stale one.
   const showing = useRef<Set<string>>(new Set());
+  const hasLiveRuns = useRef(false);
+  const pollInFlight = useRef(false);
 
   const poll = useCallback(async () => {
     if (!autoDock || !setRuntime) return;
     let manifests: UltraManifest[];
     try {
-      const res = await fetch("/api/ultra");
-      if (!res.ok) return;
       // ONE envelope adapter (§5.6-T16) — `{ runs }` here, a bare manifest on
       // the SSE frames, `{ run }` on the detail route.
-      manifests = unwrapManifests(await res.json());
+      manifests = unwrapManifests(
+        await cachedJson<unknown>("/api/ultra", { force: true }),
+      );
     } catch {
       return; // offline / route down — try again next tick
     }
@@ -100,6 +103,7 @@ export function UltraDockSignal() {
       list.push(withName.name ? { ...snap, name: withName.name } : snap);
       bySession.set(m.sessionId, list);
     }
+    hasLiveRuns.current = bySession.size > 0;
 
     // FAST PATH: nothing live. Clear any summary this component set and stop —
     // no `/api/chats` fetch, no dock writes.
@@ -120,14 +124,11 @@ export function UltraDockSignal() {
     // `/projects/<project>/sessions/<id>` — a path there produces a dead URL.
     let chats = new Map<string, ChatRow>();
     try {
-      const res = await fetch("/api/chats");
-      if (res.ok) {
-        const d: unknown = await res.json();
-        const rows = (d as { chats?: unknown }).chats;
-        if (Array.isArray(rows)) {
-          for (const c of rows as ChatRow[]) {
-            if (c && typeof c.id === "string") chats.set(c.id, c);
-          }
+      const data = await cachedJson<{ chats?: unknown }>("/api/chats", { force: true });
+      const rows = data.chats;
+      if (Array.isArray(rows)) {
+        for (const c of rows as ChatRow[]) {
+          if (c && typeof c.id === "string") chats.set(c.id, c);
         }
       }
     } catch {
@@ -206,17 +207,33 @@ export function UltraDockSignal() {
   useEffect(() => {
     if (!autoDock || !setRuntime) return;
     let cancelled = false;
-    const tick = () => {
-      if (!cancelled) void poll();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (cancelled || pollInFlight.current) return;
+      pollInFlight.current = true;
+      try {
+        await poll();
+      } finally {
+        pollInFlight.current = false;
+        if (!cancelled) {
+          timer = setTimeout(
+            () => void tick(),
+            hasLiveRuns.current ? LIVE_POLL_MS : IDLE_POLL_MS,
+          );
+        }
+      }
     };
-    tick();
-    const t = setInterval(tick, POLL_MS);
+    void tick();
     // The app-wide refresh signal every other client surface listens to.
-    const onRefresh = () => tick();
+    const onRefresh = (event: Event) => {
+      if (!refreshIncludes(event, "ultra")) return;
+      if (timer) clearTimeout(timer);
+      void tick();
+    };
     window.addEventListener("telar:refresh", onRefresh);
     return () => {
       cancelled = true;
-      clearInterval(t);
+      if (timer) clearTimeout(timer);
       window.removeEventListener("telar:refresh", onRefresh);
     };
   }, [poll, autoDock, setRuntime]);

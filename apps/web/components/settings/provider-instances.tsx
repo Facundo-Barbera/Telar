@@ -18,9 +18,7 @@
 
 import { useState } from "react";
 import {
-  CheckIcon,
   ChevronDownIcon,
-  CopyIcon,
   PlusIcon,
   StarIcon,
   Trash2Icon,
@@ -56,13 +54,12 @@ export type AccountWire = {
   enabled?: boolean;
   displayTier?: string;
   env?: AccountEnvVarWire[];
-  // Presence = routed through the CLIProxyAPI gateway. `prefix` pins one
-  // upstream credential; absent lets the gateway's own strategy choose.
-  proxy?: { prefix?: string };
   health?: AccountHealth;
   isMain?: boolean;
   identity?: AccountIdentity | null;
   signInHint?: string;
+  runtimeRouted?: boolean;
+  available?: boolean;
 };
 
 // ── redaction ──────────────────────────────────────────────────────────────
@@ -268,7 +265,6 @@ export function ProviderInstanceRow({
   onMakeDefault,
   onRemove,
   error,
-  proxyAvailable,
 }: {
   account: AccountWire;
   provider?: ProviderStatus;
@@ -279,11 +275,6 @@ export function ProviderInstanceRow({
   onMakeDefault: () => void;
   onRemove: () => void;
   error?: string | null;
-  // The gateway is configured and switched on. When it isn't, the routing
-  // control is hidden rather than shown-and-disabled: an account cannot be
-  // routed through something that does not exist, and offering the switch would
-  // imply otherwise.
-  proxyAvailable?: boolean;
 }) {
   const providerId = account.provider ?? "claude";
   const title = account.displayName?.trim() || account.name;
@@ -295,8 +286,6 @@ export function ProviderInstanceRow({
   const [displayName, setDisplayName] = useState(account.displayName ?? "");
   const [configDir, setConfigDir] = useState(account.configDir ?? "");
   const [tier, setTier] = useState(account.displayTier ?? "");
-  const [prefix, setPrefix] = useState(account.proxy?.prefix ?? "");
-  const routed = Boolean(account.proxy);
 
   return (
     <div className={cn("rounded-xl transition-colors hover:bg-muted/20", !enabled && "opacity-60")}>
@@ -353,19 +342,6 @@ export function ProviderInstanceRow({
               {account.isMain && (
                 <Badge variant="outline" className="text-[10px]" title="Detected automatically — the provider's base login">
                   detected
-                </Badge>
-              )}
-              {routed && (
-                <Badge
-                  variant="secondary"
-                  className="text-[10px]"
-                  title={
-                    account.proxy?.prefix
-                      ? `Routed through CLIProxyAPI, pinned to "${account.proxy.prefix}"`
-                      : "Routed through CLIProxyAPI"
-                  }
-                >
-                  proxied{account.proxy?.prefix ? ` · ${account.proxy.prefix}` : ""}
                 </Badge>
               )}
               {isDefault ? (
@@ -516,45 +492,6 @@ export function ProviderInstanceRow({
                 className="mt-1.5 h-8 w-28 text-xs"
               />
             </label>
-
-            {(proxyAvailable || routed) && (
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    checked={routed}
-                    onCheckedChange={(c) => onPatch({ proxy: c ? {} : undefined })}
-                    aria-label={`Route ${title} through CLIProxyAPI`}
-                  />
-                  <span className="text-xs font-medium text-foreground">
-                    Route through CLIProxyAPI
-                  </span>
-                </div>
-                {routed ? (
-                  <>
-                    <Input
-                      value={prefix}
-                      onChange={(e) => setPrefix(e.target.value)}
-                      onBlur={() =>
-                        prefix !== (account.proxy?.prefix ?? "") &&
-                        onPatch({ proxy: { prefix: prefix.trim() || undefined } })
-                      }
-                      placeholder="upstream prefix (optional)"
-                      className="h-8 font-mono text-xs"
-                    />
-                    <span className="block text-[11px] text-muted-foreground">
-                      Empty lets the gateway pick from its pool. A prefix pins this account to one
-                      upstream login — it must match that credential&apos;s{" "}
-                      <code className="font-mono">prefix</code> in the proxy&apos;s own config.
-                    </span>
-                  </>
-                ) : (
-                  <span className="block text-[11px] text-muted-foreground">
-                    Off: this account talks to {providerId === "codex" ? "OpenAI" : "Anthropic"}{" "}
-                    directly.
-                  </span>
-                )}
-              </div>
-            )}
 
             <div>
               <span className="text-xs font-medium text-foreground">Environment variables</span>

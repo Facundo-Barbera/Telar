@@ -1,13 +1,24 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { AppSidebar } from "@/components/app-sidebar";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import {
+  AppSidebar,
+  type AppSidebarInitialData,
+} from "@/components/app-sidebar";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { DockProvider } from "@/components/dock/dock-provider";
 import { Dock } from "@/components/dock/dock";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/settings/theme-provider";
 import { LoomNotifications } from "@/components/common/loom-notifications";
 import { UltraDockSignal } from "@/components/common/ultra-dock-signal";
+import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
+import { readAccountsEnvelope } from "@/lib/accounts-server";
+import { listLooms } from "@telar/core/looms";
+import { listProjects } from "@telar/core/manifest";
+import { listChats } from "@/lib/store";
+import { AccountsProvider } from "@/lib/use-accounts";
+
+export const dynamic = "force-dynamic";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,6 +40,18 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // These are millisecond-scale local file reads. Seeding the persistent shell
+  // here removes the old mount-time fan-out to five API routes; subsequent
+  // mutations are still refreshed by the sidebar's scoped client events.
+  const accountEnvelope = readAccountsEnvelope();
+  const initialSidebarData: AppSidebarInitialData = {
+    projects: listProjects().filter((project) => project.manifest !== null),
+    chats: listChats(undefined, { archived: "include" }).filter(
+      (chat) => chat.role !== "steerer" && chat.role !== "escalation" && Boolean(chat.project),
+    ),
+    looms: listLooms().filter((loom) => !loom.draft && !loom.parentLoomId),
+  };
+
   return (
     <html
       lang="en"
@@ -42,20 +65,27 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <ThemeProvider />
-        <LoomNotifications />
-        <DockProvider>
-          {/* Story 4.2 / AC7 — INSIDE the provider, unlike LoomNotifications
-              above, because it calls useDock(). It renders nothing; it makes a
-              session's dock bubble show a live Ultra run FROM ANYWHERE,
-              including a session the user never docked. */}
-          <UltraDockSignal />
-          <SidebarProvider>
-            <AppSidebar />
-            <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>
-          </SidebarProvider>
-          {/* The mini-dock rides above every route — portaled to <body>. */}
-          <Dock />
-        </DockProvider>
+        <AccountsProvider initial={accountEnvelope}>
+          <LoomNotifications />
+          <DockProvider>
+            {/* Story 4.2 / AC7 — INSIDE the provider, unlike LoomNotifications
+                above, because it calls useDock(). It renders nothing; it makes a
+                session's dock bubble show a live Ultra run FROM ANYWHERE,
+                including a session the user never docked. */}
+            <UltraDockSignal />
+            <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY}>
+              <SidebarTrigger
+                aria-label="Toggle main sidebar"
+                title="Toggle main sidebar"
+                className="fixed left-2 top-2 z-[60] border border-border/60 bg-background/90 shadow-sm backdrop-blur-sm"
+              />
+              <AppSidebar initialData={initialSidebarData} />
+              <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>
+            </SidebarProvider>
+            {/* The mini-dock rides above every route — portaled to <body>. */}
+            <Dock />
+          </DockProvider>
+        </AccountsProvider>
       </body>
     </html>
   );

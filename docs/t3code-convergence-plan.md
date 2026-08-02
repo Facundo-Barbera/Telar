@@ -42,8 +42,7 @@ Each was checked directly, not taken from the research summary.
    meet today. This is a decision, not an oversight — if someone later unifies them, the
    `acceptForSession` safety argument in the approvals phase must be re-derived, because today it
    holds only *because* the paths are separate.
-3. **Multi-instance providers stay optional.** CLIProxyAPI already pools multiple logins, so this is
-   a convenience over the gateway rather than a missing capability. Promote it only if hand-swapping
+3. **Multi-instance providers stay optional.** Promote this only if hand-swapping
    `CODEX_HOME` becomes daily pain.
 
 ## The rejected first move, and why
@@ -150,7 +149,7 @@ works*. A stall here costs a paused branch and nothing the owner asked for.
 
 ### Phase 8 — Optional upside
 Each item independently droppable: persisted session directory + resume cursors; multi-instance
-providers (deprioritised — CLIProxyAPI already pools); cross-provider model palette with ⌘1–⌘9;
+providers; cross-provider model palette with ⌘1–⌘9;
 native browser compositing (real Electron work against a 479-line `main.js`).
 
 ## Open questions still unanswered

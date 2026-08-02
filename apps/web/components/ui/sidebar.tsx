@@ -8,7 +8,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
   clampSidebarWidth,
-  resolveDragWidth,
+  flushPendingSidebarWidth,
   setSidebarCollapsed,
   setSidebarWidth,
   SIDEBAR_RESIZE_MIN_WIDTH,
@@ -174,8 +174,8 @@ function SidebarProvider({
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
+    window.addEventListener("keydown", handleKeyDown, true)
+    return () => window.removeEventListener("keydown", handleKeyDown, true)
   }, [toggleSidebar])
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
@@ -304,17 +304,16 @@ function Sidebar({
   // attribute for React to find a mismatch in. The stored width lands in the
   // commit after hydration.
   //
-  // The cost of that ordering, stated plainly because nothing in the tree pays
-  // it yet: first paint is always the CSS default (16rem), so a surface with a
+  // The cost of that ordering, now paid by the app sidebar: first paint is
+  // always the CSS default (16rem), so a surface with a
   // stored width of 420px paints at 16rem and jumps once hydration commits.
   // The same is true of the fold — first paint is `defaultOpen`. Both are
   // fixable before paint, and neither is fixed here: the collapsed half would
   // mean reading the `sidebar_state` cookie in app/layout.tsx (which `setOpen`
   // below still writes and no server has ever read), and that would opt the
   // whole app into dynamic rendering; the width half would mean teaching
-  // THEME_INIT_SCRIPT a storage key the shell does not yet have, since nothing
-  // passes `storageKey` or `resizable` today. When Phase 2 mounts a real rail
-  // it should do one of the two rather than inherit the flash.
+  // THEME_INIT_SCRIPT the app sidebar storage key. The live rail deliberately
+  // accepts this post-hydration width adoption for now.
   const prefs = useSidebarPrefs(resolvedResizable?.storageKey ?? null)
   const width =
     resolvedResizable && prefs.width !== null
@@ -507,16 +506,41 @@ function SidebarRail({
   onPointerUp,
   ...props
 }: React.ComponentProps<"button">) {
-  const { open, resizable, side, toggleSidebar } = useSidebar()
+  const { isMobile, open, resizable, side, toggleSidebar } = useSidebar()
   const dragRef = React.useRef<SidebarDragState | null>(null)
   // A drag that moved must not also toggle: the click that follows pointerup
   // is the same gesture, and swallowing it here is the only place the two can
   // be told apart.
   const suppressClickRef = React.useRef(false)
 
-  // A collapsed sidebar has no width worth dragging — it is a strip of icons —
-  // so the rail goes back to being the toggle that expands it.
+  // A collapsed sidebar has no exposed width worth dragging, so the rail goes
+  // back to being the toggle that expands it.
   const canResize = resizable !== null && open
+
+  const applyPendingWidth = React.useCallback(
+    (drag: SidebarDragState) => {
+      if (!resizable) return
+      const nextWidth = flushPendingSidebarWidth(
+        drag.width,
+        drag.pendingWidth,
+        resizable.minWidth,
+        resizable.maxWidth,
+        (candidate) =>
+          resizable.shouldAcceptWidth?.({
+            currentWidth: drag.width,
+            nextWidth: candidate,
+            rail: drag.rail,
+            side: drag.side,
+            sidebarRoot: drag.sidebarRoot,
+            wrapper: drag.wrapper,
+          }) ?? true
+      )
+      if (nextWidth === drag.width) return
+      drag.sidebarRoot.style.setProperty("--sidebar-width", `${nextWidth}px`)
+      drag.width = nextWidth
+    },
+    [resizable]
+  )
 
   const endDrag = React.useCallback(
     (pointerId: number) => {
@@ -524,7 +548,12 @@ function SidebarRail({
       if (!drag || drag.pointerId !== pointerId) return
       if (drag.rafId !== null) {
         window.cancelAnimationFrame(drag.rafId)
+        drag.rafId = null
       }
+      // Pointer-up is allowed to beat the scheduled paint. Flush the latest
+      // proposal synchronously before persistence so the released edge and the
+      // restored edge are the same pixel.
+      applyPendingWidth(drag)
       // Hand the width transition back to CSS, so collapsing still animates.
       for (const element of drag.transitionTargets) {
         element.style.removeProperty("transition-duration")
@@ -543,7 +572,7 @@ function SidebarRail({
       document.body.style.removeProperty("cursor")
       document.body.style.removeProperty("user-select")
     },
-    [resizable]
+    [applyPendingWidth, resizable]
   )
 
   // A rail unmounted mid-drag would otherwise leave the page wearing a resize
@@ -652,24 +681,7 @@ function SidebarRail({
       const active = dragRef.current
       if (!active) return
       active.rafId = null
-      const nextWidth = resolveDragWidth(
-        active.width,
-        active.pendingWidth,
-        resizable.minWidth,
-        resizable.maxWidth,
-        (candidate) =>
-          resizable.shouldAcceptWidth?.({
-            currentWidth: active.width,
-            nextWidth: candidate,
-            rail: active.rail,
-            side: active.side,
-            sidebarRoot: active.sidebarRoot,
-            wrapper: active.wrapper,
-          }) ?? true
-      )
-      if (nextWidth === active.width) return
-      active.sidebarRoot.style.setProperty("--sidebar-width", `${nextWidth}px`)
-      active.width = nextWidth
+      applyPendingWidth(active)
     })
   }
 
@@ -712,6 +724,8 @@ function SidebarRail({
     }
     toggleSidebar()
   }
+
+  if (isMobile) return null
 
   return (
     <button

@@ -1757,14 +1757,13 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
 // at the bottom of this file. Same AD, opposite scope: INV-3 scans production
 // source and excludes tests; INV-7 scans tests and excludes production source.
 
-// The 19 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
+// The 22 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
 // it. It is the invariant's whole content.
 const AD5_SITES = [
   "apps/web/lib/mcp-oauth-pending.ts :: mcp-oauth-pending.json",
   "apps/web/lib/permissions.ts :: permissions.json",
   "apps/web/lib/session-log.ts :: sessions",
   "apps/web/lib/store.ts :: chats.json",
-  "apps/web/lib/store.ts :: plan-usage.json",
   "packages/core/src/accounts.ts :: accounts.json",
   "packages/core/src/detect.ts :: providers.json",
   "packages/core/src/dispatcher.ts :: policy.json",
@@ -1773,14 +1772,13 @@ const AD5_SITES = [
   "packages/core/src/looms.ts :: runs",
   "packages/core/src/manifest.ts :: projects.json",
   "packages/core/src/mcp-oauth.ts :: mcp-oauth.json",
-  "packages/core/src/proxy.ts :: proxy.json",
   "packages/core/src/secrets.ts :: credentials.json",
   "packages/core/src/sessions.ts :: sessions",
   "packages/core/src/ultra/journal.ts :: ultra",
   "packages/core/src/usage-ledger.ts :: usage.ndjson",
   "packages/core/src/vcs.ts :: worktrees",
   "packages/core/src/watches.ts :: watches.json",
-  // Story 5.1 — the 19th site, in sorted position ("wa" < "wo"). The workspace
+  // Story 5.1 — the workspace site, in sorted position ("wa" < "wo"). The workspace
   // store composes `path.join(telarDir(), "workspace")` as a BARE QUOTED
   // LITERAL, in exactly one function in exactly one file, and its comment says
   // that the literal is a deliberate concession to THIS scanner: a const second
@@ -1796,20 +1794,13 @@ const AD5_OWNERS: Record<string, string[]> = {
   "projects.json": ["packages/core/src/manifest.ts"],
   "accounts.json": ["packages/core/src/accounts.ts"],
   "credentials.json": ["packages/core/src/secrets.ts"],
-  // Provider DETECTION's cache — the last `<bin> --version` + reported-plan
+  // Provider DETECTION's cache — the last `<bin> --version` answer
   // answer per provider, so the settings surface can render without re-probing
   // on every paint. A root-level FILE with a single writer: detect.ts is the
   // only module that composes it, and apps/web reaches it through the
   // /api/providers route calling readProviderCache/writeProviderCache, never by
   // path. It holds no credential — detection reads a version string and takes
-  // the plan as data from the usage snapshots (see the module header).
   "providers.json": ["packages/core/src/detect.ts"],
-  // The OPTIONAL CLIProxyAPI gateway's own config — url + enabled flag, and
-  // nothing else: both of its keys live in credentials.json (secrets.ts), so
-  // this file is as safe to read as accounts.json is. One writer; apps/web
-  // reaches it through the /api/proxy route calling read/writeProxyConfig,
-  // never by path.
-  "proxy.json": ["packages/core/src/proxy.ts"],
   "watches.json": ["packages/core/src/watches.ts"],
   "mcp-oauth.json": ["packages/core/src/mcp-oauth.ts"],
   "policy.json": ["packages/core/src/dispatcher.ts"],
@@ -1841,11 +1832,10 @@ const AD5_OWNERS: Record<string, string[]> = {
   "permissions.json": ["apps/web/lib/permissions.ts"],
   "mcp-oauth-pending.json": ["apps/web/lib/mcp-oauth-pending.ts"],
   // CO-TENANCY 2: store.ts resolves its root TWO WAYS within one file —
-  // chats.json / plan-usage.json through its own stateRoot(), usage.ndjson
+  // chats.json through its own stateRoot(), usage.ndjson
   // through core's telarDir() reached via the ledger port. The two expressions
   // are byte-identical today. Recorded in deferred-work.md; not fixed here.
   "chats.json": ["apps/web/lib/store.ts"],
-  "plan-usage.json": ["apps/web/lib/store.ts"],
 };
 
 // The five modules that legitimately derive the state root from scratch. Their
@@ -3988,8 +3978,9 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
 // "verified by none of them individually — the classic shape of a constraint
 // that passes every unit check and fails in integration."
 //
-// AND IT IS BOUNDED. INV-8 scans apps/web/components/conversation/** and
-// session-view.tsx — a small, new, wholly-owned surface — never the whole tree.
+// AND IT IS BOUNDED. INV-8 scans apps/web/components/conversation/**,
+// apps/web/components/right-panel/**, and session-view.tsx — small, new,
+// wholly-owned surfaces — never the whole tree.
 // Pointing INV-8b at apps/web/components/** would make every legitimate
 // useSidebar/useDock call in 100+ client files a violation, and the fix would be
 // to weaken the predicate, which is how a guard becomes a decoration.
@@ -4009,6 +4000,11 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
 
 const SHELL_ROOT = "apps/web/components/conversation/";
 const SHELL_FILES = INDEX.filter((f) => f.rel.startsWith(SHELL_ROOT) && !isTestFile(f.rel));
+const RIGHT_PANEL_ROOT = "apps/web/components/right-panel/";
+const RIGHT_PANEL_FILES = INDEX.filter(
+  (f) => f.rel.startsWith(RIGHT_PANEL_ROOT) && !isTestFile(f.rel),
+);
+const PURE_SURFACE_FILES = [...SHELL_FILES, ...RIGHT_PANEL_FILES];
 const SESSION_VIEW_REL = "apps/web/components/session/session-view.tsx";
 
 // ── the kind renderers that live OUTSIDE the shell directory ────────────────
@@ -4305,6 +4301,7 @@ const CONTEXT_HOOKS = [...new Set(CONTEXT_INVENTORY.hooks.map(([, n]) => n))].so
 // that appears in the tree and NOT here fails INV-8c by name. Either way the
 // denylist cannot go quietly out of date.
 const CLASSIFIED_CONTEXTS: Readonly<Record<string, readonly string[]>> = {
+  "apps/web/lib/use-accounts.ts": ["AccountsContext"],
   "apps/web/components/ui/sidebar.tsx": ["SidebarContext"],
   "apps/web/components/ui/carousel.tsx": ["CarouselContext"],
   "apps/web/components/ai-elements/message.tsx": ["MessageBranchContext"],
@@ -4318,6 +4315,7 @@ const CLASSIFIED_CONTEXTS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const CLASSIFIED_HOOKS: readonly string[] = [
+  "useAccounts",
   "useSidebar",
   "useCarousel",
   "useMessageBranch",
@@ -4333,6 +4331,7 @@ const CLASSIFIED_HOOKS: readonly string[] = [
 
 line(
   `shell: ${SHELL_FILES.length} files under components/conversation · ` +
+    `${RIGHT_PANEL_FILES.length} files under components/right-panel · ` +
     `${CONTEXT_INVENTORY.contexts.length} React contexts · ${CONTEXT_HOOKS.length} consuming hooks`,
 );
 
@@ -4504,10 +4503,18 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
           `hold over the empty set. NEXT STEP: fix SHELL_ROOT; do not relax the floor.`,
       );
     }
+    if (RIGHT_PANEL_FILES.length < 3) {
+      broken.push(
+        `only ${RIGHT_PANEL_FILES.length} non-test files under ${RIGHT_PANEL_ROOT} (floor 3) — ` +
+          `the right-panel WALK is broken, the directory moved, or the panel was deleted. ` +
+          `Every purity assertion below would otherwise hold over an empty panel set. NEXT STEP: ` +
+          `restore the panel renderers or update RIGHT_PANEL_ROOT; do not relax the floor.`,
+      );
+    }
     expect(broken).toEqual([]);
 
     const violations: string[] = [];
-    for (const f of SHELL_FILES) {
+    for (const f of PURE_SURFACE_FILES) {
       for (const [needle, what] of denylistScan(f.text)) {
         violations.push(
           `${f.rel} contains "${needle}" — ${what}. RULE (AD-12): the shell owns scrolling, ` +
@@ -4527,7 +4534,7 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
   test("INV-8b no file in the shell reads ambient React context", () => {
     // THE INVARIANT AC4 has no other possible proof for. The hook list is
     // DERIVED (INV-8c), never restated.
-    const violations = SHELL_FILES.flatMap((f) =>
+    const violations = PURE_SURFACE_FILES.flatMap((f) =>
       ambientContextScan(f.rel, f.text, CONTEXT_HOOKS),
     );
     expect(violations).toEqual([]);
@@ -4832,6 +4839,24 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
     expect(denyScan(`function f(sessionId: string) {}`)).toEqual(["sessionId"]);
     expect(denyScan(`// the adapter owns the fetch( to /api/ and the sessionId\n`)).toEqual([]);
     expect(denyScan(`const view = { live: true };`)).toEqual([]);
+  });
+
+  test("INV-8d2 right-panel purity coverage is non-vacuous and discriminating", () => {
+    // The panel is a second host surface, not a carve-out from the conversation
+    // shell. Pin its own walk and run fixtures through the SAME predicates used
+    // by INV-8a/8b so adding the directory to a list cannot be decorative.
+    expect(RIGHT_PANEL_FILES.length).toBeGreaterThanOrEqual(3);
+    expect(RIGHT_PANEL_FILES.some((f) => f.rel.endsWith("right-panel.tsx"))).toBe(true);
+
+    const dirty =
+      `import { useDock } from "@/components/dock/dock-provider";\n` +
+      `export function Panel() { const d = useDock(); return fetch("/api/panel"); }\n`;
+    expect(denylistScan(dirty).map(([needle]) => needle).sort()).toEqual(["/api/", "fetch("]);
+    expect(ambientContextScan("panel-fixture.tsx", dirty, CONTEXT_HOOKS)).not.toEqual([]);
+
+    const clean = `export function Panel({ title }: { title: string }) { return <aside>{title}</aside>; }\n`;
+    expect(denylistScan(clean)).toEqual([]);
+    expect(ambientContextScan("panel-fixture.tsx", clean, CONTEXT_HOOKS)).toEqual([]);
   });
 
   test("INV-8e the shell is configured by PROPS, never by inheritance", () => {

@@ -31,7 +31,7 @@ import {
   toolEvent,
   agentResultEvent,
 } from "./builders";
-import { accountsList, brokenRow, finchRow, planByAccount } from "./scenarios/app/projects";
+import { accountsList, brokenRow, finchRow } from "./scenarios/app/projects";
 
 // ---------------------------------------------------------------------------
 // One loom per WorkUnitState — the state-badge + loom-card variant grids.
@@ -450,7 +450,6 @@ export const SHOWCASE = {
   projectEntry: finchRow,
   manifestErrorEntry: brokenRow,
   accounts: accountsList,
-  planSnapshot: planByAccount.personal!,
   decisionFeed,
   threadTree,
   specContract,

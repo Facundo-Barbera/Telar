@@ -10,11 +10,11 @@ import Link from "next/link";
 // cleanup is the router's job.
 import { usePathname, useRouter } from "next/navigation";
 import {
-  ArrowLeftIcon,
   BellIcon,
   BotIcon,
   CheckIcon,
   ExternalLinkIcon,
+  FolderGit2Icon,
   PencilIcon,
   PictureInPicture2Icon,
   TriangleAlertIcon,
@@ -57,7 +57,6 @@ import {
   type AgentBucket,
   type ChatMessage,
   type ItemKind,
-  type MarkerPayload,
   type PermissionPart,
   type PromptInputMessage,
   type StatusPayload,
@@ -77,12 +76,12 @@ import {
   type LoomTone,
   type LoomEventRow,
 } from "@/components/session/session-loom";
-import { CostPill, ContextPill } from "@/components/session/session-meters";
+import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
 import { WorkingIndicator, type WorkState } from "@/components/session/working-indicator";
 import { ComposerSettings } from "@/components/session/composer-settings";
-import { PageHeader } from "@/components/common/page-header";
+import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -93,10 +92,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fmtTokens, shortId } from "@/lib/format";
+import { shortId } from "@/lib/format";
 import { consumeSSE } from "@/lib/sse";
-import { UsagePill } from "@/components/session/usage-pill";
-import type { PlanSnapshot } from "@/lib/store";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
 import type { Watch, WorkUnitState } from "@telar/core";
 import {
@@ -106,6 +103,7 @@ import {
   DEFAULT_CODEX_MODEL,
   DEFAULT_MODEL,
   EFFORT_OPTIONS,
+  contextLabelForModel,
   modelById,
   modelsForProvider,
   type CodexApprovalPolicy,
@@ -121,6 +119,8 @@ import { isValidPermissionMode, type ClientPermissionMode } from "@/lib/permissi
 // hydration mismatch by construction.
 import { getUiPrefs } from "@/lib/ui-prefs";
 import { useHydrated } from "@/lib/use-hydrated";
+import { dispatchTelarRefresh } from "@/lib/telar-refresh";
+import { cachedJson } from "@/lib/client-json-cache";
 import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
@@ -132,18 +132,16 @@ import {
   ULTRA_WAKE_SENTINEL,
 } from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
+import { sessionProviders } from "@/lib/account-visibility";
 import { useUltraWake } from "@/lib/use-ultra-wake";
 // Story 4.2 — the Ultra session surface. `@/lib/ultra-runs` is the pure
 // projection layer (no React, no fetch, no @telar/core runtime); the two
 // components below render it and read nothing else.
 import {
-  armReducer,
   runSnapshot,
-  sendOptionsFor,
   spliceRunAnchors,
   ultraTabId,
   ultraTabRunId,
-  type ArmState,
   type RunSnapshot,
   type UltraAnchorPayload,
 } from "@/lib/ultra-runs";
@@ -159,6 +157,14 @@ import { cn } from "@/lib/utils";
 import { PROVIDER_LABEL, ProviderIcon } from "@/components/session/provider-icon";
 
 type Provider = "claude" | "codex";
+
+function modelProvider(modelId: string): Provider | undefined {
+  const known = modelById(modelId);
+  if (known) return known.provider ?? "claude";
+  if (/^(gpt-|codex-|o\d)/i.test(modelId)) return "codex";
+  if (/^claude-/i.test(modelId)) return "claude";
+  return undefined;
+}
 
 // Mirrors lib/loom-mcp.ts's own LOOM_START_TOOL export — kept as a plain
 // literal here (not imported) since that module pulls in server-only
@@ -296,24 +302,10 @@ export type InitialChat = {
   role?: "planner" | "steerer" | "escalation";
 };
 
-const refresh = () => window.dispatchEvent(new Event("telar:refresh"));
-
 // consumeSSE (the frame-by-frame `event:`/`data:` reader shared by the POST
 // send() path and the §1b reconnect subscriber) now lives in @/lib/sse — the
 // dock's own live tail (session-runtime-host.tsx) reuses the exact same
 // parser rather than a second implementation of the wire format.
-
-function BackLink({ href, label }: { href: string; label: string }) {
-  return (
-    <Link
-      href={href}
-      aria-label={label}
-      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-    >
-      <ArrowLeftIcon className="size-4" />
-    </Link>
-  );
-}
 
 function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
   if (!chat) return [];
@@ -754,13 +746,22 @@ function agentBucketItem(bucket: AgentBucket, onBack: () => void): TranscriptIte
 export function SessionView(props: {
   project: string;
   account: string;
-  accounts: Array<{ name: string; displayTier?: string }>;
+  initialProvider?: Provider;
+  accounts: Array<{
+    name: string;
+    provider?: Provider;
+    displayTier?: string;
+    runtimeRouted?: boolean;
+  }>;
   initialChat?: InitialChat;
   initialTitle?: string;
   // The route's session id (undefined for the "new" front door). Only used to
   // seed sessionId when there's no persisted initialChat yet — the mid-turn
   // cold-reload case; see the sessionId state below.
   routeSessionId?: string;
+  // Shared with the sibling right panel so workspace controls can invoke the
+  // store directly without a global window event protocol.
+  rightPanelScopeKey?: string;
   // Story 4.2 / AC7 — the run to select in the rail's Workflows section on
   // arrival, threaded from the page's `?run=` search param. Undefined on every
   // other entry, and cleared out of the URL once consumed so a later refresh
@@ -812,10 +813,12 @@ export function SessionView(props: {
 function SessionViewInner({
   project,
   account,
+  initialProvider,
   accounts,
   initialChat,
   initialTitle,
   routeSessionId,
+  rightPanelScopeKey,
   focusRunId,
   initialRole,
   planner,
@@ -826,10 +829,17 @@ function SessionViewInner({
 }: {
   project: string;
   account: string;
-  accounts: Array<{ name: string; displayTier?: string }>;
+  initialProvider?: Provider;
+  accounts: Array<{
+    name: string;
+    provider?: Provider;
+    displayTier?: string;
+    runtimeRouted?: boolean;
+  }>;
   initialChat?: InitialChat;
   initialTitle?: string;
   routeSessionId?: string;
+  rightPanelScopeKey?: string;
   focusRunId?: string;
   initialRole?: "planner";
   planner?: boolean;
@@ -886,7 +896,14 @@ function SessionViewInner({
   // the account registry (fetched async, below) resolves `activeAccount`'s
   // real provider. Drives which model/effort/sandbox-or-permission controls
   // render and which fields go in the POST body.
-  const [provider, setProvider] = useState<Provider>("claude");
+  const [provider, setProvider] = useState<Provider>(initialProvider ?? "claude");
+  // Old composer preferences could store a Codex model under a Claude project.
+  // Keep that stale value
+  // from ever reaching the wrong harness; unknown provider-specific aliases
+  // remain allowed, while recognizable cross-provider ids fall back safely.
+  const effectiveModel = modelProvider(model) === (provider === "claude" ? "codex" : "claude")
+    ? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL)
+    : model;
   // Codex's counterpart to `permissionMode` — an approval preset (sandbox +
   // approvalPolicy pair, see CODEX_APPROVAL_PRESETS in lib/models.ts) now that
   // the app-server can prompt mid-turn. Kept as its own state rather than
@@ -902,7 +919,17 @@ function SessionViewInner({
   // `accounts` prop which predates multi-provider and only carries
   // name/displayTier). Used to scope the account picker to the selected
   // provider and to recover a resumed session's real provider below.
-  const { accounts: accountProfiles } = useAccounts();
+  const { accounts: accountProfiles, allAccounts } = useAccounts();
+  // The server seed already carries provider identity, so a fresh composer is
+  // fully usable before the client registry request finishes. Once that request
+  // lands it becomes authoritative. Every provider/account decision below reads
+  // this same source to avoid a half-loaded state where a provider is visible
+  // but has no account to select.
+  const selectableAccountProfiles = accountProfiles.length > 0 ? accountProfiles : accounts;
+  const availableProviders = useMemo(
+    () => sessionProviders(selectableAccountProfiles),
+    [selectableAccountProfiles],
+  );
   // `account`'s real provider may be either one (a fresh session's account
   // is the project manifest's default, which can itself be a Codex account;
   // a resumed session's is whatever it was created with) — re-derive
@@ -913,44 +940,82 @@ function SessionViewInner({
   const providerTouched = useRef(false);
   useEffect(() => {
     if (providerTouched.current) return;
-    const match = accountProfiles.find((a) => a.name === activeAccount);
+    const match =
+      allAccounts.find((a) => a.name === activeAccount) ??
+      accounts.find((a) => a.name === activeAccount);
     if (match) setProvider(match.provider ?? "claude");
-  }, [accountProfiles, activeAccount]);
+  }, [allAccounts, accounts, activeAccount]);
   // Accounts belonging to the currently selected provider, for the agent
   // selector's scoped account picker. Falls back to the server-resolved
   // `accounts` prop for "claude" so the picker isn't empty for the one
   // provider we can resolve before the client-side /api/accounts fetch lands.
   const providerAccounts = useMemo<Array<{ name: string; displayTier?: string }>>(() => {
-    const fromRegistry = accountProfiles.filter((a) => (a.provider ?? "claude") === provider);
-    if (fromRegistry.length > 0) return fromRegistry;
-    return provider === "claude" ? accounts : [];
-  }, [accountProfiles, provider, accounts]);
-  // Model catalog for the selected provider AND ACCOUNT, fetched from
-  // GET /api/models (Claude: the live /v1/models catalog; Codex: the local
-  // models_cache.json), falling back to the curated static list on any hiccup.
-  //
-  // The ACCOUNT is part of the question, not just the provider: an account
-  // routed through the CLIProxyAPI gateway resolves its catalog from that
-  // gateway, which serves a different — cross-harness — set than the provider
-  // does directly. Refetched when either changes, because switching accounts
-  // can change which models this session can actually reach.
-  const [modelOptions, setModelOptions] = useState<ModelInfo[]>(() => modelsForProvider("claude"));
+    return selectableAccountProfiles.filter((a) => (a.provider ?? "claude") === provider);
+  }, [selectableAccountProfiles, provider]);
+  // Harness-owned model catalog. Claude exposes stable routing slots whose
+  // concrete targets are resolved by the user's Claude configuration; Codex
+  // exposes its local models cache. The account still selects the runtime
+  // environment and routed-spend semantics, but a gateway inventory never
+  // becomes a second model picker.
+  const [modelOptions, setModelOptions] = useState<ModelInfo[]>(() =>
+    modelsForProvider(initialProvider ?? "claude"),
+  );
+  const [catalogDefault, setCatalogDefault] = useState(
+    initialProvider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL,
+  );
+  const [runtimeRouted, setRuntimeRouted] = useState(false);
   useEffect(() => {
+    // Claude owns a stable slot vocabulary. Its concrete model mapping and
+    // router live in the user's Claude configuration, so there is nothing to
+    // discover over HTTP before the composer can become usable.
+    if (provider === "claude") {
+      setModelOptions(modelsForProvider("claude"));
+      setCatalogDefault(DEFAULT_MODEL);
+      const selected = selectableAccountProfiles.find(
+        (profile) => profile.name === activeAccount,
+      );
+      setRuntimeRouted(selected?.runtimeRouted === true);
+      return;
+    }
+
     let cancelled = false;
-    fetch(`/api/models?provider=${provider}&account=${encodeURIComponent(activeAccount)}`)
-      .then((r) => (r.ok ? r.json() : null))
+    const url = `/api/models?provider=${provider}&account=${encodeURIComponent(activeAccount)}`;
+    cachedJson<{ models?: ModelInfo[]; default?: string; proxied?: boolean }>(url, { maxAgeMs: 60 * 60 * 1000 })
       .then((d) => {
         if (cancelled) return;
         const list: ModelInfo[] = Array.isArray(d?.models) && d.models.length > 0 ? d.models : modelsForProvider(provider);
         setModelOptions(list);
+        setCatalogDefault(
+          typeof d?.default === "string"
+            ? d.default
+            : provider === "codex"
+              ? DEFAULT_CODEX_MODEL
+              : DEFAULT_MODEL,
+        );
+        setRuntimeRouted(d?.proxied === true);
       })
       .catch(() => {
-        if (!cancelled) setModelOptions(modelsForProvider(provider));
+        if (!cancelled) {
+          setModelOptions(modelsForProvider(provider));
+          setRuntimeRouted(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [provider, activeAccount]);
+  }, [provider, activeAccount, selectableAccountProfiles]);
+  // Project-local memory can outlive a provider integration. Normalize the
+  // effective value of a BRAND-NEW session against the loaded catalog; an
+  // existing chat remains locked to what it actually used. Keeping this a
+  // projection avoids a corrective setState/render cycle after every catalog
+  // fetch while still ensuring the value shown, persisted and submitted is
+  // always selectable.
+  const catalogFallback =
+    modelOptions.find((option) => option.id === catalogDefault) ?? modelOptions[0];
+  const sessionModel =
+    initialChat || modelOptions.some((option) => option.id === effectiveModel)
+      ? effectiveModel
+      : (catalogFallback?.id ?? effectiveModel);
   // Switching the agent selector: sets the provider, resets model/effort to
   // that provider's defaults (a Claude model id sent to Codex, or vice versa,
   // is meaningless), and — unless the currently active account already
@@ -961,15 +1026,17 @@ function SessionViewInner({
       setProvider(next);
       setModel(next === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
       setEffort("default");
-      const stillValid = accountProfiles.find(
+      const stillValid = selectableAccountProfiles.find(
         (a) => a.name === activeAccount && (a.provider ?? "claude") === next,
       );
       if (!stillValid) {
-        const candidates = accountProfiles.filter((a) => (a.provider ?? "claude") === next);
+        const candidates = selectableAccountProfiles.filter(
+          (a) => (a.provider ?? "claude") === next,
+        );
         if (candidates[0]) setActiveAccount(candidates[0].name);
       }
     },
-    [accountProfiles, activeAccount],
+    [selectableAccountProfiles, activeAccount],
   );
   const [status, setStatus] = useState<Status>("ready");
   // Latest status for the reconnect effect's point-in-time "ready" gate, read
@@ -1004,26 +1071,6 @@ function SessionViewInner({
   // Context-window occupancy: the LATEST turn's prompt size, set (not summed)
   // each turn — see the "done" handler and store.ts contextTokens.
   const [context, setContext] = useState(initialChat?.contextTokens ?? 0);
-  // Active account's 5h + weekly limit snapshot for the workspace usage pill.
-  // Reads the stored plan (populated by the sidebar's refresh) and re-reads on
-  // the global telar:refresh event so it stays in step with the sidebar.
-  const [usageSnap, setUsageSnap] = useState<PlanSnapshot | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      fetch("/api/usage")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          if (!cancelled) setUsageSnap(d?.plan?.[activeAccount] ?? null);
-        })
-        .catch(() => {});
-    load();
-    window.addEventListener("telar:refresh", load);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("telar:refresh", load);
-    };
-  }, [activeAccount]);
   const [elapsed, setElapsed] = useState(0);
   // 1.4 working indicator: seconds since the last streamed output, used to flip
   // the indicator to its "still working — no output" reassurance on a long
@@ -1050,11 +1097,18 @@ function SessionViewInner({
       const raw = window.localStorage.getItem(`telar:composer:${project}`);
       if (!raw) return;
       const saved = JSON.parse(raw) as {
+        provider?: Provider;
         model?: string;
         effort?: string;
         perm?: unknown;
       };
-      if (typeof saved.model === "string") setModel(saved.model);
+      const savedProvider = typeof saved.model === "string"
+        ? (modelProvider(saved.model) ?? saved.provider ?? "claude")
+        : saved.provider;
+      if (
+        typeof saved.model === "string" &&
+        savedProvider === provider
+      ) setModel(saved.model);
       if (typeof saved.effort === "string") setEffort(saved.effort);
       if (isValidPermissionMode(saved.perm)) setPermissionMode(saved.perm);
     } catch {
@@ -1066,12 +1120,12 @@ function SessionViewInner({
     try {
       window.localStorage.setItem(
         `telar:composer:${project}`,
-        JSON.stringify({ model, effort, perm: permissionMode }),
+        JSON.stringify({ provider, model: sessionModel, effort, perm: permissionMode }),
       );
     } catch {
       // ignore storage-blocked
     }
-  }, [provider, project, model, effort, permissionMode]);
+  }, [provider, project, sessionModel, effort, permissionMode]);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   // The current turn's server run id (docs/runtime-architecture.md §A.4) — sent
@@ -1198,22 +1252,7 @@ function SessionViewInner({
   // (never dropped, never force-sent mid-turn — the busy guard forbids that).
   // Queued messages render as editable/removable chips above the composer and
   // dispatch in order the moment the turn settles, via the same send() path.
-  // Story 4.2 — `ultra?: boolean` is the queue's armed flag. Widening the item
-  // type by one optional field and threading it through the ONE dispatch
-  // expression is exactly the two-line change story 4.1 made for `hidden`, and
-  // for the same reason: arming the chip and pressing Enter while the agent is
-  // busy must annotate THAT message when it eventually sends — not the next one
-  // the user types, and not none of them.
-  const [messageQueue, setMessageQueue] = useState<
-    { id: string; text: string; ultra?: boolean }[]
-  >([]);
-  // Story 4.2 / AC6 — the composer chip's arm state. NOT persisted (T11).
-  const [ultraArm, setUltraArm] = useState<ArmState>({ armed: false });
-  // Which user turns went out Ultra-annotated. LIVE-ONLY, like the thinking
-  // parts: `StoreMessage` has no such field and this is a property of the
-  // REQUEST rather than of anything anyone said, so a reloaded transcript
-  // simply shows the message without the marker.
-  const [ultraAnnotated, setUltraAnnotated] = useState<ReadonlySet<string>>(new Set());
+  const [messageQueue, setMessageQueue] = useState<{ id: string; text: string }[]>([]);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1362,8 +1401,10 @@ function SessionViewInner({
   // autocomplete is a nicety, never worth an error UI.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/projects/${encodeURIComponent(project)}/commands`)
-      .then((res) => (res.ok ? res.json() : { commands: [] }))
+    cachedJson<{ commands?: ProjectCommand[] }>(
+      `/api/projects/${encodeURIComponent(project)}/commands`,
+      { maxAgeMs: 60_000 },
+    )
       .then((data: { commands?: ProjectCommand[] }) => {
         if (!cancelled) setProjectCommands(data.commands ?? []);
       })
@@ -1445,7 +1486,7 @@ function SessionViewInner({
       })
         .then((res) => {
           if (!res.ok) throw new Error("rename failed");
-          refresh();
+          dispatchTelarRefresh({ domains: ["chats"], project, sessionId: id });
         })
         .catch(() => setTitle(prev));
     },
@@ -1780,9 +1821,6 @@ function SessionViewInner({
                 // after this same read loop finishes).
                 markToolsInterrupted(asstId);
                 break;
-              case "plan":
-                refresh();
-                break;
               case "title":
                 // Fired once, only for a fresh session (route.ts contract #2)
                 // — arrives before "saved". Only ever overwrites the
@@ -1814,11 +1852,14 @@ function SessionViewInner({
                 // (payload.context), NOT derived from the cumulative usage
                 // above — that usage sums every step of the turn.
                 if (typeof payload.context === "number") setContext(payload.context);
-                refresh();
                 break;
               case "saved":
                 setChatPersisted(true);
-                refresh();
+                dispatchTelarRefresh({
+                  domains: ["chats", "usage"],
+                  project,
+                  sessionId: sessionId ?? undefined,
+                });
                 break;
               case "error":
                 streamErrorRef.current = payload.message;
@@ -1888,20 +1929,7 @@ function SessionViewInner({
     // kickoff, where `text` is the sentinel route.ts swaps for the real prompt.
     // The agent visibly speaks first: only the assistant message is appended, so
     // the human never appears to have typed the sentinel.
-    // Story 4.2 / AC6 — `ultra` is the WIRE NAME: `app/api/chat/route.ts`
-    // destructures that exact key and narrows it with `rawUltra === true`
-    // ("anything but a literal `true` collapses to false"). Do not invent
-    // `ultraAnnotated`, `ultraArmed` or `annotateUltra` on the wire.
-    //
-    // IT IS READ OFF THESE PER-DISPATCH OPTIONS AND NEVER OFF `ultraArm`. The
-    // body literal below is shared by every turn this file fires — including
-    // story 4.1's HIDDEN WAKE TURN and the message-queue drain. Reading
-    // component state here would annotate a turn with no user message at all
-    // with ULTRA_ANNOTATION_NOTE's claim that "the user's message below is
-    // Ultra-annotated", and would annotate a queued message with whatever the
-    // chip happened to say when the queue drained rather than when the user
-    // pressed Enter.
-    async (text: string, opts?: { hidden?: boolean; ultra?: boolean }) => {
+    async (text: string, opts?: { hidden?: boolean }) => {
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
       // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
@@ -1928,15 +1956,6 @@ function SessionViewInner({
             ]),
         { id: asstId, role: "assistant", parts: [] },
       ]);
-      // THE CHIP'S ONLY VISIBLE PROOF. `ultra: true` reaches the route and
-      // becomes a system-prompt note — a REQUEST the agent may act on, not a
-      // behaviour flag (see the options doc above). That is the right semantics
-      // and it is also exactly why the control read as dead: arming it, sending,
-      // and watching nothing change is indistinguishable from a no-op. Recorded
-      // against the turn it was armed for, so the transcript can say so.
-      if (opts?.ultra && !opts.hidden) {
-        setUltraAnnotated((prev) => new Set(prev).add(userId));
-      }
       setStatus("submitted");
       setThinking(false);
 
@@ -1954,7 +1973,7 @@ function SessionViewInner({
             message: text,
             sessionId,
             runId,
-            model,
+            model: sessionModel,
             project,
             account: activeAccount,
             ...(effort !== "default" ? { effort } : {}),
@@ -1976,9 +1995,6 @@ function SessionViewInner({
                 : escalation
                   ? { role: "escalation", loomId }
                   : {}),
-            // Story 4.2 / AC6 — the composer's Ultra chip, for THIS dispatch
-            // only. See the options type above for why it is read from `opts`.
-            ...(opts?.ultra ? { ultra: true } : {}),
           }),
           signal: abort.signal,
         });
@@ -2047,7 +2063,7 @@ function SessionViewInner({
         runIdRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
+    [sessionId, sessionModel, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
   );
 
   // M11 finding-1 — auto-fire the escalation opening turn ONCE, on mount.
@@ -2086,11 +2102,10 @@ function SessionViewInner({
   const loadWatches = useCallback(async () => {
     if (!sessionId) return;
     try {
-      const res = await fetch(
+      const data = await cachedJson<Watch[] | { watches?: Watch[] }>(
         `/api/chat/${encodeURIComponent(sessionId)}/watches`,
+        { force: true },
       );
-      if (!res.ok) return;
-      const data = await res.json();
       const list: Watch[] = Array.isArray(data)
         ? data
         : Array.isArray(data?.watches)
@@ -2526,27 +2541,16 @@ function SessionViewInner({
     void send(next.text, next.hidden ? { hidden: true } : undefined);
   }, [status, injectionQueue, send, pendingWakes]);
 
-  // Story 4.2 / AC6 — `handleSubmit` IS THE ONE SITE THAT READS `ultraArm`, and
-  // both paths disarm exactly once. The immediate path passes the flag straight
-  // to `send`; the busy path stores it ON THE QUEUED ITEM so it travels with the
-  // message it was armed for (§5.5-D2), which is the same shape story 4.1's
-  // `hidden` precedent took for the same reason.
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();
     if (!text) return;
-    const armed = ultraArm.armed;
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
-      setMessageQueue((q) => [
-        ...q,
-        { id: `q${queueSeqRef.current++}`, text, ...(armed ? { ultra: true } : {}) },
-      ]);
-      if (armed) setUltraArm((s) => armReducer(s, "sent"));
+      setMessageQueue((q) => [...q, { id: `q${queueSeqRef.current++}`, text }]);
       return;
     }
-    if (armed) setUltraArm((s) => armReducer(s, "sent"));
-    void send(text, sendOptionsFor({ kind: "user", armed }));
+    void send(text);
   };
 
   // Dispatch the head of the message queue once the composer is genuinely idle
@@ -2564,15 +2568,13 @@ function SessionViewInner({
       return;
     const [next, ...rest] = messageQueue;
     setMessageQueue(rest);
-    // Story 4.2 — the queued message carries ITS OWN flag, decided when Enter
-    // was pressed rather than when the queue happened to drain.
-    void send(next.text, sendOptionsFor({ kind: "queued", ultra: next.ultra }));
+    void send(next.text);
   }, [status, messageQueue, send]);
 
   // Prefer the fetched catalog (matches what's actually offered in the
   // select) and fall back to the static list for a model id seeded from a
   // resumed chat before the fetch resolves.
-  const activeModel = modelOptions.find((m) => m.id === model) ?? modelById(model);
+  const activeModel = modelOptions.find((m) => m.id === sessionModel) ?? modelById(sessionModel);
   const effortOptions = provider === "codex" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
 
   // 1.4 working indicator: the current main-thread tool call still in flight
@@ -2876,21 +2878,6 @@ function SessionViewInner({
                 ultraAnchorPayloads,
                 pendingUltraAnchor,
               ),
-              // The armed chip, said out loud on the turn it applied to. A
-              // MARKER rather than a new kind: this is exactly what markers are
-              // — a one-line statement about the conversation that is not
-              // something anyone said — and `conversation:marker` already ships.
-              ...(ultraAnnotated.has(m.id)
-                ? [
-                    {
-                      kind: CONVERSATION_KINDS.marker,
-                      key: `${m.id}:ultra`,
-                      payload: {
-                        text: "sent as an Ultra request",
-                      } satisfies MarkerPayload,
-                    },
-                  ]
-                : []),
               ...(statusItem ? [statusItem] : []),
             ],
             pending:
@@ -2942,39 +2929,26 @@ function SessionViewInner({
       />
     );
 
+  // T3's fresh-thread posture: the composer is the workspace's starting object,
+  // centered until the first user turn exists. It remains the same mounted form
+  // and moves with a transform, so submit/focus and the stream are never torn
+  // down merely to animate into the conversation layout.
+  const freshWorkspace =
+    messages.length === 0 && !sessionId && !planner && !escalation && !steerer;
+
   return (
     <>
-      {/* The standalone-session chrome (back button + identity header + account/
-          usage heartbeat bar) is suppressed for an embedded surface — the host
-          page (the loom cockpit) already carries identity. See the `embedded`
-          prop. */}
+      {/* Workspace identity, not telemetry. Account/model/context/spend belong
+          to the composer where the next turn is configured. This edge only tells the user where they are and
+          surfaces truly workspace-level live actions. */}
       {!embedded && (
-        <PageHeader
-          leading={
-            <BackLink
-              href={`/projects/${encodeURIComponent(project)}`}
-              label={`Back to ${project}`}
-            />
-          }
-          title={titleNode}
-          description={<span className="font-mono text-xs">{project}</span>}
-        />
-      )}
-
-      {/* Live heartbeat for this session — active account (editable pre-session,
-          locked once one exists), session id once minted, elapsed while
-          working, running cost + token counts. */}
-      {!embedded && (
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
-        <Badge variant="outline" className="gap-1.5 font-mono text-xs">
-          <UserRoundIcon className="size-3" />
-          {activeAccount}
-        </Badge>
-        {sessionId && (
-          <Badge variant="secondary" className="font-mono text-xs">
-            {shortId(sessionId)}
-          </Badge>
-        )}
+      <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 bg-background/65 px-4 py-1.5 backdrop-blur">
+        <div className="mr-1 flex min-w-0 items-center gap-2 text-sm">
+          <FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0 text-muted-foreground">{project}</span>
+          <span className="text-border">/</span>
+          <div className="min-w-0 truncate font-semibold">{titleNode}</div>
+        </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {liveWork && (
             <WorkingIndicator state={liveWork} className="max-w-[min(420px,60vw)]" />
@@ -2983,47 +2957,6 @@ function SessionViewInner({
               "Planning loom" chip). Solo → state + short id; N → most-urgent
               rollup. Hover previews the per-loom overlay, click pins. */}
           <LoomsPill looms={pillLooms} />
-          <UsagePill snap={usageSnap} />
-          {/* Context-window occupancy after the latest turn, with a /context-
-              style hover: real used/window fill + lifetime token split (per-
-              category breakdown reserved — not instrumented yet). */}
-          {context > 0 && (
-            <ContextPill
-              used={context}
-              windowTokens={parseWindow(activeModel?.context)}
-              messagesEst={estimateTranscriptTokens(messages)}
-              lifetime={{
-                input: tokens.input,
-                output: tokens.output,
-                cacheRead: tokens.cacheRead,
-                cacheCreate: tokens.cacheCreate,
-              }}
-            />
-          )}
-          {/* Aggregate session spend, rendered in THIS session's cost language
-              (story 4.1 / AC6). It used to be `provider !== "codex" &&
-              <CostPill total={sessionCost} />` — a HIDE, on the correct
-              observation that a ChatGPT-subscription account has no per-token
-              billing so its USD figure is always $0.00. That reasoning is right
-              about USD and is exactly why tokens are the substitute rather than
-              nothing; lib/spend-readout.ts makes the unit a property of the
-              projection. A Codex session now shows the token form instead of a
-              blank. The CTX pill is unaffected — it is context-window
-              occupancy, not spend, and it always rendered for both providers.
-
-              THE CODEX FIGURE IS `tokens.input + tokens.output` — the lifetime
-              billable pair, deliberately excluding the two cache fields, which
-              are re-presentations of content this session already sent and
-              would climb every turn on an idle transcript. Story 4.2's per-run
-              anchor must be able to choose the same pair, and it can: they are
-              the same two fields `UsageEntry` carries per row. */}
-          <CostPill
-            readout={spendReadout(provider, {
-              usd: sessionCost,
-              tokens: tokens.input + tokens.output,
-            })}
-            breakdown={spendBreakdown}
-          />
           {/* Minimize this session to the mini-dock — the dock's natural entry
               point. Only once a real, persisted session id exists to follow. */}
           {dock && sessionId && chatPersisted && (
@@ -3108,6 +3041,7 @@ function SessionViewInner({
           `applyServerEvent` and the whole turn state machine — it simply no
           longer owns a render loop. */}
       <Conversation
+        className="relative"
         items={transcriptItems}
         kinds={SESSION_KINDS}
         // The donor's `isCurrentMessage`: the shell marks only the LAST
@@ -3122,7 +3056,7 @@ function SessionViewInner({
               ? agentStatus(activeBucket.spawn) === "running"
               : busy
         }
-        empty={emptyState}
+        empty={freshWorkspace ? undefined : emptyState}
         // Durable in-stream loom record (replaces the banner): a compact row
         // per lifecycle transition — started/parked/resumed/ready — carrying
         // the title, short id, and a god-view link. Scrolls away with
@@ -3180,7 +3114,12 @@ function SessionViewInner({
           /* Composer matches the transcript's reading column — same mx-auto
               max-w-7xl the Message wrapper uses, so the input aligns with the
               messages instead of spanning the whole pane. */
-          <div className="relative mx-auto w-full max-w-7xl px-4 pb-4">
+          <div
+            className={cn(
+              "relative mx-auto w-full max-w-3xl px-4 pb-5 transition-transform duration-500 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
+              freshWorkspace && "-translate-y-[calc(45dvh-7.5rem)]",
+            )}
+          >
             {slashMenuOpen && (
               <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
                 {filteredCommands.length === 0 ? (
@@ -3250,7 +3189,10 @@ function SessionViewInner({
                 ))}
               </div>
             )}
-            <PromptInput onSubmit={handleSubmit}>
+            <PromptInput
+              onSubmit={handleSubmit}
+              className="[&_[data-slot=input-group]]:rounded-2xl [&_[data-slot=input-group]]:border-border/80 [&_[data-slot=input-group]]:bg-card/95 [&_[data-slot=input-group]]:shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] [&_[data-slot=input-group]]:backdrop-blur-xl"
+            >
               <PromptInputBody>
                 {/* THE TEXTAREA IS CLIENT-ONLY, and that is a fix rather than a
                     preference. cmux stamps a `data-cmux-addressbar-focus-id`
@@ -3267,11 +3209,11 @@ function SessionViewInner({
                     aria-hidden so it is never a focus target or announced. */}
                 {hydrated ? (
                   <PromptInputTextarea
-                    className="min-h-10"
+                    className="min-h-[76px] px-3 pb-2 pt-3 text-[15px] leading-6"
                     placeholder={
                       busy
                         ? "Agent is working — Enter queues a message…"
-                        : `Ask about ${project}… ("/" for commands)`
+                        : "Ask for changes, explore the code, or attach context…"
                     }
                     onKeyDown={handleComposerKeyDown}
                     onChange={() => setMenuDismissed(false)}
@@ -3280,8 +3222,8 @@ function SessionViewInner({
                   <div className="min-h-10 w-full px-2.5 py-2.5 text-base" aria-hidden />
                 )}
               </PromptInputBody>
-              <PromptInputFooter className="flex-wrap">
-                <PromptInputTools className="flex-wrap">
+              <PromptInputFooter className="min-h-11 flex-wrap border-t border-border/40 px-2.5 pb-2 pt-1.5">
+                <PromptInputTools className="flex-wrap gap-1.5">
                   {/* Agent selector — first in the bar, per spec: it's the thing
                       that determines what everything to its right even means.
                       Provider/account are choosable only pre-session (an existing
@@ -3301,7 +3243,7 @@ function SessionViewInner({
                         </SelectValue>
                       </SelectTrigger>
                       <SelectContent className="w-[min(180px,calc(100vw-2rem))]">
-                        {(["claude", "codex"] as const).map((p) => (
+                        {availableProviders.map((p) => (
                           <SelectItem key={p} value={p} className="py-2">
                             <span className="flex items-center gap-1.5">
                               <ProviderIcon provider={p} />
@@ -3366,7 +3308,7 @@ function SessionViewInner({
                     provider={provider}
                     open={settingsOpen}
                     onOpenChange={setSettingsOpen}
-                    model={model}
+                    model={sessionModel}
                     setModel={setModel}
                     effort={effort}
                     setEffort={setEffort}
@@ -3415,71 +3357,36 @@ function SessionViewInner({
                           }
                     }
                   />
-                  {/* Story 4.2 / AC6 — THE ULTRA CHIP. Arming only: no ceiling
-                      editor, no submenu (NFR-UW-7 and `ui-contract.md` §6).
-
-                      A TOGGLE IN `PromptInputTools`, beside the other per-message
-                      controls, and deliberately NOT inside `ComposerSettings` —
-                      that popover is per-project REMEMBERED config, and the AC
-                      forbids a submenu. It is also not persisted anywhere:
-                      `telar:composer:${project}` remembers model, effort and
-                      permission mode across sessions, and a remembered chip
-                      would be the behaviour flag NFR-UW-1 says opt-in must never
-                      become ("Opt-in is a request, not a behavior flag").
-
-                      CLAUDE BRANCH ONLY: `app/api/chat/route.ts` constructs the
-                      ultra MCP server only in the non-Codex fork, so on Codex
-                      the chip would arm a tool that is never offered.
-
-                      AND NOT ON THE ESCALATION SURFACE (review round 1, SF-2).
-                      AC6 proof 6 says the chip is "gated off the escalation
-                      surface", and it was gated on the PROVIDER and nothing
-                      else — while `discuss-escalation.tsx` mounts
-                      `<SessionView escalation embedded …/>` with `provider`
-                      defaulting to `"claude"`. So the chip rendered in a blocked
-                      loom's orchestrator chat, armed, showed `aria-pressed`, and
-                      put `ultra: true` on the same body literal that carries
-                      `role: "escalation"` — where `resolveSessionProfile`'s
-                      escalation branch builds `escalationAppendix`, whose
-                      signature carries no `ultraAnnotated` at all, and
-                      `buildEscalationProfile` hard-denies every one of
-                      `ULTRA_AUTO_TOOLS`. The flag was discarded entirely: a
-                      control that cannot do anything, which is exactly the
-                      placebo hard rule 3 forbids. The TYPE enforces the absence
-                      of the APPENDIX; only this term enforces the absence of the
-                      CONTROL, and AC6 proof 6 is about the control.
-
-                      THE GLYPH IS `WorkflowIcon`, NOT `SparklesIcon`.
-                      `SparklesIcon` is taken twice over — `composer-settings.tsx`
-                      uses it for the Claude-config chip immediately to the left,
-                      and `subagent-rail.tsx`'s `TOOL_GLYPH` maps it to the
-                      `general-purpose` subagent type in the very rail this story
-                      adds a Workflows section to. */}
-                  {provider !== "codex" && !escalation && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-pressed={ultraArm.armed}
-                      onClick={() => setUltraArm((s) => armReducer(s, s.armed ? "disarm" : "arm"))}
-                      title={
-                        ultraArm.armed
-                          ? "This message is Ultra-annotated — the agent may launch an Ultra run for it"
-                          : "Annotate the next message as an explicit Ultra request"
-                      }
-                      className={cn("h-8 gap-1.5 text-xs", ultraArm.armed && "bg-muted text-foreground")}
-                    >
-                      <WorkflowIcon className="size-3.5" />
-                      Ultra
-                    </Button>
-                  )}
                 </PromptInputTools>
-                {/* ml-auto/self-end: when the tools row wraps onto multiple lines
-                    on a narrow composer, the submit button stays pinned to the
-                    bottom-right instead of drifting to wherever justify-between
-                    would otherwise place a lone wrapped item. */}
+                <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
+                  <ContextPill
+                    used={context}
+                    windowTokens={parseWindow(
+                      activeModel?.context && activeModel.context !== "—"
+                        ? activeModel.context
+                        : contextLabelForModel(sessionModel, provider),
+                    )}
+                    messagesEst={estimateTranscriptTokens(messages)}
+                    lifetime={{
+                      input: tokens.input,
+                      output: tokens.output,
+                      cacheRead: tokens.cacheRead,
+                      cacheCreate: tokens.cacheCreate,
+                    }}
+                    spend={{
+                      readout: spendReadout(
+                        provider,
+                        {
+                          usd: sessionCost,
+                          tokens: tokens.input + tokens.output,
+                        },
+                        { subscriptionRouted: runtimeRouted },
+                      ),
+                      breakdown: spendBreakdown,
+                    }}
+                  />
                 <PromptInputSubmit
-                  className="ml-auto shrink-0 self-end"
+                  className="shrink-0"
                   status={status === "ready" ? undefined : status}
                   onStop={() => {
                     // Stop the DETACHED server run — a mere disconnect no longer
@@ -3502,8 +3409,15 @@ function SessionViewInner({
                     abortRef.current?.abort();
                   }}
                 />
+                </div>
               </PromptInputFooter>
             </PromptInput>
+            {!embedded && (
+              <WorkspaceEnvironment
+                project={project}
+                rightPanelScopeKey={rightPanelScopeKey ?? `${project}:new`}
+              />
+            )}
           </div>
         }
       />

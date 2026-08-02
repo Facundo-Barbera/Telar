@@ -1,11 +1,11 @@
 import {
   activeLoomIds,
-  listAccounts,
-  listLooms,
   loadPolicy,
   startLoom,
   type StartLoomInput,
-} from "@telar/core";
+} from "@telar/core/dispatcher";
+import { listAccounts } from "@telar/core/accounts";
+import { listLooms } from "@telar/core/looms";
 
 export const dynamic = "force-dynamic";
 

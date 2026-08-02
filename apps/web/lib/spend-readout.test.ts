@@ -47,6 +47,12 @@ describe("spend readout — the session's cost language (AC6)", () => {
     expect(r.text).not.toContain("$");
   });
 
+  test("a Claude harness routed through a subscription pool does not invent USD attribution", () => {
+    expect(
+      spendReadout("claude", { usd: 9.99, tokens: 12_345 }, { subscriptionRouted: true }),
+    ).toMatchObject({ unit: "tokens", tokens: 12_345, text: "12.3k tok" });
+  });
+
   test("the two providers DISCRIMINATE on the same input — the unit is the projection's, not the record's", () => {
     // Same figures, two languages. Without this, a function that ignored
     // `provider` entirely would satisfy both tests above.

@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { ArrowLeftIcon, FolderGitIcon } from "lucide-react";
-import { getProject, listAccounts } from "@telar/core";
-import { getChat, listChats } from "@/lib/store";
+import {
+  getAccount,
+  resolveEnabledAccount,
+} from "@telar/core/accounts";
+import { getProject } from "@telar/core/manifest";
+import { getChat } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { SessionView } from "@/components/session/session-view";
-import { SessionsRail } from "@/components/session/sessions-rail";
+import { RightPanel } from "@/components/right-panel/right-panel";
+import { readAccountsEnvelope } from "@/lib/accounts-server";
 
 // The transcript is read straight from the store at request time.
 export const dynamic = "force-dynamic";
@@ -120,34 +125,45 @@ export default async function SessionPage({
   // An existing chat resumes with its own persisted account (the resume
   // transcript lives under that account's config dir — the manifest default
   // may have changed since); a fresh session falls back to the manifest.
-  const account = chat?.account ?? manifest.account;
-
-  // The rail lists every session anchored to this project, newest-first. It's
-  // server-rendered from the store: a freshly-minted session (URL rewritten
-  // mid-stream, first turn not yet persisted) simply isn't in the list until it
-  // saves — no highlight, which is correct for a thread that doesn't exist yet.
-  // Loom-born sessions (role "steerer"/"escalation") are excluded — same rule
-  // as GET /api/chats — they're scoped to their loom's own UI, not this rail.
-  // A direct link to one (e.g. from the loom page) still opens it via the pane
-  // on the right; it just never appears in this list.
-  const sessions = listChats(name).filter(
-    (c) => c.role !== "steerer" && c.role !== "escalation",
-  );
+  const freshAccount = chat ? undefined : resolveEnabledAccount(manifest.account);
+  if (!chat && !freshAccount) {
+    return (
+      <div className="flex h-dvh items-center justify-center p-6">
+        <EmptyState
+          icon={FolderGitIcon}
+          title="No enabled account"
+          description="Enable the project account or another account in Settings before starting a session."
+          action={
+            <Button variant="outline" size="sm" render={<Link href="/settings?section=providers" />}>
+              Open provider settings
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+  const account = chat?.account ?? freshAccount!.name;
+  // Seed the persisted harness explicitly so a resumed Codex chat does not
+  // visually fall back to Claude when its account is currently unavailable.
+  const initialProvider = getAccount(account)?.provider ?? "claude";
 
   // Display-only account metadata for the client picker — passed as plain
   // data so the client component never imports the server-only registry.
-  const accounts = listAccounts().map((a) => ({
-    name: a.name,
-    displayTier: a.displayTier,
-  }));
+  const accounts = readAccountsEnvelope().accounts
+    .filter((account) => account.available)
+    .map((a) => ({
+      name: a.name,
+      provider: a.provider ?? "claude",
+      displayTier: a.displayTier,
+      runtimeRouted: a.runtimeRouted,
+    }));
 
-  // Rail on the left, chat pane on the right. The pane keeps SessionView's own
+  // The app sidebar owns session navigation. This pane keeps SessionView's own
   // header inside it so a freshly-minted session shows its derived title live
   // (the store only persists the title on the later 'saved' event, after the
   // URL has already been rewritten to the new id).
   return (
     <div className="flex h-dvh overflow-hidden">
-      <SessionsRail project={name} sessions={sessions} activeId={id} />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <SessionView
           // Keyed on project+id (not just project) so a real Next.js
@@ -160,6 +176,7 @@ export default async function SessionPage({
           key={`${name}:${id}`}
           project={name}
           account={account}
+          initialProvider={initialProvider}
           accounts={accounts}
           initialChat={initialChat}
           initialTitle={chat?.title}
@@ -169,10 +186,12 @@ export default async function SessionPage({
           // mid-turn session whose transcript hasn't persisted yet — so the
           // reconnect effect can tail the live stream instead of showing empty.
           routeSessionId={id === "new" ? undefined : id}
+          rightPanelScopeKey={`${name}:${id}`}
           // Story 4.2 / AC7 — the run to focus in the rail on arrival.
           focusRunId={runParam}
         />
       </div>
+      <RightPanel project={name} scopeKey={`${name}:${id}`} />
     </div>
   );
 }

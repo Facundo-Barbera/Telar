@@ -11,7 +11,6 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { WorkUnitState, type Loom } from "@telar/core";
-import { isTerminal } from "@/components/looms/utils";
 import {
   byLastActivity,
   byOpenWork,
@@ -19,7 +18,6 @@ import {
   isLoomAwaitingAccept,
   isLoomAwaitingDecision,
   isLoomClosed,
-  isLoomLegacyActive,
   isLoomNeedsYou,
   isLoomRecent,
   isLoomRunning,
@@ -95,9 +93,8 @@ describe("the state vocabulary", () => {
     ]);
   });
 
-  // The membership of the other three sets, written out. Without these the only
-  // thing pinning them is the legacyActive-vs-isTerminal guard below, which 2b
-  // deletes along with the field — and `isLoomAwaitingDecision` is what the
+  // The membership of the other three sets, written out. The
+  // `isLoomAwaitingDecision` predicate is what the
   // project header's "N need you" and the Looms tab's "Needs you" group are
   // made of. Moving a state out of it should cost someone a failing test, not
   // go unnoticed because the coarse-fold check below is true by definition.
@@ -128,15 +125,6 @@ describe("the state vocabulary", () => {
   test("isLoomRecent still means closed, as it did when it meant 'neither of the others'", () => {
     for (const s of ALL_STATES) {
       expect([s, isLoomRecent(s)]).toEqual([s, !isLoomRunning(s) && !isLoomNeedsYou(s)]);
-    }
-  });
-
-  // The anti-drift guard for the one predicate this module keeps only to hold
-  // the sidebar still. If someone edits looms/utils' TERMINAL set, this fails
-  // rather than letting the sidebar quietly diverge from its own legacy.
-  test("legacyActive is the exact complement of looms/utils' isTerminal", () => {
-    for (const s of ALL_STATES) {
-      expect([s, isLoomLegacyActive(s)]).toEqual([s, !isTerminal(s)]);
     }
   });
 });
@@ -205,12 +193,9 @@ describe("DIVERGENCE — a project whose only loom is `ready`", () => {
     expect(s.counts.awaitingAccept).toBe(1);
   });
 
-  test("the sidebar STILL pulses it as weaving", () => {
-    expect(s.legacyActive).toHaveLength(1);
-  });
 });
 
-describe("DIVERGENCE — needs-review and failed are invisible to the sidebar", () => {
+describe("needs-review and failed", () => {
   const s = one([
     loom("api", "failed"),
     loom("api", "failed"),
@@ -221,30 +206,19 @@ describe("DIVERGENCE — needs-review and failed are invisible to the sidebar", 
     expect(s.counts.awaitingDecision).toBe(3); // header: "3 need you"
     expect(s.counts.open).toBe(3); // index + Hot projects
   });
-
-  test("the sidebar STILL shows nothing: no pulse, no nested rows", () => {
-    // And because its Recents sort puts every `active` project first, this one
-    // can be pushed out of the six-row window entirely. Preserved as-is; the
-    // sidebar's ordering is another agent's file this phase.
-    expect(s.legacyActive).toHaveLength(0);
-  });
 });
 
-describe("DIVERGENCE — charter-review and blocked read as 'the machine is working'", () => {
+describe("charter-review and blocked", () => {
   const s = one([loom("api", "charter-review"), loom("api", "blocked")]);
 
   test("they are waiting on a human, and every count says so", () => {
     expect(s.counts.inFlight).toBe(0);
     expect(s.counts.awaitingDecision).toBe(2);
   });
-
-  test("the sidebar STILL animates them with the same glyph as a live run", () => {
-    expect(s.legacyActive).toHaveLength(2);
-  });
 });
 
-describe("DIVERGENCE — the nav badge counts something no other surface does", () => {
-  test("one project, three numbers: 1 in flight, 4 needing you, 3 'weaving'", () => {
+describe("global sidebar semantics", () => {
+  test("in-flight and needs-you remain distinct", () => {
     const s = one([
       loom("api", "running"),
       loom("api", "ready"),
@@ -254,7 +228,6 @@ describe("DIVERGENCE — the nav badge counts something no other surface does", 
     ]);
     expect(s.counts.inFlight).toBe(1); // the dashboard's "Running now"
     expect(s.counts.awaitingDecision + s.counts.awaitingAccept).toBe(4); // "Needs you"
-    expect(s.legacyActive).toHaveLength(3); // the badge, above the link that says 1 and 4
   });
 });
 
@@ -269,8 +242,7 @@ describe("DIVERGENCE — a project where only sessions moved", () => {
     expect(s.counts.open).toBe(0);
   });
 
-  test("the sidebar STILL lists the session without pulsing the project", () => {
-    expect(s.legacyActive).toHaveLength(0);
+  test("the session remains available to session-list derivation", () => {
     expect(s.chatsToday).toHaveLength(1);
   });
 });

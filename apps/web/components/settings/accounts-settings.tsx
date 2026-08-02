@@ -1,20 +1,19 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   BellIcon,
+  BotIcon,
   GaugeIcon,
   PaletteIcon,
   PlugIcon,
   PlusIcon,
   RotateCwIcon,
   SparklesIcon,
-  StarIcon,
   StethoscopeIcon,
 } from "lucide-react";
-import type { ProviderStatus } from "@telar/core";
-import type { PlanSnapshot, PlanWindow } from "@/lib/store";
-import { formatResetIn, usedWindows } from "@/lib/plan-window";
+import type { ProviderStatus } from "@telar/core/detect";
 import {
   disabledBoundary,
   orderAccounts,
@@ -27,7 +26,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -36,7 +34,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EmptyState } from "@/components/common/empty-state";
 import {
   SettingsShell,
   SettingsGroup,
@@ -50,7 +47,29 @@ import {
   ProviderInstanceRow,
   type AccountWire,
 } from "@/components/settings/provider-instances";
-import { ProxyCard, type ProxyStatusWire } from "@/components/settings/proxy-card";
+import { dispatchTelarRefresh } from "@/lib/telar-refresh";
+import { cachedJson } from "@/lib/client-json-cache";
+import { INTEGRATION_REGISTRY } from "@/lib/integrations/registry";
+
+type UsageTotals = {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+};
+
+type UsageSummary = {
+  session: UsageTotals;
+  weekly: UsageTotals;
+  byAccount: Record<string, { session: UsageTotals; weekly: UsageTotals }>;
+};
+
+export type SettingsInitialData = {
+  accounts: AccountWire[];
+  defaultAccount: string;
+  usage: UsageSummary;
+  providers: ProviderStatus[];
+};
 
 // TELAR ADOPTS LOGINS, IT DOES NOT CREATE THEM. There is no login panel here and
 // no login route behind it: signing in happens in the user's own terminal, with
@@ -76,38 +95,28 @@ const fmtChecked = (iso: string | null | undefined): string => {
   return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
 };
 
-// The attribute value in these variants is QUOTED deliberately. Left bare, the
-// generated attribute selector makes the CSS optimizer emit "Unexpected token
-// Delim" while escaping the class name, which fails the build. Quoting produces
-// the same selector and parses cleanly.
-//
-// AND THE BARE FORM MUST NOT APPEAR ANYWHERE IN THIS FILE — not even in a
-// comment. Tailwind scans sources as PLAIN TEXT rather than parsing them, so a
-// class-shaped string inside a comment is still extracted as a candidate and
-// regenerates the broken rule. That is exactly how this comment reintroduced
-// the bug it was written to explain.
-const meterBar = (pct: number) =>
-  pct >= 90
-    ? "[&>[data-slot='progress-indicator']]:bg-destructive"
-    : pct >= 70
-      ? "[&>[data-slot='progress-indicator']]:bg-amber-500"
-      : "";
+const formatCount = (value: number) => new Intl.NumberFormat().format(value);
 
-function LimitMeter({ label, w }: { label: string; w?: PlanWindow | null }) {
-  if (!w || w.utilization == null) return null;
-  const pct = w.utilization;
+function UsageWindow({ label, totals }: { label: string; totals: UsageTotals }) {
+  const tokens = totals.inputTokens + totals.outputTokens;
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span className="font-mono">
-          {pct}%
-          {w.resets_at && (
-            <span className="text-muted-foreground/60"> · resets in {formatResetIn(w.resets_at)}</span>
-          )}
-        </span>
+    <div className="grid gap-3 px-4 py-4 sm:grid-cols-[minmax(8rem,1fr)_repeat(3,minmax(6rem,auto))] sm:items-center">
+      <div>
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-[11px] text-muted-foreground">Recorded by Telar</div>
       </div>
-      <Progress value={Math.min(100, pct)} className={`h-1.5 ${meterBar(pct)}`} />
+      <div>
+        <div className="font-mono text-sm">{formatCount(totals.requests)}</div>
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">requests</div>
+      </div>
+      <div>
+        <div className="font-mono text-sm">{formatCount(tokens)}</div>
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">tokens</div>
+      </div>
+      <div>
+        <div className="font-mono text-sm">${totals.costUsd.toFixed(4)}</div>
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">recorded cost</div>
+      </div>
     </div>
   );
 }
@@ -212,7 +221,8 @@ const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Preferences" },
   { id: "agent", label: "Agent defaults", icon: SparklesIcon, group: "Preferences" },
   { id: "notifications", label: "Notifications", icon: BellIcon, group: "Preferences" },
-  { id: "providers", label: "Providers", icon: PlugIcon, group: "Provider" },
+  { id: "providers", label: "Providers", icon: BotIcon, group: "Provider" },
+  { id: "integrations", label: "Integrations", icon: PlugIcon, group: "Provider" },
   { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
   { id: "doctor", label: "Doctor", icon: StethoscopeIcon, group: "Machine" },
 ];
@@ -220,8 +230,17 @@ const SECTIONS: SettingsSection[] = [
 // Legacy deep-links (/settings#accounts) still land somewhere sensible.
 const SECTION_ALIASES: Record<string, string> = { accounts: "providers" };
 
-export function GeneralSettings() {
-  const [active, setActive] = useState("appearance");
+const validSection = (requested: string | null | undefined): string => {
+  const normalized = SECTION_ALIASES[requested ?? ""] ?? requested;
+  return SECTIONS.some((section) => section.id === normalized) ? normalized! : "appearance";
+};
+
+export function GeneralSettings({ initialData }: { initialData?: SettingsInitialData }) {
+  const sectionParam = useSearchParams().get("section");
+  // Resolve query deep-links during the initial render. An effect-only
+  // initializer leaves /settings?section=providers visibly on Appearance until
+  // hydration timers run (and background tabs may throttle those timers).
+  const [active, setActive] = useState(() => validSection(sectionParam));
   const prefs = useUiPrefs();
 
   // THE SECTION LIVES IN THE URL. It used to be read from the hash on mount and
@@ -237,7 +256,11 @@ export function GeneralSettings() {
   // re-render of the shell is involved in switching pane.
   const selectSection = useCallback((id: string) => {
     setActive(id);
-    if (window.location.hash.slice(1) !== id) window.history.pushState(null, "", `#${id}`);
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("section") === id && !url.hash) return;
+    url.searchParams.set("section", id);
+    url.hash = "";
+    window.history.pushState(null, "", url);
   }, []);
 
   // Read the URL on mount AND whenever the history entry changes, so the
@@ -247,8 +270,8 @@ export function GeneralSettings() {
   useEffect(() => {
     const sync = () => {
       const h = window.location.hash.slice(1);
-      const target = SECTION_ALIASES[h] ?? h;
-      if (SECTIONS.some((s) => s.id === target)) setActive(target);
+      const requested = sectionParam || h || "appearance";
+      setActive(validSection(requested));
     };
     sync();
     window.addEventListener("popstate", sync);
@@ -257,52 +280,70 @@ export function GeneralSettings() {
       window.removeEventListener("popstate", sync);
       window.removeEventListener("hashchange", sync);
     };
-  }, []);
+  }, [sectionParam]);
 
-  const [accounts, setAccounts] = useState<AccountWire[]>([]);
-  const [defaultAccount, setDefaultAccount] = useState("personal");
-  const [plan, setPlan] = useState<Record<string, PlanSnapshot>>({});
-  const [providers, setProviders] = useState<ProviderStatus[]>([]);
-  const [proxy, setProxy] = useState<ProxyStatusWire | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  // Why an account has no usage figure, keyed by account name — returned by the
-  // refresh so the Usage tab can say "no source" instead of showing a blank.
-  const [unavailable, setUnavailable] = useState<Record<string, string>>({});
+  const [accounts, setAccounts] = useState<AccountWire[]>(initialData?.accounts ?? []);
+  const [accountsLoaded, setAccountsLoaded] = useState(Boolean(initialData));
+  const [defaultAccount, setDefaultAccount] = useState(initialData?.defaultAccount ?? "personal");
+  const [usage, setUsage] = useState<UsageSummary | null>(initialData?.usage ?? null);
+  const [usageLoaded, setUsageLoaded] = useState(Boolean(initialData));
+  const [providers, setProviders] = useState<ProviderStatus[]>(initialData?.providers ?? []);
   const [detecting, setDetecting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [rowError, setRowError] = useState<Record<string, string | null>>({});
 
-  const load = useCallback(async () => {
-    const [a, u, p, x] = await Promise.all([
-      fetch("/api/accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      fetch("/api/usage").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      fetch("/api/providers").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      fetch("/api/proxy").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    ]);
-    if (a) {
-      setAccounts(a.accounts ?? []);
-      setDefaultAccount(a.default ?? "personal");
+  const loadAccounts = useCallback(async () => {
+    const data = await cachedJson<{ accounts?: AccountWire[]; default?: string }>(
+      "/api/accounts",
+      { force: true },
+    )
+      .catch(() => null);
+    if (data) {
+      setAccounts(data.accounts ?? []);
+      setDefaultAccount(data.default ?? "personal");
     }
-    if (u) setPlan(u.plan ?? {});
-    if (p) setProviders(p.providers ?? []);
-    if (x) setProxy(x.proxy ?? null);
+    setAccountsLoaded(true);
+  }, []);
+
+  const loadUsage = useCallback(async () => {
+    const data = await cachedJson<{ ledger?: UsageSummary }>("/api/usage", { force: true })
+      .catch(() => null);
+    if (data?.ledger) setUsage(data.ledger);
+    setUsageLoaded(true);
+  }, []);
+
+  const loadProviderStatus = useCallback(async () => {
+    const data = await cachedJson<{ providers?: ProviderStatus[] }>("/api/providers")
+      .catch(() => null);
+    if (data) setProviders(data.providers ?? []);
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active !== "providers" && active !== "usage") return;
+    if (initialData) return;
+    queueMicrotask(() => {
+      void loadAccounts();
+    });
+  }, [active, initialData, loadAccounts]);
 
-  const refreshUsage = async () => {
-    setRefreshing(true);
-    const r = await fetch("/api/usage/refresh", { method: "POST" })
-      .then((res) => (res.ok ? res.json() : null))
-      .catch(() => null);
-    setUnavailable(r?.unavailable ?? {});
-    await load();
-    setRefreshing(false);
-    window.dispatchEvent(new Event("telar:refresh"));
-  };
+  useEffect(() => {
+    if (active !== "usage") return;
+    if (initialData) return;
+    queueMicrotask(() => {
+      void loadUsage();
+    });
+  }, [active, initialData, loadUsage]);
+
+  // Provider detection is scoped to the provider pane. It never probes an
+  // optional integration.
+  useEffect(() => {
+    if (active !== "providers") return;
+    if (initialData) return;
+    queueMicrotask(() => {
+      void loadProviderStatus();
+    });
+  }, [active, initialData, loadProviderStatus]);
 
   // Re-detect: one `--version` per provider, plus whatever plan the latest
   // usage snapshot knows. Cheap enough to be a button, too costly to be a poll
@@ -341,10 +382,11 @@ export function GeneralSettings() {
       setRowError((e) => ({ ...e, [account.name]: d.error ?? "That didn't work." }));
       // Re-read so the UI shows what the server actually kept, not the rejected
       // edit — otherwise a refused config dir lingers in the field as if saved.
-      await load();
+      await loadAccounts();
       return;
     }
-    await load();
+    await loadAccounts();
+    dispatchTelarRefresh({ domains: ["accounts"] });
   };
 
   const makeDefault = async (name: string) => {
@@ -353,7 +395,8 @@ export function GeneralSettings() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ makeDefault: true }),
     }).catch(() => {});
-    await load();
+    await loadAccounts();
+    dispatchTelarRefresh({ domains: ["accounts"] });
   };
 
   const removeAccount = async (account: AccountWire) => {
@@ -365,7 +408,8 @@ export function GeneralSettings() {
       const d = await r.json().catch(() => ({}));
       setRowError((e) => ({ ...e, [account.name]: d.error ?? "Could not remove it." }));
     }
-    await load();
+    await loadAccounts();
+    dispatchTelarRefresh({ domains: ["accounts"] });
   };
 
   const providerOf = (a: AccountWire) =>
@@ -374,7 +418,8 @@ export function GeneralSettings() {
   // Order is a VIEW, driven by the two controls above the list — see
   // lib/provider-order.ts for the comparator and the reason disabled-last
   // outranks whichever mode is selected.
-  const ordered = orderAccounts(accounts, prefs.providerSort, prefs.providerDisabledLast);
+  const providerAccounts = accounts;
+  const ordered = orderAccounts(providerAccounts, prefs.providerSort, prefs.providerDisabledLast);
   const disabledAt = disabledBoundary(ordered, prefs.providerDisabledLast);
 
   const lastChecked = providers.reduce<string | null>(
@@ -382,24 +427,19 @@ export function GeneralSettings() {
     null,
   );
   const hasCodex = accounts.some((a) => (a.provider ?? "claude") === "codex");
-  // EVERY ENABLED ACCOUNT gets a row, whether or not it has usage.
-  //
-  // Two bugs lived in the old `accounts.filter(has-windows)`: it listed
-  // accounts the user had switched OFF (the sidebar hid them, this did not —
-  // so the two surfaces disagreed about how many accounts you have), and it
-  // silently omitted any account without a figure, which is indistinguishable
-  // from that account not existing. A missing number is now a stated reason.
-  const metered = accounts.filter((a) => a.enabled !== false);
   const notInstalled = providers.filter((p) => !p.installed);
 
   const sections = SECTIONS.map((s) =>
-    s.id === "providers" ? { ...s, count: accounts.length || undefined } : s,
+    s.id === "providers"
+      ? { ...s, count: providerAccounts.length || undefined }
+      : s.id === "integrations"
+        ? { ...s, count: INTEGRATION_REGISTRY.length || undefined }
+        : s,
   );
-
   return (
     <SettingsShell
       title="Settings"
-      subtitle="Appearance, agent defaults, notifications & provider accounts"
+      subtitle="Workspace preferences, local harnesses, integrations & usage"
       sections={sections}
       active={active}
       onSelect={selectSection}
@@ -428,11 +468,6 @@ export function GeneralSettings() {
                 <RotateCwIcon className={detecting ? "animate-spin" : ""} />
               </Button>
             </div>
-          )}
-          {active === "usage" && (
-            <Button variant="outline" size="sm" onClick={refreshUsage} disabled={refreshing}>
-              <RotateCwIcon className={refreshing ? "animate-spin" : ""} /> Refresh usage
-            </Button>
           )}
         </>
       }
@@ -527,7 +562,12 @@ export function GeneralSettings() {
           </div>
 
           <div className="divide-y rounded-xl border">
-            {ordered.map((a, i) => (
+            {!accountsLoaded && (
+              <div className="flex items-center gap-2 px-4 py-5 text-xs text-muted-foreground">
+                <RotateCwIcon className="size-3.5 animate-spin" /> Loading provider accounts…
+              </div>
+            )}
+            {accountsLoaded && ordered.map((a, i) => (
               <Fragment key={a.name}>
                 {/* The boundary is LABELLED, not just implied by the dimming.
                     Rows that moved need to say why they moved — otherwise the
@@ -553,7 +593,6 @@ export function GeneralSettings() {
                   onMakeDefault={() => void makeDefault(a.name)}
                   onRemove={() => void removeAccount(a)}
                   error={rowError[a.name]}
-                  proxyAvailable={Boolean(proxy?.enabled)}
                 />
               </Fragment>
             ))}
@@ -564,18 +603,10 @@ export function GeneralSettings() {
               hasCodex={hasCodex}
               onAdded={() => {
                 setAdding(false);
-                void load();
+                void loadAccounts();
+                dispatchTelarRefresh({ domains: ["accounts"] });
               }}
               onCancel={() => setAdding(false)}
-            />
-          )}
-
-          {proxy && (
-            <ProxyCard
-              proxy={proxy}
-              onSaved={setProxy}
-              adoptedPrefixes={accounts.flatMap((a) => (a.proxy?.prefix ? [a.proxy.prefix] : []))}
-              onAdopted={load}
             />
           )}
 
@@ -589,65 +620,75 @@ export function GeneralSettings() {
         </div>
       )}
 
+      {active === "integrations" && (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-xl border border-border bg-muted/20 p-4">
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm font-medium">Integration workspace</h4>
+              <Badge variant="secondary" className="ml-auto text-[10px]">
+                {INTEGRATION_REGISTRY.length} installed
+              </Badge>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Pluggable adapters add optional capabilities around a harness. Each adapter owns its
+              settings and data; removing one leaves providers, accounts, models, and sessions
+              untouched.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <Badge variant="outline" className="text-[10px] font-normal">
+                providers stay native
+              </Badge>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                harness owns models
+              </Badge>
+              <Badge variant="outline" className="text-[10px] font-normal">
+                opt-in and removable
+              </Badge>
+            </div>
+          </div>
+          <div className="flex items-end justify-between gap-3 pt-1">
+            <div>
+              <h4 className="text-sm font-medium">Installed integrations</h4>
+              <p className="text-xs text-muted-foreground">
+                Add future adapters to the registry; each appears here as its own settings card.
+              </p>
+            </div>
+          </div>
+          {INTEGRATION_REGISTRY.map(({ definition, Settings }) => (
+            <Settings
+              key={definition.id}
+              definition={definition}
+            />
+          ))}
+          {INTEGRATION_REGISTRY.length === 0 && (
+            <div className="rounded-xl border border-dashed px-4 py-10 text-center">
+              <PlugIcon className="mx-auto mb-3 size-5 text-muted-foreground" />
+              <h4 className="text-sm font-medium">No integrations installed</h4>
+              <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+                Telar works with your local harnesses on its own. Optional adapters can add browser,
+                issue tracking, notifications, and other workspace capabilities later.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {active === "usage" && (
         <SettingsGroup
-          title="Plan limits"
-          description="Live utilization per account. Refresh to fetch the latest windows."
+          title="Recorded usage"
+          description="Requests, tokens, and cost recorded by Telar while sessions run. Provider quotas and subscription limits are intentionally not inferred."
         >
-          {metered.length === 0 ? (
-            <EmptyState
-              className="border-none py-10"
-              icon={GaugeIcon}
-              title="No enabled accounts"
-              description="Switch an account on in Providers to see its plan limits here."
-            />
+          {!usageLoaded ? (
+            <div className="flex items-center gap-2 px-4 py-5 text-xs text-muted-foreground">
+              <RotateCwIcon className="size-3.5 animate-spin" /> Loading recorded usage…
+            </div>
+          ) : usage ? (
+            <>
+              <UsageWindow label="Last 5 hours" totals={usage.session} />
+              <UsageWindow label="Last 7 days" totals={usage.weekly} />
+            </>
           ) : (
-            metered.map((a) => {
-              const snap = plan[a.name];
-              return (
-                <div key={a.name} className="space-y-2 px-4 py-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="font-mono">{a.displayName?.trim() || a.name}</span>
-                    {a.displayTier && (
-                      <Badge variant="outline" className="text-[10px]">{a.displayTier}</Badge>
-                    )}
-                    {snap?.subscriptionType && (
-                      <Badge variant="outline" className="text-[10px] uppercase">
-                        {snap.subscriptionType}
-                      </Badge>
-                    )}
-                    {a.name === defaultAccount && (
-                      <Badge className="gap-1 text-[10px]">
-                        <StarIcon className="size-3" /> default
-                      </Badge>
-                    )}
-                  </div>
-                  {/* One meter per window the provider actually reports, named
-                      by its real duration. A Codex account today shows a single
-                      weekly bar; if the 5-hour window returns, its bar returns
-                      with it and nothing here changes. */}
-                  {usedWindows(snap).map((row) => (
-                    <LimitMeter key={row.key} label={row.label} w={row.window} />
-                  ))}
-                  {/* No windows is a FACT with a reason, not an empty space. */}
-                  {usedWindows(snap).length === 0 && (
-                    <p className="text-[11px] text-muted-foreground/70">
-                      {unavailable[a.name] ??
-                        "No usage captured yet — refresh to fetch it."}
-                    </p>
-                  )}
-                  {snap?.credits?.hasCredits && (
-                    <p className="text-[11px] text-muted-foreground/70">
-                      credits:{" "}
-                      {snap.credits.unlimited ? "unlimited" : (snap.credits.balance ?? "—")}
-                    </p>
-                  )}
-                  {snap?.modelScoped?.map((w) => (
-                    <LimitMeter key={w.display_name} label={`Weekly · ${w.display_name}`} w={w} />
-                  ))}
-                </div>
-              );
-            })
+            <p className="px-4 py-5 text-xs text-muted-foreground">No usage has been recorded yet.</p>
           )}
         </SettingsGroup>
       )}

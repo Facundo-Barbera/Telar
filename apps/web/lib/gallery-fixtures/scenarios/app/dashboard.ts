@@ -6,7 +6,7 @@ import type { GalleryScene } from "../../scene";
 import { allLooms, activeLoomIds } from "./looms";
 import { finchRow, auroraRow, recentChats, usageScene } from "./projects";
 
-// Populated: active looms + needs-attention + recent sessions + projects + plan.
+// Populated: active looms + needs-attention + recent sessions + projects + usage.
 export const dashboardScene: GalleryScene = {
   looms: { body: { looms: allLooms, active: activeLoomIds } },
   projects: { body: { projects: [finchRow, auroraRow] } },
@@ -20,7 +20,7 @@ export const dashboardIdleScene: GalleryScene = {
   looms: { body: { looms: [], active: [] } },
   projects: { body: { projects: [finchRow, auroraRow] } },
   chats: { body: { chats: [] } },
-  usage: { body: { plan: {}, ledger: [] } },
+  usage: { body: { ledger: { session: {}, weekly: {}, byAccount: {} } } },
 };
 
 // Error: both the looms and projects loads fail (500 → the page's EmptyState
@@ -29,5 +29,5 @@ export const dashboardErrorScene: GalleryScene = {
   looms: { body: { looms: [], active: [] }, status: 500 },
   projects: { body: { projects: [] }, status: 500 },
   chats: { body: { chats: [] } },
-  usage: { body: { plan: {}, ledger: [] } },
+  usage: { body: { ledger: { session: {}, weekly: {}, byAccount: {} } } },
 };

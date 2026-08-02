@@ -71,20 +71,6 @@ export const isLoomNeedsYou = (s: WorkUnitState): boolean =>
   isLoomAwaitingDecision(s) || isLoomAwaitingAccept(s);
 export const isLoomRecent = isLoomClosed;
 
-// DEPRECATED — do not reach for this in new code. It is the sidebar's current
-// notion of "this project is busy": the complement of components/looms/utils'
-// isTerminal, which was written to answer a different question ("has this
-// loom's event stream closed?") and folds needs-review and failed in with done.
-// Read as project busyness it is wrong on both edges — it pulses the weaving
-// glyph for charter-review, ready and blocked (states the dispatcher documents
-// as paused BY DESIGN, with no runner) and it hides the two states that most
-// need a human. It exists here, spelled out in this module's own vocabulary
-// rather than imported, so that all four derivations live in one tested file
-// while the sidebar's pixels stay exactly where phase 1 left them. Phase 2b
-// deletes it and the divergence together.
-export const isLoomLegacyActive = (s: WorkUnitState): boolean =>
-  !isLoomClosed(s) && s !== "needs-review" && s !== "failed";
-
 /* ------------------------------------------------------------------ input */
 
 // Structural rather than the wire types, for the same reason provider-order's
@@ -119,10 +105,6 @@ export type ProjectSignal<
   awaitingDecision: Loom[];
   awaitingAccept: Loom[];
   closed: Loom[];
-  // DEPRECATED, sidebar-only — see isLoomLegacyActive. Overlaps the buckets
-  // above rather than partitioning with them.
-  legacyActive: Loom[];
-
   counts: {
     inFlight: number;
     awaitingDecision: number;
@@ -190,7 +172,6 @@ export function deriveProjectSignals<P extends ProjectSource, C extends ChatTouc
     const awaitingDecision: Loom[] = [];
     const awaitingAccept: Loom[] = [];
     const closed: Loom[] = [];
-    const legacyActive: Loom[] = [];
     let lastTouch: number | null = null;
 
     // A touch has to be a real number to count. `updatedAt` is typed as one,
@@ -213,7 +194,6 @@ export function deriveProjectSignals<P extends ProjectSource, C extends ChatTouc
       else if (isLoomAwaitingDecision(l.state)) awaitingDecision.push(l);
       else if (isLoomAwaitingAccept(l.state)) awaitingAccept.push(l);
       else closed.push(l);
-      if (isLoomLegacyActive(l.state)) legacyActive.push(l);
       touch(l.updatedAt);
     }
     for (const c of myChats) touch(c.updatedAt);
@@ -225,7 +205,6 @@ export function deriveProjectSignals<P extends ProjectSource, C extends ChatTouc
       awaitingDecision,
       awaitingAccept,
       closed,
-      legacyActive,
       counts: {
         inFlight: inFlight.length,
         awaitingDecision: awaitingDecision.length,

@@ -72,8 +72,9 @@ export type SpendReadout =
 export function spendReadout(
   provider: SpendProvider,
   spend: { usd: number; tokens: number },
+  opts: { subscriptionRouted?: boolean } = {},
 ): SpendReadout {
-  if (provider === "codex") {
+  if (provider === "codex" || opts.subscriptionRouted) {
     const tokens = Math.max(0, spend.tokens);
     return {
       unit: "tokens",
@@ -81,7 +82,9 @@ export function spendReadout(
       text: `${fmtTokens(tokens)} tok`,
       // Stated, not implied: the session really has no dollar figure, rather
       // than having one this surface declined to show.
-      title: "Tokens spent this session — a ChatGPT-subscription account has no per-token billing",
+      title: opts.subscriptionRouted
+        ? "Tokens spent this session — the routed subscription has no reliable per-session dollar figure"
+        : "Tokens spent this session — a ChatGPT-subscription account has no per-token billing",
     };
   }
   const usd = spend.usd;

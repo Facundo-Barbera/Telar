@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // erasure `use-accounts.ts` and `use-ultra-wake.ts` both rely on, and the one
 // INV-4 checks by walking VALUE edges out of every "use client" file.
 import type { UltraEvent, UltraManifest } from "@telar/core";
+import { refreshIncludes } from "@/lib/telar-refresh";
+import { cachedJson } from "@/lib/client-json-cache";
 import {
   type AgentIndexRow,
   type RunSnapshot,
@@ -103,12 +105,14 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
       return;
     }
     try {
-      const r = await fetch(`/api/ultra?sessionId=${encodeURIComponent(sessionId)}`);
-      if (!r.ok) return;
+      const data = await cachedJson<unknown>(
+        `/api/ultra?sessionId=${encodeURIComponent(sessionId)}`,
+        { force: true },
+      );
       // ONE envelope adapter, used everywhere (§5.6-T16). Three shapes exist for
       // this one object and unwrapping inline is how you unwrap the wrong level
       // exactly once, in the case you tested least.
-      setRows(unwrapManifests(await r.json()) as RunRow[]);
+      setRows(unwrapManifests(data) as RunRow[]);
     } catch {
       // Best-effort. A failed poll means the list is one cadence stale; the
       // manifests on disk are the truth and the next poll re-answers.
@@ -132,7 +136,9 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
   }, [reload]);
 
   useEffect(() => {
-    const onRefresh = () => void reload();
+    const onRefresh = (event: Event) => {
+      if (refreshIncludes(event, "ultra")) void reload();
+    };
     window.addEventListener("telar:refresh", onRefresh);
     return () => window.removeEventListener("telar:refresh", onRefresh);
   }, [reload]);

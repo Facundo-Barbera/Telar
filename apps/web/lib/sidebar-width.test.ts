@@ -14,6 +14,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   clampSidebarWidth,
+  APP_SIDEBAR_MAIN_MIN_WIDTH,
+  APP_SIDEBAR_STORAGE_KEY,
+  flushPendingSidebarWidth,
   keepsRoomForMain,
   NO_SIDEBAR_PREFS,
   parseSidebarPrefs,
@@ -98,6 +101,25 @@ describe("resolveDragWidth", () => {
   });
 });
 
+describe("a release before the next animation frame", () => {
+  test("commits the latest pointer proposal, not the previous painted width", () => {
+    const paintedWidth = 320;
+    const finalPointerWidth = 417;
+
+    expect(flushPendingSidebarWidth(paintedWidth, finalPointerWidth, MIN, MAX)).toBe(417);
+  });
+
+  test("the release still obeys bounds and the main-pane floor", () => {
+    const accept = (next: number) =>
+      keepsRoomForMain(320, next, 1000, APP_SIDEBAR_MAIN_MIN_WIDTH);
+
+    expect(flushPendingSidebarWidth(320, 500, MIN, MAX, accept)).toBe(320);
+    expect(flushPendingSidebarWidth(500, 300, MIN, MAX, (next) =>
+      keepsRoomForMain(500, next, 900, APP_SIDEBAR_MAIN_MIN_WIDTH)
+    )).toBe(300);
+  });
+});
+
 describe("keepsRoomForMain", () => {
   test("growth stops at the point it would starve the main pane", () => {
     // 1000px of wrapper, main insists on 640: 360 is the widest the sidebar
@@ -113,6 +135,14 @@ describe("keepsRoomForMain", () => {
     expect(keepsRoomForMain(800, 700, 1000, 640)).toBe(true);
     expect(keepsRoomForMain(800, 800, 1000, 640)).toBe(true);
     expect(keepsRoomForMain(800, 801, 1000, 640)).toBe(false);
+  });
+});
+
+describe("the live app sidebar contract", () => {
+  test("pins the shared preference key and geometry defaults", () => {
+    expect(APP_SIDEBAR_STORAGE_KEY).toBe("app");
+    expect(APP_SIDEBAR_MAIN_MIN_WIDTH).toBe(640);
+    expect(SIDEBAR_RESIZE_MIN_WIDTH).toBe(256);
   });
 });
 

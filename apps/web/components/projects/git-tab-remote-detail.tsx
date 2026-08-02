@@ -33,7 +33,6 @@ import {
   FileDiffIcon,
   GitMergeIcon,
   GitPullRequestDraftIcon,
-  GitPullRequestIcon,
   LoaderCircleIcon,
   MessageSquareIcon,
   MilestoneIcon,
@@ -49,6 +48,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { dispatchTelarRefresh } from "@/lib/telar-refresh";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -512,6 +512,7 @@ function StateToggle({
 function useCommentThread(
   base: RemoteComment[],
   endpoint: string,
+  project: string,
   onWrote: () => void,
 ) {
   const [extra, setExtra] = useState<ThreadComment[]>([]);
@@ -561,6 +562,7 @@ function useCommentThread(
         setExtra((xs) =>
           xs.map((c) => (c.id === tmpId ? { ...data.comment } : c)),
         );
+        dispatchTelarRefresh({ domains: ["git"], project });
         onWrote();
         return true;
       } catch {
@@ -574,7 +576,7 @@ function useCommentThread(
         setSubmitting(false);
       }
     },
-    [endpoint, onWrote],
+    [endpoint, project, onWrote],
   );
 
   return { comments, submitting, gate, setGate, onComment };
@@ -619,12 +621,14 @@ export function IssueDetailView({
   }, [endpoint]);
 
   useEffect(() => {
-    void load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   const thread = useCommentThread(
     issue?.comments ?? [],
     `${endpoint}/comment`,
+    name,
     onListStale,
   );
 
@@ -649,13 +653,14 @@ export function IssueDetailView({
         return;
       }
       setIssue({ ...issue, state: data.state });
+      dispatchTelarRefresh({ domains: ["git"], project: name });
       onListStale();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setStateBusy(false);
     }
-  }, [issue, endpoint, onListStale, thread]);
+  }, [issue, endpoint, name, onListStale, thread]);
 
   const gate: RemoteReason | null = notConnected ?? thread.gate;
 
@@ -992,12 +997,14 @@ export function PRDetailView({
   }, [endpoint]);
 
   useEffect(() => {
-    void load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   const thread = useCommentThread(
     pr?.comments ?? [],
     `${endpoint}/comment`,
+    name,
     onListStale,
   );
 

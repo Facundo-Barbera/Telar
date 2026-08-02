@@ -35,6 +35,8 @@ import { useCallback, useSyncExternalStore } from "react";
 // 16rem, the same width SIDEBAR_WIDTH has always used, so opting into resizing
 // never moves the sidebar on its own.
 export const SIDEBAR_RESIZE_MIN_WIDTH = 16 * 16;
+export const APP_SIDEBAR_MAIN_MIN_WIDTH = 640;
+export const APP_SIDEBAR_STORAGE_KEY = "app";
 
 const KEY_PREFIX = "telar-sidebar:";
 
@@ -81,6 +83,20 @@ export function resolveDragWidth(
   return nextWidth;
 }
 
+// Flush the latest pointer proposal through the same rules used by a painted
+// animation frame. Pointer-up can arrive before requestAnimationFrame; keeping
+// this operation explicit lets release commit the actual final pointer position
+// instead of the previous frame's width.
+export function flushPendingSidebarWidth(
+  currentWidth: number,
+  pendingWidth: number,
+  minWidth: number,
+  maxWidth: number,
+  accept?: (nextWidth: number) => boolean,
+): number {
+  return resolveDragWidth(currentWidth, pendingWidth, minWidth, maxWidth, accept);
+}
+
 // The predicate most callers want: the sidebar may not grow into the space the
 // main pane needs. Stated as two clauses because the second one alone would be
 // a trap — a sidebar that is already too wide (the window was resized, or the
@@ -88,12 +104,10 @@ export function resolveDragWidth(
 // never be dragged back. Shrinking is therefore always allowed, whatever the
 // numbers say.
 //
-// Nothing calls this yet — no surface passes `shouldAcceptWidth`, because no
-// surface mounts a rail. It ships as the reference predicate for whoever mounts
-// the first resizable sidebar, and its tests pin the two clauses rather than
-// any real behaviour. If that first consumer wants different semantics — a
-// percentage floor instead of a pixel one, say — change this and its tests
-// together; a green suite here is not evidence that anyone chose these rules.
+// AppSidebar is the first consumer: its rail uses this with a 640px main-pane
+// floor. Keep the two clauses and the mounted contract tests in sync if that
+// geometry changes; a green pure-function suite alone is not evidence that the
+// production rail still uses the rule.
 export function keepsRoomForMain(
   currentWidth: number,
   nextWidth: number,

@@ -20,6 +20,7 @@ const {
   relocateProject,
   isMainAccount,
   isAccountEnabled,
+  resolveEnabledAccount,
 } = await import("../src/accounts");
 const { createProject, getProject } = await import("../src/manifest");
 const { accountEnv } = await import("../src/engine");
@@ -45,6 +46,8 @@ describe("providers", () => {
     expect(PROVIDERS.codex.tokenEnvByMode["api-key"]).toBe("OPENAI_API_KEY");
     // Codex has no subscription setup-token analogue.
     expect(PROVIDERS.codex.tokenEnvByMode["oauth-token"]).toBeUndefined();
+    expect(PROVIDERS.claude.modelCatalog).toBe("native-slots");
+    expect(PROVIDERS.codex.modelCatalog).toBe("harness-cache");
   });
 
   test("providerOf defaults to claude", () => {
@@ -65,20 +68,6 @@ describe("providers", () => {
         expect(
           d.ownedEnv.includes(tokenEnv),
           `${id}: tokenEnvByMode sets ${tokenEnv} but ownedEnv does not clear it — an ambient ${tokenEnv} would survive onto an account that never declared it`,
-        ).toBe(true);
-      }
-    }
-  });
-
-  test("every provider clears the env vars its proxy routing sets", () => {
-    // Same rule as tokenEnvByMode, for the gateway: if proxyEnv can SET a var
-    // that ownedEnv does not CLEAR, an ambient value survives onto an account
-    // that never opted into the proxy — the exact hole ownedEnv exists to close.
-    for (const [id, d] of Object.entries(PROVIDERS)) {
-      for (const name of [d.proxyEnv.baseUrl, d.proxyEnv.token]) {
-        expect(
-          d.ownedEnv.includes(name),
-          `${id}: proxyEnv sets ${name} but ownedEnv does not clear it`,
         ).toBe(true);
       }
     }

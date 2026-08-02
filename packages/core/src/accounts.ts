@@ -69,9 +69,9 @@ function seed(): AccountRegistry {
   // home-RELATIVE ("~/.codex") so the registry is portable across
   // machines/homes — expandHome resolves them at use time, while the existsSync
   // gate probes the concrete current-home path.
-  if (fs.existsSync(path.join(os.homedir(), ".codex")))
+  if (fs.existsSync(path.join(os.homedir(), ".codex", "auth.json")))
     accounts.push({ name: "codex", provider: "codex", authMode: "subscription", configDir: "~/.codex" });
-  return { version: 1, default: "personal", accounts };
+  return { version: 3, default: "personal", accounts };
 }
 
 function persist(reg: AccountRegistry) {
@@ -91,17 +91,22 @@ function load(): AccountRegistry {
     persist(seeded);
     return seeded;
   }
-  let data: { version?: number; default?: unknown; accounts?: unknown[] };
+  let data: {
+    version?: number;
+    default?: unknown;
+    accounts?: unknown[];
+  };
   try {
     data = JSON.parse(raw);
   } catch {
-    return { version: 1, default: "personal", accounts: [] };
+    return seed();
   }
   // Skip malformed entries rather than throwing — a bad hand-edit of one
   // account shouldn't take down the whole app.
-  const accounts = (data.accounts ?? [])
+  const parsedAccounts = (data.accounts ?? [])
     .map((a) => AccountProfile.safeParse(a))
     .flatMap((r) => (r.success ? [r.data] : []));
+  const accounts = parsedAccounts;
   // Migrate-on-load: fold absolute current-home configDirs down to "~/..." so
   // stale registries become portable without a manual edit. Foreign-home
   // absolute paths are untouched (see toHomeRelative). Persist only when
@@ -115,9 +120,32 @@ function load(): AccountRegistry {
       migrated = true;
     }
   }
+
+  // Native Claude is the zero-configuration baseline and may not disappear
+  // because a previous integration disabled it. It represents `claude` as the
+  // user launches it normally: no config-dir or endpoint is imposed by Telar.
+  let main = accounts.find((account) => isMainAccount(account));
+  if (!main) {
+    main = { name: "personal", provider: "claude", authMode: "subscription" };
+    accounts.unshift(main);
+    migrated = true;
+  }
   const def =
     typeof data.default === "string" ? data.default : accounts[0]?.name ?? "personal";
-  const reg = { version: data.version ?? 1, default: def, accounts };
+  // Older registries could keep a disabled account as the default. Repair that
+  // state on read, while leaving an all-disabled registry untouched so callers
+  // can surface an honest configuration error.
+  const repairedDefault =
+    accounts.find((a) => a.name === def && a.enabled !== false)?.name ??
+    accounts.find((a) => a.enabled !== false)?.name ??
+    def;
+  if (repairedDefault !== def) migrated = true;
+  if (data.version !== 3) migrated = true;
+  const reg: AccountRegistry = {
+    version: 3,
+    default: repairedDefault,
+    accounts,
+  };
   if (migrated) persist(reg);
   return reg;
 }
@@ -127,17 +155,46 @@ export function listAccounts(): AccountProfile[] {
 }
 
 export function getAccount(name: string): AccountProfile | undefined {
-  return load().accounts.find((a) => a.name === name);
+  return load().accounts.find((account) => account.name === name);
 }
 
 export function getDefaultAccountName(): string {
   return load().default;
 }
 
+/** Resolve an account for a brand-new session. Existing sessions deliberately
+ * bypass this helper and remain locked to their persisted account. */
+export function resolveEnabledAccount(
+  preferred?: string,
+  provider?: ProviderId,
+): AccountProfile | undefined {
+  const reg = load();
+  if (
+    preferred &&
+    !reg.accounts.some((account) => account.name === preferred)
+  ) {
+    return undefined;
+  }
+  const eligible = reg.accounts.filter(
+    (account) =>
+      account.enabled !== false &&
+      isAccountAvailableForSessions(account) &&
+      (!provider || (account.provider ?? "claude") === provider),
+  );
+  return (
+    eligible.find((account) => account.name === preferred) ??
+    eligible.find((account) => account.name === reg.default) ??
+    eligible[0]
+  );
+}
+
 export function setDefaultAccount(name: string): void {
   const reg = load();
-  if (!reg.accounts.some((a) => a.name === name))
+  const account = reg.accounts.find((a) => a.name === name);
+  if (!account)
     throw new Error(`Unknown account "${name}" — not in the registry.`);
+  if (account.enabled === false)
+    throw new Error(`Account "${name}" is disabled and cannot be the default.`);
   reg.default = name;
   persist(reg);
 }
@@ -151,13 +208,8 @@ const MAIN_CLAUDE_DIR = "~/.claude";
 // The one auto-detected account: Claude's base login, identified by having no
 // configDir at all. Everything else in the registry was added by hand.
 //
-// `!a.proxy` is load-bearing, not belt-and-braces. A gateway-routed account also
-// carries no configDir — its login lives in the proxy, not in a folder — so
-// without this clause every adopted account would read as the main one: badged
-// "detected" and refused deletion, which is exactly backwards for an account the
-// user explicitly created.
 export const isMainAccount = (a: AccountProfile): boolean =>
-  (a.provider ?? "claude") === "claude" && !a.configDir && !a.proxy;
+  (a.provider ?? "claude") === "claude" && !a.configDir;
 
 const sameDir = (a?: string, b?: string): boolean =>
   !!a && !!b && path.resolve(expandHome(a)) === path.resolve(expandHome(b));
@@ -179,13 +231,9 @@ function assertAdmissible(reg: AccountRegistry, next: AccountProfile): void {
   // Codex is single-account FOR NOW. CODEX_HOME swaps the entire config tree —
   // sessions, history and auth together — so a second Codex account is not the
   // one-line change it is for Claude, and the investigation is still open.
-  // The Codex single-account limit is about CODEX_HOME swapping a whole config
-  // tree on this machine. A gateway-routed Codex account swaps nothing — the
-  // proxy holds the login — so routed accounts are counted out of the limit on
-  // both sides of the comparison.
-  if (provider === "codex" && !next.proxy) {
+  if (provider === "codex") {
     const other = reg.accounts.find(
-      (a) => (a.provider ?? "claude") === "codex" && a.name !== next.name && !a.proxy,
+      (a) => (a.provider ?? "claude") === "codex" && a.name !== next.name,
     );
     if (other)
       throw new Error(
@@ -195,12 +243,7 @@ function assertAdmissible(reg: AccountRegistry, next: AccountProfile): void {
 
   if (prev && prev.configDir === next.configDir) return;
 
-  // A GATEWAY-ROUTED account is exempt from the config-folder rule, because the
-  // rule exists to locate a login on THIS machine and a routed account's login
-  // is not on this machine at all — it lives in the proxy's credential pool,
-  // reached by prefix. Requiring a folder it will never read would make adopting
-  // an upstream impossible.
-  if (provider === "claude" && !next.proxy) {
+  if (provider === "claude") {
     if (!next.configDir)
       throw new Error(
         "A Claude account needs its own config folder. The main login is the only account without one, and it is detected automatically.",
@@ -225,6 +268,13 @@ function assertAdmissible(reg: AccountRegistry, next: AccountProfile): void {
 // An account is usable unless it was explicitly switched off. Absent ⇒ enabled,
 // so a registry written before the switch existed doesn't read as all-off.
 export const isAccountEnabled = (a: AccountProfile): boolean => a.enabled !== false;
+
+/** Cheap, side-effect-free session availability derived from local artifacts. */
+export function isAccountAvailableForSessions(account: AccountProfile): boolean {
+  if (account.enabled === false) return false;
+  const health = accountHealth(account);
+  return health.status !== "missing-config-dir" && health.status !== "never-logged-in";
+}
 
 // Move every sensitive env value OFF the profile and INTO the secret store, so
 // the registry keeps names and a marker but never a token. A sensitive var
@@ -257,6 +307,9 @@ export function upsertAccount(profile: AccountProfile): AccountProfile {
   const i = reg.accounts.findIndex((a) => a.name === parsed.name);
   if (i >= 0) reg.accounts[i] = parsed;
   else reg.accounts.push(parsed);
+  if (reg.default === parsed.name && parsed.enabled === false) {
+    reg.default = reg.accounts.find((account) => account.enabled !== false)?.name ?? reg.default;
+  }
   persist(reg);
   return parsed;
 }
@@ -272,7 +325,8 @@ export function removeAccount(name: string): boolean {
   const reg = load();
   const i = reg.accounts.findIndex((a) => a.name === name);
   if (i < 0) return false;
-  if (isMainAccount(reg.accounts[i]))
+  const target = reg.accounts[i];
+  if (isMainAccount(target))
     throw new Error(
       `"${name}" is the main Claude login — it is detected, not added, so it can't be removed. Sign out with the Claude CLI instead.`,
     );

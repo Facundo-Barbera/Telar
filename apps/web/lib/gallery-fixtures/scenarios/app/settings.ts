@@ -39,15 +39,14 @@ export const projectSettingsManifestErrorScene: GalleryScene = {
   permissions: { body: { rules: [] } },
 };
 
-// Global settings — accounts + plan-limit meters + add-account form.
+// Global settings — accounts + recorded usage + add-account form.
 export const settingsAccountsScene: GalleryScene = {
   accounts: accountsScene,
   usage: usageScene,
 };
 
-// Global settings, no usage captured yet — accounts present, plan {} (the
-// "No usage captured yet" empty framing).
+// Global settings, no usage captured yet.
 export const settingsAccountsEmptyScene: GalleryScene = {
   accounts: accountsScene,
-  usage: { body: { plan: {}, ledger: [] } },
+  usage: { body: { ledger: { session: {}, weekly: {}, byAccount: {} } } },
 };

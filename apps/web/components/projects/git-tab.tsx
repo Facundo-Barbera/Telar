@@ -27,6 +27,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtAgo } from "@/lib/format";
+import { dispatchTelarRefresh, refreshIncludes } from "@/lib/telar-refresh";
+import { cachedJson } from "@/lib/client-json-cache";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   SubError,
@@ -177,15 +179,15 @@ export function GitTab({ name }: { name: string }) {
   const [error, setError] = useState<string | null>(null);
   const [active, setActive] = useState<ViewKey>("worktrees");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setError(null);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(name)}/git`);
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Couldn't load Git (${res.status}).`);
-      }
-      setData((await res.json()) as GitOverviewResponse);
+      setData(
+        await cachedJson<GitOverviewResponse>(`/api/projects/${encodeURIComponent(name)}/git`, {
+          maxAgeMs: 15_000,
+          force,
+        }),
+      );
     } catch (e) {
       setData(null);
       setError(e instanceof Error ? e.message : String(e));
@@ -193,11 +195,14 @@ export function GitTab({ name }: { name: string }) {
   }, [name]);
 
   useEffect(() => {
-    void load();
+    const initialLoad = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(initialLoad);
   }, [load]);
 
   useEffect(() => {
-    const onRefresh = () => void load();
+    const onRefresh = (event: Event) => {
+      if (refreshIncludes(event, "git")) void load(true);
+    };
     window.addEventListener("telar:refresh", onRefresh);
     return () => window.removeEventListener("telar:refresh", onRefresh);
   }, [load]);
@@ -220,7 +225,10 @@ export function GitTab({ name }: { name: string }) {
         throw new Error(body.error ?? `Cleanup failed (${res.status}).`);
       }
       const out = (await res.json()) as CleanupResponse;
-      await load();
+      await load(true);
+      if (out.results.some((result) => result.ok)) {
+        dispatchTelarRefresh({ domains: ["git"], project: name });
+      }
       return out;
     },
     [name, load],

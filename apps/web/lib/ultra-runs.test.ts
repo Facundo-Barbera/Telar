@@ -1257,9 +1257,9 @@ describe("4.2 §5.5-D1 item 7 — the wake's dispatch can never carry the chip's
     // executable form; the reducer's own behaviour is asserted above.
     const src = readSource("apps/web/components/session/session-view.tsx");
     expect(src).toContain("void send(next.text, next.hidden ? { hidden: true } : undefined);");
-    // The complementary half: the ONE site that reads the chip is handleSubmit,
-    // and the body literal reads `opts`, never component state.
-    expect(src).toContain("...(opts?.ultra ? { ultra: true } : {}),");
+    // The composer no longer exposes an Ultra arm at all. A wake can therefore
+    // only carry its hidden marker; no composer state can add an Ultra key.
+    expect(src).not.toContain("...(opts?.ultra ? { ultra: true } : {}),");
     expect(src).not.toContain("...(ultraArmed ? { ultra: true } : {})");
     expect(src).not.toContain("ultraArm.armed ? { ultra: true }");
   });
@@ -1281,16 +1281,10 @@ describe("4.2 review round 1 — the four fixes that live in components and hook
   // pin is that the component actually CALLS them — which is the half a pure
   // test cannot see, and the half every one of these findings turned on.
 
-  test("SF-2 — the Ultra chip is gated off the escalation surface, not just off Codex", () => {
+  test("SF-2 — the retired Ultra chip cannot return on any composer surface", () => {
     const src = readSource("apps/web/components/session/session-view.tsx");
-    // AC6 proof 6 says the chip is "gated off the escalation surface … the
-    // absence is enforced by the type". The type enforces the absence of the
-    // APPENDIX (`escalationAppendix` has no `ultraAnnotated` parameter and
-    // `buildEscalationProfile` denies all of `ULTRA_AUTO_TOOLS`); it never
-    // enforced the absence of the CONTROL, and proof 6 is about the control.
-    expect(src).toContain('{provider !== "codex" && !escalation && (');
-    // The one-term version is gone rather than merely shadowed.
-    expect(src).not.toContain('{provider !== "codex" && (\n');
+    expect(src).not.toContain("ultraArmed");
+    expect(src).not.toContain("setUltraArmed");
     // …and B1 at the pending factory: `null` (not read) rather than `[]` (read
     // and empty), because every persisted launch in a reloaded transcript
     // renders through it on the first paint.

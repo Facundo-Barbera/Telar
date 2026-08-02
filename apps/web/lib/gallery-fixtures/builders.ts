@@ -32,7 +32,7 @@ import type {
 } from "@telar/core";
 import type { SpecBundleData } from "@/components/looms/spec-bundle";
 import type { InitialChat } from "@/components/session/session-view";
-import type { ChatSummary, PlanSnapshot, PlanWindow } from "@/lib/store";
+import type { ChatSummary } from "@/lib/store";
 import type { HttpStatus } from "@/components/settings/mcp-health";
 
 // Every fixture loom.id starts with this. Real ids `loom_<base36>_<rand>` can
@@ -366,7 +366,7 @@ export function makeChat(p: Partial<InitialChat> & { id: string }): InitialChat 
 // message shapes the full-page scenes feed to the REAL default-export pages.
 // ProjectManifest + AccountProfile ARE zod schemas (schemas.ts) — the validate
 // test proves makeManifest/makeAccount round-trip .parse(). RegistryEntry /
-// ChatSummary / PlanSnapshot / HttpStatus are plain TS types (compile-time only,
+// ChatSummary / HttpStatus are plain TS types (compile-time only,
 // same honest gap the loom envelope documents). Every helper stays runtime-free
 // (typed literals, never `.parse`) so this module drags zero server code into the
 // client bundle, exactly like the v1 builders above.
@@ -430,24 +430,6 @@ export function makeAccount(
   return {
     provider: "claude",
     authMode: "subscription",
-    ...p,
-  };
-}
-
-export function makePlanWindow(p: Partial<PlanWindow> = {}): PlanWindow {
-  return {
-    utilization: 42,
-    resets_at: new Date(at(18_000)).toISOString(),
-    ...p,
-  };
-}
-
-export function makePlanSnapshot(p: Partial<PlanSnapshot> = {}): PlanSnapshot {
-  return {
-    capturedAt: at(0),
-    subscriptionType: "max",
-    fiveHour: makePlanWindow({ utilization: 42 }),
-    sevenDay: makePlanWindow({ utilization: 61, resets_at: new Date(at(500_000)).toISOString() }),
     ...p,
   };
 }

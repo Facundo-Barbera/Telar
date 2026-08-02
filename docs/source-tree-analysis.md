@@ -80,8 +80,7 @@ telar/                              Bun-workspaces monorepo (workspaces: apps/*,
 │   │   │   ├── escalation-kickoff.ts, loom-mcp.ts (+2 tests), ultra-mcp.ts (+test) — MCP bridges into
 │   │   │   │                       @telar/core loom/ultra engines
 │   │   │   ├── permissions.ts (+test), permission-modes.ts — tool-permission gating
-│   │   │   ├── store.ts            File-backed persistence under ~/.telar (chats.json, usage.ndjson,
-│   │   │   │                       plan-usage.json) — "files remember; no database"
+│   │   │   ├── store.ts            File-backed persistence under ~/.telar (chats.json, usage.ndjson)
 │   │   │   ├── session-log.ts, sse.ts, transcript.ts (+test), titles.ts (+test) — session/stream plumbing
 │   │   │   └── model-registry.ts, models.ts, notify.ts, format.ts, utils.ts, ui-prefs.ts, use-accounts.ts,
 │   │   │                           use-anchored-overlay.ts, mcp-oauth-pending.ts — misc app support
