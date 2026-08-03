@@ -11,7 +11,11 @@
   "workspaces": ["apps/*", "packages/*"],
   "packageManager": "bun@1.3.11",
   "scripts": {
-    "dev": "turbo dev"
+    "dev": "turbo dev",
+    "dev:desktop": "bun run --cwd apps/desktop dev",
+    "test:desktop": "bun run --cwd apps/desktop test:desktop:unit",
+    "test:desktop:smoke": "bun run --cwd apps/desktop test:desktop:smoke",
+    "test:desktop:e2e": "bun run --cwd apps/desktop test:desktop:e2e"
   },
   "devDependencies": {
     "turbo": "^2.10.8"

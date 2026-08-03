@@ -15,6 +15,23 @@ export type ModelInfo = {
   // Offered by a router behind this harness rather than one of the harness's
   // native model slots. The composer hides these until the user opts in.
   routed?: boolean;
+  /** Canonical model id reported by the harness for an alias such as `sonnet`. */
+  resolvedModel?: string;
+  /** Provider-owned reasoning choices for this exact model. */
+  reasoningOptions?: ModelCapabilityOption[];
+  /** Provider-owned service tiers (Codex currently publishes these). */
+  serviceTiers?: ModelCapabilityOption[];
+  supportsFastMode?: boolean;
+  supportsAdaptiveThinking?: boolean;
+  /** The harness's default row/choice, when it publishes one. */
+  isDefault?: boolean;
+};
+
+export type ModelCapabilityOption = {
+  id: string;
+  label: string;
+  blurb?: string;
+  isDefault?: boolean;
 };
 
 // Curated FALLBACK list only. The composer fetches the live catalog from
@@ -23,7 +40,7 @@ export type ModelInfo = {
 export const MODELS: ModelInfo[] = [
   {
     id: "fable",
-    name: "Fable",
+    name: "Claude Fable 5",
     tier: "frontier",
     context: "1M",
     maxOutput: "128K",
@@ -35,7 +52,7 @@ export const MODELS: ModelInfo[] = [
   },
   {
     id: "opus",
-    name: "Opus",
+    name: "Claude Opus",
     tier: "opus",
     context: "1M",
     maxOutput: "128K",
@@ -47,7 +64,7 @@ export const MODELS: ModelInfo[] = [
   },
   {
     id: "sonnet",
-    name: "Sonnet",
+    name: "Claude Sonnet",
     tier: "sonnet",
     context: "1M",
     maxOutput: "128K",
@@ -59,7 +76,7 @@ export const MODELS: ModelInfo[] = [
   },
   {
     id: "haiku",
-    name: "Haiku",
+    name: "Claude Haiku",
     tier: "haiku",
     context: "200K",
     maxOutput: "64K",
@@ -182,14 +199,23 @@ export const effortById = (id: string): EffortOption | undefined =>
 
 // Codex reasoning effort — mirrors the Codex SDK's ModelReasoningEffort union
 // ("minimal" instead of Claude's "max").
-export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type CodexReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 
 export const CODEX_EFFORT_OPTIONS: { id: CodexReasoningEffort; label: string; blurb: string }[] = [
   { id: "minimal", label: "Minimal", blurb: "Fastest, least reasoning." },
   { id: "low", label: "Low", blurb: "Light reasoning." },
   { id: "medium", label: "Medium", blurb: "Balanced everyday reasoning." },
   { id: "high", label: "High", blurb: "Deep reasoning for harder problems." },
-  { id: "xhigh", label: "Extra high", blurb: "Maximum reasoning." },
+  { id: "xhigh", label: "Extra high", blurb: "Deeper reasoning for complex problems." },
+  { id: "max", label: "Max", blurb: "Maximum reasoning depth." },
+  { id: "ultra", label: "Ultra", blurb: "Maximum reasoning with automatic task delegation." },
 ];
 
 // Codex sandbox presets. The Codex SDK (`codex exec`) can't prompt mid-turn, so

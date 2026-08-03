@@ -9,7 +9,6 @@ import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
 import { accountEnvSecretKey, readSecret } from "./secrets";
 import { acquireAdmission, type AdmissionClass } from "./admission";
-import { CLAUDE_RUNTIME_ENV_KEYS, readClaudeRuntimeEnv } from "./claude-runtime";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -133,11 +132,10 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
   if (!account) return env;
   const p = providerOf(account.provider);
   const provider = account.provider ?? "claude";
-  const systemClaude =
+  const nativeClaude =
     provider === "claude" &&
     !account.configDir &&
     (account.authMode ?? "subscription") === "subscription";
-  const nativeClaudeEnv = systemClaude ? readClaudeRuntimeEnv() : {};
   if (account.configDir) {
     env[p.configDirEnv] = expandHome(account.configDir);
   } else {
@@ -150,27 +148,17 @@ export function accountEnv(account?: AccountProfile): Record<string, string | un
     delete env[p.configDirEnv];
   }
 
-  // THE SAME RULE, GENERALIZED: an account owns where its requests go and who
-  // they go as, so every env var in the provider's ownedEnv is deleted here
-  // before anything below sets one deliberately. Without this, whichever shell
-  // launched the Telar server decides — and it decides for EVERY account at
-  // once, silently. Two concrete ways that bites:
+  // The native Claude provider deliberately keeps its launch environment.
+  // Claude then layers user/project/local settings itself, exactly as it does
+  // in a terminal. Telar no longer parses ~/.claude/settings.json and rebuilds
+  // a lossy allow-list of routing variables — flags such as ENABLE_TOOL_SEARCH,
+  // hooks, skills, plugins and future Claude settings remain Claude-owned.
   //
-  //   · A terminal spawned by Claude Code exports its settings.json `env`
-  //     block, so a server started there inherits ANTHROPIC_BASE_URL and every
-  //     account quietly runs through a local proxy it never declared.
-  //   · An ambient ANTHROPIC_API_KEY moves a "subscription" account onto
-  //     metered API billing while the registry still says subscription.
-  //
-  // Deleting is not the same as forbidding: the account's own env (applied at
-  // the bottom of this function) sets these deliberately, and non-subscription
-  // auth modes set their token just below. What stops is INHERITANCE.
-  for (const name of p.ownedEnv) delete env[name];
-  // Model-slot overrides are part of the same runtime identity. A manually
-  // isolated account must not inherit the main Claude installation's routing.
-  if (provider === "claude") {
-    for (const name of CLAUDE_RUNTIME_ENV_KEYS) delete env[name];
-    if (systemClaude) Object.assign(env, nativeClaudeEnv);
+  // Isolated/configured instances still need a clean identity boundary: their
+  // own config directory, auth mode and explicit env must not inherit routing
+  // or model aliases from the native instance that launched Telar.
+  if (!nativeClaude) {
+    for (const name of p.ownedEnv) delete env[name];
   }
 
   const mode = account.authMode ?? "subscription";
@@ -249,12 +237,13 @@ export async function agent<S extends z.ZodRawShape>(
           ? { tools: (opts.tools ?? ["Read", "Grep", "Glob"]).filter((t) => !t.startsWith("mcp__")) }
           : {}),
         mcpServers: { out, ...opts.extraMcpServers },
-        // Telar OWNS the MCP surface: only the servers we pass here (emit_result
-        // + the project's telar.yaml servers) are used. Ignore the repo's own
-        // .mcp.json, user settings, and plugin MCP that settingSources would
-        // otherwise pull in — those are the user's local Claude config, not
-        // Telar's, and leak in as confusing duplicate/unauthenticated servers.
-        strictMcpConfig: true,
+        // A capability-wall agent deliberately disables filesystem settings;
+        // keep its MCP surface closed. Ordinary agents pass native Claude
+        // setting sources and therefore inherit configured MCP servers beside
+        // Telar's explicit servers, matching a normal Claude session.
+        ...(!opts.settingSources || opts.settingSources.length === 0
+          ? { strictMcpConfig: true }
+          : {}),
         allowedTools: [...(opts.tools ?? ["Read", "Grep", "Glob"]), "mcp__out__emit_result"],
         // Belt-and-suspenders against settingSources: a repo's own .claude
         // settings can widen its own allow rules, but an explicit SDK

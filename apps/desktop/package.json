@@ -2,11 +2,17 @@
   "name": "telar-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Telar desktop shell (viable tier) — boots the standalone Next server and points a window at it.",
+  "description": "Telar desktop shell with a shared Electron-owned browser host.",
   "main": "main.js",
   "scripts": {
     "build:web": "bash ./build-web.sh",
-    "smoke": "electron . --smoke",
+    "dev": "bun ./dev-runner.js",
+    "test": "bun run test:desktop:unit",
+    "test:desktop": "bun run test:desktop:unit",
+    "test:desktop:unit": "bun test ./browser-manager.test.js",
+    "test:desktop:smoke": "electron . --smoke",
+    "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
+    "smoke": "bun run test:desktop:smoke",
     "pack": "electron-builder --dir",
     "install:app": "bash ./install-app.sh"
   },
@@ -19,6 +25,8 @@
     "asar": true,
     "files": [
       "main.js",
+      "browser-manager.js",
+      "preload.js",
       "server-preload.js",
       "package.json"
     ],

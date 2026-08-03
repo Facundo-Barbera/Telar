@@ -67,6 +67,7 @@ import { readyItems, EST_COST_PER_AGENT } from "./tick";
 import { fanoutSize, prioritizeScored, budgetLeftUsd, DEFAULT_MAX_AGENTS } from "./budget";
 import { resolveServersConfig, resolveRunbook } from "./servers";
 import { blockedStrategyQuestion, charterHasGateIntent, deriveDeliverableSignal, type CharterProofIntent } from "./deliverable-signal";
+import { NATIVE_CLAUDE_SETTING_SOURCES } from "./session-profile";
 
 export type ExecuteOpts = {
   policy?: ModelPolicy;
@@ -1416,7 +1417,7 @@ export async function runRepairThread(
     maxTurns: policy.maxTurns ?? MAX_TURNS[loom.kind],
     tools,
     disallowedTools: manifest.guardrails.disallowedTools,
-    settingSources: ["project", "local"],
+    settingSources: [...NATIVE_CLAUDE_SETTING_SOURCES],
     account: opts.accounts?.[manifest.account],
     extraMcpServers: resolveProjectMcpServers(manifest.name),
     abort: opts.abort,
@@ -1616,7 +1617,7 @@ export async function executeLoom(
       maxTurns,
       tools,
       disallowedTools: manifest.guardrails.disallowedTools,
-      settingSources: ["project", "local"],
+      settingSources: [...NATIVE_CLAUDE_SETTING_SOURCES],
       account: opts.accounts?.[manifest.account],
       // Per-project MCP servers (docs/runtime-architecture.md §B) — each with
       // its OWN token-injected env/headers, decoupled from the build account.
@@ -1684,7 +1685,7 @@ export async function executeLoom(
           maxTurns,
           tools: preset?.tools ?? tools,
           disallowedTools: preset?.disallowedTools ?? manifest.guardrails.disallowedTools,
-          settingSources: ["project", "local"],
+          settingSources: [...NATIVE_CLAUDE_SETTING_SOURCES],
           account: opts.accounts?.[manifest.account],
           extraMcpServers: resolveProjectMcpServers(manifest.name),
           abort: opts.abort,

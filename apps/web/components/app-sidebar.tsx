@@ -45,8 +45,10 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarRail,
+  SidebarTrigger,
   type SidebarResizableOptions,
   type SidebarWidthProposal,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { StateBadge } from "@/components/common/state-badge";
 import { isLoomNeedsYou, isLoomRunning } from "@/lib/project-signal";
@@ -56,6 +58,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -93,6 +96,7 @@ export type AppSidebarInitialData = {
   looms: Loom[];
   chats: ChatMeta[];
   projects: ProjectMeta[];
+  renderedAt: number;
 };
 
 
@@ -105,9 +109,19 @@ const NAV = [
 
 function TelarSidebarHeader({ activeLooms }: { activeLooms: number }) {
   const pathname = usePathname();
+  // A session is the workspace itself, not the Projects index. Keeping the
+  // Projects glyph selected on /sessions/new made the new-session canvas look
+  // like a nested project-management screen; real resumed sessions had the
+  // same false state. Project overview/settings pages remain selected.
+  const inSessionWorkspace = /^\/projects\/[^/]+\/sessions\/[^/]+(?:\/|$)/.test(pathname);
   return (
-    <SidebarHeader className="h-14 justify-center border-b border-sidebar-border/60 pl-11 pr-2">
+    <SidebarHeader className="h-14 justify-center border-b border-sidebar-border/60 px-2">
       <div className="flex min-w-0 items-center gap-1">
+        <SidebarTrigger
+          aria-label="Hide main sidebar"
+          title="Hide main sidebar"
+          className="shrink-0"
+        />
         <Link
           href="/"
           title="New session"
@@ -117,7 +131,9 @@ function TelarSidebarHeader({ activeLooms }: { activeLooms: number }) {
         </Link>
         <nav aria-label="Workspace" className="flex shrink-0 items-center gap-0.5">
           {NAV.map(({ href, label, icon: Icon }) => {
-            const active = href.startsWith("/?") ? pathname === "/" : pathname.startsWith(href);
+            const active = href.startsWith("/?")
+              ? pathname === "/"
+              : pathname.startsWith(href) && !(href === "/projects" && inSessionWorkspace);
             const isLooms = href === "/looms";
             return (
               <Link
@@ -169,6 +185,7 @@ function SessionRow({
   showProject,
   searchable = false,
   searchSelected = false,
+  renderedAt,
   onRefresh,
 }: {
   session: ChatMeta;
@@ -176,6 +193,7 @@ function SessionRow({
   showProject: boolean;
   searchable?: boolean;
   searchSelected?: boolean;
+  renderedAt: number;
   onRefresh: () => void;
 }) {
   if (!session.project) return null;
@@ -189,6 +207,10 @@ function SessionRow({
       <Link
         id={`sidebar-session-${session.id}`}
         href={href}
+        // Session routes are force-dynamic and carry the transcript. They are
+        // deliberately fetched only when selected; speculative RSC work here
+        // multiplies across every open Telar window during development.
+        prefetch={false}
         role={searchable ? "option" : undefined}
         aria-selected={searchable ? searchSelected : undefined}
         aria-current={active ? "page" : undefined}
@@ -199,7 +221,7 @@ function SessionRow({
             <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-sidebar-foreground/50">
               <FolderGit2Icon className="size-3 shrink-0" />
               <span className="min-w-0 flex-1 truncate">{session.project}</span>
-              <span className="shrink-0">{fmtAgo(session.updatedAt)}</span>
+              <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
             </span>
             <span className="mt-1 flex min-w-0 items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-xs font-medium text-sidebar-foreground">
@@ -216,7 +238,7 @@ function SessionRow({
               {session.title || "Untitled session"}
             </span>
             <span className="mt-1 flex items-center gap-1.5 text-[10px] text-sidebar-foreground/45">
-              <span className="shrink-0">{fmtAgo(session.updatedAt)}</span>
+              <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
               <span aria-hidden>·</span>
               <span className="shrink-0 font-mono">{fmtCost(session.costUsd)}</span>
             </span>
@@ -242,6 +264,11 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
   const [looms, setLooms] = useState<Loom[]>(initialData?.looms ?? []);
   const [chats, setChats] = useState<ChatMeta[]>(initialData?.chats ?? []);
   const [projects, setProjects] = useState<ProjectMeta[]>(initialData?.projects ?? []);
+  // The server and first client render must use the same clock. Calling
+  // Date.now() independently on each side crosses minute boundaries often
+  // enough to produce a hydration mismatch and force React to regenerate the
+  // entire persistent sidebar. Refresh this clock only when sidebar data does.
+  const [renderedAt, setRenderedAt] = useState(initialData?.renderedAt ?? Date.now());
   const [scope, setScope] = useState<string>();
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
@@ -282,6 +309,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
             ? cachedJson<{ projects?: ProjectMeta[] }>("/api/projects", { force: forceBatch })
             : null,
         ]);
+        if (loomsBody || chatsBody || projectsBody) setRenderedAt(Date.now());
 
         if (loomsBody) {
           const next: Loom[] = Array.isArray(loomsBody.looms) ? loomsBody.looms : [];
@@ -480,32 +508,34 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                 <ChevronDownIcon className="ml-auto" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-64">
-                <DropdownMenuLabel>Session scope</DropdownMenuLabel>
-                <DropdownMenuItem onClick={() => selectScope()}>
-                  <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
-                  All projects
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {projectNames.map((project) => (
-                  <div key={project} className="flex items-center">
-                    <DropdownMenuItem
-                      className="min-w-0 flex-1"
-                      onClick={() => selectScope(project)}
-                    >
-                      <span className="w-4">{selectedScope === project ? <CheckIcon /> : null}</span>
-                      <span className="truncate">{project}</span>
-                    </DropdownMenuItem>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={`Open ${project}`}
-                      title={`Open ${project}`}
-                      onClick={() => router.push(`/projects/${encodeURIComponent(project)}`)}
-                    >
-                      <MoreHorizontalIcon />
-                    </Button>
-                  </div>
-                ))}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>Session scope</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={() => selectScope()}>
+                    <span className="w-4">{selectedScope ? null : <CheckIcon />}</span>
+                    All projects
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {projectNames.map((project) => (
+                    <div key={project} className="flex items-center">
+                      <DropdownMenuItem
+                        className="min-w-0 flex-1"
+                        onClick={() => selectScope(project)}
+                      >
+                        <span className="w-4">{selectedScope === project ? <CheckIcon /> : null}</span>
+                        <span className="truncate">{project}</span>
+                      </DropdownMenuItem>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label={`Open ${project}`}
+                        title={`Open ${project}`}
+                        onClick={() => router.push(`/projects/${encodeURIComponent(project)}`)}
+                      >
+                        <MoreHorizontalIcon />
+                      </Button>
+                    </div>
+                  ))}
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
             <RegisterProjectDialog onRegistered={loadAll} compact />
@@ -564,6 +594,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                   showProject={!selectedScope}
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
+                  renderedAt={renderedAt}
                   onRefresh={loadAll}
                 />
               ))
@@ -600,6 +631,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                     session={session}
                     active={session.id === activeSessionId}
                     showProject={!selectedScope}
+                    renderedAt={renderedAt}
                     onRefresh={loadAll}
                   />
                 ))}
@@ -644,11 +676,16 @@ function SettingsButton() {
   );
 }
 
+function AppSidebarRail() {
+  const { open } = useSidebar();
+  return open ? <SidebarRail /> : null;
+}
+
 export function AppSidebar({ initialData }: { initialData?: AppSidebarInitialData }) {
   return (
     <Sidebar collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE}>
       <SidebarBody initialData={initialData} />
-      <SidebarRail />
+      <AppSidebarRail />
     </Sidebar>
   );
 }

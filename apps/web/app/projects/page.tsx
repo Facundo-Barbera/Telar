@@ -21,8 +21,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import {
-  AccountBadge,
-  Chip,
   GroupHeader,
   SearchField,
   SortSelect,
@@ -57,7 +55,6 @@ type ProjectRow = {
   entry: RegistryEntry;
   manifest: ProjectManifest | null;
   broken: boolean;
-  account: string;
   adapter: string;
   gates: number;
   counts: ProjectSignal["counts"];
@@ -171,7 +168,6 @@ function ProjectRowItem({
           </div>
         </div>
 
-        <AccountBadge account={row.account} />
         <span className="hidden w-16 shrink-0 truncate text-right font-mono text-[11px] text-muted-foreground md:block">
           {row.adapter}
         </span>
@@ -273,7 +269,6 @@ export default function ProjectsPage() {
 
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<Sort>("activity");
-  const [account, setAccount] = useState<string>("all");
   const [pinned, setPinned] = useState<Set<string>>(new Set());
 
   // Pinned projects persist client-side (no server prefs surface exists yet).
@@ -342,7 +337,6 @@ export default function ProjectsPage() {
           entry,
           manifest,
           broken: !manifest || !!manifestError,
-          account: manifest?.account ?? "—",
           adapter: manifest?.adapter ?? "—",
           gates: manifest?.gates.length ?? 0,
           counts: signal.counts,
@@ -353,28 +347,22 @@ export default function ProjectsPage() {
     );
   }, [entries, looms, chats]);
 
-  const accountOptions = useMemo(() => {
-    const set = new Set(rows.map((r) => r.account).filter((a) => a !== "—"));
-    return ["all", ...[...set].sort()];
-  }, [rows]);
-
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let out = rows.filter(
+    const out = rows.filter(
       (r) =>
         !needle ||
         r.entry.name.toLowerCase().includes(needle) ||
         r.adapter.toLowerCase().includes(needle) ||
         r.entry.root.toLowerCase().includes(needle),
     );
-    if (account !== "all") out = out.filter((r) => r.account === account);
     const cmp: Record<Sort, (a: ProjectRow, b: ProjectRow) => number> = {
       activity: byLastActivity,
       name: (a, b) => a.entry.name.localeCompare(b.entry.name),
       work: byOpenWork,
     };
     return [...out].sort(cmp[sort]);
-  }, [rows, q, account, sort]);
+  }, [rows, q, sort]);
 
   const pinnedList = filtered.filter((r) => pinned.has(r.entry.name));
   const rest = filtered.filter((r) => !pinned.has(r.entry.name));
@@ -391,7 +379,7 @@ export default function ProjectsPage() {
         description={
           populated
             ? `${entries.length} ${entries.length === 1 ? "repo" : "repos"} on the loom · ${activeNow} active now`
-            : "Repos on the loom — each carries its gates, guardrails, and account in a telar.yaml."
+            : "Repos on the loom — each carries its gates and guardrails in a telar.yaml."
         }
         actions={<RegisterProjectDialog onRegistered={load} />}
       />
@@ -405,15 +393,6 @@ export default function ProjectsPage() {
               onChange={setQ}
               placeholder="Search projects by name, adapter, or path…"
             />
-            {accountOptions.map((a) => (
-              <Chip
-                key={a}
-                active={account === a}
-                onClick={() => setAccount(a)}
-              >
-                {a === "all" ? "All" : a}
-              </Chip>
-            ))}
             <SortSelect
               value={sort}
               onChange={setSort}
@@ -468,7 +447,7 @@ export default function ProjectsPage() {
             <EmptyState
               icon={FolderGit2Icon}
               title="No projects on the loom yet"
-              description="A telar.yaml in a repo declares its gates, guardrails, and account — register one to let Telar weave changes there."
+              description="A telar.yaml in a repo declares its gates and guardrails — register one to let Telar weave changes there."
               action={<RegisterProjectDialog onRegistered={load} />}
             />
           )}
@@ -496,7 +475,6 @@ export default function ProjectsPage() {
                     size="sm"
                     onClick={() => {
                       setQ("");
-                      setAccount("all");
                     }}
                   >
                     Clear filters

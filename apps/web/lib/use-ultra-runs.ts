@@ -119,20 +119,11 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
     }
   }, [sessionId]);
 
-  // THE ONE SUPPRESSION IN THIS FILE, and `use-ultra-wake.ts` carries the full
-  // reasoning: `reload` is async and every setState in it sits behind an
-  // `await fetch`, so nothing is set DURING the effect body. What the rule
-  // actually keys on is that the effect body calls a function that transitively
-  // calls setState at all — measured there rather than reasoned.
-  //
-  // THE DIRECTIVE MUST BE THE LINE IMMEDIATELY ABOVE THE CALL. Written with its
-  // explanation trailing onto a second comment line, `eslint-disable-next-line`
-  // applies to THAT COMMENT and the error still fires — which is how the first
-  // version of this file shipped both an unused-directive warning AND the error
-  // it was meant to suppress.
+  // Let the session shell hydrate before compiling and calling the run-list
+  // route. A refresh event still bypasses this small startup stagger.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reload();
+    const initial = setTimeout(() => void reload(), 250);
+    return () => clearTimeout(initial);
   }, [reload]);
 
   useEffect(() => {

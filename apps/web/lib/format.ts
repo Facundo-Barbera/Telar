@@ -3,8 +3,8 @@
 // system instead of drifting per-file.
 
 /** Relative "time ago", compact and coarsening as it recedes into the past. */
-export function fmtAgo(ts: number): string {
-  const s = Math.floor((Date.now() - ts) / 1000);
+export function fmtAgo(ts: number, now = Date.now()): string {
+  const s = Math.floor((now - ts) / 1000);
   if (s < 60) return "just now";
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;

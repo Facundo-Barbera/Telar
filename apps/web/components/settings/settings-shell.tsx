@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 
 export type SettingsSection = {
   id: string;
@@ -127,6 +128,7 @@ export function SettingsShell({
       {/* Content pane — sticky header + internal scroll */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 flex min-h-13 shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 py-2 text-foreground backdrop-blur">
+          <MainSidebarTrigger />
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}

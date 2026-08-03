@@ -207,9 +207,9 @@ export function StatTile({
   );
 }
 
-// An account chip — sky for work, emerald for oss, muted otherwise. Accounts
-// are freeform strings (manifest.account), so the tone is by convention, never
-// an exhaustive enum.
+// An account chip — sky for work, emerald for oss, muted otherwise. Session
+// accounts are freeform strings, so the tone is by convention, never an
+// exhaustive enum.
 export function AccountBadge({ account }: { account: string }) {
   const tone =
     account === "work"

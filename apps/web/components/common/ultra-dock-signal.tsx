@@ -208,33 +208,51 @@ export function UltraDockSignal() {
     if (!autoDock || !setRuntime) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (delay: number) => {
+      if (cancelled || document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        void tick();
+      }, delay);
+    };
     const tick = async () => {
-      if (cancelled || pollInFlight.current) return;
+      if (cancelled || document.visibilityState !== "visible") return;
+      if (pollInFlight.current) {
+        schedule(1_000);
+        return;
+      }
       pollInFlight.current = true;
       try {
         await poll();
       } finally {
         pollInFlight.current = false;
-        if (!cancelled) {
-          timer = setTimeout(
-            () => void tick(),
-            hasLiveRuns.current ? LIVE_POLL_MS : IDLE_POLL_MS,
-          );
-        }
+        schedule(hasLiveRuns.current ? LIVE_POLL_MS : IDLE_POLL_MS);
       }
     };
-    void tick();
+    // Global run discovery is useful but not part of making the current page
+    // interactive. Stagger its first route compilation behind the session's
+    // own data instead of attacking the dev server during hydration.
+    schedule(1_500);
     // The app-wide refresh signal every other client surface listens to.
     const onRefresh = (event: Event) => {
       if (!refreshIncludes(event, "ultra")) return;
-      if (timer) clearTimeout(timer);
-      void tick();
+      schedule(0);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") schedule(0);
+      else if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
     };
     window.addEventListener("telar:refresh", onRefresh);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
       window.removeEventListener("telar:refresh", onRefresh);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [poll, autoDock, setRuntime]);
 

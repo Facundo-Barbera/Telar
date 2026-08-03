@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import {
   BASE_ALLOWED_TOOLS,
   LOOM_AUTO_TOOL_NAMES,
+  NATIVE_CLAUDE_SETTING_SOURCES,
   PROVIDER_CAPABILITIES,
   PROVIDERS,
   ProjectManifest,
@@ -111,7 +112,7 @@ const registerFourKinds = (): void => {
   for (const kind of SESSION_KINDS) {
     registerSessionProfile(kind, () => ({
       kind,
-      settingSources: ["project", "local"],
+      settingSources: [...NATIVE_CLAUDE_SETTING_SOURCES],
       // The escalation narrowing mirrors the real builder: the route's
       // escalation branch auto-ran [...LOOM_ESCALATION_READONLY_TOOLS], and
       // since story 2.2 grew BASE_ALLOWED_TOOLS to the full auto-run
@@ -167,7 +168,7 @@ describe("AC1 the fold — a typed SessionProfile with AD-9's seven fields plus 
       ]);
       expect(resolved.kind).toBe(kind);
       expect(resolved.requiredCapabilities).toEqual(D11_REQUIRED[kind]!);
-      expect(resolved.settingSources).toEqual(["project", "local"]);
+      expect(resolved.settingSources).toEqual(NATIVE_CLAUDE_SETTING_SOURCES);
       // No undefined at the seam: a consumer never has to read a missing field
       // as "everything", which is the reading that would turn an omission into
       // a grant.

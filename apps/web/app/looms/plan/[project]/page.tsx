@@ -48,9 +48,8 @@ export default async function LoomPlanPage({
   // An unknown project can't resolve mid-stream, so — like the sessions
   // page — it's the one case surfaced as an error rather than a fresh
   // session.
-  let manifest;
   try {
-    manifest = getProject(project).manifest;
+    getProject(project);
   } catch {
     return (
       <div className="flex h-dvh flex-col">
@@ -80,7 +79,7 @@ export default async function LoomPlanPage({
   // Display-only account metadata for the client picker (see SessionView) —
   // passed as plain data so the client component never imports the
   // server-only registry.
-  const account = resolveEnabledAccount(manifest.account);
+  const account = resolveEnabledAccount();
   if (!account) {
     return (
       <div className="flex h-dvh items-center justify-center p-6">

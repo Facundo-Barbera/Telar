@@ -1,21 +1,73 @@
-import { PanelsTopLeftIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  GitBranchIcon,
+  GlobeIcon,
+  PanelsTopLeftIcon,
+} from "lucide-react";
 
-export function PanelEmptyState({ onOpenBrowser }: { onOpenBrowser: () => void }) {
+const surfaces = [
+  {
+    key: "browser",
+    label: "Browser",
+    description: "Open a local app or URL.",
+    icon: GlobeIcon,
+  },
+  {
+    key: "git",
+    label: "Git",
+    description: "Review changes and worktrees.",
+    icon: GitBranchIcon,
+  },
+  {
+    key: "activity",
+    label: "Activity",
+    description: "Inspect subagents and Ultras.",
+    icon: ActivityIcon,
+  },
+] as const;
+
+export function PanelEmptyState({
+  onOpenActivity,
+  onOpenGit,
+  onOpenBrowser,
+}: {
+  onOpenActivity: () => void;
+  onOpenGit: () => void;
+  onOpenBrowser: () => void;
+}) {
+  const actions = {
+    activity: onOpenActivity,
+    git: onOpenGit,
+    browser: onOpenBrowser,
+  };
+
   return (
     <div className="flex h-full items-center justify-center p-6">
-      <div className="max-w-xs text-center">
+      <div className="w-full max-w-lg text-center">
         <PanelsTopLeftIcon className="mx-auto size-8 text-muted-foreground/40" />
-        <h2 className="mt-4 font-heading text-sm font-medium">No panel tabs open</h2>
+        <h2 className="mt-4 font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          Open Git or a browser tab from the plus menu to keep working beside the chat.
+          Choose what to keep beside the conversation.
         </p>
-        <button
-          type="button"
-          onClick={onOpenBrowser}
-          className="mt-4 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
-        >
-          Open browser
-        </button>
+        <div className="mt-5 grid gap-2 text-left sm:grid-cols-3">
+          {surfaces.map((surface) => {
+            const Icon = surface.icon;
+            return (
+              <button
+                key={surface.key}
+                type="button"
+                onClick={actions[surface.key]}
+                className="rounded-2xl border border-border bg-background/70 p-3 transition-colors hover:bg-muted/60"
+              >
+                <Icon className="size-4 text-muted-foreground" />
+                <div className="mt-3 text-xs font-medium text-foreground">{surface.label}</div>
+                <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  {surface.description}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

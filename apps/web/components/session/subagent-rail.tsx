@@ -35,6 +35,8 @@ import { cn } from "@/lib/utils";
 
 export type RailStatus = "running" | "done" | "error";
 
+const NOOP = () => {};
+
 // A sub-agent as the rail models it, derived from an AgentBucket in session-view.
 // `steps` is the bucket's part count (the real, available signal); `activity` is
 // the current tool preview while running.
@@ -328,8 +330,8 @@ export function SubagentRail({
   agents,
   activeId,
   onSelect,
-  collapsed,
-  onToggle,
+  collapsed = false,
+  onToggle = NOOP,
   sessionLabel = "Main conversation",
   mainNeedsAttention,
   // Story 4.2 — THE WORKFLOWS SECTION AS A SLOT, NOT A WRAPPER.
@@ -346,16 +348,20 @@ export function SubagentRail({
   // exactly what it gets now.
   workflows,
   workflowCount,
+  surface = "rail",
 }: {
   agents: RailAgent[];
   activeId: string;
   onSelect: (id: string) => void;
-  collapsed: boolean;
-  onToggle: () => void;
+  collapsed?: boolean;
+  onToggle?: () => void;
   sessionLabel?: string;
   mainNeedsAttention?: boolean;
   workflows?: ReactNode;
   workflowCount?: number;
+  /** `panel` embeds this index in the unified workspace dock. The historical
+   *  `rail` shape remains available to the demo gallery. */
+  surface?: "rail" | "panel";
 }) {
   const live = agents.filter((c) => c.status !== "done");
   const history = agents.filter((c) => c.status === "done");
@@ -363,7 +369,7 @@ export function SubagentRail({
   const failed = live.filter((c) => c.status === "error").length;
   const done = history.length;
 
-  if (collapsed) {
+  if (surface === "rail" && collapsed) {
     const mainActive = activeId === "main";
     return (
       <div className="flex w-11 shrink-0 flex-col items-center gap-3 border-l border-border py-3">
@@ -401,7 +407,14 @@ export function SubagentRail({
   }
 
   return (
-    <div className="flex w-60 shrink-0 flex-col border-l border-border">
+    <div
+      className={cn(
+        "flex shrink-0 flex-col",
+        surface === "panel"
+          ? "h-full w-full min-w-0 bg-background"
+          : "w-60 border-l border-border",
+      )}
+    >
       <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
         <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
           Sub-agents
@@ -419,14 +432,16 @@ export function SubagentRail({
             {failed} failed
           </span>
         )}
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label="Collapse sub-agents rail"
-          className="ml-auto rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <PanelRightCloseIcon className="size-4" />
-        </button>
+        {surface === "rail" && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label="Collapse sub-agents rail"
+            className="ml-auto rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <PanelRightCloseIcon className="size-4" />
+          </button>
+        )}
       </div>
 
       {/* Story 4.2's Workflows section, ABOVE the Main anchor's divider so a
@@ -448,7 +463,9 @@ export function SubagentRail({
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {live.length === 0 ? (
           <p className="px-1 py-2 text-[11px] text-muted-foreground/60">
-            No sub-agents running.
+            {surface === "panel" && history.length === 0 && (workflowCount ?? 0) === 0
+              ? "Sub-agents and Ultras will appear here as they work."
+              : "No sub-agents running."}
           </p>
         ) : (
           live.map((c) => (

@@ -270,7 +270,10 @@ export const ProjectManifest = z.object({
   // undefined`; it is overwritten immediately on load and never observed empty.
   root: z.string().default(""),
   adapter: z.enum(["plain", "bmad"]).default("plain"),
-  account: z.string().default("personal"), // AccountProfile.name — routes billing/limits
+  // Legacy fallback for manifests created before accounts became session-scoped.
+  // New chat/planning surfaces ignore this value; keeping it readable avoids
+  // breaking older manifests and headless loom callers during migration.
+  account: z.string().default("personal"),
   // Human-approval policy for a drafted Charter (docs/loom-orchestrator.md §5).
   // "auto" never pauses; "human-required-for-epics" pauses only when the
   // charter weaves (isWoven — has a decomposition) (default — a non-weaving

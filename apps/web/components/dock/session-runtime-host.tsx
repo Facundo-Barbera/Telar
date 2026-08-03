@@ -38,7 +38,19 @@ import { consumeSSE } from "@/lib/sse";
 // would drag the whole shell (and the 1465-line composer kit) into the dock's
 // graph for no benefit.
 import { readPreStreamError } from "@/components/conversation/pre-stream-error";
+import {
+  dispatchTelarSessionRun,
+  refreshIncludes,
+  TELAR_REFRESH_EVENT,
+  TELAR_SESSION_RUN_EVENT,
+  type TelarRefreshDetail,
+} from "@/lib/telar-refresh";
 import { useDock, type CompactMsg } from "./dock-provider";
+
+const DETAIL_SAFETY_POLL_MS = 60_000;
+const IDLE_TAIL_RETRY_MS = 30_000;
+const ACTIVE_TAIL_RETRY_MS = 800;
+const TURN_START_GRACE_MS = 10_000;
 
 const newRunId = () =>
   globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
@@ -247,6 +259,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       // turn this dock did not start (see the `sawEvent` arm in openTail).
       setRuntime(id, { working: true, error: undefined });
       commitLive();
+      dispatchTelarSessionRun(id);
 
       const sendAbort = new AbortController();
       sendAbortRef.current = sendAbort;
@@ -370,17 +383,33 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       }
     };
     void refetch();
-    // A slow poll catches turns started elsewhere that the SSE loop missed.
-    const poll = setInterval(refetch, 8000);
+    // Events handle normal writes. This minute-scale check is only a recovery
+    // net for changes made in another browser or process.
+    const poll = setInterval(() => {
+      if (document.visibilityState === "visible") void refetch();
+    }, DETAIL_SAFETY_POLL_MS);
     // Expose a manual refetch for the SSE loop below via a custom event.
     const onRefetch = (e: Event) => {
       if ((e as CustomEvent<string>).detail === id) void refetch();
     };
+    const onRefresh = (event: Event) => {
+      if (!refreshIncludes(event, "chats")) return;
+      const detail = (event as CustomEvent<TelarRefreshDetail | undefined>).detail;
+      if (detail?.sessionId && detail.sessionId !== id) return;
+      void refetch();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void refetch();
+    };
     window.addEventListener("telar:dock-refetch", onRefetch);
+    window.addEventListener(TELAR_REFRESH_EVENT, onRefresh);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       alive = false;
       clearInterval(poll);
       window.removeEventListener("telar:dock-refetch", onRefetch);
+      window.removeEventListener(TELAR_REFRESH_EVENT, onRefresh);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [id, setRuntime]);
 
@@ -394,9 +423,19 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     let alive = true;
     let abort: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let wakeUntil = 0;
+
+    const schedule = (delay: number) => {
+      if (!alive || document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        void openTail();
+      }, delay);
+    };
 
     const openTail = async () => {
-      if (!alive) return;
+      if (!alive || abort || document.visibilityState !== "visible") return;
       abort = new AbortController();
       tailAbortRef.current = abort;
       resetLive();
@@ -428,6 +467,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         /* not live / aborted (incl. an explicit Stop) / dropped — reschedule */
       } finally {
         if (tailAbortRef.current === abort) tailAbortRef.current = null;
+        abort = null;
         if (alive) {
           if (sawEvent) {
             // A turn just ran to completion (or was stopped) — settle + pull
@@ -437,16 +477,42 @@ export function SessionRuntimeHost({ id }: { id: string }) {
             commitLive();
             window.dispatchEvent(new CustomEvent("telar:dock-refetch", { detail: id }));
           }
-          // Re-arm: a live run reconnects fast, an idle one polls lazily.
-          timer = setTimeout(openTail, sawEvent ? 800 : 3500);
+          // A locally announced turn gets a short grace window because the
+          // wake may beat server-side run registration. Truly idle sessions
+          // use a minute-scale safety net instead of hammering this endpoint.
+          schedule(
+            sawEvent || Date.now() < wakeUntil
+              ? ACTIVE_TAIL_RETRY_MS
+              : IDLE_TAIL_RETRY_MS,
+          );
         }
       }
     };
-    void openTail();
+    const onRun = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== id) return;
+      wakeUntil = Date.now() + TURN_START_GRACE_MS;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      void openTail();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") schedule(0);
+      else if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    window.addEventListener(TELAR_SESSION_RUN_EVENT, onRun);
+    document.addEventListener("visibilitychange", onVisibility);
+    schedule(1_500);
     return () => {
       alive = false;
       if (abort) abort.abort();
       if (timer) clearTimeout(timer);
+      window.removeEventListener(TELAR_SESSION_RUN_EVENT, onRun);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [id, setRuntime]);
 

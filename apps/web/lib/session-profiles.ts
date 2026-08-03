@@ -58,6 +58,7 @@
 //     master profile is the first kind that genuinely needs a different MCP
 //     set, and it is the story with a reason to pay for the restructure.
 import {
+  NATIVE_CLAUDE_SETTING_SOURCES,
   registerSessionProfile,
   type SessionProfileBuilder,
 } from "@telar/core";
@@ -74,13 +75,11 @@ import {
   steererAppendix,
 } from "@/lib/session-prompts";
 
-// Every kind loads the repo's own .claude (CLAUDE.md, skills, slash commands,
-// settings, MCP servers) and deliberately NOT the user's. Measured from the
-// route's `settingSources: ["project", "local"]`, whose comment records the
-// decision: user-level settings stay out so the developer's personal
-// config/tokens never reach the subprocess. The port's ProfileSettingSource
-// type makes "user" unspellable here, so this cannot drift back.
-const REPO_SETTING_SOURCES = ["project", "local"] as const;
+// Every ordinary session uses Claude's native configuration stack. The user
+// source resolves from the selected provider instance's CLAUDE_CONFIG_DIR (or
+// ~/.claude for the default instance), so alternate instances stay isolated
+// while the default behaves like `claude` launched in a terminal.
+const CLAUDE_SETTING_SOURCES = NATIVE_CLAUDE_SETTING_SOURCES;
 
 // Disallowed for every kind, measured from the route's own `disallowedTools`
 // array, which lists it unconditionally: the chat UI has no widget to answer a
@@ -111,7 +110,7 @@ const ALWAYS_DENIED_TOOLS = ["AskUserQuestion"] as const;
 // isEscalationSession.
 export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   kind: "project",
-  settingSources: [...REPO_SETTING_SOURCES],
+  settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: [],
   // The route's old fallthrough arm: `ultraAnnotationNote ? { …append } : { }`.
@@ -163,7 +162,7 @@ export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
 // safeLiveContext, and a failure of it degrades to the static prompt.
 export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
   kind: "planner",
-  settingSources: [...REPO_SETTING_SOURCES],
+  settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
   systemPromptAppendix: plannerAppendix({
@@ -196,7 +195,7 @@ export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
 // that can read another project's loom.
 export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
   kind: "steerer",
-  settingSources: [...REPO_SETTING_SOURCES],
+  settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
   systemPromptAppendix: steererAppendix({
@@ -255,7 +254,7 @@ export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
 // from the route's own `ultraAnnotated && !isEscalationSession`.
 export const buildEscalationProfile: SessionProfileBuilder = (ctx) => ({
   kind: "escalation",
-  settingSources: [...REPO_SETTING_SOURCES],
+  settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: {
     allow: [...LOOM_ESCALATION_READONLY_TOOLS],
     deny: [

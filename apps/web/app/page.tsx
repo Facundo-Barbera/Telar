@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
-import { listProjects } from "@telar/core/manifest";
 import DashboardPage from "@/components/dashboard-page";
-import { listChats } from "@/lib/store";
+import { listAppShellChats, listAppShellProjects } from "@/lib/app-shell-data";
 
 export const dynamic = "force-dynamic";
 
@@ -18,13 +17,14 @@ export default async function HomePage({
   const query = await searchParams;
   if (query.overview !== undefined) return <DashboardPage />;
 
-  const projects = listProjects().filter((project) => project.manifest !== null);
+  const projects = listAppShellProjects();
   if (projects.length === 0) return <DashboardPage />;
 
   const known = new Set(projects.map((project) => project.entry.name));
-  const latestProject = listChats(undefined, { archived: "exclude" })
+  const latestProject = listAppShellChats()
     .filter(
       (chat) =>
+        !chat.archived &&
         chat.role !== "steerer" &&
         chat.role !== "escalation" &&
         typeof chat.project === "string" &&

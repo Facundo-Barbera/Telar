@@ -1,9 +1,7 @@
 import {
-  createProject,
   listProjects,
-  registerProject,
+  registerOrCreateProject,
 } from "@telar/core/manifest";
-import type { ProjectManifest } from "@telar/core/schemas";
 
 export const dynamic = "force-dynamic";
 
@@ -11,12 +9,12 @@ export async function GET() {
   return Response.json({ projects: listProjects() });
 }
 
-// Register an existing telar repo, or scaffold a fresh telar.yaml when create=true.
+// Register a repo, preserving its telar.yaml or creating one when absent.
 export async function POST(req: Request) {
   let body: {
     root?: string;
-    create?: boolean;
-    manifest?: Partial<ProjectManifest>;
+    manifest?: { name?: unknown };
+    addToGitignore?: boolean;
   };
   try {
     body = await req.json();
@@ -24,14 +22,34 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { root, create, manifest } = body;
+  const { root, manifest, addToGitignore } = body;
   if (typeof root !== "string" || root.trim() === "") {
-    return Response.json({ error: "A repo `root` path is required." }, { status: 400 });
+    return Response.json(
+      { error: "A repo `root` path is required." },
+      { status: 400 },
+    );
+  }
+  if (
+    manifest?.name !== undefined &&
+    (typeof manifest.name !== "string" || manifest.name.trim() === "")
+  ) {
+    return Response.json(
+      { error: "Project name must be a non-empty string when provided." },
+      { status: 400 },
+    );
   }
 
   try {
-    const result = create ? createProject(root, manifest) : registerProject(root);
-    return Response.json({ manifest: result });
+    const result = registerOrCreateProject(
+      root,
+      typeof manifest?.name === "string"
+        ? { name: manifest.name.trim() }
+        : undefined,
+      {
+        addToGitignore: addToGitignore === true,
+      },
+    );
+    return Response.json(result);
   } catch (e) {
     return Response.json(
       { error: e instanceof Error ? e.message : String(e) },

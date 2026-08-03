@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 import type { ProjectManifest, RegistryEntry } from "@telar/core";
 import { cn } from "@/lib/utils";
-import { useAccounts } from "@/lib/use-accounts";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,7 +56,6 @@ type GateRow = { name: string; run: string };
 // here. Mirrors ProjectManifest but flattens guardrails so each list edits
 // independently.
 type Form = {
-  account: string;
   baseBranch: string;
   adapter: "plain" | "bmad";
   gates: GateRow[];
@@ -70,7 +68,6 @@ const ADAPTERS = ["plain", "bmad"] as const;
 
 function formFromManifest(m: ProjectManifest): Form {
   return {
-    account: m.account,
     baseBranch: m.baseBranch,
     adapter: m.adapter,
     gates: m.gates.map((g) => ({ name: g.name, run: g.run })),
@@ -88,8 +85,6 @@ function formFromManifest(m: ProjectManifest): Form {
 // are dropped so a stray blank row never counts as an edit or reaches the API.
 function buildBody(form: Form, orig: Form): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (form.account !== orig.account) body.account = form.account;
-
   const baseBranch = form.baseBranch.trim();
   if (baseBranch !== orig.baseBranch) body.baseBranch = baseBranch;
 
@@ -210,8 +205,6 @@ export function ProjectSettings({
   // h-dvh as a standalone page; h-full to fill the hub tab body.
   const frameClass = embedded ? "h-full min-h-0" : "h-dvh";
   const backHref = embedded ? undefined : projectHref;
-  const { accounts } = useAccounts();
-  const accountNames = accounts.map((a) => a.name);
 
   const [active, setActive] = useState("general");
   const [status, setStatus] = useState<Status>("loading");
@@ -468,27 +461,6 @@ export function ProjectSettings({
         {active === "general" &&
           (form ? (
             <SettingsGroup description="Identity and where looms cut their work from.">
-              <Row
-                label="Account"
-                hint="Default account for new sessions and looms in this project."
-                control={
-                  <Select
-                    value={form.account}
-                    onValueChange={(v) => v && patch({ account: String(v) })}
-                  >
-                    <SelectTrigger className="h-8 w-40 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accountNames.map((a) => (
-                        <SelectItem key={a} value={a}>
-                          {a}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                }
-              />
               <Row
                 label="Adapter"
                 hint="Workflow flavor for looms."

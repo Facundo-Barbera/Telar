@@ -1,6 +1,7 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_ACTIVITY_TAB,
   DEFAULT_RIGHT_PANEL_SESSION,
   EMPTY_RIGHT_PANEL_PAYLOAD,
   RIGHT_PANEL_SCHEMA_VERSION,
@@ -27,6 +28,7 @@ const state = (ids: string[], activeTabId = ids[0] ?? null): RightPanelSession =
   tabs: ids.map(browser),
   activeTabId,
   open: true,
+  fullscreen: false,
   touchedAt: 1,
 });
 
@@ -51,16 +53,70 @@ describe("right panel persistence", () => {
     });
     expect(parsed.sessions.one).toEqual({
       tabs: [browser("a")],
-      activeTabId: "a",
-      open: true,
+      activeTabId: null,
+      open: false,
+      fullscreen: false,
       touchedAt: 0,
     });
   });
 
   test("keeps a stable default without materializing untouched sessions", () => {
-    expect(DEFAULT_RIGHT_PANEL_SESSION.tabs.map((tab) => tab.id)).toEqual(["git"]);
+    expect(DEFAULT_RIGHT_PANEL_SESSION.tabs).toEqual([]);
+    expect(DEFAULT_RIGHT_PANEL_SESSION.activeTabId).toBeNull();
     expect(DEFAULT_RIGHT_PANEL_SESSION.open).toBe(false);
+    expect(DEFAULT_RIGHT_PANEL_SESSION.fullscreen).toBe(false);
     expect(EMPTY_RIGHT_PANEL_PAYLOAD.sessions).toEqual({});
+  });
+
+  test("migrates old panel state to the closed-by-default dock once", () => {
+    for (const version of [1, 2]) {
+      const parsed = sanitizeRightPanelPayload({
+        version,
+        sessions: {
+          legacy: { ...state(["browser"]), open: true },
+        },
+      });
+      expect(parsed.version).toBe(RIGHT_PANEL_SCHEMA_VERSION);
+      expect(parsed.sessions.legacy.open).toBe(false);
+      expect(parsed.sessions.legacy.fullscreen).toBe(false);
+    }
+  });
+
+  test("preserves version 3 open state while adding fullscreen state", () => {
+    const parsed = sanitizeRightPanelPayload({
+      version: 3,
+      sessions: {
+        existing: {
+          ...state(["browser"]),
+          tabs: [DEFAULT_ACTIVITY_TAB, browser("browser")],
+          activeTabId: "browser",
+          open: true,
+        },
+      },
+    });
+    expect(parsed.sessions.existing.open).toBe(true);
+    expect(parsed.sessions.existing.fullscreen).toBe(false);
+    expect(parsed.sessions.existing.tabs).toEqual([browser("browser")]);
+    expect(parsed.sessions.existing.activeTabId).toBe("browser");
+  });
+
+  test("migrates the old injected Activity selection to the surface chooser", () => {
+    const parsed = sanitizeRightPanelPayload({
+      version: 4,
+      sessions: {
+        existing: {
+          ...state([]),
+          tabs: [DEFAULT_ACTIVITY_TAB, browser("browser")],
+          activeTabId: "activity",
+          open: true,
+        },
+      },
+    });
+    expect(parsed.sessions.existing).toMatchObject({
+      tabs: [browser("browser")],
+      activeTabId: null,
+      open: true,
+    });
   });
 });
 
@@ -102,8 +158,20 @@ describe("tab closing", () => {
     expect(left.activeTabId).toBe("a");
   });
 
-  test("closing the last tab yields the empty state", () => {
-    expect(closePanelTab(state(["a"]), "a")).toMatchObject({ tabs: [], activeTabId: null });
+  test("closing the last surface returns to the chooser", () => {
+    expect(closePanelTab(state(["a"], "a"), "a")).toMatchObject({
+      tabs: [],
+      activeTabId: null,
+    });
+    const activity: RightPanelSession = {
+      ...state([]),
+      tabs: [DEFAULT_ACTIVITY_TAB],
+      activeTabId: "activity",
+    };
+    expect(closePanelTab(activity, "activity")).toMatchObject({
+      tabs: [],
+      activeTabId: null,
+    });
   });
 
   test("close others and close right make the target deterministic", () => {

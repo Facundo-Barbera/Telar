@@ -88,9 +88,7 @@ describe("the Phase 3 Git migration", () => {
     const projectPage = read("app/projects/[name]/page.tsx");
     const panel = read("components/right-panel/right-panel.tsx");
 
-    expect(panel).toContain(
-      'import { GitTab } from "@/components/projects/git-tab"',
-    );
+    expect(panel).toContain('import("@/components/projects/git-tab")');
     expect(panel).toContain("<GitTab name={project} />");
     expect(projectPage).not.toContain(
       'import { GitTab } from "@/components/projects/git-tab"',

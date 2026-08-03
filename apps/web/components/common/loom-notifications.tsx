@@ -101,10 +101,13 @@ export function LoomNotifications() {
       for (const k of [...prev.keys()]) if (!live.has(k)) prev.delete(k);
     };
 
-    poll();
+    // Notification discovery is background work. Deferring the first scan
+    // keeps it out of the initial API-route compilation burst in development.
+    const initial = setTimeout(() => void poll(), 2_000);
     const t = setInterval(poll, POLL_MS);
     return () => {
       cancelled = true;
+      clearTimeout(initial);
       clearInterval(t);
     };
   }, [armed]);

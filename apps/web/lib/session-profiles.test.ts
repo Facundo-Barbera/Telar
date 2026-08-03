@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import {
   BASE_ALLOWED_TOOLS,
   LOOM_AUTO_TOOL_NAMES,
+  NATIVE_CLAUDE_SETTING_SOURCES,
   ProjectManifest,
   registeredSessionKinds,
   resetSessionProfiles,
@@ -388,11 +389,10 @@ describe("the four builders carry D11's per-kind decisions", () => {
     }
   });
 
-  test("every builder loads the repo's settings and NOT the user's", () => {
+  test("every builder loads Claude's complete native setting stack", () => {
     for (const row of D11) {
       const settingSources = resolveSessionProfile(ctx({ kind: row.kind })).settingSources;
-      expect(settingSources).toEqual(["project", "local"]);
-      expect(settingSources).not.toContain("user");
+      expect(settingSources).toEqual(NATIVE_CLAUDE_SETTING_SOURCES);
     }
   });
 

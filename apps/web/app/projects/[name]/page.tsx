@@ -300,6 +300,7 @@ function SessionRow({
       )}
       <Link
         href={`/projects/${encodeURIComponent(name)}/sessions/${chat.id}`}
+        prefetch={false}
         className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-2 pl-4"
       >
         <div className="min-w-0 flex-1">
@@ -1158,20 +1159,12 @@ function ProjectHub({ params }: { params: Promise<{ name: string }> }) {
                 {title}
               </h1>
               {manifest ? (
-                <>
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 px-1.5 py-0 text-[10px] text-muted-foreground"
-                  >
-                    {manifest.account}
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
-                  >
-                    {manifest.baseBranch}
-                  </Badge>
-                </>
+                <Badge
+                  variant="outline"
+                  className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground"
+                >
+                  {manifest.baseBranch}
+                </Badge>
               ) : (
                 <Badge variant="destructive" className="shrink-0 text-[10px]">
                   manifest error

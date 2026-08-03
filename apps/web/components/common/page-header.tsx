@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { cn } from "@/lib/utils";
 
 // The page chrome every top-level surface repeats: sidebar trigger, a hairline,
@@ -27,6 +28,7 @@ export function PageHeader({
         className,
       )}
     >
+      <MainSidebarTrigger />
       {leading}
       <div className="min-w-0 flex-1 space-y-0.5">
         <h1 className="truncate font-heading text-base font-semibold tracking-tight">
@@ -36,9 +38,9 @@ export function PageHeader({
           <div className="text-xs text-muted-foreground">{description}</div>
         )}
       </div>
-      {actions && (
-        <div className="flex shrink-0 items-center gap-2">{actions}</div>
-      )}
+      <div className="flex shrink-0 items-center gap-2">
+        {actions}
+      </div>
     </header>
   );
 }

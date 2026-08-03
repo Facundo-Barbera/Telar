@@ -1,15 +1,41 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { extractCodexEntries, fetchModels } from "@/lib/model-registry";
+import { extractCodexEntries, mapClaudeModels } from "@/lib/model-registry";
 import { contextLabelForModel } from "@/lib/models";
 
 describe("harness-owned model catalogs", () => {
-  test("Claude exposes native slots even when a gateway URL is inherited", async () => {
-    const models = await fetchModels("claude", {
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
-      ANTHROPIC_AUTH_TOKEN: "unused",
-    });
-    expect(models.map((model) => model.id)).toEqual(["fable", "opus", "sonnet", "haiku"]);
+  test("Claude exposes resolved harness models instead of a transport inventory", () => {
+    const models = mapClaudeModels([
+      {
+        value: "default",
+        resolvedModel: "claude-opus-4-8[1m]",
+        displayName: "Default (recommended)",
+        description: "Use the default model (currently Opus 4.8)",
+      },
+      {
+        value: "opus[1m]",
+        resolvedModel: "claude-opus-4-8[1m]",
+        displayName: "Opus",
+        description: "Opus 4.8 with 1M context",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        supportsFastMode: true,
+      },
+      {
+        value: "sonnet",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Sonnet",
+        description: "Sonnet 5",
+      },
+    ]);
+    expect(models.map((model) => model.id)).toEqual(["opus[1m]", "sonnet", "opus"]);
+    expect(models.map((model) => model.name)).toEqual([
+      "Claude Opus 4.8",
+      "Claude Sonnet 5",
+      "Claude Opus 4.8",
+    ]);
+    expect(models.find((model) => model.id === "opus[1m]")?.isDefault).toBe(true);
+    expect(models.find((model) => model.id === "opus[1m]")?.supportsFastMode).toBe(true);
     expect(models.some((model) => model.id.startsWith("gpt"))).toBe(false);
   });
 

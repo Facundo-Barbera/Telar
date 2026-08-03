@@ -13,12 +13,22 @@ const path = require("node:path");
 const http = require("node:http");
 const net = require("node:net");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
+const { DesktopBrowserManager } = require("./browser-manager");
 
 const SMOKE = process.argv.includes("--smoke");
 const OVERRIDE_URL = process.env.TELAR_DESKTOP_URL;
 
 let serverChild = null;
+let browserManager = null;
+
+const REMOTE_DEBUGGING_PORT = process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
+if (REMOTE_DEBUGGING_PORT && /^\d+$/.test(REMOTE_DEBUGGING_PORT)) {
+  app.commandLine.appendSwitch("remote-debugging-port", REMOTE_DEBUGGING_PORT);
+  // Bound to loopback by Chromium; allow the local Playwright/CDP test client
+  // to attach regardless of the ephemeral websocket origin it chooses.
+  app.commandLine.appendSwitch("remote-allow-origins", "*");
+}
 
 // --- (a) Login-shell env -----------------------------------------------------
 // Finder-launched apps inherit a bare PATH; Telar shells out to git/gh/claude/
@@ -332,7 +342,14 @@ function createWindow(url) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, "preload.js"),
     },
+  });
+  browserManager = new DesktopBrowserManager(win);
+  win.on("closed", () => {
+    browserManager?.destroy();
+    browserManager = null;
   });
   // Keep the build stamp in the title bar — don't let the loaded page's <title>
   // overwrite it (that's how you answer "which build am I running?").
@@ -345,6 +362,23 @@ function createWindow(url) {
   win.loadURL(url);
   return win;
 }
+
+function requireBrowserManager() {
+  if (!browserManager) throw new Error("The Telar desktop browser host is not ready.");
+  return browserManager;
+}
+
+ipcMain.handle("telar:browser:state", () => requireBrowserManager().state());
+ipcMain.handle("telar:browser:action", (_event, action) => requireBrowserManager().action(action));
+ipcMain.handle("telar:browser:tool", (_event, input) =>
+  requireBrowserManager().callTool(input?.name, input?.args || {}),
+);
+ipcMain.handle("telar:browser:set-bounds", (_event, bounds) => {
+  requireBrowserManager().setBounds(bounds);
+});
+ipcMain.handle("telar:browser:set-visible", (_event, visible) => {
+  requireBrowserManager().setVisible(visible);
+});
 
 // --- (f) Teardown ------------------------------------------------------------
 function killServer() {

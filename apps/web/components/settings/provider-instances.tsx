@@ -371,8 +371,8 @@ export function ProviderInstanceRow({
               on the ROW live here instead, in the same place on every row
               whatever the badges do. */}
           <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
-            {/* The main account is detected, not added, and every project
-                manifest defaults to it — so there is no delete affordance. */}
+            {/* The main account is detected, not added, and is the native
+                zero-configuration session fallback — so there is no delete affordance. */}
             {!account.isMain && (
               <Button
                 variant="ghost"

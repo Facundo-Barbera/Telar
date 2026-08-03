@@ -326,22 +326,18 @@ export type ResolvedToolPolicy = {
 
 // --- The setting sources and the permission mode ------------------------------
 
-// `user` is excluded BY TYPE, not by convention. The route's own comment
-// records the decision: user-level settings stay out "on purpose (keeps the
-// developer's personal config/tokens out of the subprocess)". A profile field
-// that could re-add it would turn that decision into a setting — the same
-// degradation AD-10 forbids for tool grants. Same utility-type family as
-// critic.ts's Omit<> and runner/lease.ts's Pick<>.
-//
-// Stated honestly, because the type does NOT close it: settingSources
-// ["project", "local"] still lets a repo's own settings.local.json widen its
-// own access — it can grant permissions.allow or defaultMode:
-// bypassPermissions, which the SDK honours BEFORE canUseTool is ever invoked.
-// The route's comment spells this out as a deliberate, accepted trust decision.
-// The mechanism holding against it is `disallowedTools`, which is why the fold
-// below always feeds `deny` through and why guardrails union rather than
-// replace.
-export type ProfileSettingSource = Exclude<SettingSource, "user">;
+// Native Claude sessions load the same complete setting stack as Claude Code:
+// global user configuration, repository configuration, and local repository
+// overrides. This is deliberately a harness-level constant rather than a list
+// reconstructed by each surface. Restricted verifier/scoping agents continue
+// to opt into `settingSources: []` at their own capability wall.
+export const NATIVE_CLAUDE_SETTING_SOURCES = [
+  "user",
+  "project",
+  "local",
+] as const satisfies readonly SettingSource[];
+
+export type ProfileSettingSource = SettingSource;
 
 // The permission modes a profile context may carry, derived from the SDK's own
 // union rather than restated. The three excluded members are excluded for

@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { accountEnv } from "../src/engine";
-
-const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-claude-runtime-"));
-const runtimeSettings = path.join(runtimeDir, "settings.json");
-process.env.TELAR_CLAUDE_SETTINGS_PATH = runtimeSettings;
 
 // Account isolation (the "both accounts point to work" bug): a subscription
 // account with NO configDir must land on the provider's BASE login regardless
@@ -14,7 +7,6 @@ process.env.TELAR_CLAUDE_SETTINGS_PATH = runtimeSettings;
 let prev: string | undefined;
 beforeEach(() => {
   prev = process.env.CLAUDE_CONFIG_DIR;
-  fs.writeFileSync(runtimeSettings, JSON.stringify({ env: {} }));
 });
 afterEach(() => {
   if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -59,6 +51,8 @@ const OWNED = [
   "ANTHROPIC_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_API_KEY",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "CLAUDE_CODE_USE_BEDROCK",
 ];
 let ambient: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -87,22 +81,6 @@ test("the native Claude account inherits its configured router token", () => {
   process.env.ANTHROPIC_AUTH_TOKEN = "sk-local-ambient";
   const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
   expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-local-ambient");
-});
-
-test("Claude settings contribute routing and model aliases without loading the user tier", () => {
-  fs.writeFileSync(runtimeSettings, JSON.stringify({
-    env: {
-      ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
-      ANTHROPIC_AUTH_TOKEN: "router-token",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "gpt-routed-mini",
-      UNRELATED_TOOL_ENV: "must-not-leak-from-settings",
-    },
-  }));
-  const env = accountEnv({ name: "personal", provider: "claude", authMode: "subscription" });
-  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
-  expect(env.ANTHROPIC_AUTH_TOKEN).toBe("router-token");
-  expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("gpt-routed-mini");
-  expect(env.UNRELATED_TOOL_ENV).toBeUndefined();
 });
 
 test("codex accounts get the same guard in their own spelling", () => {
@@ -150,4 +128,19 @@ test("an isolated config-dir account does not inherit the native runtime route",
   const isolated = accountEnv({ name: "work", provider: "claude", configDir: "/tmp/claude-work" });
   expect(native.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8317");
   expect(isolated.ANTHROPIC_BASE_URL).toBeUndefined();
+});
+
+test("an isolated config-dir account does not inherit native model or backend overrides", () => {
+  process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "native-router-model";
+  process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+  const native = accountEnv({ name: "personal", provider: "claude" });
+  const isolated = accountEnv({
+    name: "work",
+    provider: "claude",
+    configDir: "/tmp/claude-work",
+  });
+  expect(native.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("native-router-model");
+  expect(native.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+  expect(isolated.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+  expect(isolated.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
 });

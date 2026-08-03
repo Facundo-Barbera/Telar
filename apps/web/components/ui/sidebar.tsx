@@ -500,6 +500,7 @@ type SidebarDragState = {
 function SidebarRail({
   className,
   onClick,
+  onKeyDown,
   onPointerCancel,
   onPointerDown,
   onPointerMove,
@@ -725,6 +726,41 @@ function SidebarRail({
     toggleSidebar()
   }
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    onKeyDown?.(event)
+    if (event.defaultPrevented || !canResize || !resizable) return
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
+    const rail = event.currentTarget
+    const wrapper = rail.closest<HTMLElement>("[data-slot='sidebar-wrapper']")
+    const sidebarRoot = rail.closest<HTMLElement>("[data-slot='sidebar']")
+    const container = sidebarRoot?.querySelector<HTMLElement>(
+      "[data-slot='sidebar-container']"
+    )
+    if (!wrapper || !sidebarRoot || !container) return
+    event.preventDefault()
+    const currentWidth = container.getBoundingClientRect().width
+    const visualDelta = event.key === "ArrowRight" ? 16 : -16
+    const proposedWidth = currentWidth + (side === "right" ? -visualDelta : visualDelta)
+    const width = flushPendingSidebarWidth(
+      currentWidth,
+      proposedWidth,
+      resizable.minWidth,
+      resizable.maxWidth,
+      (candidate) =>
+        resizable.shouldAcceptWidth?.({
+          currentWidth,
+          nextWidth: candidate,
+          rail,
+          side,
+          sidebarRoot,
+          wrapper,
+        }) ?? true
+    )
+    sidebarRoot.style.setProperty("--sidebar-width", `${width}px`)
+    if (resizable.storageKey) setSidebarWidth(resizable.storageKey, width)
+    resizable.onResize?.(width)
+  }
+
   if (isMobile) return null
 
   return (
@@ -732,15 +768,16 @@ function SidebarRail({
       data-sidebar="rail"
       data-slot="sidebar-rail"
       aria-label={canResize ? "Resize Sidebar" : "Toggle Sidebar"}
-      tabIndex={-1}
+      tabIndex={canResize ? 0 : -1}
       onClick={handleClick}
+      onKeyDown={handleKeyDown}
       onPointerCancel={handlePointerCancel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       title={canResize ? "Drag to resize sidebar" : "Toggle Sidebar"}
       className={cn(
-        "absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] hover:after:bg-sidebar-border sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2",
+        "absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] after:bg-sidebar-border/25 after:transition-colors hover:after:bg-sidebar-border focus-visible:outline-none focus-visible:after:bg-ring sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2",
         // Without this the browser's own pan gesture claims a pen or touch drag
         // on a touchscreen laptop, fires pointercancel, and the rail appears
         // simply not to work — while endDrag still persists whatever partial

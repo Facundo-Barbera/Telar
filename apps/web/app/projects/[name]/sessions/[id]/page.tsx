@@ -10,8 +10,7 @@ import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { SessionView } from "@/components/session/session-view";
-import { RightPanel } from "@/components/right-panel/right-panel";
-import { readAccountsEnvelope } from "@/lib/accounts-server";
+import { readAppShellAccounts } from "@/lib/app-shell-data";
 
 // The transcript is read straight from the store at request time.
 export const dynamic = "force-dynamic";
@@ -56,12 +55,10 @@ export default async function SessionPage({
   const { name, id } = await params;
   const { role: roleParam, run: runParam } = await searchParams;
 
-  // The manifest fixes this project's default account. An unknown project is
-  // a stable condition (it can't resolve mid-stream), so it's the one case
-  // we surface as an error rather than a fresh session.
-  let manifest;
+  // An unknown project is a stable condition (it can't resolve mid-stream), so
+  // it's the one case we surface as an error rather than a fresh session.
   try {
-    manifest = getProject(name).manifest;
+    getProject(name);
   } catch {
     return (
       <div className="flex h-dvh flex-col">
@@ -101,7 +98,10 @@ export default async function SessionPage({
         id: chat.id,
         model: chat.model,
         effort: chat.effort,
+        runtimeMode: chat.runtimeMode,
         permissionMode: chat.permissionMode,
+        fastMode: chat.fastMode,
+        serviceTier: chat.serviceTier,
         messages: chat.messages,
         costUsd: chat.costUsd,
         inputTokens: chat.inputTokens ?? 0,
@@ -109,6 +109,7 @@ export default async function SessionPage({
         cacheReadTokens: chat.cacheReadTokens ?? 0,
         cacheCreateTokens: chat.cacheCreateTokens ?? 0,
         contextTokens: chat.contextTokens ?? 0,
+        contextUsage: chat.contextUsage,
         loomId: chat.loomId,
         role: chat.role,
       }
@@ -123,16 +124,17 @@ export default async function SessionPage({
   const initialRole = !chat && roleParam === "planner" ? "planner" : undefined;
 
   // An existing chat resumes with its own persisted account (the resume
-  // transcript lives under that account's config dir — the manifest default
-  // may have changed since); a fresh session falls back to the manifest.
-  const freshAccount = chat ? undefined : resolveEnabledAccount(manifest.account);
+  // transcript lives under that account's config dir). A fresh session starts
+  // from the user's enabled global default, then the composer may change it
+  // until the first turn locks the choice to that session.
+  const freshAccount = chat ? undefined : resolveEnabledAccount();
   if (!chat && !freshAccount) {
     return (
       <div className="flex h-dvh items-center justify-center p-6">
         <EmptyState
           icon={FolderGitIcon}
           title="No enabled account"
-          description="Enable the project account or another account in Settings before starting a session."
+          description="Enable an account in Settings before starting a session."
           action={
             <Button variant="outline" size="sm" render={<Link href="/settings?section=providers" />}>
               Open provider settings
@@ -149,7 +151,7 @@ export default async function SessionPage({
 
   // Display-only account metadata for the client picker — passed as plain
   // data so the client component never imports the server-only registry.
-  const accounts = readAccountsEnvelope().accounts
+  const accounts = readAppShellAccounts().accounts
     .filter((account) => account.available)
     .map((a) => ({
       name: a.name,
@@ -191,7 +193,6 @@ export default async function SessionPage({
           focusRunId={runParam}
         />
       </div>
-      <RightPanel project={name} scopeKey={`${name}:${id}`} />
     </div>
   );
 }

@@ -1,133 +1,107 @@
 "use client";
 
-// 1.2 — collapse the composer's button crowd (permission · model · effort)
-// into ONE settings popover fronted by a compact config chip that reads back
-// the active model, approval mode and effort at a glance. Ported from the
-// owner-verdicted demo (lib/demo-gallery/input/settings-popover.tsx +
-// shared.tsx). Provider/account stay as their own pre-session controls in the
-// footer; this chip is the config trio.
-//
-// ONE MENU, BOTH PROVIDERS. This used to be the CLAUDE config trio, and Codex
-// got three loose selects beside it instead — approval preset, model, effort —
-// so the composer changed shape depending on which agent you picked, and the
-// same three decisions were made through two different UIs with two different
-// vocabularies. There is no reason for that: the decisions are identical
-// (how much may it do on its own · which model · how hard should it think),
-// only the option VALUES differ.
-//
-// So the popover is now provider-neutral and every provider-specific thing
-// arrives as data: the approval section takes its own title, options and
-// current value (Claude's permission modes, Codex's sandbox+approval presets),
-// and the header badge names whichever provider is active. Nothing in this file
-// branches on a provider id — if it ever needs to, the abstraction is wrong.
-//
-// Real data only: the model list is the live catalog fetched by the composer
-// (modelOptions), the effort list is the provider's real EFFORT_OPTIONS, and
-// the approval options are the provider's real ones — nothing is hardcoded.
+// The composer exposes three focused decisions instead of one miniature
+// settings page: agent/model, reasoning, and permissions. Provider and account
+// live inside the agent picker because together they identify the runtime that
+// owns the selected model. Each menu is sized for one question and applies its
+// choice immediately.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  BotIcon,
+  forwardRef,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
+import {
   CheckIcon,
+  ChevronDownIcon,
   GaugeIcon,
   SearchIcon,
-  SettingsIcon,
   ShieldCheckIcon,
-  SparklesIcon,
-  ZapIcon,
+  StarIcon,
+  UserRoundIcon,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { cachedJson } from "@/lib/client-json-cache";
 import { DEFAULT_MODEL, modelsForProvider, type ModelInfo } from "@/lib/models";
 import { getUiPrefs } from "@/lib/ui-prefs";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
+import {
+  triggerLabel,
+  type ProviderOptionGroup,
+} from "@/lib/provider-options";
 
-type EffortOpt = { id: string; label: string; blurb: string };
+type Provider = "claude" | "codex";
 
-/** One choice in the approval section. Provider-neutral by construction: a
- *  Claude permission mode and a Codex sandbox+approval preset both flatten to
- *  this, which is what lets the two share a control instead of a shape. */
-export type ApprovalOption = { value: string; label: string; description: string };
+export type ComposerAccountOption = {
+  name: string;
+  provider?: Provider;
+  displayTier?: string;
+};
 
-/** Everything the approval section needs, supplied by whoever knows the
- *  provider. `defaultValue` is the one that reads as "Default for new
- *  projects"; `seedValue` (optional) is what a project with no remembered
- *  config should start at, taken from the global Agent-defaults preference.
- *
- *  `seedValue` is a FUNCTION, not a value, so the caller never has to read
- *  localStorage-backed preferences during render — SSR would return the
- *  defaults and the client the stored ones, which is a hydration mismatch
- *  waiting to happen. It is called inside the seed effect, client-side only. */
+export type ApprovalOption = {
+  value: string;
+  label: string;
+  description: string;
+};
+
 export type ApprovalConfig = {
   title: string;
   value: string;
   options: readonly ApprovalOption[];
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
   defaultValue: string;
   seedValue?: () => string | undefined;
 };
 
-// Icons are positional, not value-keyed: the first option is the permissive
-// "just do it" one on both providers, the last is the most cautious. Keying on
-// a Claude value here would reintroduce the branch this refactor removed.
-const approvalIcon = (index: number, total: number) =>
-  index === 0 ? (
-    <ZapIcon className="size-3.5 text-primary" />
-  ) : index === total - 1 ? (
-    <BotIcon className="size-3.5" />
-  ) : (
-    <CheckIcon className="size-3.5" />
-  );
-
-function chipClass(active: boolean) {
+function controlClass(open: boolean) {
   return cn(
-    "flex h-8 items-center gap-2 rounded-lg border border-input bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+    "flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-input bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors",
     "hover:bg-accent hover:text-foreground",
-    active && "border-ring bg-accent text-foreground",
+    open && "border-ring bg-accent text-foreground",
   );
 }
 
-function SectionLabel({ icon, children }: { icon?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex items-center gap-1.5 px-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+type ControlTriggerProps = ComponentPropsWithoutRef<"button"> & {
+  open: boolean;
+  icon: ReactNode;
+  label: string;
+  detail?: string;
+  ariaLabel: string;
+};
+
+const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>(
+  ({ open, icon, label, detail, ariaLabel, className, ...props }, ref) => (
+    <button
+      {...props}
+      ref={ref}
+      type="button"
+      className={cn(controlClass(open), className)}
+      aria-label={ariaLabel}
+    >
       {icon}
-      {children}
-    </div>
-  );
-}
+      <span className="max-w-32 truncate text-foreground">{label}</span>
+      {detail ? (
+        <>
+          <span className="hidden text-muted-foreground/40 md:inline">·</span>
+          <span className="hidden max-w-24 truncate md:inline">{detail}</span>
+        </>
+      ) : null}
+      <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
+    </button>
+  ),
+);
+ControlTrigger.displayName = "ControlTrigger";
 
-// A labelled segmented control — single-tap, no dropdown-inside-a-dropdown.
-function Segmented<T extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string; icon?: ReactNode }[];
-}) {
+function MenuHeading({ children }: { children: ReactNode }) {
   return (
-    <div className="flex gap-1 rounded-lg bg-muted/60 p-1">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => onChange(o.value)}
-          className={cn(
-            "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-            value === o.value
-              ? "bg-background text-foreground shadow-sm ring-1 ring-border"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {o.icon}
-          <span className="truncate">{o.label}</span>
-        </button>
-      ))}
+    <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      {children}
     </div>
   );
 }
@@ -135,80 +109,200 @@ function Segmented<T extends string>({
 function ModelRow({
   model,
   selected,
-  onClick,
+  favorite,
+  disabled,
+  onSelect,
+  onToggleFavorite,
 }: {
   model: ModelInfo;
   selected: boolean;
-  onClick: () => void;
+  favorite: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+  onToggleFavorite: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex w-full items-center rounded-lg transition-colors",
+        selected ? "bg-accent" : "hover:bg-accent/60",
+      )}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onSelect}
+        className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left disabled:cursor-default"
+      >
+        <span
+          className={cn(
+            "flex size-4 shrink-0 items-center justify-center rounded-full border",
+            selected
+              ? "border-primary bg-primary text-primary-foreground"
+              : "border-input",
+          )}
+        >
+          {selected ? <CheckIcon className="size-3" /> : null}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{model.name}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            {PROVIDER_LABEL[model.provider ?? "claude"]}
+          </span>
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={onToggleFavorite}
+        aria-label={`${favorite ? "Remove" : "Add"} ${model.name} ${favorite ? "from" : "to"} favorites`}
+        className="mr-1.5 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground"
+      >
+        <StarIcon className={cn("size-3.5", favorite && "fill-current text-amber-500")} />
+      </button>
+    </div>
+  );
+}
+
+function ChoiceRow({
+  label,
+  description,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  description?: string;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={onSelect}
       className={cn(
-        "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+        "flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
         selected ? "bg-accent" : "hover:bg-accent/60",
       )}
     >
-      <span
-        className={cn(
-          "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-          selected ? "border-primary bg-primary text-primary-foreground" : "border-input",
-        )}
-      >
-        {selected && <CheckIcon className="size-3" />}
-      </span>
       <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1.5">
-          <span className="text-sm font-medium">{model.name}</span>
-          <span className="rounded border border-border px-1 py-0 text-[10px] text-muted-foreground">
-            {model.context}
+        <span className="block text-sm font-medium text-foreground">{label}</span>
+        {description ? (
+          <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+            {description}
           </span>
-        </span>
-        <span className="mt-0.5 block text-xs text-muted-foreground">{model.blurb}</span>
+        ) : null}
+      </span>
+      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+        {selected ? <CheckIcon className="size-3.5 text-primary" /> : null}
       </span>
     </button>
   );
 }
 
-export function ComposerSettings({
+const modelFamilyKey = (option: Pick<ModelInfo, "id" | "resolvedModel">) =>
+  (option.resolvedModel ?? option.id)
+    .replace(/\[1m\]$/i, "")
+    .replace(/-\d{8}$/i, "");
+
+const FAVORITE_MODELS_KEY = "telar:favorite-models";
+
+const providerForModel = (model: ModelInfo): Provider => model.provider ?? "claude";
+
+const favoriteModelKey = (model: ModelInfo): string =>
+  `${providerForModel(model)}:${modelFamilyKey(model)}`;
+
+export function ComposerControls({
   project,
   provider,
-  open,
-  onOpenChange,
+  providers,
+  onProviderChange,
+  account,
+  accounts,
+  onAccountChange,
+  runtimeLocked,
   model,
   setModel,
-  effort,
-  setEffort,
+  optionGroups,
+  optionValues,
+  onOptionChange,
   approval,
   modelOptions,
-  effortOptions,
 }: {
   project: string;
-  provider: "claude" | "codex";
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
+  provider: Provider;
+  providers: readonly Provider[];
+  onProviderChange: (provider: Provider) => void;
+  account: string;
+  accounts: readonly ComposerAccountOption[];
+  onAccountChange: (account: string) => void;
+  runtimeLocked: boolean;
   model: string;
-  setModel: (v: string) => void;
-  effort: string;
-  setEffort: (v: string) => void;
+  setModel: (model: string) => void;
+  optionGroups: readonly ProviderOptionGroup[];
+  optionValues: Readonly<Record<string, string>>;
+  onOptionChange: (group: string, value: string) => void;
   approval: ApprovalConfig;
   modelOptions: ModelInfo[];
-  effortOptions: EffortOpt[];
 }) {
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [approvalOpen, setApprovalOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState("");
-  // New-session fallback: for a project with NO remembered composer config, seed
-  // the still-untouched hardcoded defaults from the global UI preference (see
-  // settings › Agent defaults). Per-project memory (telar:composer:<project>)
-  // and any explicit choice always win — hence the guards below:
-  //   • only when this project has no remembered config yet;
-  //   • only while model/permission are still the session's hardcoded defaults
-  //     (DEFAULT_MODEL / "auto"), so a resumed session's own values are never
-  //     clobbered;
-  //   • only for a Claude session (the global model appears in modelOptions),
-  //     so a Codex session's model list isn't seeded a Claude id.
-  // This effect (a child of the composer) runs before the parent's own seed +
-  // persist effects, so it reads the pre-existing memory state correctly.
+  const [modelView, setModelView] = useState<Provider | "favorites">(provider);
+  const [catalogs, setCatalogs] = useState<Partial<Record<Provider, ModelInfo[]>>>({});
+  const [favoriteModels, setFavoriteModels] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(FAVORITE_MODELS_KEY) ?? "[]");
+      return Array.isArray(saved)
+        ? new Set(saved.filter((value): value is string => typeof value === "string"))
+        : new Set();
+    } catch {
+      // Corrupt preferences degrade to an empty favorites list.
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    if (!agentOpen) return;
+    let cancelled = false;
+    const requests = providers.map(async (catalogProvider) => {
+      if (catalogProvider === provider) return [catalogProvider, modelOptions] as const;
+      const catalogAccount = accounts.find(
+        (candidate) => (candidate.provider ?? "claude") === catalogProvider,
+      );
+      if (!catalogAccount) {
+        return [catalogProvider, modelsForProvider(catalogProvider)] as const;
+      }
+      const params = new URLSearchParams({
+        provider: catalogProvider,
+        account: catalogAccount.name,
+        project,
+      });
+      try {
+        const data = await cachedJson<{ models?: ModelInfo[] }>(
+          `/api/models?${params.toString()}`,
+          { maxAgeMs: 60 * 60 * 1000 },
+        );
+        const models = Array.isArray(data.models) && data.models.length > 0
+          ? data.models
+          : modelsForProvider(catalogProvider);
+        return [catalogProvider, models] as const;
+      } catch {
+        return [catalogProvider, modelsForProvider(catalogProvider)] as const;
+      }
+    });
+    void Promise.all(requests).then((entries) => {
+      if (cancelled) return;
+      setCatalogs((current) => ({ ...current, ...Object.fromEntries(entries) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts, agentOpen, modelOptions, project, provider, providers]);
+
+  // Seed untouched new sessions from the global Claude defaults. Per-project
+  // composer memory and explicit choices still win, matching the old combined
+  // control's behavior without coupling persistence to any popover's lifetime.
   const seededRef = useRef(false);
   useEffect(() => {
     if (seededRef.current) return;
@@ -219,171 +313,298 @@ export function ComposerSettings({
     } catch {
       return;
     }
-    const prefs = getUiPrefs();
+    const preferences = getUiPrefs();
     if (
       model === DEFAULT_MODEL &&
-      modelsForProvider("claude").some((m) => m.id === prefs.defaultModel)
+      modelsForProvider("claude").some(
+        (option) => option.id === preferences.defaultModel,
+      )
     ) {
-      setModel(prefs.defaultModel);
-      // Only when the caller supplied one AND the control is still untouched —
-      // a resumed session's own choice is never clobbered.
+      setModel(preferences.defaultModel);
       const seed = approval.seedValue?.();
-      if (seed && approval.value === approval.defaultValue) approval.onChange(seed);
+      if (seed && approval.value === approval.defaultValue) {
+        approval.onChange(seed);
+      }
     }
-    // Seed once per project mount; deliberately not reacting to model changes.
+    // Seed only once for this mount. Reacting to later model/approval changes
+    // would overwrite deliberate composer choices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
-  const activeModel = modelOptions.find((m) => m.id === model);
+  const activeModel = modelOptions.find((option) => option.id === model);
   const modelLabel = activeModel?.name ?? model;
-  const active = approval.options.find((o) => o.value === approval.value);
-  const approvalLabel = active?.label ?? approval.options[0]?.label ?? "";
-  const approvalDescription = active?.description;
-  const isDefault = approval.value === approval.defaultValue;
-  const effortLabel = effortOptions.find((e) => e.id === effort)?.label;
+  const reasoningLabel = triggerLabel(optionGroups, optionValues) ?? "Reasoning";
+  const activeApproval = approval.options.find(
+    (option) => option.value === approval.value,
+  );
+  const approvalLabel = activeApproval?.label ?? approval.options[0]?.label ?? "";
+  const providerAccounts = accounts.filter(
+    (option) => (option.provider ?? "claude") === provider,
+  );
+  const hasModelQuery = modelQuery.trim().length > 0;
+  const toggleFavorite = (option: ModelInfo) => {
+    setFavoriteModels((current) => {
+      const next = new Set(current);
+      const key = favoriteModelKey(option);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        window.localStorage.setItem(FAVORITE_MODELS_KEY, JSON.stringify([...next]));
+      } catch {
+        // The in-memory choice remains useful when storage is unavailable.
+      }
+      return next;
+    });
+  };
   const visibleModels = useMemo(() => {
+    const families = new Map<string, ModelInfo>();
+    const preference = (option: ModelInfo, key: string) =>
+      (`${providerForModel(option)}:${modelFamilyKey({ id: option.id })}` === key ? 4 : 0) +
+      (option.id === model ? 2 : 0) +
+      (option.isDefault ? 1 : 0);
+    const allModels = providers.flatMap((catalogProvider) =>
+      catalogProvider === provider
+        ? modelOptions
+        : catalogs[catalogProvider] ?? modelsForProvider(catalogProvider),
+    );
+    for (const option of allModels) {
+      const key = favoriteModelKey(option);
+      const existing = families.get(key);
+      if (!existing || preference(option, key) > preference(existing, key)) {
+        families.set(key, option);
+      }
+    }
+    const models = [...families.values()];
     const query = modelQuery.trim().toLowerCase();
-    return query
-      ? modelOptions.filter((option) =>
-          `${option.name} ${option.id} ${option.tier}`.toLowerCase().includes(query),
-        )
-      : modelOptions;
-  }, [modelOptions, modelQuery]);
+    if (query) {
+      return models.filter((option) =>
+          `${option.name} ${option.id} ${option.tier}`
+            .toLowerCase()
+            .includes(query),
+        );
+    }
+    return modelView === "favorites"
+      ? models.filter((option) => favoriteModels.has(favoriteModelKey(option)))
+      : models.filter((option) => providerForModel(option) === modelView);
+  }, [catalogs, favoriteModels, model, modelOptions, modelQuery, modelView, provider, providers]);
+
+  const activeFamily =
+    activeModel ? modelFamilyKey(activeModel) : modelFamilyKey({ id: model });
+
+  const changeAgentOpen = (next: boolean) => {
+    setAgentOpen(next);
+    setModelQuery("");
+    setModelView(provider);
+  };
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger
-        render={(props) => (
-          <button type="button" {...props} className={chipClass(open)}>
-            <SparklesIcon className="size-3.5 text-foreground/70" />
-            <span className="text-foreground">{modelLabel}</span>
-            <span className="text-muted-foreground/40">·</span>
-            <span className="flex items-center gap-1">
-              {isDefault ? (
-                <ZapIcon className="size-3 text-primary" />
-              ) : (
-                <ShieldCheckIcon className="size-3" />
-              )}
-              {approvalLabel}
-            </span>
-            {effort !== "default" && effortLabel && (
-              <>
-                <span className="text-muted-foreground/40">·</span>
-                <span>{effortLabel}</span>
-              </>
-            )}
-          </button>
-        )}
-      />
-      <PopoverContent align="start" sideOffset={8} className="w-[340px] p-0">
-        <div className="flex items-center justify-between border-b px-3.5 py-2.5">
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <SettingsIcon className="size-4 text-muted-foreground" />
-            Agent configuration
-          </span>
-          <Badge variant="outline" className="gap-1 text-[10px]">
-            <ProviderIcon provider={provider} size={12} />
-            {PROVIDER_LABEL[provider]}
-          </Badge>
-        </div>
-
-        <div className="max-h-[min(66vh,560px)] space-y-4 overflow-y-auto p-3.5">
-          {/* Approval — whatever the provider calls it, in the provider's own
-              option set. The control is the same on both. */}
-          <div className="space-y-2">
-            <SectionLabel icon={<ShieldCheckIcon className="size-3" />}>{approval.title}</SectionLabel>
-            <Segmented<string>
-              value={approval.value}
-              onChange={approval.onChange}
-              options={approval.options.map((o, i) => ({
-                value: o.value,
-                label: o.label,
-                icon: approvalIcon(i, approval.options.length),
-              }))}
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <Popover open={agentOpen} onOpenChange={changeAgentOpen}>
+        <PopoverTrigger
+          render={
+            <ControlTrigger
+              open={agentOpen}
+              icon={<ProviderIcon provider={provider} size={14} />}
+              label={modelLabel}
+              detail={providerAccounts.length > 1 ? account : undefined}
+              ariaLabel={`Agent: ${PROVIDER_LABEL[provider]}, ${modelLabel}, account ${account}`}
+              className="w-40 justify-start"
             />
-            <p className="px-0.5 text-xs text-muted-foreground">
-              {approvalDescription}
-              {isDefault && (
-                <span className="ml-1 font-medium text-primary">Default for new projects.</span>
-              )}
-            </p>
-          </div>
+          }
+        />
+        <PopoverContent
+          align="start"
+          side="top"
+          sideOffset={8}
+          className="flex h-[min(340px,calc(100vh-5rem))] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden p-0"
+        >
+          <div className="flex min-h-0 flex-1">
+            <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-muted/20 p-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setModelQuery("");
+                  setModelView("favorites");
+                }}
+                aria-label="Favorites"
+                title="Favorites"
+                className={cn(
+                  "flex size-9 items-center justify-center rounded-lg transition-colors",
+                  modelView === "favorites"
+                    ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+              >
+                <StarIcon className="size-4" />
+              </button>
+              {providers.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  disabled={runtimeLocked}
+                  onClick={() => {
+                    setModelQuery("");
+                    setModelView(option);
+                    onProviderChange(option);
+                  }}
+                  aria-label={PROVIDER_LABEL[option]}
+                  title={PROVIDER_LABEL[option]}
+                  className={cn(
+                    "flex size-9 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
+                    modelView === option
+                      ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                  )}
+                >
+                  <ProviderIcon provider={option} size={18} />
+                </button>
+              ))}
+            </div>
 
-          <Separator />
-
-          {/* Model list — the live catalog. */}
-          <div className="space-y-1.5">
-            <SectionLabel icon={<SparklesIcon className="size-3" />}>Model</SectionLabel>
-            {modelOptions.length > 6 && (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3">
               <div className="relative">
                 <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={modelQuery}
                   onChange={(event) => setModelQuery(event.target.value)}
-                  placeholder="Search models"
+                  placeholder="Search all models"
                   aria-label="Search models"
-                  className="h-8 pl-8 text-xs"
+                  className="h-9 pl-8 text-xs"
                 />
               </div>
-            )}
-            <div className="space-y-0.5">
-              {visibleModels.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  model={m}
-                  selected={model === m.id}
-                  onClick={() => setModel(m.id)}
+
+              {!hasModelQuery && modelView === provider && providerAccounts.length > 1 ? (
+                <div className="space-y-1.5">
+                  <MenuHeading>Account</MenuHeading>
+                  <div className="flex flex-wrap gap-1">
+                    {providerAccounts.map((option) => (
+                      <button
+                        key={option.name}
+                        type="button"
+                        disabled={runtimeLocked}
+                        onClick={() => onAccountChange(option.name)}
+                        className={cn(
+                          "flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs transition-colors disabled:cursor-default",
+                          account === option.name
+                            ? "border-ring bg-accent text-foreground"
+                            : "border-input text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                        )}
+                      >
+                        <UserRoundIcon className="size-3 shrink-0" />
+                        <span className="max-w-40 truncate">{option.name}</span>
+                        {option.displayTier ? (
+                          <span className="rounded border border-border px-1 text-[9px] text-muted-foreground">
+                            {option.displayTier}
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+                <MenuHeading>
+                  {hasModelQuery
+                    ? "Search results"
+                    : modelView === "favorites"
+                      ? "Favorites"
+                      : `${PROVIDER_LABEL[modelView]} models`}
+                </MenuHeading>
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+                  {visibleModels.map((option) => (
+                    <ModelRow
+                      key={favoriteModelKey(option)}
+                      model={option}
+                      selected={
+                        providerForModel(option) === provider &&
+                        modelFamilyKey(option) === activeFamily
+                      }
+                      favorite={favoriteModels.has(favoriteModelKey(option))}
+                      disabled={runtimeLocked}
+                      onSelect={() => {
+                        const nextProvider = providerForModel(option);
+                        if (nextProvider !== provider) onProviderChange(nextProvider);
+                        setModel(option.id);
+                        changeAgentOpen(false);
+                      }}
+                      onToggleFavorite={() => toggleFavorite(option)}
+                    />
+                  ))}
+                  {visibleModels.length === 0 ? (
+                    <p className="px-2.5 py-5 text-center text-xs text-muted-foreground">
+                      {modelView === "favorites" && !hasModelQuery
+                        ? "Star a model to keep it here."
+                        : `No models match “${modelQuery}”.`}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <Popover open={reasoningOpen} onOpenChange={setReasoningOpen}>
+        <PopoverTrigger
+          render={
+            <ControlTrigger
+              open={reasoningOpen}
+              icon={<GaugeIcon className="size-3.5" />}
+              label={reasoningLabel}
+              ariaLabel={`Model options: ${reasoningLabel}`}
+            />
+          }
+        />
+        <PopoverContent align="start" sideOffset={8} className="w-72 p-1.5">
+          {optionGroups.map((group, index) => (
+            <div key={group.id} className={cn(index > 0 && "mt-1 border-t pt-1")}>
+              <MenuHeading>{group.label}</MenuHeading>
+              {group.values.map((option) => (
+                <ChoiceRow
+                  key={option.value}
+                  label={option.label}
+                  description={option.blurb}
+                  selected={optionValues[group.id] === option.value}
+                  onSelect={() => onOptionChange(group.id, option.value)}
                 />
               ))}
-              {visibleModels.length === 0 && (
-                <p className="px-2.5 py-4 text-center text-xs text-muted-foreground">
-                  No models match “{modelQuery}”.
-                </p>
-              )}
             </div>
-          </div>
+          ))}
+        </PopoverContent>
+      </Popover>
 
-          <Separator />
-
-          {/* Effort — "Auto" (default) omits effort from the POST body; the
-              rest map 1:1 to the provider's EFFORT_OPTIONS. */}
-          <div className="space-y-2">
-            <SectionLabel icon={<GaugeIcon className="size-3" />}>Reasoning effort</SectionLabel>
-            <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1">
-              {[{ id: "default", label: "Auto" }, ...effortOptions].map((e) => (
-                <button
-                  key={e.id}
-                  type="button"
-                  onClick={() => setEffort(e.id)}
-                  className={cn(
-                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                    effort === e.id
-                      ? "bg-background text-foreground shadow-sm ring-1 ring-border"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {e.label}
-                </button>
-              ))}
-            </div>
-            <p className="px-0.5 text-xs text-muted-foreground">
-              {effort === "default"
-                ? "Let the model choose its own effort."
-                : effortOptions.find((e) => e.id === effort)?.blurb}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-3.5 py-2.5">
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <CheckIcon className="size-3.5 text-primary" />
-            Remembered for <span className="font-medium text-foreground">{project}</span>
-          </span>
-          <Button size="sm" variant="ghost" className="text-xs" onClick={() => onOpenChange(false)}>
-            Done
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
+      <Popover open={approvalOpen} onOpenChange={setApprovalOpen}>
+        <PopoverTrigger
+          render={
+            <ControlTrigger
+              open={approvalOpen}
+              icon={<ShieldCheckIcon className="size-3.5" />}
+              label={approvalLabel}
+              ariaLabel={`${approval.title}: ${approvalLabel}`}
+            />
+          }
+        />
+        <PopoverContent
+          align="start"
+          sideOffset={8}
+          className="w-[min(300px,calc(100vw-2rem))] p-1.5"
+        >
+          <MenuHeading>{approval.title}</MenuHeading>
+          {approval.options.map((option) => (
+            <ChoiceRow
+              key={option.value}
+              label={option.label}
+              description={option.description}
+              selected={approval.value === option.value}
+              onSelect={() => {
+                approval.onChange(option.value);
+                setApprovalOpen(false);
+              }}
+            />
+          ))}
+        </PopoverContent>
+      </Popover>
+    </div>
   );
 }

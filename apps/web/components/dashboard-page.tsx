@@ -512,6 +512,7 @@ export default function DashboardPage() {
                           <Link
                             key={s.id}
                             href={`/projects/${encodeURIComponent(s.project ?? "")}/sessions/${s.id}`}
+                            prefetch={false}
                             className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/40"
                           >
                             <MessagesSquareIcon className="size-4 shrink-0 text-muted-foreground" />

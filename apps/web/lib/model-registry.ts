@@ -1,8 +1,8 @@
 // Server-only harness model discovery.
 //
 // Model ownership is intentionally narrow:
-//   - Claude exposes its stable native slots. The user's Claude configuration
-//     may map those slots to concrete models, including through a router.
+//   - Claude exposes the models and concrete alias resolutions reported by its
+//     own control protocol after loading the selected configuration stack.
 //   - Codex exposes the selectable models recorded by its own local cache.
 //
 // An optional transport integration never contributes models here. In
@@ -11,6 +11,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { query, type ModelInfo as ClaudeModelInfo } from "@anthropic-ai/claude-agent-sdk";
+import { claudeExecutableOptions } from "./claude-executable";
 import { modelsForProvider, type ModelInfo } from "./models";
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -27,6 +29,10 @@ type CodexCacheEntry = {
   description?: string;
   context_window?: number;
   visibility?: string;
+  default_reasoning_level?: string;
+  supported_reasoning_levels?: Array<{ effort?: string; description?: string }>;
+  service_tiers?: Array<{ id?: string; name?: string; description?: string }>;
+  default_service_tier?: string;
 };
 
 const CODEX_INTERNAL_RE = /(auto-review|internal|eval)/i;
@@ -36,6 +42,94 @@ function tokenLabel(tokens?: number): string {
   if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
   if (tokens >= 1_000 && tokens % 1_000 === 0) return `${tokens / 1_000}K`;
   return tokens.toLocaleString("en-US");
+}
+
+const effortLabel = (value: string): string =>
+  ({ xhigh: "Extra high", max: "Max", ultra: "Ultra" })[value] ??
+  value.charAt(0).toUpperCase() + value.slice(1);
+
+function claudeName(model: ClaudeModelInfo): string {
+  const resolved = model.resolvedModel?.replace(/\[1m\]$/i, "") ?? "";
+  const match = resolved.match(/^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?/i);
+  if (!match) return model.displayName.startsWith("Claude ")
+    ? model.displayName
+    : `Claude ${model.displayName.replace(/ \(.*\)$/, "")}`;
+  const family = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+  const version = match[3] ? `${match[2]}.${match[3]}` : match[2];
+  return `Claude ${family} ${version}`;
+}
+
+function claudeTier(model: ClaudeModelInfo): ModelInfo["tier"] {
+  const id = `${model.value} ${model.resolvedModel ?? ""}`.toLowerCase();
+  if (id.includes("fable")) return "frontier";
+  if (id.includes("opus")) return "opus";
+  if (id.includes("haiku")) return "haiku";
+  return "sonnet";
+}
+
+export function mapClaudeModels(rows: ClaudeModelInfo[]): ModelInfo[] {
+  const defaultResolved = rows.find((row) => row.value === "default")?.resolvedModel;
+  const concrete = rows.filter((row) => row.value !== "default");
+  const source = concrete.length > 0 ? concrete : rows;
+  const mapped = source.map((row) => ({
+    id: row.value,
+    resolvedModel: row.resolvedModel,
+    name: claudeName(row),
+    provider: "claude" as const,
+    tier: claudeTier(row),
+    context: /\[1m\]/i.test(row.value) || /\[1m\]/i.test(row.resolvedModel ?? "") ? "1M" : "200K",
+    maxOutput: "—",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    cacheReadPerMTok: 0,
+    blurb: row.description,
+    supportsFastMode: row.supportsFastMode,
+    supportsAdaptiveThinking: row.supportsAdaptiveThinking,
+    reasoningOptions: row.supportedEffortLevels?.map((effort) => ({
+      id: effort,
+      label: effortLabel(effort),
+      isDefault: effort === "high",
+    })),
+    isDefault: Boolean(defaultResolved && row.resolvedModel === defaultResolved),
+  }));
+  const variants = [...mapped];
+  for (const model of mapped) {
+    if (!/\[1m\]$/i.test(model.id)) continue;
+    const baseId = model.id.replace(/\[1m\]$/i, "");
+    if (mapped.some((candidate) => candidate.id === baseId)) continue;
+    variants.push({
+      ...model,
+      id: baseId,
+      resolvedModel: model.resolvedModel?.replace(/\[1m\]$/i, ""),
+      context: "200K",
+      isDefault: false,
+    });
+  }
+  return variants;
+}
+
+async function readClaudeModels(
+  env: Record<string, string | undefined>,
+  cwd: string,
+): Promise<ModelInfo[]> {
+  async function* emptyPrompt() {
+    // Streaming mode lets us initialize the harness without sending a turn.
+  }
+  const control = query({
+    prompt: emptyPrompt(),
+    options: {
+      ...claudeExecutableOptions(),
+      cwd,
+      env,
+      settingSources: ["user", "project", "local"],
+    },
+  });
+  try {
+    const models = mapClaudeModels(await control.supportedModels());
+    return models.length > 0 ? models : modelsForProvider("claude");
+  } finally {
+    control.close();
+  }
 }
 
 // Codex has used an array, { models: [...] }, and a slug-keyed object across
@@ -83,6 +177,34 @@ function readCodexModels(env: Record<string, string | undefined>): ModelInfo[] {
         cacheReadPerMTok: 0,
         blurb: entry.description ?? "",
         note: "ChatGPT subscription.",
+        reasoningOptions: entry.supported_reasoning_levels?.flatMap((option) =>
+          option.effort
+            ? [{
+                id: option.effort,
+                label: effortLabel(option.effort),
+                blurb: option.description,
+                isDefault: option.effort === entry.default_reasoning_level,
+              }]
+            : [],
+        ),
+        serviceTiers: [
+          {
+            id: "standard",
+            label: "Standard",
+            blurb: "Standard service tier.",
+            isDefault: !entry.default_service_tier,
+          },
+          ...(entry.service_tiers?.flatMap((tier) =>
+            tier.id
+              ? [{
+                  id: tier.id,
+                  label: tier.name ?? tier.id,
+                  blurb: tier.description,
+                  isDefault: tier.id === entry.default_service_tier,
+                }]
+              : [],
+          ) ?? []),
+        ],
       };
     });
   } catch {
@@ -93,8 +215,21 @@ function readCodexModels(env: Record<string, string | undefined>): ModelInfo[] {
 export async function fetchModels(
   provider: "claude" | "codex",
   env: Record<string, string | undefined> = process.env,
+  cwd = process.cwd(),
 ): Promise<ModelInfo[]> {
-  if (provider === "claude") return modelsForProvider("claude");
+  if (provider === "claude") {
+    const configDir = expandHome(env.CLAUDE_CONFIG_DIR || "~/.claude");
+    const key = `claude:${configDir}:${cwd}`;
+    const cached = cache.get(key);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.models;
+    try {
+      const models = await readClaudeModels(env, cwd);
+      cache.set(key, { at: Date.now(), models });
+      return models;
+    } catch {
+      return modelsForProvider("claude");
+    }
+  }
 
   const codexHome = expandHome(env.CODEX_HOME || "~/.codex");
   const cached = cache.get(codexHome);

@@ -8,6 +8,11 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { claudeExecutableOptions } from "@/lib/claude-executable";
 import {
+  fromClaudeContextUsage,
+  fromCodexContextUsage,
+  type ContextUsageSnapshot,
+} from "@/lib/context-usage";
+import {
   accountEnv,
   accountHealth,
   ackUltraWakes,
@@ -28,14 +33,18 @@ import {
   type SessionRole,
 } from "@telar/core";
 import {
+  DEFAULT_RUNTIME_MODE,
+  claudePermissionMode,
+  codexThreadConfig,
+  isRuntimeMode,
+  type RuntimeMode,
+} from "@telar/core/runtime-mode";
+import {
   CODEX_EFFORT_OPTIONS,
-  CODEX_SANDBOX_PRESETS,
   DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_SANDBOX,
   DEFAULT_MODEL,
   EFFORT_OPTIONS,
   type CodexReasoningEffort,
-  type CodexSandbox,
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
@@ -78,6 +87,11 @@ import {
   workspaceTools,
   WORKSPACE_MCP_VERSION,
 } from "@/lib/workspace-mcp";
+import {
+  browserTools,
+  BROWSER_MCP_VERSION,
+  createBrowserMcpServer,
+} from "@/lib/browser-mcp";
 import { namespaceOf } from "@/lib/harness-tools";
 import {
   createPending,
@@ -88,8 +102,6 @@ import {
   ruleMatches,
   ruleOptionsFor,
   makeGuardrailDecision,
-  isValidPermissionMode,
-  type ClientPermissionMode,
   type PermissionDecision,
 } from "@/lib/permissions";
 import {
@@ -136,12 +148,12 @@ const MAX_DETAILED_TOOL_PARTS = 200;
 // is identical either way.
 const EFFORT_LEVELS: Set<string> = new Set(EFFORT_OPTIONS.map((o) => o.id));
 
-// Same idea as EFFORT_LEVELS but for Codex's distinct reasoning-effort union
-// ("minimal" instead of Claude's "max") and its static sandbox choice —
-// both single-sourced from lib/models.ts so this route's validation can't
-// drift from what the composer offers.
+// Same idea as EFFORT_LEVELS but for Codex's distinct reasoning vocabulary.
+// The live cache narrows the UI per model; this route accepts the complete
+// protocol union so a newly selected model never fails on a known effort.
 const CODEX_EFFORT_LEVELS: Set<string> = new Set(CODEX_EFFORT_OPTIONS.map((o) => o.id));
-const CODEX_SANDBOXES: Set<string> = new Set(CODEX_SANDBOX_PRESETS.map((p) => p.sandbox));
+CODEX_EFFORT_LEVELS.add("max");
+CODEX_EFFORT_LEVELS.add("ultra");
 
 // Title generation must never delay teardown beyond this — see the `finally`
 // block's Promise.race. Deliberately short: a title that isn't ready by then
@@ -169,10 +181,15 @@ export async function POST(req: Request) {
     model: rawModel,
     project,
     account,
-    effort,
-    permissionMode: rawPermissionMode = "default",
+    effort: rawEffort,
+    runtimeMode: rawRuntimeMode,
+    // Legacy fields are accepted only to migrate callers that predate the
+    // provider-neutral runtime mode.
+    permissionMode: rawPermissionMode,
     sandbox: rawSandbox,
     approvalPolicy: rawApprovalPolicy,
+    fastMode: rawFastMode,
+    serviceTier: rawServiceTier,
     // Session<->Loom link (docs/loom-model.md §5): the client (session-view.tsx)
     // sends this IFF its `planner` OR `steerer` prop is true. "planner" and
     // "steerer" are the two recognized values on the wire — anything else
@@ -281,7 +298,7 @@ export async function POST(req: Request) {
   }
 
   // Caller-supplied account wins (existing chats resume with their persisted
-  // chat.account, passed explicitly here), else the project's manifest account.
+  // chat.account, passed explicitly here), else use the global enabled default.
   // See AGENTS notes on the account-lock: a session's resume transcript lives
   // under the account's config dir, so this route trusts whatever the client
   // sends — the picker being choosable only pre-first-turn is a client-side
@@ -289,19 +306,18 @@ export async function POST(req: Request) {
   // because both are provider-shaped (Claude's EffortLevel vs Codex's
   // ModelReasoningEffort; sandbox is Codex-only).
   //
-  // FAIL-CLOSED: the old `?? { name: manifest.account }` bare fallback silently
-  // mis-billed a base login when the named account was gone. When the manifest
-  // names an account the registry doesn't have, that's a 4xx — never a silent
-  // slide onto a different login. (A caller `account` was validated up top.)
+  // A caller-supplied account was validated above. The no-account path exists
+  // for API clients that have not adopted the session picker yet and follows
+  // the same global default used by the new-session page.
   let profile: AccountProfile;
   if (account) {
     profile = getAccount(account)!;
   } else {
-    const named = resolveEnabledAccount(manifest.account);
+    const named = resolveEnabledAccount();
     if (!named) {
       return Response.json(
         {
-          error: `Project "${project ?? manifest.name}" cannot start with account "${manifest.account}" because it is missing or no compatible account is enabled. Check Settings → Accounts, or point the project at an enabled account.`,
+          error: `Project "${project ?? manifest.name}" cannot start because no compatible account is enabled. Check Settings → Accounts.`,
         },
         { status: 400 },
       );
@@ -325,6 +341,13 @@ export async function POST(req: Request) {
   }
 
   const provider = profile.provider ?? "claude";
+  // UltraCode and Ultrathink briefly existed as Telar-only Claude presets.
+  // Existing chats may still carry either value; retire them as an ordinary
+  // model-default turn instead of breaking the next resume with a 400.
+  const effort =
+    provider === "claude" && (rawEffort === "ultracode" || rawEffort === "ultrathink")
+      ? undefined
+      : rawEffort;
   // Resolve the subprocess environment once. Besides preventing three reads
   const runtimeEnv = accountEnv(profile);
 
@@ -344,56 +367,32 @@ export async function POST(req: Request) {
     }
   }
 
-  // Codex-only: the sandbox is a static, up-front choice paired with the
-  // approvalPolicy validated just below (see CODEX_APPROVAL_PRESETS in
-  // lib/models.ts, which the composer's preset picker sources both from —
-  // this route validates each independently rather than trusting a
-  // preset id, since the client sends the resolved sandbox/approvalPolicy
-  // pair, not the preset id itself). Ignored for Claude, where the
-  // interactive canUseTool/permissionMode flow below governs access instead.
-  let sandbox: CodexSandbox = DEFAULT_CODEX_SANDBOX;
-  if (provider === "codex" && rawSandbox != null) {
-    if (typeof rawSandbox !== "string" || !CODEX_SANDBOXES.has(rawSandbox)) {
-      return Response.json(
-        { error: `Invalid sandbox "${rawSandbox}".` },
-        { status: 400 },
-      );
-    }
-    sandbox = rawSandbox as CodexSandbox;
-  }
-
-  // Codex-only: mirrors the app-server's AskForApproval union. Deliberately
-  // an INLINE set here, not imported from lib/models.ts's CODEX_APPROVAL_
-  // PRESETS — that file also feeds the client bundle (composer UI), and this
-  // route's own validation is meant to stand alone rather than trust
-  // whatever the client-side preset list happens to contain. Defaults to
-  // "on-request" (CODEX_APPROVAL_PRESETS' "auto" preset's policy) when
-  // omitted, matching the composer's own default preset.
-  const CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
-  let approvalPolicy: "untrusted" | "on-request" | "never" = "on-request";
-  if (provider === "codex" && rawApprovalPolicy != null) {
-    if (typeof rawApprovalPolicy !== "string" || !CODEX_APPROVAL_POLICIES.has(rawApprovalPolicy)) {
-      return Response.json(
-        { error: `Invalid approvalPolicy "${rawApprovalPolicy}".` },
-        { status: 400 },
-      );
-    }
-    approvalPolicy = rawApprovalPolicy as "untrusted" | "on-request" | "never";
-  }
-
-  // Only "default"/"auto"/"acceptEdits" are ever accepted from a client —
-  // never "bypassPermissions" (skips canUseTool entirely), "dontAsk", or
-  // "plan", regardless of what the request body claims. See
-  // isValidPermissionMode. Codex turns don't consult this — approvalPolicy
-  // (validated above) is Codex's own analogous knob — but it's still
-  // validated uniformly for both providers.
-  if (!isValidPermissionMode(rawPermissionMode)) {
+  if (rawRuntimeMode != null && !isRuntimeMode(rawRuntimeMode)) {
     return Response.json(
-      { error: `Invalid permissionMode "${rawPermissionMode}".` },
+      { error: `Invalid runtimeMode "${rawRuntimeMode}".` },
       { status: 400 },
     );
   }
-  const permissionMode: ClientPermissionMode = rawPermissionMode;
+  let legacyMode: RuntimeMode = DEFAULT_RUNTIME_MODE;
+  if (rawPermissionMode === "default" || rawSandbox === "read-only") {
+    legacyMode = "approval-required";
+  } else if (rawPermissionMode === "acceptEdits") {
+    legacyMode = "auto-accept-edits";
+  } else if (rawPermissionMode === "bypassPermissions" || rawSandbox === "danger-full-access" || rawApprovalPolicy === "never") {
+    legacyMode = "full-access";
+  }
+  const runtimeMode: RuntimeMode = isRuntimeMode(rawRuntimeMode) ? rawRuntimeMode : legacyMode;
+  const permissionMode = claudePermissionMode(runtimeMode);
+  const profilePermissionMode =
+    permissionMode === "bypassPermissions" ? "auto" : (permissionMode ?? "default");
+  const { sandbox, approvalPolicy, approvalsReviewer } = codexThreadConfig(runtimeMode);
+  const fastMode = rawFastMode === true;
+  const serviceTier =
+    typeof rawServiceTier === "string" && /^[a-z0-9_-]{1,40}$/i.test(rawServiceTier)
+      ? rawServiceTier
+      : undefined;
+  const claudeEffort = effort;
+  const claudePrompt = message;
 
   const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
 
@@ -492,7 +491,7 @@ export async function POST(req: Request) {
     // that could reach an unvalidated id is a builder that can read another
     // project's loom.
     loomId: loomLink.loomId,
-    permissionMode,
+    permissionMode: profilePermissionMode,
     ultraAnnotated,
     // Story 4.1 / AC2 — lets the project/planner/steerer composers read this
     // session's completed-Ultra-run mailbox and fold it into the appendix, so
@@ -688,6 +687,13 @@ export async function POST(req: Request) {
       let capturedSession: string | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
+      // Claude's stable control API returns the same structured attribution as
+      // `/context`. It must be requested while the query is still
+      // bidirectional: the SDK closes stdin as soon as it receives the final
+      // result frame. Keep the latest successfully decoded snapshot instead
+      // of retaining a request that teardown can invalidate.
+      let contextUsage: ContextUsageSnapshot | undefined;
+      let contextUsageWarningSent = false;
       // The last "result" message seen this POST — captured, not acted on
       // immediately. A backgrounded subagent (forwardSubagentText) can wake
       // an SDK auto-continuation that runs a second full turn (and hence a
@@ -1065,6 +1071,7 @@ export async function POST(req: Request) {
           // Ultra: there was no ultra tool in its toolset, no error saying so,
           // and a model that narrated spawning three agents it never spawned.
           const codexToolNamespaces = [
+            namespaceOf("browser", BROWSER_MCP_VERSION, browserTools()),
             namespaceOf("ultra", ULTRA_MCP_VERSION, ultraTools({
               project,
               account: profile,
@@ -1095,6 +1102,8 @@ export async function POST(req: Request) {
             resume: resumeTarget,
             signal: abort.signal,
             approvalPolicy,
+            approvalsReviewer,
+            ...(serviceTier && serviceTier !== "standard" ? { serviceTier } : {}),
             onApproval: onCodexApproval,
             tools: codexToolNamespaces,
             // The same appendix the Claude branch passes as
@@ -1134,7 +1143,9 @@ export async function POST(req: Request) {
                   effort,
                   account: profile.name,
                   project,
-                  permissionMode,
+                  runtimeMode,
+                  fastMode,
+                  serviceTier,
                   loomId: loomLink.loomId,
                   role: loomLink.role,
                   userText: displayText,
@@ -1244,10 +1255,21 @@ export async function POST(req: Request) {
                 break;
               }
               case "usage": {
+                contextUsage = fromCodexContextUsage({
+                  model,
+                  totalTokens: nev.usage.total_tokens,
+                  modelContextWindow: nev.usage.model_context_window,
+                  inputTokens: nev.usage.input_tokens,
+                  cachedInputTokens: nev.usage.cache_read_input_tokens,
+                  cacheWriteInputTokens: nev.usage.cache_creation_input_tokens,
+                  outputTokens: nev.usage.output_tokens,
+                  reasoningOutputTokens: nev.usage.reasoning_output_tokens,
+                });
                 lastMainUsage = {
-                  input_tokens: nev.usage.input_tokens,
-                  cache_read_input_tokens: nev.usage.cache_read_input_tokens,
-                  cache_creation_input_tokens: nev.usage.cache_creation_input_tokens,
+                  // Codex's last.totalTokens is the exact figure its own UI
+                  // uses for context occupancy. Cached input is already a
+                  // subset of input, so do not add it again here.
+                  input_tokens: nev.usage.total_tokens,
                 };
                 // Codex has no per-token billing (ChatGPT subscription — see
                 // lib/models.ts's zeroed Codex pricing), so totalCostUsd is
@@ -1330,6 +1352,10 @@ export async function POST(req: Request) {
           account: profile,
           getSessionId: () => capturedSession,
         });
+        // One lazy, server-owned browser runtime backs both the human surface
+        // and agent tools. Constructing this descriptor does not start a
+        // browser; the Playwright MCP process launches only on first use.
+        const browserMcpServer = createBrowserMcpServer();
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -1339,7 +1365,7 @@ export async function POST(req: Request) {
         // that is enforced by escalationAppendix having no `ultraAnnotated`
         // parameter at all rather than by a branch here.
         const q = query({
-          prompt: message,
+          prompt: claudePrompt,
           options: {
             ...claudeExecutableOptions(),
             // AC2 — `cwd` arrives BY CONSTRUCTION. The fold sets it from
@@ -1349,7 +1375,7 @@ export async function POST(req: Request) {
             cwd: sessionProfile.cwd,
             ...(resumeTarget ? { resume: resumeTarget } : {}),
             model,
-            ...(effort ? { effort: effort as EffortLevel } : {}),
+            ...(claudeEffort ? { effort: claudeEffort as EffortLevel } : {}),
             // `profile`, NOT `sessionProfile` — this is the AccountProfile, and
             // accountEnv is what dispatches the turn onto the right login. The
             // two names are one character apart and a mix-up bills the wrong
@@ -1372,27 +1398,34 @@ export async function POST(req: Request) {
                   append: sessionProfile.systemPromptAppendix,
                 }
               : { type: "preset", preset: "claude_code" },
-            permissionMode,
-            // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
-            // settings, hooks, and MCP servers. User-level settings stay out
-            // on purpose (keeps the developer's personal config/tokens out of
-            // the subprocess). This is a deliberate trust decision, not an
-            // oversight: a repo's settings.local.json can itself grant
-            // `permissions.allow`/`defaultMode: bypassPermissions`, which the
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(permissionMode === "bypassPermissions"
+              ? { allowDangerouslySkipPermissions: true }
+              : {}),
+            ...(fastMode
+              ? {
+                  settings: {
+                    fastMode: true,
+                  },
+                }
+              : {}),
+            // Load Claude's native user/project/local stack from the selected
+            // provider instance. For the default instance this is ~/.claude;
+            // an account with CLAUDE_CONFIG_DIR gets its own complete stack.
+            // Those settings can grant `permissions.allow` or
+            // `defaultMode: bypassPermissions`, which the
             // SDK honors BEFORE canUseTool is ever invoked — our guardrails
             // and the interactive prompt below are both bypassed for
-            // whatever the repo pre-allows. Hooks/apiKeyHelper/MCP servers
-            // from the repo's settings also run as ordinary subprocess code,
+            // whatever the selected configuration pre-allows. Hooks,
+            // apiKeyHelper and MCP servers from those settings also run,
             // outside canUseTool entirely. `disallowedTools` is passed
             // explicitly below because the SDK guarantees a disallow always
             // wins over any allow rule (repo-settings or otherwise), which is
             // the one lever we have against a repo widening its own access.
             //
-            // AC2 — the literal ["project", "local"] used to live here; it is
-            // now the profile's, and `ProfileSettingSource` makes "user"
-            // UNSPELLABLE by any profile, so the decision above cannot drift
-            // back into a setting. Spread because the field is readonly and the
-            // SDK's own SettingSource[] is not.
+            // The canonical ["user", "project", "local"] list lives at the
+            // provider/profile seam. Spread because the field is readonly and
+            // the SDK's own SettingSource[] is not.
             settingSources: [...sessionProfile.settingSources],
             // The agent-spawn tool ("Agent"/"Task") is deliberately NOT in the
             // profile's allow set even though it's auto-allowed in effect: an
@@ -1459,6 +1492,7 @@ export async function POST(req: Request) {
             // decoupled from accountEnv above, so account-switching can't
             // rotate MCP auth.
             mcpServers: {
+              browser: browserMcpServer,
               loom: loomMcpServer,
               ultra: ultraMcpServer,
               workspace: wsMcpServer,
@@ -1473,12 +1507,8 @@ export async function POST(req: Request) {
               // ordering as the guard.
               ...(project ? resolveProjectMcpServers(project) : {}),
             },
-            // Telar OWNS the MCP surface: use ONLY the servers above (loom +
-            // the project's telar.yaml servers). settingSources ["project",
-            // "local"] would otherwise pull in the repo's .mcp.json / the
-            // user's local Claude MCP config — leaking in confusing duplicate,
-            // unauthenticated servers (e.g. a second Supabase). Ignore them.
-            strictMcpConfig: true,
+            // Explicit Telar servers are added beside MCP servers from the
+            // selected Claude configuration, matching a native Claude launch.
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
             maxTurns: 25,
@@ -1536,7 +1566,9 @@ export async function POST(req: Request) {
               effort,
               account: profile.name,
               project,
-              permissionMode,
+              runtimeMode,
+              fastMode,
+              serviceTier,
               // Best-available loom link at init (existing chat's, else the
               // turn-1 wire seed); appendTurn narrows in any link a loom tool
               // establishes during the turn.
@@ -1674,6 +1706,25 @@ export async function POST(req: Request) {
                 if (origin && dead.has(origin)) {
                   parts.splice(i, 1);
                   partOrigin.splice(i, 1);
+                }
+              }
+            }
+            if (!parent) {
+              try {
+                // Await before advancing to the final result frame. The SDK's
+                // background reader can receive this control response while
+                // the public message iterator is paused here; once `result`
+                // arrives it deliberately ends stdin and a new request can no
+                // longer be written.
+                contextUsage = fromClaudeContextUsage(await q.getContextUsage());
+              } catch (error) {
+                // Older Claude Code builds may not expose this control call.
+                // Preserve the provider-neutral estimate, but make a real
+                // integration failure observable instead of silently
+                // presenting it as a successful exact capture.
+                if (!contextUsageWarningSent) {
+                  console.warn("[context-usage] Exact Claude attribution unavailable", error);
+                  contextUsageWarningSent = true;
                 }
               }
             }
@@ -1958,7 +2009,8 @@ export async function POST(req: Request) {
               turns: lastResult.turns,
               usage: lastResult.usage,
               // Real context-window occupancy (final call), not the step sum.
-              context: contextOf(lastMainUsage),
+              context: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              contextUsage,
             });
           }
           if (capturedSession) {
@@ -1983,7 +2035,9 @@ export async function POST(req: Request) {
               effort,
               account: profile.name,
               project,
-              permissionMode,
+              runtimeMode,
+              fastMode,
+              serviceTier,
               // Session<->Loom link (docs/loom-model.md §5): undefined
               // means "no change" (appendTurn only ever narrows a link in,
               // see its own comment) — loomLink stays untouched for a plain
@@ -2014,7 +2068,8 @@ export async function POST(req: Request) {
                 : undefined,
               // Final-call context (not the step sum) — persisted so CTX is
               // right on resume, independent of the cumulative usage above.
-              contextTokens: contextOf(lastMainUsage),
+              contextTokens: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              contextUsage,
             });
             send("saved", { chatId: capturedSession });
           }

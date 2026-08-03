@@ -8,13 +8,19 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 export const RIGHT_PANEL_STORAGE_KEY = "telar:right-panel";
-export const RIGHT_PANEL_SCHEMA_VERSION = 1;
+export const RIGHT_PANEL_SCHEMA_VERSION = 5;
 export const RIGHT_PANEL_SESSION_CAP = 24;
 
 export type GitPanelTab = {
   id: "git";
   kind: "git";
   title: "Git";
+};
+
+export type ActivityPanelTab = {
+  id: "activity";
+  kind: "activity";
+  title: "Activity";
 };
 
 export type BrowserPanelTab = {
@@ -24,12 +30,13 @@ export type BrowserPanelTab = {
   url: string;
 };
 
-export type RightPanelTab = GitPanelTab | BrowserPanelTab;
+export type RightPanelTab = ActivityPanelTab | GitPanelTab | BrowserPanelTab;
 
 export type RightPanelSession = {
   tabs: RightPanelTab[];
   activeTabId: string | null;
   open: boolean;
+  fullscreen: boolean;
   touchedAt: number;
 };
 
@@ -38,13 +45,17 @@ export type RightPanelPayload = {
   sessions: Record<string, RightPanelSession>;
 };
 
+export const DEFAULT_ACTIVITY_TAB: ActivityPanelTab = {
+  id: "activity",
+  kind: "activity",
+  title: "Activity",
+};
 export const DEFAULT_GIT_TAB: GitPanelTab = { id: "git", kind: "git", title: "Git" };
 export const DEFAULT_RIGHT_PANEL_SESSION: RightPanelSession = {
-  tabs: [DEFAULT_GIT_TAB],
-  activeTabId: DEFAULT_GIT_TAB.id,
-  // Keep the workspace quiet until the user asks for Git or Browser. This also
-  // avoids mounting a second Git reader on every session navigation.
+  tabs: [],
+  activeTabId: null,
   open: false,
+  fullscreen: false,
   touchedAt: 0,
 };
 export const EMPTY_RIGHT_PANEL_PAYLOAD: RightPanelPayload = {
@@ -55,6 +66,7 @@ export const EMPTY_RIGHT_PANEL_PAYLOAD: RightPanelPayload = {
 function sanitizeTab(raw: unknown): RightPanelTab | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
+  if (r.kind === "activity") return DEFAULT_ACTIVITY_TAB;
   if (r.kind === "git") return DEFAULT_GIT_TAB;
   if (
     r.kind === "browser" &&
@@ -84,11 +96,12 @@ export function sanitizeRightPanelSession(raw: unknown): RightPanelSession | nul
   const requested = typeof r.activeTabId === "string" ? r.activeTabId : null;
   const activeTabId = requested && tabs.some((tab) => tab.id === requested)
     ? requested
-    : (tabs[0]?.id ?? null);
+    : null;
   return {
     tabs,
     activeTabId,
-    open: typeof r.open === "boolean" ? r.open : true,
+    open: typeof r.open === "boolean" ? r.open : false,
+    fullscreen: typeof r.fullscreen === "boolean" ? r.fullscreen : false,
     touchedAt:
       typeof r.touchedAt === "number" && Number.isFinite(r.touchedAt) && r.touchedAt >= 0
         ? r.touchedAt
@@ -99,14 +112,35 @@ export function sanitizeRightPanelSession(raw: unknown): RightPanelSession | nul
 export function sanitizeRightPanelPayload(raw: unknown): RightPanelPayload {
   if (!raw || typeof raw !== "object") return EMPTY_RIGHT_PANEL_PAYLOAD;
   const r = raw as Record<string, unknown>;
-  if (r.version !== RIGHT_PANEL_SCHEMA_VERSION || !r.sessions || typeof r.sessions !== "object") {
+  const legacyClosedVersion = r.version === 1 || r.version === 2;
+  const legacyActivityVersion =
+    r.version === 1 || r.version === 2 || r.version === 3 || r.version === 4;
+  const recognizedVersion = legacyActivityVersion || r.version === RIGHT_PANEL_SCHEMA_VERSION;
+  if (!recognizedVersion || !r.sessions || typeof r.sessions !== "object") {
     return EMPTY_RIGHT_PANEL_PAYLOAD;
   }
   const sessions: Record<string, RightPanelSession> = {};
   for (const [key, value] of Object.entries(r.sessions as Record<string, unknown>)) {
     if (!key) continue;
     const session = sanitizeRightPanelSession(value);
-    if (session) sessions[key] = session;
+    // Versions 1 and 2 predate the closed-by-default dock contract. Versions
+    // through 4 also injected Activity as a permanent first tab. In v5 it is an
+    // explicit surface, so legacy Activity selection migrates to the chooser.
+    if (session) {
+      const migrated = legacyActivityVersion
+        ? {
+            ...session,
+            tabs: session.tabs.filter((tab) => tab.kind !== "activity"),
+            activeTabId:
+              session.activeTabId === DEFAULT_ACTIVITY_TAB.id
+                ? null
+                : session.activeTabId,
+          }
+        : session;
+      sessions[key] = legacyClosedVersion
+        ? { ...migrated, open: false, fullscreen: false }
+        : migrated;
+    }
   }
   return boundRightPanelSessions({ version: RIGHT_PANEL_SCHEMA_VERSION, sessions });
 }
@@ -160,7 +194,8 @@ export function closeOtherPanelTabs(
   tabId: string,
 ): RightPanelSession {
   const tab = session.tabs.find((candidate) => candidate.id === tabId);
-  return tab ? { ...session, tabs: [tab], activeTabId: tab.id } : session;
+  if (!tab) return session;
+  return { ...session, tabs: [tab], activeTabId: tab.id };
 }
 
 export function closePanelTabsToRight(
@@ -248,17 +283,57 @@ export function useRightPanelStore(scopeKey: string) {
       if (!session.tabs.some((tab) => tab.id === tabId)) return;
       write(scopeKey, { ...session, activeTabId: tabId, open: true });
     },
-    setOpen: (open: boolean) => write(scopeKey, { ...session, open }),
+    setOpen: (open: boolean) => write(scopeKey, {
+      ...session,
+      open,
+      fullscreen: open ? session.fullscreen : false,
+    }),
+    setFullscreen: (fullscreen: boolean) => write(scopeKey, {
+      ...session,
+      open: fullscreen ? true : session.open,
+      fullscreen,
+    }),
     openGit: () => {
       const tabs = session.tabs.some((tab) => tab.id === DEFAULT_GIT_TAB.id)
         ? session.tabs
         : [...session.tabs, DEFAULT_GIT_TAB];
       write(scopeKey, { ...session, tabs, activeTabId: DEFAULT_GIT_TAB.id, open: true });
     },
-    openBrowser: (url = "http://localhost:3000") => {
+    openActivity: () => {
+      const tabs = session.tabs.some((tab) => tab.id === DEFAULT_ACTIVITY_TAB.id)
+        ? session.tabs
+        : [DEFAULT_ACTIVITY_TAB, ...session.tabs];
+      write(scopeKey, {
+        ...session,
+        tabs,
+        activeTabId: DEFAULT_ACTIVITY_TAB.id,
+        open: true,
+      });
+    },
+    openBrowser: (url = "about:blank") => {
+      // The controlled browser owns its own tab strip. Reuse one Browser
+      // surface in the right dock instead of nesting duplicate Browser
+      // surfaces around the same shared Playwright session.
+      const existing = session.tabs.find((candidate): candidate is BrowserPanelTab =>
+        candidate.kind === "browser",
+      );
+      if (existing) {
+        write(scopeKey, {
+          ...session,
+          activeTabId: existing.id,
+          open: true,
+        });
+        return;
+      }
       const id = `browser:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
       const tab: BrowserPanelTab = { id, kind: "browser", title: "Browser", url };
       write(scopeKey, { ...session, tabs: [...session.tabs, tab], activeTabId: id, open: true });
+    },
+    navigateBrowser: (tabId: string, url: string) => {
+      const tabs = session.tabs.map((tab) =>
+        tab.kind === "browser" && tab.id === tabId ? { ...tab, url } : tab,
+      );
+      write(scopeKey, { ...session, tabs, activeTabId: tabId, open: true });
     },
     close: (tabId: string) => write(scopeKey, closePanelTab(session, tabId)),
     closeOthers: (tabId: string) => write(scopeKey, closeOtherPanelTabs(session, tabId)),

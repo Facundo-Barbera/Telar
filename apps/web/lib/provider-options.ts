@@ -13,20 +13,19 @@
 // `provider === "codex" ? … : …` fork for exactly this, and the fork is what
 // made the two surfaces drift.
 //
-// WE PUBLISH WHAT TELAR HONOURS, NOT WHAT T3CODE PUBLISHES. t3code's Claude
-// list carries `ultracode`, `ultrathink`, `contextWindow` and `fastMode`; its
-// Codex list carries `serviceTier`. Telar's adapters wire none of those today —
-// `runCodexTurn` takes no serviceTier, and the Claude branch sets no
-// ultracode/fastMode settings — so listing them would offer a control that
-// silently does nothing, which is the same failure as publishing a capability
-// you cannot honour. When an adapter grows one, it is added HERE and the
-// composer shows it with no UI change. That is the whole point of the seam.
+// WE PUBLISH WHAT TELAR HONOURS. Claude's control protocol contributes the
+// model-specific effort and fast-mode flags; its context aliases are projected
+// as one group. Codex's cache contributes reasoning levels and service tiers.
+// The adapters consume every value produced here, so adding a capability at
+// the harness boundary makes it appear without adding provider branches to the
+// composer itself.
 //
 // CLIENT-SAFE: imports only ./models (import-free data). No SDK, no node:*.
 
 import {
   CODEX_EFFORT_OPTIONS,
   EFFORT_OPTIONS,
+  type ModelInfo,
   type CodexReasoningEffort,
   type EffortLevel,
 } from "./models";
@@ -59,38 +58,88 @@ const unsetEffort: ProviderOptionValue = {
   isDefault: true,
 };
 
-const claudeEffort: ProviderOptionGroup = {
-  id: "effort",
-  label: "Reasoning",
-  values: [
-    unsetEffort,
-    ...EFFORT_OPTIONS.map((e: { id: EffortLevel; label: string; blurb: string }) => ({
-      value: e.id,
-      label: e.label,
-      blurb: e.blurb,
-    })),
-  ],
-};
+const capabilityValues = (
+  options: ModelInfo["reasoningOptions"],
+  fallback: readonly { id: string; label: string; blurb: string }[],
+): ProviderOptionValue[] =>
+  (options?.length ? options : fallback).map((option) => ({
+    value: option.id,
+    label: option.label,
+    blurb: option.blurb,
+    isDefault: "isDefault" in option ? option.isDefault : undefined,
+  }));
 
-const codexEffort: ProviderOptionGroup = {
-  id: "effort",
-  label: "Reasoning",
-  values: [
-    unsetEffort,
-    ...CODEX_EFFORT_OPTIONS.map((e: { id: CodexReasoningEffort; label: string; blurb: string }) => ({
-      value: e.id,
-      label: e.label,
-      blurb: e.blurb,
-    })),
-  ],
-};
+function contextValues(model: ModelInfo, models: readonly ModelInfo[]): ProviderOptionValue[] {
+  const familyKey = (candidate: ModelInfo) =>
+    (candidate.resolvedModel ?? candidate.id).replace(/\[1m\]$/i, "");
+  const baseResolved = familyKey(model);
+  const sameModel = models.filter(
+    (candidate) => familyKey(candidate) === baseResolved,
+  );
+  const byContext = new Map(sameModel.map((candidate) => [candidate.context, candidate.id]));
+  if (model.context === "1M" && /\[1m\]$/i.test(model.id) && !byContext.has("200K")) {
+    byContext.set("200K", model.id.replace(/\[1m\]$/i, ""));
+  }
+  if (model.context === "200K" && model.resolvedModel && !byContext.has("1M")) {
+    byContext.set("1M", `${model.id}[1m]`);
+  }
+  return ["200K", "1M"].flatMap((label) => {
+    const value = byContext.get(label);
+    return value ? [{ value, label, isDefault: label === "200K" }] : [];
+  });
+}
 
 /** Everything this provider lets a session tune, beyond the model and the
  *  runtime mode. Ordered — the composer renders groups top to bottom and joins
  *  their active labels with "·" for the trigger, exactly as t3code does
  *  ("Medium · Standard"). */
-export function providerOptionGroups(provider: "claude" | "codex"): readonly ProviderOptionGroup[] {
-  return provider === "codex" ? [codexEffort] : [claudeEffort];
+export function providerOptionGroups(
+  provider: "claude" | "codex",
+  model?: ModelInfo,
+  models: readonly ModelInfo[] = [],
+): readonly ProviderOptionGroup[] {
+  const fallback = provider === "codex" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
+  const effortValues = capabilityValues(model?.reasoningOptions, fallback as readonly {
+    id: CodexReasoningEffort | EffortLevel;
+    label: string;
+    blurb: string;
+  }[]);
+  const groups: ProviderOptionGroup[] = [{
+    id: "effort",
+    label: "Reasoning",
+    values: model?.reasoningOptions?.length ? effortValues : [unsetEffort, ...effortValues],
+  }];
+
+  if (provider === "claude" && model) {
+    const contexts = contextValues(model, models);
+    if (contexts.length > 1) {
+      groups.push({ id: "model", label: "Context Window", values: contexts });
+    }
+    if (model.supportsFastMode) {
+      groups.push({
+        id: "fastMode",
+        label: "Fast Mode",
+        values: [
+          { value: "off", label: "Off", isDefault: true },
+          { value: "on", label: "On" },
+        ],
+      });
+    }
+  }
+
+  if (provider === "codex" && model?.serviceTiers?.length) {
+    groups.push({
+      id: "serviceTier",
+      label: "Service Tier",
+      values: model.serviceTiers.map((option) => ({
+        value: option.id,
+        label: option.label,
+        blurb: option.blurb,
+        isDefault: option.isDefault,
+      })),
+    });
+  }
+  return groups;
 }
 
 /** The value a group falls back to. Every group must declare exactly one
@@ -116,17 +165,15 @@ export function groupValueLabel(group: ProviderOptionGroup, value: string): stri
   return group.values.find((v) => v.value === value)?.label ?? value;
 }
 
-/** The collapsed trigger text — active labels joined by "·", skipping any group
- *  sitting on its default so the bar stays quiet until something is actually
- *  set. Returns null when everything is default, which the caller renders as
- *  the group's own name instead of a value. */
+/** The collapsed trigger mirrors T3 Code: every active value is visible, even
+ *  when it is the default (for example `High · 1M` or `Medium · Standard`). */
 export function triggerLabel(
   groups: readonly ProviderOptionGroup[],
   values: Readonly<Record<string, string>>,
 ): string | null {
-  const parts = groups.flatMap((g) => {
+  const parts = groups.map((g) => {
     const v = values[g.id] ?? groupDefault(g);
-    return v === groupDefault(g) ? [] : [groupValueLabel(g, v)];
+    return groupValueLabel(g, v);
   });
   return parts.length ? parts.join(" · ") : null;
 }

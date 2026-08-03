@@ -46,8 +46,9 @@ export type ProviderCapability =
   // `allowedTools` / `disallowedTools`. Codex: neither argument exists on
   // runCodexTurn — access there is governed by `sandbox` + `approvalPolicy`.
   | "tool-allow-deny-lists"
-  // The harness loads the repo's own settings tiers. Claude: query()'s
-  // `settingSources: ["project", "local"]`. Codex: no settingSources argument.
+  // The harness loads its native settings tiers. Claude: query()'s
+  // `settingSources: ["user", "project", "local"]`. Codex: no settingSources
+  // argument.
   | "setting-sources"
   // The harness can APPEND to its system prompt. Claude: query()'s
   // `systemPrompt: { type: "preset", preset: "claude_code", append: … }`.
@@ -85,10 +86,11 @@ export interface ProviderDescriptor {
   configDirEnv: string;
   // Which env var carries the credential for each non-subscription auth mode.
   tokenEnvByMode: Partial<Record<AuthMode, string>>;
-  // THE ENV VARS AN ACCOUNT OWNS: the ones that decide WHERE this provider's
-  // requests go and WHO they go as. accountEnv DELETES every one of them before
-  // building the subprocess env, so an ambient value inherited from whatever
-  // shell launched the Telar server can never decide either question.
+  // THE ENV VARS AN ISOLATED ACCOUNT OWNS: routing, identity, model aliases,
+  // and backend selection. accountEnv scrubs these only when Telar is building
+  // an isolated/configured provider instance. The native Claude instance keeps
+  // the process environment intact and lets Claude load its own user settings,
+  // matching a normal `claude` launch and T3 Code's provider-instance model.
   //
   // This is the same rule configDirEnv already has, generalized. The config-dir
   // guard exists because an inherited CLAUDE_CONFIG_DIR silently put `personal`
@@ -101,11 +103,6 @@ export interface ProviderDescriptor {
   // which accountEnv applies after the deletion — so declaring still works and
   // only inheriting stops.
   //
-  // KNOWN GAP, stated rather than papered over: CLAUDE_CODE_USE_BEDROCK and
-  // CLAUDE_CODE_USE_VERTEX also reroute a session, and are NOT listed. Telar has
-  // no way to express a Bedrock/Vertex account today, so deleting them would
-  // remove the only way to use one rather than protect anybody. When an account
-  // can name that routing, they belong here.
   ownedEnv: readonly string[];
   // Argv (after the binary) that starts an interactive login for this provider.
   loginArgs: string[];
@@ -143,6 +140,15 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
       "ANTHROPIC_AUTH_TOKEN",
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
     ],
     loginArgs: ["auth", "login"],
     defaultConfigDir: ".claude",

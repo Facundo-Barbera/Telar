@@ -13,10 +13,12 @@ beforeEach(() => {
 
 const {
   createProject,
+  ensureTelarGitignore,
   getProject,
   listProjects,
   loadManifest,
   registerProject,
+  registerOrCreateProject,
   telarDir,
   unregisterProject,
   writeManifest,
@@ -87,6 +89,83 @@ describe("manifest", () => {
     expect(unregisterProject(path.basename(projRoot))).toBe(true);
     expect(unregisterProject(path.basename(projRoot))).toBe(false);
     expect(fs.existsSync(path.join(projRoot, "telar.yaml"))).toBe(true);
+  });
+});
+
+describe("automatic registration", () => {
+  const roots: string[] = [];
+  const freshRoot = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-register-"));
+    roots.push(root);
+    return root;
+  };
+
+  afterAll(() => {
+    for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("creates and registers telar.yaml when the repo does not have one", () => {
+    const root = freshRoot();
+    const result = registerOrCreateProject(root);
+    const directoryName = path.basename(root);
+
+    expect(result.created).toBe(true);
+    expect(result.manifest.name).toBe(directoryName);
+    expect(loadManifest(root).gates).toEqual([]);
+    expect(fs.readFileSync(path.join(root, "telar.yaml"), "utf8")).not.toMatch(
+      /^account:/m,
+    );
+    expect(getProject(directoryName).entry.root).toBe(path.resolve(root));
+  });
+
+  test("detects and preserves an existing telar.yaml", () => {
+    const root = freshRoot();
+    const existing = ProjectManifest.parse({
+      name: "automatic-existing",
+      root,
+      account: "work",
+      gates: [{ name: "lint", run: "bun run lint" }],
+    });
+    writeManifest(root, existing);
+    const before = fs.readFileSync(path.join(root, "telar.yaml"), "utf8");
+
+    const result = registerOrCreateProject(root, {
+      name: "must-not-overwrite",
+      account: "personal",
+      gates: [],
+    });
+
+    expect(result.created).toBe(false);
+    expect(result.manifest.name).toBe("automatic-existing");
+    expect(result.manifest.account).toBe("work");
+    expect(fs.readFileSync(path.join(root, "telar.yaml"), "utf8")).toBe(before);
+  });
+
+  test("optionally adds canonical Telar rules to .gitignore exactly once", () => {
+    const root = freshRoot();
+    fs.writeFileSync(path.join(root, ".gitignore"), "node_modules\n");
+
+    const first = registerOrCreateProject(
+      root,
+      { name: "automatic-ignored" },
+      { addToGitignore: true },
+    );
+    const afterFirst = fs.readFileSync(path.join(root, ".gitignore"), "utf8");
+    const second = ensureTelarGitignore(root);
+
+    expect(first.gitignoreEntriesAdded).toEqual(["telar.yaml", ".telar/"]);
+    expect(afterFirst).toBe("node_modules\ntelar.yaml\n.telar/\n");
+    expect(second).toEqual([]);
+    expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toBe(afterFirst);
+  });
+
+  test("recognizes equivalent root-anchored ignore rules", () => {
+    const root = freshRoot();
+    fs.writeFileSync(path.join(root, ".gitignore"), "/telar.yaml\n/.telar\n");
+    expect(ensureTelarGitignore(root)).toEqual([]);
+    expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toBe(
+      "/telar.yaml\n/.telar\n",
+    );
   });
 });
 

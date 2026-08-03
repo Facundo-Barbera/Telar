@@ -2,11 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// Claude's user settings can describe where the Claude harness sends requests
-// and how its native model slots resolve. Telar needs those two pieces so a
-// session behaves like `claude` launched in the user's terminal, but it must
-// not load the rest of the user tier (hooks, MCP servers, permission grants,
-// plugins, and commands). This allow-list is that boundary.
+// Lightweight settings inspection for presentation only (for example, showing
+// that the native Claude instance is routed). Runtime configuration is NOT
+// assembled from this allow-list: Claude loads its complete user/project/local
+// setting stack itself through the Agent SDK.
 export const CLAUDE_RUNTIME_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
@@ -28,9 +27,8 @@ type RuntimeKey = (typeof CLAUDE_RUNTIME_ENV_KEYS)[number];
 const settingsPath = (): string =>
   process.env.TELAR_CLAUDE_SETTINGS_PATH || path.join(os.homedir(), ".claude", "settings.json");
 
-/** Read only Claude's runtime-routing/model environment. Values already in
- * the server environment are honored too; settings.json wins, matching the
- * explicit configuration the Claude CLI applies for a normal launch. */
+/** Read routing/model values for server-rendered metadata. Never use this to
+ * build a Claude subprocess environment; doing so drops unknown native config. */
 export function readClaudeRuntimeEnv(): Partial<Record<RuntimeKey, string>> {
   const out: Partial<Record<RuntimeKey, string>> = {};
   for (const key of CLAUDE_RUNTIME_ENV_KEYS) {

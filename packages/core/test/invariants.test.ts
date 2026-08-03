@@ -956,6 +956,7 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
 // static scan covers all three from packages/core/test without importing an
 // apps/web module and without depending on a private field.
 const LOOM_MCP = "apps/web/lib/loom-mcp.ts";
+const BROWSER_MCP = "apps/web/lib/browser-mcp.ts";
 const ULTRA_MCP = "apps/web/lib/ultra-mcp.ts";
 const WORKSPACE_MCP = "apps/web/lib/workspace-mcp.ts";
 const ENGINE = "packages/core/src/engine.ts";
@@ -969,6 +970,24 @@ const ACCEPT_ROUTE = "apps/web/app/api/looms/[id]/accept/route.ts";
 // is a maintenance cost and the cost is the point: the deny-list below is the
 // belt, but a name like `mark_delivered` is exactly what a pattern walks past.
 const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
+  browser: {
+    file: BROWSER_MCP,
+    tools: [
+      "browser_tabs",
+      "browser_navigate",
+      "browser_navigate_back",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
+      "browser_fill_form",
+      "browser_select_option",
+      "browser_press_key",
+      "browser_hover",
+      "browser_take_screenshot",
+      "browser_console_messages",
+      "browser_network_requests",
+    ],
+  },
   loom: {
     file: LOOM_MCP,
     tools: [
@@ -1036,8 +1055,8 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
   }
   const allToolNames = [...collected.values()].flatMap((s) => s.tools);
 
-  test("INV-1a the set of MCP surfaces in the tree is exactly the four we know about", () => {
-    // A FIFTH surface must fail here rather than be silently unscanned — that
+  test("INV-1a the set of MCP surfaces in the tree is exactly the five we know about", () => {
+    // A SIXTH surface must fail here rather than be silently unscanned — that
     // is the difference between "no accept tool on the servers I remembered"
     // and "no accept tool anywhere".
     //
@@ -1051,8 +1070,10 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     // "workspace" happens to sort last, so appending would have been correct by
     // luck; it is spliced into sorted position deliberately, because the next
     // server somebody adds may be called "build".
-    expect(surfaces.map((f) => f.rel).sort()).toEqual([LOOM_MCP, ENGINE, ULTRA_MCP, WORKSPACE_MCP].sort());
-    expect([...collected.keys()].sort()).toEqual(["loom", "out", "ultra", "workspace"]);
+    expect(surfaces.map((f) => f.rel).sort()).toEqual(
+      [BROWSER_MCP, LOOM_MCP, ENGINE, ULTRA_MCP, WORKSPACE_MCP].sort(),
+    );
+    expect([...collected.keys()].sort()).toEqual(["browser", "loom", "out", "ultra", "workspace"]);
   });
 
   test("INV-1b the collected tool inventory EQUALS the pinned one, per server", () => {
@@ -4461,7 +4482,10 @@ const STAYED_IN_ADAPTER: ReadonlyArray<[string, string, number?]> = [
   ["consumeSSE", "the wire reader"],
   ['fetch("/api/chat"', "the turn POST"],
   ["new EventSource(", "the live subscribers — BOTH of them", 2],
-  ["setSessionCost", "the ledger readout (story 1.1's set-not-accumulate)"],
+  // Session spend is still persisted by the route and projected in list
+  // surfaces, but its live composer indicator was intentionally removed. It is
+  // no longer adapter state and therefore no longer belongs in this carve-out
+  // pin.
 ];
 
 const countOccurrences = (haystack: string, needle: string): number =>

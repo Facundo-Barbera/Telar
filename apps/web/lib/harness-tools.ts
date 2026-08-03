@@ -44,7 +44,7 @@ export type DynamicToolFunctionSpec = {
 export type DynamicToolNamespaceSpec = {
   name: string;
   description: string;
-  tools: Array<{ name: string; description: string; inputSchema: unknown }>;
+  tools: Array<{ type: "function"; name: string; description: string; inputSchema: unknown }>;
 };
 
 export type DynamicToolSpec =
@@ -70,6 +70,11 @@ export function toDynamicToolSpec(ns: HarnessToolNamespace): DynamicToolSpec {
     name: ns.name,
     description: `Telar ${ns.name} tools.`,
     tools: ns.tools.map((t) => ({
+      // Codex 0.145 accepts the old all-legacy shape for compatibility, but a
+      // canonical `type: "namespace"` parent requires every nested tool to use
+      // the canonical discriminated shape too. Omitting this produced a mixed
+      // request that app-server rejected before starting the thread.
+      type: "function",
       name: t.name,
       description: t.description,
       inputSchema: shapeToJsonSchema(t.inputSchema),

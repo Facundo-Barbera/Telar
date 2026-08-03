@@ -47,6 +47,7 @@ export function telarDir(): string {
 
 const registryFile = () => path.join(telarDir(), "projects.json");
 const manifestFile = (root: string) => path.join(root, "telar.yaml");
+const gitignoreFile = (root: string) => path.join(root, ".gitignore");
 
 // Exported for servers.ts's writeAcceptedServersConfig (M7) — the same
 // mkdir+tmp+rename idiom, so an accepted `.telar/servers.yaml` is written
@@ -94,14 +95,17 @@ export function loadManifest(root: string): ProjectManifest {
 
 // `root` is stripped rather than written. It is derived on every load from the
 // directory the file lives in, so persisting it can only ever create a second,
-// staler answer to a question that already has a correct one.
+// staler answer to a question that already has a correct one. The old default
+// project account is omitted too: session surfaces now own account selection.
+// A non-default legacy value is preserved for compatibility with headless loom
+// callers that still read it during the migration.
 export function writeManifest(root: string, m: ProjectManifest): void {
-  const { root: _derived, ...persisted } = m;
+  const { root: _derived, account, ...shared } = m;
+  const persisted = account === "personal" ? shared : { ...shared, account };
   atomicWrite(manifestFile(root), YAML.stringify(persisted));
 }
 
-export function registerProject(root: string): ProjectManifest {
-  const manifest = loadManifest(root);
+function rememberProject(root: string, manifest: ProjectManifest): ProjectManifest {
   const reg = readRegistry();
   reg[manifest.name] = {
     name: manifest.name,
@@ -111,6 +115,10 @@ export function registerProject(root: string): ProjectManifest {
   };
   writeRegistry(reg);
   return manifest;
+}
+
+export function registerProject(root: string): ProjectManifest {
+  return rememberProject(root, loadManifest(root));
 }
 
 export function createProject(root: string, partial?: Partial<ProjectManifest>): ProjectManifest {
@@ -125,6 +133,66 @@ export function createProject(root: string, partial?: Partial<ProjectManifest>):
   writeManifest(abs, manifest);
   registerProject(abs);
   return manifest;
+}
+
+const rootGitignorePatterns = {
+  manifest: new Set(["telar.yaml", "/telar.yaml"]),
+  state: new Set([".telar", ".telar/", "/.telar", "/.telar/"]),
+};
+
+/** Add Telar's project-local files to .gitignore without rewriting or
+ * duplicating an existing rule. Returns the canonical rules that were added. */
+export function ensureTelarGitignore(root: string): string[] {
+  const abs = path.resolve(root);
+  const file = gitignoreFile(abs);
+  let current = "";
+  try {
+    current = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  const rules = new Set(
+    current
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#")),
+  );
+  const additions: string[] = [];
+  if (![...rootGitignorePatterns.manifest].some((rule) => rules.has(rule))) {
+    additions.push("telar.yaml");
+  }
+  if (![...rootGitignorePatterns.state].some((rule) => rules.has(rule))) {
+    additions.push(".telar/");
+  }
+  if (additions.length === 0) return additions;
+
+  const prefix = current.length > 0 && !current.endsWith("\n") ? `${current}\n` : current;
+  atomicWrite(file, `${prefix}${additions.join("\n")}\n`);
+  return additions;
+}
+
+/** Register a repo in one operation: preserve and load an existing manifest,
+ * or create the default manifest when it is missing. */
+export function registerOrCreateProject(
+  root: string,
+  partial?: Partial<ProjectManifest>,
+  options: { addToGitignore?: boolean } = {},
+): { manifest: ProjectManifest; created: boolean; gitignoreEntriesAdded: string[] } {
+  const abs = path.resolve(root);
+  const exists = fs.existsSync(manifestFile(abs));
+  const manifest = exists
+    ? loadManifest(abs)
+    : ProjectManifest.parse({
+        ...partial,
+        name: partial?.name ?? path.basename(abs),
+        root: abs,
+      });
+
+  const gitignoreEntriesAdded = options.addToGitignore ? ensureTelarGitignore(abs) : [];
+  if (!exists) writeManifest(abs, manifest);
+  rememberProject(abs, manifest);
+  return { manifest, created: !exists, gitignoreEntriesAdded };
 }
 
 export function listProjects(): Array<{

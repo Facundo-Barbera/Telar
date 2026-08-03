@@ -33,10 +33,13 @@ export type CodexNormalizedEvent =
   | {
       type: "usage";
       usage: {
+        total_tokens: number;
         input_tokens: number;
         output_tokens: number;
         cache_read_input_tokens: number;
         cache_creation_input_tokens: number;
+        reasoning_output_tokens: number;
+        model_context_window: number | null;
       };
     }
   | { type: "error"; message: string; threadId?: string }
@@ -84,6 +87,8 @@ export type CodexRunOptions = {
   // let the server send back the item/*/requestApproval (or legacy
   // execCommandApproval/applyPatchApproval) REQUESTS handled below.
   approvalPolicy: "untrusted" | "on-request" | "never";
+  approvalsReviewer: "user" | "auto_review";
+  serviceTier?: string;
   // Called for every server->client approval REQUEST when approvalPolicy
   // isn't "never" — route.ts wires this to the same canUseTool/pending-
   // approval machinery the Claude branch uses. Absent (or approvalPolicy
@@ -188,7 +193,14 @@ const APPROVAL_METHODS = new Set([
 // pinned adapter that recognises only one of them silently loses every tool
 // call on the other side of that bump — which reads exactly like the model
 // choosing not to use its tools.
-const DYNAMIC_TOOL_METHODS = new Set(["dynamicToolCall", "thread/dynamicToolCall"]);
+const DYNAMIC_TOOL_METHODS = new Set([
+  // Current v2 protocol (Codex 0.145 generated ServerRequest union).
+  "item/tool/call",
+  // Older app-server spellings retained so system Codex upgrades can move in
+  // either direction without silently dropping Telar's tool callbacks.
+  "dynamicToolCall",
+  "thread/dynamicToolCall",
+]);
 
 // Owns one `codex app-server` subprocess: request/response id correlation
 // plus a notification channel. Any server->client REQUEST (id + method) for
@@ -506,8 +518,10 @@ export async function* runCodexTurn(
     const threadStartParams = {
       cwd: opts.cwd,
       approvalPolicy: opts.approvalPolicy,
+      approvalsReviewer: opts.approvalsReviewer,
       sandbox: opts.sandbox,
       model: opts.model,
+      ...(opts.serviceTier ? { serviceTier: opts.serviceTier } : {}),
       ...harnessParams,
     };
     const startResult = opts.resume
@@ -515,8 +529,10 @@ export async function* runCodexTurn(
           threadId: opts.resume,
           cwd: opts.cwd,
           approvalPolicy: opts.approvalPolicy,
+          approvalsReviewer: opts.approvalsReviewer,
           sandbox: opts.sandbox,
           model: opts.model,
+          ...(opts.serviceTier ? { serviceTier: opts.serviceTier } : {}),
           // A RESUMED thread re-declares them too. The tool set lives in this
           // process, not in the harness's persisted thread state, so a resume
           // that stayed silent would hand the model a thread whose tools no
@@ -537,7 +553,9 @@ export async function* runCodexTurn(
       ...(opts.reasoningEffort ? { effort: opts.reasoningEffort } : {}),
       model: opts.model,
       approvalPolicy: opts.approvalPolicy,
+      approvalsReviewer: opts.approvalsReviewer,
       sandboxPolicy: sandboxPolicy(opts.sandbox, opts.cwd),
+      ...(opts.serviceTier ? { serviceTier: opts.serviceTier } : {}),
     });
     const rootTurnId = turnStartResult.turn.id;
 
@@ -556,10 +574,13 @@ export async function* runCodexTurn(
     const resultedChildren = new Set<string>();
     let planUpdateSeq = 0;
     let lastUsage: {
+      total_tokens: number;
       input_tokens: number;
       output_tokens: number;
       cache_read_input_tokens: number;
       cache_creation_input_tokens: number;
+      reasoning_output_tokens: number;
+      model_context_window: number | null;
     } | null = null;
 
     const threadTag = (threadId: string): string | undefined =>
@@ -691,10 +712,13 @@ export async function* runCodexTurn(
           const last = params.tokenUsage?.last;
           if (last) {
             lastUsage = {
+              total_tokens: last.totalTokens ?? 0,
               input_tokens: last.inputTokens ?? 0,
               output_tokens: last.outputTokens ?? 0,
               cache_read_input_tokens: last.cachedInputTokens ?? 0,
-              cache_creation_input_tokens: 0,
+              cache_creation_input_tokens: last.cacheWriteInputTokens ?? 0,
+              reasoning_output_tokens: last.reasoningOutputTokens ?? 0,
+              model_context_window: params.tokenUsage?.modelContextWindow ?? null,
             };
           }
           break;

@@ -143,9 +143,6 @@ export function ProjectCard({
           <Badge variant="secondary" className="font-mono text-[10px]">
             {manifest.adapter}
           </Badge>
-          <Badge variant="outline" className="text-[10px]">
-            {manifest.account}
-          </Badge>
           <Badge variant="outline" className="font-mono text-[10px]">
             {manifest.baseBranch}
           </Badge>

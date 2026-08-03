@@ -20,16 +20,28 @@ describe("the production sidebar mount", () => {
     expect(sidebar).toContain("APP_SIDEBAR_MAIN_MIN_WIDTH");
     expect(layout).toContain("<SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY}>");
     expect(sidebar).toContain("storageKey: APP_SIDEBAR_STORAGE_KEY");
+    expect(read("components/ui/sidebar.tsx")).toContain('title={canResize ? "Drag to resize sidebar"');
+    expect(read("components/ui/sidebar.tsx")).toContain("focus-visible:after:bg-ring");
   });
 
-  test("keeps the keyboard-accessible trigger outside the offcanvas sidebar", () => {
+  test("keeps sidebar controls in layout instead of floating over route content", () => {
     const sidebar = read("components/app-sidebar.tsx");
+    const trigger = read("components/main-sidebar-trigger.tsx");
+    const pageHeader = read("components/common/page-header.tsx");
+    const sessionView = read("components/session/session-view.tsx");
+    const settingsShell = read("components/settings/settings-shell.tsx");
     const layout = read("app/layout.tsx");
 
-    expect(sidebar).not.toContain("<SidebarTrigger");
-    expect(layout).toContain('aria-label="Toggle main sidebar"');
-    expect(layout).toContain("z-[60]");
-    expect(layout.indexOf("<SidebarTrigger")).toBeLessThan(layout.indexOf("<AppSidebar"));
+    expect(sidebar).toContain('aria-label="Hide main sidebar"');
+    expect(sidebar).not.toContain('data-slot="sidebar-reveal-rail"');
+    expect(trigger).toContain('aria-label="Show main sidebar"');
+    expect(trigger).toContain("if (!visible) return fallback");
+    expect(pageHeader).toContain("<MainSidebarTrigger />");
+    expect(sessionView).toContain('className="-mx-[7px]"');
+    expect(sessionView).toContain("fallback={<FolderGit2Icon");
+    expect(settingsShell).toContain("<MainSidebarTrigger />");
+    expect(layout).not.toContain("<SidebarTrigger");
+    expect(layout).not.toContain("fixed left-2 top-2");
   });
 
   test("flushes a queued pointer width before persisting on release", () => {
@@ -59,6 +71,27 @@ describe("the production sidebar mount", () => {
     expect(sidebar).toContain("isLoomNeedsYou(loom.state)");
     expect(sidebar).not.toContain("ProjectRow");
     expect(sessionPage).not.toContain("SessionsRail");
+    expect(sidebar).toContain("prefetch={false}");
+  });
+
+  test("clears a focused run without starting an RSC navigation loop", () => {
+    const view = read("components/session/session-view.tsx");
+    const focusCleanup = view.slice(
+      view.indexOf("if (!focusRunId) return"),
+      view.indexOf("const ultraRunList"),
+    );
+
+    expect(focusCleanup).toContain('window.history.replaceState(null, "", pathname)');
+    expect(focusCleanup).not.toContain("\n    router.replace(");
+    expect(focusCleanup).toContain("}, [focusRunId, pathname]);");
+  });
+
+  test("keeps stale inspector callbacks from crashing Fast Refresh", () => {
+    const inspector = read("components/session/workspace-inspector.tsx");
+
+    expect(inspector).toContain('typeof onReservedChange === "function"');
+    expect(inspector).toContain("notifyReservedChange(reserved)");
+    expect(inspector).toContain("notifyReservedChange(false)");
   });
 
   test("opens the shared new-session workspace without a duplicate project prompt", () => {
@@ -69,15 +102,24 @@ describe("the production sidebar mount", () => {
     expect(sidebar).not.toContain("Choose the project this session belongs to.");
   });
 
+  test("does not mark Projects active inside a session workspace", () => {
+    const sidebar = read("components/app-sidebar.tsx");
+
+    expect(sidebar).toContain("const inSessionWorkspace =");
+    expect(sidebar).toContain('href === "/projects" && inSessionWorkspace');
+  });
+
   test("server-seeds the persistent shell and shares one account registry", () => {
     const layout = read("app/layout.tsx");
     const sidebar = read("components/app-sidebar.tsx");
     const accounts = read("lib/use-accounts.ts");
 
     expect(layout).toContain("const initialSidebarData: AppSidebarInitialData");
+    expect(layout).toContain("renderedAt: Date.now()");
     expect(layout).toContain("<AppSidebar initialData={initialSidebarData}");
     expect(layout).toContain("<AccountsProvider initial={accountEnvelope}>");
     expect(sidebar).toContain("if (!initialData) queueMicrotask");
+    expect(sidebar).toContain("fmtAgo(session.updatedAt, renderedAt)");
     expect(accounts).toContain("const AccountsContext = createContext");
     expect(accounts).toContain('refreshIncludes(event, "accounts")');
   });
@@ -88,5 +130,15 @@ describe("the production sidebar mount", () => {
     expect(saved).toContain("dispatchTelarRefresh({");
     expect(saved).toContain('domains: ["chats", "usage"]');
     expect(saved).not.toContain('new Event("telar:refresh")');
+  });
+
+  test("does not reopen a completed session reconnect after effect cleanup", () => {
+    const view = read("components/session/session-view.tsx");
+    const reconnect = view.slice(
+      view.indexOf("// §1b reconnect"),
+      view.indexOf("const send = useCallback"),
+    );
+    expect(reconnect).toContain("reconnectedRef.current = sessionId");
+    expect(reconnect).not.toContain("reconnectedRef.current = null");
   });
 });

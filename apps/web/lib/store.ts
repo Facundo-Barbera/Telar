@@ -6,6 +6,8 @@ import os from "os";
 import path from "path";
 import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
+import type { ContextUsageSnapshot } from "./context-usage";
+import type { RuntimeMode } from "@telar/core/runtime-mode";
 
 // The spend ledger itself lives in @telar/core (usage-ledger.ts) — it is
 // shared runtime state that belongs to no module, so its owning core service
@@ -127,6 +129,9 @@ export type Chat = {
   // predating mode selection, which read as "default" (the prior hardcoded
   // behavior).
   permissionMode?: ClientPermissionMode;
+  runtimeMode?: RuntimeMode;
+  fastMode?: boolean;
+  serviceTier?: string;
   // Session<->Loom link (docs/loom-model.md §5): the loom this session is
   // planning/steering/discussing, and which of the three roles it holds.
   // Optional: most chats are plain sessions with no loom attached. Once set,
@@ -156,6 +161,10 @@ export type Chat = {
   // turn re-sends the whole conversation as its prompt, so the last turn's
   // input side IS the current context size. This is the "CTX" the header shows.
   contextTokens?: number;
+  // Exact latest-window attribution when the active harness exposes one.
+  // Optional and provider-neutral: old chats and harnesses without a breakdown
+  // continue to use contextTokens plus the UI's conservative estimate.
+  contextUsage?: ContextUsageSnapshot;
   messages: ChatMessage[];
 };
 
@@ -407,6 +416,9 @@ export function upsertChatStub(opts: {
   account: string;
   project?: string;
   permissionMode?: ClientPermissionMode;
+  runtimeMode?: RuntimeMode;
+  fastMode?: boolean;
+  serviceTier?: string;
   loomId?: string;
   role?: "planner" | "steerer" | "escalation";
   title?: string;
@@ -424,6 +436,9 @@ export function upsertChatStub(opts: {
     account: opts.account,
     project: opts.project,
     permissionMode: opts.permissionMode,
+    runtimeMode: opts.runtimeMode,
+    fastMode: opts.fastMode,
+    serviceTier: opts.serviceTier,
     loomId: opts.loomId,
     role: opts.role,
     createdAt: now,
@@ -446,6 +461,9 @@ export function appendTurn(opts: {
   account: string;
   project?: string;
   permissionMode?: ClientPermissionMode;
+  runtimeMode?: RuntimeMode;
+  fastMode?: boolean;
+  serviceTier?: string;
   // Session<->Loom link — set once a session is attached to a loom (see
   // Chat.loomId/role). Undefined means "no change"; only ever narrows a
   // link in, never clears one (see the guarded assignment below).
@@ -474,6 +492,8 @@ export function appendTurn(opts: {
   // Context-window occupancy after this turn (final model call's prompt size),
   // computed by the caller — SET, not accumulated.
   contextTokens?: number;
+  // Exact latest-window snapshot, also replaced per turn rather than folded.
+  contextUsage?: ContextUsageSnapshot;
 }) {
   const chats = readChats();
   let chat = chats.find((c) => c.id === opts.id);
@@ -490,6 +510,9 @@ export function appendTurn(opts: {
       account: opts.account,
       project: opts.project,
       permissionMode: opts.permissionMode,
+      runtimeMode: opts.runtimeMode,
+      fastMode: opts.fastMode,
+      serviceTier: opts.serviceTier,
       createdAt: now,
       updatedAt: now,
       costUsd: 0,
@@ -524,6 +547,9 @@ export function appendTurn(opts: {
   chat.model = opts.model;
   chat.effort = opts.effort;
   chat.permissionMode = opts.permissionMode;
+  chat.runtimeMode = opts.runtimeMode;
+  chat.fastMode = opts.fastMode;
+  chat.serviceTier = opts.serviceTier;
   if (opts.usage) {
     // chat.inputTokens === undefined means this chat predates per-turn token
     // accumulation (getChat's tokensFromUsageLog fallback is the canary's
@@ -556,6 +582,7 @@ export function appendTurn(opts: {
   // caller from the last main-thread assistant message, not the step-summed
   // usage above) — overwrite, never accumulate.
   if (opts.contextTokens !== undefined) chat.contextTokens = opts.contextTokens;
+  if (opts.contextUsage !== undefined) chat.contextUsage = opts.contextUsage;
   // Session<->Loom link: guarded the same way — once a caller sets it, a
   // later turn that doesn't pass loomId/role must not wipe it back out.
   if (opts.loomId !== undefined) chat.loomId = opts.loomId;

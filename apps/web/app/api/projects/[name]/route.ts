@@ -1,4 +1,9 @@
-import { getAccount, getProject, unregisterProject, writeManifest, ProjectManifest } from "@telar/core";
+import {
+  getProject,
+  ProjectManifest,
+  unregisterProject,
+  writeManifest,
+} from "@telar/core";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -6,9 +11,10 @@ import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 
-// Edit a repo's manifest in place. name/root are immutable identity; account
-// must resolve to a real profile. The merged object is re-validated before it
-// hits disk, so a bad partial can never corrupt telar.yaml.
+// Edit a repo's manifest in place. name/root are immutable identity. Accounts
+// belong to sessions, not projects, so this endpoint does not expose the legacy
+// manifest account field. The merged object is re-validated before it hits
+// disk, so a bad partial can never corrupt telar.yaml.
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ name: string }> },
@@ -34,9 +40,12 @@ export async function PATCH(
   if ("root" in body && body.root !== manifest.root) {
     return Response.json({ error: "root is immutable." }, { status: 400 });
   }
-  if (body.account != null && !getAccount(body.account)) {
+  if ("account" in body) {
     return Response.json(
-      { error: `Unknown account "${body.account}".` },
+      {
+        error:
+          "Project accounts are no longer configurable. Choose an account when starting a session.",
+      },
       { status: 400 },
     );
   }
@@ -76,7 +85,6 @@ export async function PATCH(
 
   const merged = {
     ...rawManifest,
-    ...(body.account != null ? { account: body.account } : {}),
     ...(body.baseBranch != null ? { baseBranch: body.baseBranch } : {}),
     ...(body.adapter != null ? { adapter: body.adapter } : {}),
     // A learned devCommand (from settings or answerBlocked's promotion) must be
