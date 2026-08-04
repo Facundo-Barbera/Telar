@@ -79,7 +79,7 @@ import {
 import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
-import { WorkingIndicator, type WorkState } from "@/components/session/working-indicator";
+import type { WorkState } from "@/components/session/working-indicator";
 import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
@@ -3268,9 +3268,17 @@ function SessionWorkspace({
           <div className="min-w-0 truncate font-semibold">{titleNode}</div>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {liveWork && (
-            <WorkingIndicator state={liveWork} className="max-w-[min(420px,60vw)]" />
-          )}
+          {/* NO WORKING INDICATOR HERE. `liveWork` feeds the transcript's tail
+              status row (CONVERSATION_KINDS.status, appended below) and that is
+              now its ONLY consumer. Rendering the same state through the same
+              component in both places meant a streaming turn showed two
+              identical "Thinking 1m 01s" cards at once — one pinned to this bar
+              and one in the bubble — and the composer's "Agent is working…"
+              placeholder plus its Stop button said it twice more. The tail row
+              wins because it sits WHERE THE WORK IS: next to the steps it
+              describes, in the reading column, scrolling with the turn it
+              belongs to. Embedded surfaces have no header bar at all, so it was
+              also the only one of the two that was always present. */}
           {/* The aggregate looms pill (replaces the persistent banner + the old
               "Planning loom" chip). Solo → state + short id; N → most-urgent
               rollup. Hover previews the per-loom overlay, click pins. */}
@@ -3564,8 +3572,13 @@ function SessionWorkspace({
                   suppressHydrationWarning
                   className="min-h-[76px] px-3 pb-2 pt-3 text-[15px] leading-6"
                   placeholder={
+                    // The busy half of this used to read "Agent is working —
+                    // Enter queues a message…". The transcript's status row and
+                    // this composer's own Stop button both already say the agent
+                    // is working; what the user cannot infer is what Enter does
+                    // RIGHT NOW, so only that survives.
                     busy
-                      ? "Agent is working — Enter queues a message…"
+                      ? "Enter queues a message…"
                       : "Ask for changes, explore the code, or attach context…"
                   }
                   onKeyDown={handleComposerKeyDown}

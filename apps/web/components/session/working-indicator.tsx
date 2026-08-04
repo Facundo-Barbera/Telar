@@ -12,9 +12,7 @@
 // (see ai-elements/shimmer) so we use it directly.
 
 import { useEffect, useState } from "react";
-import { Loader2Icon, WrenchIcon } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { TOOL_ICONS } from "@/components/session/tool-step";
 import { cn } from "@/lib/utils";
 
 // Seconds of no streamed output before the indicator flips to its long-silence
@@ -32,6 +30,16 @@ const fmtElapsed = (s: number) => {
   return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 };
 
+// WHAT THIS ROW NO LONGER SAYS, AND WHY. It used to name the running tool and
+// its target ("Running Bash · bun test") because it lived in the HEADER, where
+// it had no neighbours and was the turn's only description of itself. It is now
+// the transcript's tail row, and the activity lane directly above it already
+// renders that same running step, shimmering, with the same label — so naming
+// the tool here printed it twice, one line apart. What is left is the part
+// nothing else carries: that the turn is alive, roughly what it is doing, how
+// long it has been at it, and whether it has gone quiet. `state.tool`/`target`
+// stay in WorkState because `silent` is derived from that arm and the gallery
+// drives all four states from it — this component just stops rendering them.
 export function WorkingIndicator({
   state,
   className,
@@ -46,67 +54,57 @@ export function WorkingIndicator({
     return () => window.clearInterval(timer);
   }, [state.kind]);
 
-  const base = "flex items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-xs";
+  // No border, no card, no background: a status LINE, at the same 11px muted
+  // weight as a tool row's metadata. The old bordered card gave a transient
+  // affordance the visual weight of a permanent one, which is most of why a
+  // finished turn and a running turn looked equally loud.
+  const base = "flex items-center gap-2 text-[11px] text-muted-foreground/70";
 
   if (state.kind === "starting") {
     return (
-      <div className={cn(base, "border-border", className)}>
-        <Loader2Icon className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-        <Shimmer as="span" className="font-medium">
-          Starting turn
+      <div className={cn(base, className)}>
+        <PulseDot />
+        <Shimmer as="span" className="text-[11px]">
+          Starting
         </Shimmer>
       </div>
     );
   }
 
-  if (state.kind === "thinking" || state.kind === "working") {
-    const elapsed = Math.max(0, Math.floor((now - state.startedAt) / 1_000));
-    return (
-      <div className={cn(base, "border-border", className)}>
-        <span aria-hidden className="text-sm">
-          ✻
-        </span>
-        <Shimmer as="span" className="font-medium">
-          {state.kind === "thinking" ? "Thinking" : "Working"}
-        </Shimmer>
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/70">
-          {fmtElapsed(elapsed)}
-        </span>
-      </div>
-    );
-  }
-
-  const Icon = TOOL_ICONS[state.tool] ?? WrenchIcon;
   const elapsed = Math.max(0, Math.floor((now - state.startedAt) / 1_000));
-  const silentFor = Math.max(0, Math.floor((now - state.lastActivityAt) / 1_000));
+  const silentFor =
+    state.kind === "tool" ? Math.max(0, Math.floor((now - state.lastActivityAt) / 1_000)) : 0;
   const silent = silentFor >= SILENCE_THRESHOLD;
+  // A tool call reads as "Working": the lane above says WHICH tool, and the two
+  // rows disagreeing about the verb ("Ran command" / "Using Read") was noise.
+  const label = state.kind === "thinking" ? "Thinking" : "Working";
+
   return (
-    <div className={cn(base, silent ? "border-amber-500/40" : "border-border", className)}>
-      <Icon
-        className={cn("size-3.5 shrink-0", silent ? "text-amber-500" : "text-muted-foreground")}
-      />
-      <span className="shrink-0 font-medium text-foreground">
-        {state.tool === "Bash" ? "Running" : "Using"} {state.tool}
-      </span>
-      {state.target && (
-        <span className="min-w-0 flex-1 truncate">
-          <Shimmer as="span" className="font-mono text-[11px]">
-            {state.target}
-          </Shimmer>
-        </span>
-      )}
-      {silent ? (
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <span className="text-[10px] text-amber-500">still working</span>
-          <span className="font-mono text-[10px] text-muted-foreground/70">
-            no output {fmtElapsed(silentFor)}
-          </span>
-        </span>
-      ) : (
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/70">
-          {fmtElapsed(elapsed)}
+    <div className={cn(base, silent && "text-amber-500/80", className)}>
+      <PulseDot silent={silent} />
+      <Shimmer as="span" className={cn("text-[11px]", silent && "text-amber-500/80")}>
+        {label}
+      </Shimmer>
+      <span className="shrink-0 font-mono tabular-nums">{fmtElapsed(elapsed)}</span>
+      {silent && (
+        <span className="shrink-0 font-mono tabular-nums text-amber-500">
+          · no output {fmtElapsed(silentFor)}
         </span>
       )}
     </div>
+  );
+}
+
+/** The liveness glyph: one small pulsing dot, replacing a spinner and a ✻ that
+ *  each carried more visual weight than the sentence beside them. */
+function PulseDot({ silent = false }: { silent?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "size-1.5 shrink-0 rounded-full motion-safe:animate-pulse",
+        silent ? "bg-amber-500" : "bg-muted-foreground/50",
+      )}
+    />
   );
 }
