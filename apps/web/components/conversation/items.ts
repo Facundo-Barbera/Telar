@@ -227,6 +227,25 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
     } else if (part.type === "text") {
       items.push({ kind: "text", key: `${messageId}:${idx}`, part });
     } else if (part.type === "thinking") {
+      // A THINKING BLOCK WITH NO TEXT IS NOT CONTENT, AND MUST NOT SEVER A RUN.
+      // `thinkingSuppressed` already renders such a block as nothing; without
+      // the same rule HERE, the grouping layer and the render layer disagree
+      // about what is visible, and that disagreement is what a user sees.
+      //
+      // Concretely: the client opens a thinking part on the block-START event,
+      // before any delta exists (session-view's "thinking" case). Interleaved
+      // extended thinking opens one such block before EACH tool call, so a
+      // turn's parts read `thinking(""), tool, thinking(""), tool, …` — and
+      // because only CONSECUTIVE tool parts coalesce below, every empty block
+      // split the run into its own group. Eight tool calls rendered as eight
+      // identical "1 step · Ran command" rows separated by nothing at all,
+      // because the thing separating them drew no pixels. Codex makes the same
+      // shape permanent rather than transient: it emits block-start and then no
+      // reasoning deltas ever (see thinkingSuppressed's own note).
+      //
+      // Skipping here rather than merging across it keeps the rule ONE rule:
+      // a block that has text is a real boundary and still splits the run.
+      if (thinkingSuppressed(part)) return;
       items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
     } else if (part.type === "attachments") {
       items.push({ kind: "attachments", key: `${messageId}:${idx}`, part });

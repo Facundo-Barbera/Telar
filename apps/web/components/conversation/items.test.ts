@@ -109,6 +109,47 @@ describe("groupParts — what breaks a group", () => {
   });
 });
 
+describe("groupParts — a TEXTLESS thinking block is not a boundary", () => {
+  // The regression these exist for: the client opens a thinking part on the
+  // block-START event, before any delta. Interleaved extended thinking opens one
+  // per tool call, so the run was severed between every pair — and because
+  // `thinkingSuppressed` draws nothing, the user saw N identical "1 step" rows
+  // with no visible reason for the split.
+  test("an empty thinking block between two tool calls keeps them in ONE group", () => {
+    const items = groupParts("m1", [tool("Read", "t1"), thinking("", false), tool("Bash", "t2")]);
+    expect(items.map((i) => i.kind)).toEqual(["tools"]);
+    expect(items[0].kind === "tools" && items[0].parts.map((p) => p.name)).toEqual(["Read", "Bash"]);
+  });
+
+  test("the interleaved-thinking shape collapses to one group, not eight", () => {
+    const parts: Part[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      parts.push(thinking("", false), tool("Bash", `t${i}`));
+    }
+    const items = groupParts("m1", parts);
+    expect(items.map((i) => i.kind)).toEqual(["tools"]);
+    expect(items[0].kind === "tools" && items[0].parts.length).toBe(8);
+  });
+
+  test("whitespace-only counts as empty — same rule the renderer applies", () => {
+    const items = groupParts("m1", [tool("Read", "t1"), thinking("  \n "), tool("Bash", "t2")]);
+    expect(items.map((i) => i.kind)).toEqual(["tools"]);
+  });
+
+  test("a thinking block WITH text is still a real boundary", () => {
+    // The skip must not widen into "thinking never splits": once a block has
+    // narration it is content, and content separates two runs of work.
+    const items = groupParts("m1", [tool("Read", "t1"), thinking("hmm", false), tool("Bash", "t2")]);
+    expect(items.map((i) => i.kind)).toEqual(["tools", "thinking", "tools"]);
+  });
+
+  test("a skipped block consumes no key, and the parts after it keep their own index", () => {
+    // Keys are part-indexed, so skipping must not renumber anything downstream.
+    const items = groupParts("mK", [thinking(""), text("hi"), thinking(""), text("bye")]);
+    expect(items.map((i) => i.key)).toEqual(["mK:1", "mK:3"]);
+  });
+});
+
 describe("parentOf — one definition of 'main thread'", () => {
   test("a permission part is ALWAYS main — even one that arrives CARRYING a parentId", () => {
     // canUseTool gets no parent attribution from the SDK, so a permission card
