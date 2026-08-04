@@ -16,11 +16,19 @@
 //
 // The lesson these tests encode: the theme is a contract between two files and
 // one selector, and "I read it and it looked fine" is not a way to check it.
+// @ts-expect-error no @types/bun in this workspace — the runtime is `bun test`
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const css = readFileSync(join(import.meta.dir, "..", "app", "globals.css"), "utf8");
+// `import.meta.url` + fileURLToPath rather than Bun's `import.meta.dir`: the
+// latter is a Bun extension that this workspace has no types for, so it was a
+// type error in every checkout whose tsconfig did not exclude test files. Same
+// resolution, same directory, and it is the idiom store.test.ts already uses.
+const css = readFileSync(
+  fileURLToPath(new URL("../app/globals.css", import.meta.url)),
+  "utf8",
+);
 
 // Comments stripped, because this file EXPLAINS the selectors it must not
 // contain — the first version of these tests failed on the paragraph describing

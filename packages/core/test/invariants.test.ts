@@ -973,6 +973,11 @@ const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
   browser: {
     file: BROWSER_MCP,
     tools: [
+      // Read-only by construction: it lists open tabs and changes nothing —
+      // it is in BROWSER_READ_TOOLS, and `browser_tabs` remains the only tool
+      // that can create/close/select. AD-1 confirmed: a tab listing cannot move
+      // a loom from ready to done, and cannot reach the loom surface at all.
+      "browser_list_tabs",
       "browser_tabs",
       "browser_navigate",
       "browser_navigate_back",

@@ -84,7 +84,8 @@ import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
-import { adoptRightPanelSession } from "@/lib/right-panel-store";
+import { adoptRightPanelSession, openRightPanelBrowser } from "@/lib/right-panel-store";
+import { TELAR_BROWSER_MUTATION_EVENT } from "@/lib/browser-runtime-contract";
 import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1249,6 +1250,37 @@ function SessionWorkspace({
   // The conversation column, which is the composer's drop zone — see the
   // `dropTarget` prop and the element this is attached to.
   const sessionSurfaceRef = useRef<HTMLDivElement | null>(null);
+
+  // Reveal the browser panel when an AGENT mutates a tab in one of THIS
+  // session's scopes.
+  //
+  // It lives here rather than inside <RightPanel> because it is session
+  // semantics — a window subscription plus a comparison against this session's
+  // own scope keys — and AD-12 keeps both out of the shell (INV-8a fails the
+  // shell by name for either). The panel is a pure projection of the store; the
+  // adapter decides when to open it.
+  //
+  // Draft scopes are valid browser owners until the first session event adopts
+  // them into the persisted session key, so BOTH keys are accepted: without the
+  // provisional one, an agent that opens a tab before that adoption reveals
+  // nothing.
+  useEffect(() => {
+    const revealAgentBrowser = (event: Event) => {
+      const eventScopeKey = (event as CustomEvent<string>).detail;
+      if (
+        eventScopeKey !== resolvedRightPanelScopeKey &&
+        eventScopeKey !== provisionalRightPanelScopeKey
+      ) {
+        return;
+      }
+      openRightPanelBrowser(resolvedRightPanelScopeKey);
+    };
+    window.addEventListener(TELAR_BROWSER_MUTATION_EVENT, revealAgentBrowser);
+    return () => window.removeEventListener(
+      TELAR_BROWSER_MUTATION_EVENT,
+      revealAgentBrowser,
+    );
+  }, [resolvedRightPanelScopeKey, provisionalRightPanelScopeKey]);
 
   useEffect(() => {
     const pos = pendingCaretRef.current;
@@ -3641,7 +3673,6 @@ function SessionWorkspace({
         <RightPanel
           project={project}
           scopeKey={resolvedRightPanelScopeKey}
-          revealScopeKey={provisionalRightPanelScopeKey}
           activityCount={activityCount}
           activityRunning={activityRunning}
           activityAttention={activityAttention}

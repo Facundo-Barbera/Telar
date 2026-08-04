@@ -126,7 +126,12 @@ describe("the production right-panel mount", () => {
     expect(controller).toContain("await bridge.setVisible(scopeKey, true)");
     expect(controller).toContain("performance.now() + 360");
     expect(browser).toContain('className="min-h-0 flex-1 bg-background"');
-    expect(desktopHost).toContain("bridge.callTool(command.scopeKey, command.name, command.args)");
+    // The claim is that the tool call is SCOPED — the host routes by scopeKey
+    // rather than to a single ambient browser. The exact spelling moved when
+    // desktop-browser-host started validating id/scopeKey/name off the command
+    // before dispatching (an unscoped legacy command is now rejected outright),
+    // so this tracks the validated locals it dispatches with.
+    expect(desktopHost).toContain("bridge.callTool(scopeKey, name, command.args ?? {})");
     expect(desktopHost).toContain("T3 Code-derived");
     expect(desktopHost).toContain("renderer must not create or own a parallel");
     expect(desktopHost).toContain("/api/browser/desktop-host");
@@ -135,12 +140,20 @@ describe("the production right-panel mount", () => {
     expect(desktopHost).toContain("TELAR_BROWSER_MUTATION_EVENT");
     expect(desktopHost).toContain("event.reveal && event.scopeKey");
     expect(desktopHost).toContain("detail: event.scopeKey");
-    expect(panel).toContain("openRightPanelBrowser(scopeKey)");
-    expect(panel).toContain("TELAR_BROWSER_MUTATION_EVENT");
-    expect(panel).toContain("eventScopeKey !== scopeKey && eventScopeKey !== revealScopeKey");
+    // THE AGENT-REVEAL LISTENER BELONGS TO THE ADAPTER, NOT THE PANEL. It was
+    // in right-panel.tsx and INV-8a failed it there by name: a window
+    // subscription plus a comparison against this session's scope keys is
+    // session semantics, which AD-12 keeps out of the shell. Asserted from both
+    // sides — present in the owner, ABSENT from the panel — so a future move
+    // back cannot pass by satisfying only half of it.
+    expect(session).toContain("openRightPanelBrowser(resolvedRightPanelScopeKey)");
+    expect(session).toContain("TELAR_BROWSER_MUTATION_EVENT");
+    expect(session).toContain("eventScopeKey !== resolvedRightPanelScopeKey");
+    expect(session).toContain("eventScopeKey !== provisionalRightPanelScopeKey");
+    expect(panel).not.toContain("TELAR_BROWSER_MUTATION_EVENT");
+    expect(panel).not.toContain("window.addEventListener");
     expect(session).toContain("adoptRightPanelSession(");
     expect(session).toContain("scopeKey={resolvedRightPanelScopeKey}");
-    expect(session).toContain("revealScopeKey={provisionalRightPanelScopeKey}");
     expect(layout).toContain("<DesktopBrowserHost />");
     expect(desktopMain).toContain("new DesktopBrowserManager(win)");
     expect(desktopMain).toContain('preload: path.join(__dirname, "preload.js")');

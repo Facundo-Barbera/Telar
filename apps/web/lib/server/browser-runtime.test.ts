@@ -1,3 +1,4 @@
+// @ts-expect-error no @types/bun in this workspace — the runtime is `bun test`
 import { describe, expect, test } from "bun:test";
 import {
   browserToolPhase,

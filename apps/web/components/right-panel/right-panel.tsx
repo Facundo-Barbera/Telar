@@ -18,11 +18,7 @@ import {
   PanelRightOpenIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { TELAR_BROWSER_MUTATION_EVENT } from "@/lib/browser-runtime-contract";
-import {
-  openRightPanelBrowser,
-  useRightPanelStore,
-} from "@/lib/right-panel-store";
+import { useRightPanelStore } from "@/lib/right-panel-store";
 import {
   clampSidebarWidth,
   setSidebarWidth,
@@ -195,7 +191,6 @@ export function RightPanelTrigger({ scopeKey }: { scopeKey: string }) {
 export function RightPanel({
   project,
   scopeKey,
-  revealScopeKey,
   activity,
   activityCount,
   activityRunning,
@@ -203,7 +198,6 @@ export function RightPanel({
 }: {
   project: string;
   scopeKey: string;
-  revealScopeKey?: string;
   activity: ReactNode;
   activityCount: number;
   activityRunning: number;
@@ -243,22 +237,12 @@ export function RightPanel({
     panel.setOpen(false);
   }, [panel, scopeKey]);
 
-  useEffect(() => {
-    const revealAgentBrowser = (event: Event) => {
-      const eventScopeKey = (event as CustomEvent<string>).detail;
-      if (eventScopeKey !== scopeKey && eventScopeKey !== revealScopeKey) return;
-      // Draft scopes are valid browser owners until the first session event
-      // adopts them into the persisted session key. Revealing here avoids a
-      // race where the agent opens a tab before that adoption; the panel store
-      // is moved alongside the browser scope when the session is created.
-      openRightPanelBrowser(scopeKey);
-    };
-    window.addEventListener(TELAR_BROWSER_MUTATION_EVENT, revealAgentBrowser);
-    return () => window.removeEventListener(
-      TELAR_BROWSER_MUTATION_EVENT,
-      revealAgentBrowser,
-    );
-  }, [revealScopeKey, scopeKey]);
+  // The agent-reveal listener that used to live here now lives in the OWNER
+  // ADAPTER (session-view.tsx), which is the only thing that renders this
+  // panel. It was a window subscription plus a session-scope comparison —
+  // session semantics, which AD-12 keeps out of the shell and INV-8a fails by
+  // name. Moving it cost this component its `revealScopeKey` prop, whose only
+  // reader was that effect.
 
   return (
     <AnimatePresence initial={false}>
