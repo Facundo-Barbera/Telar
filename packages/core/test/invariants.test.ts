@@ -1781,6 +1781,17 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
 // The 22 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
 // it. It is the invariant's whole content.
 const AD5_SITES = [
+  // Composer attachments — the bytes a user drops into a chat. A NEW OWNER, in
+  // sorted position ("at" < "mc"): lib/attachments.ts is the only module that
+  // composes this subtree, and every other reader (the upload route, the
+  // preview route, the chat route, the archive/delete sweep) reaches it through
+  // that module's exported ports — attachmentPath, readAttachmentMeta,
+  // putAttachment, bindAttachments, deleteAttachmentsForChat — never by path.
+  // It cannot ride store.ts's `chats.json` site: these are opaque blobs with a
+  // lifetime of their own (destroyed on archive, swept when orphaned) and
+  // putting them inside the single JSON document that holds every transcript is
+  // exactly what that lifetime exists to avoid.
+  "apps/web/lib/attachments.ts :: attachments",
   "apps/web/lib/mcp-oauth-pending.ts :: mcp-oauth-pending.json",
   "apps/web/lib/permissions.ts :: permissions.json",
   "apps/web/lib/session-log.ts :: sessions",
@@ -1812,6 +1823,9 @@ const AD5_SITES = [
 // subtree; root-level FILES belonging to no module are AD-20's, not AD-5's, and
 // are still listed here because the composing module is their sole writer.
 const AD5_OWNERS: Record<string, string[]> = {
+  // See the AD5_SITES entry above for why this is its own owner rather than
+  // part of store.ts's chats.json.
+  attachments: ["apps/web/lib/attachments.ts"],
   "projects.json": ["packages/core/src/manifest.ts"],
   "accounts.json": ["packages/core/src/accounts.ts"],
   "credentials.json": ["packages/core/src/secrets.ts"],
@@ -4397,6 +4411,12 @@ const EXPECTED_BUILTIN_KIND_IDS = [
   "conversation:permission",
   "conversation:status",
   "conversation:marker",
+  // The EIGHTH, added deliberately: what the user attached to a message. It is
+  // built in rather than surface-registered for the same reason `text` is — an
+  // attachment is part of what a user message IS in every surface that renders
+  // one, and a registered kind would leave each of the six lanes epic 3 unified
+  // to re-answer "what does a dropped screenshot look like" on its own.
+  "conversation:attachments",
 ].sort();
 
 // ── the shell's prop list, as an exact set ──────────────────────────────────

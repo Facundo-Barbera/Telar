@@ -20,9 +20,17 @@ import {
   GitCommitHorizontalIcon,
   GitCompareArrowsIcon,
   GlobeIcon,
+  PaperclipIcon,
   PlusIcon,
   WorkflowIcon,
 } from "lucide-react";
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+import type { AttachmentRef } from "@/components/conversation";
+import { attachmentUrl } from "@/lib/attachment-contract";
 import type { RailAgent } from "@/components/session/subagent-rail";
 import type { RunSnapshot } from "@/lib/ultra-runs";
 import type { GitOverviewResponse } from "@/components/projects/git-tab-shared";
@@ -103,6 +111,58 @@ function InspectorRow({
   );
 }
 
+/**
+ * One attached file, as a row with a hover PREVIEW.
+ *
+ * The preview is the reason this is not just another `InspectorRow`: the whole
+ * point of surfacing attachments in the pinned summary is answering "what did I
+ * give it?" without scrolling the transcript, and for an image that question is
+ * answered by looking rather than by reading a filename. Non-images get the row
+ * and no card — there is nothing to show, and an empty popover is worse than
+ * none.
+ *
+ * A missing thumbnail (the bytes died with an archive) degrades to the plain
+ * row, so the section stays honest without probing anything up front.
+ */
+function AttachmentRow({ item }: { item: AttachmentRef }) {
+  const [missing, setMissing] = useState(false);
+  const isImage = item.mediaType.startsWith("image/") && !missing;
+
+  const row = (
+    <div className="flex min-h-9 items-center gap-2.5 rounded-xl px-2.5">
+      <PaperclipIcon className="size-4 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate text-sm">{item.name}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">
+        {missing ? "gone" : formatBytes(item.size)}
+      </span>
+    </div>
+  );
+
+  if (!isImage) return row;
+
+  return (
+    <HoverCard>
+      <HoverCardTrigger render={<div className="cursor-default">{row}</div>} />
+      <HoverCardContent align="end" className="w-auto max-w-80 p-1.5" side="left">
+        {/* eslint-disable-next-line @next/next/no-img-element -- user-uploaded
+            bytes of unknown dimensions, served by this app and possibly gone. */}
+        <img
+          alt={item.name}
+          className="max-h-64 w-auto rounded-md object-contain"
+          onError={() => setMissing(true)}
+          src={attachmentUrl(item.id)}
+        />
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb < 1024 ? `${Math.round(kb)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+};
+
 function agentTone(status: RailAgent["status"]): "default" | "live" | "attention" {
   if (status === "error") return "attention";
   if (status === "running") return "live";
@@ -117,6 +177,7 @@ export function WorkspaceInspector({
   onReservedChange = () => {},
   agents,
   workflows,
+  attachments = [],
   needsAttention,
   onSelectAgent,
   onSelectWorkflow,
@@ -128,6 +189,9 @@ export function WorkspaceInspector({
   onReservedChange?: (reserved: boolean) => void;
   agents: readonly RailAgent[];
   workflows: readonly RunSnapshot[];
+  /** Everything the human has attached to THIS session, newest first. Derived
+   *  from the transcript by the adapter — this component stores nothing. */
+  attachments?: readonly AttachmentRef[];
   needsAttention: boolean;
   onSelectAgent: (id: string) => void;
   onSelectWorkflow: (id: string) => void;
@@ -418,6 +482,18 @@ export function WorkspaceInspector({
                     tone={run.state === "running" ? "live" : "default"}
                     onClick={() => openActivity(() => onSelectWorkflow(run.runId))}
                   />
+                ))}
+              </div>
+            </>
+          )}
+
+          {attachments.length > 0 && (
+            <>
+              <div className="my-2 h-px bg-border/70" />
+              <SectionHeading>Context</SectionHeading>
+              <div className="space-y-0.5">
+                {attachments.map((item) => (
+                  <AttachmentRow item={item} key={item.id} />
                 ))}
               </div>
             </>

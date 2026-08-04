@@ -53,7 +53,24 @@ export type StorePart =
       // Set when auto/acceptEdits mode hard-blocked this call without an
       // interactive prompt (route.ts's "permission_denied" handling).
       autoDenied?: boolean;
-    };
+    }
+  // What the user attached to a message. METADATA ONLY, and that is the whole
+  // design: the bytes live under the Telar state root with a lifetime of their
+  // own (destroyed when the chat is archived — see apps/web/lib/attachments.ts),
+  // while this part is persisted in the transcript and outlives them. When the
+  // bytes are gone the chip renders as a TOMBSTONE, which is possible precisely
+  // because every field needed to draw one is here rather than fetched.
+  | { type: "attachments"; files: AttachmentRef[] };
+
+/** One attachment, as the transcript remembers it. `id` addresses the bytes
+ *  through /api/chat/attachments/<id> for as long as they exist. */
+export type AttachmentRef = {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+};
+
 export type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 
 // Permission cards are live-stream-only artifacts (resolved by "permission_result"
@@ -72,6 +89,9 @@ export type Part =
   | { type: "text"; text: string; done: boolean; parentId?: string }
   | { type: "thinking"; text: string; done: boolean; parentId?: string }
   | ToolPart
+  // Identical to its StorePart twin: an attachment part is complete the moment
+  // it exists (nothing about it streams), so unlike text it needs no `done`.
+  | { type: "attachments"; files: AttachmentRef[] }
   | {
       type: "permission";
       id: string;
@@ -97,7 +117,11 @@ export type PermissionPart = Extract<Part, { type: "permission" }>;
 // lookup means every routing decision (grouping, streaming merge, bucketing)
 // agrees on what "main thread" means.
 export const parentOf = (p: Part): string | undefined =>
-  p.type === "permission" ? undefined : p.parentId;
+  // Attachments join permission cards as a MAIN-THREAD-ONLY part: a subagent
+  // has no composer, so nothing can attach a file from inside a spawn. Naming
+  // both here rather than giving the variant an unused `parentId` field keeps
+  // "can this be parented" a fact about the union instead of a field nobody sets.
+  p.type === "permission" || p.type === "attachments" ? undefined : p.parentId;
 
 // One spawned subagent's own transcript, reconstructed identically whether
 // it's arriving live (SSE events tagged with `parent`) or reconstructed from
@@ -184,6 +208,7 @@ export type RenderItem =
   | { kind: "text"; key: string; part: Extract<Part, { type: "text" }> }
   | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
   | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
+  | { kind: "attachments"; key: string; part: Extract<Part, { type: "attachments" }> }
   | { kind: "tools"; key: string; parts: ToolPart[] };
 
 export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
@@ -203,6 +228,8 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
       items.push({ kind: "text", key: `${messageId}:${idx}`, part });
     } else if (part.type === "thinking") {
       items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
+    } else if (part.type === "attachments") {
+      items.push({ kind: "attachments", key: `${messageId}:${idx}`, part });
     } else {
       items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
     }
@@ -224,9 +251,15 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
 // reordered. The day parts reorder, that fallback names the wrong slot.
 export type TranscriptItem = { kind: ItemKindId; key: string; payload: unknown };
 
-// The seven built-in ids. Namespaced (`conversation:*`) like every other kind,
+// The eight built-in ids. Namespaced (`conversation:*`) like every other kind,
 // because AD-13 admits no unnamespaced ids and a bare `text` would be exactly
 // the collision the rule exists to prevent. INV-8f pins this set exactly.
+//
+// `attachments` is the eighth and is a BUILT-IN rather than a registered kind
+// because it is part of what a user message IS, in every surface that renders
+// one — the same argument that makes `text` built-in. A surface-registered kind
+// would leave the six lanes epic 3 exists to unify each re-solving "what does a
+// dropped screenshot look like".
 export const CONVERSATION_KINDS = {
   turn: "conversation:turn",
   text: "conversation:text",
@@ -235,6 +268,7 @@ export const CONVERSATION_KINDS = {
   permission: "conversation:permission",
   marker: "conversation:marker",
   status: "conversation:status",
+  attachments: "conversation:attachments",
 } as const;
 
 export type PermissionRespond = (
@@ -255,6 +289,7 @@ export type TurnPayload = {
   pending?: ReactNode;
 };
 export type TextPayload = { text: string };
+export type AttachmentsPayload = { files: AttachmentRef[] };
 export type ThinkingPayload = { text: string; done: boolean };
 export type ToolsPayload = {
   parts: ToolPart[];
@@ -341,6 +376,12 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
         kind: CONVERSATION_KINDS.thinking,
         key: item.key,
         payload: { text: item.part.text, done: item.part.done } satisfies ThinkingPayload,
+      };
+    case "attachments":
+      return {
+        kind: CONVERSATION_KINDS.attachments,
+        key: item.key,
+        payload: { files: item.part.files } satisfies AttachmentsPayload,
       };
     case "permission":
       return {

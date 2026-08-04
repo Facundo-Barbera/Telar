@@ -96,6 +96,14 @@ import {
   isReadOnlyBrowserCall,
 } from "@/lib/browser-mcp";
 import { namespaceOf } from "@/lib/harness-tools";
+import fs from "node:fs";
+import { extractMentions } from "@/lib/project-files";
+import type { TurnAttachment } from "@/lib/attachment-contract";
+import {
+  attachmentPath,
+  bindAttachments,
+  readAttachmentMeta,
+} from "@/lib/attachments";
 import {
   createPending,
   resolvePending,
@@ -174,6 +182,24 @@ const TITLE_RACE_MS = 2_000;
 // `sessionProfile.systemPromptAppendix`, and branches only on whether it is
 // empty.
 
+/**
+ * The block appended to a Claude turn's prompt naming this turn's attachments.
+ *
+ * It is phrased as a statement of fact rather than an instruction ("read these
+ * now"): the user may have attached a screenshot purely as backup for a
+ * question about something else, and a directive would spend a Read on every
+ * file regardless. Absolute paths, because the agent's cwd is the project root
+ * but an attachment lives under the Telar state root, outside it.
+ */
+function attachmentPromptBlock(attachments: readonly TurnAttachment[]): string {
+  const lines = attachments.map((a) => `- ${a.name} (${a.mediaType}): ${a.path}`);
+  return [
+    "The user attached the following file(s) to this message. Read them with",
+    "the Read tool if they are relevant to the request:",
+    ...lines,
+  ].join("\n");
+}
+
 // One POST = one turn. Continuation via `resume: sessionId`; the SDK restores
 // full conversation state from the session transcript. Token-level streaming
 // via includePartialMessages; client abort propagates to the subprocess.
@@ -222,7 +248,31 @@ export async function POST(req: Request) {
     // agent (a system-prompt note the `ultra` tool's own description tells
     // it to look for).
     ultra: rawUltra,
+    // Composer attachments for THIS turn: ids minted by POST /api/chat/
+    // attachments, which already holds the bytes. Resolved to absolute paths
+    // below and handed to whichever harness is running — never inlined here.
+    attachments: rawAttachments,
   } = await req.json();
+  // Ids only, from the wire, narrowed the same fail-safe way as `role`: an
+  // entry that isn't a string, or that names an upload this server has no
+  // record of, collapses away rather than reaching a harness as a path.
+  // `path` is REQUIRED here, unlike on the wire type: an entry only survives
+  // the filter below if its bytes are on disk right now. Optional-on-the-wire
+  // is for the persisted/tombstone case, which never reaches a harness.
+  const turnAttachments: (TurnAttachment & { path: string })[] = (
+    Array.isArray(rawAttachments) ? rawAttachments : []
+  )
+    .map((entry: unknown) => {
+      const id = typeof entry === "string" ? entry : (entry as { id?: unknown })?.id;
+      return typeof id === "string" ? readAttachmentMeta(id) : null;
+    })
+    .flatMap((meta) => {
+      if (!meta) return [];
+      const file = attachmentPath(meta.id);
+      return file && fs.existsSync(file)
+        ? [{ id: meta.id, name: meta.name, mediaType: meta.mediaType, size: meta.size, path: file }]
+        : [];
+    });
   // "Which strings are session roles" now has ONE home, in the profile port —
   // this eight-line ternary and core's own sessionKindFromRole were two copies
   // of the same fact, and resolveSessionKind below is the third reader. Same
@@ -411,7 +461,24 @@ export async function POST(req: Request) {
       ? rawServiceTier
       : undefined;
   const claudeEffort = effort;
-  const claudePrompt = message;
+  // ATTACHMENTS REACH CLAUDE AS PATHS, NOT AS CONTENT BLOCKS. The SDK would
+  // take image blocks, but only through streaming-input mode (`prompt` as an
+  // AsyncIterable<SDKUserMessage>), and switching this call site to that shape
+  // moves resume, canUseTool and the abort path onto a different code path in
+  // the SDK for a benefit the agent already has without it: Read renders an
+  // image file into the conversation as an image block by itself. A path also
+  // matches what the Codex branch sends, so ONE wire shape serves both.
+  // `@path` mentions the human typed into this turn, resolved against the
+  // project root. Read back OUT of the final text rather than tracked by the
+  // composer, so the two can never disagree — see extractMentions.
+  //
+  // The CLAUDE branch needs nothing further: the `@path` is already in the
+  // prompt, the agent's cwd is this same root, and Read takes it from there.
+  // The CODEX branch turns each one into a native `mention` input item below.
+  const mentions = extractMentions(message, manifest.root);
+  const claudePrompt = turnAttachments.length
+    ? `${message}\n\n${attachmentPromptBlock(turnAttachments)}`
+    : message;
 
   const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
 
@@ -1180,6 +1247,17 @@ export async function POST(req: Request) {
           ];
           for await (const nev of runCodexTurn({
             prompt: message,
+            // `@path` mentions, lifted out of the message text and handed over
+            // as the app-server's own `mention` input items — the same thing the
+            // Codex TUI's `@` produces. The text keeps the `@path` it always
+            // had; this makes the file a first-class reference beside it rather
+            // than a string the model has to notice.
+            ...(mentions.length ? { mentions } : {}),
+            // Note this is `message`, NOT `claudePrompt`: the Claude branch has
+            // to name its attachments inside the prompt text, whereas here they
+            // travel as their own typed input items. Sending both would state
+            // the same paths twice.
+            ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
             // AC2/AC3 — the same profile-resolved cwd the Claude branch uses.
             cwd: sessionProfile.cwd,
             env: runtimeEnv,
@@ -2135,6 +2213,15 @@ export async function POST(req: Request) {
             });
           }
           if (capturedSession) {
+            // Hand this turn's attachments to the chat that now exists. Until
+            // this runs they are unowned uploads, which the orphan sweep in
+            // lib/attachments.ts collects after a day — and after it, they are
+            // covered by the chat's lifetime, so archiving destroys them.
+            // Bound HERE rather than at upload time because a fresh composer
+            // has no session id until this turn's first `session` event.
+            if (turnAttachments.length) {
+              bindAttachments(turnAttachments.map((a) => a.id), capturedSession);
+            }
             // Bounded wait for the title job fired at POST-body-validation
             // time (parallel with the whole main turn above, so it's usually
             // already settled by now) — never let it delay persistence
@@ -2165,7 +2252,28 @@ export async function POST(req: Request) {
               // turn that never called a loom tool.
               loomId: loomLink.loomId,
               role: loomLink.role,
-              userMessage: { role: "user", parts: [{ type: "text", text: displayText }] },
+              // The attachment part rides AFTER the text, matching the order the
+              // composer stages them in and the order the live turn rendered.
+              // Metadata only — see the `attachments` variant in lib/store.ts.
+              userMessage: {
+                role: "user",
+                parts: [
+                  { type: "text", text: displayText },
+                  ...(turnAttachments.length
+                    ? [
+                        {
+                          type: "attachments" as const,
+                          files: turnAttachments.map((a) => ({
+                            id: a.id,
+                            name: a.name,
+                            mediaType: a.mediaType,
+                            size: a.size,
+                          })),
+                        },
+                      ]
+                    : []),
+                ],
+              },
               // Bug-B fix: the escalation kickoff's "user" turn is the
               // server-authored instruction, not something the human said —
               // never persist it into the visible transcript (userMessage

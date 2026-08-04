@@ -138,10 +138,14 @@ describe("the six configurations", () => {
       ),
     );
     for (const id of KINDS.ids()) expect(seen.has(id)).toBe(true);
-    // SEVEN since the live status row joined the built-ins. The count is pinned
-    // so an eighth kind cannot arrive without a fixture exercising it — which is
-    // the whole point of this test and why the number is edited, not derived.
-    expect(KINDS.ids().length).toBe(7);
+    // EIGHT since composer attachments joined the built-ins (the live status row
+    // was the seventh). The count is pinned so a NINTH kind cannot arrive
+    // without a fixture exercising it — which is the whole point of this test
+    // and why the number is edited, not derived. The attachments fixture lives
+    // in configuration 1 and deliberately shows the TOMBSTONE state: its ids
+    // address no stored bytes, which is what a real transcript looks like once
+    // its chat has been archived.
+    expect(KINDS.ids().length).toBe(8);
   });
 });
 

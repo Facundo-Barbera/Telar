@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
 import {
   CornerDownLeftIcon,
+  FileIcon,
   ImageIcon,
   Monitor,
   PlusIcon,
@@ -178,8 +179,18 @@ const captureScreenshot = async (): Promise<File | null> => {
 // Provider Context & Types
 // ============================================================================
 
+/**
+ * One staged attachment. `size` is THIS PROJECT'S ADDITION to the vendored
+ * shape: `FileUIPart` carries only filename/mediaType/url, so the byte count
+ * the user dropped is lost the moment the File becomes a blob URL — and both
+ * the chip ("2.4 MB") and the per-kind upload caps need it without re-fetching
+ * the blob to measure it. Optional, so nothing that constructs a bare
+ * FileUIPart breaks.
+ */
+export type PromptInputAttachmentItem = FileUIPart & { id: string; size?: number };
+
 export interface AttachmentsContext {
-  files: (FileUIPart & { id: string })[];
+  files: PromptInputAttachmentItem[];
   add: (files: File[] | FileList) => void;
   remove: (id: string) => void;
   clear: () => void;
@@ -255,7 +266,7 @@ export const PromptInputProvider = ({
 
   // ----- attachments state (global when wrapped)
   const [attachmentFiles, setAttachmentFiles] = useState<
-    (FileUIPart & { id: string })[]
+    PromptInputAttachmentItem[]
   >([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // oxlint-disable-next-line eslint(no-empty-function)
@@ -273,6 +284,7 @@ export const PromptInputProvider = ({
         filename: file.name,
         id: nanoid(),
         mediaType: file.type,
+        size: file.size,
         type: "file" as const,
         url: URL.createObjectURL(file),
       })),
@@ -489,7 +501,9 @@ export const PromptInputActionAddScreenshot = ({
 
 export interface PromptInputMessage {
   text: string;
-  files: FileUIPart[];
+  /** `size` rides along (see PromptInputAttachmentItem) so a submit handler can
+   *  apply per-kind byte caps without re-fetching each blob to measure it. */
+  files: (FileUIPart & { size?: number })[];
 }
 
 export type PromptInputProps = Omit<
@@ -501,6 +515,20 @@ export type PromptInputProps = Omit<
   multiple?: boolean;
   // When true, accepts drops anywhere on document. Default false (opt-in).
   globalDrop?: boolean;
+  /**
+   * Accept drops anywhere inside THIS element instead of just the form.
+   *
+   * The middle ground between the two options the vendor shipped, and the one a
+   * real chat surface wants: a 76px-tall textarea is a cruel drop target, but
+   * `globalDrop` claims the entire document — so any other surface on screen
+   * that wants its own drop behaviour (a file tree, a browser panel) silently
+   * loses to the composer. Scoping to the conversation column gives the human a
+   * target the size of the thing they are talking to, and leaves the rest of the
+   * app free to own its own drops.
+   *
+   * Ignored when `globalDrop` is set, which stays the wider claim.
+   */
+  dropTarget?: RefObject<HTMLElement | null>;
   // Render a hidden input with given name and keep it in sync for native form posts. Default false.
   syncHiddenInput?: boolean;
   // Minimal constraints
@@ -522,6 +550,7 @@ export const PromptInput = ({
   accept,
   multiple,
   globalDrop,
+  dropTarget,
   syncHiddenInput,
   maxFiles,
   maxFileSize,
@@ -539,13 +568,19 @@ export const PromptInput = ({
   const formRef = useRef<HTMLFormElement | null>(null);
 
   // ----- Local attachments (only used when no provider)
-  const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
+  const [items, setItems] = useState<PromptInputAttachmentItem[]>([]);
   const files = usingProvider ? controller.attachments.files : items;
 
   // ----- Local referenced sources (always local to PromptInput)
   const [referencedSources, setReferencedSources] = useState<
     (SourceDocumentUIPart & { id: string })[]
   >([]);
+  // Drag affordance. The drop HANDLERS live in the effects below (and have
+  // since the vendor wrote them); this is only whether to PAINT the overlay,
+  // counted rather than set/cleared because dragenter/dragleave also fire for
+  // every child element the pointer crosses — a bare boolean flickers off the
+  // moment the cursor moves from the textarea onto the footer.
+  const [dragDepth, setDragDepth] = useState(0);
 
   // Keep a ref to files for cleanup on unmount (avoids stale closure)
   const filesRef = useRef(files);
@@ -616,12 +651,13 @@ export const PromptInput = ({
             message: "Too many files. Some were not added.",
           });
         }
-        const next: (FileUIPart & { id: string })[] = [];
+        const next: PromptInputAttachmentItem[] = [];
         for (const file of capped) {
           next.push({
             filename: file.name,
             id: nanoid(),
             mediaType: file.type,
+            size: file.size,
             type: "file",
             url: URL.createObjectURL(file),
           });
@@ -737,8 +773,13 @@ export const PromptInput = ({
 
   // Attach drop handlers on nearest form and document (opt-in)
   useEffect(() => {
-    const form = formRef.current;
-    if (!form) {
+    // The form is the fallback; `dropTarget` widens the catchment to a region
+    // the owner names. Safe to read here because React attaches refs during
+    // commit, BEFORE effects run — so an owner's ref is already populated on
+    // this effect's first pass and needs no dependency of its own (a ref in a
+    // dep array cannot trigger anything anyway: mutating it does not re-render).
+    const zone = dropTarget?.current ?? formRef.current;
+    if (!zone) {
       return;
     }
     if (globalDrop) {
@@ -751,21 +792,39 @@ export const PromptInput = ({
         e.preventDefault();
       }
     };
+    const onDragEnter = (e: DragEvent) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        setDragDepth((d) => d + 1);
+      }
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        setDragDepth((d) => Math.max(0, d - 1));
+      }
+    };
     const onDrop = (e: DragEvent) => {
       if (e.dataTransfer?.types?.includes("Files")) {
         e.preventDefault();
       }
+      // Unconditionally, not decrement: a drop fires no matching dragleave for
+      // the enters it ends, so counting down here would strand the overlay on
+      // screen after the files have already landed.
+      setDragDepth(0);
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         add(e.dataTransfer.files);
       }
     };
-    form.addEventListener("dragover", onDragOver);
-    form.addEventListener("drop", onDrop);
+    zone.addEventListener("dragover", onDragOver);
+    zone.addEventListener("dragenter", onDragEnter);
+    zone.addEventListener("dragleave", onDragLeave);
+    zone.addEventListener("drop", onDrop);
     return () => {
-      form.removeEventListener("dragover", onDragOver);
-      form.removeEventListener("drop", onDrop);
+      zone.removeEventListener("dragover", onDragOver);
+      zone.removeEventListener("dragenter", onDragEnter);
+      zone.removeEventListener("dragleave", onDragLeave);
+      zone.removeEventListener("drop", onDrop);
     };
-  }, [add, globalDrop]);
+  }, [add, globalDrop, dropTarget]);
 
   useEffect(() => {
     if (!globalDrop) {
@@ -777,18 +836,33 @@ export const PromptInput = ({
         e.preventDefault();
       }
     };
+    const onDragEnter = (e: DragEvent) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        setDragDepth((d) => d + 1);
+      }
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        setDragDepth((d) => Math.max(0, d - 1));
+      }
+    };
     const onDrop = (e: DragEvent) => {
       if (e.dataTransfer?.types?.includes("Files")) {
         e.preventDefault();
       }
+      setDragDepth(0);
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         add(e.dataTransfer.files);
       }
     };
     document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragleave", onDragLeave);
     document.addEventListener("drop", onDrop);
     return () => {
       document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragleave", onDragLeave);
       document.removeEventListener("drop", onDrop);
     };
   }, [add, globalDrop]);
@@ -927,7 +1001,24 @@ export const PromptInput = ({
         ref={formRef}
         {...props}
       >
-        <InputGroup className="overflow-hidden">{children}</InputGroup>
+        <InputGroup className="overflow-hidden">
+          {children}
+          {/* Rendered HERE rather than exposed through a context so that a drag
+              affordance costs no new React context — the file's context
+              inventory is exact-set pinned by INV-8c, and a fourth entry would
+              be a load-bearing invariant edit for a purely visual overlay.
+              `inset-0` covers the whole group (relative, per ui/input-group);
+              pointer-events-none keeps the real drop target underneath. */}
+          {dragDepth > 0 && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-[inherit] border-2 border-dashed border-primary/60 bg-background/85 text-sm font-medium text-primary backdrop-blur-[2px]"
+            >
+              <PlusIcon className="size-4" />
+              Drop to attach
+            </div>
+          )}
+        </InputGroup>
       </form>
     </>
   );
@@ -1089,6 +1180,128 @@ export const PromptInputHeader = ({
     {...props}
   />
 );
+
+// ============================================================================
+// Staged-attachment chips
+// ============================================================================
+//
+// The vendored module ships attachment STATE (add/remove/clear, blob URLs,
+// paste, drop) and the menu ITEMS that fill it, but no way to SEE what is
+// staged — upstream puts the display in a separate opt-in module (see the note
+// by PromptInputActionMenuItem). These are that module, kept in this file
+// because the barrel re-exports the composer kit wholesale via `export *`:
+// a sibling file would need its own `export {…}` line in components/
+// conversation/index.ts, and that line would land inside the primitive group
+// INV-8f pins as an exact set.
+
+/** Bytes → a chip-sized label. Deliberately coarse: a chip has room for
+ *  "2.4 MB", not for three significant figures. */
+const formatAttachmentSize = (bytes: number | undefined): string | null => {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+    return null;
+  }
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+};
+
+export type PromptInputAttachmentProps = HTMLAttributes<HTMLDivElement> & {
+  data: PromptInputAttachmentItem;
+  onRemove?: (id: string) => void;
+};
+
+export const PromptInputAttachment = ({
+  data,
+  onRemove,
+  className,
+  ...props
+}: PromptInputAttachmentProps) => {
+  const isImage = data.mediaType?.startsWith("image/") ?? false;
+  const size = formatAttachmentSize(data.size);
+  const name = data.filename ?? "attachment";
+
+  return (
+    <div
+      className={cn(
+        "group/attachment relative flex max-w-56 items-center gap-2 rounded-lg bg-background/80 py-1 pl-1 pr-6 ring-1 ring-border",
+        className
+      )}
+      {...props}
+    >
+      {isImage && data.url ? (
+        // A blob: URL from the user's own drop; next/image would need a loader
+        // and a known size for something that exists only until this turn is
+        // sent. The directive has to be the LAST line before the element —
+        // "next-line" means the next LINE, so a directive stacked above further
+        // comment lines silently applies to a comment and disables nothing.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          alt={name}
+          className="size-8 shrink-0 rounded-md object-cover"
+          src={data.url}
+        />
+      ) : (
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <FileIcon className="size-4" />
+        </span>
+      )}
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-xs font-medium text-foreground" title={name}>
+          {name}
+        </span>
+        {size && <span className="text-[10px] text-muted-foreground">{size}</span>}
+      </span>
+      {onRemove && (
+        <button
+          aria-label={`Remove ${name}`}
+          className="absolute right-1 top-1 flex size-4 items-center justify-center rounded-full bg-muted text-muted-foreground opacity-0 transition-opacity hover:bg-destructive hover:text-destructive-foreground focus-visible:opacity-100 group-hover/attachment:opacity-100"
+          onClick={() => onRemove(data.id)}
+          type="button"
+        >
+          <XIcon className="size-3" />
+        </button>
+      )}
+    </div>
+  );
+};
+
+export type PromptInputAttachmentsProps = Omit<
+  ComponentProps<typeof InputGroupAddon>,
+  "align" | "children"
+>;
+
+/**
+ * The staged-attachment row, above the textarea. Renders NOTHING when nothing
+ * is staged — an always-present addon would put an empty bar and its border
+ * across the top of every idle composer.
+ */
+export const PromptInputAttachments = ({
+  className,
+  ...props
+}: PromptInputAttachmentsProps) => {
+  const attachments = usePromptInputAttachments();
+
+  if (attachments.files.length === 0) {
+    return null;
+  }
+
+  return (
+    <InputGroupAddon
+      align="block-start"
+      className={cn("flex-wrap gap-1.5 px-2.5 pt-2.5", className)}
+      {...props}
+    >
+      {attachments.files.map((file) => (
+        <PromptInputAttachment
+          data={file}
+          key={file.id}
+          onRemove={attachments.remove}
+        />
+      ))}
+    </InputGroupAddon>
+  );
+};
 
 export type PromptInputFooterProps = Omit<
   ComponentProps<typeof InputGroupAddon>,

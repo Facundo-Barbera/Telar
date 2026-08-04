@@ -88,6 +88,8 @@ export {
   toTranscriptItem,
   toTranscriptItems,
   type AgentBucket,
+  type AttachmentRef,
+  type AttachmentsPayload,
   type ChatMessage,
   type ItemPayloadHooks,
   type MarkerPayload,

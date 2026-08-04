@@ -71,8 +71,32 @@ export type CodexNormalizedEvent =
   // can end without one (error, interrupted).
   | { type: "spawn_result"; childThreadId: string; output: string; isError: boolean };
 
+/**
+ * One composer attachment, as `runCodexTurn` needs it. Structurally the
+ * provider-neutral `TurnAttachment` from lib/attachment-contract minus the
+ * fields this file has no use for — kept as its own type so the adapter stays
+ * importable without dragging a web-app module into it.
+ */
+export type CodexAttachment = { name: string; mediaType: string; path: string };
+
 export type CodexRunOptions = {
   prompt: string;
+  /**
+   * Composer attachments for this turn, sent as their OWN input items rather
+   * than as text: the app-server's `UserInput` union has first-class
+   * `localImage` (`{type, path}`) and `mention` (`{type, name, path}`) members,
+   * so an image arrives as an image the model can actually look at, and a
+   * non-image arrives as the same kind of file reference the TUI's `@` produces.
+   * Text-splicing a path would get neither.
+   */
+  attachments?: readonly CodexAttachment[];
+  /**
+   * `@path` file mentions from the message text, as repo-relative paths already
+   * validated against the project root by the caller. Sent as the app-server's
+   * `mention` input items — the same thing the Codex TUI produces — so the file
+   * is a reference the harness understands rather than a string in the prose.
+   */
+  mentions?: readonly { name: string; path: string }[];
   cwd: string;
   // A COMPLETE env for the subprocess — accountEnv(profile) already spreads
   // process.env; app-server needs PATH etc. like any other child process.
@@ -527,6 +551,35 @@ const isTerminalCollabStatus = (s: string | undefined): boolean =>
 // Runs exactly one Codex turn against `codex app-server` and yields
 // normalized events as they arrive — same generator contract as the old
 // @openai/codex-sdk adapter (route.ts drives it with `for await`).
+/**
+ * Build `turn/start`'s `input` array: the user's text, then one item per
+ * attachment. Shape is pinned by the app-server's own generated bindings
+ * (`codex app-server generate-ts` → v2/UserInput.ts):
+ *
+ *   {type:"text", text, text_elements} | {type:"localImage", path, detail?}
+ *   | {type:"mention", name, path} | …
+ *
+ * Images become `localImage` so the model SEES them; everything else becomes a
+ * `mention`, which is exactly what the TUI's `@` produces and lets the model
+ * open the file on its own terms. The text item stays FIRST and unchanged, so a
+ * turn with no attachments produces byte-identical input to before.
+ */
+export function turnInput(
+  prompt: string,
+  attachments: readonly CodexAttachment[] = [],
+  mentions: readonly { name: string; path: string }[] = [],
+): Array<Record<string, unknown>> {
+  return [
+    { type: "text", text: prompt, text_elements: [] },
+    ...attachments.map((a) =>
+      a.mediaType.startsWith("image/")
+        ? { type: "localImage", path: a.path }
+        : { type: "mention", name: a.name, path: a.path },
+    ),
+    ...mentions.map((m) => ({ type: "mention", name: m.name, path: m.path })),
+  ];
+}
+
 export async function* runCodexTurn(
   opts: CodexRunOptions,
 ): AsyncGenerator<CodexNormalizedEvent> {
@@ -590,7 +643,7 @@ export async function* runCodexTurn(
 
     const turnStartResult = await client.request<{ turn: { id: string } }>("turn/start", {
       threadId: rootThreadId,
-      input: [{ type: "text", text: opts.prompt, text_elements: [] }],
+      input: turnInput(opts.prompt, opts.attachments, opts.mentions),
       ...(opts.reasoningEffort ? { effort: opts.reasoningEffort } : {}),
       model: opts.model,
       approvalPolicy: opts.approvalPolicy,

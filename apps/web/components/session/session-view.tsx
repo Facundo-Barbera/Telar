@@ -30,6 +30,12 @@ import {
   MessageContent,
   MessageResponse,
   PromptInput,
+  PromptInputActionAddAttachments,
+  PromptInputActionAddScreenshot,
+  PromptInputActionMenu,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuTrigger,
+  PromptInputAttachments,
   PromptInputBody,
   PromptInputFooter,
   PromptInputProvider,
@@ -48,6 +54,7 @@ import {
   toTranscriptItems,
   usePromptInputController,
   type AgentBucket,
+  type AttachmentRef,
   type ChatMessage,
   type ItemKind,
   type PermissionPart,
@@ -101,6 +108,11 @@ import {
   modelsForProvider,
   type ModelInfo,
 } from "@/lib/models";
+import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_FILES,
+  type AttachmentUploadResponse,
+} from "@/lib/attachment-contract";
 import {
   groupAccepts,
   groupDefault,
@@ -243,6 +255,20 @@ type ProjectCommand = {
   kind: "command" | "skill";
 };
 
+// Mirrored rather than imported, exactly like ProjectCommand above it: the
+// module that produces these (lib/project-files.ts) reaches node:child_process
+// and node:fs to read the repo. `import type` would erase cleanly today, but
+// the day someone drops the `type` keyword the whole file index follows it into
+// the client bundle — and a local shape cannot be de-erased by accident.
+type ProjectFile = { path: string; name: string };
+
+// The `@token` the cursor is sitting at the end of. Anchored on
+// start-of-string-or-whitespace so `foo@bar` and an email never open the menu,
+// and stopping at the next whitespace so a COMPLETED mention closes it again.
+// Module scope, and no /g flag — so it carries no lastIndex between calls and
+// is safe to share across every render and both readers below.
+const MENTION_AT_CARET = /(?:^|\s)@([^\s@]*)$/;
+
 export type InitialChat = {
   id: string;
   model: string;
@@ -288,7 +314,13 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
     parts: m.parts.map((p) =>
       p.type === "text"
         ? { type: "text" as const, text: p.text, done: true, parentId: p.parentId }
-        : {
+        : // Attachments seed straight through: the part IS its own render input
+          // (metadata only), and the chip decides for itself whether the bytes
+          // behind each id still exist. A chat archived since it was written
+          // reloads to tombstones rather than to broken images.
+          p.type === "attachments"
+          ? { type: "attachments" as const, files: p.files }
+          : {
             type: "tool" as const,
             name: p.name,
             id: p.id,
@@ -325,6 +357,39 @@ function runtimeModeFromLegacy(
 // Escape cancels; the ✕ drops it before it ever sends. No programmatic .focus()
 // beyond the input's own autoFocus (WebKit-safe — it's mount focus, not a
 // roving .focus() call on an existing element).
+/**
+ * Persist a turn's staged attachments and return the ids the wire carries.
+ *
+ * The urls arriving here are DATA urls, not blob urls: PromptInput converts
+ * them before it calls onSubmit precisely so the payload survives the composer
+ * clearing (which revokes every blob it created). That conversion is also why
+ * this can run after the UI has already reset.
+ *
+ * Throws on failure, which puts the turn on send()'s existing error path — an
+ * attachment that silently failed to upload would produce a turn whose text
+ * refers to a screenshot the agent was never given.
+ */
+async function uploadAttachments(
+  files: PromptInputMessage["files"],
+): Promise<{ id: string; name: string; mediaType: string; size: number }[]> {
+  const form = new FormData();
+  for (const file of files) {
+    if (!file.url) continue;
+    const blob = await fetch(file.url).then((r) => r.blob());
+    form.append("file", blob, file.filename ?? "attachment");
+  }
+  const res = await fetch("/api/chat/attachments", { method: "POST", body: form });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((b) => (b as { error?: string })?.error)
+      .catch(() => null);
+    throw new Error(detail ?? `attachment upload failed (HTTP ${res.status})`);
+  }
+  const body = (await res.json()) as AttachmentUploadResponse;
+  return body.attachments;
+}
+
 function QueueChip({
   index,
   text,
@@ -1157,6 +1222,46 @@ function SessionWorkspace({
     null,
   );
   const [menuDismissed, setMenuDismissed] = useState(false);
+
+  // Composer attachments. The staged FILES live in PromptInputProvider's own
+  // context (this surface is wrapped in one) — all that is held here is the
+  // one-line failure text shown above the composer, since the app has no toast
+  // primitive and a cap rejection that says nothing reads as a dead button.
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+
+  // `@` file mentions. `caret` is tracked because — unlike the slash menu, which
+  // only ever fires when the WHOLE value starts with "/" — a mention is typed
+  // mid-sentence, so the query is whatever `@token` the cursor currently sits
+  // at the end of. Null means "not measured yet", which reads as end-of-text.
+  const [caret, setCaret] = useState<number | null>(null);
+  const [mentionFiles, setMentionFiles] = useState<ProjectFile[]>([]);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  // The composer textarea, and the caret position to restore into it once React
+  // has committed a programmatic edit. Accepting a mention rewrites the value
+  // through the controlled `setInput`, which puts the cursor at the END of the
+  // new text — so completing `@rou` mid-sentence would drop the human's cursor
+  // after the rest of their sentence rather than after the path they just
+  // inserted. The DOM write has to happen after the commit, hence the ref pair
+  // plus the effect below rather than a straight-line assignment.
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+  // The conversation column, which is the composer's drop zone — see the
+  // `dropTarget` prop and the element this is attached to.
+  const sessionSurfaceRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const pos = pendingCaretRef.current;
+    if (pos === null) return;
+    pendingCaretRef.current = null;
+    const el = composerRef.current;
+    if (!el) return;
+    // focus() because accepting by MOUSE leaves the textarea unfocused; the
+    // mousedown handler on the menu item prevents the blur, but a click that
+    // landed before the composer ever had focus still needs it back.
+    el.focus();
+    el.setSelectionRange(pos, pos);
+  }, [textInput.value]);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   // The three per-item disclosure maps that used to live here — groupOverrides,
@@ -1177,7 +1282,13 @@ function SessionWorkspace({
   // (never dropped, never force-sent mid-turn — the busy guard forbids that).
   // Queued messages render as editable/removable chips above the composer and
   // dispatch in order the moment the turn settles, via the same send() path.
-  const [messageQueue, setMessageQueue] = useState<{ id: string; text: string }[]>([]);
+  // A queued message carries its attachments with it. They ride as data URLs
+  // (PromptInput converts the blob URLs before handing them over), so they stay
+  // valid after the composer has cleared and revoked the originals — the queue
+  // can outlive several turns.
+  const [messageQueue, setMessageQueue] = useState<
+    { id: string; text: string; files?: PromptInputMessage["files"] }[]
+  >([]);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1850,7 +1961,10 @@ function SessionWorkspace({
     // kickoff, where `text` is the sentinel route.ts swaps for the real prompt.
     // The agent visibly speaks first: only the assistant message is appended, so
     // the human never appears to have typed the sentinel.
-    async (text: string, opts?: { hidden?: boolean }) => {
+    async (
+      text: string,
+      opts?: { hidden?: boolean; files?: PromptInputMessage["files"] },
+    ) => {
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
       // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
@@ -1888,11 +2002,32 @@ function SessionWorkspace({
       dispatchTelarSessionRun(sessionId);
 
       try {
+        // Bytes first, turn second. The upload returns ids the route resolves
+        // to absolute paths, which is how an attachment reaches EITHER harness
+        // (see lib/attachment-contract.ts) — so nothing here is base64 and
+        // /api/chat's JSON body stays the size it has always been.
+        const attachments = opts?.files?.length
+          ? await uploadAttachments(opts.files)
+          : [];
+        // Patched onto the bubble rather than included when it was appended
+        // above: the ids do not exist until the upload returns, and delaying the
+        // whole bubble behind that upload would make the composer feel like it
+        // swallowed the message. The text lands instantly; the chips follow.
+        // Persistence sends the same part server-side (see appendTurn's
+        // userMessage), so a reload reproduces exactly this.
+        if (attachments.length && !opts?.hidden) {
+          patch(userId, (m) => ({
+            ...m,
+            parts: [...m.parts, { type: "attachments", files: attachments }],
+          }));
+        }
+
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: text,
+            ...(attachments.length ? { attachments } : {}),
             sessionId,
             runId,
             model: sessionModel,
@@ -2498,14 +2633,20 @@ function SessionWorkspace({
 
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();
-    if (!text) return;
+    // An attachment IS a message. Sending a screenshot with no words is a
+    // normal thing to want ("look at this"), so the empty-text guard now only
+    // rejects a genuinely empty composer.
+    if (!text && message.files.length === 0) return;
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
-      setMessageQueue((q) => [...q, { id: `q${queueSeqRef.current++}`, text }]);
+      setMessageQueue((q) => [
+        ...q,
+        { id: `q${queueSeqRef.current++}`, text, files: message.files },
+      ]);
       return;
     }
-    void send(text);
+    void send(text, { files: message.files });
   };
 
   // Dispatch the head of the message queue once the composer is genuinely idle
@@ -2523,7 +2664,7 @@ function SessionWorkspace({
       return;
     const [next, ...rest] = messageQueue;
     setMessageQueue(rest);
-    void send(next.text);
+    void send(next.text, next.files ? { files: next.files } : undefined);
   }, [status, messageQueue, send]);
 
   // Prefer the fetched catalog (matches what's actually offered in the
@@ -2650,9 +2791,102 @@ function SessionWorkspace({
     [textInput],
   );
 
+  // ── `@` file mentions ─────────────────────────────────────────────────────
+  //
+  // The token under the cursor, if the cursor is at the end of one.
+  const mentionQuery = useMemo(() => {
+    const value = textInput.value;
+    return MENTION_AT_CARET.exec(value.slice(0, caret ?? value.length))?.[1] ?? null;
+  }, [textInput.value, caret]);
+
+  const mentionMenuOpen = mentionQuery !== null && !mentionDismissed && mentionFiles.length > 0;
+
+  // Re-query on every keystroke of the mention, debounced. The index resets
+  // with the query so the highlight never points past a shrunk list.
+  useEffect(() => {
+    if (mentionQuery === null) {
+      setMentionFiles([]);
+      return;
+    }
+    setMentionIndex(0);
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      void fetch(
+        `/api/projects/${encodeURIComponent(project)}/files?q=${encodeURIComponent(mentionQuery)}`,
+        { signal: abort.signal },
+      )
+        .then((r) => (r.ok ? r.json() : { files: [] }))
+        .then((body: { files?: ProjectFile[] }) => setMentionFiles(body.files ?? []))
+        .catch(() => {
+          /* aborted or offline — leave the previous list rather than flashing empty */
+        });
+    }, 120);
+    return () => {
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [mentionQuery, project]);
+
+  const acceptMention = useCallback(
+    (file: ProjectFile) => {
+      const value = textInput.value;
+      const pos = caret ?? value.length;
+      const match = MENTION_AT_CARET.exec(value.slice(0, pos));
+      if (!match) return;
+      // Replace from the "@" itself — match[1] is the query, so the "@" sits one
+      // character before it — and leave a trailing space so the next word does
+      // not extend the path that was just completed.
+      const start = pos - match[1].length - 1;
+      const next = `${value.slice(0, start)}@${file.path} ${value.slice(pos)}`;
+      // "@" + path + the trailing space — where the human should carry on typing.
+      const after = start + file.path.length + 2;
+      textInput.setInput(next);
+      pendingCaretRef.current = after;
+      setCaret(after);
+      setMentionDismissed(true);
+    },
+    [textInput, caret],
+  );
+
   // No focus() anywhere here — navigation and acceptance are driven entirely
   // by the textarea's own keydown, so the textarea never loses focus.
   const handleComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    // The caret moves on arrows/home/end without the value changing, so onChange
+    // alone would leave `caret` stale and the mention query measured against the
+    // wrong slice. Read it AFTER the browser has applied the key, hence the
+    // deferral — currentTarget is captured first because React pools nothing
+    // here but the event object is still not safe to close over.
+    const el = e.currentTarget;
+    queueMicrotask(() => setCaret(el.selectionStart));
+
+    // The mention menu takes the keys FIRST when it is open: both menus are
+    // driven by the same textarea, and a "/" command can only ever be at the
+    // very start of the value, so the two can never both be open on the same
+    // token — but if that ever changes, the one the cursor is actually inside
+    // should win, and that is this one.
+    if (mentionMenuOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+      switch (e.key) {
+        case "ArrowDown":
+          e.preventDefault();
+          setMentionIndex((i) => (i + 1) % mentionFiles.length);
+          return;
+        case "ArrowUp":
+          e.preventDefault();
+          setMentionIndex((i) => (i - 1 + mentionFiles.length) % mentionFiles.length);
+          return;
+        case "Enter":
+        case "Tab":
+          e.preventDefault();
+          acceptMention(mentionFiles[mentionIndex] ?? mentionFiles[0]);
+          return;
+      }
+    }
+
     if (!slashMenuOpen) return;
     // Escape always dismisses, including the empty-project hint panel. The
     // rest only make sense once there's something to navigate/accept — the
@@ -2680,6 +2914,26 @@ function SessionWorkspace({
         break;
     }
   };
+
+  // Everything attached to this session, for the pinned summary's Context
+  // section. DERIVED FROM THE TRANSCRIPT, never stored on its own (contract #5,
+  // same rule the sub-agent rail below follows): the messages already hold every
+  // attachment part, both the ones this mount sent and the ones seeded from the
+  // store on reload, so a second list could only ever disagree with them.
+  //
+  // Newest first, because the question the section answers is "what did I just
+  // give it?" — and de-duplicated by id, since a queued message re-sent after an
+  // edit can legitimately carry the same attachment twice.
+  const sessionAttachments = useMemo(() => {
+    const byId = new Map<string, AttachmentRef>();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      for (const part of messages[i].parts) {
+        if (part.type !== "attachments") continue;
+        for (const file of part.files) if (!byId.has(file.id)) byId.set(file.id, file);
+      }
+    }
+    return [...byId.values()];
+  }, [messages]);
 
   // Sub-agents rail data — derived straight from agentBuckets, never stored on
   // its own (contract #5). Order follows first appearance so a card never jumps
@@ -2959,7 +3213,14 @@ function SessionWorkspace({
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      {/* The conversation column — header, transcript, composer. It is also the
+          composer's DROP ZONE (see `dropTarget` below): the right panel is a
+          SIBLING of this element, not a child, so scoping here is exactly what
+          leaves the browser and git surfaces free to own their own drops. */}
+      <div
+        ref={sessionSurfaceRef}
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      >
       {/* Workspace identity, not telemetry. Account/model/context/spend belong
           to the composer where the next turn is configured. This edge only tells the user where they are and
           surfaces truly workspace-level live actions. */}
@@ -3015,6 +3276,7 @@ function SessionWorkspace({
             onReservedChange={setWorkspaceInspectorReserved}
             agents={railAgents}
             workflows={ultraRunList}
+            attachments={sessionAttachments}
             needsAttention={activityAttention}
             onSelectAgent={setActiveTab}
             onSelectWorkflow={(id) => setActiveTab(ultraTabId(id))}
@@ -3161,6 +3423,32 @@ function SessionWorkspace({
                 )}
               </div>
             )}
+            {mentionMenuOpen && (
+              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
+                {mentionFiles.map((f, i) => (
+                  <button
+                    type="button"
+                    key={f.path}
+                    // Same trick the slash menu uses: preventDefault on
+                    // mousedown keeps focus on the textarea, so accepting an
+                    // item never costs the composer its cursor.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => acceptMention(f)}
+                    className={cn(
+                      "flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left",
+                      i === mentionIndex
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-accent hover:text-accent-foreground",
+                    )}
+                  >
+                    <span className="shrink-0 font-mono text-xs">{f.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground">
+                      {f.path}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {messageQueue.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
                 <div className="flex items-center justify-between px-1.5 pt-0.5">
@@ -3187,10 +3475,51 @@ function SessionWorkspace({
                 ))}
               </div>
             )}
+            {attachmentError && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-2.5 py-1.5 text-[11px] text-destructive">
+                <span className="min-w-0 flex-1">{attachmentError}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachmentError(null)}
+                  className="shrink-0 rounded px-1 hover:bg-destructive/10"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             <PromptInput
               onSubmit={handleSubmit}
+              // Drops land anywhere over the CONVERSATION COLUMN, not only on
+              // the composer — aiming at a 76px textarea to attach a screenshot
+              // is the kind of precision this app asks for nowhere else. Scoped
+              // to the column rather than the document (the vendored
+              // `globalDrop`) so the right panel keeps its own drop behaviour:
+              // the browser and git surfaces live there, and a composer that
+              // claimed every drop in the window would silently outrank them.
+              // The overlay still paints on the composer, which is where the
+              // files are about to appear.
+              dropTarget={sessionSurfaceRef}
+              multiple
+              maxFiles={ATTACHMENT_MAX_FILES}
+              // The CEILING, not the policy: 10 MB is the image budget, and the
+              // tighter 2 MB cap for everything else is applied in handleSubmit
+              // where the media type is known (see ATTACHMENT_MAX_BYTES). Both
+              // exist because the bytes are inlined into the turn — a file over
+              // its cap is still attachable, it just travels as a path for the
+              // agent to read rather than as inlined content.
+              maxFileSize={ATTACHMENT_MAX_BYTES.image}
+              onError={(err) =>
+                setAttachmentError(
+                  err.code === "max_files"
+                    ? `At most ${ATTACHMENT_MAX_FILES} attachments per message.`
+                    : err.code === "max_file_size"
+                      ? `Attachments are capped at ${ATTACHMENT_MAX_BYTES.image / 1024 / 1024} MB.`
+                      : err.message,
+                )
+              }
               className="[&_[data-slot=input-group]]:rounded-2xl [&_[data-slot=input-group]]:border-border/80 [&_[data-slot=input-group]]:bg-card/95 [&_[data-slot=input-group]]:shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] [&_[data-slot=input-group]]:backdrop-blur-xl"
             >
+              <PromptInputAttachments />
               <PromptInputBody>
                 {/* cmux may attach its private focus marker before hydration.
                     Scope suppression to this one host-mutated element so the
@@ -3199,6 +3528,7 @@ function SessionWorkspace({
                     follow-up snapshot, leaving exactly the empty composer the
                     user cannot type into. */}
                 <PromptInputTextarea
+                  ref={composerRef}
                   suppressHydrationWarning
                   className="min-h-[76px] px-3 pb-2 pt-3 text-[15px] leading-6"
                   placeholder={
@@ -3207,11 +3537,29 @@ function SessionWorkspace({
                       : "Ask for changes, explore the code, or attach context…"
                   }
                   onKeyDown={handleComposerKeyDown}
-                  onChange={() => setMenuDismissed(false)}
+                  onChange={(e) => {
+                    setMenuDismissed(false);
+                    // Typing past a completed mention must be able to re-open
+                    // the menu, so this clears the dismissal the same way the
+                    // slash menu's does.
+                    setMentionDismissed(false);
+                    setCaret(e.currentTarget.selectionStart);
+                  }}
+                  onClick={(e) => setCaret(e.currentTarget.selectionStart)}
                 />
               </PromptInputBody>
               <PromptInputFooter className="min-h-11 flex-wrap border-t border-border/40 px-2.5 pb-2 pt-1.5">
                 <PromptInputTools className="flex-wrap gap-1.5">
+                  <PromptInputActionMenu>
+                    <PromptInputActionMenuTrigger
+                      aria-label="Add context"
+                      title="Add photos, files, or a screenshot"
+                    />
+                    <PromptInputActionMenuContent>
+                      <PromptInputActionAddAttachments />
+                      <PromptInputActionAddScreenshot />
+                    </PromptInputActionMenuContent>
+                  </PromptInputActionMenu>
                   <ComposerControls
                     project={project}
                     provider={provider}

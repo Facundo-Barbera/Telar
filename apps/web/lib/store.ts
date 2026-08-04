@@ -109,6 +109,19 @@ export type Part =
       // never touches this field (the permission card's own status covers
       // that case instead).
       autoDenied?: boolean;
+    }
+  // What the user attached to a message, as METADATA ONLY — id, name, media
+  // type, size. The bytes live under <stateRoot>/attachments (see
+  // lib/attachments.ts) with a lifetime of their own: archiving the chat
+  // destroys them while this part survives here, which is exactly what lets an
+  // old message still render a named chip once the file behind it is gone.
+  //
+  // NOTHING BASE64 EVER GOES IN HERE. chats.json is one document holding every
+  // transcript in the app; inlining bytes would grow it without bound and make
+  // every unrelated read pay for them.
+  | {
+      type: "attachments";
+      files: { id: string; name: string; mediaType: string; size: number }[];
     };
 
 export type ChatMessage = {

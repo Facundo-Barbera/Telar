@@ -27,7 +27,8 @@
 // tempted to improve one of these while you are in here: don't. That is what a
 // later story is for.
 
-import { BotIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, PaperclipIcon, TriangleAlertIcon } from "lucide-react";
+import { useState } from "react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { StatusDot } from "@/components/session/agent-tabs";
@@ -40,12 +41,15 @@ import {
 import { WorkingIndicator } from "@/components/session/working-indicator";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./approval-card";
+import { attachmentUrl } from "@/lib/attachment-contract";
 import {
   CONVERSATION_KINDS,
   agentLabel,
   agentStatus,
   isTrailingItem,
   thinkingSuppressed,
+  type AttachmentRef,
+  type AttachmentsPayload,
   type MarkerPayload,
   type PermissionPayload,
   type StatusPayload,
@@ -326,6 +330,75 @@ const textKind: ItemKind<TextPayload> = {
   render: (payload) => <MessageResponse>{payload.text}</MessageResponse>,
 };
 
+/** Bytes → a chip-sized label, matching the composer's staged chips. */
+function attachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  return kb < 1024 ? `${Math.round(kb)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * One persisted attachment.
+ *
+ * THE TOMBSTONE IS THE INTERESTING CASE. Archiving a chat destroys its bytes
+ * while this part survives in the transcript (see lib/attachments.ts), so a chip
+ * must be able to say "this was here and is gone" rather than showing a broken
+ * image. For an image that costs nothing: the thumbnail request either succeeds
+ * or fires `onError`, and there is no extra probe either way. A non-image never
+ * claims liveness in the first place — it renders as a name and a size, which
+ * stay true forever.
+ */
+function AttachmentChip({ item }: { item: AttachmentRef }) {
+  const [missing, setMissing] = useState(false);
+  const isImage = item.mediaType.startsWith("image/");
+
+  return (
+    <span
+      className={cn(
+        "flex max-w-56 items-center gap-2 rounded-lg bg-background/70 py-1 pl-1 pr-2 ring-1 ring-border",
+        missing && "opacity-60",
+      )}
+      title={missing ? `${item.name} — no longer available` : item.name}
+    >
+      {isImage && !missing ? (
+        // A user-uploaded blob of unknown dimensions served from this app;
+        // next/image would need a loader and a size for something that may not
+        // exist any more. The directive must be the LAST line before the
+        // element — "next-line" means the next LINE, so stacking it above more
+        // comment lines disables nothing.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          alt={item.name}
+          className="size-8 shrink-0 rounded-md object-cover"
+          onError={() => setMissing(true)}
+          src={attachmentUrl(item.id)}
+        />
+      ) : (
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          {missing ? <TriangleAlertIcon className="size-4" /> : <PaperclipIcon className="size-4" />}
+        </span>
+      )}
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-xs font-medium">{item.name}</span>
+        <span className="text-[10px] text-muted-foreground">
+          {missing ? "no longer available" : attachmentSize(item.size)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+const attachmentsKind: ItemKind<AttachmentsPayload> = {
+  id: CONVERSATION_KINDS.attachments,
+  render: (payload) => (
+    <div className="flex flex-wrap gap-1.5">
+      {payload.files.map((item) => (
+        <AttachmentChip item={item} key={item.id} />
+      ))}
+    </div>
+  ),
+};
+
 const thinkingKind: ItemKind<ThinkingPayload> = {
   id: CONVERSATION_KINDS.thinking,
   render: (payload, view) => (
@@ -400,7 +473,7 @@ const statusKind: ItemKind<StatusPayload> = {
   render: (payload) => <WorkingIndicator state={payload.state} className="w-fit" />,
 };
 
-/** The seven built-ins, ready to spread into an owner adapter's own registry. */
+/** The eight built-ins, ready to spread into an owner adapter's own registry. */
 export const BUILTIN_KINDS: readonly ItemKind<never>[] = [
   turnKind,
   textKind,
@@ -409,4 +482,5 @@ export const BUILTIN_KINDS: readonly ItemKind<never>[] = [
   permissionKind,
   markerKind,
   statusKind,
+  attachmentsKind,
 ] as unknown as readonly ItemKind<never>[];

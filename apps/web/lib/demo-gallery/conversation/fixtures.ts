@@ -18,6 +18,7 @@
 
 import {
   CONVERSATION_KINDS,
+  type AttachmentsPayload,
   type MarkerPayload,
   type PermissionPart,
   type PermissionPayload,
@@ -85,6 +86,17 @@ const permission = (
   payload: { part, onRespond } satisfies PermissionPayload,
 });
 
+// TWO CHIPS, ONE OF EACH SHAPE, on purpose: an image (whose thumbnail the chip
+// tries to load) and a non-image (which never claims liveness). In the gallery
+// BOTH resolve to the tombstone state — these ids address no stored bytes — and
+// that is the more valuable still to review, because it is the state a real
+// transcript reaches the moment its chat is archived.
+const attachments = (key: string, files: AttachmentsPayload["files"]): TranscriptItem => ({
+  kind: CONVERSATION_KINDS.attachments,
+  key,
+  payload: { files } satisfies AttachmentsPayload,
+});
+
 const turn = (
   key: string,
   from: TurnPayload["from"],
@@ -148,7 +160,13 @@ const AGO = fmtAgo(DEMO_NOW - 8 * 60 * 1000);
 
 // A transcript that exercises every built-in kind at least once.
 const EVERY_KIND: TranscriptItem[] = [
-  turn("m1", "user", [text("m1:0", "Carve the chat window out of session-view and give it a registry.")]),
+  turn("m1", "user", [
+    text("m1:0", "Carve the chat window out of session-view and give it a registry."),
+    attachments("m1:1", [
+      { id: "demo-shot", name: "composer-before.png", mediaType: "image/png", size: 284_120 },
+      { id: "demo-notes", name: "brainstorm-notes.md", mediaType: "text/markdown", size: 4_820 },
+    ]),
+  ]),
   turn("m2", "assistant", [
     thinking("m2:0", "Two dispatch switches over the same union — the second one's own comment admits it mirrors the first. Collapse them."),
     tools("t_read", [READ, GREP]),
@@ -234,12 +252,25 @@ export const CONVERSATION_FIXTURES: Record<ConversationConfig, readonly Transcri
 
 /** Every item in a configuration, nested composites included — what a validator
  *  has to walk, and what the shell actually dispatches. */
+const isTranscriptItem = (v: unknown): v is TranscriptItem =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as TranscriptItem).kind === "string" &&
+  typeof (v as TranscriptItem).key === "string";
+
 export function flattenItems(items: readonly TranscriptItem[]): TranscriptItem[] {
   const out: TranscriptItem[] = [];
   for (const item of items) {
     out.push(item);
     const nested = (item.payload as { items?: readonly TranscriptItem[] } | null)?.items;
-    if (Array.isArray(nested)) out.push(...flattenItems(nested));
+    // The elements must LOOK like transcript items, not merely live under a
+    // field called `items`. This probe is structural, so any payload with an
+    // `items` array used to be walked as if it were nested items — and the
+    // walker would then read `kind`/`key` off things that have neither, failing
+    // registry resolution and key-uniqueness for reasons nowhere near the cause.
+    if (Array.isArray(nested) && nested.every(isTranscriptItem)) {
+      out.push(...flattenItems(nested));
+    }
   }
   return out;
 }

@@ -1,3 +1,4 @@
+import { deleteAttachmentsForChat } from "@/lib/attachments";
 import {
   deleteChat,
   getChat,
@@ -92,6 +93,13 @@ export async function PATCH(
   if (!setChatArchived(id, body.archived)) {
     return new Response("not found", { status: 404 });
   }
+  // ARCHIVING IS DESTRUCTIVE FOR ATTACHMENTS, and deliberately one-way (owner's
+  // call, 2026-08-04): the bytes die with the archive and un-archiving does not
+  // bring them back. The transcript keeps each attachment's name/type/size, so
+  // the messages still render — as tombstone chips with nothing behind them.
+  // Only on the way IN, so a subsequent un-archive isn't a second sweep of
+  // attachments a later turn may have added.
+  if (body.archived) deleteAttachmentsForChat(id);
   return Response.json({ ok: true });
 }
 
@@ -101,5 +109,6 @@ export async function DELETE(
 ) {
   const { id } = await params;
   deleteChat(id);
+  deleteAttachmentsForChat(id);
   return new Response(null, { status: 204 });
 }
