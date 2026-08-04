@@ -78,11 +78,13 @@ export type { AgentInfo, ToolPart } from "@/components/session/tool-step";
 export type { AgentTab, AgentTabStatus } from "@/components/session/agent-tabs";
 export {
   CONVERSATION_KINDS,
+  LIVE_STEP_WINDOW,
   agentLabel,
   agentStatus,
   groupParts,
   isAsyncLaunchAck,
   isTrailingItem,
+  liveStepWindow,
   parentOf,
   showsLiveStatus,
   toTranscriptItem,

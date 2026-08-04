@@ -356,6 +356,31 @@ export function thinkingSuppressed(part: ThinkingPayload): boolean {
   return !part.text.trim();
 }
 
+// ── the live step window ───────────────────────────────────────────────────
+
+// HOW MANY STEPS OF A *LIVE* GROUP STAY ON SCREEN. One, because a live group is
+// a status display and a status display has one current value; the steps behind
+// it are history that has not finished being made yet.
+//
+// The old behaviour was the opposite: a live group defaulted fully OPEN, so a
+// turn that ran twenty tool calls grew a twenty-row wall, pushed the composer
+// off-screen, and then — the moment the turn ended and the group snapped shut —
+// threw all of it away. The user paid full attention cost for rows they could
+// not read at streaming speed and could not keep.
+export const LIVE_STEP_WINDOW = 1;
+
+/** A live group's parts split into what's shown and what's behind the "+N
+ *  earlier steps" toggle. `expanded` ⇒ the user asked for all of it. Generic
+ *  because the RULE is about counts, not about tool parts — which is also what
+ *  lets it be tested without constructing any. */
+export function liveStepWindow<T>(
+  parts: readonly T[],
+  expanded: boolean,
+): { hidden: readonly T[]; visible: readonly T[] } {
+  if (expanded || parts.length <= LIVE_STEP_WINDOW) return { hidden: [], visible: parts };
+  return { hidden: parts.slice(0, -LIVE_STEP_WINDOW), visible: parts.slice(-LIVE_STEP_WINDOW) };
+}
+
 // WHETHER THE STREAMING TURN GETS ITS STATUS ROW — the whole live-only rule, in
 // one predicate, because the four clauses are what make the row live-only and a
 // four-clause conditional buried in a `.map` has no test surface at all. It is

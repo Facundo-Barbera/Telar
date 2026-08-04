@@ -19,6 +19,8 @@ import {
   groupParts,
   isTrailingItem,
   parentOf,
+  LIVE_STEP_WINDOW,
+  liveStepWindow,
   showsLiveStatus,
   thinkingSuppressed,
   toTranscriptItem,
@@ -147,6 +149,39 @@ describe("groupParts — a TEXTLESS thinking block is not a boundary", () => {
     // Keys are part-indexed, so skipping must not renumber anything downstream.
     const items = groupParts("mK", [thinking(""), text("hi"), thinking(""), text("bye")]);
     expect(items.map((i) => i.key)).toEqual(["mK:1", "mK:3"]);
+  });
+});
+
+describe("liveStepWindow — a live group shows its current step, not its history", () => {
+  const steps = ["a", "b", "c", "d"];
+
+  test("a group at or under the window shows everything and hides nothing", () => {
+    expect(liveStepWindow(["only"], false)).toEqual({ hidden: [], visible: ["only"] });
+    expect(liveStepWindow([], false)).toEqual({ hidden: [], visible: [] });
+  });
+
+  test("the visible slice is the TAIL — the newest step, not the oldest", () => {
+    // The direction is the whole point: a rolling status display shows the
+    // current value. Slicing from the front would pin the window to step 1 and
+    // hide every step the user actually wants to watch.
+    expect(liveStepWindow(steps, false)).toEqual({ hidden: ["a", "b", "c"], visible: ["d"] });
+  });
+
+  test("expanded shows everything, with nothing left behind the toggle", () => {
+    expect(liveStepWindow(steps, true)).toEqual({ hidden: [], visible: steps });
+  });
+
+  test("hidden + visible always reconstructs the input, in order", () => {
+    // The invariant that makes this safe to render from: windowing may not
+    // drop or reorder a step, only move it behind a toggle.
+    for (const expanded of [true, false]) {
+      const { hidden, visible } = liveStepWindow(steps, expanded);
+      expect([...hidden, ...visible]).toEqual(steps);
+    }
+  });
+
+  test("the window is exactly LIVE_STEP_WINDOW wide once it engages", () => {
+    expect(liveStepWindow(steps, false).visible.length).toBe(LIVE_STEP_WINDOW);
   });
 });
 

@@ -44,9 +44,11 @@ import { ApprovalCard } from "./approval-card";
 import { attachmentUrl } from "@/lib/attachment-contract";
 import {
   CONVERSATION_KINDS,
+  LIVE_STEP_WINDOW,
   agentLabel,
   agentStatus,
   isTrailingItem,
+  liveStepWindow,
   thinkingSuppressed,
   type AttachmentRef,
   type AttachmentsPayload,
@@ -225,6 +227,74 @@ export function ToolStepGroup({
   const hasInterrupted =
     !hasError && toolParts.some((p) => p.interrupted && p.output === undefined);
 
+  const renderRow = (p: ToolPart, i: number) => {
+    const rowKey = p.id ?? String(i);
+    if (p.agent && p.id && onSelectAgent) {
+      return (
+        <AgentStepRow
+          key={rowKey}
+          part={p as ToolPart & { agent: AgentInfo }}
+          stepCount={agentSteps?.(p.id) ?? 0}
+          onSelect={() => onSelectAgent(p.id!)}
+        />
+      );
+    }
+    return (
+      <ToolStepRow
+        key={rowKey}
+        part={p}
+        running={live && p.output === undefined && !p.isError}
+        open={rowOpen(rowKey)}
+        onToggle={() => onToggleRow(rowKey)}
+      />
+    );
+  };
+
+  // ── LIVE: a rolling window, not an accordion ─────────────────────────────
+  //
+  // The tally header ("8 steps · Ran command ×8") is deliberately absent here.
+  // While the group is still growing, the tally is a number that changes every
+  // few seconds and describes rows the user can already see one of; the step
+  // ITSELF is the information. The header comes back the moment the turn
+  // settles, below, where the tally is final and is the whole summary.
+  if (live) {
+    const { hidden, visible } = liveStepWindow(toolParts, open);
+    const hiddenHasError = hidden.some((p) => p.isError);
+    return (
+      <div className={cn("flex w-full min-w-0 flex-col gap-0.5 text-xs", hasError && "text-destructive")}>
+        {hidden.length > 0 && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={false}
+            className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-muted/50"
+          >
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            {/* A step that failed while scrolled out of the window must not be
+                silently swallowed by the very mechanism that hid it. */}
+            {hiddenHasError && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
+            <span className={cn("shrink-0", hiddenHasError && "text-destructive")}>
+              +{hidden.length} earlier step{hidden.length === 1 ? "" : "s"}
+            </span>
+          </button>
+        )}
+        {open && toolParts.length > LIVE_STEP_WINDOW && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded
+            className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-muted/50"
+          >
+            <ChevronRightIcon className="size-3.5 shrink-0 rotate-90 text-muted-foreground transition-transform" />
+            <span className="shrink-0">Show fewer steps</span>
+          </button>
+        )}
+        <div className="flex flex-col gap-0.5">{visible.map(renderRow)}</div>
+      </div>
+    );
+  }
+
+  // ── SETTLED: the tally header, collapsed by default ──────────────────────
   return (
     <div
       className={cn(
@@ -266,28 +336,7 @@ export function ToolStepGroup({
       </button>
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          {toolParts.map((p, i) => {
-            const rowKey = p.id ?? String(i);
-            if (p.agent && p.id && onSelectAgent) {
-              return (
-                <AgentStepRow
-                  key={rowKey}
-                  part={p as ToolPart & { agent: AgentInfo }}
-                  stepCount={agentSteps?.(p.id) ?? 0}
-                  onSelect={() => onSelectAgent(p.id!)}
-                />
-              );
-            }
-            return (
-              <ToolStepRow
-                key={rowKey}
-                part={p}
-                running={live && p.output === undefined && !p.isError}
-                open={rowOpen(rowKey)}
-                onToggle={() => onToggleRow(rowKey)}
-              />
-            );
-          })}
+          {toolParts.map(renderRow)}
         </div>
       )}
     </div>
@@ -412,16 +461,20 @@ const thinkingKind: ItemKind<ThinkingPayload> = {
 
 const toolsKind: ItemKind<ToolsPayload> = {
   id: CONVERSATION_KINDS.tools,
-  // The trailing tool-step group of the message currently being streamed into
-  // defaults OPEN; every other group defaults collapsed. A manual toggle always
-  // wins over that default, which is why `isOpen` takes the default as its
-  // fallback rather than the renderer pre-resolving it.
+  // EVERY group now defaults CLOSED, live or not — the live default used to be
+  // OPEN so the user could watch steps arrive, and the rolling window serves
+  // that need without the wall of rows (see ToolStepGroup's live branch).
+  //
+  // The two meanings of `open` share one key ON PURPOSE: live it means "show
+  // the earlier steps too", settled it means "show the steps at all". A user
+  // who expanded a group mid-turn keeps it expanded when the turn ends, which
+  // is the continuity they asked for by clicking.
   render: (payload, view) => (
     <ToolStepGroup
       toolParts={payload.parts}
-      open={view.isOpen("group", view.live)}
+      open={view.isOpen("group")}
       live={view.live}
-      onToggle={() => view.setOpen("group", !view.isOpen("group", view.live))}
+      onToggle={() => view.setOpen("group", !view.isOpen("group"))}
       rowOpen={(key) => view.isOpen(`row:${key}`)}
       onToggleRow={(key) => view.setOpen(`row:${key}`, !view.isOpen(`row:${key}`))}
       agentSteps={payload.agentSteps}
