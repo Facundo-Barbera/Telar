@@ -97,8 +97,22 @@ export async function POST(req: Request) {
     return Response.json({ error: "A project is required." }, { status: 400 });
   }
   let root: string;
+  // The project's own guardrails ride along with its root — resolved from the
+  // SAME lookup, so a child agent cannot end up confined to a root whose rules
+  // nobody read. Enforced on every child through the Ultra PreToolUse hook
+  // (packages/core/src/ultra/child-guard.ts); before that hook existed,
+  // protectedPaths/disallowedTools were a session-only promise and an Ultra
+  // child could rewrite the very files a project declared off limits.
+  let guardrails: { disallowedTools: string[]; protectedPaths: string[] };
   try {
-    root = getProject(body.project).manifest.root;
+    const manifest = getProject(body.project).manifest;
+    root = manifest.root;
+    // Defensive read — the catch below reports "unknown project", so a manifest
+    // missing this field must not masquerade as a missing project.
+    guardrails = {
+      disallowedTools: [...(manifest.guardrails?.disallowedTools ?? [])],
+      protectedPaths: [...(manifest.guardrails?.protectedPaths ?? [])],
+    };
   } catch {
     return Response.json({ error: `Unknown project "${body.project}".` }, { status: 400 });
   }
@@ -124,6 +138,7 @@ export async function POST(req: Request) {
     script: body.script,
     args: body.args,
     project: root,
+    guardrails: { root, guardrails },
     account,
     sessionId: body.sessionId as string | undefined,
     messageId: body.messageId as string | undefined,

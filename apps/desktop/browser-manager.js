@@ -3,7 +3,9 @@ const { randomUUID } = require("node:crypto");
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
 const RPC_TIMEOUT_MS = 30_000;
+const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
+const MAX_LIVE_VIEWS = 6;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,26 +55,42 @@ class DesktopBrowserManager {
     this.createId = dependencies.createId || randomUUID;
     this.wait = dependencies.wait || sleep;
     this.tabs = [];
-    this.activeTabId = null;
-    this.visible = false;
+    this.activeTabIds = new Map();
+    this.visibleScopeKey = null;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
     this.version = 0;
+    this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
   }
 
-  state() {
+  requireScope(scopeKey) {
+    const value = String(scopeKey || "").trim();
+    if (!value) throw new Error("A browser session scope is required.");
+    return value;
+  }
+
+  scopeTabs(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    return this.tabs.filter((tab) => tab.scopeKey === scope);
+  }
+
+  state(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const tabs = this.scopeTabs(scope);
+    const activeTabId = this.activeTabIds.get(scope) ?? null;
     return {
+      scopeKey: scope,
       available: true,
       running: true,
       provider: "desktop",
-      tabs: this.tabs.map((tab, index) => ({
+      tabs: tabs.map((tab, index) => ({
         index,
         id: tab.id,
         title: tab.title || `Tab ${index + 1}`,
         url: tab.url || "about:blank",
-        active: tab.id === this.activeTabId,
+        active: tab.id === activeTabId,
         loading: tab.loading,
-        canGoBack: navigationFlag(tab.view.webContents, "canGoBack"),
-        canGoForward: navigationFlag(tab.view.webContents, "canGoForward"),
+        canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
+        canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
       })),
       screenshot: null,
       error: null,
@@ -80,22 +98,26 @@ class DesktopBrowserManager {
     };
   }
 
-  emitState() {
+  emitState(scopeKey) {
+    const scope = this.requireScope(scopeKey);
     this.version += 1;
     if (!this.window.isDestroyed()) {
-      this.window.webContents.send("telar:browser:state", this.state());
+      this.window.webContents.send("telar:browser:state", this.state(scope));
     }
   }
 
   applyVisibility() {
     for (const tab of this.tabs) {
-      const active = this.visible && tab.id === this.activeTabId;
+      if (!tab.view) continue;
+      const active = tab.scopeKey === this.visibleScopeKey &&
+        tab.id === this.activeTabIds.get(tab.scopeKey);
       tab.view.setVisible(active);
       if (active) tab.view.setBounds(this.bounds);
     }
   }
 
-  setBounds(input) {
+  setBounds(scopeKey, input) {
+    this.requireScope(scopeKey);
     const next = {
       x: Math.max(0, Math.round(Number(input?.x) || 0)),
       y: Math.max(0, Math.round(Number(input?.y) || 0)),
@@ -106,13 +128,26 @@ class DesktopBrowserManager {
     this.applyVisibility();
   }
 
-  setVisible(visible) {
-    this.visible = Boolean(visible);
+  setVisible(scopeKey, visible) {
+    const scope = this.requireScope(scopeKey);
+    if (visible) {
+      this.visibleScopeKey = scope;
+      for (const tab of this.scopeTabs(scope)) {
+        if (!tab.destroyWhenIdle) this.cancelDeferredHibernate(tab);
+      }
+    }
+    else if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
+    if (!visible) this.releaseScope(scope);
   }
 
-  async createTab(url = "about:blank") {
-    const id = this.createId();
+  hideVisibleScope() {
+    const scope = this.visibleScopeKey;
+    if (!scope) return;
+    this.setVisible(scope, false);
+  }
+
+  createViewForTab(tab) {
     const view = this.createView({
       webPreferences: {
         partition: "persist:telar-integrated-browser",
@@ -121,12 +156,141 @@ class DesktopBrowserManager {
         sandbox: true,
       },
     });
-    view.setBackgroundColor("#ffffff");
+    // Let the themed renderer host show through while a page is navigating.
+    // An opaque white native underlay otherwise appears as a strip whenever
+    // its bounds update a frame ahead of the surrounding right-panel layout.
+    view.setBackgroundColor("#00000000");
     view.setVisible(false);
     this.window.contentView.addChildView(view);
+    tab.view = view;
+    tab.hibernating = false;
+    tab.refs.clear();
+    tab.console = [];
+    tab.network = [];
+    tab.debuggerReady = false;
+    tab.debuggerListenersBound = false;
+    this.bindTab(tab);
+    return view;
+  }
+
+  async wakeTab(tab) {
+    tab.lastUsedAt = Date.now();
+    if (tab.view) return tab;
+    const view = this.createViewForTab(tab);
+    const destination = normalizeUrl(tab.url);
+    if (destination !== "about:blank") await this.loadTab(tab, destination);
+    this.enforceLiveViewBudget(tab);
+    return tab;
+  }
+
+  beginNavigation(tab) {
+    tab.navigationPending += 1;
+  }
+
+  endNavigation(tab) {
+    tab.navigationPending = Math.max(0, tab.navigationPending - 1);
+    this.finishDeferredHibernate(tab);
+  }
+
+  async loadTab(tab, url) {
+    this.beginNavigation(tab);
+    try {
+      await tab.view.webContents.loadURL(url);
+    } finally {
+      this.endNavigation(tab);
+    }
+  }
+
+  async navigateTab(tab, url) {
+    this.beginNavigation(tab);
+    try {
+      await this.wakeTab(tab);
+      await this.loadTab(tab, normalizeUrl(url));
+    } finally {
+      this.endNavigation(tab);
+    }
+  }
+
+  hibernateTab(tab) {
+    if (!tab.view) return;
+    this.cancelDeferredHibernate(tab);
+    const view = tab.view;
+    tab.url = view.webContents.getURL() || tab.url || "about:blank";
+    tab.title = view.webContents.getTitle() || tab.title || "New tab";
+    tab.hibernating = true;
+    tab.view = null;
+    try { this.window.contentView.removeChildView(view); } catch {}
+    try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
+    tab.hibernating = false;
+  }
+
+  cancelDeferredHibernate(tab) {
+    if (tab.hibernateTimer) clearTimeout(tab.hibernateTimer);
+    tab.hibernateTimer = null;
+    tab.hibernateWhenIdle = false;
+    tab.destroyWhenIdle = false;
+  }
+
+  removeTab(tab) {
+    const scope = tab.scopeKey;
+    this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+    if (this.activeTabIds.get(scope) === tab.id) {
+      const remaining = this.scopeTabs(scope);
+      this.activeTabIds.set(scope, remaining.at(-1)?.id ?? null);
+    }
+    if (!this.scopeTabs(scope).length) this.activeTabIds.delete(scope);
+    this.applyVisibility();
+  }
+
+  finishDeferredHibernate(tab, force = false) {
+    if (!tab.hibernateWhenIdle || !tab.view || ((tab.loading || tab.navigationPending > 0) && !force)) return;
+    const destroy = tab.destroyWhenIdle;
+    this.hibernateTab(tab);
+    if (destroy) {
+      this.removeTab(tab);
+      this.emitState(tab.scopeKey);
+    }
+  }
+
+  requestHibernate(tab, destroy = false) {
+    if (!tab.view) {
+      if (destroy) this.removeTab(tab);
+      return;
+    }
+    if (tab.loading || tab.navigationPending > 0) {
+      tab.hibernateWhenIdle = true;
+      tab.destroyWhenIdle ||= destroy;
+      if (!tab.hibernateTimer) {
+        tab.hibernateTimer = setTimeout(
+          () => this.finishDeferredHibernate(tab, true),
+          HIBERNATE_GRACE_MS,
+        );
+      }
+      return;
+    }
+    this.hibernateTab(tab);
+    if (destroy) this.removeTab(tab);
+  }
+
+  enforceLiveViewBudget(exceptTab) {
+    const live = this.tabs.filter((tab) => tab.view && tab !== exceptTab);
+    while (live.length + (exceptTab?.view ? 1 : 0) > this.maxLiveViews) {
+      const candidate = live
+        .filter((tab) => tab.scopeKey !== this.visibleScopeKey)
+        .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] ?? live.shift();
+      if (!candidate) break;
+      this.hibernateTab(candidate);
+      const index = live.indexOf(candidate);
+      if (index >= 0) live.splice(index, 1);
+    }
+  }
+
+  async createTab(scopeKey, url = "about:blank") {
+    const scope = this.requireScope(scopeKey);
     const tab = {
-      id,
-      view,
+      id: this.createId(),
+      scopeKey: scope,
+      view: null,
       title: "New tab",
       url: "about:blank",
       loading: false,
@@ -135,23 +299,31 @@ class DesktopBrowserManager {
       network: [],
       debuggerReady: false,
       debuggerListenersBound: false,
+      hibernating: false,
+      hibernateWhenIdle: false,
+      destroyWhenIdle: false,
+      hibernateTimer: null,
+      navigationPending: 0,
+      lastUsedAt: Date.now(),
     };
     this.tabs.push(tab);
-    this.activeTabId = id;
-    this.bindTab(tab);
+    this.activeTabIds.set(scope, tab.id);
+    const view = this.createViewForTab(tab);
     this.applyVisibility();
     const destination = normalizeUrl(url);
-    if (destination !== "about:blank") await view.webContents.loadURL(destination);
-    this.emitState();
+    if (destination !== "about:blank") await this.loadTab(tab, destination);
+    this.enforceLiveViewBudget(tab);
+    this.emitState(scope);
     return tab;
   }
 
   bindTab(tab) {
-    const wc = tab.view.webContents;
+    const view = tab.view;
+    const wc = view.webContents;
     const sync = () => {
       tab.url = wc.getURL() || "about:blank";
       tab.title = wc.getTitle() || (tab.url === "about:blank" ? "New tab" : tab.url);
-      this.emitState();
+      this.emitState(tab.scopeKey);
     };
     wc.on("did-start-loading", () => {
       tab.loading = true;
@@ -161,86 +333,101 @@ class DesktopBrowserManager {
     wc.on("did-stop-loading", () => {
       tab.loading = false;
       sync();
+      this.finishDeferredHibernate(tab);
     });
     wc.on("page-title-updated", (_event, title) => {
       tab.title = title || tab.title;
-      this.emitState();
+      this.emitState(tab.scopeKey);
     });
     wc.on("did-navigate", sync);
     wc.on("did-navigate-in-page", sync);
     wc.on("destroyed", () => {
+      if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
-      if (this.activeTabId === tab.id) this.activeTabId = this.tabs.at(-1)?.id ?? null;
+      const scoped = this.scopeTabs(tab.scopeKey);
+      if (this.activeTabIds.get(tab.scopeKey) === tab.id) {
+        this.activeTabIds.set(tab.scopeKey, scoped.at(-1)?.id ?? null);
+      }
       this.applyVisibility();
-      this.emitState();
+      this.emitState(tab.scopeKey);
     });
   }
 
-  activeTab() {
-    const tab = this.tabs.find((candidate) => candidate.id === this.activeTabId);
+  activeTab(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const tab = this.tabs.find((candidate) =>
+      candidate.scopeKey === scope && candidate.id === this.activeTabIds.get(scope),
+    );
     if (!tab) throw new Error("Open a browser tab before using browser controls.");
     return tab;
   }
 
-  tabAt(index) {
-    const tab = this.tabs[Number(index)];
+  tabAt(scopeKey, index) {
+    const tab = this.scopeTabs(scopeKey)[Number(index)];
     if (!tab) throw new Error(`Browser tab ${String(index)} does not exist.`);
     return tab;
   }
 
-  selectTab(index) {
-    const tab = this.tabAt(index);
-    this.activeTabId = tab.id;
+  async selectTab(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = this.tabAt(scope, index);
+    await this.wakeTab(tab);
+    this.activeTabIds.set(scope, tab.id);
     this.applyVisibility();
-    this.emitState();
+    this.emitState(scope);
   }
 
-  closeTab(index) {
-    const tab = index === undefined ? this.activeTab() : this.tabAt(index);
-    const position = this.tabs.indexOf(tab);
-    this.tabs.splice(position, 1);
-    this.window.contentView.removeChildView(tab.view);
-    if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-    if (this.activeTabId === tab.id) {
-      this.activeTabId = this.tabs[position]?.id ?? this.tabs[position - 1]?.id ?? null;
+  closeTab(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const scoped = this.scopeTabs(scope);
+    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    const position = scoped.indexOf(tab);
+    this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+    this.hibernateTab(tab);
+    if (this.activeTabIds.get(scope) === tab.id) {
+      const remaining = this.scopeTabs(scope);
+      this.activeTabIds.set(scope, remaining[position]?.id ?? remaining[position - 1]?.id ?? null);
     }
     this.applyVisibility();
-    this.emitState();
+    this.emitState(scope);
   }
 
-  async action(action) {
+  async action(scopeKey, action) {
+    const scope = this.requireScope(scopeKey);
     switch (action?.action) {
       case "new":
-        await this.createTab(action.url || "about:blank");
+        await this.createTab(scope, action.url || "about:blank");
         break;
       case "select":
-        this.selectTab(action.index);
+        await this.selectTab(scope, action.index);
         break;
       case "close":
-        this.closeTab(action.index);
+        this.closeTab(scope, action.index);
         break;
       case "navigate": {
-        const tab = this.tabs.length ? this.activeTab() : await this.createTab();
-        await tab.view.webContents.loadURL(normalizeUrl(action.url));
+        const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
+        await this.navigateTab(tab, action.url);
         break;
       }
       case "back": {
-        const wc = this.activeTab().view.webContents;
+        const tab = await this.wakeTab(this.activeTab(scope));
+        const wc = tab.view.webContents;
         if (navigationFlag(wc, "canGoBack")) wc.navigationHistory.goBack();
         break;
       }
       case "forward": {
-        const wc = this.activeTab().view.webContents;
+        const tab = await this.wakeTab(this.activeTab(scope));
+        const wc = tab.view.webContents;
         if (navigationFlag(wc, "canGoForward")) wc.navigationHistory.goForward();
         break;
       }
       case "reload":
-        this.activeTab().view.webContents.reload();
+        (await this.wakeTab(this.activeTab(scope))).view.webContents.reload();
         break;
       default:
         throw new Error("Unknown desktop browser action.");
     }
-    return this.state();
+    return this.state(scope);
   }
 
   async ensureDebugger(tab) {
@@ -378,7 +565,12 @@ class DesktopBrowserManager {
         root.style.opacity = '1';
         root.style.transform = 'translate3d(' + data.x + 'px,' + data.y + 'px,0)';
         clearTimeout(window.__telarAgentCursorTimer);
-        window.__telarAgentCursorTimer = setTimeout(() => { root.style.opacity = '0'; }, 700);
+        window.__telarAgentCursorTimer = setTimeout(() => {
+          root.style.opacity = '0.38';
+          window.__telarAgentCursorTimer = setTimeout(() => {
+            root.style.opacity = '0';
+          }, 6000);
+        }, 2200);
         if (data.phase === 'click') {
           const ring = document.createElement('span');
           ring.style.cssText = 'position:absolute;left:-7px;top:-7px;width:24px;height:24px;border-radius:999px;background:rgba(37,99,235,.22);animation:__telar_cursor_ping 360ms ease-out forwards';
@@ -395,6 +587,7 @@ class DesktopBrowserManager {
     });
     if (!this.window.isDestroyed()) {
       this.window.webContents.send("telar:browser:pointer", {
+        scopeKey: tab.scopeKey,
         tabId: tab.id,
         phase,
         x: point.x,
@@ -485,12 +678,16 @@ class DesktopBrowserManager {
     return { content: [{ type: "image", data: result.data, mimeType: `image/${format}` }] };
   }
 
-  listTabs() {
-    if (!this.tabs.length) return okText("No browser tabs are open.");
-    return okText(this.tabs.map((tab, index) => `- ${index}: ${tab.id === this.activeTabId ? "(current) " : ""}[${tab.title}](${tab.url})`).join("\n"));
+  listTabs(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const tabs = this.scopeTabs(scope);
+    if (!tabs.length) return okText("No browser tabs are open in this session.");
+    const activeTabId = this.activeTabIds.get(scope);
+    return okText(tabs.map((tab, index) => `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[${tab.title}](${tab.url})`).join("\n"));
   }
 
-  async callTool(name, args = {}) {
+  async callTool(scopeKey, name, args = {}) {
+    const scope = this.requireScope(scopeKey);
     let timeoutId;
     const timeout = new Promise((_, reject) => {
       timeoutId = setTimeout(() => reject(new Error(`Browser action ${name} timed out.`)), RPC_TIMEOUT_MS);
@@ -498,39 +695,39 @@ class DesktopBrowserManager {
     const operation = (async () => {
       switch (name) {
         case "browser_tabs":
-          if (args.action === "list") return this.listTabs();
-          if (args.action === "new") { await this.createTab(args.url || "about:blank"); return this.listTabs(); }
-          if (args.action === "select") { this.selectTab(args.index); return this.listTabs(); }
-          if (args.action === "close") { this.closeTab(args.index); return this.listTabs(); }
+          if (args.action === "list") return this.listTabs(scope);
+          if (args.action === "new") { await this.createTab(scope, args.url || "about:blank"); return this.listTabs(scope); }
+          if (args.action === "select") { await this.selectTab(scope, args.index); return this.listTabs(scope); }
+          if (args.action === "close") { this.closeTab(scope, args.index); return this.listTabs(scope); }
           throw new Error("Unknown browser_tabs action.");
         case "browser_navigate": {
-          const tab = this.tabs.length ? this.activeTab() : await this.createTab();
-          await tab.view.webContents.loadURL(normalizeUrl(args.url));
+          const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
+          await this.navigateTab(tab, args.url);
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
-        case "browser_navigate_back": await this.action({ action: "back" }); return okText("Navigated back.");
-        case "browser_snapshot": return this.snapshot(this.activeTab());
-        case "browser_click": return this.click(this.activeTab(), args);
-        case "browser_type": return this.type(this.activeTab(), args);
-        case "browser_fill_form": return this.fillForm(this.activeTab(), args);
-        case "browser_select_option": return this.selectOption(this.activeTab(), args);
-        case "browser_press_key": return this.press(this.activeTab(), args);
+        case "browser_navigate_back": await this.action(scope, { action: "back" }); return okText("Navigated back.");
+        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.activeTab(scope)));
+        case "browser_click": return this.click(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_type": return this.type(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_fill_form": return this.fillForm(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_select_option": return this.selectOption(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_press_key": return this.press(await this.wakeTab(this.activeTab(scope)), args);
         case "browser_hover": {
-          const tab = this.activeTab();
+          const tab = await this.wakeTab(this.activeTab(scope));
           const point = await this.targetPoint(tab, args.target);
           await this.showAgentCursor(tab, point, "move");
           const debug = await this.ensureDebugger(tab);
           await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
           return okText(`Hovered ${args.element || args.target}.`);
         }
-        case "browser_take_screenshot": return this.screenshot(this.activeTab(), args);
+        case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.activeTab(scope)), args);
         case "browser_console_messages": {
-          const tab = this.activeTab();
+          const tab = await this.wakeTab(this.activeTab(scope));
           await this.ensureDebugger(tab);
           return okText(tab.console.map((entry) => `[${entry.level}] ${entry.text}`).join("\n") || "No console messages captured.");
         }
         case "browser_network_requests": {
-          const tab = this.activeTab();
+          const tab = await this.wakeTab(this.activeTab(scope));
           await this.ensureDebugger(tab);
           const filter = String(args.filter || "");
           const rows = tab.network.filter((entry) => !filter || entry.url.includes(filter));
@@ -548,12 +745,41 @@ class DesktopBrowserManager {
     }
   }
 
+  releaseScope(scopeKey, destroy = false) {
+    const scope = this.requireScope(scopeKey);
+    for (const tab of this.scopeTabs(scope)) this.requestHibernate(tab, destroy);
+    if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
+    this.applyVisibility();
+    if (destroy && !this.scopeTabs(scope).length) this.activeTabIds.delete(scope);
+    this.emitState(scope);
+  }
+
+  adoptScope(fromScopeKey, toScopeKey) {
+    const from = this.requireScope(fromScopeKey);
+    const to = this.requireScope(toScopeKey);
+    if (from === to) return this.state(to);
+    const sourceTabs = this.scopeTabs(from);
+    if (sourceTabs.length && this.scopeTabs(to).length) {
+      throw new Error("Cannot merge two browser session scopes.");
+    }
+    const sourceActiveId = this.activeTabIds.get(from) ?? null;
+    for (const tab of sourceTabs) tab.scopeKey = to;
+    if (sourceTabs.length) this.activeTabIds.set(to, sourceActiveId);
+    this.activeTabIds.delete(from);
+    if (this.visibleScopeKey === from) this.visibleScopeKey = to;
+    this.applyVisibility();
+    this.emitState(from);
+    this.emitState(to);
+    return this.state(to);
+  }
+
   destroy() {
     for (const tab of [...this.tabs]) {
-      try { this.window.contentView.removeChildView(tab.view); } catch {}
-      try { if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close(); } catch {}
+      this.hibernateTab(tab);
     }
     this.tabs = [];
+    this.activeTabIds.clear();
+    this.visibleScopeKey = null;
   }
 }
 

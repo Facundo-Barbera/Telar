@@ -41,7 +41,7 @@ describe("Ultra resume — full-cache prefix replay runs zero live calls", () =>
     const run = startUltra(script, { agent: echoFake });
     const res = await run.finished;
     expect(res.state).toBe("done");
-    expect(res.result).toEqual([{ text: "p0" }, { text: "p1" }]);
+    expect(res.result).toEqual(["p0", "p1"]);
     expect(readJournal(run.runId).length).toBe(2);
 
     let liveCalls = 0;
@@ -52,7 +52,7 @@ describe("Ultra resume — full-cache prefix replay runs zero live calls", () =>
     const resumed = resumeUltra(run.runId, script, { agent: throwingFake });
     const res2 = await resumed.finished;
     expect(res2.state).toBe("done");
-    expect(res2.result).toEqual([{ text: "p0" }, { text: "p1" }]);
+    expect(res2.result).toEqual(["p0", "p1"]);
     expect(liveCalls).toBe(0);
   });
 });
@@ -77,7 +77,7 @@ describe("Ultra resume — an edited call invalidates it AND every later ordinal
     const resumed = resumeUltra(run.runId, edited, { agent: trackingFake });
     const res2 = await resumed.finished;
     expect(res2.state).toBe("done");
-    expect(res2.result).toEqual([{ text: "p0" }, { text: "p1-EDITED" }, { text: "p2" }]);
+    expect(res2.result).toEqual(["p0", "p1-EDITED", "p2"]);
     // p0 never re-runs live; p1-EDITED and p2 both do, in issue order.
     expect(seenPrompts).toEqual(["p1-EDITED", "p2"]);
   });
@@ -95,7 +95,7 @@ describe("Ultra resume — parallel() ordinals key by issue order, stable across
     const run = startUltra(script, { agent: reorderingFake });
     const res = await run.finished;
     expect(res.state).toBe("done");
-    expect(res.result).toEqual([{ text: "a" }, { text: "b" }, { text: "c" }]); // Promise.all preserves input order regardless
+    expect(res.result).toEqual(["a", "b", "c"]); // Promise.all preserves input order regardless
 
     const byOrdinal = new Map(readJournal(run.runId).map((r) => [r.ordinal, r]));
     expect(byOrdinal.get(0)!.result).toEqual({ text: "a" }); // issued first → ordinal 0, despite finishing last
@@ -110,7 +110,7 @@ describe("Ultra resume — parallel() ordinals key by issue order, stable across
     const resumed = resumeUltra(run.runId, script, { agent: throwingFake });
     const res2 = await resumed.finished;
     expect(res2.state).toBe("done");
-    expect(res2.result).toEqual([{ text: "a" }, { text: "b" }, { text: "c" }]);
+    expect(res2.result).toEqual(["a", "b", "c"]);
     expect(liveCalls).toBe(0);
   });
 });
@@ -142,7 +142,7 @@ describe("Ultra resume — a partial journal (simulated process death) resumes o
     const resumed = resumeUltra(run.runId, script, { agent: freshFake });
     const res2 = await resumed.finished;
     expect(res2.state).toBe("done");
-    expect(res2.result).toEqual([{ text: "p0" }, { text: "live-p1" }]);
+    expect(res2.result).toEqual(["p0", "live-p1"]);
     expect(seenPrompts).toEqual(["p1"]); // p0 served from the journal, never re-issued live
   });
 });

@@ -31,7 +31,12 @@ import { BotIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { StatusDot } from "@/components/session/agent-tabs";
-import { ToolStepRow, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
+import {
+  ToolStepRow,
+  toolActionLabel,
+  type AgentInfo,
+  type ToolPart,
+} from "@/components/session/tool-step";
 import { WorkingIndicator } from "@/components/session/working-indicator";
 import { cn } from "@/lib/utils";
 import { ApprovalCard } from "./approval-card";
@@ -90,7 +95,7 @@ export function ThinkingRow({
     // Live stream: a growing muted italic block with a ✻ + shimmering "Thinking"
     // header and a blinking caret — the "something is happening" register.
     return (
-      <div className="rounded-md border border-dashed bg-muted/10 px-2.5 py-2">
+      <div className="py-1 text-muted-foreground">
         <div className="mb-1 flex items-center gap-1.5">
           <span aria-hidden className="text-xs">
             ✻
@@ -99,7 +104,7 @@ export function ThinkingRow({
             Thinking
           </Shimmer>
         </div>
-        <p className="text-xs italic leading-relaxed whitespace-pre-wrap text-muted-foreground">
+        <p className="ml-5 border-l border-border/70 pl-3 text-xs italic leading-relaxed whitespace-pre-wrap text-muted-foreground">
           {part.text}
           <span className="ml-0.5 inline-block h-3 w-[2px] translate-y-0.5 animate-pulse bg-muted-foreground/70 align-middle" />
         </p>
@@ -219,18 +224,19 @@ export function ToolStepGroup({
   return (
     <div
       className={cn(
-        "flex flex-col gap-0.5 rounded-lg border bg-muted/20 text-xs",
-        // Collapsed groups hug their label (a short "1 step · Bash ×1" in a
-        // full-width bar reads as empty/heavy); only expand to full width when
-        // open, so the rows inside have room.
-        open ? "w-full" : "w-fit",
-        hasError && "border-destructive/40",
+        // Activity is a stable lane inside the assistant turn. It must not hug
+        // the current label: that made its width change with both tool names
+        // and the prose emitted immediately before it. The low-contrast header
+        // keeps the full-width lane visually light while giving every summary
+        // and expanded row the same geometry.
+        "flex w-full min-w-0 flex-col gap-0.5 text-xs",
+        hasError && "text-destructive",
       )}
     >
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left hover:bg-muted/40"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-muted/50"
       >
         <ChevronRightIcon
           className={cn(
@@ -250,12 +256,12 @@ export function ToolStepGroup({
           {toolParts.length} step{toolParts.length === 1 ? "" : "s"}
         </span>
         <span className="shrink-0 text-muted-foreground/50">·</span>
-        <span className="min-w-0 truncate font-mono text-muted-foreground">
-          {tally.map(([name, count]) => `${name} ×${count}`).join(" · ")}
+        <span className="min-w-0 truncate text-muted-foreground/80">
+          {tally.map(([name, count]) => `${toolActionLabel(name)}${count > 1 ? ` ×${count}` : ""}`).join(" · ")}
         </span>
       </button>
       {open && (
-        <div className="flex flex-col gap-0.5 px-1.5 pb-1.5">
+        <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
           {toolParts.map((p, i) => {
             const rowKey = p.id ?? String(i);
             if (p.agent && p.id && onSelectAgent) {

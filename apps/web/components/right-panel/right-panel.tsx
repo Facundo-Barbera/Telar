@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -17,7 +18,11 @@ import {
   PanelRightOpenIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useRightPanelStore } from "@/lib/right-panel-store";
+import { TELAR_BROWSER_MUTATION_EVENT } from "@/lib/browser-runtime-contract";
+import {
+  openRightPanelBrowser,
+  useRightPanelStore,
+} from "@/lib/right-panel-store";
 import {
   clampSidebarWidth,
   setSidebarWidth,
@@ -74,6 +79,7 @@ function RightPanelResizeHandle({ panelRef }: {
     );
     drag.width = width;
     panelRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+    panelRef.current?.style.setProperty("width", `${width}px`);
   }, [maxWidth, panelRef]);
 
   const finish = useCallback((pointerId: number) => {
@@ -143,6 +149,7 @@ function RightPanelResizeHandle({ panelRef }: {
           maxWidth(),
         );
         panelRef.current.style.setProperty("--right-panel-width", `${width}px`);
+        panelRef.current.style.setProperty("width", `${width}px`);
         setSidebarWidth(RIGHT_PANEL_WIDTH_STORAGE_KEY, width);
       }}
     >
@@ -156,26 +163,39 @@ function RightPanelResizeHandle({ panelRef }: {
  * changes, while placing the icon in normal toolbar layout. */
 export function RightPanelTrigger({ scopeKey }: { scopeKey: string }) {
   const panel = useRightPanelStore(scopeKey);
-  if (panel.session.open) return null;
 
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon-sm"
-      onClick={() => panel.setOpen(true)}
-      aria-label="Open right panel"
-      title="Open right panel"
-      className="shrink-0 text-muted-foreground hover:text-foreground"
+    <motion.div
+      initial={false}
+      animate={{
+        opacity: panel.session.open ? 0 : 1,
+        width: panel.session.open ? 0 : 32,
+      }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      className="shrink-0 overflow-hidden"
+      aria-hidden={panel.session.open}
+      style={{ pointerEvents: panel.session.open ? "none" : "auto" }}
     >
-      <PanelRightOpenIcon className="size-4" />
-    </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        tabIndex={panel.session.open ? -1 : 0}
+        onClick={() => panel.setOpen(true)}
+        aria-label="Open right panel"
+        title="Open right panel"
+        className="shrink-0 text-muted-foreground hover:text-foreground"
+      >
+        <PanelRightOpenIcon className="size-4" />
+      </Button>
+    </motion.div>
   );
 }
 
 export function RightPanel({
   project,
   scopeKey,
+  revealScopeKey,
   activity,
   activityCount,
   activityRunning,
@@ -183,6 +203,7 @@ export function RightPanel({
 }: {
   project: string;
   scopeKey: string;
+  revealScopeKey?: string;
   activity: ReactNode;
   activityCount: number;
   activityRunning: number;
@@ -191,6 +212,7 @@ export function RightPanel({
   const panel = useRightPanelStore(scopeKey);
   const reduceMotion = useReducedMotion();
   const panelRef = useRef<HTMLElement>(null);
+  const [inlinePanel, setInlinePanel] = useState(false);
   const widthPrefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const activeTab = panel.session.tabs.find((tab) => tab.id === panel.session.activeTabId);
   const fullscreen = panel.session.fullscreen;
@@ -199,6 +221,44 @@ export function RightPanel({
     RIGHT_PANEL_MIN_WIDTH,
     Number.POSITIVE_INFINITY,
   );
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 1180px)");
+    const update = () => setInlinePanel(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!panel.session.open) {
+      // Electron owns the native browser view. Hide it at the beginning of the
+      // renderer transition so it cannot remain pinned over the collapsing UI.
+      void window.telarDesktop?.browser.setVisible(scopeKey, false);
+    }
+  }, [panel.session.open, scopeKey]);
+
+  const collapsePanel = useCallback(() => {
+    void window.telarDesktop?.browser.setVisible(scopeKey, false);
+    panel.setOpen(false);
+  }, [panel, scopeKey]);
+
+  useEffect(() => {
+    const revealAgentBrowser = (event: Event) => {
+      const eventScopeKey = (event as CustomEvent<string>).detail;
+      if (eventScopeKey !== scopeKey && eventScopeKey !== revealScopeKey) return;
+      // Draft scopes are valid browser owners until the first session event
+      // adopts them into the persisted session key. Revealing here avoids a
+      // race where the agent opens a tab before that adoption; the panel store
+      // is moved alongside the browser scope when the session is created.
+      openRightPanelBrowser(scopeKey);
+    };
+    window.addEventListener(TELAR_BROWSER_MUTATION_EVENT, revealAgentBrowser);
+    return () => window.removeEventListener(
+      TELAR_BROWSER_MUTATION_EVENT,
+      revealAgentBrowser,
+    );
+  }, [revealScopeKey, scopeKey]);
 
   return (
     <AnimatePresence initial={false}>
@@ -210,10 +270,18 @@ export function RightPanel({
           style={fullscreen
             ? undefined
             : ({ "--right-panel-width": `${preferredWidth}px` } as CSSProperties)}
-          initial={reduceMotion ? false : { opacity: 0, x: 28 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 28 }}
-          transition={{ duration: reduceMotion ? 0 : 0.22, ease: [0.22, 1, 0.36, 1] }}
+          initial={reduceMotion ? false : {
+            opacity: 0,
+            x: inlinePanel ? 0 : 28,
+            marginRight: inlinePanel && !fullscreen ? -preferredWidth : 0,
+          }}
+          animate={{ opacity: 1, x: 0, marginRight: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : {
+            opacity: 0,
+            x: inlinePanel ? 0 : 28,
+            marginRight: inlinePanel && !fullscreen ? -preferredWidth : 0,
+          }}
+          transition={{ duration: reduceMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
           className={
             fullscreen
               ? `${RIGHT_PANEL_VISIBLE_CLASS} absolute inset-0 z-40 w-full max-w-none flex-col bg-muted/10`
@@ -251,7 +319,7 @@ export function RightPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() => panel.setOpen(false)}
+                  onClick={collapsePanel}
                   aria-label="Collapse right panel"
                   title="Collapse right panel"
                   className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -275,9 +343,11 @@ export function RightPanel({
             ) : (
               <BrowserSurface
                 key={activeTab.id}
+                scopeKey={scopeKey}
                 title={activeTab.title}
                 url={activeTab.url}
                 onNavigate={(url) => panel.navigateBrowser(activeTab.id, url)}
+                onDetach={() => panel.close(activeTab.id)}
               />
             )}
           </div>

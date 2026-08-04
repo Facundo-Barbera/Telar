@@ -15,6 +15,7 @@ const {
   createProject,
   ensureTelarGitignore,
   getProject,
+  guardrailsForRoot,
   listProjects,
   loadManifest,
   registerProject,
@@ -82,6 +83,32 @@ describe("manifest", () => {
     expect(broken?.manifest).toBeNull();
     expect(broken?.error).toMatch(/No telar.yaml/);
     writeManifest(projRoot, loadValid());
+  });
+
+  // The lookup an Ultra RESUME depends on. Everything downstream of a launch
+  // knows a project as a PATH (UltraManifest.project stores the root), so a
+  // resume that inherits its original project has a root and no name — without
+  // a by-root lookup it could only be guarded when the caller happened to
+  // re-supply the project by name, which is opt-out-by-re-entry.
+  test("guardrailsForRoot finds a registered project by its root", () => {
+    const m = loadValid();
+    m.guardrails = { disallowedTools: ["WebFetch"], protectedPaths: [".env"] };
+    writeManifest(projRoot, m);
+
+    const found = guardrailsForRoot(projRoot);
+    expect(found?.disallowedTools).toEqual(["WebFetch"]);
+    expect(found?.protectedPaths).toEqual([".env"]);
+    // Same answer for a non-canonical spelling of the same root — the resume
+    // path passes whatever the manifest stored.
+    expect(guardrailsForRoot(path.join(projRoot, "."))?.protectedPaths).toEqual([".env"]);
+
+    writeManifest(projRoot, loadValid());
+  });
+
+  test("guardrailsForRoot returns undefined for an unregistered root", () => {
+    // The caller then launches with the control-plane rule only, rather than
+    // failing the run — an unregistered root is not a reason to refuse work.
+    expect(guardrailsForRoot(path.join(os.tmpdir(), "telar-not-a-project"))).toBeUndefined();
   });
 
   test("getProject throws on unknown, unregisterProject removes entry only", () => {

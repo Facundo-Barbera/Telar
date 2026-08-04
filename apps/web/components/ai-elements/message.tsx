@@ -38,7 +38,11 @@ export type MessageProps = HTMLAttributes<HTMLDivElement> & {
 export const Message = ({ className, from, ...props }: MessageProps) => (
   <div
     className={cn(
-      "group mx-auto flex w-full max-w-3xl flex-col gap-2",
+      // Match the composer's 50rem outer measure. The previous 48rem lane
+      // added one extra gutter on each side, making prose look over-inset on a
+      // wide workspace even though the input below was already correctly
+      // sized. User content still shrinks to its bubble in MessageContent.
+      "group mx-auto flex w-full max-w-[50rem] flex-col gap-2",
       from === "user" ? "is-user" : "is-assistant",
       className
     )}
@@ -55,7 +59,12 @@ export const MessageContent = ({
 }: MessageContentProps) => (
   <div
     className={cn(
-      "is-user:dark flex w-fit min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm",
+      "is-user:dark flex min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm",
+      // Assistant turns own the complete reading lane. Keeping them `w-fit`
+      // made every nested activity row inherit the width of the longest prose
+      // fragment in that turn, so tool disclosures visibly changed size as an
+      // agent narrated its work. User messages remain compact bubbles.
+      "group-[.is-assistant]:w-full group-[.is-user]:w-fit",
       "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
       "group-[.is-assistant]:text-foreground",
       className

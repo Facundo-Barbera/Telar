@@ -121,7 +121,9 @@ export function sanitizeRightPanelPayload(raw: unknown): RightPanelPayload {
   }
   const sessions: Record<string, RightPanelSession> = {};
   for (const [key, value] of Object.entries(r.sessions as Record<string, unknown>)) {
-    if (!key) continue;
+    // `project:new` is a disposable owner used only until the first turn
+    // supplies a real session id. Never hydrate it into a later blank session.
+    if (!key || key.endsWith(":new")) continue;
     const session = sanitizeRightPanelSession(value);
     // Versions 1 and 2 predate the closed-by-default dock contract. Versions
     // through 4 also injected Activity as a permanent first tab. In v5 it is an
@@ -176,6 +178,22 @@ export function setPanelSession(
     version: RIGHT_PANEL_SCHEMA_VERSION,
     sessions: { ...payload.sessions, [scopeKey]: { ...session, touchedAt } },
   });
+}
+
+export function movePanelSession(
+  payload: RightPanelPayload,
+  fromScopeKey: string,
+  toScopeKey: string,
+  touchedAt: number,
+): RightPanelPayload {
+  const provisional = payload.sessions[fromScopeKey];
+  if (fromScopeKey === toScopeKey || !provisional) return payload;
+  const sessions = { ...payload.sessions };
+  delete sessions[fromScopeKey];
+  if (!sessions[toScopeKey]) {
+    sessions[toScopeKey] = { ...provisional, touchedAt };
+  }
+  return boundRightPanelSessions({ version: RIGHT_PANEL_SCHEMA_VERSION, sessions });
 }
 
 export function closePanelTab(session: RightPanelSession, tabId: string): RightPanelSession {
@@ -248,6 +266,25 @@ function write(scopeKey: string, next: RightPanelSession) {
   emit();
 }
 
+/** Move the disposable `project:new` surface onto the durable session minted
+ * by the first turn. The placeholder must be cleared so the next new-session
+ * page never inherits a Browser tab or an open dock from the previous chat. */
+export function adoptRightPanelSession(
+  fromScopeKey: string,
+  toScopeKey: string,
+): void {
+  ensureHydrated();
+  const next = movePanelSession(current, fromScopeKey, toScopeKey, Date.now());
+  if (next === current) return;
+  current = next;
+  try {
+    window.localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, JSON.stringify(current));
+  } catch {
+    /* private mode / storage blocked — panel state remains live in memory */
+  }
+  emit();
+}
+
 /** Imperative owner-adapter action used by workspace controls outside the
  * panel surface. Keeping it in the store means the renderer stays a pure
  * projection and does not grow a window-level event protocol. */
@@ -257,6 +294,33 @@ export function openRightPanelGit(scopeKey: string): void {
     ? session.tabs
     : [...session.tabs, DEFAULT_GIT_TAB];
   write(scopeKey, { ...session, tabs, activeTabId: DEFAULT_GIT_TAB.id, open: true });
+}
+
+/** Reveal the controlled browser owned by the currently mounted session. */
+export function openRightPanelBrowser(
+  scopeKey: string,
+  url = "about:blank",
+): void {
+  const session = read(scopeKey);
+  const existing = session.tabs.find((candidate): candidate is BrowserPanelTab =>
+    candidate.kind === "browser",
+  );
+  if (existing) {
+    write(scopeKey, {
+      ...session,
+      activeTabId: existing.id,
+      open: true,
+    });
+    return;
+  }
+  const id = `browser:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+  const tab: BrowserPanelTab = { id, kind: "browser", title: "Browser", url };
+  write(scopeKey, {
+    ...session,
+    tabs: [...session.tabs, tab],
+    activeTabId: id,
+    open: true,
+  });
 }
 
 function subscribe(listener: () => void): () => void {
@@ -310,25 +374,9 @@ export function useRightPanelStore(scopeKey: string) {
         open: true,
       });
     },
-    openBrowser: (url = "about:blank") => {
-      // The controlled browser owns its own tab strip. Reuse one Browser
-      // surface in the right dock instead of nesting duplicate Browser
-      // surfaces around the same shared Playwright session.
-      const existing = session.tabs.find((candidate): candidate is BrowserPanelTab =>
-        candidate.kind === "browser",
-      );
-      if (existing) {
-        write(scopeKey, {
-          ...session,
-          activeTabId: existing.id,
-          open: true,
-        });
-        return;
-      }
-      const id = `browser:${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
-      const tab: BrowserPanelTab = { id, kind: "browser", title: "Browser", url };
-      write(scopeKey, { ...session, tabs: [...session.tabs, tab], activeTabId: id, open: true });
-    },
+    // The controlled browser owns its own tab strip. Reuse one Browser surface
+    // instead of nesting duplicate surfaces around the shared runtime.
+    openBrowser: (url = "about:blank") => openRightPanelBrowser(scopeKey, url),
     navigateBrowser: (tabId: string, url: string) => {
       const tabs = session.tabs.map((tab) =>
         tab.kind === "browser" && tab.id === tabId ? { ...tab, url } : tab,

@@ -9,6 +9,7 @@ import type { AccountProfile } from "./schemas";
 import { providerOf } from "./providers";
 import { accountEnvSecretKey, readSecret } from "./secrets";
 import { acquireAdmission, type AdmissionClass } from "./admission";
+import { claudeExecutableOptions } from "./claude-executable";
 
 export type AgentOpts<S extends z.ZodRawShape> = {
   schema: z.ZodObject<S>;
@@ -37,6 +38,13 @@ export type AgentOpts<S extends z.ZodRawShape> = {
   resume?: string; // session id — continue a previous run
   abort?: AbortController;
   settingSources?: Array<"user" | "project" | "local">; // repo .claude support
+  // PreToolUse hooks, handed straight to the SDK. HOOKS FIRE IN EVERY
+  // PERMISSION MODE — including this function's `bypassPermissions` — which is
+  // exactly why a caller that needs a hard rule on a child agent uses this
+  // rather than `disallowedTools` (a whole-tool ban) or canUseTool (never
+  // invoked here). Ultra's child guard is the first caller; see
+  // ultra/child-guard.ts for why a child needs one at all.
+  hooks?: unknown;
   // Which admission class this call competes in (admission.ts). OPTIONAL —
   // omitted means "other": the lowest-weight class with no precedence, so an
   // untagged call can never take a freed slot ahead of verification, and
@@ -228,9 +236,14 @@ export async function agent<S extends z.ZodRawShape>(
         maxTurns: opts.maxTurns ?? 30,
         permissionMode: "bypassPermissions",
         env: accountEnv(opts.account),
+        // Without this a child dies on "Native CLI binary not found" wherever
+        // the SDK's optional binary was not installed — while the interactive
+        // session, which resolves this at the app layer, keeps working.
+        ...claudeExecutableOptions(),
         ...(opts.resume ? { resume: opts.resume } : {}),
         ...(opts.abort ? { abortController: opts.abort } : {}),
         ...(opts.settingSources ? { settingSources: opts.settingSources } : {}),
+        ...(opts.hooks ? { hooks: opts.hooks as never } : {}),
         // Availability restriction (built-in tools only; MCP tools come via
         // mcpServers below). Filter out mcp__ names — they aren't built-ins.
         ...(opts.restrictTools

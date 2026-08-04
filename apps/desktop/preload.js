@@ -9,11 +9,13 @@ function on(channel, listener) {
 contextBridge.exposeInMainWorld("telarDesktop", {
   isDesktop: true,
   browser: {
-    getState: () => ipcRenderer.invoke("telar:browser:state"),
-    action: (action) => ipcRenderer.invoke("telar:browser:action", action),
-    callTool: (name, args) => ipcRenderer.invoke("telar:browser:tool", { name, args }),
-    setBounds: (bounds) => ipcRenderer.invoke("telar:browser:set-bounds", bounds),
-    setVisible: (visible) => ipcRenderer.invoke("telar:browser:set-visible", visible),
+    getState: (scopeKey) => ipcRenderer.invoke("telar:browser:state", scopeKey),
+    action: (scopeKey, action) => ipcRenderer.invoke("telar:browser:action", { scopeKey, action }),
+    callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
+    setBounds: (scopeKey, bounds) => ipcRenderer.invoke("telar:browser:set-bounds", { scopeKey, bounds }),
+    setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
+    releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
+    adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
   },

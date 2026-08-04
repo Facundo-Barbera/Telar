@@ -55,6 +55,18 @@ export type JournalRecord = {
   // to the count-derived key that older code used for it (executor.ts's
   // `legacyCounts`).
   settleId?: string;
+  /** WHY a dead agent died, when the harness told us. Present only on a record
+   *  whose `result` is null AND whose cause is known — today the one knowable
+   *  cause is `"max-turns"` (the child ran out of agent turns rather than
+   *  failing). Absent keeps its existing meaning, "ordinary failure, cause
+   *  unknown", which is what every record written before this field means.
+   *
+   *  It is journaled rather than derived because a RESUME replays this record
+   *  instead of re-running the call: a reason left off disk is a reason a
+   *  resumed run can never state again — the same argument `tokens` and
+   *  `settleId` above are here for. It matters more than either, because a
+   *  turn-exhausted child may have edited files before it stopped. */
+  deadReason?: "max-turns";
 };
 
 // Deep, key-sorted canonicalization so two structurally-identical (prompt,

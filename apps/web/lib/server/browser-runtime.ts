@@ -3,6 +3,8 @@ import { createInterface } from "readline";
 import type { SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { resolvePlaywrightMcpBin } from "@telar/core/verifier";
 import type {
+  BrowserAgentPresence,
+  BrowserRuntimeEvent,
   ControlledBrowserState,
   ControlledBrowserTab,
 } from "@/lib/browser-runtime-contract";
@@ -15,6 +17,7 @@ type RpcMessage = {
 };
 
 export type BrowserToolResult = Awaited<ReturnType<SdkMcpToolDefinition["handler"]>>;
+export type { BrowserRuntimeEvent } from "@/lib/browser-runtime-contract";
 
 const RPC_TIMEOUT_MS = 30_000;
 
@@ -31,6 +34,33 @@ const MUTATING_TOOLS = new Set([
 ]);
 
 const DEFAULT_BROWSER_ENGINE = "chromium";
+
+function desktopControlConfig() {
+  const port = process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT?.trim();
+  const token = process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim();
+  return port && token ? { origin: `http://127.0.0.1:${port}`, token } : null;
+}
+
+async function desktopControlRequest<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T | null> {
+  const config = desktopControlConfig();
+  if (!config) return null;
+  const response = await fetch(`${config.origin}${path}`, {
+    ...init,
+    headers: {
+      ...init.headers,
+      Authorization: `Bearer ${config.token}`,
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+    },
+    cache: "no-store",
+    signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+  });
+  const value = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(value.error || `Desktop browser host returned ${response.status}.`);
+  return value;
+}
 
 function controlledBrowserEngine() {
   return process.env.TELAR_BROWSER_ENGINE?.trim() || DEFAULT_BROWSER_ENGINE;
@@ -49,6 +79,37 @@ function textOf(result: BrowserToolResult): string {
     if (part.type === "text") chunks.push(part.text);
   }
   return chunks.join("\n");
+}
+
+export function normalizeBrowserToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): { name: string; args: Record<string, unknown> } {
+  return name === "browser_list_tabs"
+    ? { name: "browser_tabs", args: { action: "list" } }
+    : { name, args };
+}
+
+export function shouldRevealBrowserCall(
+  name: string,
+  args: Record<string, unknown>,
+  notify = true,
+): boolean {
+  return notify &&
+    MUTATING_TOOLS.has(name) &&
+    !(name === "browser_tabs" && args.action === "list");
+}
+
+export function browserToolPhase(name: string): BrowserAgentPresence["phase"] {
+  if (name === "browser_click") return "click";
+  if (name === "browser_hover") return "move";
+  if (name === "browser_type" || name === "browser_fill_form" || name === "browser_press_key") {
+    return "type";
+  }
+  if (name === "browser_navigate" || name === "browser_navigate_back" || name === "browser_tabs") {
+    return "navigate";
+  }
+  return "inspect";
 }
 
 export function parseBrowserTabs(text: string): ControlledBrowserTab[] {
@@ -76,13 +137,14 @@ export function parseBrowserTabs(text: string): ControlledBrowserTab[] {
 class BrowserRuntime {
   private child: ChildProcessWithoutNullStreams | null = null;
   private starting: Promise<void> | null = null;
+  private fallbackScopeKey: string | null = null;
   private nextId = 1;
   private pending = new Map<number, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
-  private listeners = new Set<(version: number) => void>();
+  private listeners = new Set<(event: BrowserRuntimeEvent) => void>();
   private lastError: string | null = null;
   private stderr = "";
   private _version = 0;
@@ -99,22 +161,52 @@ class BrowserRuntime {
     return this.child !== null;
   }
 
-  subscribe(listener: (version: number) => void) {
+  subscribe(listener: (event: BrowserRuntimeEvent) => void) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
-  private emit() {
+  private emit(
+    reveal = false,
+    scopeKey?: string,
+    presence?: BrowserAgentPresence,
+    stateChanged = true,
+  ) {
     this._version += 1;
-    for (const listener of this.listeners) listener(this._version);
+    const event = {
+      version: this._version,
+      reveal,
+      stateChanged,
+      ...(scopeKey ? { scopeKey } : {}),
+      ...(presence ? { presence } : {}),
+    };
+    for (const listener of this.listeners) listener(event);
   }
 
-  private async start() {
-    if (this.child) return;
-    if (this.starting) return this.starting;
+  private stopFallback(reason = "The browser session changed.") {
+    const child = this.child;
+    this.child = null;
+    this.fallbackScopeKey = null;
+    if (child) child.kill();
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+    this.pending.clear();
+  }
+
+  private async start(scopeKey: string) {
+    if (this.child && this.fallbackScopeKey === scopeKey) return;
+    if (this.child) this.stopFallback();
+    if (this.starting) {
+      await this.starting;
+      if (this.child && this.fallbackScopeKey === scopeKey) return;
+      if (this.child) this.stopFallback();
+    }
     this.starting = this.startInner();
     try {
       await this.starting;
+      this.fallbackScopeKey = scopeKey;
     } finally {
       this.starting = null;
     }
@@ -210,50 +302,131 @@ class BrowserRuntime {
   async call(
     name: string,
     args: Record<string, unknown> = {},
-    options: { notify?: boolean } = {},
+    options: { notify?: boolean; scopeKey?: string } = {},
   ): Promise<BrowserToolResult> {
-    const desktop = desktopBrowserHost();
-    if (desktop.online()) {
-      const result = await desktop.call(name, args);
-      if (
-        !result.isError &&
-        options.notify !== false &&
-        MUTATING_TOOLS.has(name) &&
-        !(name === "browser_tabs" && args.action === "list")
-      ) {
-        this.emit();
-      }
-      return result;
+    const scopeKey = options.scopeKey?.trim();
+    if (!scopeKey) throw new Error("A browser session scope is required.");
+    const normalized = normalizeBrowserToolCall(name, args);
+    const runtimeName = normalized.name;
+    const runtimeArgs = normalized.args;
+    const startedAt = new Date().toISOString();
+    const notifyPresence = options.notify !== false;
+    if (notifyPresence) {
+      this.emit(false, options.scopeKey, {
+        status: "acting",
+        scopeKey: options.scopeKey,
+        tool: runtimeName,
+        phase: browserToolPhase(runtimeName),
+        startedAt,
+      }, false);
     }
-    await this.start();
+    const desktop = desktopBrowserHost();
     try {
-      const result = await this.request<BrowserToolResult>("tools/call", { name, arguments: args });
+      const controlResult = await desktopControlRequest<BrowserToolResult>("/tool", {
+        method: "POST",
+        body: JSON.stringify({ scopeKey, name: runtimeName, args: runtimeArgs }),
+      });
+      const result = controlResult ?? (desktop.online()
+        ? await desktop.call(scopeKey, runtimeName, runtimeArgs)
+        : null);
+      if (result) {
+        const reveal =
+          !result.isError &&
+          shouldRevealBrowserCall(runtimeName, runtimeArgs, notifyPresence);
+        if (notifyPresence) {
+          this.emit(reveal, options.scopeKey, {
+            status: "settling",
+            scopeKey: options.scopeKey,
+            tool: runtimeName,
+            phase: browserToolPhase(runtimeName),
+            startedAt,
+            lastActionAt: new Date().toISOString(),
+          });
+        }
+        return result;
+      }
+    } catch (error) {
+      this.lastError = browserErrorText(error instanceof Error ? error.message : error);
+      if (notifyPresence) {
+        this.emit(false, options.scopeKey, {
+          status: "settling",
+          scopeKey: options.scopeKey,
+          tool: runtimeName,
+          phase: browserToolPhase(runtimeName),
+          startedAt,
+          lastActionAt: new Date().toISOString(),
+        }, false);
+      }
+      throw error;
+    }
+    await this.start(scopeKey);
+    try {
+      const result = await this.request<BrowserToolResult>("tools/call", {
+        name: runtimeName,
+        arguments: runtimeArgs,
+      });
       const failure = result.isError ? browserErrorText(textOf(result)) || "Browser action failed." : null;
       this.lastError = failure;
-      if (
+      const reveal =
         !result.isError &&
-        options.notify !== false &&
-        MUTATING_TOOLS.has(name) &&
-        !(name === "browser_tabs" && args.action === "list")
-      ) {
-        this.emit();
+        shouldRevealBrowserCall(runtimeName, runtimeArgs, notifyPresence);
+      if (notifyPresence) {
+        this.emit(reveal, options.scopeKey, {
+          status: "settling",
+          scopeKey: options.scopeKey,
+          tool: runtimeName,
+          phase: browserToolPhase(runtimeName),
+          startedAt,
+          lastActionAt: new Date().toISOString(),
+        });
       }
       return result;
     } catch (error) {
       this.lastError = browserErrorText(error instanceof Error ? error.message : error);
+      if (notifyPresence) {
+        this.emit(false, options.scopeKey, {
+          status: "settling",
+          scopeKey: options.scopeKey,
+          tool: runtimeName,
+          phase: browserToolPhase(runtimeName),
+          startedAt,
+          lastActionAt: new Date().toISOString(),
+        }, false);
+      }
       throw error;
     }
   }
 
-  async state(): Promise<ControlledBrowserState> {
-    const desktopState = desktopBrowserHost().state();
+  async state(scopeKey: string): Promise<ControlledBrowserState> {
+    try {
+      const controlState = await desktopControlRequest<ControlledBrowserState>(
+        `/state?scopeKey=${encodeURIComponent(scopeKey)}`,
+      );
+      if (controlState) return controlState;
+    } catch (error) {
+      return {
+        scopeKey,
+        available: false,
+        running: false,
+        provider: "desktop",
+        tabs: [],
+        screenshot: null,
+        error: browserErrorText(error instanceof Error ? error.message : error),
+        version: this.version,
+      };
+    }
+    const desktopState = desktopBrowserHost().state(scopeKey);
     if (desktopState) return desktopState;
     try {
-      const tabsResult = await this.call("browser_tabs", { action: "list" });
+      const tabsResult = await this.call("browser_tabs", { action: "list" }, { notify: false, scopeKey });
       const tabs = parseBrowserTabs(textOf(tabsResult));
       let screenshot: string | null = null;
       if (!tabsResult.isError && tabs.length > 0) {
-        const shot = await this.call("browser_take_screenshot", { type: "jpeg", scale: "css" });
+        const shot = await this.call(
+          "browser_take_screenshot",
+          { type: "jpeg", scale: "css" },
+          { notify: false, scopeKey },
+        );
         for (const part of shot.content) {
           if (part.type !== "image") continue;
           screenshot = `data:${part.mimeType || "image/jpeg"};base64,${part.data}`;
@@ -261,6 +434,7 @@ class BrowserRuntime {
         }
       }
       return {
+        scopeKey,
         available: !tabsResult.isError,
         running: this.running,
         provider: "playwright",
@@ -271,6 +445,7 @@ class BrowserRuntime {
       };
     } catch (error) {
       return {
+        scopeKey,
         available: false,
         running: this.running,
         provider: "playwright",

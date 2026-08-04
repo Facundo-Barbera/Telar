@@ -3,6 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { LOOM_START_TOOL } from "./loom-mcp";
+// Imported as well as re-exported below: `ruleMatches` in this file calls
+// inputPaths, and a bare `export { … } from` creates no local binding.
+import {
+  inputPaths,
+  isProtectedPath,
+  bashTouchesProtectedPath,
+  makeGuardrailDecision,
+} from "@telar/core";
 
 // Claude Code-style permission rules, per project: "Write", "Edit",
 // "Bash(bun test:*)" — a bare tool name allows the tool, a parenthesized
@@ -319,101 +327,15 @@ export function ruleMatches(rule: string, toolName: string, input: Record<string
   return target === parsed.spec;
 }
 
-// Tool inputs that name a file, in priority order — Write/Edit/MultiEdit use
-// file_path, NotebookEdit uses notebook_path.
-const PATH_KEYS = ["file_path", "notebook_path", "path"];
-export function inputPaths(input: Record<string, unknown>): string[] {
-  return PATH_KEYS.map((k) => input[k]).filter(
-    (v): v is string => typeof v === "string" && v.length > 0,
-  );
-}
-
-// Resolve symlinks as far up the tree as they exist. A tool's target may not
-// exist yet (e.g. Write creating a new file), so this walks up to the first
-// existing ancestor, realpath's that, then rejoins the remaining segments —
-// a symlinked ancestor directory still gets caught even for a new file.
-function realpathOrSelf(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    const parent = path.dirname(p);
-    if (parent === p) return p;
-    // Not a real dynamic-import/require path — a bounded upward walk over an
-    // already-resolved absolute path. Silences Turbopack's whole-project
-    // filesystem-tracing warning, which doesn't apply here.
-    return path.join(/*turbopackIgnore: true*/ realpathOrSelf(parent), path.basename(p));
-  }
-}
-
-// True when `target` (a tool's file path, absolute or relative to `root`)
-// resolves to, or lands inside, one of the project's protected paths. Both
-// sides are resolved against `root` and then through realpath, so ../
-// traversal, trailing slashes, absolute-vs-relative mismatches, and a
-// symlink planted inside the repo that points at a protected file all
-// reduce to a canonical comparison.
-// NOTE: this only guards writes (called from the Write/Edit/etc branch of
-// canUseTool). Read/Grep/Glob are pre-allowed and never path-checked, so a
-// protected file's *contents* can still be read and later exfiltrated via an
-// approved Bash command — protectedPaths stops modification, not disclosure.
-export function isProtectedPath(root: string, protectedPaths: string[], target: string): boolean {
-  if (!target) return false;
-  const abs = realpathOrSelf(path.resolve(root, target));
-  return protectedPaths.some((p) => {
-    if (!p) return false;
-    const base = realpathOrSelf(path.resolve(root, p));
-    return abs === base || abs.startsWith(base + path.sep);
-  });
-}
-
-// Bash carries its target in `command`, not in a path field, so
-// isProtectedPath(inputPaths(...)) never sees it — protectedPaths would
-// otherwise be silently bypassed by e.g. Bash(rm -rf .env). This is a
-// best-effort static check: split the command on whitespace/shell
-// metacharacters and test every resulting word as a candidate path. It
-// cannot see through variable expansion or obfuscation, but it catches the
-// direct case, which is what "always allow bun test" style rules would
-// otherwise let through unchecked.
-const BASH_WORD_SPLIT = /[\s;&|><$`"'(){}]+/;
-export function bashTouchesProtectedPath(root: string, protectedPaths: string[], command: string): boolean {
-  if (!protectedPaths.length) return false;
-  return command
-    .split(BASH_WORD_SPLIT)
-    .filter(Boolean)
-    .some((word) => isProtectedPath(root, protectedPaths, word));
-}
-
-// Pure extraction of the hard-deny guardrail checks (disallowedTools,
-// protectedPaths over path-shaped inputs, protectedPaths over a Bash
-// command's words) that used to be inlined in the chat route's canUseTool.
-// Callable from both canUseTool and, later, an SDK PreToolUse hook — neither
-// of which this function knows about. Order matters: disallowedTools first
-// (cheapest, no filesystem access), then the two protectedPaths checks.
-export function makeGuardrailDecision(
-  manifest: { guardrails: { disallowedTools: string[]; protectedPaths: string[] } },
-  root: string,
-  toolName: string,
-  input: Record<string, unknown>,
-): { behavior: "allow" } | { behavior: "deny"; message: string } {
-  const g = manifest.guardrails;
-  if (g.disallowedTools.includes(toolName)) {
-    return { behavior: "deny", message: `${toolName} is disallowed by this project's guardrails.` };
-  }
-  const blocked = inputPaths(input).find((t) => isProtectedPath(root, g.protectedPaths, t));
-  if (blocked) {
-    return { behavior: "deny", message: `"${blocked}" is a protected path in this project.` };
-  }
-  // protectedPaths above only inspects path-shaped input keys, which Bash
-  // never populates (its target lives in `command`) — check it separately
-  // or the guardrail is a no-op for the most powerful tool.
-  if (
-    toolName === "Bash" &&
-    typeof input.command === "string" &&
-    bashTouchesProtectedPath(root, g.protectedPaths, input.command)
-  ) {
-    return { behavior: "deny", message: "This command touches a protected path in this project." };
-  }
-  return { behavior: "allow" };
-}
+// THE GUARDRAIL PREDICATE NOW LIVES IN CORE, and this is the app-layer import
+// path its callers already use. It moved because a module in apps/web is not
+// reachable from `engine.ts`'s agent() or `ultra/runner.ts` — the two places
+// that SPAWN — so a session turn enforced protectedPaths/disallowedTools while
+// every child agent enforced neither. See packages/core/src/guardrails.ts.
+//
+// Re-exported rather than re-implemented: a second copy is how two enforcement
+// points drift into one enforcement point and one decoration.
+export { inputPaths, isProtectedPath, bashTouchesProtectedPath, makeGuardrailDecision };
 
 export function createPending(
   project: string,

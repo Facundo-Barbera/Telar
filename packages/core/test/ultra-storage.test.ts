@@ -137,7 +137,7 @@ describe("Ultra storage — manifest.result carries the terminal outcome (doc §
     await getLiveUltraRun(res.runId)!.finished;
     const m = getUltraManifest(res.runId);
     expect(m?.state).toBe("done");
-    expect(m?.result).toEqual({ summary: { text: "p0" } });
+    expect(m?.result).toEqual({ summary: "p0" }); // schema-less → the text itself
   });
 
   test("a `failed` run (MissingModel) carries `error`, never a stale/undefined `result`", async () => {

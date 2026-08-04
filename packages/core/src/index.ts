@@ -1,6 +1,8 @@
 export * from "./schemas";
 export * from "./providers";
 export * from "./claude-runtime";
+export * from "./claude-executable";
+export * from "./guardrails";
 // The provider-neutral harness contract: one event vocabulary and one tool
 // shape that both the Claude Agent SDK adapter and the Codex app-server
 // adapter speak. Exported beside providers.ts because the two are halves of

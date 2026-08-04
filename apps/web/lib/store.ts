@@ -149,6 +149,23 @@ export type Chat = {
   costUsd: number;
   turns: number;
   archived?: boolean; // optional: absent on entries predating archiving
+  // ── inbox state (docs/phase-2-sidebar-design.md; t3code Sidebar V2) ────────
+  // Settling is a RESTING state, deliberately not archiving: a settled session
+  // drops out of the active band but stays a first-class session everywhere
+  // else. Two things can shelve a row — this explicit timestamp, and the
+  // derived "quiet for SETTLED_AFTER_MS" rule in lib/session-list.ts. Only the
+  // explicit one is persisted, so the quiet rule stays a pure view over
+  // updatedAt and never needs a migration pass to re-derive.
+  settledAt?: number;
+  // A deferral with a scheduled return. While Date.now() < snoozedUntil the row
+  // sits in the Snoozed shelf; past it, it re-enters the active band on its own
+  // with no writer involved. Cleared, not just passed, by fresh activity.
+  snoozedUntil?: number;
+  // Read watermark for the unread dot: unread ⟺ readAt is absent or older than
+  // updatedAt. Storing a timestamp rather than a boolean means a later turn
+  // re-marks the row unread for free, and "mark unread" is a write of 0 rather
+  // than a separate flag that can disagree with updatedAt.
+  readAt?: number;
   // Per-turn token totals, accumulated on appendTurn. All optional so chats
   // persisted before this field existed keep loading — see getChat's
   // read-time derivation fallback (tokensFromUsageLog) for those.
@@ -377,6 +394,56 @@ export function setChatArchived(id: string, archived: boolean): boolean {
   return true;
 }
 
+// Settle (rest) or unsettle a chat. Settling also clears any snooze — the two
+// are alternative ways of saying "not now", and holding both would leave a row
+// that un-snoozes into a shelf it is already sitting in. Returns false when the
+// id is unknown.
+export function setChatSettled(id: string, settled: boolean): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  if (settled) {
+    chat.settledAt = Date.now();
+    delete chat.snoozedUntil;
+  } else {
+    delete chat.settledAt;
+  }
+  writeChats(chats);
+  return true;
+}
+
+// Snooze a chat until `until` (epoch ms), or clear the snooze with null. A
+// snooze also unsettles: choosing a wake-up time is a statement that the work
+// is not finished, so the row must be able to come back to the active band.
+// Returns false when the id is unknown or `until` is already in the past —
+// a snooze that expires on write is a no-op the caller should hear about.
+export function setChatSnoozed(id: string, until: number | null): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  if (until === null) {
+    delete chat.snoozedUntil;
+  } else {
+    if (!Number.isFinite(until) || until <= Date.now()) return false;
+    chat.snoozedUntil = until;
+    delete chat.settledAt;
+  }
+  writeChats(chats);
+  return true;
+}
+
+// Mark a chat read (readAt = now) or unread (readAt = 0, which is always older
+// than updatedAt and so reads as unread without a second flag). Returns false
+// when the id is unknown.
+export function setChatRead(id: string, read: boolean): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  chat.readAt = read ? Date.now() : 0;
+  writeChats(chats);
+  return true;
+}
+
 // Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so
 // appendTurn's fallback title-on-create logic never matters again for this
 // chat — a user rename always wins. Returns false when the id is unknown.
@@ -544,6 +611,13 @@ export function appendTurn(opts: {
   // and the session view's seed prop; deleting it is a separate change.
   chat.costUsd += opts.costUsd;
   chat.turns += 1;
+  // Fresh activity un-shelves the row. t3code's rule, and the one that makes
+  // settling safe to do liberally: a settled or snoozed session you actually
+  // talk to again is, by that act, live work — so it returns to the active band
+  // rather than being answered inside a shelf nobody has expanded. Archiving is
+  // deliberately NOT cleared here: it is an explicit "hide this", not a rest.
+  delete chat.settledAt;
+  delete chat.snoozedUntil;
   chat.model = opts.model;
   chat.effort = opts.effort;
   chat.permissionMode = opts.permissionMode;

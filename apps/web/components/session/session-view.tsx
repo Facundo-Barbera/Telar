@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -77,6 +77,7 @@ import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
+import { adoptRightPanelSession } from "@/lib/right-panel-store";
 import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -123,6 +124,7 @@ import { useUltraWake } from "@/lib/use-ultra-wake";
 // projection layer (no React, no fetch, no @telar/core runtime); the two
 // components below render it and read nothing else.
 import {
+  launchedRunId,
   runSnapshot,
   spliceRunAnchors,
   ultraTabId,
@@ -811,6 +813,11 @@ function SessionWorkspace({
   const [sessionId, setSessionId] = useState<string | null>(
     initialChat?.id ?? routeSessionId ?? null,
   );
+  const draftBrowserId = useId().replaceAll(":", "");
+  const provisionalRightPanelScopeKey = `${project}:draft:${draftBrowserId}`;
+  const resolvedRightPanelScopeKey = sessionId
+    ? `${project}:${sessionId}`
+    : provisionalRightPanelScopeKey;
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     seedMessages(initialChat),
   );
@@ -987,16 +994,12 @@ function SessionWorkspace({
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>(
     initialChat?.contextUsage,
   );
-  const [elapsed, setElapsed] = useState(0);
-  // 1.4 working indicator: seconds since the last streamed output, used to flip
-  // the indicator to its "still working — no output" reassurance on a long
-  // quiet step. Reset whenever `messages` changes (any delta/part is activity).
-  const [silentFor, setSilentFor] = useState(0);
-  const lastActivityRef = useRef(Date.now());
-  useEffect(() => {
-    lastActivityRef.current = Date.now();
-    setSilentFor(0);
-  }, [messages]);
+  const [turnStartedAt, setTurnStartedAt] = useState(Date.now);
+  const messageActivity = useMemo(
+    () => ({ messages, at: Date.now() }),
+    [messages],
+  );
+  const lastActivityAt = messageActivity.at;
   // 1.2 remembered config: a fresh session boots from this project's last-used
   // Claude config (model · effort · permission); a project never configured
   // stays on the Auto default. Persisted per project in localStorage. The seed
@@ -1303,16 +1306,11 @@ function SessionWorkspace({
 
   const activeBucket = activeTab === "main" ? null : (agentBucketById.get(activeTab) ?? null);
 
-  // Elapsed clock — runs only while a turn is in flight.
+  // Record the turn boundary once. The live one-second clock lives inside the
+  // tiny WorkingIndicator leaf so it cannot rerender this entire session view.
   useEffect(() => {
     if (!busy) return;
-    const started = Date.now();
-    setElapsed(0);
-    const t = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000));
-      setSilentFor(Math.floor((Date.now() - lastActivityRef.current) / 1000));
-    }, 1000);
-    return () => clearInterval(t);
+    setTurnStartedAt(Date.now());
   }, [busy]);
 
   // Abort any in-flight turn if the session is navigated away from.
@@ -1447,6 +1445,18 @@ function SessionWorkspace({
                 // address bar only; the next real navigation loads the
                 // persisted transcript from the new URL.
                 if (payload.sessionId !== sessionId) {
+                  if (!sessionId) {
+                    adoptRightPanelSession(
+                      provisionalRightPanelScopeKey,
+                      `${project}:${payload.sessionId}`,
+                    );
+                  }
+                  if (!sessionId) {
+                    void window.telarDesktop?.browser.adoptScope(
+                      provisionalRightPanelScopeKey,
+                      `${project}:${payload.sessionId}`,
+                    );
+                  }
                   setSessionId(payload.sessionId);
                   // An embedded steerer session (loom Chat tab) OR escalation
                   // session (blocked-loom discuss surface) keeps the /looms/[id]
@@ -1777,7 +1787,7 @@ function SessionWorkspace({
                 streamErrorRef.current = payload.message;
                 break;
     }
-  }, [sessionId, project]);
+  }, [sessionId, project, rightPanelScopeKey, provisionalRightPanelScopeKey]);
 
   // §1b reconnect: returning to a session whose turn is STILL running. The
   // page seeded prior turns from chats.json; here we tail the live event log so
@@ -1887,6 +1897,7 @@ function SessionWorkspace({
             runId,
             model: sessionModel,
             project,
+            browserScopeKey: resolvedRightPanelScopeKey,
             account: activeAccount,
             ...(effort !== "default" ? { effort } : {}),
             runtimeMode,
@@ -1979,7 +1990,7 @@ function SessionWorkspace({
         runIdRef.current = null;
       }
     },
-    [sessionId, sessionModel, effort, runtimeMode, provider, fastMode, serviceTier, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
+    [sessionId, sessionModel, effort, runtimeMode, provider, fastMode, serviceTier, project, resolvedRightPanelScopeKey, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
   );
 
   // M11 finding-1 — auto-fire the escalation opening turn ONCE, on mount.
@@ -2175,14 +2186,40 @@ function SessionWorkspace({
   // A POLL, NOT A STREAM (NFR-X-15 / §5.5-D9): one small session-scoped question
   // answered on the house cadence. `/api/ultra/[id]/events` exists and is story
   // 4.2's per-run channel for the anchor; a wake does not need a stream per run.
-  const { pending: pendingWakes } = useUltraWake(sessionId);
+  const { pending: pendingWakes, reload: reloadUltraWake } = useUltraWake(sessionId);
 
   // ── story 4.2 — the Ultra run surface (D1 items 3, 10) ────────────────────
   //
   // One `EventSource` per LIVE run plus a session-scoped list poll, projected
   // into `RunSnapshot`s by `@/lib/ultra-runs`. Everything that is a DECISION
   // lives there and is tested there; what follows is wiring.
-  const { runs: ultraRuns, reload: reloadUltraRuns } = useUltraRuns(sessionId);
+  // THE LAUNCHES THIS TRANSCRIPT HAS SEEN, which is strictly earlier than any
+  // poll can know them. `spliceRunAnchors` below already reads exactly this to
+  // draw the pending anchor; handing the same fact to `useUltraRuns` is what
+  // lets the run ATTACH while the turn is still going instead of surfacing only
+  // as a completion wake at the turn boundary (see the hook's own note on the
+  // bootstrap deadlock).
+  //
+  // The same `p.type === "tool"` narrowing used for `spawnPart` further down,
+  // and `launchedRunId` is a pure total function that returns null for every
+  // part that is not a successful ultra launch — so this is one linear scan of
+  // parts the component already holds, with no fetch and no new state.
+  const launchedUltraRunIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const m of messages) {
+      for (const p of m.parts) {
+        if (p.type !== "tool") continue;
+        const id = launchedRunId(p as ToolPart);
+        if (id !== null && !ids.includes(id)) ids.push(id);
+      }
+    }
+    return ids;
+  }, [messages]);
+
+  const { runs: ultraRuns, reload: reloadUltraRuns } = useUltraRuns(
+    sessionId,
+    launchedUltraRunIds,
+  );
   // The session's activity index now lives in the unified workspace dock.
   // `activeTab` remains the sole owner of which transcript or Ultra detail is
   // shown in the center pane; the dock is only a navigation projection.
@@ -2316,6 +2353,37 @@ function SessionWorkspace({
   );
   // Published to the unmount auto-dock guard declared above (AC7 proof 3).
   ultraLiveRef.current = ultraLiveCount;
+
+  // A RUN GOING TERMINAL ASKS THE WAKE MAILBOX, ONCE. Without this the wake
+  // hook's own gate (`live > 0 || pending.length > 0`, both filled only by its
+  // own reload, which fires on mount and on `telar:refresh` and nowhere else)
+  // is the same bootstrap deadlock the run list had: a session whose page
+  // mounted BEFORE the launch has nothing live and nothing pending at mount, so
+  // it never starts its interval, so the run settles into a mailbox nobody is
+  // reading. Measured, not theorised — `u-b051b5580bdb` finished `done` and its
+  // wake record sat at `deliveredAt: 0`, while an earlier identical run was
+  // delivered only because an unrelated remount happened to re-arm the poll.
+  //
+  // EDGE-TRIGGERED ON THE TERMINAL SET, NOT GATED ON LIVENESS. Polling only
+  // while `ultraLiveCount > 0` would close the gate on the very transition that
+  // creates the wake — the run stops being live at the same instant it becomes
+  // deliverable. Keying on WHICH runs are terminal fires exactly once per run
+  // that settles, and one fetch is all that is needed: a wake that exists then
+  // lands in `pending`, which opens the wake hook's own interval and keeps it
+  // open until the §6.D drain has fired the turn.
+  const settledRunKey = useMemo(
+    () =>
+      ultraRunList
+        .filter((r) => r.state === "done" || r.state === "failed" || r.state === "stopped")
+        .map((r) => r.runId)
+        .sort()
+        .join(","),
+    [ultraRunList],
+  );
+  useEffect(() => {
+    if (settledRunKey === "") return;
+    void reloadUltraWake();
+  }, [settledRunKey, reloadUltraWake]);
 
   // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
   // all of them — its formatter takes a list — so three finished runs must not
@@ -2507,21 +2575,25 @@ function SessionWorkspace({
   }, [messages]);
 
   // Derive the single live-work state the header indicator renders while busy.
-  const liveWork: WorkState | null = !busy
-    ? null
-    : status === "submitted"
-      ? { kind: "starting" }
-      : runningTool
-        ? {
-            kind: "tool",
-            tool: runningTool.name,
-            target: runningTool.target,
-            elapsed,
-            silentFor,
-          }
-        : thinking
-          ? { kind: "thinking", elapsed }
-          : { kind: "working", elapsed };
+  const liveWork = useMemo<WorkState | null>(
+    () =>
+      !busy
+        ? null
+        : status === "submitted"
+          ? { kind: "starting" }
+          : runningTool
+            ? {
+                kind: "tool",
+                tool: runningTool.name,
+                target: runningTool.target,
+                startedAt: turnStartedAt,
+                lastActivityAt,
+              }
+            : thinking
+              ? { kind: "thinking", startedAt: turnStartedAt }
+              : { kind: "working", startedAt: turnStartedAt },
+    [busy, lastActivityAt, runningTool, status, thinking, turnStartedAt],
+  );
 
   // Merge project's scanned commands+skills with what the live SDK session
   // actually reports (once known) — the SDK's slash_commands list includes
@@ -2707,25 +2779,27 @@ function SessionWorkspace({
   // handed down rather than read from a context. That is AD-12's purity rule and
   // it is what lets a surface with no providers at all render the same kinds.
   //
-  // Deliberately NOT memoized: `messages` changes on essentially every SSE frame
-  // of a live turn, so a memo would recompute anyway while adding a dependency
-  // list to keep correct. The donor computed `groupParts` inline in its render
-  // loop for the same reason.
+  // The projection changes on every meaningful SSE frame, but it must remain
+  // referentially stable between those frames. SessionWorkspace also owns the
+  // composer, side panels and workspace chrome; without this memo any update in
+  // those siblings makes the transcript replay markdown, syntax highlighting
+  // and every tool renderer even though no conversation data changed.
   // THE RUN-TAB ARM COMES FIRST so the two selectors cannot both resolve: an
   // `ultra-run:` id can never also be a bucket id, but ordering says so
   // structurally rather than relying on that.
-  const transcriptItems: TranscriptItem[] = activeRunTab
-    ? [
-        ultraTabItem(
-          activeRunTab,
-          () => setActiveTab("main"),
-          () => void ultraAct(activeRunTab.runId, "stop"),
-          ultraBusyRunId === activeRunTab.runId,
-        ),
-      ]
-    : activeBucket
-    ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
-    : messages.map((m) => {
+  const transcriptItems = useMemo<TranscriptItem[]>(() =>
+    activeRunTab
+      ? [
+          ultraTabItem(
+            activeRunTab,
+            () => setActiveTab("main"),
+            () => void ultraAct(activeRunTab.runId, "stop"),
+            ultraBusyRunId === activeRunTab.runId,
+          ),
+        ]
+      : activeBucket
+        ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
+        : messages.map((m) => {
         // Main renders only this message's OWN parts — anything a subagent
         // produced lives in its own tab (see agentBuckets), not interleaved
         // here even though it rode in on the same SSE stream and the same
@@ -2796,7 +2870,22 @@ function SessionWorkspace({
               ) : undefined,
           } satisfies TurnPayload,
         };
-      });
+          }),
+    [
+      activeBucket,
+      activeRunTab,
+      agentBucketById,
+      busy,
+      liveWork,
+      messages,
+      pendingUltraAnchor,
+      respondPermission,
+      thinking,
+      ultraAct,
+      ultraAnchorPayloads,
+      ultraBusyRunId,
+    ],
+  );
 
   // The three empty states, unchanged. The shell renders whichever of these it
   // is handed, and only while `items` is empty — which for a project session is
@@ -2843,6 +2932,24 @@ function SessionWorkspace({
   // down merely to animate into the conversation layout.
   const freshWorkspace =
     messages.length === 0 && !sessionId && !planner && !escalation && !steerer;
+
+  const transcriptTrailing = useMemo(
+    () =>
+      !activeBucket && !activeRunTab && loomEvents.length > 0 ? (
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pt-3">
+          {loomEvents.map((row) => (
+            <InlineLoomRow
+              key={row.id}
+              row={row}
+              onDismiss={() =>
+                setLoomEvents((previous) => previous.filter((item) => item.id !== row.id))
+              }
+            />
+          ))}
+        </div>
+      ) : undefined,
+    [activeBucket, activeRunTab, loomEvents],
+  );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;
   const agentNeedsAttention = railAgents.some((agent) => agent.status === "error");
@@ -2902,7 +3009,7 @@ function SessionWorkspace({
           )}
           <WorkspaceInspector
             project={project}
-            scopeKey={rightPanelScopeKey ?? `${project}:new`}
+            scopeKey={resolvedRightPanelScopeKey}
             open={workspaceInspectorOpen}
             onOpenChange={setWorkspaceInspectorOpen}
             onReservedChange={setWorkspaceInspectorReserved}
@@ -2912,7 +3019,7 @@ function SessionWorkspace({
             onSelectAgent={setActiveTab}
             onSelectWorkflow={(id) => setActiveTab(ultraTabId(id))}
           />
-          <RightPanelTrigger scopeKey={rightPanelScopeKey ?? `${project}:new`} />
+          <RightPanelTrigger scopeKey={resolvedRightPanelScopeKey} />
         </div>
       </div>
       )}
@@ -2973,7 +3080,7 @@ function SessionWorkspace({
           longer owns a render loop. */}
       <Conversation
         className={cn(
-          "relative",
+          "relative transition-[padding-right] duration-300 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
           workspaceInspectorReserved && "min-[1180px]:pr-[21rem]",
         )}
         items={transcriptItems}
@@ -3000,21 +3107,7 @@ function SessionWorkspace({
         // marks the LAST top-level item live, so an item appended after the
         // streaming turn would silently steal its liveness and the trailing
         // tool group would stop auto-opening mid-turn.
-        trailing={
-          !activeBucket && !activeRunTab && loomEvents.length > 0 ? (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pt-3">
-              {loomEvents.map((r) => (
-                <InlineLoomRow
-                  key={r.id}
-                  row={r}
-                  onDismiss={() =>
-                    setLoomEvents((prev) => prev.filter((x) => x.id !== r.id))
-                  }
-                />
-              ))}
-            </div>
-          ) : undefined
-        }
+        trailing={transcriptTrailing}
         composer={
           /* The outer shell is 2rem wider than the 48rem reading column because
               its px-4 gutters sit outside the actual input. That leaves the
@@ -3189,7 +3282,7 @@ function SessionWorkspace({
             {!embedded && (
               <WorkspaceEnvironment
                 project={project}
-                rightPanelScopeKey={rightPanelScopeKey ?? `${project}:new`}
+                rightPanelScopeKey={resolvedRightPanelScopeKey}
               />
             )}
           </div>
@@ -3199,7 +3292,8 @@ function SessionWorkspace({
       {!embedded && (
         <RightPanel
           project={project}
-          scopeKey={rightPanelScopeKey ?? `${project}:new`}
+          scopeKey={resolvedRightPanelScopeKey}
+          revealScopeKey={provisionalRightPanelScopeKey}
           activityCount={activityCount}
           activityRunning={activityRunning}
           activityAttention={activityAttention}

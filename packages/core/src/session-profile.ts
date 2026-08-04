@@ -252,6 +252,17 @@ export const WORKSPACE_AUTO_TOOL_NAMES = [
   "mcp__workspace__update_item",
 ] as const;
 
+// Read-only access to the browser surface the human and agent share. The
+// overloaded browser_tabs tool is intentionally absent because it can also
+// create, select and close tabs; browser_list_tabs is the non-mutating alias.
+export const BROWSER_READ_TOOL_NAMES = [
+  "mcp__browser__browser_list_tabs",
+  "mcp__browser__browser_snapshot",
+  "mcp__browser__browser_take_screenshot",
+  "mcp__browser__browser_console_messages",
+  "mcp__browser__browser_network_requests",
+] as const;
+
 // The whole AUTO-RUN vocabulary a profile may narrow: the six built-in read/web
 // tools, then the loom read/draft/lifecycle tools, then ultra's three, then the
 // workspace store's four.
@@ -295,6 +306,7 @@ export const BASE_ALLOWED_TOOLS = [
   ...LOOM_AUTO_TOOL_NAMES,
   ...ULTRA_AUTO_TOOL_NAMES,
   ...WORKSPACE_AUTO_TOOL_NAMES,
+  ...BROWSER_READ_TOOL_NAMES,
 ] as const;
 
 export type BaseAllowedTool = (typeof BASE_ALLOWED_TOOLS)[number];

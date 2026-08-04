@@ -25,6 +25,7 @@ import {
   resolveEnabledAccount,
   resolveSessionKind,
   resolveSessionProfile,
+  loadPolicy,
   sessionRoleFromWire,
   signInCommand,
   unmetCapabilities,
@@ -90,7 +91,9 @@ import {
 import {
   browserTools,
   BROWSER_MCP_VERSION,
+  CODEX_BROWSER_TOOL_NAMESPACE,
   createBrowserMcpServer,
+  isReadOnlyBrowserCall,
 } from "@/lib/browser-mcp";
 import { namespaceOf } from "@/lib/harness-tools";
 import {
@@ -180,6 +183,7 @@ export async function POST(req: Request) {
     sessionId,
     model: rawModel,
     project,
+    browserScopeKey: rawBrowserScopeKey,
     account,
     effort: rawEffort,
     runtimeMode: rawRuntimeMode,
@@ -229,6 +233,21 @@ export async function POST(req: Request) {
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
   const ultraAnnotated: boolean = rawUltra === true;
+  // The Electron browser host is shared, but its tabs and tool namespace are
+  // not. Existing chats have one canonical scope. Fresh composers provide a
+  // unique draft scope that is adopted into the SDK session id when the first
+  // `session` event arrives, preventing two new-session windows from sharing
+  // tabs while still keeping one bounded desktop browser process.
+  const canonicalBrowserScope = `${project}:${sessionId ?? ""}`;
+  const suppliedBrowserScope = typeof rawBrowserScopeKey === "string"
+    ? rawBrowserScopeKey.trim()
+    : "";
+  const draftPrefix = `${project}:draft:`;
+  const browserScopeKey = sessionId
+    ? canonicalBrowserScope
+    : suppliedBrowserScope.startsWith(draftPrefix) && /^[\w.-]+$/.test(suppliedBrowserScope.slice(draftPrefix.length))
+      ? suppliedBrowserScope
+      : `${project}:draft:${runId}`;
 
   // M11 finding-1: the escalation surface auto-fires a HIDDEN first turn whose
   // wire message is the kickoff sentinel (see @/lib/escalation-kickoff). On a
@@ -1060,6 +1079,70 @@ export async function POST(req: Request) {
             }
             return decision.behavior === "allow" ? "accept" : "decline";
           };
+          const onCodexDynamicTool = async (req: {
+            namespace: string | null;
+            tool: string;
+            arguments: Record<string, unknown>;
+          }): Promise<"accept" | "decline"> => {
+            // Other Telar dynamic tools retain their existing lifecycle gates.
+            // Browser reads are safe to perform immediately; browser mutations
+            // need the same user-facing permission card Claude receives unless
+            // the selected runtime mode explicitly delegates approval.
+            if (req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE) return "accept";
+            if (isReadOnlyBrowserCall(req.tool, req.arguments)) return "accept";
+
+            const toolName = `mcp__browser__${req.tool}`;
+            const guardrail = makeGuardrailDecision(
+              sessionProfile,
+              sessionProfile.cwd,
+              toolName,
+              req.arguments,
+            );
+            if (guardrail.behavior === "deny") {
+              send("error", { message: guardrail.message });
+              return "decline";
+            }
+            if (runtimeMode === "full-access" || runtimeMode === "auto") return "accept";
+
+            const rule = ruleFor(toolName, req.arguments);
+            if (readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))) {
+              return "accept";
+            }
+            if (abort.signal.aborted) return "decline";
+
+            const ruleOptions = ruleOptionsFor(toolName, req.arguments);
+            const { id, promise } = createPending(
+              project,
+              toolName,
+              req.arguments,
+              rule,
+              undefined,
+              ruleOptions,
+            );
+            myPending.add(id);
+            const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
+            abort.signal.addEventListener("abort", onAbort, { once: true });
+            send("permission", {
+              id,
+              toolName,
+              input: req.arguments,
+              rule,
+              ruleOptions,
+            });
+
+            let decision: PermissionDecision;
+            try {
+              decision = await promise;
+            } finally {
+              abort.signal.removeEventListener("abort", onAbort);
+              myPending.delete(id);
+            }
+            send("permission_result", { id, behavior: decision.behavior });
+            if (decision.behavior === "allow" && decision.always) {
+              addRule(project, decision.rule ?? rule);
+            }
+            return decision.behavior === "allow" ? "accept" : "decline";
+          };
           // TELAR'S OWN TOOLS, ON CODEX. The same three tool sets the Claude
           // branch registers as in-process MCP servers, handed to the
           // app-server as `dynamicTools` — same definitions, same handlers,
@@ -1071,7 +1154,11 @@ export async function POST(req: Request) {
           // Ultra: there was no ultra tool in its toolset, no error saying so,
           // and a model that narrated spawning three agents it never spawned.
           const codexToolNamespaces = [
-            namespaceOf("browser", BROWSER_MCP_VERSION, browserTools()),
+            namespaceOf(
+              CODEX_BROWSER_TOOL_NAMESPACE,
+              BROWSER_MCP_VERSION,
+              browserTools({ scopeKey: browserScopeKey }),
+            ),
             namespaceOf("ultra", ULTRA_MCP_VERSION, ultraTools({
               project,
               account: profile,
@@ -1105,6 +1192,7 @@ export async function POST(req: Request) {
             approvalsReviewer,
             ...(serviceTier && serviceTier !== "standard" ? { serviceTier } : {}),
             onApproval: onCodexApproval,
+            onDynamicTool: onCodexDynamicTool,
             tools: codexToolNamespaces,
             // The same appendix the Claude branch passes as
             // systemPrompt.append. It used to be built and then dropped on the
@@ -1355,7 +1443,7 @@ export async function POST(req: Request) {
         // One lazy, server-owned browser runtime backs both the human surface
         // and agent tools. Constructing this descriptor does not start a
         // browser; the Playwright MCP process launches only on first use.
-        const browserMcpServer = createBrowserMcpServer();
+        const browserMcpServer = createBrowserMcpServer({ scopeKey: browserScopeKey });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -1364,6 +1452,13 @@ export async function POST(req: Request) {
         // and steerer carry it when the chip is on; escalation never does, and
         // that is enforced by escalationAppendix having no `ultraAnnotated`
         // parameter at all rather than by a branch here.
+        // Read ONCE per turn rather than inside the options literal — the file
+        // read is cheap but it is still a read, and a config value that could
+        // change midway through building one request is a config value two
+        // fields could disagree about. `?? 0` normalizes the absent case so the
+        // spread below tests one thing.
+        const policyMaxTurns = loadPolicy().maxTurns ?? 0;
+
         const q = query({
           prompt: claudePrompt,
           options: {
@@ -1511,7 +1606,33 @@ export async function POST(req: Request) {
             // selected Claude configuration, matching a native Claude launch.
             canUseTool,
             hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
-            maxTurns: 25,
+            // NO TURN CEILING BY DEFAULT — omitted, not set to a big number.
+            //
+            // This used to be a bare `maxTurns: 25` with no comment and no way
+            // to change it, and a session that hit it stopped mid-task with
+            // "exceeded step count". On a long refactor that is not a safety
+            // rail firing, it is the tool quitting on work the human asked for
+            // and is still watching.
+            //
+            // A Telar session is the same shape as a Claude Code session, so it
+            // gets the same posture: the SDK's `maxTurns` is optional
+            // (sdk.d.ts's "Maximum number of conversation turns before the query
+            // stops") and the CLI exposes `--max-turns` as an OPT-IN, so leaving
+            // the field off is what matches the harness this wraps. Spreading
+            // rather than passing `undefined` keeps that literal — an explicit
+            // `maxTurns: undefined` is a field the SDK still sees.
+            //
+            // WHAT BOUNDS A RUNAWAY INSTEAD, since it is no longer this: the
+            // human watching it with a Stop button (the abort controller wired
+            // below), the admission controller's concurrency ceiling, and the
+            // usage ledger. A turn cap was never the load-bearing one — it just
+            // fired first, on the wrong sessions.
+            //
+            // The ceiling remains AVAILABLE, as the same override looms already
+            // honor: `~/.telar/policy.json`'s `maxTurns` (ModelPolicy,
+            // schemas.ts). Set it and this surface obeys it; that override
+            // existed and this was the one place ignoring it.
+            ...(policyMaxTurns ? { maxTurns: policyMaxTurns } : {}),
             includePartialMessages: true,
             // Relay full subagent conversation text (not just its tool
             // calls/results) on this same stream, each message tagged with

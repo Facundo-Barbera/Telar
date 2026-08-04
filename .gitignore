@@ -17,8 +17,24 @@ playwright-report/
 apps/desktop/release/
 .next-desktop/
 
+# Scratch Next builds from parallel agent runs. `.next/` above only covers the
+# default distDir; next.config.ts's NEXT_DIST_DIR lets a run pick its own, and
+# each one is ~650MB.
+apps/web/.next-codex-*/
+.codex-tmp/
+.tmp/
+
+# Local runtime state, not source: a TELAR_HOME-shaped tree keyed by repo path,
+# and the desktop dev runner's scratch profile.
+/projects/
+.telar-desktop-dev/
+
+# pnpm's content-addressed store, if a tool reaches for pnpm in this tree.
+.pnpm-store/
+
 # BMAD And others
 _bmad/
 .claude/
 .agents/
 .cleanup-archives/
+telar.yaml

@@ -1,4 +1,11 @@
-import { getAccount, getProject, resumeUltraRun, type AccountProfile } from "@telar/core";
+import {
+  getAccount,
+  getProject,
+  getUltraManifest,
+  guardrailsForRoot,
+  resumeUltraRun,
+  type AccountProfile,
+} from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
@@ -50,9 +57,19 @@ export async function POST(
     }
   }
 
+  // A RESUME IS GUARDED LIKE A LAUNCH. `project` is optional here — a bare
+  // resume inherits the original root from the manifest inside resumeUltraRun —
+  // so the guardrails are resolved BY ROOT, covering both the explicit case and
+  // the inherited one. Resolving today's rules rather than the ones in force at
+  // first launch is deliberate: guardrails are the project's current
+  // configuration, not a property of the run.
+  const guardedRoot = project ?? getUltraManifest(id)?.project;
+  const guardrails = guardedRoot ? guardrailsForRoot(guardedRoot) : undefined;
+
   const result = await resumeUltraRun(id, {
     script: body.script as string | undefined,
     project,
+    ...(guardedRoot && guardrails ? { guardrails: { root: guardedRoot, guardrails } } : {}),
     account,
   });
 

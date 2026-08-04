@@ -13,6 +13,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ClockIcon,
   FolderGit2Icon,
   FolderPlusIcon,
   LayoutDashboardIcon,
@@ -26,13 +27,18 @@ import {
 import type { Loom } from "@telar/core/looms";
 import {
   activeSessionFromPathname,
+  bandOf,
   deriveSessionList,
+  isUnread,
   SESSION_PAGE_SIZE,
+  type SessionFilter,
   type SidebarSession,
 } from "@/lib/session-list";
 import { fmtAgo, fmtCost } from "@/lib/format";
+import { patchChat } from "@/lib/chat-actions";
 import {
   refreshIncludes,
+  TELAR_SESSION_RUN_EVENT,
   type TelarRefreshDomain,
 } from "@/lib/telar-refresh";
 import { cachedJson } from "@/lib/client-json-cache";
@@ -52,7 +58,7 @@ import {
 } from "@/components/ui/sidebar";
 import { StateBadge } from "@/components/common/state-badge";
 import { isLoomNeedsYou, isLoomRunning } from "@/lib/project-signal";
-import { ArchiveButton } from "@/components/session/archive-button";
+import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -161,6 +167,94 @@ function TelarSidebarHeader({ activeLooms }: { activeLooms: number }) {
   );
 }
 
+// The inbox's slice selector. A chip is a view over the same list, never a
+// different screen — picking one flattens the shelves away (see
+// deriveSessionList's `flat`) because a filtered list that still hides rows
+// behind a collapsed shelf is the thing the filter was meant to stop.
+const FILTERS: readonly {
+  id: SessionFilter;
+  label: string;
+  count?: "unread" | "snoozed";
+}[] = [
+  { id: "all", label: "All" },
+  { id: "unread", label: "Unread", count: "unread" },
+  { id: "snoozed", label: "Snoozed", count: "snoozed" },
+  { id: "settled", label: "Settled" },
+];
+
+function FilterChips({
+  value,
+  onChange,
+  unreadCount,
+  snoozedCount,
+}: {
+  value: SessionFilter;
+  onChange: (next: SessionFilter) => void;
+  unreadCount: number;
+  snoozedCount: number;
+}) {
+  return (
+    <div role="tablist" aria-label="Session filter" className="flex items-center gap-1">
+      {FILTERS.map(({ id, label, count }) => {
+        const badge =
+          count === "unread" ? unreadCount : count === "snoozed" ? snoozedCount : 0;
+        // An empty Snoozed chip is noise — nothing is deferred, so there is
+        // nothing to switch to. Unread stays put: it is the count you scan for.
+        if (count === "snoozed" && badge === 0 && value !== id) return null;
+        const active = value === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(id)}
+            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+              active
+                ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/55 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+            }`}
+          >
+            {label}
+            {count && badge > 0 ? (
+              <span className="font-mono text-[9px] text-sidebar-foreground/45">{badge}</span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// An empty chip view means "you are done with this slice", not "something is
+// missing" — each one says so in its own terms rather than reusing the
+// no-sessions-yet copy, which would read as if the filter had broken.
+const EMPTY_BY_FILTER: Record<
+  SessionFilter,
+  { icon: React.ComponentType<{ className?: string }>; title: string; detail: string }
+> = {
+  all: {
+    icon: MessageSquareIcon,
+    title: "No sessions yet",
+    detail: "Start a new session from the button above.",
+  },
+  unread: {
+    icon: CheckIcon,
+    title: "Nothing unread",
+    detail: "Every session here has been read.",
+  },
+  snoozed: {
+    icon: ClockIcon,
+    title: "Nothing snoozed",
+    detail: "Snooze a session to have it come back later.",
+  },
+  settled: {
+    icon: MessageSquareIcon,
+    title: "Nothing settled",
+    detail: "Settle a session when you are done with it.",
+  },
+};
+
 function SidebarEmpty({
   icon: Icon,
   title,
@@ -177,6 +271,42 @@ function SidebarEmpty({
       <p className="mt-1 text-[11px] leading-4">{detail}</p>
     </div>
   );
+}
+
+// The one signal a session row carries about itself, in precedence order:
+// a running turn outranks an unread reply, which outranks nothing at all.
+// `live` is server-derived per fetch (GET /api/chats over the in-flight run
+// registry), so the animated state can never outlive the turn it describes.
+function SessionStatus({ session }: { session: ChatMeta }) {
+  if (session.live) {
+    return (
+      <span className="relative flex size-1.5 shrink-0" title="Running now">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-75" />
+        <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+        <span className="sr-only">Running now</span>
+      </span>
+    );
+  }
+  if (isUnread(session)) {
+    return (
+      <span className="flex size-1.5 shrink-0 rounded-full bg-primary" title="Unread">
+        <span className="sr-only">Unread</span>
+      </span>
+    );
+  }
+  return null;
+}
+
+// When a snoozed row is shown, its return time is the useful fact — not how
+// long ago it was last touched. Days out reads as a date; anything sooner as a
+// weekday and clock time.
+function fmtWake(at: number, now: number): string {
+  const wake = new Date(at);
+  const days = Math.round((at - now) / (24 * 60 * 60 * 1000));
+  const time = wake.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (days >= 7) return wake.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (days >= 1) return `${wake.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+  return time;
 }
 
 function SessionRow({
@@ -198,6 +328,10 @@ function SessionRow({
 }) {
   if (!session.project) return null;
   const href = `/projects/${encodeURIComponent(session.project)}/sessions/${encodeURIComponent(session.id)}`;
+  const snoozedUntil =
+    session.snoozedUntil !== undefined && session.snoozedUntil > renderedAt
+      ? session.snoozedUntil
+      : undefined;
   return (
     <div
       className={`group/session relative rounded-md ${
@@ -221,10 +355,22 @@ function SessionRow({
             <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-sidebar-foreground/50">
               <FolderGit2Icon className="size-3 shrink-0" />
               <span className="min-w-0 flex-1 truncate">{session.project}</span>
-              <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
+              {snoozedUntil ? (
+                <span className="flex shrink-0 items-center gap-0.5 text-sidebar-foreground/45">
+                  <ClockIcon className="size-2.5" />
+                  {fmtWake(snoozedUntil, renderedAt)}
+                </span>
+              ) : (
+                <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
+              )}
             </span>
-            <span className="mt-1 flex min-w-0 items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-sidebar-foreground">
+            <span className="mt-1 flex min-w-0 items-center gap-1.5">
+              <SessionStatus session={session} />
+              <span
+                className={`min-w-0 flex-1 truncate text-xs text-sidebar-foreground ${
+                  isUnread(session) ? "font-semibold" : "font-medium"
+                }`}
+              >
                 {session.title || "Untitled session"}
               </span>
               <span className="shrink-0 font-mono text-[9px] text-sidebar-foreground/35">
@@ -234,11 +380,25 @@ function SessionRow({
           </>
         ) : (
           <>
-            <span className="block truncate text-xs font-medium text-sidebar-foreground">
-              {session.title || "Untitled session"}
+            <span className="flex min-w-0 items-center gap-1.5">
+              <SessionStatus session={session} />
+              <span
+                className={`min-w-0 flex-1 truncate text-xs text-sidebar-foreground ${
+                  isUnread(session) ? "font-semibold" : "font-medium"
+                }`}
+              >
+                {session.title || "Untitled session"}
+              </span>
             </span>
             <span className="mt-1 flex items-center gap-1.5 text-[10px] text-sidebar-foreground/45">
-              <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
+              {snoozedUntil ? (
+                <span className="flex shrink-0 items-center gap-0.5">
+                  <ClockIcon className="size-2.5" />
+                  {fmtWake(snoozedUntil, renderedAt)}
+                </span>
+              ) : (
+                <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
+              )}
               <span aria-hidden>·</span>
               <span className="shrink-0 font-mono">{fmtCost(session.costUsd)}</span>
             </span>
@@ -246,14 +406,92 @@ function SessionRow({
         )}
       </Link>
       {!searchable && (
-        <ArchiveButton
-          id={session.id}
-          archived={session.archived}
+        <SessionInboxMenu
+          session={session}
+          // Derived per row rather than passed down per band, so a row rendered
+          // in the flat "Settled" chip view offers Unsettle just like the one
+          // in the shelf does.
+          settled={bandOf(session, renderedAt) === "settled"}
+          snoozed={snoozedUntil !== undefined}
           onDone={onRefresh}
-          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-popup-open:opacity-100"
         />
       )}
     </div>
+  );
+}
+
+// A collapsed band of rows below the live list — Snoozed and Settled are the
+// same shape and differ only in what put a row there, so they share one
+// component rather than two near-identical blocks that drift apart.
+// Renders nothing at all when empty: an always-present "Snoozed (0)" header
+// would cost a row of chrome to say nothing.
+function SessionShelf({
+  label,
+  count,
+  rows,
+  open,
+  onToggle,
+  hasMore,
+  onShowMore,
+  limit,
+  activeSessionId,
+  showProject,
+  renderedAt,
+  onRefresh,
+}: {
+  label: string;
+  count: number;
+  rows: ChatMeta[];
+  open: boolean;
+  onToggle: () => void;
+  hasMore: boolean;
+  onShowMore: () => void;
+  limit: number;
+  activeSessionId?: string;
+  showProject: boolean;
+  renderedAt: number;
+  onRefresh: () => void;
+}) {
+  if (count === 0) return null;
+  return (
+    <SidebarGroup className="pt-0">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 px-2 py-1 text-xs font-medium text-sidebar-foreground/60 hover:text-sidebar-foreground"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <ChevronRightIcon
+          className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        {label}
+        <span className="ml-auto font-mono text-[10px]">{count}</span>
+      </button>
+      {open && (
+        <SidebarGroupContent className="space-y-0.5">
+          {rows.slice(0, limit).map((session) => (
+            <SessionRow
+              key={session.id}
+              session={session}
+              active={session.id === activeSessionId}
+              showProject={showProject}
+              renderedAt={renderedAt}
+              onRefresh={onRefresh}
+            />
+          ))}
+          {hasMore && (
+            <button
+              type="button"
+              className="w-full rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+              onClick={onShowMore}
+            >
+              Show more
+            </button>
+          )}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
   );
 }
 
@@ -273,9 +511,16 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  // Deliberately NOT persisted, for the same reason scope is not: a filter you
+  // forget you set is a bug report about missing sessions (docs/phase-2-
+  // sidebar-design.md, open question on remembered scope).
+  const [filter, setFilter] = useState<SessionFilter>("all");
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
   const [settledLimit, setSettledLimit] = useState(SESSION_PAGE_SIZE);
+  const [snoozedLimit, setSnoozedLimit] = useState(SESSION_PAGE_SIZE);
   const searchInput = useRef<HTMLInputElement>(null);
+  const markedRead = useRef<Set<string>>(new Set());
   const loadInFlight = useRef(false);
   const pendingLoads = useRef<Set<TelarRefreshDomain>>(new Set());
   const pendingForce = useRef(false);
@@ -348,9 +593,17 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
       );
       if (domains.length > 0) void loadAll(domains);
     };
+    // A turn STARTING has no mutation to broadcast — nothing is written until
+    // it ends — so telar:refresh alone would leave the running dot dark for the
+    // whole turn and light it only once the turn was already over. This event
+    // is the start edge; the end edge is the ordinary chats refresh that
+    // appendTurn's callers already fire.
+    const onRun = () => void loadAll(["chats"]);
     window.addEventListener("telar:refresh", onRefresh);
+    window.addEventListener(TELAR_SESSION_RUN_EVENT, onRun);
     return () => {
       window.removeEventListener("telar:refresh", onRefresh);
+      window.removeEventListener(TELAR_SESSION_RUN_EVENT, onRun);
     };
   }, [initialData, loadAll]);
 
@@ -382,10 +635,44 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
     sessions: chats,
     project: selectedScope,
     query,
+    filter,
     activeSessionId,
+    now: renderedAt,
     limit: sessionLimit,
     settledLimit,
+    snoozedLimit,
   });
+  // The chip badges are counted over the scope ALONE — no query, no active
+  // chip — so they stay still while you type and keep saying how much is
+  // actually there rather than how much the current view happens to show.
+  // limit 0 makes this a counting pass: no rows are materialized.
+  const totals = deriveSessionList({
+    sessions: chats,
+    project: selectedScope,
+    now: renderedAt,
+    limit: 0,
+  });
+  // Opening a session reads it — the inbox's defining gesture, and the only
+  // thing that makes an unread count mean anything. Keyed by id+updatedAt so a
+  // NEW turn on a session you already have open re-marks it unread and is then
+  // read again on the next tick, rather than being permanently pre-read.
+  // The ref guard is what keeps the write from re-entering: patchChat
+  // broadcasts telar:refresh, which reloads chats, which re-runs this effect.
+  // It also makes "mark as unread" on the session you are LOOKING AT stick,
+  // which is the point of that action — the row stays unread until a new turn
+  // moves updatedAt and mints a key this guard has not seen.
+  const activeChat = activeSessionId
+    ? chats.find((chat) => chat.id === activeSessionId)
+    : undefined;
+  const activeUnread = activeChat ? isUnread(activeChat) : false;
+  useEffect(() => {
+    if (!activeChat || !activeUnread) return;
+    const key = `${activeChat.id}:${activeChat.updatedAt}`;
+    if (markedRead.current.has(key)) return;
+    markedRead.current.add(key);
+    void patchChat(activeChat.id, { read: true });
+  }, [activeChat, activeUnread]);
+
   const needsYou = looms
     .filter((loom) => isLoomNeedsYou(loom.state))
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -394,10 +681,20 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
     ? Math.min(searchIndex, list.sessions.length - 1)
     : -1;
 
-  const selectScope = (next?: string) => {
-    setScope(next);
+  const resetPaging = () => {
     setSessionLimit(SESSION_PAGE_SIZE);
     setSettledLimit(SESSION_PAGE_SIZE);
+    setSnoozedLimit(SESSION_PAGE_SIZE);
+  };
+
+  const selectScope = (next?: string) => {
+    setScope(next);
+    resetPaging();
+  };
+
+  const selectFilter = (next: SessionFilter) => {
+    setFilter(next);
+    resetPaging();
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -540,9 +837,16 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
             </DropdownMenu>
             <RegisterProjectDialog onRegistered={loadAll} compact />
           </div>
+
+          <FilterChips
+            value={filter}
+            onChange={selectFilter}
+            unreadCount={totals.unreadCount}
+            snoozedCount={totals.snoozedCount}
+          />
         </div>
 
-        {needsYou.length > 0 && !query && (
+        {needsYou.length > 0 && !query && filter === "all" && (
           <SidebarGroup>
             <SidebarGroupLabel>Needs you</SidebarGroupLabel>
             <SidebarGroupContent className="space-y-0.5">
@@ -567,7 +871,13 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
         )}
 
         <SidebarGroup className="min-h-0 flex-1">
-          <SidebarGroupLabel>{query ? "Search results" : "Recent"}</SidebarGroupLabel>
+          <SidebarGroupLabel>
+            {query
+              ? "Search results"
+              : filter === "all"
+                ? "Recent"
+                : (FILTERS.find((entry) => entry.id === filter)?.label ?? "Recent")}
+          </SidebarGroupLabel>
           <SidebarGroupContent
             id="sidebar-session-results"
             role={query ? "listbox" : undefined}
@@ -579,11 +889,26 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                 title="No projects yet"
                 detail="Register a project to start a session."
               />
-            ) : list.sessions.length === 0 && (!list.settledCount || query) ? (
+            ) : list.sessions.length === 0 &&
+              (list.flat || (!list.settledCount && !list.snoozedCount)) ? (
               <SidebarEmpty
-                icon={MessageSquareIcon}
-                title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
-                detail={query ? "Try another title or project name." : "Start a new session from the button above."}
+                icon={query ? MessageSquareIcon : EMPTY_BY_FILTER[filter].icon}
+                title={
+                  query
+                    ? "No sessions found"
+                    : filter !== "all"
+                      ? EMPTY_BY_FILTER[filter].title
+                      : selectedScope
+                        ? "No sessions in this project"
+                        : "No sessions yet"
+                }
+                detail={
+                  query
+                    ? "Try another title or project name."
+                    : filter !== "all"
+                      ? EMPTY_BY_FILTER[filter].detail
+                      : "Start a new session from the button above."
+                }
               />
             ) : (
               list.sessions.map((session, index) => (
@@ -611,42 +936,40 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {!query && list.settledCount > 0 && (
-          <SidebarGroup className="pt-0">
-            <button
-              type="button"
-              className="flex w-full items-center gap-1 px-2 py-1 text-xs font-medium text-sidebar-foreground/60 hover:text-sidebar-foreground"
-              aria-expanded={settledOpen}
-              onClick={() => setSettledOpen((open) => !open)}
-            >
-              <ChevronRightIcon className={`size-3.5 transition-transform ${settledOpen ? "rotate-90" : ""}`} />
-              Settled
-              <span className="ml-auto font-mono text-[10px]">{list.settledCount}</span>
-            </button>
-            {settledOpen && (
-              <SidebarGroupContent className="space-y-0.5">
-                {list.settled.slice(0, settledLimit).map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    active={session.id === activeSessionId}
-                    showProject={!selectedScope}
-                    renderedAt={renderedAt}
-                    onRefresh={loadAll}
-                  />
-                ))}
-                {list.hasMoreSettled && settledLimit < list.settledCount && (
-                  <button
-                    type="button"
-                    className="w-full rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-                    onClick={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
-                  >
-                    Show more
-                  </button>
-                )}
-              </SidebarGroupContent>
-            )}
-          </SidebarGroup>
+        {/* Shelves exist only in the banded view. A chip or a search has
+            already flattened everything it matched into the list above, so a
+            second collapsed place for rows to hide would defeat the filter. */}
+        {!list.flat && (
+          <>
+            <SessionShelf
+              label="Snoozed"
+              count={list.snoozedCount}
+              rows={list.snoozed}
+              open={snoozedOpen}
+              onToggle={() => setSnoozedOpen((open) => !open)}
+              hasMore={list.hasMoreSnoozed && snoozedLimit < list.snoozedCount}
+              onShowMore={() => setSnoozedLimit((limit) => limit + SESSION_PAGE_SIZE)}
+              limit={snoozedLimit}
+              activeSessionId={activeSessionId}
+              showProject={!selectedScope}
+              renderedAt={renderedAt}
+              onRefresh={loadAll}
+            />
+            <SessionShelf
+              label="Settled"
+              count={list.settledCount}
+              rows={list.settled}
+              open={settledOpen}
+              onToggle={() => setSettledOpen((open) => !open)}
+              hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
+              onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
+              limit={settledLimit}
+              activeSessionId={activeSessionId}
+              showProject={!selectedScope}
+              renderedAt={renderedAt}
+              onRefresh={loadAll}
+            />
+          </>
         )}
       </SidebarContent>
 

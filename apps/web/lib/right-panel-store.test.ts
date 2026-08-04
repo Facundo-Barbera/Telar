@@ -10,6 +10,7 @@ import {
   closeOtherPanelTabs,
   closePanelTab,
   closePanelTabsToRight,
+  movePanelSession,
   parseRightPanelPayload,
   sanitizeRightPanelPayload,
   setPanelSession,
@@ -66,6 +67,37 @@ describe("right panel persistence", () => {
     expect(DEFAULT_RIGHT_PANEL_SESSION.open).toBe(false);
     expect(DEFAULT_RIGHT_PANEL_SESSION.fullscreen).toBe(false);
     expect(EMPTY_RIGHT_PANEL_PAYLOAD.sessions).toEqual({});
+  });
+
+  test("drops provisional new-session state during hydration", () => {
+    const parsed = sanitizeRightPanelPayload({
+      version: RIGHT_PANEL_SCHEMA_VERSION,
+      sessions: {
+        "telar:new": state(["browser"]),
+        "telar:session-a": state(["git"]),
+      },
+    });
+
+    expect(parsed.sessions["telar:new"]).toBeUndefined();
+    expect(parsed.sessions["telar:session-a"]).toBeDefined();
+  });
+
+  test("adopts provisional new-session state without leaking it to the next chat", () => {
+    const provisional = setPanelSession(
+      EMPTY_RIGHT_PANEL_PAYLOAD,
+      "telar:new",
+      state(["browser"]),
+      1,
+    );
+    const adopted = movePanelSession(provisional, "telar:new", "telar:session-a", 2);
+
+    expect(adopted.sessions["telar:new"]).toBeUndefined();
+    expect(adopted.sessions["telar:session-a"]).toMatchObject({
+      tabs: [browser("browser")],
+      activeTabId: "browser",
+      open: true,
+      touchedAt: 2,
+    });
   });
 
   test("migrates old panel state to the closed-by-default dock once", () => {

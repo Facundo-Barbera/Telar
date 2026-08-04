@@ -98,8 +98,8 @@ const turn = (
 // The live in-flight row. A fixture is a STILL of a moving thing, so this one
 // picks the `tool` arm: it is the only WorkState that carries a name and a
 // target, and a gallery still of "starting"/"working" is an unlabelled spinner
-// no reviewer can judge. `elapsed` is a constant for the same reason every age
-// string here goes through DEMO_NOW — a wall-clock read would hydrate differently.
+// no reviewer can judge. Its timestamps derive from DEMO_NOW for the same reason
+// every age string here does — a wall-clock read would hydrate differently.
 const status = (key: string, state: StatusPayload["state"]): TranscriptItem => ({
   kind: CONVERSATION_KINDS.status,
   key,
@@ -173,7 +173,13 @@ export const CONVERSATION_FIXTURES: Record<ConversationConfig, readonly Transcri
       // LAST, exactly where the adapter appends it in production: the status row
       // narrates the turn rather than adding to it, and `isTrailingItem` exempts
       // it so the running tools group above keeps its liveness and its spinner.
-      status("m4:2", { kind: "tool", tool: "Edit", target: "components/conversation/kinds.tsx", elapsed: 12 }),
+      status("m4:2", {
+        kind: "tool",
+        tool: "Edit",
+        target: "components/conversation/kinds.tsx",
+        startedAt: DEMO_NOW - 12_000,
+        lastActivityAt: DEMO_NOW - 2_000,
+      }),
     ]),
   ],
 

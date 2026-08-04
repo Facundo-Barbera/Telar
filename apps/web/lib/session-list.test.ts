@@ -2,7 +2,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   activeSessionFromPathname,
+  bandOf,
   deriveSessionList,
+  isUnread,
   SETTLED_AFTER_MS,
   type SidebarSession,
 } from "./session-list";
@@ -82,6 +84,94 @@ describe("deriveSessionList", () => {
     expect(result.sessions.map((r) => r.id)).toEqual(["s0", "s1", "active"]);
     expect(result.settledCount).toBe(0);
     expect(result.hasMoreSessions).toBe(true);
+  });
+});
+
+describe("inbox bands", () => {
+  test("an explicit settle shelves a session that is otherwise live", () => {
+    const rows = [session("rested", { settledAt: NOW - 10 })];
+    const result = deriveSessionList({ sessions: rows, now: NOW });
+    expect(result.sessions).toEqual([]);
+    expect(result.settled.map((r) => r.id)).toEqual(["rested"]);
+  });
+
+  test("snooze beats every settle reason so its wake-up stays visible", () => {
+    // Quiet enough to auto-settle AND explicitly archived — the snooze still
+    // wins, because it is the only state carrying a return time.
+    const rows = [
+      session("deferred", {
+        updatedAt: NOW - SETTLED_AFTER_MS,
+        archived: true,
+        snoozedUntil: NOW + 60_000,
+      }),
+    ];
+    const result = deriveSessionList({ sessions: rows, now: NOW });
+    expect(result.snoozed.map((r) => r.id)).toEqual(["deferred"]);
+    expect(result.settled).toEqual([]);
+    expect(result.snoozedCount).toBe(1);
+  });
+
+  test("a snooze whose instant has passed needs no timer to expire", () => {
+    const row = session("woken", { snoozedUntil: NOW - 1 });
+    expect(bandOf(row, NOW)).toBe("active");
+    expect(deriveSessionList({ sessions: [row], now: NOW }).sessions.map((r) => r.id)).toEqual([
+      "woken",
+    ]);
+  });
+
+  test("unread is a watermark, so a later turn re-marks a read session", () => {
+    expect(isUnread(session("fresh", { updatedAt: 100, readAt: 50 }))).toBe(true);
+    expect(isUnread(session("seen", { updatedAt: 100, readAt: 100 }))).toBe(false);
+    expect(isUnread(session("never", { updatedAt: 100 }))).toBe(true);
+    // "Mark unread" writes 0 rather than adding a second flag that could
+    // disagree with updatedAt.
+    expect(isUnread(session("remarked", { updatedAt: 100, readAt: 0 }))).toBe(true);
+  });
+
+  test("unreadCount spans every band, not just the visible page", () => {
+    const rows = [
+      session("a", { updatedAt: NOW - 1_000 }),
+      session("b", { settledAt: NOW - 10 }),
+      session("c", { snoozedUntil: NOW + 60_000 }),
+      session("d", { updatedAt: NOW - 1_000, readAt: NOW }),
+    ];
+    expect(deriveSessionList({ sessions: rows, now: NOW, limit: 1 }).unreadCount).toBe(3);
+  });
+
+  test("a chip returns a flat, shelf-less view over one predicate", () => {
+    const rows = [
+      session("live"),
+      session("rested", { settledAt: NOW - 10 }),
+      session("deferred", { snoozedUntil: NOW + 60_000 }),
+    ];
+    const result = deriveSessionList({ sessions: rows, now: NOW, filter: "settled" });
+    expect(result.sessions.map((r) => r.id)).toEqual(["rested"]);
+    expect(result.flat).toBe(true);
+    expect(result.settled).toEqual([]);
+    expect(result.snoozed).toEqual([]);
+  });
+
+  test("a chip stays honored underneath a search", () => {
+    const rows = [
+      session("match-unread", { title: "Fix parser" }),
+      session("match-read", { title: "Fix parser", readAt: NOW }),
+      session("other-unread", { title: "Ship docs" }),
+    ];
+    const result = deriveSessionList({
+      sessions: rows,
+      now: NOW,
+      query: "parser",
+      filter: "unread",
+    });
+    expect(result.sessions.map((r) => r.id)).toEqual(["match-unread"]);
+  });
+
+  test("the open session surfaces out of the snoozed shelf exactly once", () => {
+    const rows = [session("open", { snoozedUntil: NOW + 60_000 })];
+    const result = deriveSessionList({ sessions: rows, activeSessionId: "open", now: NOW });
+    expect(result.sessions.map((r) => r.id)).toEqual(["open"]);
+    expect(result.snoozed).toEqual([]);
+    expect(result.snoozedCount).toBe(0);
   });
 });
 

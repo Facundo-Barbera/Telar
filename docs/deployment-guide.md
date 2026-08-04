@@ -4,7 +4,7 @@
 
 ## Overview
 
-Telar is a Bun-workspaces monorepo (`workspaces: ["apps/*", "packages/*"]`, [`package.json`](../package.json)) with **no root-level build/test scripts** — every build is per-workspace. There are two distinct deployment targets:
+Telar is a Bun-workspaces monorepo (`workspaces: ["apps/*", "packages/*"]`, [`package.json`](../package.json)) with root shortcuts for development and local desktop packaging. There are two distinct deployment targets:
 
 1. **Desktop packaging (`apps/desktop`) — the primary deployment artifact.** An Electron shell ("viable tier") that boots the standalone Next.js server built from `apps/web` as a forked child process and points a single `BrowserWindow` at it. This is how Telar ships to end users today: an unsigned, unnotarized `Telar.app` for macOS arm64, produced by [`scripts/build-desktop.sh`](../scripts/build-desktop.sh) and installed locally by [`apps/desktop/install-app.sh`](../apps/desktop/install-app.sh).
 2. **Web build & serving (`apps/web`)** — a plain Next.js production build/start pair, used both as the input to desktop packaging (via `output: "standalone"`) and as a standalone way to run the cockpit directly (e.g. via the `scripts/telar` launcher, see below).
@@ -14,7 +14,7 @@ There is no hosted deployment (no Vercel/Docker/cloud target found in-repo) and 
 | Target | Entry point | Output |
 |---|---|---|
 | Desktop `.app` (repo-flow, from a git ref) | [`scripts/build-desktop.sh`](../scripts/build-desktop.sh) | `apps/desktop/release/from-origin/Telar.app` (path configurable via `--out`) |
-| Desktop `.app` (local working tree) | `bun run pack` in `apps/desktop` + [`apps/desktop/install-app.sh`](../apps/desktop/install-app.sh) | `apps/desktop/release/mac-arm64/Telar.app`, installed to `/Applications/Telar.app` and `apps/desktop/release/from-origin/Telar.app` |
+| Desktop `.app` (local working tree) | `bun run desktop:package` + `bun run desktop:install` | `apps/desktop/release/mac-arm64/Telar.app`, installed to `~/Applications/Telar.app` by default or `/Applications/Telar.app` with `--system` |
 | Web production server | `next build` + `next start` in `apps/web` | `apps/web/.next/` (or `$NEXT_DIST_DIR`), served on `next start`'s port |
 | Stable cockpit launcher | [`scripts/telar`](../scripts/telar) (`bun scripts/telar open`) | Runs `bun run build` + `bun run start` in a separate checkout (default `~/Projects/personal/telar-stable/apps/web`), opens the browser |
 
@@ -25,7 +25,8 @@ Related docs: [./architecture-desktop.md](./architecture-desktop.md) for the Ele
 Desktop packaging has two independent code paths that converge on the same electron-builder output shape:
 
 - **`scripts/build-desktop.sh`** — the reproducible, repo-flow pipeline: builds from a **pristine git-worktree snapshot of a remote ref**, never the working tree. This is the "official" build path.
-- **`apps/desktop/install-app.sh`** — installs whatever is already packed in the *working tree's* `apps/desktop/release/mac-arm64/Telar.app` (produced by `bun run pack`) to `/Applications`. Useful for local iteration; does not rebuild anything itself.
+- **`scripts/package-desktop.sh`** — the local iteration pipeline: builds the current working tree, stamps it as dirty/local when applicable, packages it, and smoke-tests the result. It may be followed by `bun run desktop:install`.
+- **`apps/desktop/install-app.sh`** — installs whatever is already packed in the *working tree's* `apps/desktop/release/mac-arm64/Telar.app` to a user-selected destination. Useful for installing an already-verified artifact; it does not rebuild anything itself.
 
 Both converge on the electron-builder `build` config in [`apps/desktop/package.json`](../apps/desktop/package.json) and both end with the same fail-closed `--smoke` gate.
 
@@ -70,7 +71,7 @@ Called by step 5 above (and independently runnable via `bun run build:web` in `a
 }
 ```
 
-- `files` covers only the three shell files (`main.js`, `server-preload.js`, `package.json`); the entire Next server, its deps, the Playwright MCP CLI, and the native Claude binary are delivered via `extraResources`, which sits outside the asar archive under `Contents/Resources`.
+- `files` covers only the desktop shell files (`main.js`, `browser-manager.js`, `browser-control-server.js`, `preload.js`, `server-preload.js`, `package.json`); the entire Next server, its deps, the Playwright MCP CLI, and the native Claude binary are delivered via `extraResources`, which sits outside the asar archive under `Contents/Resources`.
 - The second `extraResources` entry (re-copying `standalone/node_modules/.bun`) is load-bearing, not redundant: it's the slot `build-web.sh` step 4 injects the real Claude binary into, and this entry ensures that injected content is captured even though the first entry already covers `standalone` generally.
 - `mac.target` is `dir` only — no `dmg`/`zip`/`pkg`, just an unpacked `.app` directory. `arch: arm64` only — no universal/x64 build. `identity: null` — **unsigned, no code signing, no notarization**. No `win`/`linux` targets are configured — macOS-only today.
 - Output directory: `apps/desktop/release/` (git-ignored per [`.gitignore`](../.gitignore)).
@@ -80,21 +81,27 @@ Called by step 5 above (and independently runnable via `bun run build:web` in `a
 | Path | Produced by | Purpose |
 |---|---|---|
 | `apps/desktop/release/mac-arm64/Telar.app` | `bunx electron-builder --dir` (raw electron-builder output) | The freshly packed app before any install step |
-| `apps/desktop/release/from-origin/Telar.app` | `scripts/build-desktop.sh` (atomic swap) and `apps/desktop/install-app.sh` (`install_to`) | The repo-flow "latest built from origin" copy both scripts converge on |
-| `/Applications/Telar.app` | `apps/desktop/install-app.sh` only | The human-facing installed copy |
+| `apps/desktop/release/from-origin/Telar.app` | `scripts/build-desktop.sh` (atomic swap) | The repo-flow "latest built from origin" copy |
+| `~/Applications/Telar.app` | `apps/desktop/install-app.sh` by default | The user-facing local install without sudo |
+| `/Applications/Telar.app` | `apps/desktop/install-app.sh --system` | Optional system-wide install |
 
 ### `apps/desktop/install-app.sh` — local install flow
 
-Run manually after `bun run pack` in `apps/desktop`, or via `bun run install:app`:
+Run manually after `bun run desktop:package`, or use the combined command
+`bun run desktop:install -- --open`:
 
-1. Asserts `release/mac-arm64/Telar.app` exists (else errors with a `bun run pack` hint).
-2. Runs `./release/mac-arm64/Telar.app/Contents/MacOS/Telar --smoke` directly — fails closed (`set -e` aborts the script on non-zero exit).
-3. `install_to(dst)` helper: `ditto`s (macOS-native recursive copy preserving resource forks/metadata) a fresh copy to `<dst>.new`, moves any existing `<dst>` to `<dst>.prev`, `mv`s `.new` into place, removes `.prev` — an atomic-ish two-step swap.
-4. Installs to both `/Applications/Telar.app` and `apps/desktop/release/from-origin/Telar.app`.
+1. Asserts `release/mac-arm64/Telar.app` exists (else errors with a `bun run desktop:package` hint).
+2. Runs the packaged executable with `--smoke` directly — fails closed (`set -e` aborts the script on non-zero exit).
+3. `install_atomic(dst)` helper: `ditto`s (macOS-native recursive copy preserving resource forks/metadata) a fresh copy to a staging path, moves any existing destination aside, then moves the staged app into place.
+4. Installs to `~/Applications/Telar.app` by default; `--system` selects `/Applications/Telar.app`, and `--destination PATH` selects another location. `--open` launches the installed app.
+
+The combined `desktop:install` command passes `--verified` after the package
+pipeline's smoke gate, avoiding a redundant second Electron launch. Running
+`install-app.sh` directly still performs its own smoke gate.
 
 ### The `--smoke` gate (what it actually proves)
 
-`apps/desktop/main.js`'s `runSmoke()` (invoked via `electron . --smoke` / the packaged binary's `--smoke` flag) never creates a window; it boots the real forked Next server against a throwaway `mkdtempSync` `TELAR_HOME` (so it can never touch or reconcile a real user's `~/.telar` looms), then:
+`apps/desktop/main.js`'s `runSmoke()` (invoked via `electron . --smoke` / the packaged binary's `--smoke` flag) never creates a window; it uses isolated per-process Electron user data and boots the real forked Next server against a throwaway `mkdtempSync` `TELAR_HOME` (so it can never touch or reconcile a real user's `~/.telar` looms), then:
 
 1. Polls the server via HTTP until it answers, prints `BUILD <windowTitle()>` then `SMOKE_OK`.
 2. Checks the bundled `@playwright/mcp` CLI exists on disk — hard fail (`PLAYWRIGHT_MCP_BUNDLED_MISSING`) if packaged and missing, since the Verifier can't drive a browser without it.

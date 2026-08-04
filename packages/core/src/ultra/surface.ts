@@ -38,6 +38,16 @@ export type UltraAgentOpts = {
   label?: string;
   phase?: string;
   effort?: string;
+  // How many agent turns this child may take before the harness stops it.
+  //
+  // THE SCRIPT DECIDES THE SHAPE, and this was the one shape knob it could not
+  // reach: the runner's default governed every child equally, so a fan-out of
+  // one-sentence readers and a child doing a multi-file refactor got the same
+  // budget — too generous for the first and too tight for the second. A child
+  // that runs out does NOT fail loudly; it settles as a dead agent, and if it
+  // was an editing child it may already have changed files. Absent = the
+  // runner's default (runner.ts).
+  maxTurns?: number;
   isolation?: boolean;
   // THE ONE ESCAPE from the stringified-object prompt guard (signals.ts's
   // BadPrompt, enforced in executor.ts's agentFn). Off by default, and it must

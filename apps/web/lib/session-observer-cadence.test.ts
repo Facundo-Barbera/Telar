@@ -13,8 +13,14 @@ describe("background session observer cadence", () => {
     expect(host).not.toContain("setInterval(refetch, 8000)");
     expect(host).not.toContain("sawEvent ? 800 : 3500");
     expect(host).toContain('document.visibilityState === "visible"');
+    expect(host).toContain("enqueueIdleRequest(budgetKey, refetch)");
+    expect(host).toContain("enqueueIdleRequest(budgetKey, openTail)");
+    expect(host).toContain("cancelIdleRequest(budgetKey)");
     expect(host).toContain("TELAR_SESSION_RUN_EVENT");
     expect(host).toContain("TELAR_REFRESH_EVENT");
+    expect(host).toContain("if (refetching) return");
+    expect(host).toContain('"dock session detail"');
+    expect(host).toContain('"dock live tail"');
   });
 
   test("pauses global Ultra discovery in background tabs", () => {

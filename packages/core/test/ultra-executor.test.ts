@@ -40,7 +40,7 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const META = `export const meta = { name: "t", description: "d", phases: [] };`;
 
 describe("Ultra executor — happy path + opts mapping", () => {
-  test("a schema-less agent() gets a passthrough {text} schema and the run resolves `done`", async () => {
+  test("a schema-less agent() gets a passthrough {text} schema, and resolves to the TEXT itself", async () => {
     const seen: AgentOpts<any>[] = [];
     const fake: Fake = async (_p, o) => {
       seen.push(o);
@@ -51,7 +51,11 @@ describe("Ultra executor — happy path + opts mapping", () => {
     });
     const res = await run.finished;
     expect(res.state).toBe("done");
-    expect(res.result).toEqual({ text: "ok" });
+    // THE WRAPPER IS INTERNAL. The engine is still asked for `{text}` (the
+    // assertion on `seen[0].schema` below), but the script — and therefore the
+    // run's result — sees the string. Pinning the wrapper here is what let the
+    // executor and the authoring reference disagree for as long as they did.
+    expect(res.result).toBe("ok");
     // Passthrough schema injected; model + shared abort passed — AND effort,
     // which this assertion used to pin as ABSENT ("effort NOT sent to the
     // engine"). That pin encoded a real limitation of the SDK this code was
@@ -64,6 +68,75 @@ describe("Ultra executor — happy path + opts mapping", () => {
     expect(seen[0]!.model).toBe("sonnet");
     expect(seen[0]!.abort).toBeInstanceOf(AbortController);
     expect(seen[0]!.effort).toBe("high");
+  });
+});
+
+describe("Ultra executor — a schema-less agent() resolves to a STRING", () => {
+  // THE DIVERGENCE THIS BLOCK CLOSES. PASSTHROUGH_SCHEMA exists so the
+  // validate-and-retry loop can tell "emitted nothing" from "emitted the wrong
+  // shape" on a call that declared no schema. It leaked out as the script-facing
+  // return type, which put the executor at odds with BOTH runner.ts's own
+  // schema-less branch (returns a bare string) and the authoring reference given
+  // to every session (says "the model's final text"). Authors wrote the
+  // documented `${result}`, got "[object Object]", and the run died at the
+  // fold-up with the whole fan-out already paid for.
+  const echo: Fake = async (p) => ({ text: `saw:${p}` });
+
+  test("the value handed to the script interpolates cleanly into the next prompt", async () => {
+    const calls: string[] = [];
+    const recording: Fake = async (p) => {
+      calls.push(p);
+      return { text: "SUMMARY" };
+    };
+    const run = startUltra(
+      // The canonical fan-out → synthesis shape, written the way the reference
+      // documents it. Before the unwrap this was the run-killing footgun.
+      `${META}\nexport default async function ({ agent }) {\n  const a = await agent("scout", { model: "sonnet" });\n  return agent(\`fold: \${a}\`, { model: "sonnet" });\n}`,
+      { agent: recording as any },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(calls).toEqual(["scout", "fold: SUMMARY"]);
+    expect(res.result).toBe("SUMMARY");
+  });
+
+  test("a CACHED replay hands the script the same string a live settle did", async () => {
+    // The unwrap is applied at both return points or a resume silently changes
+    // the script's own data shape mid-flight — the failure a single-path fix
+    // would have shipped.
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  return \`got:\${a}\`;\n}`;
+    const run = startUltra(script, { agent: echo });
+    expect((await run.finished).result).toBe("got:saw:p0");
+
+    const throwing: Fake = async () => {
+      throw new Error("must not be called — the prefix should be cache-served");
+    };
+    const resumed = resumeUltra(run.runId, script, { agent: throwing });
+    const res = await resumed.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toBe("got:saw:p0");
+  });
+
+  test("the JOURNAL still stores the raw {text} record — unwrapping is presentation, not storage", async () => {
+    // What keeps every record written before this change replayable.
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`,
+      { agent: echo },
+    );
+    await run.finished;
+    const journal = readJournal(run.runId);
+    expect(journal[0]!.result).toEqual({ text: "saw:p0" });
+  });
+
+  test("a dead agent stays null — the unwrap never invents a string", async () => {
+    const dead: Fake = async () => null;
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("p0", { model: "sonnet" }); }`,
+      { agent: dead },
+    );
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toBeNull();
   });
 });
 
@@ -94,13 +167,20 @@ describe("Ultra executor — MissingModel is a control signal, never a null resu
 });
 
 describe("Ultra executor — BadPrompt is a control signal, rejected before any ordinal or spend", () => {
-  // THE DEFECT THIS BLOCK EXISTS FOR. Every agent() resolves to an OBJECT —
-  // PASSTHROUGH_SCHEMA is the default, so even a schema-less call resolves to
-  // `{ text }` — and Ultra scripts are untyped JS in a vm sandbox. So
-  // `agent(\`summary: ${result}\`, …)` silently sends the child the literal text
-  // "[object Object]", the object-ness is gone by the time anything can notice,
-  // and the run burns a real billed call on a prompt that says nothing.
-  // Deterministic authoring error → reject, exactly as MissingModel does.
+  // THE DEFECT THIS BLOCK EXISTS FOR. Ultra scripts are untyped JS in a vm
+  // sandbox, so interpolating a non-string into a prompt silently sends the
+  // child the literal text "[object Object]": the object-ness is gone by the
+  // time anything can notice, and the run burns a real billed call on a prompt
+  // that says nothing. Deterministic authoring error → reject, as MissingModel does.
+  //
+  // NOTE WHAT IS NO LONGER IN THIS BLOCK. It used to be a schema-less agent()
+  // result that tripped this, because the executor leaked PASSTHROUGH_SCHEMA's
+  // `{ text }` wrapper out to the script. That leak is gone (executor.ts's
+  // unwrapPassthrough) and with it the guard's most common trigger — the docs
+  // no longer induce the error the guard catches. The remaining live triggers
+  // are the ones below: a value the SCRIPT ITSELF built, a non-string prompt,
+  // and a missing await. Pinning the unwrap that removed the fourth is the
+  // "schema-less agent() resolves to a STRING" block further down.
   const seenPrompts = (calls: string[]): Fake =>
     (async (p: string) => {
       calls.push(p);
@@ -110,7 +190,9 @@ describe("Ultra executor — BadPrompt is a control signal, rejected before any 
   test("a prompt carrying the '[object Object]' artifact ends the run `failed` with ZERO engine calls", async () => {
     const calls: string[] = [];
     const run = startUltra(
-      `${META}\nexport default async function ({ agent }) {\n  const a = await agent("first", { model: "sonnet" });\n  return agent(\`summary: \${a}\`, { model: "sonnet" });\n}`,
+      // A value the SCRIPT built and forgot to unwrap — the fold-up step of a
+      // fan-out, keyed by label, interpolated whole instead of by field.
+      `${META}\nexport default async function ({ agent }) {\n  const a = await agent("first", { model: "sonnet" });\n  const entry = { label: "scout", body: a };\n  return agent(\`summary: \${entry}\`, { model: "sonnet" });\n}`,
       { agent: seenPrompts(calls) as any },
     );
     const res = await run.finished;
@@ -118,7 +200,7 @@ describe("Ultra executor — BadPrompt is a control signal, rejected before any 
     expect(res.error).toContain("BadPrompt");
     expect(res.error).toContain("[object Object]");
     // The message names the LIKELY CAUSE, not just the symptom.
-    expect(res.error).toContain("result.text");
+    expect(res.error).toContain("read the field you want");
     // The first (legitimate) call ran; the artifact call never reached the engine.
     expect(calls).toEqual(["first"]);
   });
@@ -344,7 +426,7 @@ describe("Ultra executor — per-ordinal transcript tap", () => {
       { agent: fake as any, onAgentEvent: (ordinal, e, attempt) => taps.push({ ordinal, e, attempt }) },
     );
     const res = await run.finished;
-    expect(res.result).toEqual({ text: "ok" });
+    expect(res.result).toBe("ok"); // schema-less → the text itself (unwrapPassthrough)
     expect(taps.every((t) => t.ordinal === 0)).toBe(true);
     expect(taps.map((t) => t.attempt)).toEqual([1, 1, 2, 2]);
     // Two distinct `result` events, unambiguously attributable by `attempt` —
@@ -370,7 +452,7 @@ describe("Ultra executor — validate-and-retry (U3, doc §3/§7-U3)", () => {
     );
     const res = await run.finished;
     expect(res.state).toBe("done");
-    expect(res.result).toEqual({ text: "ok" });
+    expect(res.result).toBe("ok"); // schema-less → the text itself (unwrapPassthrough)
     expect(calls).toBe(2);
     expect(seenPrompts[0]).toBe("p");
     // The retry appends to the ORIGINAL prompt (never chains) and names the attempt.
@@ -503,7 +585,7 @@ describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never
 
   test("a resume whose whole prefix is cache-served emits NO agent-start — a replay starts nothing", async () => {
     const echoFake: Fake = async (p) => ({ text: p });
-    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a.text, b.text];\n}`;
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a, b];\n}`;
     const first: UltraEvent[] = [];
     const run = startUltra(script, { agent: echoFake, onEvent: (e) => first.push(e) });
     expect((await run.finished).state).toBe("done");
@@ -530,7 +612,7 @@ describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never
     // The anti-vacuity control for the test above: a change that simply deleted
     // the emit would pass "no agent-start on a replay" and fail here.
     const echoFake: Fake = async (p) => ({ text: p });
-    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a.text, b.text];\n}`;
+    const script = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  const b = await agent("p1", { model: "sonnet" });\n  return [a, b];\n}`;
     const run = startUltra(script, { agent: echoFake });
     await run.finished;
 
@@ -581,7 +663,7 @@ describe("Ultra executor — pipeline() drop-to-null", () => {
     };
     const script = `${META}\nexport default async function ({ agent, pipeline }) {
       const stage1 = async (prev, item) => { if (item === "bad") throw new Error("boom"); return item; };
-      const stage2 = async (prev, item) => { const r = await agent(item + "-stage2", { model: "sonnet" }); return r.text; };
+      const stage2 = async (prev, item) => { const r = await agent(item + "-stage2", { model: "sonnet" }); return r; };
       return pipeline(["good", "bad"], stage1, stage2);
     }`;
     const run = startUltra(script, { agent: fake as any });
@@ -610,8 +692,8 @@ describe("Ultra executor — pipeline() journal interplay (doc §3/§7-U2+U3)", 
   test("every stage's agent() call journals by ordinal and replays from a full cache on resume", async () => {
     const echoFake: Fake = async (p) => ({ text: p });
     const script = `${META}\nexport default async function ({ agent, pipeline }) {
-      const stage1 = async (prev, item) => { const r = await agent(item + "-1", { model: "sonnet" }); return r.text; };
-      const stage2 = async (prev, item) => { const r = await agent(prev + "-2", { model: "sonnet" }); return r.text; };
+      const stage1 = async (prev, item) => { const r = await agent(item + "-1", { model: "sonnet" }); return r; };
+      const stage2 = async (prev, item) => { const r = await agent(prev + "-2", { model: "sonnet" }); return r; };
       return pipeline(["x", "y"], stage1, stage2);
     }`;
     const run = startUltra(script, { agent: echoFake });
@@ -631,5 +713,104 @@ describe("Ultra executor — pipeline() journal interplay (doc §3/§7-U2+U3)", 
     expect(res2.state).toBe("done");
     expect(res2.result).toEqual(["x-1-2", "y-1-2"]);
     expect(liveCalls).toBe(0);
+  });
+});
+
+// A CHILD THAT RUNS OUT OF TURNS IS NOT A CHILD THAT FAILED, and until this
+// block the two were the same value. engine.agent() returns `null` for every
+// non-emitting outcome, so the executor could not tell "ran out of room" from
+// "crashed" — it retried the exhausted one at the SAME budget (the one retry
+// that structurally cannot work) and then settled an anonymous dead agent.
+//
+// It matters because a child holds Write/Edit/Bash: one that stopped on the
+// turn limit may already have changed files, so the script folding a plain
+// `null` is folding "nothing happened" into a half-edited repo.
+describe("Ultra executor — a turn-exhausted child settles once, and says so", () => {
+  // The SDK reports the reason on the result EVENT, never in the return value.
+  const exhausted = (calls: { n: number }): Fake =>
+    (async (_p: string, o: AgentOpts<any>) => {
+      calls.n++;
+      o.onEvent?.({ type: "result", subtype: "error_max_turns", turns: 200 } as never);
+      return null;
+    }) as Fake;
+
+  const script = `${META}\nexport default async function ({ agent }) { return agent("p", { model: "sonnet" }); }`;
+
+  test("it is NOT retried at the same budget — one engine call, not VALIDATE_RETRY_K", async () => {
+    const calls = { n: 0 };
+    const run = startUltra(script, { agent: exhausted(calls) });
+    const res = await run.finished;
+    expect(res.state).toBe("done"); // a dead agent, never a run failure
+    expect(res.result).toBeNull();
+    expect(calls.n).toBe(1);
+    expect(VALIDATE_RETRY_K).toBeGreaterThan(1); // anti-vacuity: 1 is a real saving
+  });
+
+  test("an ordinary null STILL retries — the skip is scoped to exhaustion", async () => {
+    // The control for the test above: a change that simply stopped retrying
+    // everything would pass that one and fail here.
+    const calls = { n: 0 };
+    const silent: Fake = (async () => {
+      calls.n++;
+      return null;
+    }) as Fake;
+    await startUltra(script, { agent: silent }).finished;
+    expect(calls.n).toBe(VALIDATE_RETRY_K);
+  });
+
+  test("the agent event carries deadReason, so the rail can say WHY", async () => {
+    const events: UltraEvent[] = [];
+    await startUltra(script, { agent: exhausted({ n: 0 }), onEvent: (e) => events.push(e) })
+      .finished;
+    const settled = events.find((e) => e.type === "agent");
+    expect(settled).toBeDefined();
+    expect(settled!.ok).toBe(false);
+    expect(settled!.deadReason).toBe("max-turns");
+  });
+
+  test("an ordinary dead agent has NO deadReason — absent still means cause-unknown", async () => {
+    const events: UltraEvent[] = [];
+    const silent: Fake = (async () => null) as Fake;
+    await startUltra(script, { agent: silent, onEvent: (e) => events.push(e) }).finished;
+    expect(events.find((e) => e.type === "agent")!.deadReason).toBeUndefined();
+  });
+
+  test("the JOURNAL records it, and a RESUME re-presents it", async () => {
+    // A replay spends nothing and never re-learns the reason, so it has to come
+    // off disk — otherwise a resumed run silently downgrades "hit the turn
+    // limit" back to an anonymous failure.
+    const run = startUltra(script, { agent: exhausted({ n: 0 }) });
+    await run.finished;
+    expect(readJournal(run.runId)[0]!.deadReason).toBe("max-turns");
+
+    const replayed: UltraEvent[] = [];
+    const throwing: Fake = (async () => {
+      throw new Error("must not be called — the settle should be cache-served");
+    }) as Fake;
+    await resumeUltra(run.runId, script, { agent: throwing, onEvent: (e) => replayed.push(e) })
+      .finished;
+    const cached = replayed.find((e) => e.type === "agent");
+    expect(cached!.cached).toBe(true);
+    expect(cached!.deadReason).toBe("max-turns");
+  });
+});
+
+describe("Ultra executor — the script sets maxTurns per agent", () => {
+  test("opts.maxTurns reaches the runner; omitting it leaves the runner's default", async () => {
+    // The one shape knob the script could not reach: a one-sentence reader and
+    // a multi-file refactor were given the same budget.
+    const seen: AgentOpts<any>[] = [];
+    const fake: Fake = async (_p, o) => {
+      seen.push(o);
+      return { text: "ok" };
+    };
+    await startUltra(
+      `${META}\nexport default async function ({ agent }) {\n  await agent("big", { model: "sonnet", maxTurns: 400 });\n  return agent("small", { model: "sonnet" });\n}`,
+      { agent: fake },
+    ).finished;
+    expect(seen[0]!.maxTurns).toBe(400);
+    // Absent, not defaulted here — the runner owns the default, and an explicit
+    // `undefined` would be a field the SDK still sees.
+    expect(seen[1]!.maxTurns).toBeUndefined();
   });
 });

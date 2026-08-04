@@ -24,6 +24,7 @@ import {
   TriangleAlertIcon,
   WrenchIcon,
 } from "lucide-react";
+import { createElement } from "react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -83,6 +84,45 @@ export const TOOL_ICONS: Record<string, typeof WrenchIcon> = {
   WebSearch: GlobeIcon,
   TodoWrite: ListTodoIcon,
 };
+
+const TOOL_ACTIONS: Record<string, string> = {
+  Bash: "Ran command",
+  Read: "Read file",
+  Write: "Created file",
+  Edit: "Edited file",
+  Grep: "Searched text",
+  Glob: "Found files",
+  WebFetch: "Fetched page",
+  WebSearch: "Searched web",
+  browser_click: "Clicked",
+  browser_hover: "Moved over",
+  browser_type: "Typed into",
+  browser_fill_form: "Filled form",
+  browser_press_key: "Pressed key",
+  browser_navigate: "Opened page",
+  browser_navigate_back: "Went back",
+  browser_snapshot: "Inspected page",
+  browser_take_screenshot: "Captured page",
+  browser_console_messages: "Checked console",
+  browser_network_requests: "Checked network",
+  browser_tabs: "Updated browser tabs",
+  browser_list_tabs: "Checked browser tabs",
+};
+
+function canonicalToolName(name: string) {
+  return name.split("__").at(-1) ?? name;
+}
+
+export function toolActionLabel(name: string) {
+  const canonical = canonicalToolName(name);
+  return TOOL_ACTIONS[canonical] ?? canonical.replaceAll("_", " ");
+}
+
+function toolIcon(name: string) {
+  const canonical = canonicalToolName(name);
+  if (canonical.startsWith("browser_")) return GlobeIcon;
+  return TOOL_ICONS[canonical] ?? WrenchIcon;
+}
 
 type TodoState = "pending" | "in_progress" | "completed";
 
@@ -187,7 +227,7 @@ export function ToolStepRow({
   if (todos && todos.length > 0) return <TodoBlock todos={todos} isError={part.isError} />;
 
   const hasDetail = part.input !== undefined || part.output !== undefined;
-  const Icon = TOOL_ICONS[part.name] ?? WrenchIcon;
+  const action = toolActionLabel(part.name);
   const preview = stepPreview(part.input);
 
   // interrupted is only meaningful while there's genuinely no result — once
@@ -212,18 +252,18 @@ export function ToolStepRow({
       >
         {running ? (
           <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-            {preview ? `${part.name} · ${preview}` : part.name}
+            {preview ? `${action} · ${preview}` : action}
           </Shimmer>
         ) : (
           <>
-            <Icon
-              className={cn(
+            {createElement(toolIcon(part.name), {
+              className: cn(
                 "size-3.5 shrink-0",
                 part.isError ? "text-destructive" : "text-muted-foreground",
-              )}
-            />
-            <span className={cn("shrink-0 font-medium", part.isError && "text-destructive")}>
-              {part.name}
+              ),
+            })}
+            <span className={cn("shrink-0", part.isError && "text-destructive")}>
+              {action}
             </span>
             {preview && (
               <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
@@ -252,8 +292,9 @@ export function ToolStepRow({
         )}
       </button>
       {open && hasDetail && (
-        <div className="flex flex-col gap-1.5 px-1.5 pb-1.5">
-          <pre className="max-h-60 overflow-x-auto overflow-y-auto rounded-md bg-background/60 p-2 font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground ring-1 ring-border">
+        <div className="ml-3 flex flex-col gap-2 border-l border-border/70 py-1 pl-3 pr-1.5 text-[11px]">
+          <div className="font-medium text-muted-foreground">Input</div>
+          <pre className="max-h-60 overflow-x-auto overflow-y-auto font-mono whitespace-pre-wrap break-words text-muted-foreground">
             {part.name === "Bash" && typeof part.input?.command === "string"
               ? part.input.command
               : JSON.stringify(part.input ?? {}, null, 2)}
@@ -270,12 +311,13 @@ export function ToolStepRow({
               Interrupted — no result
             </div>
           )}
+          <div className="font-medium text-muted-foreground">Result</div>
           <pre
             className={cn(
-              "max-h-60 overflow-x-auto overflow-y-auto rounded-md p-2 font-mono text-[11px] whitespace-pre-wrap break-words ring-1 ring-border",
+              "max-h-60 overflow-x-auto overflow-y-auto font-mono whitespace-pre-wrap break-words",
               part.isError
-                ? "bg-destructive/10 text-destructive"
-                : "bg-background/60 text-muted-foreground",
+                ? "text-destructive"
+                : "text-muted-foreground",
             )}
           >
             {interrupted ? "(interrupted before finishing)" : part.output || "(no output)"}

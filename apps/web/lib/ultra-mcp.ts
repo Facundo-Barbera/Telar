@@ -179,8 +179,23 @@ export function ultraTools(opts: UltraMcpOpts) {
           }
 
           let root: string;
+          // The project's guardrails travel with its root, from the SAME lookup.
+          // THIS is the path a session actually takes (the `ultra` tool), so a
+          // miss here would leave the common case unguarded while the HTTP
+          // route was covered. Enforced per child by the Ultra PreToolUse hook
+          // (packages/core/src/ultra/child-guard.ts).
+          let guardrails: { disallowedTools: string[]; protectedPaths: string[] };
           try {
-            root = getProject(opts.project).manifest.root;
+            const manifest = getProject(opts.project).manifest;
+            root = manifest.root;
+            // DEFENSIVE READ, and the `catch` below is why: it reports "unknown
+            // project", so anything that throws inside this block claims the
+            // project does not exist. A manifest without a guardrails field is a
+            // manifest with nothing to enforce, not a missing project.
+            guardrails = {
+              disallowedTools: [...(manifest.guardrails?.disallowedTools ?? [])],
+              protectedPaths: [...(manifest.guardrails?.protectedPaths ?? [])],
+            };
           } catch {
             return errResult(`Unknown project "${opts.project}".`);
           }
@@ -189,6 +204,7 @@ export function ultraTools(opts: UltraMcpOpts) {
             script,
             args,
             project: root,
+            guardrails: { root, guardrails },
             account: opts.account,
             sessionId: opts.getSessionId() ?? undefined,
             messageId: opts.getMessageId?.() ?? undefined,

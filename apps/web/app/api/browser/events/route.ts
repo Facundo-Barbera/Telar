@@ -1,4 +1,7 @@
-import { controlledBrowserRuntime } from "@/lib/server/browser-runtime";
+import {
+  controlledBrowserRuntime,
+  type BrowserRuntimeEvent,
+} from "@/lib/server/browser-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +11,9 @@ export function GET(request: Request) {
   let unsubscribe = () => {};
   const stream = new ReadableStream({
     start(controller) {
-      const send = (version: number) => controller.enqueue(encoder.encode(`data: ${version}\n\n`));
+      const send = (event: BrowserRuntimeEvent) => controller.enqueue(
+        encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+      );
       // BrowserSurface performs one explicit initial read. This stream only
       // reports subsequent mutations, avoiding a duplicate state/screenshot
       // request every time the Browser surface mounts.

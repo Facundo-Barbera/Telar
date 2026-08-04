@@ -30,7 +30,7 @@ cd telar
 bun install          # installs the whole workspace (apps/*, packages/*)
 ```
 
-Root `package.json` declares `"workspaces": ["apps/*", "packages/*"]` and has **no `scripts` block at all** — there is no root-level `bun run <x>`; every command is run from inside a workspace directory (`apps/web`, `apps/desktop`, `packages/core`) or as a direct `bun run scripts/<file>.ts` invocation.
+Root `package.json` declares `"workspaces": ["apps/*", "packages/*"]` and provides a small set of root shortcuts for desktop development, packaging, and tests. Workspace-specific commands remain available from (`apps/web`, `apps/desktop`, `packages/core`) and repo tooling can still be run directly from `scripts/`.
 
 `apps/web/package.json` carries Bun-specific trust entries (`"ignoreScripts"`/`"trustedDependencies"` for `sharp` and `unrs-resolver`); `apps/desktop/package.json` trusts `electron`'s postinstall the same way. These are consulted automatically by `bun install` — no action needed.
 
@@ -111,9 +111,21 @@ Desktop has no dev-mode hot-reload workflow of its own — it boots the **alread
 cd apps/desktop
 bun run build:web      # bash ./build-web.sh — builds the standalone Next server into apps/web/.next-desktop
 bun run smoke            # electron . --smoke — headless smoke check, exits after printing SMOKE_OK
-bun run pack              # electron-builder --dir — packages release/mac-arm64/Telar.app
-bun run install:app        # bash ./install-app.sh — smoke-tests the packed app, then installs to /Applications/Telar.app and apps/desktop/release/from-origin/Telar.app
+bun run pack              # builds + smoke-tests the current working tree into release/mac-arm64/Telar.app
+bun run install:local     # builds + smoke-tests, then installs to ~/Applications/Telar.app
+bun run install:app       # smoke-tests an existing packed app, then installs it
 ```
+
+The root equivalents are:
+
+```bash
+bun run desktop:package
+bun run desktop:install -- --open
+bun run desktop:install -- --system
+```
+
+The local package is unsigned and intended for development/use on the current
+Mac only. It does not publish, sign, notarize, or auto-update.
 
 `build-web.sh` does more than a plain `next build`: it also hand-copies `static`/`public` into the standalone tree (Next's standalone output omits them), materializes a self-contained `@playwright/mcp` closure next to the standalone tree (a devDependency Next's tracing drops, needed at runtime for the packaged Verifier's Critic Panel), and materializes the `@anthropic-ai/claude-agent-sdk-<os>-<arch>` native CLI binary (~226MB, loaded via `createRequire` at runtime, so static tracing also drops it) into the exact `node_modules` slot the SDK resolves. See [../apps/desktop/build-web.sh](../apps/desktop/build-web.sh) for the full commented pipeline.
 
@@ -276,9 +288,25 @@ bash scripts/build-desktop.sh --ref origin/some-branch --out ./out-dir
 7. Atomic swap into `--out`: stage → back up any existing dest → `mv` (atomic rename) → remove backup.
 8. Smoke test: runs `Telar.app/Contents/MacOS/Telar --smoke`, fails the whole build unless the output contains the literal line `SMOKE_OK`.
 
+### scripts/package-desktop.sh — local working-tree desktop build
+
+Builds the current working tree, stamps the resulting app as a local/dirty
+build when applicable, packages it as an unsigned macOS arm64 `.app`, and runs
+the packaged `--smoke` gate. `--install` forwards install options to the
+installer after that gate:
+
+```bash
+bash scripts/package-desktop.sh
+bash scripts/package-desktop.sh --install --open
+bash scripts/package-desktop.sh --install --system
+```
+
 ### apps/desktop/install-app.sh
 
-Installs an already-packed `.app` (`release/mac-arm64/Telar.app`, produced by `bun run pack`) — smoke-tests it first (fails closed on smoke failure), then atomically refreshes both `/Applications/Telar.app` and `apps/desktop/release/from-origin/Telar.app` via the same `ditto` + `mv` swap idiom.
+Installs an already-packed `.app` (`release/mac-arm64/Telar.app`) — smoke-tests
+it first (fails closed on smoke failure), then atomically refreshes the selected
+destination. The default is `~/Applications/Telar.app`; use `--system` for
+`/Applications/Telar.app` or `--destination PATH` for another location.
 
 ### scripts/backfill-tool-detail.ts — one-off data migration
 

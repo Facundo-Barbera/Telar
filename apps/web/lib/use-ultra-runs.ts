@@ -84,7 +84,28 @@ export type UseUltraRuns = {
   reload: () => Promise<void>;
 };
 
-export function useUltraRuns(sessionId: string | null): UseUltraRuns {
+export function useUltraRuns(
+  sessionId: string | null,
+  /** RunIds this session's TRANSCRIPT has already seen launched — the caller
+   *  derives them with `launchedRunId` over its own tool parts. Optional and
+   *  defaulted, so an existing single-argument call keeps its old behaviour.
+   *
+   *  WHY THE HOOK NEEDS TELLING AT ALL. The list poll below is gated on
+   *  `liveIds`, and `liveIds` comes from `rows`, and `rows` is only ever filled
+   *  by `reload()` — which fires on mount and on `telar:refresh` and nowhere
+   *  else. Nothing dispatches `telar:refresh` during a turn (its emitters are the
+   *  loom page, the project page and settings), so the gate was a BOOTSTRAP
+   *  DEADLOCK: the client only started polling for live runs once it already
+   *  knew about a live run. A run launched mid-turn stayed invisible until a
+   *  remount, which in practice meant the turn boundary — the anchor sat at
+   *  "launching" for the whole run and the outcome arrived only as a wake, tens
+   *  of seconds after the run had actually finished.
+   *
+   *  The transcript, meanwhile, knows the runId the INSTANT the tool result
+   *  lands — it is already using it to render the pending anchor. So the launch
+   *  is the trigger, and this is the wire that carries it. */
+  launchedRunIds: readonly string[] = [],
+): UseUltraRuns {
   const [rows, setRows] = useState<RunRow[]>([]);
   const [streams, setStreams] = useState<Record<string, Stream>>({});
   const [indexes, setIndexes] = useState<Record<string, AgentIndexRow[]>>({});
@@ -156,12 +177,40 @@ export function useUltraRuns(sessionId: string | null): UseUltraRuns {
     [rows],
   );
 
-  // The list poll, gated on something actually running.
+  // Launches the transcript has seen that the LIST has not answered for yet.
+  // Sorted+joined for the same effect-key reason as `liveIds`/`allIds`.
+  //
+  // This is the whole bootstrap. A run appears here the moment its tool result
+  // lands, which is strictly earlier than any poll could have learned it, and it
+  // LEAVES here as soon as the list answers — at which point `liveIds` has taken
+  // over and the ordinary machinery (interval + stream) owns the run. So it
+  // arms the pump and then gets out of the way; it never becomes a second
+  // source of truth about run state.
+  const unanswered = useMemo(() => {
+    const known = new Set(rows.map((r) => r.runId));
+    return launchedRunIds
+      .filter((id) => !known.has(id))
+      .sort()
+      .join(",");
+  }, [rows, launchedRunIds]);
+
+  // A NEW LAUNCH ASKS THE LIST IMMEDIATELY, rather than waiting for the first
+  // interval tick. Without this the anchor would still sit pending for up to
+  // POLL_MS after a launch the client already knew about.
   useEffect(() => {
-    if (!sessionId || liveIds === "") return;
+    if (!sessionId || unanswered === "") return;
+    void reload();
+  }, [sessionId, unanswered, reload]);
+
+  // The list poll, gated on something actually running — OR on a launch the list
+  // has not answered for yet. The second clause is what keeps the pump running
+  // across the window between "the tool returned a runId" and "the list first
+  // reports that run", which is precisely where the deadlock used to sit.
+  useEffect(() => {
+    if (!sessionId || (liveIds === "" && unanswered === "")) return;
     const id = setInterval(() => void reload(), POLL_MS);
     return () => clearInterval(id);
-  }, [sessionId, liveIds, reload]);
+  }, [sessionId, liveIds, unanswered, reload]);
 
   // ONE STREAM PER RUN THAT STILL NEEDS ONE, RECONCILED INCREMENTALLY. The
   // effect key is the sorted id list, so it re-runs when a run appears or goes

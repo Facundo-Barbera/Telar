@@ -109,15 +109,44 @@ export function findTool(
 
 /** A tool result → the `contentItems` a DynamicToolCallResponse carries.
  *
- *  Non-text content is DROPPED WITH A NOTE rather than silently: Telar's tools
- *  return text today, and a future image result quietly vanishing would be a
- *  much worse failure than one that says what it did. */
-export function toContentItems(result: HarnessToolResult): Array<{ type: "inputText"; text: string }> {
-  return result.content.map((c) =>
-    c.type === "text" && typeof c.text === "string"
-      ? { type: "inputText" as const, text: c.text }
-      : { type: "inputText" as const, text: `[${c.type} content omitted — Telar returns text only]` },
-  );
+ *  Keep rich browser results rich: screenshots must reach Codex as images so
+ *  it can inspect the same integrated tab the user sees. Unknown future MCP
+ *  content types degrade to an explicit text note rather than disappearing. */
+export type DynamicToolOutputContentItem =
+  | { type: "inputText"; text: string }
+  | { type: "inputImage"; imageUrl: string }
+  | { type: "inputAudio"; audioUrl: string };
+
+export function toContentItems(result: HarnessToolResult): DynamicToolOutputContentItem[] {
+  return result.content.map((content) => {
+    if (content.type === "text" && typeof content.text === "string") {
+      return { type: "inputText", text: content.text };
+    }
+    if (
+      content.type === "image" &&
+      typeof content.data === "string" &&
+      typeof content.mimeType === "string"
+    ) {
+      return {
+        type: "inputImage",
+        imageUrl: `data:${content.mimeType};base64,${content.data}`,
+      };
+    }
+    if (
+      content.type === "audio" &&
+      typeof content.data === "string" &&
+      typeof content.mimeType === "string"
+    ) {
+      return {
+        type: "inputAudio",
+        audioUrl: `data:${content.mimeType};base64,${content.data}`,
+      };
+    }
+    return {
+      type: "inputText",
+      text: `[Unsupported ${content.type} content omitted]`,
+    };
+  });
 }
 
 /** Build a namespace from an SDK-built tool array. The cast is the one place

@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ActivityIcon,
   BotIcon,
@@ -132,9 +133,16 @@ export function WorkspaceInspector({
   onSelectWorkflow: (id: string) => void;
 }) {
   const panel = useRightPanelStore(scopeKey);
+  const reduceMotion = useReducedMotion();
   const widthPrefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const [anchor, setAnchor] = useState({ right: 16, top: 48, width: 320 });
+  const [anchor, setAnchor] = useState<{
+    right: number;
+    top: number;
+    width: number;
+    maxHeight?: number;
+  }>({ right: 16, top: 48, width: 320 });
+  const [wideLayout, setWideLayout] = useState(false);
   const [git, setGit] = useState<GitOverviewResponse | null>(null);
   const [gitPane, setGitPane] = useState<WorkspaceGitPane | null>(null);
   const notifyOpenChange =
@@ -184,6 +192,7 @@ export function WorkspaceInspector({
     Number.POSITIVE_INFINITY,
   );
   const reserved = open && !panel.session.open && !panel.session.fullscreen;
+  const sidebarMode = reserved && wideLayout;
   // Fast Refresh can briefly preserve a caller from the previous component
   // signature while swapping this module. Treat that transient value as an
   // omitted callback instead of throwing: one render-time exception forces a
@@ -193,10 +202,18 @@ export function WorkspaceInspector({
       ? onReservedChange
       : NOOP_RESERVED_CHANGE;
 
+  useLayoutEffect(() => {
+    const query = window.matchMedia("(min-width: 1180px)");
+    const sync = () => setWideLayout(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+
   useEffect(() => {
-    notifyReservedChange(reserved);
+    notifyReservedChange(sidebarMode);
     return () => notifyReservedChange(false);
-  }, [notifyReservedChange, reserved]);
+  }, [notifyReservedChange, sidebarMode]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -207,6 +224,16 @@ export function WorkspaceInspector({
       if (!trigger) return;
       const rect = trigger.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
+      if (sidebarMode) {
+        const top = rect.bottom + 8;
+        setAnchor({
+          right: 12,
+          top,
+          width: Math.min(320, viewportWidth),
+          maxHeight: Math.max(0, window.innerHeight - top - 12),
+        });
+        return;
+      }
       const compactPanel =
         panel.session.open &&
         !panel.session.fullscreen &&
@@ -247,7 +274,7 @@ export function WorkspaceInspector({
       observer.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [open, panel.session.fullscreen, panel.session.open, panelWidth]);
+  }, [open, panel.session.fullscreen, panel.session.open, panelWidth, sidebarMode]);
 
   const openActivity = (select: () => void) => {
     select();
@@ -284,14 +311,31 @@ export function WorkspaceInspector({
           />
         )}
       </button>
-      {open && typeof document !== "undefined" && createPortal(
-        <div
-          role="dialog"
-          aria-label="Pinned summary"
-          style={anchor}
-          className="fixed z-[70] overflow-hidden rounded-3xl border border-border bg-popover text-popover-foreground shadow-2xl"
-        >
-          <div className="max-h-[min(44rem,calc(100vh-6rem))] overflow-y-auto p-2.5">
+      {typeof document !== "undefined" && createPortal(
+        <AnimatePresence initial={false}>
+          {open && (
+            <motion.div
+              key="workspace-inspector"
+              role="dialog"
+              aria-label="Pinned summary"
+              data-presentation={sidebarMode ? "sidebar" : "floating"}
+              style={{ right: anchor.right, top: anchor.top, width: anchor.width }}
+              initial={sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : false}
+              animate={{ opacity: 1, x: 0 }}
+              exit={sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : undefined}
+              transition={{
+                duration: reduceMotion ? 0 : 0.28,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+              className="fixed z-[70] overflow-hidden rounded-3xl border border-border bg-popover text-popover-foreground shadow-2xl"
+            >
+              <div
+                style={sidebarMode ? { maxHeight: anchor.maxHeight } : undefined}
+                className={cn(
+                  "overflow-y-auto p-2.5",
+                  !sidebarMode && "max-h-[min(44rem,calc(100vh-6rem))]",
+                )}
+              >
           {gitPane ? (
             <WorkspaceGitPaneContent
               pane={gitPane}
@@ -411,8 +455,10 @@ export function WorkspaceInspector({
             </>
           )}
           </>}
-          </div>
-        </div>,
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
         document.body,
       )}
     </div>

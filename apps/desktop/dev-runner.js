@@ -1,8 +1,8 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
-const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 
 const desktopDir = __dirname;
 const repoDir = path.resolve(desktopDir, "../..");
@@ -33,17 +33,28 @@ async function firstFreePort(start) {
   throw new Error(`No free port found after ${start}.`);
 }
 
-function waitForUrl(url, timeoutMs = 60_000) {
+function waitForServer(url, timeoutMs = 60_000) {
+  const target = new URL(url);
+  const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
-      const request = http.get(url, (response) => {
-        response.resume();
-        if ((response.statusCode || 500) < 500) resolve();
-        else retry();
+      const socket = net.createConnection({ host: target.hostname, port });
+      let settled = false;
+      const retryOnce = () => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        retry();
+      };
+      socket.once("connect", () => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve();
       });
-      request.once("error", retry);
-      request.setTimeout(2_000, () => request.destroy());
+      socket.once("error", retryOnce);
+      socket.setTimeout(2_000, retryOnce);
     };
     const retry = () => {
       if (Date.now() >= deadline) reject(new Error(`Timed out waiting for ${url}.`));
@@ -79,13 +90,15 @@ function stopChild(child, timeoutMs = 1_500) {
   });
 }
 
-function startElectron(url, debuggingPort) {
+function startElectron(url, debuggingPort, controlPort, controlToken) {
   if (electron || stopping) return;
-  electronConfig = { url, debuggingPort };
+  electronConfig = { url, debuggingPort, controlPort, controlToken };
   const env = {
     ...process.env,
     TELAR_DESKTOP_URL: url,
     TELAR_DESKTOP_REMOTE_DEBUGGING_PORT: String(debuggingPort),
+    TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(controlPort),
+    TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: controlToken,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   const app = trackedSpawn(electronPath, [desktopDir], { cwd: desktopDir, env });
@@ -119,7 +132,12 @@ function scheduleElectronRestart() {
       .then(async () => {
         await stopElectron();
         if (!stopping && electronConfig) {
-          startElectron(electronConfig.url, electronConfig.debuggingPort);
+          startElectron(
+            electronConfig.url,
+            electronConfig.debuggingPort,
+            electronConfig.controlPort,
+            electronConfig.controlToken,
+          );
         }
       });
   }, 150);
@@ -138,16 +156,22 @@ async function stop(exitCode) {
 }
 
 async function main() {
+  const controlPort = await firstFreePort(19223);
+  const controlToken = randomUUID();
+  const sharedEnv = {
+    ...process.env,
+    TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(controlPort),
+    TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: controlToken,
+  };
   let url = process.env.TELAR_DESKTOP_URL?.trim();
   if (!url) {
     const requested = Number(process.env.TELAR_DESKTOP_PORT || 3000);
     const port = await firstFreePort(Number.isInteger(requested) ? requested : 3000);
     url = `http://127.0.0.1:${port}`;
-    const devHome = process.env.TELAR_HOME?.trim() || path.join(repoDir, ".telar-desktop-dev");
     web = trackedSpawn(
       process.execPath,
-      ["--cwd", webDir, "run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(port)],
-      { cwd: repoDir, env: { ...process.env, TELAR_HOME: devHome } },
+      ["run", "--cwd", webDir, "dev", "--", "--hostname", "127.0.0.1", "--port", String(port)],
+      { cwd: repoDir, env: sharedEnv },
     );
     web.once("exit", (code) => {
       web = null;
@@ -155,13 +179,13 @@ async function main() {
     });
   }
 
-  await waitForUrl(url);
+  await waitForServer(url);
   const requestedDebugPort = Number(process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT || 9223);
   const debuggingPort = await firstFreePort(Number.isInteger(requestedDebugPort) ? requestedDebugPort : 9223);
   console.log(`[telar-desktop] app=${url} devtools=http://127.0.0.1:${debuggingPort}`);
-  startElectron(url, debuggingPort);
+  startElectron(url, debuggingPort, controlPort, controlToken);
 
-  for (const file of ["main.js", "preload.js", "browser-manager.js"]) {
+  for (const file of ["main.js", "preload.js", "browser-manager.js", "browser-control-server.js"]) {
     watchers.push(
       fs.watch(path.join(desktopDir, file), { persistent: true }, () =>
         scheduleElectronRestart(),

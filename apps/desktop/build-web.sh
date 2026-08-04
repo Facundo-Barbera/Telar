@@ -12,6 +12,10 @@ DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_DIR="$(cd "$DESKTOP_DIR/../web" && pwd)"
 DIST="$WEB_DIR/.next-desktop"
 STANDALONE_WEB="$DIST/standalone/apps/web"
+JS_RUNTIME="${TELAR_JS_RUNTIME:-bun}"
+
+command -v "$JS_RUNTIME" >/dev/null 2>&1 \
+  || { echo "!! JavaScript runtime '$JS_RUNTIME' was not found — install Bun or set TELAR_JS_RUNTIME" >&2; exit 1; }
 
 echo "==> next build (standalone) into .next-desktop"
 cd "$WEB_DIR"
@@ -32,7 +36,7 @@ echo "==> materialize @playwright/mcp for the packaged Verifier"
 # runtime deps playwright/playwright-core) next to the standalone tree; main.js
 # points the packaged server child at this cli.js. `cp -RL` collapses bun's
 # .bun-store symlink indirection into real files so nothing dangles in the .app.
-MCP_REAL="$(node -e 'process.stdout.write(require("fs").realpathSync(require("path").dirname(require.resolve("@playwright/mcp/package.json"))))')"
+MCP_REAL="$("$JS_RUNTIME" -e 'process.stdout.write(require("fs").realpathSync(require("path").dirname(require.resolve("@playwright/mcp/package.json"))))')"
 MCP_NM="$(cd "$MCP_REAL/../.." && pwd)"   # bun store's node_modules: mcp + deps as peers
 PW_BUNDLE="$DIST/playwright-mcp"
 rm -rf "$PW_BUNDLE"
@@ -51,7 +55,7 @@ echo "==> materialize @anthropic-ai/claude-agent-sdk native CLI binary into the 
 # claude-agent-sdk inside the standalone .bun store — replacing the dropped symlink with a real
 # dir. `cp -RL` collapses bun's store symlink and preserves the binary's executable bit. The
 # existing `standalone/node_modules/.bun` extraResources entry then carries it into the .app.
-CLAUDE_PKG_SRC="$(node -e '
+CLAUDE_PKG_SRC="$("$JS_RUNTIME" -e '
   const {createRequire}=require("module"), path=require("path");
   const sdkMjs=require.resolve("@anthropic-ai/claude-agent-sdk",{paths:[process.argv[1]]});
   const bin=createRequire(sdkMjs).resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);

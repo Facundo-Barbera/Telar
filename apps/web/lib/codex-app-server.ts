@@ -113,6 +113,14 @@ export type CodexRunOptions = {
   // calls one. Same in-process handlers as the Claude path — see
   // harness-tools.ts for why this beats standing up an HTTP MCP server.
   tools?: readonly HarnessToolNamespace[];
+  // Dynamic tools execute in Telar's process, outside Codex's native
+  // command/file approval requests. The route uses this hook to apply the
+  // same browser permission policy before a shared tab is mutated.
+  onDynamicTool?: (request: {
+    namespace: string | null;
+    tool: string;
+    arguments: Record<string, unknown>;
+  }) => Promise<"accept" | "decline">;
   // Appended to the system prompt. Codex's spelling of Claude's
   // `systemPrompt.append`, and the second capability gap closed here: the
   // appendix used to be built by route.ts and then silently dropped, which is
@@ -223,6 +231,7 @@ class AppServerClient {
   // possibly be processed — see runCodexTurn) rather than threaded through
   // the constructor, so it can be omitted entirely for approvalPolicy:"never".
   onApproval?: CodexRunOptions["onApproval"];
+  onDynamicTool?: CodexRunOptions["onDynamicTool"];
   // Set before the first turn, same discipline as onApproval: assigned
   // synchronously before any await, so no stdout line can be processed (hence
   // no dynamicToolCall answered) against an empty tool set.
@@ -381,6 +390,20 @@ class AppServerClient {
       return;
     }
     const args = (p.arguments ?? {}) as Record<string, unknown>;
+    if (this.onDynamicTool) {
+      const decision = await this.onDynamicTool({ namespace, tool: name, arguments: args });
+      if (decision !== "accept") {
+        this.write({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            contentItems: [{ type: "inputText", text: "The browser action was not approved." }],
+            success: false,
+          },
+        });
+        return;
+      }
+    }
     // The handler is the SAME function the Claude path calls through MCP.
     const result = await (descriptor.handler as (a: unknown) => Promise<
       { content: Array<{ type: string; [k: string]: unknown }>; isError?: boolean }
@@ -446,6 +469,11 @@ function toolMeta(item: Record<string, any>): { name: string; input: Record<stri
       return { name: "Edit", input: { changes: item.changes } };
     case "mcpToolCall":
       return { name: `${item.server}.${item.tool}`, input: (item.arguments ?? {}) as Record<string, unknown> };
+    case "dynamicToolCall":
+      return {
+        name: item.namespace ? `${item.namespace}.${item.tool}` : item.tool,
+        input: (item.arguments ?? {}) as Record<string, unknown>,
+      };
     case "webSearch":
       return { name: "WebSearch", input: { query: item.query } };
     // The "plan" ThreadItem is a legacy free-text summary, not the
@@ -474,6 +502,18 @@ function toolResultMeta(item: Record<string, any>): { output: string; isError: b
         output: item.error ? item.error.message : JSON.stringify(item.result ?? {}),
         isError: item.status === "failed",
       };
+    case "dynamicToolCall": {
+      const output = (item.contentItems ?? []).map((content: Record<string, unknown>) => {
+        if (content.type === "inputText") return String(content.text ?? "");
+        if (content.type === "inputImage") return "[Browser screenshot captured]";
+        if (content.type === "inputAudio") return "[Audio captured]";
+        return "[Tool content omitted]";
+      }).filter(Boolean).join("\n");
+      return {
+        output,
+        isError: item.status === "failed" || item.success === false,
+      };
+    }
     case "webSearch":
       return { output: "", isError: false };
     default:
@@ -495,6 +535,7 @@ export async function* runCodexTurn(
   // (hence no approval REQUEST answered) until the event loop turns, which
   // can't happen before this assignment runs.
   client.onApproval = opts.onApproval;
+  client.onDynamicTool = opts.onDynamicTool;
   client.tools = opts.tools ?? [];
   const onAbort = () => client.kill();
   opts.signal?.addEventListener("abort", onAbort, { once: true });

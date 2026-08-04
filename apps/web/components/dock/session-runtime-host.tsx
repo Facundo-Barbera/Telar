@@ -38,6 +38,11 @@ import { consumeSSE } from "@/lib/sse";
 // would drag the whole shell (and the 1465-line composer kit) into the dock's
 // graph for no benefit.
 import { readPreStreamError } from "@/components/conversation/pre-stream-error";
+import { diagnosticFetch } from "@/lib/client-request-diagnostics";
+import {
+  cancelIdleRequest,
+  enqueueIdleRequest,
+} from "@/lib/client-request-budget";
 import {
   dispatchTelarSessionRun,
   refreshIncludes,
@@ -156,33 +161,36 @@ export function SessionRuntimeHost({ id }: { id: string }) {
   // during which a sessionId-only stop silently finds nothing.
   const runIdRef = useRef<string | null>(null);
 
-  const flushLiveTools = () => {
+  const flushLiveTools = useCallback(() => {
     if (pendingToolsRef.current.length) {
       liveMsgsRef.current = [...liveMsgsRef.current, { role: "tools", steps: pendingToolsRef.current }];
       pendingToolsRef.current = [];
     }
-  };
-  const resetLive = () => {
+  }, []);
+  const resetLive = useCallback(() => {
     liveMsgsRef.current = [];
     pendingToolsRef.current = [];
-  };
-  const commitLive = () => {
+  }, []);
+  const commitLive = useCallback(() => {
     const persisted = detailRef.current ? toCompact(detailRef.current.messages) : [];
     setRuntime(id, { messages: [...persisted, ...liveMsgsRef.current] });
-  };
-  const trailingMessage = (): CompactMsg | undefined => {
+  }, [id, setRuntime]);
+  const trailingMessage = useCallback((): CompactMsg | undefined => {
     if (liveMsgsRef.current.length) return liveMsgsRef.current[liveMsgsRef.current.length - 1];
     const persisted = detailRef.current ? toCompact(detailRef.current.messages) : [];
     return persisted[persisted.length - 1];
-  };
+  }, []);
 
   // Reduced applyServerEvent (session-view.tsx §1b) for the compact grammar —
   // see the file header for what's intentionally dropped.
-  const applyLiveEvent = (event: string, payload: any) => {
-    if (payload?.parent) return; // sub-agent stream — main thread only
+  const applyLiveEvent = useCallback((event: string, payload: unknown) => {
+    const data = payload && typeof payload === "object"
+      ? payload as Record<string, unknown>
+      : {};
+    if (data.parent) return; // sub-agent stream — main thread only
     switch (event) {
       case "user": {
-        const text = String(payload?.text ?? "").trim();
+        const text = String(data.text ?? "").trim();
         if (!text) break;
         const last = trailingMessage();
         // Self-initiated sends already show this bubble optimistically
@@ -194,7 +202,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         break;
       }
       case "delta": {
-        const chunk = String(payload?.text ?? "");
+        const chunk = String(data.text ?? "");
         const last = liveMsgsRef.current[liveMsgsRef.current.length - 1];
         if (last?.role === "assistant") {
           liveMsgsRef.current = [
@@ -210,7 +218,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       case "text": {
         // Block finalize — authoritative full text, replacing whatever the
         // deltas above accumulated (mirrors applyServerEvent's "text" case).
-        const text = String(payload?.text ?? "");
+        const text = String(data.text ?? "");
         const last = liveMsgsRef.current[liveMsgsRef.current.length - 1];
         if (last?.role === "assistant") {
           liveMsgsRef.current = [...liveMsgsRef.current.slice(0, -1), { role: "assistant", text }];
@@ -223,7 +231,14 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       case "tool": {
         pendingToolsRef.current = [
           ...pendingToolsRef.current,
-          { tool: (payload?.name as string) ?? "Tool", target: toolTarget(payload?.input) },
+          {
+            tool: typeof data.name === "string" ? data.name : "Tool",
+            target: toolTarget(
+              data.input && typeof data.input === "object"
+                ? data.input as Record<string, unknown>
+                : undefined,
+            ),
+          },
         ];
         break;
       }
@@ -238,7 +253,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         return;
     }
     commitLive();
-  };
+  }, [commitLive, flushLiveTools, trailingMessage]);
 
   // Fire ONE queued message as a real turn on the same server surface the full
   // session page uses (POST /api/chat). Shows the user bubble + working ring
@@ -266,7 +281,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       const runId = newRunId();
       runIdRef.current = runId;
       try {
-        const res = await fetch("/api/chat", {
+        const res = await diagnosticFetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -279,7 +294,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
             ...(d.permissionMode ? { permissionMode: d.permissionMode } : {}),
           }),
           signal: sendAbort.signal,
-        });
+        }, "dock queued turn");
         if (res.ok && res.body) {
           const reader = res.body.getReader();
           for (;;) {
@@ -310,7 +325,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         window.dispatchEvent(new CustomEvent("telar:dock-refetch", { detail: id }));
       }
     },
-    [id, setRuntime],
+    [commitLive, id, resetLive, setRuntime],
   );
 
   // Drain the queue whenever the session is idle and loaded — one head at a
@@ -336,11 +351,11 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       tailAbortRef.current?.abort();
       setRuntime(id, { working: false });
       const runId = runIdRef.current;
-      void fetch("/api/chat/stop", {
+      void diagnosticFetch("/api/chat/stop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(runId ? { runId, sessionId: id } : { sessionId: id }),
-      }).catch(() => {});
+      }, "dock stop turn").catch(() => {});
     };
     registerStopHandler(id, stop);
     return () => registerStopHandler(id, null);
@@ -349,9 +364,17 @@ export function SessionRuntimeHost({ id }: { id: string }) {
   // ── persisted tail + park state, refetched on demand and after each run ──
   useEffect(() => {
     let alive = true;
+    let refetching = false;
+    const budgetKey = `dock:${id}:detail`;
     const refetch = async () => {
+      if (refetching) return;
+      refetching = true;
       try {
-        const res = await fetch(`/api/chats/${encodeURIComponent(id)}`);
+        const res = await diagnosticFetch(
+          `/api/chats/${encodeURIComponent(id)}`,
+          undefined,
+          "dock session detail",
+        );
         if (!res.ok || !alive) return;
         const chat = (await res.json()) as ChatDetail;
         detailRef.current = chat;
@@ -369,7 +392,11 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         // Park state rides along when the session drives a loom.
         if (chat.loomId) {
           try {
-            const lr = await fetch(`/api/looms/${encodeURIComponent(chat.loomId)}`);
+            const lr = await diagnosticFetch(
+              `/api/looms/${encodeURIComponent(chat.loomId)}`,
+              undefined,
+              "dock loom park state",
+            );
             if (lr.ok && alive) {
               const { loom } = await lr.json();
               setRuntime(id, { parked: loom?.state === "blocked" });
@@ -380,13 +407,17 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         }
       } catch {
         /* transient — a later tick retries */
+      } finally {
+        refetching = false;
       }
     };
     void refetch();
     // Events handle normal writes. This minute-scale check is only a recovery
     // net for changes made in another browser or process.
     const poll = setInterval(() => {
-      if (document.visibilityState === "visible") void refetch();
+      if (document.visibilityState === "visible") {
+        enqueueIdleRequest(budgetKey, refetch);
+      }
     }, DETAIL_SAFETY_POLL_MS);
     // Expose a manual refetch for the SSE loop below via a custom event.
     const onRefetch = (e: Event) => {
@@ -407,6 +438,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     return () => {
       alive = false;
       clearInterval(poll);
+      cancelIdleRequest(budgetKey);
       window.removeEventListener("telar:dock-refetch", onRefetch);
       window.removeEventListener(TELAR_REFRESH_EVENT, onRefresh);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -424,13 +456,15 @@ export function SessionRuntimeHost({ id }: { id: string }) {
     let abort: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let wakeUntil = 0;
+    const budgetKey = `dock:${id}:tail`;
 
-    const schedule = (delay: number) => {
+    const schedule = (delay: number, budgeted = false) => {
       if (!alive || document.visibilityState !== "visible") return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        void openTail();
+        if (budgeted) enqueueIdleRequest(budgetKey, openTail);
+        else void openTail();
       }, delay);
     };
 
@@ -441,9 +475,11 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       resetLive();
       let sawEvent = false;
       try {
-        const res = await fetch(`/api/chat/${encodeURIComponent(id)}/events`, {
-          signal: abort.signal,
-        });
+        const res = await diagnosticFetch(
+          `/api/chat/${encodeURIComponent(id)}/events`,
+          { signal: abort.signal },
+          "dock live tail",
+        );
         if (!res.ok || !res.body) throw new Error("no stream");
         await consumeSSE(res.body.getReader(), (event, payload) => {
           if (!alive) return;
@@ -480,17 +516,15 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           // A locally announced turn gets a short grace window because the
           // wake may beat server-side run registration. Truly idle sessions
           // use a minute-scale safety net instead of hammering this endpoint.
-          schedule(
-            sawEvent || Date.now() < wakeUntil
-              ? ACTIVE_TAIL_RETRY_MS
-              : IDLE_TAIL_RETRY_MS,
-          );
+          const active = sawEvent || Date.now() < wakeUntil;
+          schedule(active ? ACTIVE_TAIL_RETRY_MS : IDLE_TAIL_RETRY_MS, !active);
         }
       }
     };
     const onRun = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== id) return;
       wakeUntil = Date.now() + TURN_START_GRACE_MS;
+      cancelIdleRequest(budgetKey);
       if (timer) {
         clearTimeout(timer);
         timer = null;
@@ -498,23 +532,25 @@ export function SessionRuntimeHost({ id }: { id: string }) {
       void openTail();
     };
     const onVisibility = () => {
-      if (document.visibilityState === "visible") schedule(0);
+      if (document.visibilityState === "visible") schedule(0, true);
       else if (timer) {
         clearTimeout(timer);
         timer = null;
+        cancelIdleRequest(budgetKey);
       }
     };
     window.addEventListener(TELAR_SESSION_RUN_EVENT, onRun);
     document.addEventListener("visibilitychange", onVisibility);
-    schedule(1_500);
+    schedule(1_500, true);
     return () => {
       alive = false;
       if (abort) abort.abort();
       if (timer) clearTimeout(timer);
+      cancelIdleRequest(budgetKey);
       window.removeEventListener(TELAR_SESSION_RUN_EVENT, onRun);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [id, setRuntime]);
+  }, [applyLiveEvent, commitLive, id, resetLive, setRuntime]);
 
   return null;
 }

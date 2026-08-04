@@ -11,6 +11,7 @@
 // production one washed out on light panels; that Shimmer is now mask-based
 // (see ai-elements/shimmer) so we use it directly.
 
+import { useEffect, useState } from "react";
 import { Loader2Icon, WrenchIcon } from "lucide-react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { TOOL_ICONS } from "@/components/session/tool-step";
@@ -22,9 +23,9 @@ const SILENCE_THRESHOLD = 20;
 
 export type WorkState =
   | { kind: "starting" }
-  | { kind: "thinking"; elapsed: number }
-  | { kind: "working"; elapsed: number }
-  | { kind: "tool"; tool: string; target: string; elapsed: number; silentFor?: number };
+  | { kind: "thinking"; startedAt: number }
+  | { kind: "working"; startedAt: number }
+  | { kind: "tool"; tool: string; target: string; startedAt: number; lastActivityAt: number };
 
 const fmtElapsed = (s: number) => {
   if (s < 60) return `${s}s`;
@@ -38,6 +39,13 @@ export function WorkingIndicator({
   state: WorkState;
   className?: string;
 }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (state.kind === "starting") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [state.kind]);
+
   const base = "flex items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-xs";
 
   if (state.kind === "starting") {
@@ -52,6 +60,7 @@ export function WorkingIndicator({
   }
 
   if (state.kind === "thinking" || state.kind === "working") {
+    const elapsed = Math.max(0, Math.floor((now - state.startedAt) / 1_000));
     return (
       <div className={cn(base, "border-border", className)}>
         <span aria-hidden className="text-sm">
@@ -61,14 +70,16 @@ export function WorkingIndicator({
           {state.kind === "thinking" ? "Thinking" : "Working"}
         </Shimmer>
         <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/70">
-          {fmtElapsed(state.elapsed)}
+          {fmtElapsed(elapsed)}
         </span>
       </div>
     );
   }
 
   const Icon = TOOL_ICONS[state.tool] ?? WrenchIcon;
-  const silent = state.silentFor != null && state.silentFor >= SILENCE_THRESHOLD;
+  const elapsed = Math.max(0, Math.floor((now - state.startedAt) / 1_000));
+  const silentFor = Math.max(0, Math.floor((now - state.lastActivityAt) / 1_000));
+  const silent = silentFor >= SILENCE_THRESHOLD;
   return (
     <div className={cn(base, silent ? "border-amber-500/40" : "border-border", className)}>
       <Icon
@@ -88,12 +99,12 @@ export function WorkingIndicator({
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           <span className="text-[10px] text-amber-500">still working</span>
           <span className="font-mono text-[10px] text-muted-foreground/70">
-            no output {fmtElapsed(state.silentFor ?? 0)}
+            no output {fmtElapsed(silentFor)}
           </span>
         </span>
       ) : (
         <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/70">
-          {fmtElapsed(state.elapsed)}
+          {fmtElapsed(elapsed)}
         </span>
       )}
     </div>

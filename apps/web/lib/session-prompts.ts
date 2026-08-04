@@ -154,6 +154,9 @@ When you need to clarify something, ask it as a plain chat message and wait for 
 export const ULTRA_ANNOTATION_NOTE =
   "\n\n--- ULTRA REQUEST (this turn only) ---\nThe user's message below is Ultra-annotated: they explicitly asked for a large orchestrated/parallel run via the composer's Ultra chip. You may call the `ultra` tool THIS turn to author and launch a script. Do not call it on a later turn unless the user says \"ultra\" again or re-annotates.";
 
+export const BROWSER_CONTROL_NOTE = `\n\n--- SHARED TELAR BROWSER ---
+Telar's integrated Browser is a shared surface: its open tabs are visible to both you and the user. When the user refers to the browser, an open tab, or what they can see, do not claim that you lack access. First call browser_list_tabs, then browser_snapshot on the active tab. Use browser_take_screenshot when visual appearance matters. Navigation, clicks, typing, and tab mutations use the matching browser tools and remain subject to the session's permission policy. If no tab is open, say so plainly.`;
+
 // --- The two live-context readers (moved verbatim from route.ts) -------------
 
 // Keep the per-turn steerer append small: truncate a section to its last

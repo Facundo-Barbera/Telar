@@ -43,6 +43,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BASE_ALLOWED_TOOLS,
+  BROWSER_READ_TOOL_NAMES,
   LOOM_AUTO_TOOL_NAMES,
   NATIVE_CLAUDE_SETTING_SOURCES,
   ProjectManifest,
@@ -56,6 +57,7 @@ import {
   type SessionProfileBuilder,
   type SessionResolutionContext,
 } from "@telar/core";
+import { BROWSER_READ_TOOLS, browserTools } from "./browser-mcp";
 import {
   LOOM_ANSWER_BLOCKED_TOOL,
   LOOM_AUTO_TOOLS,
@@ -68,6 +70,7 @@ import { WORKSPACE_AUTO_TOOLS } from "./workspace-mcp";
 import { ULTRA_AUTHORING_REFERENCE } from "./ultra-authoring";
 import { makeGuardrailDecision } from "./permissions";
 import {
+  BROWSER_CONTROL_NOTE,
   ESCALATION_SYSTEM_PROMPT,
   PLANNER_SYSTEM_PROMPT,
   STEERER_SYSTEM_PROMPT,
@@ -208,6 +211,16 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     for (const n of WORKSPACE_AUTO_TOOLS) expect([...BASE_ALLOWED_TOOLS]).toContain(n);
   });
 
+  test("BROWSER_READ_TOOL_NAMES is exactly the browser server's read-only auto-run surface", () => {
+    expect([...BROWSER_READ_TOOL_NAMES]).toEqual([...BROWSER_READ_TOOLS]);
+    expect(BROWSER_READ_TOOL_NAMES.length).toBe(5);
+    expect([...BROWSER_READ_TOOL_NAMES]).not.toContain("mcp__browser__browser_tabs");
+    const registered = browserTools().map((entry) => entry.name);
+    for (const qualified of BROWSER_READ_TOOLS) {
+      expect(registered).toContain(qualified.replace("mcp__browser__", ""));
+    }
+  });
+
   test("MOAT: neither human-gated loom tool is in the auto-run vocabulary or the base union", () => {
     // Asserted against the CONSTANTS, never against literals. Both tools are
     // the human's click (docs/loom-model.md §M.6): start_loom dispatches a real
@@ -251,10 +264,15 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     ];
     expect(routesOldArray.length).toBe(20); // anti-vacuity + the measured count
     expect([...BASE_ALLOWED_TOOLS].slice(0, routesOldArray.length)).toEqual(routesOldArray);
-    expect([...BASE_ALLOWED_TOOLS].slice(routesOldArray.length)).toEqual([...WORKSPACE_AUTO_TOOLS]);
+    expect([...BASE_ALLOWED_TOOLS].slice(routesOldArray.length)).toEqual([
+      ...WORKSPACE_AUTO_TOOLS,
+      ...BROWSER_READ_TOOLS,
+    ]);
     // …and the two halves account for the WHOLE tuple, so nothing hides in a gap.
-    expect(BASE_ALLOWED_TOOLS.length).toBe(routesOldArray.length + WORKSPACE_AUTO_TOOLS.length);
-    expect(BASE_ALLOWED_TOOLS.length).toBe(24);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(
+      routesOldArray.length + WORKSPACE_AUTO_TOOLS.length + BROWSER_READ_TOOLS.length,
+    );
+    expect(BASE_ALLOWED_TOOLS.length).toBe(29);
     // No duplicates: unionOrdered would silently absorb one, shortening the
     // resolved allow set rather than failing.
     expect(new Set(BASE_ALLOWED_TOOLS).size).toBe(BASE_ALLOWED_TOOLS.length);
@@ -318,7 +336,7 @@ describe("the four builders carry D11's per-kind decisions", () => {
     });
   }
 
-  test("a plain CODEX project session with the Ultra chip OFF still has an EMPTY appendix", () => {
+  test("a plain CODEX project session carries browser guidance but no Ultra guidance", () => {
     // THIS ASSERTION USED TO BE ABOUT `ctx({ kind: "project" })`, WHICH DEFAULTS
     // TO CLAUDE, AND STORY 4.2 MADE IT DELIBERATELY FALSE THERE.
     //
@@ -342,11 +360,11 @@ describe("the four builders carry D11's per-kind decisions", () => {
     // escalation appendix likewise still contains no ultra text at all — see
     // "the escalation appendix carries no ultra text on either provider" below.
     const codex = { kind: "project", provider: "codex" } as const;
-    expect(resolveSessionProfile(ctx(codex)).systemPromptAppendix).toBe("");
-    // …and with the chip on it is EXACTLY the note, nothing more.
+    expect(resolveSessionProfile(ctx(codex)).systemPromptAppendix).toBe(BROWSER_CONTROL_NOTE);
+    // …and with the chip on it adds the turn note while retaining browser guidance.
     expect(
       resolveSessionProfile(ctx({ ...codex, ultraAnnotated: true })).systemPromptAppendix,
-    ).toBe(ULTRA_ANNOTATION_NOTE);
+    ).toBe(ULTRA_ANNOTATION_NOTE + BROWSER_CONTROL_NOTE);
   });
 
   test("4.2 AC8 — a CLAUDE project session carries the authoring reference, and the chip is orthogonal to it", () => {
@@ -460,6 +478,7 @@ describe("per-kind equivalence — the profile reproduces the route's own BEFORE
     ...LOOM_AUTO_TOOLS,
     ...ULTRA_AUTO_TOOLS,
     ...WORKSPACE_AUTO_TOOLS,
+    ...BROWSER_READ_TOOLS,
   ];
   const ESCALATION_ALLOW = [...LOOM_ESCALATION_READONLY_TOOLS];
   const NON_ESCALATION_DENY = [...MANIFEST_DENY, "AskUserQuestion"];

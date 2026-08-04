@@ -30,6 +30,7 @@ import type { UltraAgentOpts, UltraSurface, UltraTokens } from "./surface";
 import { MissingModel, LifetimeExceeded, BadPrompt, isAbortError, isControlSignal } from "./signals";
 import { appendJournal, readJournal, hashCall, type JournalRecord } from "./journal";
 import { runUltraAgent, type EngineAgentFn, type UltraRunnerOpts } from "./runner";
+import type { UltraChildGuardContext } from "./child-guard";
 
 // Per-run in-flight cap: no single run holds more than 3 agent() calls at once,
 // so a burst of 100 parallel thunks can never starve sibling runs / looms
@@ -48,6 +49,18 @@ export const LIFETIME_BACKSTOP = 1000;
 // wrong-shaped emit is treated identically to a never-emitted one.
 export const VALIDATE_RETRY_K = 2;
 
+/** True when the SDK's result `subtype` says the child stopped because it ran
+ *  out of agent turns rather than because it failed.
+ *
+ *  MATCHED BY SUBSTRING, deliberately. The exact spelling is the harness's, not
+ *  ours (`error_max_turns` today), and the cost of the two mistakes is not
+ *  symmetric: a missed match restores today's behaviour (one wasted retry, an
+ *  anonymous null), while a hard-coded equality that silently stops matching
+ *  after an SDK rename fails the same way but looks maintained. Anything naming
+ *  both "max" and "turns" is this outcome. */
+export const exhaustedTurns = (subtype: string | undefined): boolean =>
+  typeof subtype === "string" && /max/i.test(subtype) && /turns?/i.test(subtype);
+
 // A passthrough schema for the schema-less agent() case. This predates cut
 // U4's runner (which now genuinely supports "no schema -> final text", doc
 // §3): kept as-is so every already-tested script call site here still gets a
@@ -57,6 +70,39 @@ export const VALIDATE_RETRY_K = 2;
 // itself (runner.ts's schema-less branch is real and directly tested there);
 // changing this executor-level default is out of scope for U4.
 const PASSTHROUGH_SCHEMA = z.object({ text: z.string() });
+
+// WHAT A SCHEMA-LESS agent() HANDS BACK: the model's final text, as a STRING.
+//
+// PASSTHROUGH_SCHEMA is an INTERNAL device — it exists so the validate-and-retry
+// loop below can tell "emitted nothing" from "emitted the wrong shape" on a call
+// that declared no schema of its own. It was never meant to be the script-facing
+// return type, and until this change it leaked out as one: the executor returned
+// the `{text}` wrapper raw, so every schema-less call resolved to an OBJECT.
+//
+// That leak was not cosmetic. It disagreed with two things at once:
+//
+//   1. runner.ts's own schema-less branch (runner.ts:142-204), which returns
+//      `lastText` — a bare string. Two paths of one contract, disagreeing.
+//   2. The authoring reference every session is given (ultra-authoring.ts),
+//      which says omitting `schema` yields "the model's final text". Authors
+//      followed the documented contract, wrote `${result}` into the next
+//      stage's prompt, and got "[object Object]" — at which point the BadPrompt
+//      guard correctly killed the run, AFTER the whole fan-out was paid for.
+//      The docs induced the exact error the guard exists to catch.
+//
+// So the wrapper is stripped HERE, at the script-facing boundary, and nowhere
+// else. The JOURNAL KEEPS STORING THE RAW `{text}` RECORD — unwrapping is a
+// presentation step, not a storage change — which is what keeps every record
+// written before this change replayable, byte-identical, on a resume.
+//
+// safeParse rather than a cast: a legacy record (or any value that is not the
+// wrapper) passes through untouched instead of throwing. A call that declared
+// its OWN schema is never unwrapped — its shape is the author's, not ours.
+const unwrapPassthrough = (value: unknown, hadOwnSchema: boolean): unknown => {
+  if (hadOwnSchema || value === null) return value;
+  const parsed = PASSTHROUGH_SCHEMA.safeParse(value);
+  return parsed.success ? parsed.data.text : value;
+};
 
 // The stringification artifacts a prompt can never legitimately need (see the
 // guard in agentFn and signals.ts's BadPrompt). Both are what a template
@@ -135,6 +181,12 @@ export type UltraEvent =
       // mid-run) still gets the chip. Still NOT passed to the engine.
       effort?: string;
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
+      /** WHY this agent died, when known — `ok: false` alone cannot say. Today
+       *  the one knowable cause is `"max-turns"`: the child ran out of agent
+       *  turns rather than failing, which is worth distinguishing because such a
+       *  child may already have edited files before it stopped. Absent means
+       *  "cause unknown", the pre-existing meaning of every `ok: false`. */
+      deadReason?: "max-turns";
       costUsd?: number;
       turns?: number;
       // What this settle actually consumed, as the provider reported it.
@@ -231,6 +283,11 @@ export type StartUltraOpts = {
   // process.cwd() default when omitted (tests / a script with no real
   // project).
   project?: string;
+  // The PROJECT's guardrails, enforced on every child through the PreToolUse
+  // hook (ultra/child-guard.ts). Travels beside `project` because it answers the
+  // same question one level down: `project` says WHERE a child may write,
+  // this says WHAT it may not touch there. Absent = the control-plane rule only.
+  guardrails?: UltraChildGuardContext;
   // Routes every child agent() call's env exactly like a loom's agent()
   // (doc §2 — Ultra inherits accountEnv dispatch "for free"). Absent = the
   // provider's base login (engine.ts's accountEnv semantics).
@@ -316,10 +373,12 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       const artifact = STRINGIFIED_ARTIFACTS.find((a) => prompt.includes(a));
       if (artifact) {
         throw new BadPrompt(
-          `a prompt containing "${artifact}" — an agent() result is an OBJECT (the default ` +
-            `schema is z.object({ text }), so even a schema-less call resolves to { text }), and ` +
-            `interpolating one into a template literal stringifies it away. Read the field you ` +
-            `want (e.g. result.text) before interpolating. If the artifact is genuinely part of ` +
+          `a prompt containing "${artifact}" — interpolating a non-string into a template ` +
+            `literal stringifies it away. A schema-less agent() resolves to a STRING (the ` +
+            `model's final text) and interpolates cleanly; a call that declared a schema ` +
+            `resolves to your OBJECT, so read the field you want off it first. ` +
+            `"[object Promise]" instead means a missing await on the agent() call. ` +
+            `If the artifact is genuinely part of ` +
             `text you meant to send — an upstream agent quoting a log line, say — pass ` +
             `{ allowStringifiedObject: true } on this call`,
           uOpts.label,
@@ -351,6 +410,11 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           // there: `effort` is display metadata, not part of a settle's identity.
           ...(uOpts.effort ? { effort: uOpts.effort } : {}),
           ok: cached.result !== null,
+          // Re-presented from the RECORD, like costUsd/turns/tokens beside it —
+          // a replay spends nothing and never re-learns why the agent died, so
+          // the reason has to come off disk or a resumed run silently downgrades
+          // "hit the turn limit" back to an anonymous failure.
+          ...(cached.deadReason !== undefined ? { deadReason: cached.deadReason } : {}),
           ...(cached.costUsd !== undefined ? { costUsd: cached.costUsd } : {}),
           ...(cached.turns !== undefined ? { turns: cached.turns } : {}),
           // The id this settle WAS BILLED UNDER, read back out of the record —
@@ -377,7 +441,10 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           // the field's doc on UltraEvent above.
           cached: true,
         });
-        return cached.result; // served from the journal — no spawn (doc §3)
+        // Served from the journal — no spawn (doc §3). Unwrapped on the way out
+        // exactly as a live settle is, so a resumed run hands the script the
+        // SAME value the live run did; the stored record itself stays raw.
+        return unwrapPassthrough(cached.result, uOpts.schema !== undefined);
       }
       ctl.cacheValid = false; // first miss invalidates this AND every later ordinal
     }
@@ -427,6 +494,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     // run's point of view; overwritten every time a "result" event lands.
     let lastCostUsd: number | undefined;
     let lastTurns: number | undefined;
+    let lastSubtype: string | undefined;
     // The provider's usage split for this attempt, captured from the same
     // one-shot `result` event `costUsd` comes from. ONE FIELD, not four loose
     // ones: it travels together onto the journal record and the settle event,
@@ -440,12 +508,23 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ...(uOpts.effort ? { effort: uOpts.effort } : {}),
       ...(uOpts.label ? { label: uOpts.label } : {}),
       ...(opts.project ? { cwd: opts.project } : {}),
+      // Per-agent, straight from the script (surface.ts's UltraAgentOpts).
+      // Absent leaves the runner's default in force.
+      ...(uOpts.maxTurns !== undefined ? { maxTurns: uOpts.maxTurns } : {}),
+      ...(opts.guardrails ? { guardrails: opts.guardrails } : {}),
       ...(opts.account ? { account: opts.account } : {}),
       abort: ctl.abort,
       onEvent: (e: EngineEvent) => {
         if (e.type === "result") {
           lastCostUsd = e.costUsd;
           lastTurns = e.turns;
+          // WHY THE CHILD STOPPED, kept beside what it cost. engine.agent()
+          // returns `null` for every non-emitting outcome — hit the turn limit,
+          // crashed, refused — so the RETURN VALUE cannot tell them apart. This
+          // event can: the SDK's `subtype` is the only place the difference
+          // survives, and it was being read for cost and turns while the reason
+          // was dropped on the floor.
+          lastSubtype = e.subtype;
           // ABSENT STAYS ABSENT. A provider that reported no usage at all leaves
           // this undefined rather than becoming four zeroes, so a reader can
           // tell "spent nothing" apart from "never told us" — the same
@@ -495,6 +574,21 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       result = await runOnce(attemptPrompt);
       const parsed = schema.safeParse(result);
       if (parsed.success) break;
+      // RUNNING OUT OF TURNS IS NOT A SHAPE PROBLEM, and retrying it at the same
+      // budget is the one retry that structurally cannot work: the child did not
+      // emit because it ran out of room, so a re-run with the same room runs the
+      // same wall. It was costing a second full agent call to re-learn that.
+      //
+      // NOT a control signal — the run continues and this settles as an ordinary
+      // dead agent, exactly as before. What changes is that it settles ONCE, and
+      // that `lastSubtype` survives onto the record so the rail and the journal
+      // can say WHY rather than showing an anonymous failure. A child that hit
+      // this may have already edited files, so "why" is the difference between
+      // "nothing happened" and "the repo is half-changed".
+      if (exhaustedTurns(lastSubtype)) {
+        result = null;
+        break;
+      }
       if (attempt < VALIDATE_RETRY_K) {
         const detail =
           result === null
@@ -528,6 +622,14 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       // make a resumed run's rows read as "never reported" for work that was
       // measured the first time round.
       ...(lastTokens !== undefined ? { tokens: lastTokens } : {}),
+      // ONLY ON A DEAD AGENT, and only when we know why. A successful settle's
+      // reason is "it worked" and adding a field for that would put a string on
+      // every record in the journal to say nothing. Absent keeps meaning
+      // "ordinary failure, cause unknown" — which is what every record written
+      // before this change means, so old journals stay readable as-is.
+      ...(result === null && exhaustedTurns(lastSubtype)
+        ? { deadReason: "max-turns" as const }
+        : {}),
     });
     opts.onEvent?.({
       type: "agent",
@@ -539,9 +641,17 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
       ...(lastTokens !== undefined ? { tokens: lastTokens } : {}),
+      // Same field, same rule, on the live event — so the rail can say "hit the
+      // turn limit" while it happens rather than only after a journal read.
+      ...(result === null && exhaustedTurns(lastSubtype)
+        ? { deadReason: "max-turns" as const }
+        : {}),
       settleId,
     });
-    return result;
+    // Unwrapped only HERE, on the way to the script — appendJournal above has
+    // already stored the raw result, so the record and the replay path stay in
+    // the one format.
+    return unwrapPassthrough(result, uOpts.schema !== undefined);
   };
 
   // Our OWN parallel — engine.ts's `parallel` swallows AbortError /

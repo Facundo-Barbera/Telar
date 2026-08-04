@@ -69,6 +69,7 @@ import {
 import { ULTRA_AUTO_TOOLS } from "@/lib/ultra-mcp";
 import { WORKSPACE_AUTO_TOOLS } from "@/lib/workspace-mcp";
 import {
+  BROWSER_CONTROL_NOTE,
   escalationAppendix,
   plannerAppendix,
   projectAppendix,
@@ -131,11 +132,12 @@ export const buildProjectProfile: SessionProfileBuilder = (ctx) => ({
   // to "fix" the Codex case would 400 every ordinary Codex session. Codex simply
   // gets no reference, which is the correct degradation — it is offered no ultra
   // tools either.
-  systemPromptAppendix: projectAppendix({
-    ultraAnnotated: ctx.ultraAnnotated,
-    sessionId: ctx.sessionId,
-    provider: ctx.provider,
-  }),
+  systemPromptAppendix:
+    projectAppendix({
+      ultraAnnotated: ctx.ultraAnnotated,
+      sessionId: ctx.sessionId,
+      provider: ctx.provider,
+    }) + BROWSER_CONTROL_NOTE,
 });
 
 // The Loom planning session (docs/loom-model.md §5). The route's own comment on
@@ -165,12 +167,13 @@ export const buildPlannerProfile: SessionProfileBuilder = (ctx) => ({
   settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
-  systemPromptAppendix: plannerAppendix({
-    ultraAnnotated: ctx.ultraAnnotated,
-    sessionId: ctx.sessionId,
-    // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
-    provider: ctx.provider,
-  }),
+  systemPromptAppendix:
+    plannerAppendix({
+      ultraAnnotated: ctx.ultraAnnotated,
+      sessionId: ctx.sessionId,
+      // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
+      provider: ctx.provider,
+    }) + BROWSER_CONTROL_NOTE,
 });
 
 // The embedded steering session (the loom Chat tab). Same reasoning as planner,
@@ -198,13 +201,14 @@ export const buildSteererProfile: SessionProfileBuilder = (ctx) => ({
   settingSources: [...CLAUDE_SETTING_SOURCES],
   toolPolicy: { deny: [...ALWAYS_DENIED_TOOLS] },
   requiredCapabilities: ["system-prompt-append"],
-  systemPromptAppendix: steererAppendix({
-    loomId: ctx.loomId,
-    ultraAnnotated: ctx.ultraAnnotated,
-    sessionId: ctx.sessionId,
-    // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
-    provider: ctx.provider,
-  }),
+  systemPromptAppendix:
+    steererAppendix({
+      loomId: ctx.loomId,
+      ultraAnnotated: ctx.ultraAnnotated,
+      sessionId: ctx.sessionId,
+      // Story 4.2 / AC8 — see buildProjectProfile above for why the gate is here.
+      provider: ctx.provider,
+    }) + BROWSER_CONTROL_NOTE,
 });
 
 // The blocked-loom escalation chat (M11.3): a read-only loom toolset plus the

@@ -185,7 +185,7 @@ describe("ultra completion wake (FR-UW-1)", () => {
     expect(wake!.name).toBe("nightly sweep");
     expect(wake!.spendUsd).toBeCloseTo(0.25);
     expect(wake!.terminalAt).toBe(getUltraManifest(runId)!.updatedAt);
-    expect(wake!.result).toEqual({ text: "p0" });
+    expect(wake!.result).toBe("p0"); // schema-less → the text itself
   });
 
   test("AC7 anti-vacuity — a genuinely LIVE run is NOT pending, so 'everything is pending' cannot pass", async () => {

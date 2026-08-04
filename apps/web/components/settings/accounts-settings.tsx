@@ -96,6 +96,10 @@ const fmtChecked = (iso: string | null | undefined): string => {
 };
 
 const formatCount = (value: number) => new Intl.NumberFormat().format(value);
+const formatCompactCount = (value: number) => new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+}).format(value);
 
 function UsageWindow({ label, totals }: { label: string; totals: UsageTotals }) {
   const tokens = totals.inputTokens + totals.outputTokens;
@@ -110,8 +114,12 @@ function UsageWindow({ label, totals }: { label: string; totals: UsageTotals }) 
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">requests</div>
       </div>
       <div>
-        <div className="font-mono text-sm">{formatCount(tokens)}</div>
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">tokens</div>
+        <div className="font-mono text-sm" title={`${formatCount(tokens)} total tokens`}>
+          {formatCompactCount(tokens)}
+        </div>
+        <div className="text-[10px] text-muted-foreground">
+          {formatCompactCount(totals.inputTokens)} in · {formatCompactCount(totals.outputTokens)} out
+        </div>
       </div>
       <div>
         <div className="font-mono text-sm">${totals.costUsd.toFixed(4)}</div>
@@ -686,6 +694,10 @@ export function GeneralSettings({ initialData }: { initialData?: SettingsInitial
             <>
               <UsageWindow label="Last 5 hours" totals={usage.session} />
               <UsageWindow label="Last 7 days" totals={usage.weekly} />
+              <div className="px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
+                Stored in Telar&apos;s local append-only ledger. This is observed session activity,
+                not a provider quota or subscription balance.
+              </div>
             </>
           ) : (
             <p className="px-4 py-5 text-xs text-muted-foreground">No usage has been recorded yet.</p>

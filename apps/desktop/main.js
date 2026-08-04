@@ -12,15 +12,35 @@
 const path = require("node:path");
 const http = require("node:http");
 const net = require("node:net");
+const fs = require("node:fs");
+const os = require("node:os");
+const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { DesktopBrowserManager } = require("./browser-manager");
+const { startBrowserControlServer } = require("./browser-control-server");
 
 const SMOKE = process.argv.includes("--smoke");
 const OVERRIDE_URL = process.env.TELAR_DESKTOP_URL;
+const E2E_USER_DATA = process.env.TELAR_DESKTOP_E2E_USER_DATA?.trim();
+
+// Keep automated Electron runs in their own application identity. Electron's
+// single-instance lock is scoped through userData, so this lets the E2E shell
+// coexist with a developer's real Telar window without weakening the normal
+// one-instance contract.
+if (E2E_USER_DATA) {
+  app.setPath("userData", E2E_USER_DATA);
+} else if (SMOKE) {
+  app.setPath(
+    "userData",
+    fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-smoke-")),
+  );
+}
 
 let serverChild = null;
 let browserManager = null;
+let browserControl = null;
+let browserControlConfig = null;
 
 const REMOTE_DEBUGGING_PORT = process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 if (REMOTE_DEBUGGING_PORT && /^\d+$/.test(REMOTE_DEBUGGING_PORT)) {
@@ -159,6 +179,18 @@ function windowTitle() {
   return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
 }
 
+function developmentIconPath() {
+  if (app.isPackaged) return undefined;
+  const icon = path.join(__dirname, "build", "icon.png");
+  return fs.existsSync(icon) ? icon : undefined;
+}
+
+function applyDevelopmentAppIcon() {
+  const icon = developmentIconPath();
+  if (icon && process.platform === "darwin" && app.dock) app.dock.setIcon(icon);
+  return icon;
+}
+
 // --- Bundled @playwright/mcp CLI --------------------------------------------
 // build-web.sh materializes a self-contained, symlink-dereferenced @playwright/
 // mcp closure (cli.js + playwright/playwright-core) that electron-builder copies
@@ -278,6 +310,10 @@ function startServer(port) {
       PORT: String(port),
       HOSTNAME: "127.0.0.1",
       NODE_ENV: "production",
+      ...(browserControlConfig ? {
+        TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlConfig.port),
+        TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlConfig.token,
+      } : {}),
       // Packaged only: @playwright/mcp isn't traced into the standalone bundle
       // nor on PATH, so the core resolver (explicit -> ENV -> walk-up -> PATH)
       // would find nothing. Point it at the bundled cli.js unless the user
@@ -333,12 +369,14 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
 // --- (e) Window --------------------------------------------------------------
 function createWindow(url) {
   const title = windowTitle();
+  const icon = developmentIconPath();
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     backgroundColor: "#0a0a0a",
     show: false,
     title,
+    ...(icon ? { icon } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -347,6 +385,12 @@ function createWindow(url) {
     },
   });
   browserManager = new DesktopBrowserManager(win);
+  // A native WebContentsView outlives a renderer reload and React never gets a
+  // cleanup pass in that path. Hide it before the document is replaced; the
+  // remounted Browser surface will publish fresh bounds and make it visible.
+  win.webContents.on("did-start-loading", () => {
+    browserManager?.hideVisibleScope();
+  });
   win.on("closed", () => {
     browserManager?.destroy();
     browserManager = null;
@@ -368,17 +412,25 @@ function requireBrowserManager() {
   return browserManager;
 }
 
-ipcMain.handle("telar:browser:state", () => requireBrowserManager().state());
-ipcMain.handle("telar:browser:action", (_event, action) => requireBrowserManager().action(action));
-ipcMain.handle("telar:browser:tool", (_event, input) =>
-  requireBrowserManager().callTool(input?.name, input?.args || {}),
+ipcMain.handle("telar:browser:state", (_event, scopeKey) => requireBrowserManager().state(scopeKey));
+ipcMain.handle("telar:browser:action", (_event, input) =>
+  requireBrowserManager().action(input?.scopeKey, input?.action),
 );
-ipcMain.handle("telar:browser:set-bounds", (_event, bounds) => {
-  requireBrowserManager().setBounds(bounds);
+ipcMain.handle("telar:browser:tool", (_event, input) =>
+  requireBrowserManager().callTool(input?.scopeKey, input?.name, input?.args || {}),
+);
+ipcMain.handle("telar:browser:set-bounds", (_event, input) => {
+  requireBrowserManager().setBounds(input?.scopeKey, input?.bounds);
 });
-ipcMain.handle("telar:browser:set-visible", (_event, visible) => {
-  requireBrowserManager().setVisible(visible);
+ipcMain.handle("telar:browser:set-visible", (_event, input) => {
+  requireBrowserManager().setVisible(input?.scopeKey, input?.visible);
 });
+ipcMain.handle("telar:browser:release-scope", (_event, input) =>
+  requireBrowserManager().releaseScope(input?.scopeKey, Boolean(input?.destroy)),
+);
+ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
+  requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
+);
 
 // --- (f) Teardown ------------------------------------------------------------
 function killServer() {
@@ -391,7 +443,15 @@ function killServer() {
     serverChild = null;
   }
 }
-app.on("will-quit", killServer);
+function closeBrowserControl() {
+  const control = browserControl;
+  browserControl = null;
+  if (control) void control.close();
+}
+app.on("will-quit", () => {
+  killServer();
+  closeBrowserControl();
+});
 process.on("exit", killServer);
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
@@ -487,6 +547,18 @@ if (SMOKE) {
 
     app.whenReady().then(async () => {
       try {
+        applyDevelopmentAppIcon();
+        const configuredControlPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
+        browserControlConfig = {
+          port: Number.isInteger(configuredControlPort) && configuredControlPort > 0
+            ? configuredControlPort
+            : await findFreePort(),
+          token: process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim() || randomUUID(),
+        };
+        browserControl = await startBrowserControlServer({
+          ...browserControlConfig,
+          getBrowserManager: () => browserManager,
+        });
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();

@@ -90,7 +90,7 @@ describe("the production sidebar mount", () => {
     const inspector = read("components/session/workspace-inspector.tsx");
 
     expect(inspector).toContain('typeof onReservedChange === "function"');
-    expect(inspector).toContain("notifyReservedChange(reserved)");
+    expect(inspector).toContain("notifyReservedChange(sidebarMode)");
     expect(inspector).toContain("notifyReservedChange(false)");
   });
 

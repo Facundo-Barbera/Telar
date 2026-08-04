@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   BASE_ALLOWED_TOOLS,
+  BROWSER_READ_TOOL_NAMES,
   LOOM_AUTO_TOOL_NAMES,
   NATIVE_CLAUDE_SETTING_SOURCES,
   PROVIDER_CAPABILITIES,
@@ -662,16 +663,18 @@ describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () 
     ]);
     const loomEnd = 6 + LOOM_AUTO_TOOL_NAMES.length;
     const ultraEnd = loomEnd + ULTRA_AUTO_TOOL_NAMES.length;
+    const workspaceEnd = ultraEnd + WORKSPACE_AUTO_TOOL_NAMES.length;
     expect(allow.slice(6, loomEnd)).toEqual([...LOOM_AUTO_TOOL_NAMES]);
     // THE OLD ASSERTION WAS A ONE-ARGUMENT slice(6 + LOOM_AUTO_TOOL_NAMES.length)
     // — "index 17 to the end" — and it was RIGHT while ultra's three were the
     // tail. With the workspace's four appended it would compare seven elements
     // against three, so both bounds are now explicit and the tail is named.
     expect(allow.slice(loomEnd, ultraEnd)).toEqual([...ULTRA_AUTO_TOOL_NAMES]);
-    expect(allow.slice(ultraEnd)).toEqual([...WORKSPACE_AUTO_TOOL_NAMES]);
+    expect(allow.slice(ultraEnd, workspaceEnd)).toEqual([...WORKSPACE_AUTO_TOOL_NAMES]);
+    expect(allow.slice(workspaceEnd)).toEqual([...BROWSER_READ_TOOL_NAMES]);
     // The segments really do partition the whole set — a slice arithmetic slip
     // would otherwise leave a gap nothing asserts over.
-    expect(ultraEnd + WORKSPACE_AUTO_TOOL_NAMES.length).toBe(allow.length);
+    expect(workspaceEnd + BROWSER_READ_TOOL_NAMES.length).toBe(allow.length);
   });
 });
 
@@ -917,13 +920,15 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
       ...LOOM_AUTO_TOOL_NAMES,
       ...ULTRA_AUTO_TOOL_NAMES,
       ...WORKSPACE_AUTO_TOOL_NAMES,
+      ...BROWSER_READ_TOOL_NAMES,
     ]);
     // Anti-vacuity: a tuple that emptied out would satisfy a `toEqual` against
     // an equally-empty derivation.
-    expect(BASE_ALLOWED_TOOLS.length).toBe(24);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(29);
     expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);
+    expect(BROWSER_READ_TOOL_NAMES.length).toBe(5);
     // FULLY QUALIFIED, like its two siblings and unlike invariants.test.ts's
     // MCP_INVENTORY, which pins the BARE names. Writing the bare form here
     // produces tools that never auto-run AND that the runtime filter in

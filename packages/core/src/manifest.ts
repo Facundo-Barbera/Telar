@@ -209,6 +209,33 @@ export function listProjects(): Array<{
   });
 }
 
+/** The guardrails of the registered project rooted at `root`, or undefined when
+ *  no registered project matches.
+ *
+ *  WHY BY ROOT. Everything downstream of a launch knows the project as a PATH:
+ *  UltraManifest.project stores the root, and a resume that inherits its
+ *  original project (storage.ts's `opts.project ?? manifest?.project`) therefore
+ *  has a root and no name. Without this, a resumed run could only be guarded
+ *  when the caller happened to re-supply the project by name — which is the
+ *  opt-out-by-re-entry hole the resume path exists to avoid.
+ *
+ *  A malformed manifest is skipped rather than thrown: `listProjects` already
+ *  reports those with `manifest: null`, and one broken project in the registry
+ *  must not stop an unrelated run from being guarded. */
+export function guardrailsForRoot(
+  root: string,
+): { disallowedTools: string[]; protectedPaths: string[] } | undefined {
+  const resolved = path.resolve(root);
+  for (const { manifest } of listProjects()) {
+    if (!manifest || path.resolve(manifest.root) !== resolved) continue;
+    return {
+      disallowedTools: [...manifest.guardrails.disallowedTools],
+      protectedPaths: [...manifest.guardrails.protectedPaths],
+    };
+  }
+  return undefined;
+}
+
 export function getProject(name: string): { entry: RegistryEntry; manifest: ProjectManifest } {
   const reg = readRegistry();
   const entry = reg[name];

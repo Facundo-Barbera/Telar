@@ -1,4 +1,6 @@
 const { EventEmitter } = require("node:events");
+const { existsSync, readFileSync } = require("node:fs");
+const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
 const { DesktopBrowserManager, normalizeUrl } = require("./browser-manager");
@@ -58,6 +60,7 @@ class FakeWebContents extends EventEmitter {
     this.url = "about:blank";
     this.title = "New tab";
     this.destroyed = false;
+    this.loadGate = null;
     this.inputEvents = [];
     this.navigationHistory = {
       canGoBack: () => false,
@@ -77,6 +80,7 @@ class FakeWebContents extends EventEmitter {
 
   async loadURL(url) {
     this.emit("did-start-loading");
+    if (this.loadGate) await this.loadGate;
     this.url = url;
     this.title = "Fixture";
     this.emit("did-navigate");
@@ -118,7 +122,7 @@ class FakeView {
   }
 }
 
-function makeHarness() {
+function makeHarness(options = {}) {
   const views = [];
   const messages = [];
   const waits = [];
@@ -144,6 +148,7 @@ function makeHarness() {
     wait: async (milliseconds) => {
       waits.push(milliseconds);
     },
+    maxLiveViews: options.maxLiveViews,
   });
   return { children, manager, messages, views, waits };
 }
@@ -166,11 +171,11 @@ describe("DesktopBrowserManager", () => {
   test("owns tab visibility and bounds without an Electron process", async () => {
     const { children, manager, views } = makeHarness();
 
-    await manager.createTab("localhost:3000");
-    manager.setBounds({ x: 10.4, y: 20.6, width: 800.2, height: 600.8 });
-    manager.setVisible(true);
+    await manager.createTab("session-a", "localhost:3000");
+    manager.setBounds("session-a", { x: 10.4, y: 20.6, width: 800.2, height: 600.8 });
+    manager.setVisible("session-a", true);
 
-    expect(manager.state().tabs).toEqual([
+    expect(manager.state("session-a").tabs).toEqual([
       expect.objectContaining({ id: "tab-1", url: "http://localhost:3000/", active: true }),
     ]);
     expect(views[0].visible).toBe(true);
@@ -182,14 +187,54 @@ describe("DesktopBrowserManager", () => {
     expect(views[0].webContents.destroyed).toBe(true);
   });
 
+  test("hides and hibernates the visible scope safely during a renderer reload", async () => {
+    const { children, manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://example.com");
+    manager.setVisible("session-a", true);
+
+    expect(() => manager.hideVisibleScope()).not.toThrow();
+    expect(manager.visibleScopeKey).toBeNull();
+    expect(children.size).toBe(0);
+    expect(views[0].webContents.destroyed).toBe(true);
+    expect(manager.state("session-a").tabs).toEqual([
+      expect.objectContaining({ url: "https://example.com/", active: true }),
+    ]);
+  });
+
+  test("does not close a view while navigation is still loading", async () => {
+    const { children, manager, views } = makeHarness();
+    await manager.createTab("session-a");
+    manager.setVisible("session-a", true);
+    let finishLoad;
+    views[0].webContents.loadGate = new Promise((resolve) => { finishLoad = resolve; });
+
+    const navigation = manager.action("session-a", {
+      action: "navigate",
+      url: "https://www.youtube.com/",
+    });
+    manager.setVisible("session-a", false);
+
+    expect(views[0].webContents.destroyed).toBe(false);
+    expect(views[0].visible).toBe(false);
+
+    finishLoad();
+    await navigation;
+
+    expect(views[0].webContents.destroyed).toBe(true);
+    expect(children.size).toBe(0);
+    expect(manager.state("session-a").tabs).toEqual([
+      expect.objectContaining({ url: "https://www.youtube.com/", active: true }),
+    ]);
+  });
+
   test("exposes accessibility refs and preserves cursor timing around clicks", async () => {
     const { manager, messages, views, waits } = makeHarness();
-    await manager.createTab("https://example.com");
+    await manager.createTab("session-a", "https://example.com");
 
-    const snapshot = await manager.callTool("browser_snapshot");
+    const snapshot = await manager.callTool("session-a", "browser_snapshot");
     expect(textOf(snapshot)).toContain('button "Count 0" [ref=e1]');
 
-    const clicked = await manager.callTool("browser_click", {
+    const clicked = await manager.callTool("session-a", "browser_click", {
       target: "e1",
       element: "Count 0 button",
     });
@@ -210,11 +255,77 @@ describe("DesktopBrowserManager", () => {
 
   test("returns a bounded tool error for stale accessibility refs", async () => {
     const { manager } = makeHarness();
-    await manager.createTab("about:blank");
+    await manager.createTab("session-a", "about:blank");
 
-    const result = await manager.callTool("browser_click", { target: "e404" });
+    const result = await manager.callTool("session-a", "browser_click", { target: "e404" });
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("Take a fresh browser_snapshot first");
+  });
+
+  test("never exposes tabs across browser session scopes", async () => {
+    const { manager } = makeHarness();
+    await manager.createTab("session-a", "https://a.example");
+
+    expect(textOf(await manager.callTool("session-b", "browser_tabs", { action: "list" })))
+      .toBe("No browser tabs are open in this session.");
+    const denied = await manager.callTool("session-b", "browser_snapshot");
+    expect(denied.isError).toBe(true);
+    expect(textOf(denied)).toContain("Open a browser tab");
+
+    await manager.createTab("session-b", "https://b.example");
+    expect(manager.state("session-a").tabs.map((tab) => tab.url)).toEqual(["https://a.example/"]);
+    expect(manager.state("session-b").tabs.map((tab) => tab.url)).toEqual(["https://b.example/"]);
+  });
+
+  test("hibernates inactive views, bounds live renderers, and adopts draft scopes", async () => {
+    const { children, manager, views } = makeHarness({ maxLiveViews: 2 });
+    await manager.createTab("draft", "https://one.example");
+    await manager.createTab("other", "https://two.example");
+    await manager.createTab("third", "https://three.example");
+
+    expect(children.size).toBe(2);
+    expect(views.filter((view) => !view.webContents.destroyed)).toHaveLength(2);
+    manager.adoptScope("draft", "session-a");
+    expect(manager.state("draft").tabs).toHaveLength(0);
+    expect(manager.state("session-a").tabs.map((tab) => tab.url)).toEqual(["https://one.example/"]);
+
+    manager.releaseScope("session-a", true);
+    expect(manager.state("session-a").tabs).toHaveLength(0);
+  });
+});
+
+describe("desktop shell development contracts", () => {
+  test("uses the Telar icon in an unpackaged Electron run", () => {
+    const source = readFileSync(path.join(__dirname, "main.js"), "utf8");
+
+    expect(source).toContain('path.join(__dirname, "build", "icon.png")');
+    expect(source).toContain("app.dock.setIcon(icon)");
+    expect(source).toContain("...(icon ? { icon } : {})");
+    expect(existsSync(path.join(__dirname, "build", "icon.png"))).toBe(true);
+  });
+
+  test("shares the normal web development state unless explicitly overridden", () => {
+    const runner = readFileSync(path.join(__dirname, "dev-runner.js"), "utf8");
+
+    expect(runner).not.toContain(".telar-desktop-dev");
+    expect(runner).toContain("{ cwd: repoDir, env: sharedEnv }");
+    expect(runner).toContain("...process.env");
+  });
+
+  test("hides native browser views before the Telar renderer reloads", () => {
+    const source = readFileSync(path.join(__dirname, "main.js"), "utf8");
+
+    expect(source).toContain('win.webContents.on("did-start-loading"');
+    expect(source).toContain("browserManager?.hideVisibleScope()");
+  });
+
+  test("isolates E2E Electron state without disabling production's instance lock", () => {
+    const source = readFileSync(path.join(__dirname, "main.js"), "utf8");
+    const e2e = readFileSync(path.join(__dirname, "desktop-e2e.js"), "utf8");
+
+    expect(source).toContain('app.setPath("userData", E2E_USER_DATA)');
+    expect(source).toContain("app.requestSingleInstanceLock()");
+    expect(e2e).toContain("TELAR_DESKTOP_E2E_USER_DATA: desktopUserData");
   });
 });

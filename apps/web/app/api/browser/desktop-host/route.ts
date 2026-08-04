@@ -5,7 +5,8 @@ import { desktopBrowserHost } from "@/lib/server/desktop-browser-host";
 export const dynamic = "force-dynamic";
 
 export function GET(request: Request) {
-  const hostId = new URL(request.url).searchParams.get("hostId")?.trim();
+  const searchParams = new URL(request.url).searchParams;
+  const hostId = searchParams.get("hostId")?.trim();
   if (!hostId) return Response.json({ error: "hostId is required." }, { status: 400 });
   const encoder = new TextEncoder();
   let unsubscribe = () => {};
@@ -15,7 +16,12 @@ export function GET(request: Request) {
       const send = (command: unknown) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(command)}\n\n`));
       };
-      unsubscribe = desktopBrowserHost().subscribeCommands(hostId, send);
+      const broker = desktopBrowserHost();
+      // A long-lived SSE response can survive a Next.js development reload.
+      // Tell the renderer which broker generation owns this stream so it can
+      // reconnect instead of silently posting responses to a newer broker.
+      send({ kind: "broker", brokerInstanceId: broker.identity() });
+      unsubscribe = broker.subscribeCommands(hostId, send);
       heartbeat = setInterval(() => {
         desktopBrowserHost().touch(hostId);
         try { controller.enqueue(encoder.encode(": keepalive\n\n")); } catch { /* closed */ }
@@ -71,5 +77,5 @@ export async function POST(request: Request) {
     default:
       return Response.json({ error: "Unknown desktop browser host message." }, { status: 400 });
   }
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, brokerInstanceId: broker.identity() });
 }

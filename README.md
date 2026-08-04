@@ -44,6 +44,28 @@ bun install
 cd apps/web && bun run dev   # the web cockpit
 ```
 
+### Local desktop install (unsigned)
+
+For a usable local macOS app built from the current working tree:
+
+```bash
+bun run desktop:package                 # build + smoke-test apps/desktop/release/mac-arm64/Telar.app
+bun run desktop:install -- --open       # install to ~/Applications and launch it
+```
+
+The install command does not need `sudo`. Use `--system` when you specifically
+want `/Applications/Telar.app`:
+
+```bash
+bun run desktop:install -- --system --open
+```
+
+This is intentionally an unsigned, local-only `.app` flow; it does not publish,
+auto-update, sign, or notarize anything. On the first launch, macOS may block
+the app because it is unsigned. In Finder, Control-click `Telar.app`, choose
+**Open**, then confirm **Open**. Apple signing and notarized distribution can be
+added later without changing this local workflow.
+
 ## Design docs
 
 Legacy design docs (outdated; kept for reference only) are archived in

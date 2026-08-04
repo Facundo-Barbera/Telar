@@ -70,8 +70,14 @@ Your default export receives exactly these:
   EVERY call (see below). Optional: \`label\` (a short display name, shown in the
   rail), \`effort\` (display only — it reaches the UI, never the child),
   \`schema\` (a zod object; forces a validated structured result off
-  \`emit_result\` — omit it to get the model's final text instead), \`isolation\`
-  (a fresh worktree for a parallel mutator).
+  \`emit_result\` — omit it to get the model's final text as a plain STRING,
+  which interpolates into the next stage's prompt directly; WITH a schema you
+  get your object, so read the field you want off it before interpolating),
+  \`maxTurns\` (how many agent turns this child may take before the harness
+  stops it — a one-sentence reader needs few, a multi-file refactor needs many;
+  a child that runs out settles as a dead \`null\` having possibly ALREADY
+  edited files, so raise it for work that edits), \`isolation\` (a fresh worktree
+  for a parallel mutator).
 - \`parallel(thunks)\` — runs an array of \`() => agent(...)\` thunks
   concurrently WITH A BARRIER. A failed thunk resolves to \`null\` in its slot;
   the call itself never rejects. Filter with \`.filter(Boolean)\` before use.

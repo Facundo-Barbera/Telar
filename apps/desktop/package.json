@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Telar desktop shell with a shared Electron-owned browser host.",
+  "author": "Facundo Barbera <facundo.barbera@gmail.com>",
   "main": "main.js",
   "scripts": {
     "build:web": "bash ./build-web.sh",
@@ -13,8 +14,10 @@
     "test:desktop:smoke": "electron . --smoke",
     "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
     "smoke": "bun run test:desktop:smoke",
-    "pack": "electron-builder --dir",
-    "install:app": "bash ./install-app.sh"
+    "pack": "bash ../../scripts/package-desktop.sh",
+    "package:local": "bash ../../scripts/package-desktop.sh",
+    "install:app": "bash ./install-app.sh",
+    "install:local": "bash ../../scripts/package-desktop.sh --install"
   },
   "trustedDependencies": [
     "electron"
@@ -26,6 +29,7 @@
     "files": [
       "main.js",
       "browser-manager.js",
+      "browser-control-server.js",
       "preload.js",
       "server-preload.js",
       "package.json"

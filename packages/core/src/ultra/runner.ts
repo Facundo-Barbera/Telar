@@ -54,6 +54,20 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { agent as engineAgent, accountEnv, type EngineEvent } from "../engine";
+import { claudeExecutableOptions } from "../claude-executable";
+import { makeUltraChildGuard, type UltraChildGuardContext } from "./child-guard";
+
+// The child's PreToolUse registration, in the SDK's matcher shape. Built ONCE
+// per call and used on BOTH legs below (the engine.agent() delegation and the
+// schema-less query()), because a guard covering one of the two paths is a
+// guard with a documented way around it — and which leg a call takes is decided
+// by whether the SCRIPT passed a schema, which is not a security decision.
+//
+// The guard closes over the run's project context when there is one; without it
+// the control-plane rule still applies (see child-guard.ts).
+const childHooks = (context?: UltraChildGuardContext) => ({
+  PreToolUse: [{ hooks: [makeUltraChildGuard(context)] }],
+});
 import type { AccountProfile } from "../schemas";
 import { MissingModel } from "./signals";
 
@@ -68,6 +82,24 @@ import { MissingModel } from "./signals";
 // toolset is the WHAT, unconditional either way.
 export const ULTRA_CHILD_TOOLS = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"] as const;
 
+/** How many agent turns a child gets when the script does not say
+ *  (surface.ts's `UltraAgentOpts.maxTurns` overrides it per call).
+ *
+ *  WHY THERE IS A CEILING HERE AT ALL, when a session has none. A session is
+ *  watched by a human with a Stop button; agent 7 of 12 in a fan-out is watched
+ *  by nobody. Run-level Stop exists, but it needs someone to notice — so for a
+ *  child this is the only bound that acts on its own, and removing it means a
+ *  stuck child loops until the account's quota stops it.
+ *
+ *  WHY IT ROSE FROM 30. Thirty was chosen when Ultra was read-mostly, and it is
+ *  a plausible budget for "read one file, answer in a sentence". Ultra is also
+ *  for editing code, and an edit/run-tests/repair cycle spends turns several
+ *  times faster; a child that runs out does not fail loudly, it settles as a
+ *  dead agent, having possibly already changed files. 200 keeps a runaway
+ *  bounded while no longer cutting off ordinary work — and a script that knows
+ *  its own shape should say so rather than lean on this. */
+export const ULTRA_CHILD_MAX_TURNS = 200;
+
 export type UltraRunnerOpts = {
   model: string; // REQUIRED — no fallback, ever (doc §4)
   schema?: z.ZodObject<z.ZodRawShape>; // present -> forced emit_result; absent -> final-text capture
@@ -77,6 +109,12 @@ export type UltraRunnerOpts = {
   // why that was a placebo control.
   effort?: string;
   cwd?: string; // project root, or the opts.isolation worktree (doc §3) — narrows WHERE, never WHETHER
+  // The PROJECT's own guardrails (protectedPaths / disallowedTools), enforced on
+  // this child through the PreToolUse hook. Absent = the control-plane rule
+  // only. Carried explicitly rather than derived from `cwd` because the two
+  // diverge the moment `opts.isolation` lands: a worktree child has a different
+  // cwd but the SAME project rules, resolved against the project's own root.
+  guardrails?: UltraChildGuardContext;
   account?: AccountProfile; // routes env exactly like engine.ts's accountEnv (doc §2: inherited "for free")
   maxTurns?: number;
   abort?: AbortController;
@@ -127,9 +165,10 @@ export async function runUltraAgent(promptText: string, opts: UltraRunnerOpts): 
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       cwd: opts.cwd ?? process.cwd(),
-      maxTurns: opts.maxTurns ?? 30,
+      maxTurns: opts.maxTurns ?? ULTRA_CHILD_MAX_TURNS,
       tools: [...ULTRA_CHILD_TOOLS],
       restrictTools: true,
+      hooks: childHooks(opts.guardrails),
       ...(opts.account ? { account: opts.account } : {}),
       ...(opts.abort ? { abort: opts.abort } : {}),
       ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
@@ -152,9 +191,14 @@ export async function runUltraAgent(promptText: string, opts: UltraRunnerOpts): 
       cwd: opts.cwd ?? process.cwd(),
       model: opts.model,
       ...(opts.effort ? { effort: opts.effort as never } : {}),
-      maxTurns: opts.maxTurns ?? 30,
+      maxTurns: opts.maxTurns ?? ULTRA_CHILD_MAX_TURNS,
       permissionMode: "bypassPermissions",
       env: accountEnv(opts.account),
+      // Same resolution engine.agent() applies — this branch calls query()
+      // directly, so it needs it directly too.
+      ...claudeExecutableOptions(),
+      // …and the same child guard, for the same reason.
+      hooks: childHooks(opts.guardrails) as never,
       ...(opts.abort ? { abortController: opts.abort } : {}),
       // Fixed child posture (doc §3) — ALWAYS restricted, no knob. Under
       // bypassPermissions, `allowedTools` alone does not gate availability

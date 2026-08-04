@@ -30,7 +30,7 @@
 // AN UNREGISTERED KIND IS A TOMBSTONE, NEVER A THROW (AD-8). A transcript
 // containing one unknown item must still render the other nine.
 
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, memo, useState, type ReactNode } from "react";
 import {
   Conversation as ConversationViewport,
   ConversationContent as ConversationViewportContent,
@@ -76,28 +76,31 @@ export type ConversationProps = {
   className?: string;
 };
 
-export function Conversation({
+type TranscriptViewportProps = Pick<
+  ConversationProps,
+  "items" | "kinds" | "live" | "empty" | "trailing"
+>;
+
+// The transcript is the expensive half of a session surface: markdown,
+// syntax highlighting, tool disclosures and potentially hundreds of turns.
+// Keep it behind a memo boundary so composer controls, side panels, workspace
+// chrome and other sibling state can update without replaying the complete
+// render registry. The owner is responsible for preserving `items` identity
+// while the underlying transcript has not changed.
+const TranscriptViewport = memo(function TranscriptViewport({
   items,
   kinds,
-  composer,
-  rail,
-  header,
   live = false,
   empty,
   trailing,
-  className,
-}: ConversationProps) {
-  // ONE opaque map for every kind's disclosure state, keyed by the item's own
-  // key plus the key its renderer named, joined by NUL — a separator that cannot
-  // occur in any key a transcript or a renderer would ever mint, so two items
-  // can never collide through string concatenation.
+}: TranscriptViewportProps) {
+  // Disclosure state belongs to the transcript boundary. Keeping it here also
+  // means opening a tool row does not rerender the composer or the side rail.
   const [openState, setOpenState] = useState<Record<string, boolean>>({});
 
   const renderItem = (item: TranscriptItem, itemLive: boolean): ReactNode => {
     const renderer = kinds.get(item.kind);
     if (!renderer) {
-      // AD-8's tombstone. It reads as state, not prose, and it names the
-      // unregistered id so a developer can see exactly what is missing.
       return (
         <Fragment key={item.key}>
           <Marker attention>unregistered item kind · {item.kind}</Marker>
@@ -116,6 +119,30 @@ export function Conversation({
   };
 
   return (
+    <ConversationViewport className="min-w-0 flex-1">
+      <ConversationViewportContent className="px-4">
+        {items.length === 0
+          ? empty
+          : items.map((item, i) => renderItem(item, live && i === items.length - 1))}
+        {trailing}
+      </ConversationViewportContent>
+      <ConversationViewportScrollButton />
+    </ConversationViewport>
+  );
+});
+
+export function Conversation({
+  items,
+  kinds,
+  composer,
+  rail,
+  header,
+  live = false,
+  empty,
+  trailing,
+  className,
+}: ConversationProps) {
+  return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       {header}
       {/* THE COMPOSER BELONGS TO THE CHAT COLUMN, NOT TO THE WINDOW. It used to
@@ -129,15 +156,16 @@ export function Conversation({
           row instead of scrolling inside its own box. */}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <ConversationViewport className="min-w-0 flex-1">
-            <ConversationViewportContent className="px-4">
-              {items.length === 0
-                ? empty
-                : items.map((item, i) => renderItem(item, live && i === items.length - 1))}
-              {trailing}
-            </ConversationViewportContent>
-            <ConversationViewportScrollButton />
-          </ConversationViewport>
+          <TranscriptViewport
+            items={items}
+            kinds={kinds}
+            live={live}
+            // A caller will often construct its empty-state element inline.
+            // Once a transcript has content that node is irrelevant, so do not
+            // let its changing identity pierce the transcript memo boundary.
+            empty={items.length === 0 ? empty : undefined}
+            trailing={trailing}
+          />
           {composer}
         </div>
         {rail}

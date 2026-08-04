@@ -3,6 +3,7 @@ import type { ControlledBrowserState } from "@/lib/browser-runtime-contract";
 
 export type DesktopBrowserCommand = {
   id: string;
+  scopeKey: string;
   name: string;
   args: Record<string, unknown>;
 };
@@ -17,13 +18,18 @@ const HOST_STALE_MS = 35_000;
 const COMMAND_TIMEOUT_MS = 30_000;
 
 export class DesktopBrowserHostBroker {
+  private readonly instanceId = crypto.randomUUID();
   private hostId: string | null = null;
   private lastSeen = 0;
-  private stateValue: ControlledBrowserState | null = null;
+  private states = new Map<string, ControlledBrowserState>();
   private commands: DesktopBrowserCommand[] = [];
   private commandListeners = new Set<(command: DesktopBrowserCommand) => void>();
   private responses = new Map<string, PendingResponse>();
   private listeners = new Set<() => void>();
+
+  identity() {
+    return this.instanceId;
+  }
 
   subscribe(listener: () => void) {
     this.listeners.add(listener);
@@ -38,7 +44,9 @@ export class DesktopBrowserHostBroker {
     if (this.hostId && this.hostId !== hostId) this.disconnect(this.hostId);
     this.hostId = hostId;
     this.lastSeen = Date.now();
-    this.stateValue = { ...state, provider: "desktop", running: true, available: true };
+    if (state.scopeKey) {
+      this.states.set(state.scopeKey, { ...state, provider: "desktop", running: true, available: true });
+    }
     this.emit();
   }
 
@@ -50,7 +58,7 @@ export class DesktopBrowserHostBroker {
     if (hostId !== this.hostId) return;
     this.hostId = null;
     this.lastSeen = 0;
-    this.stateValue = null;
+    this.states.clear();
     this.commands = [];
     this.commandListeners.clear();
     for (const pending of this.responses.values()) {
@@ -65,18 +73,28 @@ export class DesktopBrowserHostBroker {
     return this.hostId !== null && Date.now() - this.lastSeen < HOST_STALE_MS;
   }
 
-  state(): ControlledBrowserState | null {
+  state(scopeKey: string): ControlledBrowserState | null {
     if (!this.online()) {
       if (this.hostId) this.disconnect(this.hostId);
       return null;
     }
-    return this.stateValue;
+    return this.states.get(scopeKey) ?? {
+      scopeKey,
+      available: true,
+      running: true,
+      provider: "desktop",
+      tabs: [],
+      screenshot: null,
+      error: null,
+      version: 0,
+    };
   }
 
   updateState(hostId: string, state: ControlledBrowserState) {
     if (hostId !== this.hostId) return;
     this.lastSeen = Date.now();
-    this.stateValue = { ...state, provider: "desktop", running: true, available: true };
+    if (!state.scopeKey) return;
+    this.states.set(state.scopeKey, { ...state, provider: "desktop", running: true, available: true });
     this.emit();
   }
 
@@ -88,12 +106,16 @@ export class DesktopBrowserHostBroker {
     return () => this.commandListeners.delete(listener);
   }
 
-  call(name: string, args: Record<string, unknown>): Promise<BrowserToolResult> {
+  call(scopeKey: string, name: string, args: Record<string, unknown>): Promise<BrowserToolResult> {
+    const scope = String(scopeKey ?? "").trim();
+    if (!scope) {
+      return Promise.reject(new Error("A browser session scope is required."));
+    }
     if (!this.online() || !this.hostId) {
       return Promise.reject(new Error("Open Telar Desktop and its Browser surface to share tabs with the agent."));
     }
     const id = crypto.randomUUID();
-    const command = { id, name, args };
+    const command = { id, scopeKey: scope, name, args };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.responses.delete(id);
@@ -120,9 +142,13 @@ export class DesktopBrowserHostBroker {
   }
 }
 
-const GLOBAL_KEY = Symbol.for("telar.desktop-browser-host.v1");
-const brokerGlobal = globalThis as typeof globalThis & { [GLOBAL_KEY]?: DesktopBrowserHostBroker };
+// This broker survives Next.js hot reloads. Bump the key whenever the command
+// wire contract or broker interface changes; v1 commands predated session
+// scopes, while v2 predated the broker-generation handshake used by the SSE
+// host. Reusing either instance after a reload leaves methods/protocol missing.
+const GLOBAL_KEY = Symbol.for("telar.desktop-browser-host.v3");
+const brokerProcess = process as NodeJS.Process & { [GLOBAL_KEY]?: DesktopBrowserHostBroker };
 
 export function desktopBrowserHost(): DesktopBrowserHostBroker {
-  return brokerGlobal[GLOBAL_KEY] ??= new DesktopBrowserHostBroker();
+  return brokerProcess[GLOBAL_KEY] ??= new DesktopBrowserHostBroker();
 }

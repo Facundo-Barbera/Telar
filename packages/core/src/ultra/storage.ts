@@ -359,6 +359,11 @@ export type LaunchUltraOpts = {
   sessionId?: string;
   messageId?: string;
   project?: string;
+  // The project's own guardrails, forwarded to every child agent's PreToolUse
+  // hook (ultra/child-guard.ts). The CALLER resolves them — this package does
+  // not read a project manifest — so the launch API route hands them in from the
+  // same `getProject()` lookup it already does for `root`.
+  guardrails?: StartUltraOpts["guardrails"];
   account?: AccountProfile; // resolved profile — drives the runner's accountEnv (doc §2)
   // DI seam for tests — same shape as StartUltraOpts.agent (no live SDK).
   agent?: StartUltraOpts["agent"];
@@ -836,7 +841,13 @@ export async function launchUltra(opts: LaunchUltraOpts): Promise<LaunchUltraRes
   return launch(
     runId,
     opts.script,
-    (startOpts) => startUltra(opts.script, { ...startOpts, agent: opts.agent, project: opts.project }),
+    (startOpts) =>
+      startUltra(opts.script, {
+        ...startOpts,
+        agent: opts.agent,
+        project: opts.project,
+        guardrails: opts.guardrails,
+      }),
     opts,
   );
 }
@@ -845,6 +856,11 @@ export type ResumeUltraOpts = {
   script?: string; // omitted -> the persisted script.js from the original launch
   agent?: StartUltraOpts["agent"];
   project?: string;
+  // Resolved by the CALLER, exactly as on a fresh launch. Unlike `project` and
+  // `account` this is NOT recoverable from the manifest — guardrails are the
+  // project's CURRENT configuration, not a property of the run, so a resume must
+  // enforce today's rules rather than the ones in force when it first started.
+  guardrails?: StartUltraOpts["guardrails"];
   account?: AccountProfile;
 };
 
@@ -895,7 +911,17 @@ export async function resumeUltraRun(runId: string, opts: ResumeUltraOpts = {}):
   return launch(
     runId,
     script,
-    (startOpts) => resumeUltra(runId, script, { ...startOpts, agent: opts.agent, project }),
+    // A RESUME IS GUARDED LIKE A LAUNCH. Forgetting this would make the guard
+    // opt-out by re-entry: stop a run, resume it, and its children would run
+    // unguarded — the journal replays the prefix, but every live call after the
+    // cache miss is a fresh child.
+    (startOpts) =>
+      resumeUltra(runId, script, {
+        ...startOpts,
+        agent: opts.agent,
+        project,
+        guardrails: opts.guardrails,
+      }),
     {
       args: manifest?.args,
       sessionId: manifest?.sessionId,

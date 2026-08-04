@@ -74,15 +74,17 @@ export function LiveIndicator({
   tool?: string;
   target?: string;
 }) {
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
+  const [startedAt] = useState(Date.now);
   const state: WorkState =
     kind === "tool"
-      ? { kind, tool: tool ?? "Bash", target: target ?? "", elapsed }
-      : { kind, elapsed };
+      ? {
+          kind,
+          tool: tool ?? "Bash",
+          target: target ?? "",
+          startedAt,
+          lastActivityAt: startedAt,
+        }
+      : { kind, startedAt };
   return <WorkingIndicator state={state} className="w-fit max-w-full" />;
 }
 

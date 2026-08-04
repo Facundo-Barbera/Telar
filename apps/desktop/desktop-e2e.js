@@ -4,6 +4,7 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 
 const desktopDir = __dirname;
 const webDir = path.resolve(desktopDir, "../web");
@@ -84,9 +85,16 @@ function stopChild(child) {
 }
 
 async function main() {
+  const browserControlPort = await freePort();
+  const browserControlToken = randomUUID();
+  const browserControlEnv = {
+    TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlPort),
+    TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlToken,
+  };
   let appUrl = process.env.TELAR_DESKTOP_URL?.replace(/\/$/, "");
   let webChild = null;
   let isolatedHome = null;
+  let isolatedDistDir = null;
   let webOutput = "";
   if (!appUrl) {
     const bunPath = process.env.TELAR_BUN_BINARY;
@@ -94,12 +102,18 @@ async function main() {
     const webPort = await freePort();
     appUrl = `http://127.0.0.1:${webPort}`;
     isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "telar-desktop-e2e-"));
+    isolatedDistDir = `.next-desktop-e2e-${process.pid}`;
     webChild = spawn(
       bunPath,
       ["run", "--cwd", webDir, "dev", "--", "--hostname", "127.0.0.1", "--port", String(webPort)],
       {
         cwd: path.resolve(desktopDir, "../.."),
-        env: { ...process.env, TELAR_HOME: isolatedHome },
+        env: {
+          ...process.env,
+          ...browserControlEnv,
+          TELAR_HOME: isolatedHome,
+          NEXT_DIST_DIR: isolatedDistDir,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -112,6 +126,9 @@ async function main() {
   } catch (error) {
     await stopChild(webChild);
     if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
+    if (isolatedDistDir) {
+      fs.rmSync(path.join(webDir, isolatedDistDir), { recursive: true, force: true });
+    }
     throw new Error(`${error instanceof Error ? error.message : String(error)}\n${webOutput}`);
   }
 
@@ -123,11 +140,14 @@ async function main() {
   });
   const fixtureUrl = `http://127.0.0.1:${fixturePort}/`;
   const debuggingPort = await freePort();
+  const desktopUserData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-e2e-"));
   let output = "";
   const childEnv = {
     ...process.env,
+    ...browserControlEnv,
     TELAR_DESKTOP_URL: appUrl,
     TELAR_DESKTOP_REMOTE_DEBUGGING_PORT: String(debuggingPort),
+    TELAR_DESKTOP_E2E_USER_DATA: desktopUserData,
   };
   delete childEnv.ELECTRON_RUN_AS_NODE;
   const child = spawn(electronPath, [desktopDir], {
@@ -149,44 +169,72 @@ async function main() {
     assert(page, `Could not find Telar's renderer at ${appUrl}.`);
     await page.waitForFunction(() => window.telarDesktop?.isDesktop === true, null, { timeout: 15_000 });
 
-    await page.evaluate(async (url) => {
+    await page.evaluate(async () => {
       window.__telarDesktopPointerEvents = [];
       window.__telarDesktopPointerCleanup = window.telarDesktop.browser.onPointer((event) => {
         window.__telarDesktopPointerEvents.push(event);
       });
-      await window.telarDesktop.browser.setBounds({ x: 0, y: 0, width: 800, height: 600 });
-      await window.telarDesktop.browser.setVisible(true);
-      await window.telarDesktop.browser.action({ action: "new", url });
-    }, fixtureUrl);
+      await window.telarDesktop.browser.setBounds("e2e", { x: 0, y: 0, width: 800, height: 600 });
+      await window.telarDesktop.browser.setVisible("e2e", true);
+    });
 
-    const snapshot = await page.evaluate(() => window.telarDesktop.browser.callTool("browser_snapshot", {}));
+    const agentRoute = await fetch(`${appUrl}/api/browser`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scopeKey: "e2e", action: "new", url: fixtureUrl }),
+    });
+    const agentState = await agentRoute.json();
+    assert(agentRoute.ok, `Agent-to-Electron browser route failed: ${JSON.stringify(agentState)}`);
+    assert(agentState.tabs?.some((tab) => tab.url === fixtureUrl),
+      "The agent browser route did not open the fixture in Electron.");
+
+    const snapshot = await page.evaluate(() => window.telarDesktop.browser.callTool("e2e", "browser_snapshot", {}));
     const snapshotText = textOf(snapshot);
     const target = snapshotText.match(/button\s+"Count 0".*\[ref=(e\d+)\]/)?.[1];
     assert(target, `The Electron-owned fixture was not exposed in the accessibility snapshot:\n${snapshotText}`);
 
-    const clicked = await page.evaluate((ref) => window.telarDesktop.browser.callTool("browser_click", {
+    const clicked = await page.evaluate((ref) => window.telarDesktop.browser.callTool("e2e", "browser_click", {
       target: ref,
       element: "Count 0 button",
     }), target);
     assert(!clicked.isError, `Desktop browser click failed: ${textOf(clicked)}`);
 
-    const after = await page.evaluate(() => window.telarDesktop.browser.callTool("browser_snapshot", {}));
+    const after = await page.evaluate(() => window.telarDesktop.browser.callTool("e2e", "browser_snapshot", {}));
     assert(textOf(after).includes('button "Count 1"'), "The Electron browser click did not update the fixture page.");
+    const isolatedState = await page.evaluate(() => window.telarDesktop.browser.getState("other-session"));
+    assert(isolatedState.tabs.length === 0, "A second session could see the first session's browser tab.");
+    const isolatedSnapshot = await page.evaluate(() =>
+      window.telarDesktop.browser.callTool("other-session", "browser_snapshot", {}));
+    assert(isolatedSnapshot.isError, "A second session could inspect the first session's browser tab.");
     const pointerEvents = await page.evaluate(() => {
       window.__telarDesktopPointerCleanup?.();
-      void window.telarDesktop.browser.setVisible(false);
       return window.__telarDesktopPointerEvents;
     });
     assert(pointerEvents.some((event) => event.phase === "move"), "The agent cursor never emitted a move event.");
     assert(pointerEvents.some((event) => event.phase === "click"), "The agent cursor never emitted a click event.");
+
+    // A renderer reload is the production path that originally left a native
+    // WebContentsView visible and then called setVisible without a scope. The
+    // tab should hibernate during reload and wake under the same session only.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => window.telarDesktop?.isDesktop === true, null, { timeout: 15_000 });
+    const resumed = await page.evaluate(() => window.telarDesktop.browser.callTool("e2e", "browser_snapshot", {}));
+    assert(textOf(resumed).includes('button "Count 1"'), "The scoped browser did not resume after renderer reload.");
+    await page.evaluate(() => window.telarDesktop.browser.releaseScope("e2e", true));
+    const released = await page.evaluate(() => window.telarDesktop.browser.getState("e2e"));
+    assert(released.tabs.length === 0, "Explicit session cleanup left browser tabs behind.");
     assert(!/uncaught|unhandled|fatal|segmentation fault/i.test(output), `Electron reported a fatal error:\n${output}`);
-    console.log("DESKTOP_E2E_OK shared-tab snapshot click cursor");
+    console.log("DESKTOP_E2E_OK agent-route scoped-tab snapshot click cursor reload cleanup");
   } finally {
     await browser?.close().catch(() => {});
     await stopChild(child);
     await new Promise((resolve) => fixture.close(resolve));
     await stopChild(webChild);
     if (isolatedHome) fs.rmSync(isolatedHome, { recursive: true, force: true });
+    if (isolatedDistDir) {
+      fs.rmSync(path.join(webDir, isolatedDistDir), { recursive: true, force: true });
+    }
+    fs.rmSync(desktopUserData, { recursive: true, force: true });
   }
 }
 

@@ -12,6 +12,8 @@ import {
   ArrowRightIcon,
   ExternalLinkIcon,
   GlobeIcon,
+  Link2Icon,
+  MousePointer2Icon,
   LoaderCircleIcon,
   PlusIcon,
   RadioTowerIcon,
@@ -25,6 +27,7 @@ import {
 } from "@/lib/use-controlled-browser";
 import { cn } from "@/lib/utils";
 import type { TelarDesktopBrowserBridge } from "@/types/telar-desktop";
+import { useBrowserAgentPresence } from "@/lib/browser-client-events";
 
 export function normalizeBrowserUrl(value: string): string | null {
   const trimmed = value.trim();
@@ -39,25 +42,33 @@ export function normalizeBrowserUrl(value: string): string | null {
   }
 }
 
-function DesktopBrowserViewport({ bridge }: { bridge: TelarDesktopBrowserBridge }) {
+function DesktopBrowserViewport({ bridge, scopeKey }: { bridge: TelarDesktopBrowserBridge; scopeKey: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  useDesktopBrowserViewport(bridge, hostRef);
+  useDesktopBrowserViewport(bridge, scopeKey, hostRef);
 
-  return <div ref={hostRef} className="min-h-0 flex-1 bg-white" aria-label="Desktop browser viewport" />;
+  return <div ref={hostRef} className="min-h-0 flex-1 bg-background" aria-label="Desktop browser viewport" />;
 }
 
 export function BrowserSurface({
+  scopeKey,
   title,
   url,
   onNavigate,
+  onDetach,
 }: {
+  scopeKey: string;
   title: string;
   url: string;
   onNavigate: (url: string) => void;
+  onDetach: () => void;
 }) {
+  const agentPresence = useBrowserAgentPresence(scopeKey);
   const [draft, setDraft] = useState(url === "about:blank" ? "" : url);
   const [invalid, setInvalid] = useState(false);
-  const syncDraft = useCallback((nextUrl: string) => setDraft(nextUrl), []);
+  const syncDraft = useCallback(
+    (nextUrl: string) => setDraft(nextUrl === "about:blank" ? "" : nextUrl),
+    [],
+  );
   const {
     act,
     desktopBridge,
@@ -69,11 +80,12 @@ export function BrowserSurface({
     setup,
     state,
     working,
-  } = useControlledBrowser(syncDraft);
+  } = useControlledBrowser(scopeKey, syncDraft);
   const activeTab = useMemo(
     () => state.tabs.find((tab) => tab.active) ?? state.tabs[0] ?? null,
     [state.tabs],
   );
+  const presenceTabId = agentPresence?.tabId ?? activeTab?.id;
 
   const navigate = useCallback(async (next: string) => {
     setInvalid(false);
@@ -106,7 +118,17 @@ export function BrowserSurface({
                 onClick={() => void act({ action: "select", index: tab.index })}
                 className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2 pr-6 text-left"
               >
-                <GlobeIcon className="size-3 shrink-0" />
+                {agentPresence && tab.id === presenceTabId ? (
+                  <MousePointer2Icon
+                    aria-label="Agent is using this tab"
+                    className={cn(
+                      "size-3 shrink-0 text-blue-500",
+                      agentPresence.status === "acting" && "animate-pulse",
+                    )}
+                  />
+                ) : (
+                  <GlobeIcon className="size-3 shrink-0" />
+                )}
                 <span className="min-w-0 flex-1 truncate">{tab.title || `Tab ${tab.index + 1}`}</span>
               </button>
               <button
@@ -132,6 +154,18 @@ export function BrowserSurface({
           </button>
         </div>
       </div>
+      {agentPresence && (
+        <div
+          role="status"
+          className="flex shrink-0 items-center gap-1.5 border-b border-blue-500/15 bg-blue-500/5 px-3 py-1 text-[10px] font-medium text-blue-500"
+        >
+          <MousePointer2Icon className="size-3" />
+          <span>{agentPresence.status === "acting" ? "Agent using browser" : "Agent was just here"}</span>
+          <span className="truncate font-normal text-muted-foreground">
+            · {agentPresence.tool.replace(/^browser_/, "").replaceAll("_", " ")}
+          </span>
+        </div>
+      )}
       <form onSubmit={submit} className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
         <button type="button" onClick={() => void act({ action: "back" })} aria-label="Go back" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
           <ArrowLeftIcon className="size-3.5" />
@@ -163,6 +197,18 @@ export function BrowserSurface({
         <button type="submit" aria-label="Open address" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
           <ArrowRightIcon className="size-3.5" />
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            void desktopBridge?.releaseScope(scopeKey, true);
+            onDetach();
+          }}
+          aria-label="Detach browser from this session"
+          title="Attached to this session · detach"
+          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <Link2Icon className="size-3.5" />
+        </button>
         {activeTab?.url && activeTab.url !== "about:blank" && (
           <a href={activeTab.url} target="_blank" rel="noreferrer" aria-label={`Open ${title} in a new window`} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
             <ExternalLinkIcon className="size-3.5" />
@@ -193,7 +239,7 @@ export function BrowserSurface({
       {loading ? (
         <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground"><LoaderCircleIcon className="size-5 animate-spin" /></div>
       ) : desktopBridge && hasNavigatedTab ? (
-        <DesktopBrowserViewport bridge={desktopBridge} />
+        <DesktopBrowserViewport bridge={desktopBridge} scopeKey={scopeKey} />
       ) : state.screenshot && hasNavigatedTab ? (
         <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-neutral-950 p-2">
           {/* eslint-disable-next-line @next/next/no-img-element -- live data URL from the local browser runtime */}
@@ -203,7 +249,7 @@ export function BrowserSurface({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-8">
           <div className="mx-auto w-full max-w-2xl">
             <div className="flex items-center gap-2 text-sm font-medium"><RadioTowerIcon className="size-4 text-muted-foreground" />Local servers</div>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Open a server in Telar&apos;s shared controlled browser. Agents can inspect and interact with the same tabs.</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Open a server in this session&apos;s controlled browser. Only agents in this session can inspect and interact with its tabs.</p>
             {serverState === "loading" ? (
               <div className="mt-5 space-y-2">{[0, 1, 2].map((item) => <div key={item} className="h-14 animate-pulse rounded-xl border border-border bg-muted/30" />)}</div>
             ) : servers.length > 0 ? (
