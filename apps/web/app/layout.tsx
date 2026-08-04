@@ -7,7 +7,7 @@ import {
 } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { DockProvider } from "@/components/dock/dock-provider";
-import { Dock } from "@/components/dock/dock";
+import { DockMount } from "@/components/dock/dock-mount";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/settings/theme-provider";
 import { LoomNotifications } from "@/components/common/loom-notifications";
 import { UltraDockSignal } from "@/components/common/ultra-dock-signal";
@@ -80,8 +80,11 @@ export default function RootLayout({
               <AppSidebar initialData={initialSidebarData} />
               <SidebarInset className="flex h-dvh flex-col">{children}</SidebarInset>
             </SidebarProvider>
-            {/* The mini-dock rides above every route — portaled to <body>. */}
-            <Dock />
+            {/* The mini-dock rides above every route — portaled to <body>.
+                Mounted through DockMount so its module graph (which reaches the
+                transcript renderer) is fetched only once something is docked,
+                rather than compiled into every route. */}
+            <DockMount />
           </DockProvider>
         </AccountsProvider>
       </body>
