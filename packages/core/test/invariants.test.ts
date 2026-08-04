@@ -190,8 +190,17 @@ const EXCLUDED_DIRS = new Set([
 // produced exactly that with `NEXT_DIST_DIR=.next-review`.) So the rule is
 // BOTH — the literal set above, plus any `.next-*` sibling of it. INV-8j
 // re-derives the names the config advertises and fails if one is not covered.
+// The separator is `[-.]`, NOT `-`, and the dot half was paid for in RAM. A
+// `.next.bak` (the ordinary way anyone snapshots a dist dir before deleting it —
+// `mv .next .next.bak`) matched neither the literal set nor `^\.next-`, so the
+// walk descended into it and read 4,615 minified chunks / 1.09 GB of .js into
+// the module-scope index — twice each, `text` plus comment-blanked `code`, as
+// UTF-16 — before the scans ran their regexes over the result. Measured on
+// 2026-08-04: 28 GB resident on a 16 GB machine, killed before it took the
+// machine down. The failure is silent up to that point, which is why it reads as
+// a hung test rather than a bad path.
 const isExcludedDir = (name: string): boolean =>
-  EXCLUDED_DIRS.has(name) || /^\.next-/.test(name);
+  EXCLUDED_DIRS.has(name) || /^\.next[-.]/.test(name);
 
 // ONE TOKENIZER, two uses. It walks source once and can blank comments, string
 // contents, or both — length and line structure always preserved, so offsets
