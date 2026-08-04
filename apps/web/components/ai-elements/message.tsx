@@ -13,10 +13,11 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { MarkdownPre } from "@/components/ai-elements/code-block";
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import {
+  useMermaidReady,
+  useStreamdownPlugins,
+} from "@/components/ai-elements/markdown-plugins";
+import type { MermaidErrorComponentProps } from "streamdown";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -331,8 +332,6 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
-
 // Streamdown renders ul/ol with `list-inside` (marker drawn in-flow, not in
 // the outside margin) but ZERO left padding on the top-level list — the
 // marker sits flush at the box's own left edge. Every chat surface wraps this
@@ -353,19 +352,74 @@ const streamdownPlugins = { cjk, code, math, mermaid };
 const STREAMDOWN_LIST_SPACING =
   "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5";
 
+// A ```mermaid fence rendered before the mermaid plugin has arrived is NOT an
+// error, but Streamdown's diagram component cannot tell the difference — it
+// finds no plugin on context and reports "Mermaid plugin not available", which
+// is true and useless. Since mermaid is the heaviest of the four lazy imports,
+// that message would be what a reader looks at for the whole fetch. This
+// replaces it: still loading reads as loading, and a genuine render failure
+// keeps the retry and the source, which is what the default box offers.
+function MermaidStatus({ chart, error, retry }: MermaidErrorComponentProps) {
+  const ready = useMermaidReady();
+  if (!ready) {
+    return (
+      <div className="my-4 flex min-h-28 items-center justify-center gap-2 rounded-md border border-border bg-muted/30 p-4 text-muted-foreground text-xs">
+        <span className="size-3 animate-spin rounded-full border-current border-b-2" />
+        Loading diagram…
+      </div>
+    );
+  }
+  return (
+    <div className="my-4 rounded-md border border-destructive/30 bg-destructive/10 p-3">
+      <p className="font-mono text-destructive text-xs">Mermaid error: {error}</p>
+      <button
+        type="button"
+        onClick={retry}
+        className="mt-2 rounded text-[11px] text-destructive underline underline-offset-2"
+      >
+        Retry
+      </button>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-[11px] text-destructive/80">Show code</summary>
+        <pre className="mt-1 overflow-x-auto rounded bg-destructive/10 p-2 text-[11px]">
+          {chart}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+// Module-scope so its identity is stable: Streamdown feeds the `mermaid` option
+// into a useMemo'd context value, and a fresh object each render would
+// invalidate it on every token of a streaming message.
+const MERMAID_OPTIONS = { errorComponent: MermaidStatus };
+
 export const MessageResponse = memo(
-  ({ className, components, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn(
-        "w-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        STREAMDOWN_LIST_SPACING,
-        className
-      )}
-      plugins={streamdownPlugins}
-      components={{ pre: MarkdownPre, ...components }}
-      {...props}
-    />
-  ),
+  ({ className, components, children, mermaid, ...props }: MessageResponseProps) => {
+    // katex/mermaid/shiki/cjk are ~2MB of renderer that most turns never use,
+    // and this component is in the globally-mounted dock's import graph. They
+    // load per message, from an effect, only for text whose syntax needs them —
+    // see markdown-plugins.ts for why that test is exact rather than a guess.
+    const plugins = useStreamdownPlugins(children);
+
+    return (
+      <Streamdown
+        className={cn(
+          "w-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          STREAMDOWN_LIST_SPACING,
+          className
+        )}
+        plugins={plugins}
+        // A caller-supplied option always wins; MERMAID_OPTIONS is only the
+        // default that keeps a loading diagram from reading as a broken one.
+        mermaid={mermaid ?? MERMAID_OPTIONS}
+        components={{ pre: MarkdownPre, ...components }}
+        {...props}
+      >
+        {children}
+      </Streamdown>
+    );
+  },
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     nextProps.isAnimating === prevProps.isAnimating
