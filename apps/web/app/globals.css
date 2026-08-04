@@ -354,6 +354,35 @@
   animation-name: none !important;
 }
 
+/* THE SHIMMER SWEEP, IN CSS RATHER THAN A LIBRARY.
+
+   `Shimmer` used `motion/react` to animate a single custom property linearly
+   from 100% to 0% on an infinite repeat. That is a keyframe, and nothing about
+   it needed a physics-capable animation runtime — but Shimmer is imported by
+   nine modules including working-indicator.tsx and tool-step.tsx, both of which
+   are on the transcript's critical path, so motion-dom (685KB unminified) was
+   pulled into the initial client graph of every transcript route to run this.
+
+   Animating mask-position directly (rather than a `--shimmer-x` variable) is
+   deliberate: custom properties are not interpolable unless registered with
+   @property, so a variable-based keyframe would step rather than sweep. Both
+   the prefixed and unprefixed properties are set because WebKit still needs
+   -webkit-mask-position.
+
+   The `motion-safe:` variant on the element carries the reduced-motion opt-out
+   that motion's own useReducedMotion would have provided — the sweep simply
+   does not run for users who asked for less animation. */
+@keyframes telar-shimmer {
+  from {
+    -webkit-mask-position: 100% center;
+    mask-position: 100% center;
+  }
+  to {
+    -webkit-mask-position: 0% center;
+    mask-position: 0% center;
+  }
+}
+
 /* Chromium's default scrollbars paint a stark near-white thumb over the dark
    shell. The standard properties (honored by Chromium ≥121 and Firefox; they
    supersede ::-webkit-scrollbar when set) tint the thumb from theme tokens so

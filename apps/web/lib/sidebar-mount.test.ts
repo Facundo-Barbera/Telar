@@ -77,7 +77,10 @@ describe("the production sidebar mount", () => {
     expect(sidebar).not.toContain("<SidebarGroupLabel>Needs you");
     expect(sidebar).not.toContain("ProjectRow");
     expect(sessionPage).not.toContain("SessionsRail");
-    expect(sidebar).toContain("prefetch={false}");
+    // The row moved out of app-sidebar.tsx into its own component; the claim
+    // being pinned is unchanged — session links must never speculatively fetch
+    // a force-dynamic transcript route.
+    expect(read("components/session/session-row.tsx")).toContain("prefetch={false}");
   });
 
   test("clears a focused run without starting an RSC navigation loop", () => {
@@ -125,7 +128,13 @@ describe("the production sidebar mount", () => {
     expect(layout).toContain("<AppSidebar initialData={initialSidebarData}");
     expect(layout).toContain("<AccountsProvider initial={accountEnvelope}>");
     expect(sidebar).toContain("if (!initialData) queueMicrotask");
-    expect(sidebar).toContain("fmtAgo(session.updatedAt, renderedAt)");
+    // The seeded clock must reach the row's time formatting rather than each
+    // row reading Date.now() — that is what keeps SSR and the first client
+    // render agreeing. The row now lives in its own file; the claim does not.
+    expect(read("components/session/session-row.tsx")).toContain(
+      "fmtAgo(session.updatedAt, renderedAt)",
+    );
+    expect(read("components/session/session-row.tsx")).not.toContain("Date.now()");
     expect(accounts).toContain("const AccountsContext = createContext");
     expect(accounts).toContain('refreshIncludes(event, "accounts")');
   });

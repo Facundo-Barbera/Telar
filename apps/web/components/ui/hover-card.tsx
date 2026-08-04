@@ -20,11 +20,35 @@ function HoverCardContent({
   sideOffset = 4,
   align = "center",
   alignOffset = 4,
+  // All three are forwarded to the POSITIONER, not the popup.
+  //
+  // `anchor` lets a caller position against something other than the trigger —
+  // needed when the trigger is only part of a row and the card would otherwise
+  // open on top of the row's other controls.
+  //
+  // `collisionAvoidance` matters because hover cards close via `safePolygon`
+  // pointer tracking, which breaks if collision handling flips the popup over
+  // its own trigger.
+  //
+  // `positionMethod` defaults to "absolute", which means an overflowing popup
+  // GROWS THE DOCUMENT — a horizontal scrollbar appears, layout shifts, the
+  // trigger moves, and hover is re-evaluated. For a hover-opened popup that is
+  // an open/close loop, so "fixed" is the right default for anything anchored
+  // near a viewport edge. See session-row.tsx.
+  anchor,
+  collisionAvoidance,
+  positionMethod,
   ...props
 }: PreviewCardPrimitive.Popup.Props &
   Pick<
     PreviewCardPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset"
+    | "align"
+    | "alignOffset"
+    | "side"
+    | "sideOffset"
+    | "anchor"
+    | "collisionAvoidance"
+    | "positionMethod"
   >) {
   return (
     <PreviewCardPrimitive.Portal data-slot="hover-card-portal">
@@ -33,6 +57,9 @@ function HoverCardContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        anchor={anchor}
+        collisionAvoidance={collisionAvoidance}
+        positionMethod={positionMethod}
         className="isolate z-50"
       >
         <PreviewCardPrimitive.Popup

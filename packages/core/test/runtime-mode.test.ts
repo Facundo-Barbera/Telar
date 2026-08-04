@@ -72,10 +72,14 @@ describe("Claude translation", () => {
     expect(claudePermissionMode("full-access")).toBe("bypassPermissions");
   });
 
-  test("approval-required sends NO permissionMode — the SDK's own ask default", () => {
-    // t3code's table omits this row rather than mapping it; omitting the field
-    // is what produces ask-every-time.
-    expect(claudePermissionMode("approval-required")).toBeUndefined();
+  test("approval-required sends an EXPLICIT default — never an absent field", () => {
+    // t3code omits this row and lets "no permissionMode" mean ask-every-time.
+    // Telar cannot: the chat route passes settingSources ["user","project",
+    // "local"], so an absent field falls back to ~/.claude/settings.json's
+    // `permissions.defaultMode` — and a user with `defaultMode: "auto"` there
+    // would get an auto-classified session while the composer says
+    // "Supervised". Sending the value explicitly is what makes the label true.
+    expect(claudePermissionMode("approval-required")).toBe("default");
   });
 });
 

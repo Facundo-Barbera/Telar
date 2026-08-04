@@ -78,15 +78,34 @@ export const runtimeModeLabel = (m: RuntimeMode): string =>
 
 // ── Claude ─────────────────────────────────────────────────────────────────
 
-/** The SDK permission modes a runtime mode can produce. `undefined` means
- *  "send no permissionMode", which is the SDK's own ask-every-time default —
- *  t3code's table has no entry for `approval-required` for exactly this reason
- *  (ClaudeAdapter.ts's runtimeModeToPermission omits it). */
-export type ClaudePermissionMode = "acceptEdits" | "auto" | "bypassPermissions" | undefined;
+/** The SDK permission modes a runtime mode can produce. Every mode maps to an
+ *  explicit value; `undefined` remains in the union only so callers that spread
+ *  it conditionally keep type-checking. */
+export type ClaudePermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "auto"
+  | "bypassPermissions"
+  | undefined;
 
 // Transcribed from t3code apps/server/src/provider/Layers/ClaudeAdapter.ts
 // (`runtimeModeToPermission`), which maps three of the four and leaves
 // `approval-required` to fall through to the SDK default.
+//
+// TELAR DIVERGES ON THE FOURTH ROW, and it is not a style choice. t3code omits
+// `approval-required` so the field is never sent, relying on "no permissionMode"
+// meaning ask-every-time. That holds only when nothing else supplies one — and
+// the chat route passes `settingSources: ["user", "project", "local"]`, so the
+// CLI falls back to `~/.claude/settings.json`'s `permissions.defaultMode`. A
+// user who sets `defaultMode: "auto"` there (a perfectly ordinary thing to do
+// for their own Claude Code) silently converts every Telar session the composer
+// labels "Supervised" into an auto-classified one: no permission card is ever
+// shown, and canUseTool is never even invoked for a call the classifier
+// approves. Measured on 2026-08-04 against exactly that settings file.
+//
+// Sending "default" explicitly pins the mode the label promises. The SDK's
+// PermissionMode union has always included it; omitting the field was never the
+// only way to ask for it, just the way that lost an argument with user settings.
 export function claudePermissionMode(mode: RuntimeMode): ClaudePermissionMode {
   switch (mode) {
     case "auto-accept-edits":
@@ -97,7 +116,7 @@ export function claudePermissionMode(mode: RuntimeMode): ClaudePermissionMode {
       return "bypassPermissions";
     case "approval-required":
     default:
-      return undefined; // ask every time — the SDK's own default
+      return "default"; // ask every time — stated, not inferred from absence
   }
 }
 

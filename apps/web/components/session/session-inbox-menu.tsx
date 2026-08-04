@@ -9,24 +9,24 @@
 // names them and calls the API, so the two can never drift into disagreeing
 // about, say, whether a snoozed row is also settled.
 //
-// Snooze presets are resolved against the BROWSER's clock (lib/snooze.ts) and
-// sent as an absolute instant, so the server holds no timezone opinion.
+// This is the OVERFLOW menu — the long tail. The two gestures an inbox is
+// actually for, settling and snoozing, sit on the row itself; what is left
+// here is everything that does not earn permanent space beside every title.
 
 import { useState } from "react";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
-  ClockIcon,
-  DotIcon,
+  CircleCheckIcon,
   MailIcon,
   MailOpenIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   Trash2Icon,
   UndoIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { deleteChat, patchChat } from "@/lib/chat-actions";
-import { snoozePresetsFor } from "@/lib/snooze";
 import { isUnread, type SidebarSession } from "@/lib/session-list";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,9 +34,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
@@ -45,6 +42,7 @@ export function SessionInboxMenu({
   session,
   settled,
   snoozed,
+  onRename,
   onDone,
   className,
 }: {
@@ -58,6 +56,8 @@ export function SessionInboxMenu({
    * real clock during render is both a hydration hazard and impure.
    */
   snoozed: boolean;
+  /** Switches the row into its inline editor. The row owns that state. */
+  onRename?: () => void;
   onDone?: () => void;
   className?: string;
 }) {
@@ -82,10 +82,6 @@ export function SessionInboxMenu({
   // those has nothing to clear — so it is offered only when there is a real
   // flag to remove, and the derived case says so in its own label instead.
   const canUnsettle = session.settledAt !== undefined || session.archived;
-
-  // The presets are recomputed per open rather than per render: "this evening"
-  // must not still be offered in a tab that was left open past 6pm.
-  const presets = open ? snoozePresetsFor(new Date()) : [];
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -124,7 +120,7 @@ export function SessionInboxMenu({
             </DropdownMenuItem>
           ) : (
             <DropdownMenuItem disabled>
-              <DotIcon />
+              <CircleCheckIcon />
               Settled — quiet for 3 days
             </DropdownMenuItem>
           )
@@ -132,11 +128,14 @@ export function SessionInboxMenu({
           <DropdownMenuItem
             onClick={() => void run(() => patchChat(session.id, { settled: true }))}
           >
-            <DotIcon />
+            <CircleCheckIcon />
             Settle
           </DropdownMenuItem>
         )}
 
+        {/* Snooze itself lives on the row (SnoozeMenu) — only its inverse is
+            here, because waking a row you can see is rare enough not to earn
+            permanent space beside every title. */}
         {snoozed ? (
           <DropdownMenuItem
             onClick={() => void run(() => patchChat(session.id, { snoozeUntil: null }))}
@@ -144,30 +143,16 @@ export function SessionInboxMenu({
             <UndoIcon />
             Wake now
           </DropdownMenuItem>
-        ) : (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <ClockIcon />
-              Snooze
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="min-w-40">
-              {presets.map((preset) => (
-                <DropdownMenuItem
-                  key={preset.id}
-                  onClick={() =>
-                    void run(() =>
-                      patchChat(session.id, { snoozeUntil: preset.at(new Date()) }),
-                    )
-                  }
-                >
-                  {preset.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-        )}
+        ) : null}
 
         <DropdownMenuSeparator />
+
+        {onRename ? (
+          <DropdownMenuItem onClick={onRename}>
+            <PencilIcon />
+            Rename
+          </DropdownMenuItem>
+        ) : null}
 
         <DropdownMenuItem
           onClick={() => void run(() => patchChat(session.id, { read: unread }))}

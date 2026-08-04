@@ -6,6 +6,7 @@ import os from "os";
 import path from "path";
 import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
+import { previewPlainText } from "./preview-text";
 import type { ContextUsageSnapshot } from "./context-usage";
 import type { RuntimeMode } from "@telar/core/runtime-mode";
 
@@ -223,9 +224,12 @@ function writeChats(chats: Chat[]) {
   fs.renameSync(tmp, file);
 }
 
-// Last assistant text, normalized to a single line and capped — the ~100-char
-// glimpse the list surfaces show under each session title. Scans from the end
-// so the freshest reply wins; "" when a session has no assistant text yet.
+// Last assistant text, flattened to plain words, normalized to a single line
+// and capped — the ~100-char glimpse the list surfaces show under each session
+// title. Scans from the end so the freshest reply wins; "" when a session has
+// no assistant text yet. The markdown strip runs BEFORE the whitespace
+// collapse (its line-anchored rules need the line starts) and before the cap
+// (so all 100 characters are visible ones) — see lib/preview-text.ts.
 function previewOf(messages: ChatMessage[] = []): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -234,7 +238,7 @@ function previewOf(messages: ChatMessage[] = []): string {
     for (let j = parts.length - 1; j >= 0; j--) {
       const p = parts[j];
       if (p.type === "text") {
-        const text = p.text.replace(/\s+/g, " ").trim();
+        const text = previewPlainText(p.text).replace(/\s+/g, " ").trim();
         if (text) return text.slice(0, 100);
       }
     }
