@@ -1,27 +1,16 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { MotionProps } from "motion/react";
-import { motion } from "motion/react";
-import type { CSSProperties, ElementType, JSX } from "react";
+import type { CSSProperties, ElementType } from "react";
 import { memo, useMemo } from "react";
 
-type MotionHTMLProps = MotionProps & Record<string, unknown>;
-
-// Cache motion components at module level to avoid creating during render
-const motionComponentCache = new Map<
-  keyof JSX.IntrinsicElements,
-  React.ComponentType<MotionHTMLProps>
->();
-
-const getMotionComponent = (element: keyof JSX.IntrinsicElements) => {
-  let component = motionComponentCache.get(element);
-  if (!component) {
-    component = motion.create(element);
-    motionComponentCache.set(element, component);
-  }
-  return component;
-};
+// NO ANIMATION LIBRARY HERE, ON PURPOSE. The sweep below is a plain CSS
+// keyframe (`telar-shimmer`, in app/globals.css). This component is imported by
+// nine modules, two of them — working-indicator.tsx and tool-step.tsx — on the
+// transcript's critical path, so importing `motion/react` for it put 685KB of
+// unminified animation runtime into the initial client graph of every
+// transcript route in dev. Keep it dependency-free; if this ever needs real
+// spring physics, lazy-load that variant rather than importing it here.
 
 export interface TextShimmerProps {
   children: string;
@@ -47,8 +36,6 @@ const ShimmerComponent = ({
   duration = 2,
   spread = 2,
 }: TextShimmerProps) => {
-  const MotionSpan = getMotionComponent("span");
-
   const dynamicSpread = useMemo(
     () => (children?.length ?? 0) * spread,
     [children, spread]
@@ -61,32 +48,29 @@ const ShimmerComponent = ({
   return (
     <Component className={cn("relative inline-block text-muted-foreground", className)}>
       {children}
-      <MotionSpan
+      <span
         aria-hidden
-        className="pointer-events-none absolute inset-0 text-foreground"
+        className="pointer-events-none absolute inset-0 text-foreground motion-safe:animate-[telar-shimmer_var(--shimmer-duration)_linear_infinite]"
         style={
           {
             "--shimmer-spread": `${dynamicSpread}px`,
+            "--shimmer-duration": `${duration}s`,
             WebkitMaskImage: maskImage,
             maskImage,
             WebkitMaskSize: "250% 100%",
             maskSize: "250% 100%",
             WebkitMaskRepeat: "no-repeat",
             maskRepeat: "no-repeat",
-            WebkitMaskPosition: "var(--shimmer-x) center",
-            maskPosition: "var(--shimmer-x) center",
+            // Start where the keyframe starts, so a reduced-motion user (for
+            // whom the animation never runs) sees the mask parked off the text
+            // rather than frozen mid-sweep across it.
+            WebkitMaskPosition: "100% center",
+            maskPosition: "100% center",
           } as CSSProperties
         }
-        initial={{ "--shimmer-x": "100%" }}
-        animate={{ "--shimmer-x": "0%" }}
-        transition={{
-          duration,
-          ease: "linear",
-          repeat: Number.POSITIVE_INFINITY,
-        }}
       >
         {children}
-      </MotionSpan>
+      </span>
     </Component>
   );
 };
