@@ -34,7 +34,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { StatusDot } from "@/components/session/agent-tabs";
 import {
   ToolStepRow,
-  toolActionLabel,
+  toolTallyLabel,
   type AgentInfo,
   type ToolPart,
 } from "@/components/session/tool-step";
@@ -47,9 +47,11 @@ import {
   LIVE_STEP_WINDOW,
   agentLabel,
   agentStatus,
+  foldSettledTurn,
   isTrailingItem,
   liveStepWindow,
   thinkingSuppressed,
+  type SettledTurnFold,
   type AttachmentRef,
   type AttachmentsPayload,
   type MarkerPayload,
@@ -58,6 +60,7 @@ import {
   type TextPayload,
   type ThinkingPayload,
   type ToolsPayload,
+  type TranscriptItem,
   type TurnPayload,
 } from "./items";
 import { Marker } from "./marker";
@@ -195,6 +198,7 @@ export function ToolStepGroup({
   open,
   onToggle,
   live,
+  insideFold,
   rowOpen,
   onToggleRow,
   agentSteps,
@@ -204,22 +208,12 @@ export function ToolStepGroup({
   open: boolean;
   onToggle: () => void;
   live: boolean;
+  insideFold?: boolean;
   rowOpen: (key: string) => boolean;
   onToggleRow: (key: string) => void;
   agentSteps?: (id: string) => number;
   onSelectAgent?: (id: string) => void;
 }) {
-  const tally: Array<[string, number]> = [];
-  const indexByName = new Map<string, number>();
-  for (const p of toolParts) {
-    const i = indexByName.get(p.name);
-    if (i === undefined) {
-      indexByName.set(p.name, tally.length);
-      tally.push([p.name, 1]);
-    } else {
-      tally[i][1] += 1;
-    }
-  }
   // Surfaced even while collapsed — otherwise a group that just finished
   // showing a failing/cancelled step visually disappears the instant the
   // turn ends and the group auto-collapses back to its default.
@@ -249,6 +243,25 @@ export function ToolStepGroup({
       />
     );
   };
+
+  // ── INSIDE AN OPEN FOLD: bare rows, because the fold row is the header ────
+  //
+  // The turn's fold row above already states the step count and the tally over
+  // exactly these parts. Drawing the group's own summary here printed that
+  // sentence twice, a few lines apart, with the second copy indented under the
+  // first — which reads as two different groups that happen to agree.
+  if (insideFold && !live) {
+    return (
+      <div
+        className={cn(
+          "flex w-full min-w-0 flex-col gap-0.5 text-xs",
+          hasError && "text-destructive",
+        )}
+      >
+        {toolParts.map(renderRow)}
+      </div>
+    );
+  }
 
   // ── LIVE: a rolling window, not an accordion ─────────────────────────────
   //
@@ -331,7 +344,7 @@ export function ToolStepGroup({
         </span>
         <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="min-w-0 truncate text-muted-foreground/80">
-          {tally.map(([name, count]) => `${toolActionLabel(name)}${count > 1 ? ` ×${count}` : ""}`).join(" · ")}
+          {toolTallyLabel(toolParts)}
         </span>
       </button>
       {open && (
@@ -359,19 +372,106 @@ export function ToolStepGroup({
 // the empty-turn shimmer gets a home in the payload, built by the only party
 // that knows about `busy`; and a transcript with NO turns at all still works,
 // which is what the subagent bucket and story 6.6's TranscriptView both need.
+/** A tools item told that it is being shown under an open fold. Rewriting the
+ *  PAYLOAD (rather than reaching for shell state the turn does not own) is the
+ *  sanctioned channel — behaviour reaches a renderer through its payload — and
+ *  the item's `key`, its identity and the scope of its disclosure state, is
+ *  untouched. */
+const withOpenWork = (item: TranscriptItem): TranscriptItem =>
+  item.kind === CONVERSATION_KINDS.tools
+    ? { ...item, payload: { ...(item.payload as ToolsPayload), insideFold: true } }
+    : item;
+
+/** The settled turn's one-row summary of everything it took to answer. */
+function TurnFoldRow({
+  fold,
+  expanded,
+  onToggle,
+}: {
+  fold: SettledTurnFold;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const steps = fold.toolParts.length;
+  // Errors must survive the fold. A turn whose work failed and then said
+  // something reassuring would otherwise read as clean history.
+  const hasError = fold.toolParts.some((p) => p.isError);
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-muted-foreground hover:bg-muted/50",
+        hasError && "text-destructive",
+      )}
+    >
+      <ChevronRightIcon
+        className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-90")}
+      />
+      {hasError && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
+      <span className="shrink-0">
+        {steps} step{steps === 1 ? "" : "s"}
+      </span>
+      <span className="shrink-0 text-muted-foreground/50">·</span>
+      <span className="min-w-0 truncate text-muted-foreground/80">
+        {toolTallyLabel(fold.toolParts)}
+      </span>
+    </button>
+  );
+}
+
 const turnKind: ItemKind<TurnPayload> = {
   id: CONVERSATION_KINDS.turn,
-  render: (payload, view) => (
-    <Message from={payload.from}>
-      <MessageContent>
-        {payload.items.length === 0
-          ? payload.pending
-          : payload.items.map((child, i) =>
-              view.render(child, { live: view.live && isTrailingItem(payload.items, i) }),
-            )}
-      </MessageContent>
-    </Message>
-  ),
+  render: (payload, view) => {
+    // SETTLED IS DERIVED, NOT DECLARED. The shell already marks exactly one
+    // top-level item live (the last, and only while the owner says the surface
+    // is streaming), so "assistant turn that is not live" IS "assistant turn
+    // that has finished" — for the turn mid-history and the turn that ended two
+    // seconds ago alike. Adding a `settled` field to the payload would have
+    // made the adapter re-derive, and eventually disagree with, a fact the
+    // shell was already computing correctly.
+    const fold =
+      payload.from === "assistant" && !view.live ? foldSettledTurn(payload.items) : null;
+    const expanded = view.isOpen("fold");
+    // Opening the fold means "show me the work", so the groups it un-hides come
+    // back OPEN. Left to their own default they would each re-collapse behind a
+    // tally header — and since the phase-1 grouping fix usually leaves a settled
+    // turn with exactly ONE group, that header is the fold row's own label
+    // repeated verbatim one line below it. Answering a click with a copy of the
+    // thing clicked is worse than not having the fold at all.
+    const shown = !fold
+      ? payload.items
+      : expanded
+        ? [...fold.hidden.map(withOpenWork), ...fold.tail]
+        : fold.tail;
+    return (
+      <Message from={payload.from}>
+        <MessageContent>
+          {payload.items.length === 0 ? (
+            payload.pending
+          ) : (
+            <>
+              {fold && (
+                <TurnFoldRow
+                  fold={fold}
+                  expanded={expanded}
+                  onToggle={() => view.setOpen("fold", !expanded)}
+                />
+              )}
+              {/* `isTrailingItem` runs over what is ACTUALLY rendered, not over
+                  `payload.items` — with a fold collapsed the two differ, and
+                  liveness computed against the wrong array would name an index
+                  that is not on screen. */}
+              {shown.map((child, i) =>
+                view.render(child, { live: view.live && isTrailingItem(shown, i) }),
+              )}
+            </>
+          )}
+        </MessageContent>
+      </Message>
+    );
+  },
 };
 
 const textKind: ItemKind<TextPayload> = {
@@ -474,6 +574,7 @@ const toolsKind: ItemKind<ToolsPayload> = {
       toolParts={payload.parts}
       open={view.isOpen("group")}
       live={view.live}
+      insideFold={payload.insideFold}
       onToggle={() => view.setOpen("group", !view.isOpen("group"))}
       rowOpen={(key) => view.isOpen(`row:${key}`)}
       onToggleRow={(key) => view.setOpen(`row:${key}`, !view.isOpen(`row:${key}`))}

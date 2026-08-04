@@ -314,6 +314,13 @@ export type ToolsPayload = {
   parts: ToolPart[];
   agentSteps?: (id: string) => number;
   onSelectAgent?: (id: string) => void;
+  /** This group is on screen only because a settled turn's fold was opened, and
+   *  THAT ROW IS ALREADY THIS GROUP'S HEADER — it carries the same step count
+   *  and the same tally, computed over the same parts. So the group renders its
+   *  rows bare: no summary line (it would be the fold's label repeated verbatim
+   *  a few lines below itself) and no collapse control (the fold row is the
+   *  control). Set by `conversation:turn`; absent everywhere else. */
+  insideFold?: boolean;
 };
 export type PermissionPayload = {
   part: PermissionPart;
@@ -450,6 +457,74 @@ export const toTranscriptItems = (
   items: readonly RenderItem[],
   hooks: ItemPayloadHooks = {},
 ): TranscriptItem[] => items.map((i) => toTranscriptItem(i, hooks));
+
+// ── the settled-turn fold ──────────────────────────────────────────────────
+
+// WHAT A SETTLED TURN MAY HIDE. A finished turn is history, and history is read
+// for its conclusion; the eighteen steps that produced it are available on
+// demand and in the way by default. Everything NOT in this set — an ultra run
+// anchor, a marker, an attachment — is something the user came back for, so a
+// fold that swallowed one would be lying about what the turn contains.
+const FOLDABLE_KINDS: ReadonlySet<string> = new Set<string>([
+  CONVERSATION_KINDS.text,
+  CONVERSATION_KINDS.thinking,
+  CONVERSATION_KINDS.tools,
+  CONVERSATION_KINDS.permission,
+  CONVERSATION_KINDS.status,
+]);
+
+export type SettledTurnFold = {
+  /** Everything behind the fold, in order. */
+  hidden: readonly TranscriptItem[];
+  /** Everything still shown below the summary row — the turn's answer. */
+  tail: readonly TranscriptItem[];
+  /** Every tool part behind the fold, flattened, for the summary's tally. */
+  toolParts: readonly ToolPart[];
+};
+
+/**
+ * A settled turn's work, collapsed behind one summary row — or `null` when
+ * there is nothing worth collapsing.
+ *
+ * THE FOLD ENDS AT THE LAST TOOLS GROUP. Everything up to and including it is
+ * HOW the answer was made; everything after it IS the answer. That single
+ * boundary is why intermediate commentary folds with the work it narrates while
+ * the closing prose survives — which is the behaviour a reader wants and is
+ * hard to get from "hide the tool calls" alone.
+ *
+ * NO DURATION IN THE LABEL, deliberately. `StoreMessage` persists `{role,
+ * parts}` and nothing else, so a reloaded turn has no timings at all; a
+ * "Worked for 2m 14s" that appeared on fresh turns and vanished on reload would
+ * be worse than the step tally, which is exact in both cases and says more.
+ */
+export function foldSettledTurn(items: readonly TranscriptItem[]): SettledTurnFold | null {
+  let lastTools = -1;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (items[i].kind === CONVERSATION_KINDS.tools) {
+      lastTools = i;
+      break;
+    }
+  }
+  // A turn that called no tools has no work to hide: its text is all it is.
+  if (lastTools < 0) return null;
+
+  const hidden = items.slice(0, lastTools + 1);
+  // ALL-OR-NOTHING, rather than folding around the unfoldable ones. Hiding a
+  // contiguous range is the only way to keep the survivors in their original
+  // order — skipping would reorder an ultra anchor relative to the prose that
+  // introduced it. "This turn didn't fold" is a much cheaper surprise than
+  // "this turn folded and moved things around".
+  if (!hidden.every((it) => FOLDABLE_KINDS.has(it.kind))) return null;
+
+  const toolParts = hidden.flatMap((it) =>
+    it.kind === CONVERSATION_KINDS.tools ? [...((it.payload as ToolsPayload).parts ?? [])] : [],
+  );
+  // A tools group that somehow carries no parts summarises to nothing; leave
+  // the turn alone rather than offer a fold row that says "0 steps".
+  if (toolParts.length === 0) return null;
+
+  return { hidden, tail: items.slice(lastTools + 1), toolParts };
+}
 
 // THE DONOR'S `isTrailing`, kept as one exported function so the two composite
 // renderers that need it (conversation:turn and the adapter's own agent-bucket

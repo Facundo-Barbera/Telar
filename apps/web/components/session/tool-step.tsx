@@ -118,6 +118,33 @@ export function toolActionLabel(name: string) {
   return TOOL_ACTIONS[canonical] ?? canonical.replaceAll("_", " ");
 }
 
+/**
+ * The compact "what happened here" tally, in FIRST-APPEARANCE order:
+ * `Ran command ×12 · Read file ×4 · Edited file ×2`.
+ *
+ * Shared by the collapsed tool group and the settled-turn fold so the two
+ * summaries cannot drift into describing the same work two different ways —
+ * they are the same sentence at two scales, and a reader learns it once.
+ * First-appearance beats frequency order because it preserves the shape of the
+ * turn: what the agent reached for first stays first.
+ */
+export function toolTallyLabel(parts: readonly ToolPart[]): string {
+  const tally: Array<[string, number]> = [];
+  const indexByName = new Map<string, number>();
+  for (const p of parts) {
+    const i = indexByName.get(p.name);
+    if (i === undefined) {
+      indexByName.set(p.name, tally.length);
+      tally.push([p.name, 1]);
+    } else {
+      tally[i][1] += 1;
+    }
+  }
+  return tally
+    .map(([name, count]) => `${toolActionLabel(name)}${count > 1 ? ` ×${count}` : ""}`)
+    .join(" · ");
+}
+
 function toolIcon(name: string) {
   const canonical = canonicalToolName(name);
   if (canonical.startsWith("browser_")) return GlobeIcon;

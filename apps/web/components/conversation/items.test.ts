@@ -20,6 +20,7 @@ import {
   isTrailingItem,
   parentOf,
   LIVE_STEP_WINDOW,
+  foldSettledTurn,
   liveStepWindow,
   showsLiveStatus,
   thinkingSuppressed,
@@ -182,6 +183,86 @@ describe("liveStepWindow — a live group shows its current step, not its histor
 
   test("the window is exactly LIVE_STEP_WINDOW wide once it engages", () => {
     expect(liveStepWindow(steps, false).visible.length).toBe(LIVE_STEP_WINDOW);
+  });
+});
+
+describe("foldSettledTurn — a finished turn is read for its conclusion", () => {
+  const it = (kind: string, key: string, payload: unknown = {}): TranscriptItem =>
+    ({ kind, key, payload }) as TranscriptItem;
+  const tools = (key: string, ...names: string[]) =>
+    it(CONVERSATION_KINDS.tools, key, { parts: names.map((n) => ({ type: "tool", name: n })) });
+  const prose = (key: string) => it(CONVERSATION_KINDS.text, key, { text: "hi" });
+
+  test("work folds, the closing prose survives", () => {
+    const fold = foldSettledTurn([tools("g1", "Bash", "Read"), prose("t1")]);
+    expect(fold?.hidden.map((i) => i.key)).toEqual(["g1"]);
+    expect(fold?.tail.map((i) => i.key)).toEqual(["t1"]);
+    expect(fold?.toolParts.map((p) => p.name)).toEqual(["Bash", "Read"]);
+  });
+
+  test("intermediate commentary folds WITH the work it narrates", () => {
+    // The boundary is the last tools group, not "the tool calls" — which is why
+    // the intro text goes and the answer stays.
+    const fold = foldSettledTurn([
+      prose("intro"),
+      tools("g1", "Bash"),
+      prose("mid"),
+      tools("g2", "Read"),
+      prose("answer"),
+    ]);
+    expect(fold?.hidden.map((i) => i.key)).toEqual(["intro", "g1", "mid", "g2"]);
+    expect(fold?.tail.map((i) => i.key)).toEqual(["answer"]);
+    expect(fold?.toolParts.map((p) => p.name)).toEqual(["Bash", "Read"]);
+  });
+
+  test("a turn that called no tools never folds", () => {
+    expect(foldSettledTurn([prose("t1"), prose("t2")])).toBeNull();
+  });
+
+  test("an empty turn never folds", () => {
+    expect(foldSettledTurn([])).toBeNull();
+  });
+
+  test("a turn that is ONLY work folds entirely, leaving an empty tail", () => {
+    const fold = foldSettledTurn([tools("g1", "Bash")]);
+    expect(fold?.hidden.map((i) => i.key)).toEqual(["g1"]);
+    expect(fold?.tail).toEqual([]);
+  });
+
+  test("an unfoldable item anywhere in the range cancels the fold entirely", () => {
+    // All-or-nothing: folding AROUND the ultra anchor would hoist it above the
+    // prose that introduced it. Not folding is the cheaper surprise.
+    expect(
+      foldSettledTurn([prose("intro"), it("ultra:anchor", "u1"), tools("g1", "Bash"), prose("a")]),
+    ).toBeNull();
+  });
+
+  test("an unfoldable item AFTER the last tools group does not cancel the fold", () => {
+    // It is in the tail, so it stays visible and nothing moves.
+    const fold = foldSettledTurn([tools("g1", "Bash"), it("ultra:anchor", "u1"), prose("a")]);
+    expect(fold?.hidden.map((i) => i.key)).toEqual(["g1"]);
+    expect(fold?.tail.map((i) => i.key)).toEqual(["u1", "a"]);
+  });
+
+  test("thinking, permission and status rows are all foldable", () => {
+    const fold = foldSettledTurn([
+      it(CONVERSATION_KINDS.thinking, "th", { text: "hmm", done: true }),
+      it(CONVERSATION_KINDS.permission, "p1"),
+      it(CONVERSATION_KINDS.status, "s1"),
+      tools("g1", "Bash"),
+      prose("a"),
+    ]);
+    expect(fold?.hidden.map((i) => i.key)).toEqual(["th", "p1", "s1", "g1"]);
+  });
+
+  test("a tools group carrying no parts summarises to nothing, so nothing folds", () => {
+    expect(foldSettledTurn([it(CONVERSATION_KINDS.tools, "g1", { parts: [] }), prose("a")])).toBeNull();
+  });
+
+  test("hidden + tail always reconstructs the turn, in order", () => {
+    const items = [prose("intro"), tools("g1", "Bash"), tools("g2", "Read"), prose("answer")];
+    const fold = foldSettledTurn(items);
+    expect([...(fold?.hidden ?? []), ...(fold?.tail ?? [])]).toEqual(items);
   });
 });
 
