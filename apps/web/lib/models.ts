@@ -138,6 +138,23 @@ export const modelById = (id: string): ModelInfo | undefined =>
 export const modelsForProvider = (p: "claude" | "codex"): ModelInfo[] =>
   MODELS.filter((m) => (m.provider ?? "claude") === p);
 
+/**
+ * Which harness ran a session, from the model id it persisted.
+ *
+ * The registry is consulted first, but a chat legitimately stores whatever
+ * concrete id the harness reported — including models that have since left
+ * MODELS, or ids this static table never carried. Those must not all silently
+ * render as Claude, so unknown ids fall back to a name-shape check. Claude
+ * remains the default because it is the only provider whose ids are bare
+ * aliases ("sonnet", "opus") with no distinguishing prefix.
+ */
+export function providerForModel(id: string | undefined): "claude" | "codex" {
+  if (!id) return "claude";
+  const known = modelById(id);
+  if (known) return known.provider ?? "claude";
+  return /^(gpt|o[1-9]|codex)/i.test(id) ? "codex" : "claude";
+}
+
 /** Resolve context metadata for persisted concrete Claude ids. New sessions
  * use stable slot aliases, while older chats legitimately store the concrete
  * id reported by the harness. Both must produce the same context wheel. */

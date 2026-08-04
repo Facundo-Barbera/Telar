@@ -10,6 +10,16 @@ export type SidebarSession = {
   costUsd: number;
   archived?: boolean;
   role?: string;
+  // Detail the row shows on hover rather than inline. All optional: these ride
+  // along free on the list payload (listChats already projects every one), so
+  // the hover card costs no extra request — but old persisted chats predate
+  // some of them and must still render.
+  model?: string;
+  effort?: string;
+  turns?: number;
+  contextTokens?: number;
+  /** One-line glimpse of the latest assistant reply, from listChats. */
+  preview?: string;
   // ── inbox state (see lib/store.ts's Chat for what each one means) ──────────
   settledAt?: number;
   snoozedUntil?: number;

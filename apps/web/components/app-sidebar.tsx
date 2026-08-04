@@ -27,14 +27,12 @@ import {
 import type { Loom } from "@telar/core/looms";
 import {
   activeSessionFromPathname,
-  bandOf,
   deriveSessionList,
   isUnread,
   SESSION_PAGE_SIZE,
   type SessionFilter,
   type SidebarSession,
 } from "@/lib/session-list";
-import { fmtAgo, fmtCost } from "@/lib/format";
 import { patchChat } from "@/lib/chat-actions";
 import {
   refreshIncludes,
@@ -58,7 +56,7 @@ import {
 } from "@/components/ui/sidebar";
 import { StateBadge } from "@/components/common/state-badge";
 import { isLoomNeedsYou, isLoomRunning } from "@/lib/project-signal";
-import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
+import { SessionRow } from "@/components/session/session-row";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -273,154 +271,6 @@ function SidebarEmpty({
   );
 }
 
-// The one signal a session row carries about itself, in precedence order:
-// a running turn outranks an unread reply, which outranks nothing at all.
-// `live` is server-derived per fetch (GET /api/chats over the in-flight run
-// registry), so the animated state can never outlive the turn it describes.
-function SessionStatus({ session }: { session: ChatMeta }) {
-  if (session.live) {
-    return (
-      <span className="relative flex size-1.5 shrink-0" title="Running now">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-75" />
-        <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
-        <span className="sr-only">Running now</span>
-      </span>
-    );
-  }
-  if (isUnread(session)) {
-    return (
-      <span className="flex size-1.5 shrink-0 rounded-full bg-primary" title="Unread">
-        <span className="sr-only">Unread</span>
-      </span>
-    );
-  }
-  return null;
-}
-
-// When a snoozed row is shown, its return time is the useful fact — not how
-// long ago it was last touched. Days out reads as a date; anything sooner as a
-// weekday and clock time.
-function fmtWake(at: number, now: number): string {
-  const wake = new Date(at);
-  const days = Math.round((at - now) / (24 * 60 * 60 * 1000));
-  const time = wake.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  if (days >= 7) return wake.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  if (days >= 1) return `${wake.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
-  return time;
-}
-
-function SessionRow({
-  session,
-  active,
-  showProject,
-  searchable = false,
-  searchSelected = false,
-  renderedAt,
-  onRefresh,
-}: {
-  session: ChatMeta;
-  active: boolean;
-  showProject: boolean;
-  searchable?: boolean;
-  searchSelected?: boolean;
-  renderedAt: number;
-  onRefresh: () => void;
-}) {
-  if (!session.project) return null;
-  const href = `/projects/${encodeURIComponent(session.project)}/sessions/${encodeURIComponent(session.id)}`;
-  const snoozedUntil =
-    session.snoozedUntil !== undefined && session.snoozedUntil > renderedAt
-      ? session.snoozedUntil
-      : undefined;
-  return (
-    <div
-      className={`group/session relative rounded-md ${
-        active || searchSelected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"
-      }`}
-    >
-      <Link
-        id={`sidebar-session-${session.id}`}
-        href={href}
-        // Session routes are force-dynamic and carry the transcript. They are
-        // deliberately fetched only when selected; speculative RSC work here
-        // multiplies across every open Telar window during development.
-        prefetch={false}
-        role={searchable ? "option" : undefined}
-        aria-selected={searchable ? searchSelected : undefined}
-        aria-current={active ? "page" : undefined}
-        className="block min-w-0 px-2 py-2 pr-8 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {showProject ? (
-          <>
-            <span className="flex min-w-0 items-center gap-1.5 text-[10px] text-sidebar-foreground/50">
-              <FolderGit2Icon className="size-3 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{session.project}</span>
-              {snoozedUntil ? (
-                <span className="flex shrink-0 items-center gap-0.5 text-sidebar-foreground/45">
-                  <ClockIcon className="size-2.5" />
-                  {fmtWake(snoozedUntil, renderedAt)}
-                </span>
-              ) : (
-                <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
-              )}
-            </span>
-            <span className="mt-1 flex min-w-0 items-center gap-1.5">
-              <SessionStatus session={session} />
-              <span
-                className={`min-w-0 flex-1 truncate text-xs text-sidebar-foreground ${
-                  isUnread(session) ? "font-semibold" : "font-medium"
-                }`}
-              >
-                {session.title || "Untitled session"}
-              </span>
-              <span className="shrink-0 font-mono text-[9px] text-sidebar-foreground/35">
-                {fmtCost(session.costUsd)}
-              </span>
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="flex min-w-0 items-center gap-1.5">
-              <SessionStatus session={session} />
-              <span
-                className={`min-w-0 flex-1 truncate text-xs text-sidebar-foreground ${
-                  isUnread(session) ? "font-semibold" : "font-medium"
-                }`}
-              >
-                {session.title || "Untitled session"}
-              </span>
-            </span>
-            <span className="mt-1 flex items-center gap-1.5 text-[10px] text-sidebar-foreground/45">
-              {snoozedUntil ? (
-                <span className="flex shrink-0 items-center gap-0.5">
-                  <ClockIcon className="size-2.5" />
-                  {fmtWake(snoozedUntil, renderedAt)}
-                </span>
-              ) : (
-                <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
-              )}
-              <span aria-hidden>·</span>
-              <span className="shrink-0 font-mono">{fmtCost(session.costUsd)}</span>
-            </span>
-          </>
-        )}
-      </Link>
-      {!searchable && (
-        <SessionInboxMenu
-          session={session}
-          // Derived per row rather than passed down per band, so a row rendered
-          // in the flat "Settled" chip view offers Unsettle just like the one
-          // in the shelf does.
-          settled={bandOf(session, renderedAt) === "settled"}
-          snoozed={snoozedUntil !== undefined}
-          onDone={onRefresh}
-          className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-popup-open:opacity-100"
-        />
-      )}
-    </div>
-  );
-}
-
 // A collapsed band of rows below the live list — Snoozed and Settled are the
 // same shape and differ only in what put a row there, so they share one
 // component rather than two near-identical blocks that drift apart.
@@ -629,6 +479,11 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
 
   const projectNames = projects.map((project) => project.entry.name);
   const selectedScope = scope && projectNames.includes(scope) ? scope : undefined;
+  // With ONE registered project every row would carry the same project name,
+  // which is not information — it is the same word repeated down the list,
+  // wearing the space the title needs. Scoping to a project does the same
+  // thing, since the header already says which one you are in.
+  const showProject = !selectedScope && projectNames.length > 1;
 
   const activeSessionId = activeSessionFromPathname(pathname);
   const list = deriveSessionList({
@@ -916,7 +771,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                   key={session.id}
                   session={session}
                   active={session.id === activeSessionId}
-                  showProject={!selectedScope}
+                  showProject={showProject}
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
@@ -951,7 +806,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
               onShowMore={() => setSnoozedLimit((limit) => limit + SESSION_PAGE_SIZE)}
               limit={snoozedLimit}
               activeSessionId={activeSessionId}
-              showProject={!selectedScope}
+              showProject={showProject}
               renderedAt={renderedAt}
               onRefresh={loadAll}
             />
@@ -965,7 +820,7 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
               onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
               limit={settledLimit}
               activeSessionId={activeSessionId}
-              showProject={!selectedScope}
+              showProject={showProject}
               renderedAt={renderedAt}
               onRefresh={loadAll}
             />

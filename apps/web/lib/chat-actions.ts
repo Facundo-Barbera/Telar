@@ -11,7 +11,7 @@
 // to dispatch it leaves every other open surface showing stale state until the
 // next unrelated poll.
 
-import { TELAR_REFRESH_EVENT } from "./telar-refresh";
+import { dispatchTelarRefresh } from "./telar-refresh";
 
 export type ChatPatch =
   | { title: string }
@@ -20,8 +20,15 @@ export type ChatPatch =
   | { snoozeUntil: number | null }
   | { read: boolean };
 
+// SCOPED, never a bare `new Event("telar:refresh")`. A detail-less event is the
+// legacy "invalidate everything" spelling (refreshIncludes returns true for
+// EVERY domain when there is no detail), which means each settle/snooze/read —
+// gestures the inbox invites you to make constantly — would also force an
+// immediate `/api/ultra` poll via ultra-dock-signal's `schedule(0)`, plus a
+// looms and projects refetch. Nothing here touches any of those: these writes
+// change chat rows and nothing else.
 function announce() {
-  window.dispatchEvent(new Event(TELAR_REFRESH_EVENT));
+  dispatchTelarRefresh({ domains: ["chats"] });
 }
 
 /**
