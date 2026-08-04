@@ -56,8 +56,7 @@ import {
   type SidebarWidthProposal,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { StateBadge } from "@/components/common/state-badge";
-import { isLoomNeedsYou, isLoomRunning } from "@/lib/project-signal";
+import { isLoomRunning } from "@/lib/project-signal";
 import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -673,9 +672,6 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
     void patchChat(activeChat.id, { read: true });
   }, [activeChat, activeUnread]);
 
-  const needsYou = looms
-    .filter((loom) => isLoomNeedsYou(loom.state))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
   const activeLoomCount = looms.filter((loom) => isLoomRunning(loom.state)).length;
   const selectedSearchIndex = list.sessions.length
     ? Math.min(searchIndex, list.sessions.length - 1)
@@ -846,30 +842,10 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
           />
         </div>
 
-        {needsYou.length > 0 && !query && filter === "all" && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Needs you</SidebarGroupLabel>
-            <SidebarGroupContent className="space-y-0.5">
-              {needsYou.map((loom) => (
-                <Link
-                  key={loom.id}
-                  href={`/looms/${encodeURIComponent(loom.id)}`}
-                  className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-sidebar-accent"
-                >
-                  <StateBadge
-                    state={loom.state}
-                    className="shrink-0 gap-1 px-1.5 py-0 text-[9px]"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-xs">{loom.title}</span>
-                  <span className="truncate text-[10px] text-muted-foreground">
-                    {loom.project}
-                  </span>
-                </Link>
-              ))}
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
+        {/* Looms are not chats: they carry no read/settle/snooze state, and a
+            non-ready loom has no terminal action a person can take, so a
+            "Needs you" group here could only accumulate. The signal lives on
+            the /looms page and the dashboard, which can act on it. */}
         <SidebarGroup className="min-h-0 flex-1">
           <SidebarGroupLabel>
             {query

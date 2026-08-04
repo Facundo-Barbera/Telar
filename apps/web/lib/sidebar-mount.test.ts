@@ -68,7 +68,13 @@ describe("the production sidebar mount", () => {
     expect(sidebar).toContain("deriveSessionList");
     expect(sidebar).toContain('cachedJson<{ chats?: ChatMeta[] }>("/api/chats?archived=include"');
     expect(sidebar).toContain("isLoomRunning(loom.state)");
-    expect(sidebar).toContain("isLoomNeedsYou(loom.state)");
+    // The sidebar is a chat inbox. Looms carry no read/settle/snooze state and
+    // a non-ready one has no terminal action a person can take, so an
+    // attention group for them here could only accumulate — that signal
+    // belongs to /looms and the dashboard, which can act on it. isLoomRunning
+    // stays: it feeds the activity indicator, not a list.
+    expect(sidebar).not.toContain("isLoomNeedsYou");
+    expect(sidebar).not.toContain("<SidebarGroupLabel>Needs you");
     expect(sidebar).not.toContain("ProjectRow");
     expect(sessionPage).not.toContain("SessionsRail");
     expect(sidebar).toContain("prefetch={false}");
