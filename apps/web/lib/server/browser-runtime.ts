@@ -20,6 +20,52 @@ export type BrowserToolResult = Awaited<ReturnType<SdkMcpToolDefinition["handler
 export type { BrowserRuntimeEvent } from "@/lib/browser-runtime-contract";
 
 const RPC_TIMEOUT_MS = 30_000;
+const MAX_FALLBACK_SCOPES = 6;
+
+export type ScopedRuntimeResource = {
+  isBusy: () => boolean;
+  dispose: (reason: string) => void;
+};
+
+/** Small LRU for heavyweight per-session browser processes. Busy resources are
+ * never evicted: a background agent keeps its browser even while another chat
+ * is selected. If every retained resource is busy the pool may temporarily
+ * exceed its limit, then a later acquisition reclaims the oldest idle entry. */
+export class ScopedRuntimePool<T extends ScopedRuntimeResource> {
+  private entries = new Map<string, { resource: T; usedAt: number }>();
+  private clock = 0;
+
+  constructor(private readonly limit: number) {}
+
+  acquire(scopeKey: string, create: () => T): T {
+    const existing = this.entries.get(scopeKey);
+    if (existing) {
+      existing.usedAt = ++this.clock;
+      return existing.resource;
+    }
+    if (this.entries.size >= this.limit) {
+      const candidate = [...this.entries.entries()]
+        .filter(([, entry]) => !entry.resource.isBusy())
+        .sort(([, a], [, b]) => a.usedAt - b.usedAt)[0];
+      if (candidate) {
+        const [key, entry] = candidate;
+        this.entries.delete(key);
+        entry.resource.dispose("The inactive browser session was reclaimed.");
+      }
+    }
+    const resource = create();
+    this.entries.set(scopeKey, { resource, usedAt: ++this.clock });
+    return resource;
+  }
+
+  peek(scopeKey: string): T | null {
+    return this.entries.get(scopeKey)?.resource ?? null;
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+}
 
 const MUTATING_TOOLS = new Set([
   "browser_navigate",
@@ -134,19 +180,24 @@ export function parseBrowserTabs(text: string): ControlledBrowserTab[] {
   return tabs;
 }
 
-class BrowserRuntime {
-  private child: ChildProcessWithoutNullStreams | null = null;
-  private starting: Promise<void> | null = null;
-  private fallbackScopeKey: string | null = null;
-  private nextId = 1;
-  private pending = new Map<number, {
+type FallbackSession = ScopedRuntimeResource & {
+  scopeKey: string;
+  child: ChildProcessWithoutNullStreams | null;
+  starting: Promise<void> | null;
+  nextId: number;
+  activeCalls: number;
+  pending: Map<number, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
-  }>();
+  }>;
+  lastError: string | null;
+  stderr: string;
+};
+
+class BrowserRuntime {
+  private fallbacks = new ScopedRuntimePool<FallbackSession>(MAX_FALLBACK_SCOPES);
   private listeners = new Set<(event: BrowserRuntimeEvent) => void>();
-  private lastError: string | null = null;
-  private stderr = "";
   private _version = 0;
 
   constructor() {
@@ -155,10 +206,6 @@ class BrowserRuntime {
 
   get version() {
     return this._version;
-  }
-
-  get running() {
-    return this.child !== null;
   }
 
   subscribe(listener: (event: BrowserRuntimeEvent) => void) {
@@ -183,36 +230,55 @@ class BrowserRuntime {
     for (const listener of this.listeners) listener(event);
   }
 
-  private stopFallback(reason = "The browser session changed.") {
-    const child = this.child;
-    this.child = null;
-    this.fallbackScopeKey = null;
+  private stopFallback(session: FallbackSession, reason: string) {
+    const child = session.child;
+    session.child = null;
     if (child) child.kill();
-    for (const pending of this.pending.values()) {
+    for (const pending of session.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
-    this.pending.clear();
+    session.pending.clear();
   }
 
-  private async start(scopeKey: string) {
-    if (this.child && this.fallbackScopeKey === scopeKey) return;
-    if (this.child) this.stopFallback();
-    if (this.starting) {
-      await this.starting;
-      if (this.child && this.fallbackScopeKey === scopeKey) return;
-      if (this.child) this.stopFallback();
+  private fallback(scopeKey: string): FallbackSession {
+    return this.fallbacks.acquire(scopeKey, () => {
+      let session: FallbackSession;
+      session = {
+        scopeKey,
+        child: null,
+        starting: null,
+        nextId: 1,
+        activeCalls: 0,
+        pending: new Map(),
+        lastError: null,
+        stderr: "",
+        isBusy: () => Boolean(
+          session.activeCalls > 0 || session.starting || session.pending.size > 0,
+        ),
+        dispose: (reason) => this.stopFallback(session, reason),
+      };
+      return session;
+    });
+  }
+
+  private async start(scopeKey: string): Promise<FallbackSession> {
+    const session = this.fallback(scopeKey);
+    if (session.child) return session;
+    if (session.starting) {
+      await session.starting;
+      return session;
     }
-    this.starting = this.startInner();
+    session.starting = this.startInner(session);
     try {
-      await this.starting;
-      this.fallbackScopeKey = scopeKey;
+      await session.starting;
+      return session;
     } finally {
-      this.starting = null;
+      session.starting = null;
     }
   }
 
-  private async startInner() {
+  private async startInner(session: FallbackSession) {
     const bin = resolvePlaywrightMcpBin();
     const args = [
       "--headless",
@@ -226,9 +292,9 @@ class BrowserRuntime {
     // package bin directly depends on `/usr/bin/env node`, which is absent on
     // valid Bun-only Telar installations.
     const child = spawn(process.execPath, [bin, ...args], { stdio: ["pipe", "pipe", "pipe"] });
-    this.child = child;
-    this.lastError = null;
-    this.stderr = "";
+    session.child = child;
+    session.lastError = null;
+    session.stderr = "";
 
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
@@ -239,64 +305,64 @@ class BrowserRuntime {
         return;
       }
       if (message.id === undefined) return;
-      const pending = this.pending.get(message.id);
+      const pending = session.pending.get(message.id);
       if (!pending) return;
-      this.pending.delete(message.id);
+      session.pending.delete(message.id);
       clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message ?? "Browser runtime error."));
       else pending.resolve(message.result);
     });
     child.stderr.on("data", (chunk) => {
-      this.stderr = `${this.stderr}${String(chunk)}`.slice(-8_000);
+      session.stderr = `${session.stderr}${String(chunk)}`.slice(-8_000);
     });
     const onClosed = () => {
-      if (this.child !== child) return;
-      this.child = null;
-      const reason = browserErrorText(this.stderr) || "The controlled browser stopped unexpectedly.";
-      this.lastError = reason;
-      for (const pending of this.pending.values()) {
+      if (session.child !== child) return;
+      session.child = null;
+      const reason = browserErrorText(session.stderr) || "The controlled browser stopped unexpectedly.";
+      session.lastError = reason;
+      for (const pending of session.pending.values()) {
         clearTimeout(pending.timer);
         pending.reject(new Error(reason));
       }
-      this.pending.clear();
-      this.emit();
+      session.pending.clear();
+      this.emit(false, session.scopeKey);
     };
     child.once("error", onClosed);
     child.once("exit", onClosed);
 
     try {
-      await this.request("initialize", {
+      await this.request(session, "initialize", {
         protocolVersion: "2025-06-18",
         capabilities: {},
         clientInfo: { name: "telar", version: "0.1.0" },
       });
-      this.notify("notifications/initialized");
+      this.notify(session, "notifications/initialized");
     } catch (error) {
-      if (this.child === child) this.child = null;
+      if (session.child === child) session.child = null;
       child.kill();
       throw error;
     }
   }
 
-  private request<T>(method: string, params: unknown): Promise<T> {
-    if (!this.child) return Promise.reject(new Error("Browser runtime is not running."));
-    const id = this.nextId++;
+  private request<T>(session: FallbackSession, method: string, params: unknown): Promise<T> {
+    if (!session.child) return Promise.reject(new Error("Browser runtime is not running."));
+    const id = session.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return;
+        if (!session.pending.delete(id)) return;
         reject(new Error(`Controlled browser timed out while calling ${method}.`));
       }, RPC_TIMEOUT_MS);
-      this.pending.set(id, {
+      session.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
         timer,
       });
-      this.child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      session.child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   }
 
-  private notify(method: string, params: unknown = {}) {
-    this.child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  private notify(session: FallbackSession, method: string, params: unknown = {}) {
+    session.child?.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   }
 
   async call(
@@ -346,7 +412,6 @@ class BrowserRuntime {
         return result;
       }
     } catch (error) {
-      this.lastError = browserErrorText(error instanceof Error ? error.message : error);
       if (notifyPresence) {
         this.emit(false, options.scopeKey, {
           status: "settling",
@@ -359,14 +424,19 @@ class BrowserRuntime {
       }
       throw error;
     }
-    await this.start(scopeKey);
+    // Take the scope lease BEFORE awaiting process startup. Without this tiny
+    // ordering rule, another conversation could hit the LRU in the gap between
+    // `start()` resolving and `tools/call` registering its pending RPC.
+    const session = this.fallback(scopeKey);
+    session.activeCalls += 1;
     try {
-      const result = await this.request<BrowserToolResult>("tools/call", {
+      await this.start(scopeKey);
+      const result = await this.request<BrowserToolResult>(session, "tools/call", {
         name: runtimeName,
         arguments: runtimeArgs,
       });
       const failure = result.isError ? browserErrorText(textOf(result)) || "Browser action failed." : null;
-      this.lastError = failure;
+      session.lastError = failure;
       const reveal =
         !result.isError &&
         shouldRevealBrowserCall(runtimeName, runtimeArgs, notifyPresence);
@@ -382,7 +452,7 @@ class BrowserRuntime {
       }
       return result;
     } catch (error) {
-      this.lastError = browserErrorText(error instanceof Error ? error.message : error);
+      session.lastError = browserErrorText(error instanceof Error ? error.message : error);
       if (notifyPresence) {
         this.emit(false, options.scopeKey, {
           status: "settling",
@@ -394,6 +464,8 @@ class BrowserRuntime {
         }, false);
       }
       throw error;
+    } finally {
+      session.activeCalls = Math.max(0, session.activeCalls - 1);
     }
   }
 
@@ -436,18 +508,20 @@ class BrowserRuntime {
       return {
         scopeKey,
         available: !tabsResult.isError,
-        running: this.running,
+        running: Boolean(this.fallbacks.peek(scopeKey)?.child),
         provider: "playwright",
         tabs,
         screenshot,
-        error: tabsResult.isError ? browserErrorText(textOf(tabsResult)) : this.lastError,
+        error: tabsResult.isError
+          ? browserErrorText(textOf(tabsResult))
+          : this.fallbacks.peek(scopeKey)?.lastError ?? null,
         version: this.version,
       };
     } catch (error) {
       return {
         scopeKey,
         available: false,
-        running: this.running,
+        running: Boolean(this.fallbacks.peek(scopeKey)?.child),
         provider: "playwright",
         tabs: [],
         screenshot: null,
@@ -461,7 +535,7 @@ class BrowserRuntime {
 // Bump this key when the runtime launch contract changes. Next.js preserves
 // global values through server hot reloads, so reusing an older instance would
 // otherwise keep stale launch flags and errors until the dev server restarts.
-const GLOBAL_KEY = Symbol.for("telar.controlled-browser-runtime.v3");
+const GLOBAL_KEY = Symbol.for("telar.controlled-browser-runtime.v4");
 const runtimeGlobal = globalThis as typeof globalThis & { [GLOBAL_KEY]?: BrowserRuntime };
 
 export function controlledBrowserRuntime(): BrowserRuntime {
