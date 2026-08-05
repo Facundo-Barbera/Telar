@@ -1,13 +1,22 @@
-name: Nightly desktop build
+name: Nightly channel build
 
-# Unattended: runs daily and publishes straight to R2 under the "nightly"
-# channel, no GitHub Release (that would spam the releases page). Skips
-# entirely if origin/main hasn't moved since the last nightly tag, so an
-# idle repo doesn't burn macOS runner minutes for a no-op rebuild.
+# On demand, not on a timer. Publishes straight to R2 under the "nightly"
+# channel and cuts no GitHub Release — that page is for betas, and a stream of
+# dev builds would bury them. The channel keeps its name because the version
+# scheme and the update feed (nightly-mac.yml) are keyed on it; only the
+# cadence is manual.
+#
+# There is deliberately no "has main moved since the last build?" gate: that
+# only ever earned its keep against an idle daily cron. Dispatching by hand and
+# silently getting nothing back would be a worse failure, and rebuilding the
+# same commit is exactly what you want after a run dies halfway.
 on:
-  schedule:
-    - cron: "17 9 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA)"
+        required: false
+        default: "origin/main"
 
 permissions:
   contents: write
@@ -18,27 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # build-desktop.sh resolves --ref against full origin history; also needed for tag diffing
-
-      - name: Check whether main has moved since the last nightly tag
-        id: gate
-        run: |
-          set -euo pipefail
-          git fetch --prune origin
-          LAST_NIGHTLY_SHA="$(git rev-list --tags='v*-nightly.*' --max-count=1 2>/dev/null || true)"
-          HEAD_SHA="$(git rev-parse origin/main)"
-          if [ -n "$LAST_NIGHTLY_SHA" ] && [ "$LAST_NIGHTLY_SHA" = "$HEAD_SHA" ]; then
-            echo "origin/main unchanged since the last nightly tag ($HEAD_SHA) — skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          # build-desktop.sh resolves --ref against full origin history, and
+          # set-desktop-version.mjs counts existing tags to pick the next
+          # nightly number — both need an unshallow clone with tags.
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
-        if: steps.gate.outputs.skip != 'true'
 
       - name: Import Developer ID certificate into a temporary keychain
-        if: steps.gate.outputs.skip != 'true'
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -66,7 +62,6 @@ jobs:
           rm -f "$CERT_PATH"
 
       - name: Write App Store Connect API key
-        if: steps.gate.outputs.skip != 'true'
         env:
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
         run: |
@@ -77,7 +72,6 @@ jobs:
       # macOS runner image does not reliably ship. Its preflight fails fast
       # rather than mid-build, but only after a long build has already run.
       - name: Ensure the aws CLI is on PATH
-        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           if ! command -v aws >/dev/null 2>&1; then
@@ -86,8 +80,8 @@ jobs:
           aws --version
 
       - name: Build, sign, notarize, and publish to R2
-        if: steps.gate.outputs.skip != 'true'
         env:
+          REF: ${{ inputs.ref }}
           APPLE_API_KEY: ${{ runner.temp }}/apple_api_key.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -98,19 +92,24 @@ jobs:
           UPDATE_PROXY_URL: ${{ secrets.UPDATE_PROXY_URL }}
           UPDATE_PROXY_KEY: ${{ secrets.UPDATE_PROXY_KEY }}
         run: |
-          bash scripts/build-desktop.sh --ref origin/main --targets zip,dmg \
+          bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg \
             --channel nightly --publish-r2
 
+      # Tags the commit that was actually built, not origin/main, so a build of
+      # an older ref cannot mislabel the tip. The tag is also what
+      # set-desktop-version.mjs counts to pick the next nightly number.
       - name: Tag the nightly version (no GitHub Release)
-        if: steps.gate.outputs.skip != 'true'
+        env:
+          REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           VERSION="$(cat apps/desktop/release/from-origin/VERSION)"
-          git tag "v$VERSION" origin/main
+          SHA="$(git rev-parse --verify "${REF}^{commit}")"
+          git tag "v$VERSION" "$SHA"
           git push origin "v$VERSION"
 
       - name: Clean up temporary keychain
-        if: always() && steps.gate.outputs.skip != 'true'
+        if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/apple_api_key.p8" 2>/dev/null || true
