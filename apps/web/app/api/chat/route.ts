@@ -49,6 +49,7 @@ import {
 } from "@/lib/models";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
+import { autoDenialMessage } from "@/lib/permission-denial";
 import {
   appendixCarriesUltraWake,
   isUltraWakeTrigger,
@@ -830,7 +831,21 @@ export async function POST(req: Request) {
         // never destructured/used here — see the comment below at the
         // "allow" return for why it's never forwarded as
         // `updatedPermissions`.
-        { signal }: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
+        //
+        // `agentID` IS read, and its absence was a real hole. The SDK documents
+        // it as "If running within the context of a sub-agent, the sub-agent's
+        // ID", and this route's own design DEPENDS on sub-agent calls arriving
+        // here: the agent-spawn tool is deliberately routed through canUseTool
+        // rather than listed in `allowedTools` (see the comment below) so that
+        // every tool a sub-agent goes on to call gates individually. That means
+        // this function is, by design, the busiest permission surface in the
+        // app during parallel agent work — and until now it rendered every one
+        // of those requests identically, with nothing saying which agent was
+        // asking. A queue of anonymous prompts is a queue nobody can answer.
+        {
+          signal,
+          agentID,
+        }: { signal: AbortSignal; suggestions?: PermissionUpdate[]; agentID?: string },
       ): Promise<PermissionResult> => {
         // disallowedTools / protectedPaths — shared with the PreToolUse hook
         // below (options.hooks) so the same checks apply whether or not this
@@ -900,7 +915,11 @@ export async function POST(req: Request) {
         // moment this tool call is aborted, rather than hanging to timeout.
         const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
         signal.addEventListener("abort", onAbort, { once: true });
-        send("permission", { id, toolName, input, rule, ruleOptions });
+        // `agentId` is undefined for the main turn and set for a sub-agent's
+        // call. Undefined is meaningful here and must not be coerced to a
+        // placeholder: "the session itself is asking" is a different statement
+        // from "some agent is asking and we lost track of which".
+        send("permission", { id, toolName, input, rule, ruleOptions, agentId: agentID });
 
         let decision: PermissionDecision;
         try {
@@ -2009,12 +2028,40 @@ export async function POST(req: Request) {
               tool_use_id: string;
               message: string;
               decision_reason_type?: string;
+              // WHY THESE TWO ARE READ NOW. Both are on the SDK's message and
+              // both used to be dropped here, which is precisely why a day of
+              // stalled sub-agents could not be diagnosed from telar's own
+              // output: the harness was reporting WHY on every single denial
+              // and this handler discarded it. `agent_id` is documented as
+              // "Subagent ID when the denied tool call originated inside a
+              // subagent. Mirrors can_use_tool for host-side routing" — without
+              // it a surface cannot say WHICH agent was blocked, and with many
+              // agents live that is the difference between a diagnosis and a
+              // guess.
+              decision_reason?: string;
+              agent_id?: string;
             };
+            // The message the MODEL is given, which is not the message the SDK
+            // supplied — see lib/permission-denial.ts. The SDK's default text
+            // asserts the user refused; for a classifier or working-directory
+            // block nobody was asked, and a sub-agent told to "wait for the
+            // user" waits until its turn budget is gone.
+            const denialMessage = autoDenialMessage(
+              pd.decision_reason_type,
+              pd.decision_reason,
+              pd.message,
+            );
             send("permission_denied", {
               toolName: pd.tool_name,
               toolUseId: pd.tool_use_id,
-              message: pd.message,
+              message: denialMessage,
               reason: pd.decision_reason_type,
+              // Forwarded for the surface, NOT for the model: the operator
+              // needs the raw discriminator and the originating agent to tell
+              // an auto-block apart from their own refusal at a glance.
+              reasonDetail: pd.decision_reason,
+              agentId: pd.agent_id,
+              sdkMessage: pd.message,
             });
             const existing = parts.find(
               (p): p is Extract<Part, { type: "tool" }> =>
@@ -2023,7 +2070,7 @@ export async function POST(req: Request) {
             if (existing) {
               existing.autoDenied = true;
               existing.isError = true;
-              if (existing.output === undefined) existing.output = pd.message;
+              if (existing.output === undefined) existing.output = denialMessage;
             } else {
               parts.push({
                 type: "tool",
@@ -2031,7 +2078,7 @@ export async function POST(req: Request) {
                 name: pd.tool_name,
                 isError: true,
                 autoDenied: true,
-                output: pd.message,
+                output: denialMessage,
               });
               partOrigin.push(undefined);
             }
