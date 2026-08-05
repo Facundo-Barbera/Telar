@@ -60,6 +60,7 @@ class DesktopBrowserManager {
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
+    this.activeToolCalls = new Map();
   }
 
   requireScope(scopeKey) {
@@ -128,23 +129,38 @@ class DesktopBrowserManager {
     this.applyVisibility();
   }
 
-  setVisible(scopeKey, visible) {
+  async setVisible(scopeKey, visible) {
     const scope = this.requireScope(scopeKey);
     if (visible) {
       this.visibleScopeKey = scope;
       for (const tab of this.scopeTabs(scope)) {
         if (!tab.destroyWhenIdle) this.cancelDeferredHibernate(tab);
       }
+      const active = this.scopeTabs(scope).length ? this.activeTab(scope) : null;
+      if (active) {
+        try {
+          await this.wakeTab(active);
+        } catch {
+          // The native view still renders Electron's navigation failure page.
+          // Visibility restoration must not become an unhandled renderer
+          // rejection merely because the remembered local server is offline.
+        }
+      }
     }
     else if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
-    if (!visible) this.releaseScope(scope);
   }
 
   hideVisibleScope() {
     const scope = this.visibleScopeKey;
     if (!scope) return;
-    this.setVisible(scope, false);
+    this.visibleScopeKey = null;
+    this.applyVisibility();
+    // A renderer reload has no viewport to return to and is the one lifecycle
+    // where eagerly reclaiming the native view is useful. Ordinary panel/chat
+    // switches call setVisible(false), which now only hides so background
+    // agents keep a live page and returning users get an immediate render.
+    this.releaseScope(scope);
   }
 
   createViewForTab(tab) {
@@ -243,7 +259,11 @@ class DesktopBrowserManager {
   }
 
   finishDeferredHibernate(tab, force = false) {
-    if (!tab.hibernateWhenIdle || !tab.view || ((tab.loading || tab.navigationPending > 0) && !force)) return;
+    if (
+      !tab.hibernateWhenIdle ||
+      !tab.view ||
+      ((tab.loading || tab.navigationPending > 0 || (this.activeToolCalls.get(tab.scopeKey) || 0) > 0) && !force)
+    ) return;
     const destroy = tab.destroyWhenIdle;
     this.hibernateTab(tab);
     if (destroy) {
@@ -257,7 +277,7 @@ class DesktopBrowserManager {
       if (destroy) this.removeTab(tab);
       return;
     }
-    if (tab.loading || tab.navigationPending > 0) {
+    if (tab.loading || tab.navigationPending > 0 || (this.activeToolCalls.get(tab.scopeKey) || 0) > 0) {
       tab.hibernateWhenIdle = true;
       tab.destroyWhenIdle ||= destroy;
       if (!tab.hibernateTimer) {
@@ -276,8 +296,12 @@ class DesktopBrowserManager {
     const live = this.tabs.filter((tab) => tab.view && tab !== exceptTab);
     while (live.length + (exceptTab?.view ? 1 : 0) > this.maxLiveViews) {
       const candidate = live
-        .filter((tab) => tab.scopeKey !== this.visibleScopeKey)
-        .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] ?? live.shift();
+        .filter(
+          (tab) =>
+            tab.scopeKey !== this.visibleScopeKey &&
+            (this.activeToolCalls.get(tab.scopeKey) || 0) === 0,
+        )
+        .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
       if (!candidate) break;
       this.hibernateTab(candidate);
       const index = live.indexOf(candidate);
@@ -688,6 +712,7 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
+    this.activeToolCalls.set(scope, (this.activeToolCalls.get(scope) || 0) + 1);
     let timeoutId;
     const timeout = new Promise((_, reject) => {
       timeoutId = setTimeout(() => reject(new Error(`Browser action ${name} timed out.`)), RPC_TIMEOUT_MS);
@@ -742,6 +767,10 @@ class DesktopBrowserManager {
       return errorResult(error);
     } finally {
       clearTimeout(timeoutId);
+      const remaining = Math.max(0, (this.activeToolCalls.get(scope) || 1) - 1);
+      if (remaining) this.activeToolCalls.set(scope, remaining);
+      else this.activeToolCalls.delete(scope);
+      for (const tab of this.scopeTabs(scope)) this.finishDeferredHibernate(tab);
     }
   }
 

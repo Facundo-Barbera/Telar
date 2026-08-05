@@ -423,9 +423,9 @@ ipcMain.handle("telar:browser:tool", (_event, input) =>
 ipcMain.handle("telar:browser:set-bounds", (_event, input) => {
   requireBrowserManager().setBounds(input?.scopeKey, input?.bounds);
 });
-ipcMain.handle("telar:browser:set-visible", (_event, input) => {
-  requireBrowserManager().setVisible(input?.scopeKey, input?.visible);
-});
+ipcMain.handle("telar:browser:set-visible", (_event, input) =>
+  requireBrowserManager().setVisible(input?.scopeKey, input?.visible),
+);
 ipcMain.handle("telar:browser:release-scope", (_event, input) =>
   requireBrowserManager().releaseScope(input?.scopeKey, Boolean(input?.destroy)),
 );

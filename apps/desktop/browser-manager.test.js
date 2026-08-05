@@ -145,9 +145,9 @@ function makeHarness(options = {}) {
       views.push(view);
       return view;
     },
-    wait: async (milliseconds) => {
+    wait: options.wait || (async (milliseconds) => {
       waits.push(milliseconds);
-    },
+    }),
     maxLiveViews: options.maxLiveViews,
   });
   return { children, manager, messages, views, waits };
@@ -173,7 +173,7 @@ describe("DesktopBrowserManager", () => {
 
     await manager.createTab("session-a", "localhost:3000");
     manager.setBounds("session-a", { x: 10.4, y: 20.6, width: 800.2, height: 600.8 });
-    manager.setVisible("session-a", true);
+    await manager.setVisible("session-a", true);
 
     expect(manager.state("session-a").tabs).toEqual([
       expect.objectContaining({ id: "tab-1", url: "http://localhost:3000/", active: true }),
@@ -190,7 +190,7 @@ describe("DesktopBrowserManager", () => {
   test("hides and hibernates the visible scope safely during a renderer reload", async () => {
     const { children, manager, views } = makeHarness();
     await manager.createTab("session-a", "https://example.com");
-    manager.setVisible("session-a", true);
+    await manager.setVisible("session-a", true);
 
     expect(() => manager.hideVisibleScope()).not.toThrow();
     expect(manager.visibleScopeKey).toBeNull();
@@ -201,10 +201,71 @@ describe("DesktopBrowserManager", () => {
     ]);
   });
 
+  test("conversation switches hide without destroying the session browser", async () => {
+    const { children, manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://a.example");
+    await manager.setVisible("session-a", true);
+
+    await manager.setVisible("session-a", false);
+    expect(views[0].visible).toBe(false);
+    expect(views[0].webContents.destroyed).toBe(false);
+    expect(children.size).toBe(1);
+
+    await manager.createTab("session-b", "https://b.example");
+    await manager.setVisible("session-b", true);
+    expect(textOf(await manager.callTool("session-a", "browser_tabs", { action: "list" })))
+      .toContain("https://a.example/");
+
+    await manager.setVisible("session-b", false);
+    await manager.setVisible("session-a", true);
+    expect(views[0].visible).toBe(true);
+    expect(views[0].webContents.destroyed).toBe(false);
+  });
+
+  test("returning to a budget-hibernated conversation recreates its rendered view", async () => {
+    const { children, manager, views } = makeHarness({ maxLiveViews: 1 });
+    await manager.createTab("session-a", "https://a.example");
+    await manager.createTab("session-b", "https://b.example");
+    expect(views[0].webContents.destroyed).toBe(true);
+
+    await manager.setVisible("session-a", true);
+    expect(children.size).toBe(1);
+    expect(views[2].visible).toBe(true);
+    expect(views[2].webContents.getURL()).toBe("https://a.example/");
+  });
+
+  test("the live-view budget cannot hibernate a background browser tool call", async () => {
+    let releaseWait;
+    let enteredWait;
+    const waiting = new Promise((resolve) => { enteredWait = resolve; });
+    const gate = new Promise((resolve) => { releaseWait = resolve; });
+    const { manager, views } = makeHarness({
+      maxLiveViews: 1,
+      wait: async () => {
+        enteredWait();
+        await gate;
+      },
+    });
+    await manager.createTab("session-a", "https://a.example");
+    await manager.callTool("session-a", "browser_snapshot");
+    const click = manager.callTool("session-a", "browser_click", {
+      target: "e1",
+      element: "Count 0 button",
+    });
+    await waiting;
+
+    await manager.setVisible("session-a", false);
+    await manager.createTab("session-b", "https://b.example");
+    expect(views[0].webContents.destroyed).toBe(false);
+
+    releaseWait();
+    expect((await click).isError).not.toBe(true);
+  });
+
   test("does not close a view while navigation is still loading", async () => {
     const { children, manager, views } = makeHarness();
     await manager.createTab("session-a");
-    manager.setVisible("session-a", true);
+    await manager.setVisible("session-a", true);
     let finishLoad;
     views[0].webContents.loadGate = new Promise((resolve) => { finishLoad = resolve; });
 
@@ -212,7 +273,7 @@ describe("DesktopBrowserManager", () => {
       action: "navigate",
       url: "https://www.youtube.com/",
     });
-    manager.setVisible("session-a", false);
+    manager.releaseScope("session-a");
 
     expect(views[0].webContents.destroyed).toBe(false);
     expect(views[0].visible).toBe(false);
