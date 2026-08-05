@@ -50,6 +50,11 @@ import {
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { autoDenialMessage } from "@/lib/permission-denial";
+
+/** The in-process MCP servers telar itself constructs and whose whole tool
+ *  surface it wrote. Kept beside the `mcpServers` literal's own key list, which
+ *  is the only other place these four names appear together. */
+const TELAR_OWN_MCP_SERVERS = ["browser", "loom", "ultra", "workspace"] as const;
 import {
   appendixCarriesUltraWake,
   isUltraWakeTrigger,
@@ -1750,6 +1755,49 @@ export async function POST(req: Request) {
             abortController: abort,
           },
         });
+        // TELAR'S OWN TOOLS ARE NOT THE CLASSIFIER'S BUSINESS.
+        //
+        // In `auto` mode a model classifier — a security monitor prompted to
+        // catch "actions even a human developer shouldn't do unilaterally" —
+        // approves or denies every call that reaches the permission-mode step.
+        // That is the right posture for Bash and for edits. It is the wrong one
+        // for the four in-process servers telar itself defines and whose entire
+        // surface it wrote: filing a workspace item, reading a loom, inspecting
+        // an Ultra run. Those are already gated by the PreToolUse guardrail
+        // (which runs first, in every mode) and by this route's own
+        // canUseTool, so classifying them adds no safety and one more way to
+        // fail — including a denial the user never made, which is what a
+        // classifier non-decision reaches the model as.
+        //
+        // The override is per SERVER NAME, so it names only servers telar
+        // constructs. A project's own `telar.yaml` MCP servers are deliberately
+        // absent: those are third-party surfaces this app did not write, and
+        // they keep the classifier.
+        //
+        // AND A SHADOWED NAME IS SKIPPED, which is the sharp edge here. The
+        // mcpServers literal above spreads the project's own servers LAST, and
+        // later keys win — so a project that defines a server called
+        // `workspace` REPLACES ours under that name. Exempting by name alone
+        // would then hand a third-party server the exemption written for
+        // telar's own, which is the one way this could weaken a boundary rather
+        // than tidy one. The shadowing is pre-existing and recorded in
+        // deferred-work.md; what must not be pre-existing is this override
+        // trusting it.
+        //
+        // Best-effort by design. It is only available in streaming input mode
+        // and is a refinement, not a guarantee — a failure here must never take
+        // down a turn that would otherwise run, so it is caught and dropped.
+        const projectServerNames = new Set(
+          project ? Object.keys(resolveProjectMcpServers(project)) : [],
+        );
+        for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
+          try {
+            await q.setMcpPermissionModeOverride(server, "default");
+          } catch {
+            // An SDK that does not offer the override, or a name that no server
+            // registered under, leaves the classifier in place — the status quo.
+          }
+        }
         for await (const msg of q) {
           if (msg.type === "system" && msg.subtype === "init") {
             const init = msg as {
