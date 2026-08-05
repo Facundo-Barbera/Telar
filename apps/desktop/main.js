@@ -17,6 +17,7 @@ const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
 const { app, BrowserWindow, ipcMain } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
 
@@ -432,6 +433,77 @@ ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
   requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
 
+// --- Auto-update (electron-updater) ------------------------------------------
+// electron-updater has no way to bake a custom request header into the
+// generated app-update.yml itself, so the shared secret that the R2 update
+// proxy requires travels as extraMetadata (set via
+// -c.extraMetadata.updateProxyKey at build time, in scripts/build-desktop.sh)
+// and gets read back out of the packaged package.json here, at runtime.
+function updateProxyKey() {
+  try {
+    return require("./package.json").updateProxyKey || null;
+  } catch {
+    return null;
+  }
+}
+
+let updaterWindow = null;
+function broadcastUpdateStatus(status, extra = {}) {
+  const win = updaterWindow || BrowserWindow.getAllWindows()[0];
+  win?.webContents.send("telar:updates:status", { status, ...extra });
+}
+
+// A packaged build only has a real feed to talk to when --publish-r2 baked both
+// the proxy URL and its key in together; without the key the publish.url is
+// still the package.json placeholder, so checking would only ever produce a
+// DNS error. That makes the key the honest test for "updates are available
+// here at all" — both for the automatic checks and for the Settings button.
+function updatesConfigured() {
+  return app.isPackaged && Boolean(updateProxyKey());
+}
+
+function checkForUpdates() {
+  // The 'error' event already reports failures to the UI; this catch only stops
+  // a background check's rejection from surfacing as an unhandled rejection.
+  return autoUpdater.checkForUpdates().catch(() => null);
+}
+
+// Long enough to be invisible on a working day, short enough that a nightly
+// lands the same day it is published.
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function configureAutoUpdater() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = false;
+  const key = updateProxyKey();
+  if (key) autoUpdater.requestHeaders = { "X-Telar-Update-Key": key };
+
+  autoUpdater.on("checking-for-update", () => broadcastUpdateStatus("checking"));
+  autoUpdater.on("update-available", (info) => broadcastUpdateStatus("available", { version: info.version }));
+  autoUpdater.on("update-not-available", (info) => broadcastUpdateStatus("not-available", { version: info.version }));
+  autoUpdater.on("download-progress", (progress) => broadcastUpdateStatus("downloading", { percent: progress.percent }));
+  autoUpdater.on("update-downloaded", (info) => broadcastUpdateStatus("downloaded", { version: info.version }));
+  autoUpdater.on("error", (err) =>
+    broadcastUpdateStatus("error", { message: err && err.message ? err.message : String(err) }),
+  );
+
+  if (!updatesConfigured()) return;
+  void checkForUpdates();
+  const timer = setInterval(() => void checkForUpdates(), UPDATE_CHECK_INTERVAL_MS);
+  timer.unref?.(); // a pending check must never be the reason the app stays alive
+}
+
+ipcMain.handle("telar:updates:check", async () => {
+  if (!updatesConfigured()) return { status: "unsupported" };
+  await checkForUpdates();
+  return { status: "checking" };
+});
+ipcMain.handle("telar:updates:install", () => {
+  if (!app.isPackaged) return;
+  app.isQuitting = true;
+  autoUpdater.quitAndInstall();
+});
+
 // --- (f) Teardown ------------------------------------------------------------
 function killServer() {
   if (serverChild && !serverChild.killed) {
@@ -567,7 +639,8 @@ if (SMOKE) {
           await waitForServer(port);
           url = `http://127.0.0.1:${port}/`;
         }
-        createWindow(url);
+        updaterWindow = createWindow(url);
+        configureAutoUpdater();
         app.on("activate", () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
         });

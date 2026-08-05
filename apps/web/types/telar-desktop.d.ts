@@ -21,6 +21,19 @@ type DesktopBrowserPointerEvent = {
   createdAt: string;
 };
 
+export type TelarDesktopUpdateStatus = {
+  status: "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+  version?: string;
+  percent?: number;
+  message?: string;
+};
+
+export type TelarDesktopUpdatesBridge = {
+  check: () => Promise<{ status: string }>;
+  install: () => Promise<void>;
+  onStatus: (listener: (status: TelarDesktopUpdateStatus) => void) => () => void;
+};
+
 export type TelarDesktopBrowserBridge = {
   getState: (scopeKey: string) => Promise<ControlledBrowserState>;
   action: (scopeKey: string, action: ControlledBrowserAction) => Promise<ControlledBrowserState>;
@@ -41,6 +54,7 @@ declare global {
     telarDesktop?: {
       isDesktop: true;
       browser: TelarDesktopBrowserBridge;
+      updates: TelarDesktopUpdatesBridge;
     };
   }
 }

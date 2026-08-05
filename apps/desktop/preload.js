@@ -19,4 +19,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
   },
+  updates: {
+    check: () => ipcRenderer.invoke("telar:updates:check"),
+    install: () => ipcRenderer.invoke("telar:updates:install"),
+    onStatus: (listener) => on("telar:updates:status", listener),
+  },
 });

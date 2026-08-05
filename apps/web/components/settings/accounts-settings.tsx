@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import {
   BellIcon,
   BotIcon,
+  DownloadIcon,
   GaugeIcon,
   PaletteIcon,
   PlugIcon,
@@ -42,6 +43,7 @@ import {
 import { AppearanceSettings } from "@/components/settings/appearance-settings";
 import { AgentDefaultsSettings } from "@/components/settings/agent-defaults-settings";
 import { NotificationsSettings } from "@/components/settings/notifications-settings";
+import { UpdatesSettings } from "@/components/settings/updates-settings";
 import { DoctorSettings } from "@/components/settings/doctor-settings";
 import {
   ProviderInstanceRow,
@@ -229,6 +231,7 @@ const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Preferences" },
   { id: "agent", label: "Agent defaults", icon: SparklesIcon, group: "Preferences" },
   { id: "notifications", label: "Notifications", icon: BellIcon, group: "Preferences" },
+  { id: "updates", label: "Updates", icon: DownloadIcon, group: "Preferences" },
   { id: "providers", label: "Providers", icon: BotIcon, group: "Provider" },
   { id: "integrations", label: "Integrations", icon: PlugIcon, group: "Provider" },
   { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
@@ -483,6 +486,7 @@ export function GeneralSettings({ initialData }: { initialData?: SettingsInitial
       {active === "appearance" && <AppearanceSettings />}
       {active === "agent" && <AgentDefaultsSettings />}
       {active === "notifications" && <NotificationsSettings />}
+      {active === "updates" && <UpdatesSettings />}
       {active === "doctor" && <DoctorSettings />}
 
       {active === "providers" && (
