@@ -45,6 +45,38 @@ describe("approvalHeader — the header labels a MOMENT, not a card", () => {
     expect(approvalHeader("denied", "node advance — awaiting your approval")).toBeNull();
   });
 
+  test("a sub-agent's card names the agent that is asking", () => {
+    // The route gates every tool a sub-agent calls through the same permission
+    // path the main turn uses, so parallel agent work produces several cards at
+    // once. Until this, they were identical — nothing said who was asking, and
+    // a queue of anonymous prompts is a queue nobody can answer.
+    const line = approvalHeader("pending", undefined, "agent-7f3c");
+    expect(line).toContain("agent-7f3c");
+    expect(line).toContain("awaiting your approval");
+  });
+
+  test("no agent id keeps the original wording — absent is not 'main'", () => {
+    // The common case is a single-agent session, where attributing every card
+    // to "main" would be noise on all of them. Absent must therefore read as
+    // the plain header, not as an unnamed asker.
+    expect(approvalHeader("pending", undefined, undefined)).toBe(PENDING_APPROVAL_HEADER);
+  });
+
+  test("an explicit header still wins over the agent attribution", () => {
+    // A caller that names the moment (a loom gate, a weave) is naming something
+    // MORE specific than who is asking. The asker must not overwrite it.
+    expect(approvalHeader("pending", "node advance — awaiting your approval", "agent-7f3c")).toBe(
+      "node advance — awaiting your approval",
+    );
+  });
+
+  test("a resolved card has no header even when an agent asked", () => {
+    // The resolved-card rule is the one this file exists to protect; adding a
+    // third argument must not create a path around it.
+    expect(approvalHeader("allowed", undefined, "agent-7f3c")).toBeNull();
+    expect(approvalHeader("denied", undefined, "agent-7f3c")).toBeNull();
+  });
+
   test("both shipped vocabularies really are written in the awaiting-you voice", () => {
     // Re-derived from the exported constants rather than restated, so the rule
     // above cannot quietly stop applying to the copy it was written for

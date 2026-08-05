@@ -1938,6 +1938,10 @@ function SessionWorkspace({
                       input: payload.input ?? {},
                       rule: payload.rule,
                       ruleOptions: Array.isArray(payload.ruleOptions) ? payload.ruleOptions : [],
+                      // Left undefined when the route sent nothing — the main
+                      // turn asking is not the same as an unnamed agent asking,
+                      // and the card renders the two differently.
+                      agentId: typeof payload.agentId === "string" ? payload.agentId : undefined,
                       status: "pending",
                     },
                   ],

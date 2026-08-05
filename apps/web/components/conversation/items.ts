@@ -103,6 +103,16 @@ export type Part =
       // allow" persists. `rule` above is always one of these (the default,
       // prefix, option).
       ruleOptions: Array<{ rule: string; label: string }>;
+      // WHICH agent is asking. Absent for the main turn, set to the sub-agent's
+      // id when the call came from one.
+      //
+      // ABSENT IS MEANINGFUL AND MUST STAY THAT WAY: "the session itself is
+      // asking" is a different statement from "an agent is asking and we do not
+      // know which", so this is never defaulted to a placeholder. The route
+      // reads it off the SDK's `agentID`, which it previously discarded — with
+      // several agents live, a card that cannot name its asker is a card nobody
+      // can answer, and that is what a queue of them looked like.
+      agentId?: string;
       status: "pending" | "allowed" | "denied";
     };
 export type ChatMessage = { id: string; role: "user" | "assistant"; parts: Part[] };

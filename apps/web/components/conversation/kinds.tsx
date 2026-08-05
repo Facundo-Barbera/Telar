@@ -619,6 +619,7 @@ const permissionKind: ItemKind<PermissionPayload> = {
         rule={part.rule}
         ruleOptions={part.ruleOptions}
         status={part.status}
+        agentId={part.agentId}
         onRespond={
           onRespond
             ? (behavior, always, rule) => onRespond(part.id, behavior, always, rule)
