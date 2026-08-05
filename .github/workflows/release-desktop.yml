@@ -3,13 +3,21 @@ name: Release desktop app
 # Manual only — signing + publishing a release should never happen on an
 # ordinary push. The release tag is derived from the beta version that
 # build-desktop.sh computes (via set-desktop-version.mjs), not typed by hand.
+#
+# ALWAYS origin/main, AND NOT A CHOICE. This used to take a `ref` input
+# defaulting to origin/main, which made "which commit is this release?" a
+# question with a per-run answer — a signed, notarized, publicly downloadable
+# artifact could be cut from any branch, including one that had never been
+# reviewed or merged. A released build must be reproducible from the trunk by
+# anyone reading the repo, and an input that is right by default is still an
+# input that can be wrong once.
+#
+# Landing on main is now the ONLY way to ship. That is the intended cost: it
+# makes merge the gate, rather than leaving the gate at whoever dispatches the
+# workflow. Note that the branch this workflow FILE is read from is still
+# selectable (that is how workflow_dispatch works) — but what it BUILDS is not.
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Git ref to build (branch, tag, or SHA)"
-        required: false
-        default: "origin/main"
 
 permissions:
   contents: write
@@ -81,7 +89,7 @@ jobs:
           UPDATE_PROXY_URL: ${{ secrets.UPDATE_PROXY_URL }}
           UPDATE_PROXY_KEY: ${{ secrets.UPDATE_PROXY_KEY }}
         run: |
-          bash scripts/build-desktop.sh --ref "${{ inputs.ref }}" --targets zip,dmg \
+          bash scripts/build-desktop.sh --ref origin/main --targets zip,dmg \
             --channel beta --publish-r2
 
       - name: Publish GitHub Release

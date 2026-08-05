@@ -10,13 +10,20 @@ name: Nightly channel build
 # only ever earned its keep against an idle daily cron. Dispatching by hand and
 # silently getting nothing back would be a worse failure, and rebuilding the
 # same commit is exactly what you want after a run dies halfway.
+#
+# ALWAYS origin/main, AND NOT A CHOICE — the same rule the release workflow now
+# states, applied here for a reason of its own. A nightly is not a throwaway:
+# it is published to the update channel and INSTALLED AUTOMATICALLY by every app
+# configured for it (electron-updater checks on launch and every six hours, and
+# auto-downloads). A nightly built from a branch therefore ships unmerged code
+# to real machines, silently, which is a stronger argument for main-only than
+# the release workflow has.
+#
+# This input existed and was used exactly once, on 2026-08-05, to build a
+# nightly from `fix/ultra-hardening` — which is what made the hazard concrete
+# rather than theoretical. Landing on main is now the only way to ship.
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Git ref to build (branch, tag, or SHA)"
-        required: false
-        default: "origin/main"
 
 permissions:
   contents: write
@@ -81,7 +88,6 @@ jobs:
 
       - name: Build, sign, notarize, and publish to R2
         env:
-          REF: ${{ inputs.ref }}
           APPLE_API_KEY: ${{ runner.temp }}/apple_api_key.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -92,19 +98,19 @@ jobs:
           UPDATE_PROXY_URL: ${{ secrets.UPDATE_PROXY_URL }}
           UPDATE_PROXY_KEY: ${{ secrets.UPDATE_PROXY_KEY }}
         run: |
-          bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg \
+          bash scripts/build-desktop.sh --ref origin/main --targets zip,dmg \
             --channel nightly --publish-r2
 
-      # Tags the commit that was actually built, not origin/main, so a build of
-      # an older ref cannot mislabel the tip. The tag is also what
-      # set-desktop-version.mjs counts to pick the next nightly number.
+      # Tags the commit that was actually built. That used to be a defence
+      # against a build of an OLDER ref mislabelling the tip; with main-only
+      # builds the two coincide, and it is resolved rather than assumed anyway
+      # so the tag names the exact commit this run compiled. The tag is also
+      # what set-desktop-version.mjs counts to pick the next nightly number.
       - name: Tag the nightly version (no GitHub Release)
-        env:
-          REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           VERSION="$(cat apps/desktop/release/from-origin/VERSION)"
-          SHA="$(git rev-parse --verify "${REF}^{commit}")"
+          SHA="$(git rev-parse --verify "origin/main^{commit}")"
           git tag "v$VERSION" "$SHA"
           git push origin "v$VERSION"
 
