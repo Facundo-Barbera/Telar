@@ -29,6 +29,7 @@ import {
   getProject,
   getUltraManifest,
   launchUltra,
+  resumeUltraRun,
   readUltraEvents,
   stopUltraRun,
   watchUltraRun,
@@ -132,7 +133,15 @@ Script format (plain JS — no TypeScript, no imports):
 
 opts.model is REQUIRED on EVERY agent() call — a script with even one model-less agent() call is REJECTED before anything runs, naming the offending call site. Your system context for this session carries the full authoring reference: the injected surface API, the quality patterns, and a worked example. Read it there rather than guessing the surface.
 
-Banned inside the script body (throws or is rejected before running): require, import, process, Date / Date.now() / new Date(), Math.random() — no wall-clock, no entropy, no host access; a re-run must be byte-identical. Every child agent() runs NON-INTERACTIVELY under the same fixed tool surface this session has — an action needing approval simply fails that agent() call, it never pauses the run.`;
+Banned inside the script body (throws or is rejected before running): require, import, process, Date / Date.now() / new Date(), Math.random() — no wall-clock, no entropy, no host access; a re-run must be byte-identical. Every child agent() runs NON-INTERACTIVELY under the same fixed tool surface this session has — an action needing approval simply fails that agent() call, it never pauses the run.
+
+RESUMING A RUN. Pass \`resume\` with a runId INSTEAD of \`script\` to continue a run that stopped, failed, or was aborted. Every agent() call that already settled replays from the journal instantly and costs nothing; the run goes live again from the first ordinal that never settled. This is how you recover a partially-completed run — DO NOT re-author the whole script and relaunch, which pays a second time for work that already succeeded.
+
+An agent that DIED is deliberately not journaled, so a resume re-runs exactly the calls that failed and no others. Resume inherits the original run's args and session; it re-resolves the project's guardrails as they are TODAY, not as they were at launch. It refuses a run that is still live — stop it first.
+
+Pass \`resume\` AND \`script\` together for the stop → edit → resume surgery: the longest unchanged prefix of agent() calls still replays, and the first call whose (prompt, opts) changed — plus everything after it — runs live. Same runId, same journal.
+
+Before resuming a run that returned something unexpected, read its journal at TELAR_HOME/ultra/<runId>/journal.jsonl (what each agent actually returned) and its per-agent transcripts at TELAR_HOME/ultra/<runId>/agents/<ordinal>.ndjson (every tool call, and the result subtype that says WHY an agent stopped — error_max_turns means it hit its turn ceiling, and re-running it at the same maxTurns will hit the same wall).`;
 
 const ULTRA_STATUS_DESCRIPTION = `A one-shot SNAPSHOT of an Ultra run, returned immediately: state (running / done / stopped / failed), agents in flight / started / settled, the current phase, the last event's timestamp, and a rollup of phases and narration so far. Once state is "done" it also carries the script's returned result — in full, uncapped.
 
@@ -160,14 +169,41 @@ export function ultraTools(opts: UltraMcpOpts) {
       tool(
         "ultra",
         ULTRA_TOOL_DESCRIPTION,
-        { script: z.string().min(1), args: z.unknown().optional() },
-        async ({ script, args }) => {
+        {
+          script: z.string().min(1).optional(),
+          args: z.unknown().optional(),
+          // RESUME, previously unreachable. `resumeUltraRun` has existed and
+          // been guarded since the storage cut — it serves the journal prefix
+          // by ordinal, refuses a run that is already live, re-resolves the
+          // original project/account off the manifest, and re-applies today's
+          // guardrails rather than the ones in force when the run started. None
+          // of that was reachable from a session, so the only remedy for a run
+          // that died halfway was to author the whole thing again and pay for
+          // the work that had already succeeded.
+          //
+          // That is not hypothetical: a run stopped on 2026-08-05 had two
+          // implementation groups committed and its design phase done, and the
+          // pickup was hand-written from scratch because there was no way to
+          // say "continue that one".
+          resume: z.string().optional(),
+        },
+        async ({ script, args, resume }) => {
+          if (!script && !resume) {
+            return errResult(
+              "Pass `script` to launch a new run, or `resume` with a runId to continue an existing one.",
+            );
+          }
           // PRE-RUN static reject (doc §4): compileScript is a pure,
           // side-effect-free parse — this runs BEFORE any spend and before
           // launchUltra ever touches disk, and returns the doc's structured
           // {error,kind,detail,line} shape straight back to the AUTHORING
           // AGENT (never the user) so it can re-author on the spot.
-          const compiled = compileScript(script);
+          //
+          // A bare resume compiles nothing here: the script it will run is the
+          // one already persisted for that runId, which compiled at launch.
+          // Only an EDITED script arrives with a resume, and that one is
+          // rejected on the same terms as a fresh launch.
+          const compiled = script ? compileScript(script) : { ok: true as const };
           if (!compiled.ok) {
             return errResult(
               JSON.stringify(
@@ -200,15 +236,54 @@ export function ultraTools(opts: UltraMcpOpts) {
             return errResult(`Unknown project "${opts.project}".`);
           }
 
-          const result = await launchUltra({
-            script,
-            args,
-            project: root,
-            guardrails: { root, guardrails },
-            account: opts.account,
-            sessionId: opts.getSessionId() ?? undefined,
-            messageId: opts.getMessageId?.() ?? undefined,
-          });
+          // A RESUME IS GUARDED LIKE A LAUNCH — same root, same guardrails,
+          // resolved fresh from the project's CURRENT manifest rather than
+          // recovered from the run. `args`, `sessionId` and `messageId` are
+          // deliberately not passed: resumeUltraRun reads them off the original
+          // manifest, and re-supplying them here would let a resume quietly
+          // re-parent a run onto a different session or feed it different args
+          // than the journal prefix it is about to replay.
+          // A RESUME MAY ONLY REACH THIS SESSION'S OWN RUNS. `resume` is the
+          // first tool input that names an EXISTING run, and a runId is just a
+          // string — without this, a model could name any run on the machine
+          // and replay its journal and its persisted script. The rest of this
+          // file's inputs cannot do that by construction (doc §3: scripts
+          // narrow work, never grant capability; project and account are read
+          // from the server's own opts and never from tool input), and adding
+          // the first input that CAN reach outside had to come with the check.
+          //
+          // Ownership is the manifest's `sessionId`, the same field a resume
+          // already inherits. A run with no recorded session is not adoptable
+          // either: unowned is not the same as ours.
+          if (resume) {
+            const manifest = getUltraManifest(resume);
+            if (!manifest) return errResult(`Ultra run "${resume}" not found.`);
+            const mine = opts.getSessionId();
+            if (!mine || manifest.sessionId !== mine) {
+              return errResult(
+                `Ultra run "${resume}" belongs to a different session and cannot be resumed from here.`,
+              );
+            }
+          }
+          const result = resume
+            ? await resumeUltraRun(resume, {
+                // Undefined means "run the script already persisted for this
+                // id" — the ordinary case. A supplied script is the Stop →
+                // edit → resume surgery, and re-persists.
+                ...(script ? { script } : {}),
+                project: root,
+                guardrails: { root, guardrails },
+                account: opts.account,
+              })
+            : await launchUltra({
+                script: script!,
+                args,
+                project: root,
+                guardrails: { root, guardrails },
+                account: opts.account,
+                sessionId: opts.getSessionId() ?? undefined,
+                messageId: opts.getMessageId?.() ?? undefined,
+              });
           // Defense-in-depth: launchUltra's only failure mode today is the
           // SAME compile reject already handled above, but this handler
           // never assumes that stays true forever.

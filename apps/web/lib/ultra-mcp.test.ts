@@ -37,6 +37,7 @@ let launchUltraReturn: { ok: true; runId: string; meta: Record<string, unknown> 
   meta: { name: "t" },
 };
 const launchUltraCalls: Record<string, unknown>[] = [];
+const resumeUltraRunCalls: { runId: string; opts: Record<string, unknown> }[] = [];
 
 let getUltraManifestReturn: Record<string, unknown> | null = {
   runId: "u-mockrun",
@@ -85,6 +86,10 @@ mock.module("@telar/core", () => ({
   },
   launchUltra: async (opts: Record<string, unknown>) => {
     launchUltraCalls.push(opts);
+    return launchUltraReturn;
+  },
+  resumeUltraRun: async (runId: string, opts: Record<string, unknown>) => {
+    resumeUltraRunCalls.push({ runId, opts });
     return launchUltraReturn;
   },
   readUltraEvents: () => readUltraEventsReturn,
@@ -155,6 +160,7 @@ beforeEach(() => {
     updatedAt: 2000,
   };
   getUltraManifestCalls.length = 0;
+  resumeUltraRunCalls.length = 0;
   readUltraEventsReturn = { events: [] };
   stopUltraRunReturn = true;
   stopUltraRunCalls.length = 0;
@@ -172,10 +178,106 @@ describe("ultra MCP server — tool registration", () => {
   });
 
   test("the ultra tool's input schema carries no project/account/identity field", () => {
+    // `resume` is the one input that names an EXISTING run, and it is the only
+    // reason this set grew. It is not an identity field: the project, the
+    // guardrails and the account are still resolved from the server's own opts
+    // on a resume exactly as on a launch, and the run's own session ownership
+    // is checked in the handler before anything replays.
     const keys = inputSchemaKeys(makeServer(), "ultra");
-    expect(new Set(keys)).toEqual(new Set(["script", "args"]));
+    expect(new Set(keys)).toEqual(new Set(["script", "args", "resume"]));
     expect(keys).not.toContain("project");
     expect(keys).not.toContain("account");
+    expect(keys).not.toContain("sessionId");
+  });
+});
+
+describe("ultra — resume, and what it may reach", () => {
+  // WHY RESUME EXISTS AT ALL. resumeUltraRun has been built and guarded in core
+  // since the storage cut, and no session could reach it. A run that died
+  // halfway could only be recovered by re-authoring the whole script and paying
+  // again for every agent that had already succeeded — which is exactly what
+  // happened on 2026-08-05 to a run that had two implementation groups
+  // committed and its design phase done.
+  const ownedByUs = () => {
+    getUltraManifestReturn = { runId: "u-mockrun", state: "stopped", sessionId: "sess-1" };
+  };
+
+  test("resume routes to resumeUltraRun with the runId, and never launches a new run", async () => {
+    ownedByUs();
+    const call = toolHandler(makeServer(), "ultra");
+    const res = await call({ resume: "u-mockrun" });
+    expect(isError(res)).toBe(false);
+    expect(launchUltraCalls.length).toBe(0);
+    expect(resumeUltraRunCalls.length).toBe(1);
+    expect(resumeUltraRunCalls[0]!.runId).toBe("u-mockrun");
+  });
+
+  test("a bare resume passes NO script, so the persisted one runs", async () => {
+    // Undefined is the signal core reads as "use script.js from the original
+    // launch". Sending an empty string or the meta stub instead would overwrite
+    // the persisted script and silently change what the resume runs.
+    ownedByUs();
+    await toolHandler(makeServer(), "ultra")({ resume: "u-mockrun" });
+    expect(resumeUltraRunCalls[0]!.opts.script).toBeUndefined();
+  });
+
+  test("resume still resolves project and guardrails from the SERVER, never from input", async () => {
+    // The property the whole file is built on: a script narrows work, it never
+    // grants capability. A resume must not become the way around that.
+    ownedByUs();
+    await toolHandler(makeServer(), "ultra")({
+      resume: "u-mockrun",
+      project: "EVIL",
+      account: "EVIL",
+    } as Record<string, unknown>);
+    expect(resumeUltraRunCalls[0]!.opts.project).toBe("/root/proj");
+    expect(resumeUltraRunCalls[0]!.opts.guardrails).toEqual({
+      root: "/root/proj",
+      guardrails: { disallowedTools: [], protectedPaths: [] },
+    });
+  });
+
+  test("a run belonging to ANOTHER session cannot be resumed", async () => {
+    // `resume` is the first tool input that names an existing run, and a runId
+    // is just a string. Without this check a model could name any run on the
+    // machine and replay its journal and its persisted script.
+    getUltraManifestReturn = { runId: "u-other", state: "stopped", sessionId: "sess-99" };
+    const res = await toolHandler(makeServer(), "ultra")({ resume: "u-other" });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("different session");
+    expect(resumeUltraRunCalls.length).toBe(0);
+  });
+
+  test("a run with NO recorded session is not adoptable either", async () => {
+    // Unowned is not the same as ours. Treating a missing sessionId as a match
+    // would make every pre-ownership run resumable from anywhere.
+    getUltraManifestReturn = { runId: "u-old", state: "stopped" };
+    const res = await toolHandler(makeServer(), "ultra")({ resume: "u-old" });
+    expect(isError(res)).toBe(true);
+    expect(resumeUltraRunCalls.length).toBe(0);
+  });
+
+  test("an unknown runId is refused before anything replays", async () => {
+    getUltraManifestReturn = null;
+    const res = await toolHandler(makeServer(), "ultra")({ resume: "u-nope" });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("not found");
+    expect(resumeUltraRunCalls.length).toBe(0);
+  });
+
+  test("resume WITH a script is the stop-edit-resume surgery, and the script is compiled first", async () => {
+    ownedByUs();
+    compileScriptReturn = { ok: false, error: "bad", kind: "syntax", detail: "d", line: 1 };
+    const res = await toolHandler(makeServer(), "ultra")({ resume: "u-mockrun", script: "nope(" });
+    expect(isError(res)).toBe(true);
+    expect(resumeUltraRunCalls.length).toBe(0);
+  });
+
+  test("neither script nor resume is a clean rejection, not a crash", async () => {
+    const res = await toolHandler(makeServer(), "ultra")({});
+    expect(isError(res)).toBe(true);
+    expect(launchUltraCalls.length).toBe(0);
+    expect(resumeUltraRunCalls.length).toBe(0);
   });
 });
 
