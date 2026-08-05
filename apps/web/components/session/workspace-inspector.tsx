@@ -340,14 +340,20 @@ export function WorkspaceInspector({
     };
   }, [open, panel.session.fullscreen, panel.session.open, panelWidth, sidebarMode]);
 
-  const openActivity = (select: () => void) => {
-    select();
-    panel.openActivity();
-  };
-
   const setInspectorOpen = (nextOpen: boolean) => {
     if (!nextOpen) setGitPane(null);
     notifyOpenChange(nextOpen);
+  };
+
+  // Selecting a run or agent from the pinned summary hands off to the
+  // Activity dock rather than stacking on top of it: opening a run is a
+  // "go there" action, not a "keep this open too" one. Without the close
+  // here, one click leaves the popover, the Activity tab AND the run/agent
+  // detail all on screen at once — see issue #13.
+  const openActivity = (select: () => void) => {
+    select();
+    panel.openActivity();
+    setInspectorOpen(false);
   };
 
   return (
