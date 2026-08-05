@@ -11,8 +11,10 @@
 // per that directory's rule 7). Cut, and why:
 //   - No "What's next" recommendation card: hardcoded demo content, no spec'd
 //     capability behind it in this story.
-//   - No batch-selection checkboxes or "Weave as one loom" bar: loom creation
-//     from the queue is a different capability, not CAP-4/5/6.
+//   - No "Weave as one loom" batch bar: loom creation from the queue is a
+//     different capability (5.5's handoff), not CAP-4/5/6. Selection here
+//     exists ONLY to name which rows a lane-split moves — it does not become
+//     an ApprovalCard or a loom-creation path.
 //   - No per-row attachment icons: getQueueView() deliberately does not tally
 //     attachments per row (that read belongs to the packet-detail page, where
 //     it's already available via getPacketView).
@@ -21,18 +23,26 @@
 //     that direct-from-UI capture is a later story's widening (5.4/5.5).
 //   - No Desk rendering here: the Desk is a different surface's concern; this
 //     view only reads `desk` off the response for a future consumer.
-// Lane structure (create/rename/retire) is reached through window.prompt /
-// window.confirm rather than a new dialog component — deliberately simple,
-// since no dev server can be run in this environment to visually verify a
-// richer one, and native prompts are functionally correct either way.
+// Lane structure (create/rename/retire/split) and stack reorder are reached
+// through window.prompt / window.confirm / plain up-down buttons rather than
+// drag-and-drop or a new dialog component — deliberately simple, since no dev
+// server can be run in this environment to visually verify a richer one, and
+// these are functionally correct either way. CAP-4 requires that a human can
+// split a lane and reorder a stack; it does not require a particular input
+// device for either — reorderLane/splitLaneIntoNew (store.ts/workspace-api.ts)
+// already exist and were reachable only from route handlers with no caller
+// until this pass wired them to these controls.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  ChevronDownIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   ListTodoIcon,
   PencilIcon,
   PlusIcon,
   RotateCwIcon,
+  SplitIcon,
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -143,7 +153,25 @@ function SubtaskRows({ item }: { item: Item }) {
   );
 }
 
-function ItemRow({ rank, item }: { rank: number; item: Item }) {
+function ItemRow({
+  rank,
+  item,
+  selected,
+  onToggleSelect,
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+}: {
+  rank: number;
+  item: Item;
+  selected: boolean;
+  onToggleSelect: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const subtasks = item.subtasks ?? [];
   const done = subtasks.filter((s) => s.done).length;
@@ -152,6 +180,13 @@ function ItemRow({ rank, item }: { rank: number; item: Item }) {
   return (
     <div>
       <div className="flex items-center gap-2 py-2 pr-3 pl-2 transition-colors hover:bg-muted/40">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelect}
+          title="Select to split into a new lane"
+          className="size-3.5 shrink-0 rounded border-border"
+        />
         <button
           type="button"
           onClick={() => hasSubtasks && setOpen((o) => !o)}
@@ -167,6 +202,30 @@ function ItemRow({ rank, item }: { rank: number; item: Item }) {
         <span className="w-5 shrink-0 font-mono text-[11px] text-muted-foreground/60 tabular-nums">
           {rank}
         </span>
+        {/* Stack order IS the queue's order (NFR-OW-11: no clock anywhere) — these
+            two buttons are the only way a human moves a row without editing
+            lanes.yaml by hand, so reorderLane's tested "moves the id and keeps
+            everything else's order" guarantee has a caller. */}
+        <div className="flex shrink-0 flex-col">
+          <button
+            type="button"
+            disabled={!canMoveUp}
+            onClick={onMoveUp}
+            title="Move up"
+            className="flex size-3.5 items-center justify-center text-muted-foreground/70 hover:text-foreground disabled:opacity-20"
+          >
+            <ChevronUpIcon className="size-3" />
+          </button>
+          <button
+            type="button"
+            disabled={!canMoveDown}
+            onClick={onMoveDown}
+            title="Move down"
+            className="flex size-3.5 items-center justify-center text-muted-foreground/70 hover:text-foreground disabled:opacity-20"
+          >
+            <ChevronDownIcon className="size-3" />
+          </button>
+        </div>
         <Link
           href={`/workspace/${item.id}`}
           className="min-w-0 flex-1 truncate text-sm text-foreground hover:underline"
@@ -192,35 +251,105 @@ function ItemRow({ rank, item }: { rank: number; item: Item }) {
 
 function LaneSection({
   lane,
-  onRenamed,
-  onRetired,
+  onChanged,
 }: {
   lane: QueueView["lanes"][number];
-  onRenamed: () => void;
-  onRetired: () => void;
+  onChanged: () => void;
 }) {
   const [openState, setOpenState] = useState(true);
+  // Selection is scoped to this lane and exists for exactly one purpose: naming
+  // which rows a split carries into the new lane. It is not a batch-action bar
+  // (see the module header) and it is cleared on every reload, so it never
+  // outlives the render it was made in.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const orderedIds = useMemo(() => lane.rows.map((r) => r.item.id), [lane.rows]);
 
   const rename = useCallback(async () => {
     const label = prompt("Rename lane", lane.label);
     if (!label || !label.trim() || label === lane.label) return;
     try {
       await postJson(`/api/workspace/lanes/${lane.key}`, "PATCH", { label });
-      onRenamed();
+      onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
     }
-  }, [lane.key, lane.label, onRenamed]);
+  }, [lane.key, lane.label, onChanged]);
 
   const retire = useCallback(async () => {
     if (!confirm(`Retire "${lane.label}"? This only works while it's empty.`)) return;
     try {
       await postJson(`/api/workspace/lanes/${lane.key}`, "DELETE");
-      onRetired();
+      onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
     }
-  }, [lane.key, lane.label, onRetired]);
+  }, [lane.key, lane.label, onChanged]);
+
+  // Sends this lane's FULL id order (not just the two that swapped) to
+  // reorderLane, which sets the stack to exactly the array it is given —
+  // matching store.ts's own contract ("this lane's stack becomes exactly
+  // these ids, in this order"), never a partial patch.
+  const reorderTo = useCallback(
+    async (nextIds: string[]) => {
+      try {
+        await postJson(`/api/workspace/lanes/${lane.key}/reorder`, "POST", { itemIds: nextIds });
+        onChanged();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [lane.key, onChanged],
+  );
+
+  const moveBy = useCallback(
+    (id: string, delta: 1 | -1) => {
+      const idx = orderedIds.indexOf(id);
+      const swapIdx = idx + delta;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= orderedIds.length) return; // no-op at either end
+      const next = orderedIds.slice();
+      const a = next[idx]!;
+      const b = next[swapIdx]!;
+      next[idx] = b;
+      next[swapIdx] = a;
+      void reorderTo(next);
+    },
+    [orderedIds, reorderTo],
+  );
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // CAP-4: "the master may PROPOSE a split, human-approval-gated, never
+  // auto-applied" — there is no agent path into this function at all (it is
+  // reached only from this button, behind two human-typed prompts), so the
+  // approval gate is structural here, not a card to render.
+  const split = useCallback(async () => {
+    if (selected.size === 0) return;
+    const label = prompt(
+      `Split ${selected.size} item${selected.size === 1 ? "" : "s"} out of "${lane.label}" into a new lane — its label?`,
+    );
+    if (!label || !label.trim()) return;
+    const window_ = prompt('When does this new lane\'s work tend to happen? (e.g. "evenings")');
+    if (!window_ || !window_.trim()) return;
+    try {
+      await postJson("/api/workspace/lanes/split", "POST", {
+        sourceKey: lane.key,
+        label,
+        window: window_,
+        itemIds: [...selected],
+      });
+      setSelected(new Set());
+      onChanged();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  }, [lane.key, lane.label, onChanged, selected]);
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card">
@@ -232,6 +361,12 @@ function LaneSection({
         onToggle={() => setOpenState((o) => !o)}
         action={
           <div className="flex items-center gap-1">
+            {selected.size > 0 && (
+              <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => void split()}>
+                <SplitIcon className="size-3.5" />
+                Split {selected.size} into new lane
+              </Button>
+            )}
             <Button variant="ghost" size="icon" className="size-7" onClick={() => void rename()} title="Rename lane">
               <PencilIcon className="size-3.5" />
             </Button>
@@ -246,7 +381,19 @@ function LaneSection({
           {lane.rows.length === 0 ? (
             <div className="py-4 text-center text-xs text-muted-foreground/60">Nothing filed here.</div>
           ) : (
-            lane.rows.map((r) => <ItemRow key={r.item.id} rank={r.rank} item={r.item} />)
+            lane.rows.map((r, idx) => (
+              <ItemRow
+                key={r.item.id}
+                rank={r.rank}
+                item={r.item}
+                selected={selected.has(r.item.id)}
+                onToggleSelect={() => toggleSelect(r.item.id)}
+                canMoveUp={idx > 0}
+                canMoveDown={idx < lane.rows.length - 1}
+                onMoveUp={() => moveBy(r.item.id, -1)}
+                onMoveDown={() => moveBy(r.item.id, 1)}
+              />
+            ))
           )}
         </div>
       )}
@@ -397,7 +544,7 @@ export function QueueView() {
                 </Alert>
               )}
               {filteredLanes.map((l) => (
-                <LaneSection key={l.key} lane={l} onRenamed={() => void load()} onRetired={() => void load()} />
+                <LaneSection key={l.key} lane={l} onChanged={() => void load()} />
               ))}
               <p className="px-1 py-2 text-center text-[11px] text-muted-foreground/60">
                 {view!.totalItems} items — every one traces to something you fed in or a mirror · agents added{" "}

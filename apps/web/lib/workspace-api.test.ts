@@ -98,15 +98,20 @@ describe("getPacketView", () => {
   });
 
   test("an unfiled item's lane and rank are both null", () => {
-    const item = createWorkspaceItem({ title: "orphaned" });
+    // An ORDINARY lane, not the seed — retireLane refuses "unfiled"
+    // specifically (the fix-round guard against create_item's fallback target
+    // being retired out from under it; see store.ts's SEED_LANE_KEY comment),
+    // so this test needs a lane it is actually allowed to retire.
+    const lane = createWorkspaceLane({ label: "Temp", window: "whenever" });
+    const item = createWorkspaceItem({ title: "orphaned", lane: lane.key });
     const view = getPacketView(item.id)!;
-    expect(view.lane).not.toBeNull();
+    expect(view.lane).toBe(lane.key);
     // Empty the row, then retire it — with the row gone entirely, the item's
     // own packet.lane hint names a lane absent from lanes.yaml (arm 3, "lane
     // gone"), which is the genuinely unfiled resting state. Emptying alone
     // would instead re-adopt it into that same still-existing row (arm 1).
-    reorderQueueLane(view.lane!, []);
-    expect(retireWorkspaceLane(view.lane!)).toEqual({ ok: true });
+    reorderQueueLane(lane.key, []);
+    expect(retireWorkspaceLane(lane.key)).toEqual({ ok: true });
     const after = getPacketView(item.id)!;
     expect(after.lane).toBeNull();
     expect(after.rank).toBeNull();

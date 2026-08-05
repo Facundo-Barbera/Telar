@@ -781,6 +781,73 @@ describe("AD-6 lanes.yaml is authoritative, so a hand-edit WINS", () => {
   });
 });
 
+// ── assertPacketAddressMatches — shared by EVERY writer that resolves a
+//    packet by id first (updateItem, and 5.2's addSubtask/setSubtaskDone/
+//    promoteSubtask), and untested against any of them before this fix round
+//    (found by the adversarial mutation-test pass: commenting out any one of
+//    the four call sites left the suite fully green). AD-6 invites a human to
+//    hand-edit packet.yaml, so a directory whose own `id:` line no longer
+//    matches the directory it sits in is a state the store WILL see; each
+//    writer below has to refuse it rather than clobber whatever item that
+//    `id:` line actually names. ────────────────────────────────────────────
+
+describe("AD-6 address-mismatch guard — every writer that resolves a packet by id refuses a hand-edited id: mismatch", () => {
+  // Creates a real item at `id`, then hand-rewrites its own packet.yaml to
+  // claim a DIFFERENT id — the exact shape assertPacketAddressMatches exists
+  // to catch, and the only way to construct it: no writer in this store can
+  // produce the mismatch itself (every legitimate write stamps id from the
+  // directory it is already writing to).
+  function createWithMismatchedId(): { dirId: string; claimedId: string } {
+    const item = createItem({ title: "will be hand-edited" });
+    const other = createItem({ title: "the id it will falsely claim" });
+    const before = hashOf(packetPath(other.id)); // the OTHER item, never touched
+    fs.writeFileSync(packetPath(item.id), YAML.stringify({ ...item, id: other.id }));
+    expect(hashOf(packetPath(other.id))).toBe(before); // sanity: only item.id's own file was touched
+    return { dirId: item.id, claimedId: other.id };
+  }
+
+  test("updateItem throws and writes nothing, naming both the directory and the claimed id", () => {
+    const { dirId, claimedId } = createWithMismatchedId();
+    const before = hashOf(packetPath(dirId));
+    expect(() => updateItem(dirId, { title: "clobber attempt" })).toThrow(
+      new RegExp(`${dirId}.*${claimedId}|${claimedId}.*${dirId}`, "s"),
+    );
+    expect(hashOf(packetPath(dirId))).toBe(before); // nothing written
+  });
+
+  test("addSubtask throws and writes nothing", () => {
+    const { dirId } = createWithMismatchedId();
+    const before = hashOf(packetPath(dirId));
+    expect(() => addSubtask(dirId, "a sub-task")).toThrow(/directory it sits in/);
+    expect(hashOf(packetPath(dirId))).toBe(before);
+  });
+
+  test("setSubtaskDone throws and writes nothing", () => {
+    const { dirId } = createWithMismatchedId();
+    const before = hashOf(packetPath(dirId));
+    // The subtask id does not need to exist — the address check runs first,
+    // before the subtask lookup, so this proves the GUARD fires rather than
+    // merely proving the not-found path does.
+    expect(() => setSubtaskDone(dirId, "st-doesnotexist", true)).toThrow(/directory it sits in/);
+    expect(hashOf(packetPath(dirId))).toBe(before);
+  });
+
+  test("promoteSubtask throws and writes NEITHER the parent NOR any new promoted packet", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const parent = createItem({ title: "parent", lane: "office" });
+    const withSub = addSubtask(parent.id, "a sub-task")!;
+    const other = createItem({ title: "the id it will falsely claim" });
+    fs.writeFileSync(packetPath(parent.id), YAML.stringify({ ...withSub, id: other.id }));
+    const before = hashOf(packetPath(parent.id));
+    const packetsBefore = fs.readdirSync(path.join(HOME, "workspace", "packets")).sort();
+    expect(() => promoteSubtask(parent.id, withSub.subtasks![0]!.id)).toThrow(/directory it sits in/);
+    expect(hashOf(packetPath(parent.id))).toBe(before);
+    // No third packet directory was minted for a promoted item that never happened.
+    expect(fs.readdirSync(path.join(HOME, "workspace", "packets")).sort()).toEqual(packetsBefore);
+  });
+});
+
 // ── AD-7 — lanes.yaml is read PER ROW, because AD-6 invites the hand-edit ────
 
 describe("AD-7 one malformed lane row does not discard the file", () => {
@@ -1340,6 +1407,27 @@ describe("5.2 retireLane refuses a non-empty stack and never partially applies",
     expect(readLanes().map((l) => l.key)).toEqual(["office"]); // still there
   });
 
+  // Fix-round regression: a row this build cannot parse (AD-7 tolerance) has
+  // to be refused, not silently deleted. The sibling test above proves the
+  // author was already thinking about "every id in the stack is a ghost";
+  // this proves the adjacent, previously-untested case — the ROW ITSELF is
+  // unreadable, so there is no parsed `items` array to even ask about. Found
+  // by the adversarial mutation-test pass: collapsing this branch into the
+  // length check left the suite fully green.
+  test("retireLane refuses a row this build cannot parse — its item count cannot be confirmed", () => {
+    ensureWorkspace();
+    fs.writeFileSync(
+      lanesPath(),
+      YAML.stringify([{ key: "office", label: "Office", window: "work hours", items: [] }, { key: "school", items: [] }]), // "school" is missing `window:` — unparseable, per AD-7's own broken-row test above
+    );
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    const result = retireLane("school");
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining("cannot be confirmed") });
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before); // nothing written — not even deleted
+    // The row survives exactly as AD-7 promises: still unreadable as a lane, still reported.
+    expect(listItems().unreadable.map((u) => u.id)).toEqual(["school"]);
+  });
+
   test("retireLane succeeds when the stored stack is empty, and removes exactly that row", () => {
     ensureWorkspace();
     writeLanes([lane("office", []), lane("free", ["i-a"])]);
@@ -1354,6 +1442,39 @@ describe("5.2 retireLane refuses a non-empty stack and never partially applies",
     const before = fs.readFileSync(lanesPath(), "utf8");
     expect(retireLane("nope").ok).toBe(false);
     expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before);
+  });
+
+  // Fix-round regression: retireLane must refuse "unfiled" even while its
+  // stored stack is empty, because it is create_item's only fallback target
+  // (resolveLane). Retiring it does not free the key — it strands the next
+  // unresolvable capture in a lane that no longer exists, invisible on the
+  // queue (queueSlice never adopts an orphan whose `lane` names no row) until
+  // a later story gives resolveLane a different fallback.
+  test("retireLane refuses the seed lane even when its stored stack is empty", () => {
+    ensureWorkspace(); // seeds exactly one row, key "unfiled", empty stack
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    const result = retireLane("unfiled");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("create_item");
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before); // nothing written
+    expect(readLanes().map((l) => l.key)).toEqual(["unfiled"]); // still there
+
+    // And the fallback it protects still resolves: an unresolvable lane on
+    // createItem still lands somewhere the queue and desk can both show.
+    const item = createItem({ title: "unresolvable lane", lane: "does-not-exist" });
+    expect(item.lane).toBe("unfiled");
+    expect(item.unplaced).toBe(true);
+    expect(readLanes().find((l) => l.key === "unfiled")!.items).toContain(item.id);
+  });
+
+  // A lane other than the seed still retires exactly as before — the guard
+  // above is scoped to SEED_LANE_KEY alone, not a general "protect empty
+  // fallback-shaped lanes" rule.
+  test("retireLane still retires an ordinary empty lane named anything but the seed key", () => {
+    ensureWorkspace();
+    writeLanes([lane("unfiled", []), lane("office", [])]);
+    expect(retireLane("office")).toEqual({ ok: true });
+    expect(readLanes().map((l) => l.key)).toEqual(["unfiled"]);
   });
 });
 

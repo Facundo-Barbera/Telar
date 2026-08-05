@@ -146,11 +146,29 @@ const newSubtaskId = () => `st-${crypto.randomBytes(6).toString("hex")}`;
 // row — and the store is not a tool. That distinction is the whole of what makes
 // it legal.
 //
-// IT CARRIES NO SPECIAL BEHAVIOUR IN CODE. It is renameable and retireable like
-// any other row, and nothing re-creates it. `resolveLane` below uses this key
-// only as a FALLBACK TARGET; if the user renames the row, the fallback finds no
-// such lane and the item comes to rest UNFILED — the same resting state, reached
-// by the same arm, with no lane resurrected behind the user's back.
+// RENAME CARRIES NO SPECIAL BEHAVIOUR: it is renameable like any other row,
+// and nothing re-creates it under its old label. `resolveLane` below uses
+// this KEY, never the label, as its FALLBACK TARGET, and renameLane can only
+// ever rewrite `label` — so a rename can never silently redirect where an
+// unresolvable capture lands (see "THE SEED-LANE-RENAME HAZARD, RESOLVED"
+// beside renameLane below).
+//
+// RETIRE IS THE ONE PLACE THIS ROW DOES CARRY SPECIAL BEHAVIOUR, and it is a
+// 5.2 decision, not a 5.1 one: retireLane below refuses to retire THIS key
+// specifically, for as long as it is create_item's only fallback target.
+// createItem never fails to resolve SOME target — resolveLane always returns
+// `{lane: SEED_LANE_KEY, unplaced: true}` when a requested lane is missing —
+// so if this row could be retired out from under that fallback, the very next
+// unresolvable capture would mint an item with `lane: "unfiled"` naming a row
+// that no longer exists. createItem does not create lanes (NFR-OW-10), so
+// nothing would receive it: the item would carry desk:true and unplaced:true,
+// readable via listItems and deskSlice, but absent from queueSlice and from
+// this story's own queue surface — invisible everywhere this story renders,
+// until a later story ships the desk rail (5.3). That is a strictly worse
+// resting state than "unfiled, in the Unfiled lane", so retirement of this
+// one row is refused until a later story gives resolveLane a different
+// fallback to fall back to. Every OTHER lane retires exactly as documented
+// below, no special case.
 //
 // The fixtures' aurora/office/school/free are one user's life, not a default
 // set; they are deliberately not seeded.
@@ -1016,6 +1034,21 @@ export function renameLane(key: string, label: string): WorkspaceLane | null {
 // but nothing here resolves that distinction for them. See the plan's Risk 1:
 // this is a known, accepted rough edge, not an oversight.
 export function retireLane(key: string): { ok: true } | { ok: false; reason: string } {
+  // THE ONE SPECIAL CASE — see the block comment beside SEED_LANE_KEY above
+  // for why: retiring create_item's only fallback target would not free the
+  // key, it would strand every future unresolvable capture nowhere any
+  // current surface renders. Renaming this row's label is unrestricted;
+  // only retiring the row by this key is refused.
+  if (key === SEED_LANE_KEY) {
+    return {
+      ok: false,
+      reason:
+        `"${SEED_LANE_KEY}" is where create_item sends anything it cannot place — retiring it would not remove ` +
+        `that behaviour, it would make the next unplaceable capture land in a lane that no longer exists, invisible ` +
+        `on this queue until a later story gives it a different fallback. Rename its label instead if "Unfiled" is ` +
+        `the wrong word for it; the row itself has to stay until create_item's fallback can point somewhere else.`,
+    };
+  }
   const read = readLanesReport();
   const idx = read.entries.findIndex((e) => rawKeyOf(e.row) === key);
   if (idx < 0) return { ok: false, reason: `No lane named "${key}" exists.` };
