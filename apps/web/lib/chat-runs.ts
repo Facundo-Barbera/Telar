@@ -15,18 +15,40 @@ type ChatRun = { abort: AbortController; sessionId: string | null };
 const g = globalThis as unknown as { __telarChatRuns?: Map<string, ChatRun> };
 const runs = (g.__telarChatRuns ??= new Map<string, ChatRun>());
 
-// Register a freshly-started turn. `runId` is client-generated and known before
-// the SDK session id exists, so Stop works even during a brand-new session's
-// first turn (before its id is confirmed).
-export function registerChatRun(runId: string, abort: AbortController): void {
-  runs.set(runId, { abort, sessionId: null });
+// Atomically reserve one active turn. `runId` is client-generated and known
+// before the SDK session id exists, so Stop works even during a brand-new
+// session's first turn. A resumed session is supplied up front: the engine,
+// not renderer timing, enforces the single-active-turn invariant.
+//
+// Returns false rather than overwriting an existing handle. Reusing a run id or
+// starting a second turn for the same canonical session must never orphan the
+// first AbortController while its subprocess is still alive.
+export function registerChatRun(
+  runId: string,
+  abort: AbortController,
+  sessionId: string | null = null,
+): boolean {
+  if (runs.has(runId)) return false;
+  if (sessionId) {
+    for (const run of runs.values()) {
+      if (run.sessionId === sessionId) return false;
+    }
+  }
+  runs.set(runId, { abort, sessionId });
+  return true;
 }
 
 // Attach the SDK-confirmed session id once system:init arrives, so a Stop (and,
 // later, a reconnecting subscriber) can also find the run by session id.
 export function setChatRunSession(runId: string, sessionId: string): void {
   const run = runs.get(runId);
-  if (run) run.sessionId = sessionId;
+  if (!run) return;
+  for (const [otherId, other] of runs) {
+    if (otherId !== runId && other.sessionId === sessionId) {
+      throw new Error(`session ${sessionId} already has an active turn`);
+    }
+  }
+  run.sessionId = sessionId;
 }
 
 export function endChatRun(runId: string): void {

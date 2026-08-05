@@ -15,7 +15,7 @@
 import fs from "fs";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
-import type { HarnessToolNamespace } from "@telar/core";
+import type { HarnessToolNamespace, SubagentTerminalStatus } from "@telar/core";
 import { findTool, toContentItems, toDynamicTools } from "@/lib/harness-tools";
 
 export type CodexNormalizedEvent =
@@ -69,7 +69,13 @@ export type CodexNormalizedEvent =
   // agentsStates[childThreadId].message once that state turns terminal —
   // NOT derived from the child's last agentMessage item, since a subagent
   // can end without one (error, interrupted).
-  | { type: "spawn_result"; childThreadId: string; output: string; isError: boolean };
+  | {
+      type: "spawn_result";
+      childThreadId: string;
+      output: string;
+      isError: boolean;
+      status: SubagentTerminalStatus;
+    };
 
 /**
  * One composer attachment, as `runCodexTurn` needs it. Structurally the
@@ -545,8 +551,167 @@ function toolResultMeta(item: Record<string, any>): { output: string; isError: b
   }
 }
 
-const isTerminalCollabStatus = (s: string | undefined): boolean =>
-  s === "completed" || s === "errored" || s === "interrupted" || s === "shutdown" || s === "notFound";
+const collabTerminalStatus = (s: string | undefined): SubagentTerminalStatus | null => {
+  switch (s) {
+    case "completed":
+      return "completed";
+    case "errored":
+    case "notFound":
+      return "failed";
+    case "interrupted":
+    case "shutdown":
+      return "stopped";
+    default:
+      return null;
+  }
+};
+
+type CodexSubagentLifecycleEvent = Extract<
+  CodexNormalizedEvent,
+  { type: "spawn" | "spawn_result" }
+>;
+
+/**
+ * Normalize one collab-agent item into the lifecycle shared by both harnesses.
+ *
+ * `item/started` is the earliest authoritative signal only when it already
+ * names a receiver thread. Emitting there makes the child visible while it is
+ * actually running. Some app-server versions do not attach the receiver until
+ * `item/completed`; the same function runs again then and emits the start as a
+ * safe fallback. The sets make repeated snapshots and later wait/send/close
+ * collab items idempotent.
+ */
+export function normalizeCodexSubagentLifecycle(
+  item: Record<string, unknown>,
+  started: Set<string>,
+  settled: Set<string>,
+): CodexSubagentLifecycleEvent[] {
+  if (item.type !== "collabAgentToolCall") return [];
+
+  const events: CodexSubagentLifecycleEvent[] = [];
+  const sender = typeof item.senderThreadId === "string" ? item.senderThreadId : null;
+  const receivers = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+  const receiver = typeof receivers[0] === "string"
+    ? receivers[0]
+    : null;
+
+  if (item.tool === "spawnAgent" && sender && receiver && !started.has(receiver)) {
+    started.add(receiver);
+    events.push({
+      type: "spawn",
+      parentThreadId: sender,
+      childThreadId: receiver,
+      prompt: typeof item.prompt === "string" ? item.prompt : "",
+      model: typeof item.model === "string" ? item.model : null,
+    });
+  }
+
+  const states = item.agentsStates && typeof item.agentsStates === "object"
+    ? item.agentsStates as Record<string, unknown>
+    : {};
+  for (const [childThreadId, rawState] of Object.entries(states)) {
+    if (!started.has(childThreadId) || settled.has(childThreadId)) continue;
+    const state = rawState && typeof rawState === "object"
+      ? rawState as { status?: unknown; message?: unknown }
+      : {};
+    const status = collabTerminalStatus(
+      typeof state.status === "string" ? state.status : undefined,
+    );
+    if (!status) continue;
+    settled.add(childThreadId);
+    events.push({
+      type: "spawn_result",
+      childThreadId,
+      output: typeof state.message === "string" ? state.message : "",
+      isError: status !== "completed",
+      status,
+    });
+  }
+
+  return events;
+}
+
+/**
+ * Current Codex app-server builds announce collaboration children as ordinary
+ * `thread/started` notifications. That notification is more authoritative than
+ * a collab tool snapshot: it names both the child and its actual parent even
+ * when no `collabAgentToolCall` item is published to the client at all.
+ */
+export function normalizeCodexSubagentThreadStarted(
+  thread: Record<string, unknown>,
+  rootThreadId: string,
+  started: Set<string>,
+): CodexSubagentLifecycleEvent[] {
+  const childThreadId = typeof thread.id === "string" ? thread.id : null;
+  const parentThreadId = typeof thread.parentThreadId === "string"
+    ? thread.parentThreadId
+    : null;
+  if (
+    !childThreadId ||
+    childThreadId === rootThreadId ||
+    !parentThreadId ||
+    started.has(childThreadId)
+  ) return [];
+
+  started.add(childThreadId);
+  // `agentNickname` is a Codex-assigned persona name (for example Goodall),
+  // not the task or agent type. Showing it as the badge made an implementation
+  // detail look user-authored, so only an explicit role belongs here.
+  const role = typeof thread.agentRole === "string" ? thread.agentRole : null;
+  return [{
+    type: "spawn",
+    parentThreadId,
+    childThreadId,
+    prompt: typeof thread.preview === "string" ? thread.preview : "",
+    model: role,
+  }];
+}
+
+/** Fallback for app-server versions that publish subAgentActivity before (or
+ * instead of) the child Thread. It lacks a parent id, so the only safe parent
+ * available is the current root; a later thread/started snapshot is deduped. */
+export function normalizeCodexSubagentActivity(
+  item: Record<string, unknown>,
+  rootThreadId: string,
+  started: Set<string>,
+): CodexSubagentLifecycleEvent[] {
+  if (item.type !== "subAgentActivity" || item.kind !== "started") return [];
+  const childThreadId = typeof item.agentThreadId === "string"
+    ? item.agentThreadId
+    : null;
+  if (!childThreadId || started.has(childThreadId)) return [];
+  started.add(childThreadId);
+  return [{
+    type: "spawn",
+    parentThreadId: rootThreadId,
+    childThreadId,
+    prompt: typeof item.agentPath === "string" ? item.agentPath : "",
+    model: null,
+  }];
+}
+
+/**
+ * Last-resort start signal for app-server builds that stream a child's items
+ * but omit both the collab tool item and child thread/started notification.
+ * A non-root thread id on an actual item is itself authoritative proof that the
+ * child exists. This must run before yielding that item so the UI never files
+ * activity into a bucket it has not created yet.
+ */
+export function normalizeCodexObservedChild(
+  threadId: string,
+  rootThreadId: string,
+  started: Set<string>,
+): CodexSubagentLifecycleEvent[] {
+  if (!threadId || threadId === rootThreadId || started.has(threadId)) return [];
+  started.add(threadId);
+  return [{
+    type: "spawn",
+    parentThreadId: rootThreadId,
+    childThreadId: threadId,
+    prompt: "",
+    model: null,
+  }];
+}
 
 // Runs exactly one Codex turn against `codex app-server` and yields
 // normalized events as they arrive — same generator contract as the old
@@ -666,6 +831,7 @@ export async function* runCodexTurn(
     // the same receiverThreadIds).
     const spawnedChildren = new Set<string>();
     const resultedChildren = new Set<string>();
+    const childFinalText = new Map<string, string>();
     let planUpdateSeq = 0;
     let lastUsage: {
       total_tokens: number;
@@ -686,9 +852,14 @@ export async function* runCodexTurn(
       terminal: boolean,
     ): Generator<CodexNormalizedEvent> {
       const tag = threadTag(threadId);
+      yield* normalizeCodexObservedChild(threadId, rootThreadId, spawnedChildren);
       if (item.type === "userMessage" || item.type === "hookPrompt") return;
       if (item.type === "agentMessage") {
-        if (terminal) yield { type: "text", itemId: item.id, text: item.text ?? "", ...(tag ? { threadId: tag } : {}) };
+        if (terminal) {
+          const text = item.text ?? "";
+          if (tag) childFinalText.set(threadId, text);
+          yield { type: "text", itemId: item.id, text, ...(tag ? { threadId: tag } : {}) };
+        }
         return;
       }
       if (item.type === "reasoning") {
@@ -699,34 +870,13 @@ export async function* runCodexTurn(
         return;
       }
       if (item.type === "collabAgentToolCall") {
-        const senderThreadId: string = item.senderThreadId;
-        const receiver: string | undefined = item.receiverThreadIds?.[0];
-        if (item.tool === "spawnAgent" && terminal && receiver && !spawnedChildren.has(receiver)) {
-          spawnedChildren.add(receiver);
-          yield {
-            type: "spawn",
-            parentThreadId: senderThreadId,
-            childThreadId: receiver,
-            prompt: item.prompt ?? "",
-            model: item.model ?? null,
-          };
-        }
-        const states: Record<string, { status?: string; message?: string | null }> =
-          item.agentsStates ?? {};
-        for (const [childId, state] of Object.entries(states)) {
-          if (!spawnedChildren.has(childId) || resultedChildren.has(childId)) continue;
-          if (!isTerminalCollabStatus(state.status)) continue;
-          resultedChildren.add(childId);
-          yield {
-            type: "spawn_result",
-            childThreadId: childId,
-            output: state.message ?? "",
-            isError: state.status === "errored",
-          };
-        }
+        yield* normalizeCodexSubagentLifecycle(item, spawnedChildren, resultedChildren);
         return;
       }
-      if (item.type === "subAgentActivity") return; // narration-only, not surfaced (v1)
+      if (item.type === "subAgentActivity") {
+        yield* normalizeCodexSubagentActivity(item, rootThreadId, spawnedChildren);
+        return;
+      }
       const meta = toolMeta(item);
       if (!meta) return;
       if (!seenTool.has(item.id)) {
@@ -755,7 +905,15 @@ export async function* runCodexTurn(
 
       switch (notif.method) {
         case "thread/started":
-          break; // duplicate of the thread/start response's own thread id — see above
+          // Root is the documented duplicate of thread/start's response. Child
+          // threads are lifecycle facts and must be visible before they emit
+          // their first thinking/tool/text item.
+          yield* normalizeCodexSubagentThreadStarted(
+            params.thread ?? {},
+            rootThreadId,
+            spawnedChildren,
+          );
+          break;
         case "item/started":
           yield* handleItem(params.threadId, params.item, false);
           break;
@@ -764,11 +922,13 @@ export async function* runCodexTurn(
           break;
         case "item/agentMessage/delta": {
           const tag = threadTag(params.threadId);
+          yield* normalizeCodexObservedChild(params.threadId, rootThreadId, spawnedChildren);
           yield { type: "text_delta", itemId: params.itemId, text: params.delta, ...(tag ? { threadId: tag } : {}) };
           break;
         }
         case "item/reasoning/textDelta": {
           const tag = threadTag(params.threadId);
+          yield* normalizeCodexObservedChild(params.threadId, rootThreadId, spawnedChildren);
           if (!seenThinking.has(params.itemId)) {
             seenThinking.add(params.itemId);
             yield { type: "thinking_start", itemId: params.itemId, ...(tag ? { threadId: tag } : {}) };
@@ -842,7 +1002,31 @@ export async function* runCodexTurn(
           break;
         }
         case "turn/completed": {
-          if (params.threadId !== rootThreadId || params.turn?.id !== rootTurnId) break;
+          if (params.threadId !== rootThreadId) {
+            const childThreadId = typeof params.threadId === "string" ? params.threadId : null;
+            if (
+              childThreadId &&
+              spawnedChildren.has(childThreadId) &&
+              !resultedChildren.has(childThreadId)
+            ) {
+              const wireStatus = params.turn?.status;
+              const status: SubagentTerminalStatus = wireStatus === "completed"
+                ? "completed"
+                : wireStatus === "interrupted"
+                  ? "stopped"
+                  : "failed";
+              resultedChildren.add(childThreadId);
+              yield {
+                type: "spawn_result",
+                childThreadId,
+                output: childFinalText.get(childThreadId) ?? params.turn?.error?.message ?? "",
+                isError: status !== "completed",
+                status,
+              };
+            }
+            break;
+          }
+          if (params.turn?.id !== rootTurnId) break;
           if (params.turn?.status === "failed") {
             throw new Error(params.turn?.error?.message ?? "Codex turn failed");
           }

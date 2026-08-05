@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpIcon,
+  BotIcon,
   ClockIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -188,6 +189,12 @@ function HeadTooltip({
                 <span className="truncate">{rt.ultraSummary}</span>
               </div>
             )}
+            {(rt?.agentsRunning ?? 0) > 0 && (
+              <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-primary">
+                <BotIcon className="size-2.5" />
+                <span>{rt!.agentsRunning} sub-agent{rt!.agentsRunning === 1 ? "" : "s"} running</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -232,6 +239,15 @@ function Head({ entry }: { entry: DockEntry }) {
         {unread > 0 && (
           <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground shadow">
             {unread}
+          </span>
+        )}
+
+        {(rt?.agentsRunning ?? 0) > 0 && (
+          <span
+            title={`${rt!.agentsRunning} sub-agent${rt!.agentsRunning === 1 ? "" : "s"} running`}
+            className="absolute -bottom-1 -left-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-border bg-background px-0.5 text-[9px] font-semibold text-primary shadow"
+          >
+            {rt!.agentsRunning}
           </span>
         )}
 
@@ -280,14 +296,32 @@ function IconBtn({ onClick, label, children }: { onClick: () => void; label: str
 }
 
 // ── queue-capable composer ──────────────────────────────────────────────────
-// The send path lives in the runtime host (POST /api/chat), so a queued message
-// survives minimizing the panel. The composer just enqueues into the store; the
-// host drains one head at a time the moment the session goes idle (1.5 grammar).
+// The acceptance path lives in the runtime host (POST to the engine queue), so
+// a message survives minimizing the panel. The composer only owns the brief
+// pre-ack bridge; scheduling and execution are server-side.
 function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
-  const { enqueue } = useDock();
+  const { enqueue, setRuntime } = useDock();
   const [text, setText] = useState("");
   const working = rt?.working ?? false;
   const queued = rt?.queued ?? [];
+  const queuedEngineCount = rt?.queuedEngineCount ?? 0;
+
+  const resumeQueue = async () => {
+    const response = await fetch(`/api/chat/${encodeURIComponent(id)}/queue`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused: false }),
+    });
+    if (!response.ok) return;
+    const queue = await response.json();
+    const items = Array.isArray(queue?.items) ? queue.items : [];
+    setRuntime(id, {
+      queuePaused: false,
+      queuedEngineCount: items.filter(
+        (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
+      ).length,
+    });
+  };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -299,12 +333,20 @@ function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
 
   return (
     <div className="shrink-0 border-t border-border p-2">
+      {rt?.queuePaused && (
+        <div className="mb-1.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs">
+          <span>Queue paused{queuedEngineCount > 0 ? ` · ${queuedEngineCount} waiting` : ""}</span>
+          <button type="button" className="font-medium text-primary hover:underline" onClick={() => void resumeQueue()}>
+            Resume
+          </button>
+        </div>
+      )}
       {queued.length > 0 && (
         <div className="mb-1.5 flex flex-col gap-1">
-          {queued.map((q, i) => (
-            <div key={i} className="flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1 text-xs">
+          {queued.map((q) => (
+            <div key={q.id} className="flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1 text-xs">
               <ClockIcon className="size-3 shrink-0 text-primary" />
-              <span className="min-w-0 flex-1 truncate">{q}</span>
+              <span className="min-w-0 flex-1 truncate">{q.text}</span>
               <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">queued</span>
             </div>
           ))}

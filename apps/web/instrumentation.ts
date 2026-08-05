@@ -18,4 +18,16 @@ export async function register() {
     // A reconcile failure must never crash server boot.
     console.error("[instrumentation] reconcileStuckLooms failed on boot", err);
   }
+
+  try {
+    const { listSessionQueueIds } = await import("@telar/core/session-queue");
+    const { kickSessionQueue } = await import("./lib/server/session-engine");
+    const sessionIds = listSessionQueueIds();
+    for (const sessionId of sessionIds) void kickSessionQueue(sessionId);
+    console.info(`[instrumentation] recovered ${sessionIds.length} session queue(s) on boot`);
+  } catch (err) {
+    // Queued intent remains on disk if boot recovery cannot start. A later API
+    // read/kick retries; server availability must not depend on one bad queue.
+    console.error("[instrumentation] session queue recovery failed on boot", err);
+  }
 }

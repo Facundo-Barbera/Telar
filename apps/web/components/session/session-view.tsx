@@ -46,6 +46,7 @@ import {
   agentLabel,
   agentStatus,
   createItemKindRegistry,
+  deriveAgentProjection,
   groupParts,
   isAsyncLaunchAck,
   isTrailingItem,
@@ -80,6 +81,24 @@ import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
 import type { WorkState } from "@/components/session/working-indicator";
+import {
+  browserQueueStorage,
+  queueStorageKey,
+  readQueue,
+  stripQueuedAttachments,
+  writeQueue,
+  type QueuedMessage,
+} from "@/lib/message-queue";
+
+/** The queue's message type with THIS surface's attachment shape filled in —
+ *  the lib stays generic so it need not import the composer kit. */
+type SessionQueuedMessage = QueuedMessage<PromptInputMessage["files"][number]> & {
+  /** Present only after the engine durably acknowledges this intent. */
+  accepted?: boolean;
+  revision?: number;
+  state?: "queued" | "claimed" | "running" | "failed" | "ambiguous";
+  error?: string;
+};
 import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
@@ -398,6 +417,8 @@ function QueueChip({
   onEdit,
   onCommit,
   onRemove,
+  state,
+  error,
 }: {
   index: number;
   text: string;
@@ -405,6 +426,8 @@ function QueueChip({
   onEdit: () => void;
   onCommit: (v: string) => void;
   onRemove: () => void;
+  state?: SessionQueuedMessage["state"];
+  error?: string;
 }) {
   const [draft, setDraft] = useState(text);
   useEffect(() => setDraft(text), [text, editing]);
@@ -440,6 +463,17 @@ function QueueChip({
         >
           {text}
         </button>
+      )}
+      {state && state !== "queued" && (
+        <span
+          className={cn(
+            "shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground",
+            (state === "failed" || state === "ambiguous") && "text-destructive",
+          )}
+          title={error}
+        >
+          {state}
+        </span>
       )}
       <Button
         type="button"
@@ -685,7 +719,16 @@ function agentBucketItem(bucket: AgentBucket, onBack: () => void): TranscriptIte
               {agent.type ?? "subagent"}
             </Badge>
           </div>
-          {showDescription && <p className="text-muted-foreground">{description}</p>}
+          {showDescription && (
+            <p
+              className={cn(
+                "text-muted-foreground",
+                description.startsWith("/") && "font-mono text-[10px] text-muted-foreground/60",
+              )}
+            >
+              {description}
+            </p>
+          )}
         </div>
       ),
       // Empty-while-starting is designed, not blank: the tab exists the
@@ -1138,6 +1181,10 @@ function SessionWorkspace({
   // session — its own AbortController, aborted on unmount / sessionId change.
   // Aborting only closes THIS reader, never the detached server run.
   const reconnectAbortRef = useRef<AbortController | null>(null);
+  /** State twin of `reconnectAbortRef`, existing ONLY so the queue drains can
+   *  depend on it. The ref stays the synchronous truth every gate reads; this
+   *  is what re-runs those effects when the tail opens or closes. */
+  const [reconnectLive, setReconnectLive] = useState(false);
   // Guard so the reconnect effect attaches at most once per session id.
   const reconnectedRef = useRef<string | null>(null);
 
@@ -1312,17 +1359,62 @@ function SessionWorkspace({
 
   // Message queue (1.5): typing + Enter while the agent works QUEUES the message
   // (never dropped, never force-sent mid-turn — the busy guard forbids that).
-  // Queued messages render as editable/removable chips above the composer and
-  // dispatch in order the moment the turn settles, via the same send() path.
+  // Queued messages render as editable/removable chips above the composer; the
+  // engine accepts and dispatches them in order independently of this mount.
   // A queued message carries its attachments with it. They ride as data URLs
   // (PromptInput converts the blob URLs before handing them over), so they stay
   // valid after the composer has cleared and revoked the originals — the queue
   // can outlive several turns.
-  const [messageQueue, setMessageQueue] = useState<
-    { id: string; text: string; files?: PromptInputMessage["files"] }[]
-  >([]);
+  const [messageQueue, setMessageQueue] = useState<SessionQueuedMessage[]>([]);
+  const [engineQueuePaused, setEngineQueuePaused] = useState(false);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
+
+  // ISSUE #5 — THE QUEUE OUTLIVES THIS COMPONENT.
+  //
+  // It used to be `useState` and nothing else, so navigating to another
+  // conversation unmounted this component and destroyed messages the user had
+  // written, committed with Enter, and been shown a chip for. The chips are
+  // editable and removable, which is what made the loss read as data loss: the
+  // affordances say "this is a durable list you are curating."
+  //
+  // Seeded in an EFFECT rather than a `useState` initializer on purpose. This
+  // component is server-rendered, so an initializer that read localStorage would
+  // render `[]` on the server and restored chips on the client — a hydration
+  // mismatch on the very first paint. Restoring after mount costs one frame and
+  // is the standard shape for client-only persisted state.
+  const queueHydratedFor = useRef<string | null>(null);
+  useEffect(() => {
+    // A draft session has no id to key by, and nothing to navigate back TO —
+    // there is no session yet. Persistence starts when identity does.
+    if (!sessionId || queueHydratedFor.current === sessionId) return;
+    queueHydratedFor.current = sessionId;
+    const restored = readQueue<SessionQueuedMessage>(
+      browserQueueStorage(),
+      queueStorageKey(sessionId),
+    );
+    if (restored.length === 0) return;
+    // Restored entries are legacy/pre-ack work only. Once the engine accepts an
+    // item it is removed from localStorage and projected back from queue.json.
+    // Never clobber a queue this mount already has: when a draft session is
+    // minted mid-stream its id arrives AFTER the user may have queued something,
+    // and that in-memory queue is newer than anything on disk.
+    setMessageQueue((current) => (current.length > 0 ? current : restored));
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    // Drains write too: an emptied queue REMOVES its key rather than leaving a
+    // tombstone in a budget shared with every other chat the user has opened.
+    writeQueue(
+      browserQueueStorage(),
+      queueStorageKey(sessionId),
+      // Once the engine acknowledges an item, localStorage is no longer an
+      // owner or backup. Keep only pre-ack migration/upload work locally.
+      messageQueue.filter((item) => !item.accepted),
+      stripQueuedAttachments,
+    );
+  }, [sessionId, messageQueue]);
 
   const busy = status === "submitted" || status === "streaming";
 
@@ -1406,30 +1498,11 @@ function SessionWorkspace({
   // its `conversation:tools` payloads. (This pointer used to name
   // `renderAgentBucket` — the second copy of the kind dispatch that story 3.1
   // deleted; `agentBucketItem` is where that rendering lives now.)
-  const agentBuckets = useMemo(() => {
-    const order: string[] = [];
-    const byId = new Map<string, AgentBucket>();
-    for (const m of messages) {
-      for (const part of m.parts) {
-        if (part.type === "tool" && part.agent && part.id && parentOf(part) === undefined) {
-          const existing = byId.get(part.id);
-          if (existing) {
-            existing.spawn = part; // refresh in place (e.g. output just landed)
-          } else {
-            order.push(part.id);
-            byId.set(part.id, { id: part.id, spawn: part, parts: [] });
-          }
-        }
-      }
-    }
-    for (const m of messages) {
-      for (const part of m.parts) {
-        const parent = parentOf(part);
-        if (parent) byId.get(parent)?.parts.push(part);
-      }
-    }
-    return order.map((id) => byId.get(id)!);
-  }, [messages]);
+  const agentProjection = useMemo(
+    () => deriveAgentProjection(messages, busy),
+    [busy, messages],
+  );
+  const agentBuckets = agentProjection.buckets;
 
   const agentBucketById = useMemo(
     () => new Map(agentBuckets.map((b) => [b.id, b])),
@@ -1456,8 +1529,39 @@ function SessionWorkspace({
     setTurnStartedAt(Date.now());
   }, [busy]);
 
+  // AN INTERRUPTED TURN IS NOT A FINISHED TURN — issue #5's real cause.
+  //
+  // `status` flips to "ready" the instant a turn is torn down, and the queue
+  // drain reads "ready" as "the agent is free, send the next one". On a
+  // navigation that was catastrophic: aborting the turn made the drain dispatch
+  // the user's queued message from a component that was already unmounting, so
+  // the POST went out with nowhere to deliver its stream and the queue was then
+  // persisted as empty. The message was gone, having never been seen or sent.
+  //
+  // The latch says "the last turn ended because something killed it", and the
+  // drain refuses to fire while it is set. It covers the Stop button for the
+  // same reason: stopping the agent and having it immediately restart itself
+  // with a queued message is the opposite of what Stop means.
+  const turnInterruptedRef = useRef(false);
+
   // Abort any in-flight turn if the session is navigated away from.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  //
+  // THE BODY IS NOT DEAD CODE — IT IS THE WHOLE CORRECTNESS OF THE LATCH. React
+  // StrictMode double-invokes effects in development: body → cleanup → body. An
+  // effect that only had a cleanup therefore ran that cleanup on the FIRST
+  // mount, arming `turnInterruptedRef` before the user had done anything, and
+  // nothing ever disarmed it. The drain gate then refused forever, so a queued
+  // message was restored, displayed, and never sent — on every mount, in dev.
+  //
+  // Arming on teardown and disarming on setup makes the pair symmetric, so the
+  // StrictMode cycle lands where a single mount would: false.
+  useEffect(() => {
+    turnInterruptedRef.current = false;
+    return () => {
+      turnInterruptedRef.current = true;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Non-200 (including a project scan with no .claude/commands dir, which the
   // endpoint itself answers with an empty list) is treated as "no commands" —
@@ -1949,27 +2053,60 @@ function SessionWorkspace({
 
     const abort = new AbortController();
     reconnectAbortRef.current = abort;
-    let sawEvent = false;
+    // A REF CANNOT WAKE AN EFFECT. The queue drain gates on
+    // `reconnectAbortRef.current`, and that ref goes null in the `finally`
+    // below — on the `!sawEvent` path (the turn had already finished before
+    // this mount), NOTHING ELSE CHANGES: `setStatus` is skipped, so the drain
+    // effect never re-runs and a queue that was blocked at mount stays blocked
+    // forever. This state mirrors the ref for the sole purpose of being a
+    // dependency; the gates keep reading the ref, which is the synchronous
+    // truth. See the drain effect's deps.
+    setReconnectLive(true);
+    let sawAnyEvent = false;
 
     (async () => {
       try {
-        const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/events`, {
-          signal: abort.signal,
-        });
-        if (!res.ok || !res.body) return;
-        await consumeSSE(res.body.getReader(), (event, payload) => {
-          // First byte of a live turn — flip to streaming so the busy UI shows
-          // while applyServerEvent rebuilds it. A not-live session emits nothing
-          // (server gate) and the reader closes at once, leaving status ready.
-          if (!sawEvent) {
+        let retryMs = 250;
+        while (!abort.signal.aborted) {
+          let sawEvent = false;
+          let sawClosed = false;
+          const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/events`, {
+            signal: abort.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(`tail HTTP ${res.status}`);
+          await consumeSSE(res.body.getReader(), (event, payload) => {
             sawEvent = true;
-            setStatus("streaming");
-          }
-          applyServerEvent(event, payload);
-        });
+            sawAnyEvent = true;
+            if (event === "closed") sawClosed = true;
+            // First byte of a live turn — flip to streaming so the busy UI shows
+            // while applyServerEvent rebuilds it. A not-live session emits nothing.
+            setStatus((current) => (current === "ready" ? "streaming" : current));
+            applyServerEvent(event, payload);
+          });
+          if (sawClosed || abort.signal.aborted) break;
+          // No first event means the session was idle at connect time. Once a
+          // live stream has begun, however, a close without its durable terminal
+          // marker is a transport drop and must retry in this same mount.
+          if (!sawEvent && !sawAnyEvent) break;
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              clearTimeout(timer);
+              reject(new DOMException("Aborted", "AbortError"));
+            };
+            const timer = setTimeout(() => {
+              abort.signal.removeEventListener("abort", onAbort);
+              resolve();
+            }, retryMs);
+            abort.signal.addEventListener("abort", onAbort, { once: true });
+          });
+          retryMs = Math.min(4_000, retryMs * 2);
+          // Rebuild from line zero on reconnect; applyServerEvent's id-based
+          // updates are authoritative and avoid a half-visible sub-agent.
+          asstIdRef.current = null;
+        }
         // The run's own "done" set cost/tokens but never touches status; once the
         // log drains ("closed" → reader done), settle a still-streaming view back.
-        if (sawEvent) setStatus((s) => (s === "streaming" ? "ready" : s));
+        if (sawAnyEvent) setStatus((s) => (s === "streaming" ? "ready" : s));
       } catch {
         // Aborted on unmount / sessionId change, or a dropped connection — the
         // detached server run is untouched; a later mount can reconnect again.
@@ -1979,14 +2116,63 @@ function SessionWorkspace({
         // concurrent turn during the tail (§6.D). Guard on identity so we never
         // clobber a newer reader. (Cleanup nulls it too, on unmount/dep change.)
         if (reconnectAbortRef.current === abort) reconnectAbortRef.current = null;
+        setReconnectLive(false);
       }
     })();
 
     return () => {
       abort.abort();
       reconnectAbortRef.current = null;
+      setReconnectLive(false);
     };
   }, [sessionId, applyServerEvent]);
+
+  // The complete immutable envelope handed to either the immediate-turn
+  // adapter or the durable queue. Keeping one builder prevents a queued turn
+  // from silently losing provider/runtime/loom settings.
+  const buildTurnPayload = useCallback(
+    (
+      text: string,
+      attachments: { id: string; name: string; mediaType: string; size: number }[],
+      runId: string,
+    ) => ({
+      message: text,
+      ...(attachments.length ? { attachments } : {}),
+      sessionId,
+      runId,
+      model: sessionModel,
+      project,
+      browserScopeKey: resolvedRightPanelScopeKey,
+      account: activeAccount,
+      ...(effort !== "default" ? { effort } : {}),
+      runtimeMode,
+      ...(provider === "claude" && fastMode ? { fastMode: true } : {}),
+      ...(provider === "codex" && serviceTier !== "standard" ? { serviceTier } : {}),
+      ...(planner
+        ? { role: "planner" }
+        : steerer
+          ? { role: "steerer", loomId }
+          : escalation
+            ? { role: "escalation", loomId }
+            : {}),
+    }),
+    [
+      sessionId,
+      sessionModel,
+      project,
+      resolvedRightPanelScopeKey,
+      activeAccount,
+      effort,
+      runtimeMode,
+      provider,
+      fastMode,
+      serviceTier,
+      planner,
+      steerer,
+      escalation,
+      loomId,
+    ],
+  );
 
   const send = useCallback(
     // `hidden` (M11 finding-1) fires a turn with NO user bubble — the escalation
@@ -1997,6 +2183,9 @@ function SessionWorkspace({
       text: string,
       opts?: { hidden?: boolean; files?: PromptInputMessage["files"] },
     ) => {
+      // A new turn clears the interrupted latch: whatever killed the LAST turn
+      // is no longer a reason to hold the queue back.
+      turnInterruptedRef.current = false;
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
       // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
@@ -2054,44 +2243,45 @@ function SessionWorkspace({
           }));
         }
 
+        const turnPayload = buildTurnPayload(text, attachments, runId);
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            ...(attachments.length ? { attachments } : {}),
-            sessionId,
-            runId,
-            model: sessionModel,
-            project,
-            browserScopeKey: resolvedRightPanelScopeKey,
-            account: activeAccount,
-            ...(effort !== "default" ? { effort } : {}),
-            runtimeMode,
-            ...(provider === "claude" && fastMode ? { fastMode: true } : {}),
-            ...(provider === "codex" && serviceTier !== "standard"
-              ? { serviceTier }
-              : {}),
-            // Session<->Loom link (docs/loom-model.md §5): tells route.ts
-            // this is a planner turn BEFORE any Chat record exists (turn 1
-            // has no persisted chat.role yet) — see its own comment on why
-            // it reads this from the body at all. Omitted entirely for a
-            // normal (non-planner) session. A steerer session (loom Chat tab)
-            // additionally carries loomId so route.ts's turn-1 seed can bind the
-            // session to this loom (validated server-side against the project).
-            // An escalation session (blocked-loom discuss surface) carries
-            // role:"escalation"+loomId the same way — route.ts binds a read-only
-            // toolset whose only write is the human-gated answer_blocked.
-            ...(planner
-              ? { role: "planner" }
-              : steerer
-                ? { role: "steerer", loomId }
-                : escalation
-                  ? { role: "escalation", loomId }
-                  : {}),
-          }),
+          body: JSON.stringify(turnPayload),
           signal: abort.signal,
         });
+        // Another renderer may have won the session between the optimistic
+        // idle check and this POST. Preserve the turn by handing the exact
+        // payload to the durable engine queue instead of surfacing a lossy 409.
+        if (res.status === 409 && sessionId) {
+          const queued = await fetch(
+            `/api/chat/${encodeURIComponent(sessionId)}/queue`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ idempotencyKey: runId, payload: turnPayload }),
+            },
+          );
+          const queuedBody = await queued.json().catch(() => null);
+          if (!queued.ok) {
+            throw new Error(queuedBody?.error ?? `Queue handoff failed (HTTP ${queued.status})`);
+          }
+          setMessages((messages) =>
+            messages.filter((message) => message.id !== userId && message.id !== asstId),
+          );
+          setMessageQueue((items) => [
+            ...items,
+            {
+              id: runId,
+              text,
+              accepted: true,
+              revision: queuedBody?.item?.revision,
+              state: queuedBody?.item?.state ?? "queued",
+            },
+          ]);
+          setStatus("ready");
+          return;
+        }
         if (!res.ok || !res.body) {
           // A project/account rejected server-side (unknown/removed) answers
           // with a plain JSON 400 before any SSE — surface its message.
@@ -2157,7 +2347,7 @@ function SessionWorkspace({
         runIdRef.current = null;
       }
     },
-    [sessionId, sessionModel, effort, runtimeMode, provider, fastMode, serviceTier, project, resolvedRightPanelScopeKey, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
+    [sessionId, buildTurnPayload, applyServerEvent],
   );
 
   // M11 finding-1 — auto-fire the escalation opening turn ONCE, on mount.
@@ -2661,7 +2851,170 @@ function SessionWorkspace({
     // and renders no user bubble, while an unflagged item (the loom watcher)
     // dispatches EXACTLY as before — `undefined` is what send() already received.
     void send(next.text, next.hidden ? { hidden: true } : undefined);
-  }, [status, injectionQueue, send, pendingWakes]);
+    // Same dependency, same reason as the message-queue drain below: this gate
+    // also reads `reconnectAbortRef`, so it also needs waking when that ref
+    // clears without a status change.
+  }, [status, injectionQueue, send, pendingWakes, reconnectLive]);
+
+  const queueUploadsRef = useRef<Set<string>>(new Set());
+
+  const enqueueWithEngine = useCallback(
+    async (item: SessionQueuedMessage) => {
+      if (!sessionId || item.accepted || queueUploadsRef.current.has(item.id)) return;
+      queueUploadsRef.current.add(item.id);
+      try {
+        const attachments = item.files?.length ? await uploadAttachments(item.files) : [];
+        const response = await fetch(
+          `/api/chat/${encodeURIComponent(sessionId)}/queue`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              idempotencyKey: item.id,
+              payload: buildTurnPayload(item.text, attachments, item.id),
+            }),
+          },
+        );
+        const body = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`);
+        const accepted = body?.item as
+          | { revision?: number; state?: SessionQueuedMessage["state"] }
+          | undefined;
+        setMessageQueue((queue) =>
+          queue.map((queued) =>
+            queued.id === item.id
+              ? {
+                  ...queued,
+                  accepted: true,
+                  files: undefined,
+                  revision: accepted?.revision,
+                  state: accepted?.state ?? "queued",
+                  error: undefined,
+                }
+              : queued,
+          ),
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setMessageQueue((queue) =>
+          queue.map((queued) =>
+            queued.id === item.id ? { ...queued, error: detail } : queued,
+          ),
+        );
+        setAttachmentError(`Queue was not accepted: ${detail}`);
+      } finally {
+        queueUploadsRef.current.delete(item.id);
+      }
+    },
+    [sessionId, buildTurnPayload],
+  );
+
+  // Local entries exist only until the engine owns them. This also migrates an
+  // issue-#5 localStorage queue when a session remounts after this upgrade.
+  useEffect(() => {
+    if (!sessionId) return;
+    for (const item of messageQueue) {
+      if (!item.accepted && !item.error) void enqueueWithEngine(item);
+    }
+  }, [sessionId, messageQueue, enqueueWithEngine]);
+
+  const refreshEngineQueue = useCallback(async () => {
+    if (!sessionId) return;
+    const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/queue`);
+    if (!response.ok) return;
+    const envelope = (await response.json()) as {
+      paused?: boolean;
+      items?: Array<{
+        idempotencyKey: string;
+        revision: number;
+        state: SessionQueuedMessage["state"] | "committed" | "cancelled";
+        payload?: { message?: string };
+        error?: string;
+      }>;
+    };
+    setEngineQueuePaused(Boolean(envelope.paused));
+    const active = (envelope.items ?? [])
+      .filter((item) => item.state !== "committed" && item.state !== "cancelled")
+      .map<SessionQueuedMessage>((item) => ({
+        id: item.idempotencyKey,
+        text: item.payload?.message ?? "Queued message",
+        accepted: true,
+        revision: item.revision,
+        state: item.state as SessionQueuedMessage["state"],
+        error: item.error,
+      }));
+    setMessageQueue((current) => [
+      ...current.filter((item) => !item.accepted),
+      ...active,
+    ]);
+  }, [sessionId]);
+
+  const resumeEngineQueue = useCallback(async () => {
+    if (!sessionId) return;
+    const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/queue`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused: false }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      setAttachmentError(body?.error ?? `Queue resume failed (HTTP ${response.status})`);
+      return;
+    }
+    setEngineQueuePaused(false);
+    await refreshEngineQueue();
+  }, [sessionId, refreshEngineQueue]);
+
+  const editEngineQueueItem = useCallback(
+    async (item: SessionQueuedMessage, text: string) => {
+      if (!sessionId || !item.accepted || item.revision === undefined) return;
+      const response = await fetch(
+        `/api/chat/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision, message: text }),
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setAttachmentError(body?.error ?? `Queue edit failed (HTTP ${response.status})`);
+      }
+      await refreshEngineQueue();
+    },
+    [sessionId, refreshEngineQueue],
+  );
+
+  const removeEngineQueueItem = useCallback(
+    async (item: SessionQueuedMessage) => {
+      if (!sessionId || !item.accepted || item.revision === undefined) return;
+      const response = await fetch(
+        `/api/chat/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision }),
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setAttachmentError(body?.error ?? `Queue removal failed (HTTP ${response.status})`);
+      }
+      await refreshEngineQueue();
+    },
+    [sessionId, refreshEngineQueue],
+  );
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void refreshEngineQueue();
+    if (!busy && messageQueue.length === 0) return;
+    // Queue transitions are coarse lifecycle changes, not token deltas. A
+    // sub-second poll multiplied across open tabs competes with the live stream
+    // and was visible in the browser trace as continuous request churn.
+    const timer = setInterval(() => void refreshEngineQueue(), 2_000);
+    return () => clearInterval(timer);
+  }, [sessionId, busy, messageQueue.length, refreshEngineQueue]);
 
   const handleSubmit = (message: PromptInputMessage) => {
     const text = message.text.trim();
@@ -2672,32 +3025,14 @@ function SessionWorkspace({
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
-      setMessageQueue((q) => [
-        ...q,
-        { id: `q${queueSeqRef.current++}`, text, files: message.files },
-      ]);
+      const stableId = `q-${globalThis.crypto?.randomUUID?.() ?? queueSeqRef.current++}`;
+      const queued = { id: stableId, text, files: message.files };
+      setMessageQueue((q) => [...q, queued]);
+      if (sessionId) void enqueueWithEngine(queued);
       return;
     }
     void send(text, { files: message.files });
   };
-
-  // Dispatch the head of the message queue once the composer is genuinely idle
-  // — mirrors the watcher-injection gate (§6.D): status "ready" AND no live
-  // reader (so the reconnect tail can't race a second concurrent turn). Removing
-  // the item before send() (which synchronously flips status to "submitted")
-  // guarantees strictly one-at-a-time, in order.
-  useEffect(() => {
-    if (
-      status !== "ready" ||
-      abortRef.current ||
-      reconnectAbortRef.current ||
-      messageQueue.length === 0
-    )
-      return;
-    const [next, ...rest] = messageQueue;
-    setMessageQueue(rest);
-    void send(next.text, next.files ? { files: next.files } : undefined);
-  }, [status, messageQueue, send]);
 
   // Prefer the fetched catalog (matches what's actually offered in the
   // select) and fall back to the static list for a model id seeded from a
@@ -2996,6 +3331,23 @@ function SessionWorkspace({
     [agentBuckets],
   );
 
+  // A newly-started sub-agent is an immediate runtime fact, not a turn-end
+  // summary. Reveal it once when its authoritative spawn event first enters the
+  // projection; persisted agents present at mount do not reopen old activity.
+  const seenAgentIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const ids = new Set(railAgents.map((agent) => agent.id));
+    const seen = seenAgentIdsRef.current;
+    seenAgentIdsRef.current = ids;
+    if (seen === null) return;
+    const started = railAgents.find(
+      (agent) => agent.status === "running" && !seen.has(agent.id),
+    );
+    if (!started) return;
+    setActiveTab(started.id);
+    setWorkspaceInspectorOpen(true);
+  }, [railAgents]);
+
   // `renderAgentBucket` is gone. Its inline switch — the SECOND copy of the
   // RenderItem dispatch, whose own comment admitted it "mirrors Main's exhaustive
   // RenderItem switch exactly" — was the duplication this whole extraction exists
@@ -3090,7 +3442,10 @@ function SessionWorkspace({
         // produced lives in its own tab (see agentBuckets), not interleaved
         // here even though it rode in on the same SSE stream and the same
         // message's parts array.
-        const mainParts = m.parts.filter((p) => parentOf(p) === undefined);
+        const mainParts = [
+          ...(agentProjection.inferredSpawnsByMessage.get(m.id) ?? []),
+          ...m.parts.filter((p) => parentOf(p) === undefined),
+        ];
         // The persistent in-flight row rides the STREAMING turn's items, after
         // the anchor splice, so it always renders last inside the bubble. Only
         // once real parts exist — the empty turn keeps `pending`'s shimmer
@@ -3161,6 +3516,7 @@ function SessionWorkspace({
       activeBucket,
       activeRunTab,
       agentBucketById,
+      agentProjection,
       busy,
       liveWork,
       messages,
@@ -3493,11 +3849,18 @@ function SessionWorkspace({
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
                 <div className="flex items-center justify-between px-1.5 pt-0.5">
                   <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Queued · sends in order
+                    {engineQueuePaused ? "Queue paused · review before resuming" : "Queued · sends in order"}
                   </span>
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                    {messageQueue.length}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {engineQueuePaused && (
+                      <Button type="button" size="xs" variant="outline" onClick={() => void resumeEngineQueue()}>
+                        Resume
+                      </Button>
+                    )}
+                    <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                      {messageQueue.length}
+                    </span>
+                  </div>
                 </div>
                 {messageQueue.map((m, i) => (
                   <QueueChip
@@ -3505,12 +3868,20 @@ function SessionWorkspace({
                     index={i + 1}
                     text={m.text}
                     editing={editingQueueId === m.id}
-                    onEdit={() => setEditingQueueId(m.id)}
+                    onEdit={() => {
+                      if (!m.accepted || m.state === "queued") setEditingQueueId(m.id);
+                    }}
                     onCommit={(v) => {
                       setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
                       setEditingQueueId(null);
+                      if (m.accepted) void editEngineQueueItem(m, v);
                     }}
-                    onRemove={() => setMessageQueue((q) => q.filter((x) => x.id !== m.id))}
+                    onRemove={() => {
+                      if (m.accepted) void removeEngineQueueItem(m);
+                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
+                    }}
+                    state={m.state}
+                    error={m.error}
                   />
                 ))}
               </div>
@@ -3663,9 +4034,13 @@ function SessionWorkspace({
                       void fetch("/api/chat/stop", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(rid ? { runId: rid } : { sessionId }),
+                        body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
                       }).catch(() => {});
                     }
+                    // Stop means stop. Without this latch the queue drains the
+                    // moment `status` returns to "ready", so the agent the user
+                    // just halted restarts itself with their queued message.
+                    turnInterruptedRef.current = true;
                     abortRef.current?.abort();
                   }}
                 />

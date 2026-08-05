@@ -117,10 +117,12 @@ export * from "./runner/lease";
 export * from "./runner/liveness";
 export * from "./runner/recover";
 // AD-5/AD-16 — the session subtree (<TELAR_HOME>/sessions/<id>/) and the
-// SESSION lifetime of the one lease primitive. Runtime state only: it does not
-// absorb chats.json, and it composes over runner/lease.ts rather than
+// SESSION lifetime of the one lease primitive. Operational state only: it does
+// not absorb chats.json. session-queue.ts adds crash-durable pending intent in
+// this same subtree; sessions.ts composes over runner/lease.ts rather than
 // reimplementing it.
 export * from "./sessions";
+export * from "./session-queue";
 export * from "./setup/setup-agent";
 // Ultra — deterministic script harness (docs/plans/ultra-harness.md). Additive.
 export * from "./ultra";

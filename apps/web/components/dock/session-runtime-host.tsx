@@ -37,7 +37,6 @@ import { consumeSSE } from "@/lib/sse";
 // purpose: this host renders null and only needs one pure helper, and the barrel
 // would drag the whole shell (and the 1465-line composer kit) into the dock's
 // graph for no benefit.
-import { readPreStreamError } from "@/components/conversation/pre-stream-error";
 import { diagnosticFetch } from "@/lib/client-request-diagnostics";
 import {
   cancelIdleRequest,
@@ -50,15 +49,12 @@ import {
   TELAR_SESSION_RUN_EVENT,
   type TelarRefreshDetail,
 } from "@/lib/telar-refresh";
-import { useDock, type CompactMsg } from "./dock-provider";
+import { useDock, type CompactMsg, type DockQueuedMessage } from "./dock-provider";
 
 const DETAIL_SAFETY_POLL_MS = 60_000;
 const IDLE_TAIL_RETRY_MS = 30_000;
 const ACTIVE_TAIL_RETRY_MS = 800;
 const TURN_START_GRACE_MS = 10_000;
-
-const newRunId = () =>
-  globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
 
 interface StorePart {
   type: string;
@@ -67,6 +63,8 @@ interface StorePart {
   input?: Record<string, unknown>;
   output?: string;
   parentId?: string;
+  agent?: unknown;
+  taskStatus?: "completed" | "failed" | "stopped";
 }
 interface StoreMessage { role: "user" | "assistant"; parts: StorePart[] }
 interface ChatDetail {
@@ -135,6 +133,16 @@ function toCompact(messages: StoreMessage[]): CompactMsg[] {
 const countAssistant = (messages: StoreMessage[]): number =>
   messages.filter((m) => m.role === "assistant").length;
 
+const countRunningAgents = (messages: StoreMessage[]): number => {
+  let count = 0;
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type === "tool" && part.agent && !part.parentId && !part.taskStatus) count += 1;
+    }
+  }
+  return count;
+};
+
 export function SessionRuntimeHost({ id }: { id: string }) {
   const { setRuntime, runtime, dequeue, registerStopHandler } = useDock();
   // Keep the latest chat detail so the composer can send with the right
@@ -149,17 +157,16 @@ export function SessionRuntimeHost({ id }: { id: string }) {
   // the store is always `[...persisted, ...live]` (see commitLive). ──
   const liveMsgsRef = useRef<CompactMsg[]>([]);
   const pendingToolsRef = useRef<{ tool: string; target: string }[]>([]);
+  const liveAgentsRef = useRef<Set<string>>(new Set());
   // The turn's own POST fetch (self-initiated sends) and the live tail's own
   // fetch — Stop aborts both as its local teardown, mirroring session-view's
   // abortRef.current?.abort().
-  const sendAbortRef = useRef<AbortController | null>(null);
   const tailAbortRef = useRef<AbortController | null>(null);
   // The current self-initiated turn's runId (session-view.tsx parity): set the
   // instant sendTurn fires, cleared when it settles. Stop below prefers this
   // over sessionId so it resolves from t=0 — sessionId isn't attachable to the
   // run server-side until the SDK confirms init/resume (chat-runs.ts), a window
   // during which a sessionId-only stop silently finds nothing.
-  const runIdRef = useRef<string | null>(null);
 
   const flushLiveTools = useCallback(() => {
     if (pendingToolsRef.current.length) {
@@ -170,7 +177,9 @@ export function SessionRuntimeHost({ id }: { id: string }) {
   const resetLive = useCallback(() => {
     liveMsgsRef.current = [];
     pendingToolsRef.current = [];
-  }, []);
+    liveAgentsRef.current.clear();
+    setRuntime(id, { agentsRunning: 0 });
+  }, [id, setRuntime]);
   const commitLive = useCallback(() => {
     const persisted = detailRef.current ? toCompact(detailRef.current.messages) : [];
     setRuntime(id, { messages: [...persisted, ...liveMsgsRef.current] });
@@ -229,6 +238,10 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         break;
       }
       case "tool": {
+        if (data.agent && typeof data.id === "string") {
+          liveAgentsRef.current.add(data.id);
+          setRuntime(id, { agentsRunning: liveAgentsRef.current.size });
+        }
         pendingToolsRef.current = [
           ...pendingToolsRef.current,
           {
@@ -242,6 +255,13 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         ];
         break;
       }
+      case "task_status": {
+        if (typeof data.id === "string") {
+          liveAgentsRef.current.delete(data.id);
+          setRuntime(id, { agentsRunning: liveAgentsRef.current.size });
+        }
+        break;
+      }
       case "interrupted":
       case "done":
       case "error":
@@ -253,92 +273,68 @@ export function SessionRuntimeHost({ id }: { id: string }) {
         return;
     }
     commitLive();
-  }, [commitLive, flushLiveTools, trailingMessage]);
+  }, [commitLive, flushLiveTools, id, setRuntime, trailingMessage]);
 
-  // Fire ONE queued message as a real turn on the same server surface the full
-  // session page uses (POST /api/chat). Shows the user bubble + working ring
-  // at once via the live overlay; the tail below (a second, independent
-  // connection to the same session's event log) streams the assistant's
-  // reply as it's written. This response is only drained for lifecycle
-  // (error surfacing, knowing when to settle) — not a second content path.
+  // Hand ONE local pre-ack item to the durable engine queue. Only a 202 removes
+  // it from this bridge; execution and FIFO draining happen server-side even if
+  // this host unmounts immediately afterwards.
   const sendTurn = useCallback(
-    async (text: string) => {
+    async (queued: DockQueuedMessage) => {
       const d = detailRef.current;
       if (!d || sendingRef.current) return;
       sendingRef.current = true;
-      resetLive();
-      liveMsgsRef.current = [{ role: "user", text }];
-      // Clear any previous rejection as this attempt starts — a stale sentence
-      // sitting above a turn that is now streaming reads as a fresh failure.
-      // This is one of TWO clears; the other is in the live tail below, for a
-      // turn this dock did not start (see the `sawEvent` arm in openTail).
-      setRuntime(id, { working: true, error: undefined });
-      commitLive();
-      dispatchTelarSessionRun(id);
-
-      const sendAbort = new AbortController();
-      sendAbortRef.current = sendAbort;
-      const runId = newRunId();
-      runIdRef.current = runId;
       try {
-        const res = await diagnosticFetch("/api/chat", {
+        const res = await diagnosticFetch(`/api/chat/${encodeURIComponent(id)}/queue`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            message: text,
-            sessionId: id,
-            runId,
-            model: d.model,
-            project: d.project,
-            account: d.account,
-            ...(d.permissionMode ? { permissionMode: d.permissionMode } : {}),
+            idempotencyKey: queued.id,
+            payload: {
+              message: queued.text,
+              sessionId: id,
+              runId: queued.id,
+              model: d.model,
+              project: d.project,
+              account: d.account,
+              ...(d.permissionMode ? { permissionMode: d.permissionMode } : {}),
+            },
           }),
-          signal: sendAbort.signal,
         }, "dock queued turn");
-        if (res.ok && res.body) {
-          const reader = res.body.getReader();
-          for (;;) {
-            const { done } = await reader.read();
-            if (done) break;
-          }
-        } else {
-          // THE TURN WAS REJECTED BEFORE ANY STREAM EXISTED — a plain JSON 4xx
-          // (an unknown project/account, or a profile that forbids this turn).
-          // Until this arm existed the body was never read: nothing threw, the
-          // sibling catch never fired, and the `finally` below dispatched a
-          // refetch that reloaded the PERSISTED tail — which never contained the
-          // turn, because it never ran. The user's typed message simply
-          // disappeared. Surfacing the server's own sentence is the fix, and it
-          // goes to a real field rather than being pushed into liveMsgsRef as a
-          // synthetic assistant message: disguising a rejected turn as a model
-          // reply is a worse failure than the silence it replaces.
-          const detail = await readPreStreamError(res);
-          if (detail) setRuntime(id, { error: detail });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
-      } catch {
-        /* network drop / stopped — the tail + refetch below still reconcile */
+        const body = await res.json().catch(() => null);
+        dequeue(id);
+        const engineItems = Array.isArray(body?.queue?.items) ? body.queue.items : [];
+        setRuntime(id, {
+          queuePaused: Boolean(body?.queue?.paused),
+          queuedEngineCount: engineItems.filter(
+            (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
+          ).length,
+        });
+        dispatchTelarSessionRun(id);
+      } catch (error) {
+        setRuntime(id, {
+          error: error instanceof Error ? error.message : String(error),
+        });
       } finally {
-        sendAbortRef.current = null;
         sendingRef.current = false;
-        if (runIdRef.current === runId) runIdRef.current = null;
-        setRuntime(id, { working: false });
-        window.dispatchEvent(new CustomEvent("telar:dock-refetch", { detail: id }));
       }
     },
-    [commitLive, id, resetLive, setRuntime],
+    [dequeue, id, setRuntime],
   );
 
-  // Drain the queue whenever the session is idle and loaded — one head at a
-  // time (sendTurn re-triggers this effect when working settles back to false).
+  // This is an acceptance bridge, not a scheduler: it may run while the session
+  // is busy because the engine decides when the accepted item executes.
   const rt = runtime[id];
   const queuedLen = rt?.queued.length ?? 0;
-  const working = rt?.working ?? false;
+  const queuedHead = rt?.queued[0];
   useEffect(() => {
-    if (working || sendingRef.current) return;
+    if (sendingRef.current) return;
     if (queuedLen === 0 || !detailRef.current) return;
-    const next = dequeue(id);
-    if (next !== undefined) void sendTurn(next);
-  }, [id, working, queuedLen, dequeue, sendTurn]);
+    if (queuedHead !== undefined) void sendTurn(queuedHead);
+  }, [id, queuedLen, queuedHead, sendTurn]);
 
   // Stop an active turn — session-view parity (POST /api/chat/stop + local
   // teardown). Prefers the in-flight runId (resolvable from t=0, see
@@ -347,14 +343,12 @@ export function SessionRuntimeHost({ id }: { id: string }) {
   // init that started from the full session view.
   useEffect(() => {
     const stop = () => {
-      sendAbortRef.current?.abort();
       tailAbortRef.current?.abort();
       setRuntime(id, { working: false });
-      const runId = runIdRef.current;
       void diagnosticFetch("/api/chat/stop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(runId ? { runId, sessionId: id } : { sessionId: id }),
+        body: JSON.stringify({ sessionId: id }),
       }, "dock stop turn").catch(() => {});
     };
     registerStopHandler(id, stop);
@@ -383,12 +377,32 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           project: chat.project ?? "",
           messages: [...toCompact(chat.messages), ...liveMsgsRef.current],
           assistantCount: countAssistant(chat.messages),
+          agentsRunning: countRunningAgents(chat.messages),
           cost: chat.costUsd,
           model: chat.model,
           account: chat.account,
           permissionMode: chat.permissionMode,
           loaded: true,
         });
+        try {
+          const qr = await diagnosticFetch(
+            `/api/chat/${encodeURIComponent(id)}/queue`,
+            undefined,
+            "dock queue snapshot",
+          );
+          if (qr.ok && alive) {
+            const queue = await qr.json();
+            const items = Array.isArray(queue?.items) ? queue.items : [];
+            setRuntime(id, {
+              queuePaused: Boolean(queue?.paused),
+              queuedEngineCount: items.filter(
+                (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
+              ).length,
+            });
+          }
+        } catch {
+          /* queue projection is recovered by the next detail refresh */
+        }
         // Park state rides along when the session drives a loom.
         if (chat.loomId) {
           try {

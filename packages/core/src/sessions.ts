@@ -1,7 +1,9 @@
 // The session subtree — `<TELAR_HOME>/sessions/<sessionId>/` (AD-5, AD-16).
 //
-// WHAT LIVES HERE: session-scoped RUNTIME state — the lease, and ephemera whose
-// lifetime is the session's. Nothing durable.
+// WHAT LIVES HERE: session-scoped RUNTIME state — the lease, live-tail ephemera,
+// and the crash-durable pending-turn queue. "Durable" here means accepted user
+// intent survives renderer/process loss until it settles; it is still
+// operational state with the session's lifetime, not transcript history.
 //
 // WHAT DOES NOT: `chats.json` keeps its own root-level home and is NOT absorbed
 // into this tree. A session's transcript outlives the process that produced it;
@@ -11,8 +13,9 @@
 // `apps/web/lib/session-log.ts` already creates and writes this exact directory
 // — `<TELAR_HOME>/sessions/<id>/live.ndjson`, the append-only live-tail of the
 // current turn. Core owns the LEASE FILE; session-log.ts keeps owning
-// `live.ndjson`. Different files, same directory, and `mkdirSync(…, {recursive:
-// true})` is idempotent, so coexistence is safe. Two consequences worth stating
+// `live.ndjson`; session-queue.ts owns `queue.json`. Different files, same
+// directory, and `mkdirSync(…, {recursive: true})` is idempotent, so coexistence
+// is safe. Two consequences worth stating
 // out loud:
 //   1. `sessionDir()` here must produce the BYTE-IDENTICAL path session-log.ts
 //      produces, or the two split-brain the directory. It is pinned by a

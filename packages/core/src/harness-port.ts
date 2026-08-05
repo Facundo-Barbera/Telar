@@ -53,6 +53,14 @@ const Usage = z.object({
 });
 export type Usage = z.infer<typeof Usage>;
 
+// One provider-neutral terminal vocabulary for a spawned subagent. Providers
+// use several spellings on their own wires (Codex alone currently reports
+// completed/errored/interrupted/shutdown/notFound); a surface should not need
+// to know any of them, and in particular must not collapse an explicit stop
+// into either success or failure.
+export const SubagentTerminalStatus = z.enum(["completed", "failed", "stopped"]);
+export type SubagentTerminalStatus = z.infer<typeof SubagentTerminalStatus>;
+
 // A single rate-limit window as the harness reported it, RAW. The port relays;
 // it does not shape. Mapping provider quota windows into product UI is
 // a surface concern and differs per provider, so doing it here would bake one
@@ -137,6 +145,7 @@ export const HarnessEvent = z.discriminatedUnion("type", [
     childThreadId: z.string(),
     output: z.string(),
     isError: z.boolean(),
+    status: SubagentTerminalStatus,
   }),
 ]);
 export type HarnessEvent = z.infer<typeof HarnessEvent>;

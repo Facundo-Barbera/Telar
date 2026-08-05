@@ -15,7 +15,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   CONVERSATION_KINDS,
+  agentLabel,
   agentStatus,
+  deriveAgentProjection,
   groupParts,
   isTrailingItem,
   parentOf,
@@ -49,6 +51,64 @@ const permission = (id: string, status: PermissionPart["status"] = "pending"): P
   rule: "Bash(rm:*)",
   ruleOptions: [{ rule: "Bash(rm:*)", label: "any rm" }],
   status,
+});
+
+describe("agentLabel — human-facing task names", () => {
+  test("humanizes Codex task paths without exposing the root namespace", () => {
+    expect(agentLabel({ type: null, description: "/root/mounted_live" })).toBe("Mounted live");
+    expect(agentLabel({ type: null, description: "/root/package-name" })).toBe("Package name");
+    expect(agentLabel({ type: null, description: "/root/frontendAudit" })).toBe("Frontend Audit");
+  });
+
+  test("preserves human-authored descriptions and explicit names", () => {
+    expect(agentLabel({ type: "general", description: "Inspect the queue" })).toBe("Inspect the queue");
+    expect(agentLabel({ type: "general", description: "/root/task", name: "Queue reviewer" })).toBe("Queue reviewer");
+  });
+});
+
+describe("deriveAgentProjection — durable and legacy subagent history", () => {
+  test("uses a persisted spawn as the parent of its child transcript", () => {
+    const spawn = tool("spawnAgent", "child-1", {
+      agent: { type: null, description: "/root/package_name" },
+      output: "done",
+    });
+    const projection = deriveAgentProjection([
+      { id: "m1", parts: [spawn, tool("Bash", "bash-1", { parentId: "child-1" })] },
+    ], false);
+
+    expect(projection.buckets).toHaveLength(1);
+    expect(projection.buckets[0].spawn).toBe(spawn);
+    expect(projection.buckets[0].parts.map((part) => part.type)).toEqual(["tool"]);
+    expect(projection.inferredSpawnsByMessage.size).toBe(0);
+  });
+
+  test("reconstructs a visible completed subagent when legacy history only proves a child parentId", () => {
+    const projection = deriveAgentProjection([
+      {
+        id: "m1",
+        parts: [
+          tool("Bash", "bash-1", { parentId: "child-legacy" }),
+          text("package found", "child-legacy"),
+          text("telar"),
+        ],
+      },
+    ], false);
+
+    const spawn = projection.inferredSpawnsByMessage.get("m1")?.[0];
+    expect(projection.buckets).toHaveLength(1);
+    expect(projection.buckets[0].id).toBe("child-legacy");
+    expect(projection.buckets[0].parts).toHaveLength(2);
+    expect(spawn?.agent).toEqual({ type: null, description: "" });
+    expect(spawn && agentStatus(spawn)).toBe("done");
+  });
+
+  test("keeps an inferred child running while the owning turn is live", () => {
+    const projection = deriveAgentProjection([
+      { id: "m1", parts: [tool("Bash", "bash-1", { parentId: "child-live" })] },
+    ], true);
+
+    expect(agentStatus(projection.buckets[0].spawn)).toBe("running");
+  });
 });
 
 describe("groupParts — consecutive tool parts coalesce into one group", () => {

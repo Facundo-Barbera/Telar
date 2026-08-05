@@ -57,6 +57,9 @@ import {
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
+  kickSessionQueue,
+} from "@/lib/server/session-engine";
+import {
   appendSessionEvent,
   clearSessionDeltas,
   endSessionDeltas,
@@ -611,14 +614,27 @@ export async function POST(req: Request) {
     );
   }
 
+  // Reserve the session before consuming any one-shot context. This is the
+  // engine-owned single-active-turn gate: two renderers racing the same
+  // session cannot both reach startSessionLog (which truncates the live log)
+  // or appendTurn (a whole-store read/modify/write). A duplicate run id is the
+  // same conflict — overwriting its AbortController would orphan live work.
+  const abort = new AbortController();
+  if (!registerChatRun(runId, abort, typeof sessionId === "string" && sessionId ? sessionId : null)) {
+    return Response.json(
+      { error: "This session already has an active turn. Queue the message instead." },
+      { status: 409 },
+    );
+  }
+
   // Story 4.1 / AC7 — CONSUME the wakes this turn's appendix ACTUALLY CARRIED,
   // so the same outcome is never stated twice and never stated zero times.
   //
   // THE WINDOW IS EXACT, and both edges are load-bearing. AFTER the capability
   // gate above: a pre-stream 400 would otherwise consume a wake no model ever
-  // saw. BEFORE registerChatRun below: the route's own comment on that call
-  // explains that an early return after it leaves a registered run with no
-  // stream to end, so nothing that can fail may be inserted past it.
+  // saw. AFTER the run reservation above: another renderer cannot win the
+  // session between acknowledgement and execution. The whole block is caught,
+  // so it cannot strand the reservation through an early return.
   //
   // ── THIS BLOCK CAN THROW, AND IT IS WRAPPED FOR IT (review B1) ──────────────
   // An earlier version of this comment claimed the ack "cannot fail" because
@@ -685,14 +701,6 @@ export async function POST(req: Request) {
       // the ack's idempotence already tolerates. Never a 500 on a turn path.
     }
   }
-
-  // Background turn (docs/runtime-architecture.md §A.4): the run is deliberately
-  // NOT bound to the request. A client disconnect (navigation, closed tab,
-  // hot-reload) must NOT abort it — the turn keeps working and persists on its
-  // own, like a loom. Only an explicit Stop (POST /api/chat/stop) or natural
-  // completion aborts it. Registered so Stop can find it by runId / session id.
-  const abort = new AbortController();
-  registerChatRun(runId, abort);
 
   // Fire title generation the instant the body is validated, in parallel
   // with the main turn below — only for a brand-new session (no resume
@@ -1417,7 +1425,9 @@ export async function POST(req: Request) {
                 const output = capToolOutput(nev.output);
                 part.output = output;
                 part.isError = nev.isError;
+                part.taskStatus = nev.status;
                 send("tool_result", { id: nev.childThreadId, output, isError: nev.isError });
+                send("task_status", { id: nev.childThreadId, status: nev.status });
                 break;
               }
               case "usage": {
@@ -2330,6 +2340,10 @@ export async function POST(req: Request) {
         // are all superseded by now, so a late reconnect reads the file only.
         if (capturedSession) endSessionDeltas(capturedSession);
         endChatRun(runId);
+        // The server, not a mounted renderer, owns advancing durable intent.
+        // Release the active run first, then let the one session dispatcher
+        // claim the next FIFO item if the queue is not paused.
+        if (capturedSession) void kickSessionQueue(capturedSession);
         try {
           controller.close();
         } catch {

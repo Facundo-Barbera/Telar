@@ -131,18 +131,102 @@ export const parentOf = (p: Part): string | undefined =>
 // spawned.
 export type AgentBucket = { id: string; spawn: ToolPart; parts: Part[] };
 
+export type AgentProjection = {
+  buckets: AgentBucket[];
+  /** Compatibility-only spawn rows, keyed by the message where child activity first appeared. */
+  inferredSpawnsByMessage: ReadonlyMap<string, readonly ToolPart[]>;
+};
+
+/**
+ * Reconstruct the subagent projection from the durable transcript.
+ *
+ * Current engines persist an enriched top-level spawn part before any child
+ * activity. Older Codex app-server streams sometimes persisted only parts with
+ * a child `parentId`; hiding those parts from Main without synthesizing their
+ * missing parent made a subagent demonstrably run and then disappear from
+ * history. An orphan parent id is authoritative evidence of a child thread, so
+ * this compatibility path creates a minimal projection-only spawn. It never
+ * mutates the stored transcript, and a real spawn always wins when present.
+ */
+export function deriveAgentProjection(
+  messages: readonly Pick<ChatMessage, "id" | "parts">[],
+  live: boolean,
+): AgentProjection {
+  const order: string[] = [];
+  const byId = new Map<string, AgentBucket>();
+  const inferredSpawnsByMessage = new Map<string, ToolPart[]>();
+
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.agent || !part.id || parentOf(part) !== undefined) continue;
+      const existing = byId.get(part.id);
+      if (existing) {
+        existing.spawn = part;
+      } else {
+        order.push(part.id);
+        byId.set(part.id, { id: part.id, spawn: part, parts: [] });
+      }
+    }
+  }
+
+  for (const message of messages) {
+    for (const part of message.parts) {
+      const parent = parentOf(part);
+      if (!parent) continue;
+      let bucket = byId.get(parent);
+      if (!bucket) {
+        const spawn: ToolPart = {
+          type: "tool",
+          id: parent,
+          name: "spawnAgent",
+          input: {},
+          agent: { type: null, description: "" },
+          ...(live ? {} : { output: "", taskStatus: "completed" as const }),
+        };
+        order.push(parent);
+        bucket = { id: parent, spawn, parts: [] };
+        byId.set(parent, bucket);
+        inferredSpawnsByMessage.set(message.id, [
+          ...(inferredSpawnsByMessage.get(message.id) ?? []),
+          spawn,
+        ]);
+      }
+      bucket.parts.push(part);
+    }
+  }
+
+  return {
+    buckets: order.map((id) => byId.get(id)!),
+    inferredSpawnsByMessage,
+  };
+}
+
 // Label priority per spec: an explicit run name, else a clipped slice of the
 // free-form description, else the agent type, else a generic fallback. The
 // description comes before the type because the type is shared across every
 // spawn of the same subagent — several concurrent "general-purpose" spawns
 // would otherwise all render the identical, useless tab label — while the
 // description is supplied fresh per spawn and is what actually distinguishes
-// them. Array.from/codePoints mirrors stepPreview's astral-safe slicing.
+// them. Codex may only expose its internal task path (`/root/package_name`) at
+// spawn time; that is durable routing metadata, not UI copy, so its final
+// segment is humanized before clipping. Array.from/codePoints mirrors
+// stepPreview's astral-safe slicing.
+function humanizeAgentDescription(description: string): string {
+  if (!description.startsWith("/")) return description;
+  const leaf = description.split("/").filter(Boolean).at(-1) ?? description;
+  const words = leaf
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .trim();
+  if (!words) return description;
+  return words[0].toUpperCase() + words.slice(1);
+}
+
 export function agentLabel(agent: AgentInfo): string {
   if (agent.name) return agent.name;
   const description = agent.description.trim();
   if (description) {
-    const codePoints = Array.from(description);
+    const codePoints = Array.from(humanizeAgentDescription(description));
     return codePoints.length > 24 ? `${codePoints.slice(0, 24).join("")}…` : codePoints.join("");
   }
   if (agent.type) return agent.type;

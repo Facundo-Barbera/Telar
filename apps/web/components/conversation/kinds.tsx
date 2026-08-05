@@ -393,6 +393,10 @@ function TurnFoldRow({
   onToggle: () => void;
 }) {
   const steps = fold.toolParts.length;
+  const agentParts = fold.toolParts.filter(
+    (part): part is ToolPart & { agent: AgentInfo } => Boolean(part.agent),
+  );
+  const ordinarySteps = steps - agentParts.length;
   // Errors must survive the fold. A turn whose work failed and then said
   // something reassuring would otherwise read as clean history.
   const hasError = fold.toolParts.some((p) => p.isError);
@@ -410,13 +414,33 @@ function TurnFoldRow({
         className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-90")}
       />
       {hasError && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
-      <span className="shrink-0">
-        {steps} step{steps === 1 ? "" : "s"}
-      </span>
-      <span className="shrink-0 text-muted-foreground/50">·</span>
-      <span className="min-w-0 truncate text-muted-foreground/80">
-        {toolTallyLabel(fold.toolParts)}
-      </span>
+      {agentParts.length > 0 ? (
+        <>
+          <BotIcon className="size-3.5 shrink-0" />
+          <span className="shrink-0 font-medium text-foreground/80">
+            {agentParts.length === 1 ? "Subagent" : `${agentParts.length} subagents`}
+          </span>
+          <span className="shrink-0 text-muted-foreground/50">·</span>
+          <span className="min-w-0 truncate text-muted-foreground/90">
+            {agentParts.map((part) => agentLabel(part.agent)).join(", ")}
+          </span>
+          {ordinarySteps > 0 && (
+            <span className="shrink-0 text-[10px] text-muted-foreground/70">
+              + {ordinarySteps} step{ordinarySteps === 1 ? "" : "s"}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <span className="shrink-0">
+            {steps} step{steps === 1 ? "" : "s"}
+          </span>
+          <span className="shrink-0 text-muted-foreground/50">·</span>
+          <span className="min-w-0 truncate text-muted-foreground/80">
+            {toolTallyLabel(fold.toolParts)}
+          </span>
+        </>
+      )}
     </button>
   );
 }

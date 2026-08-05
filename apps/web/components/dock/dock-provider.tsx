@@ -28,6 +28,31 @@ import {
 
 const ENTRIES_KEY = "telar:dock-entries"; // persisted: docked set + order
 const VIEWED_KEY = "telar:dock-viewed"; // persisted: assistant-count at last view
+// ISSUE #5 — persisted: per-session pending sends. `runtime` is otherwise
+// deliberately NOT persisted (it is refetched from the server on mount), but a
+// queued message is the one thing in it the SERVER HAS NEVER BEEN TOLD ABOUT.
+// Without this key the dock remembered which bubbles you docked and forgot what
+// you had typed into them.
+const QUEUED_KEY = "telar:dock-queued";
+
+/** A fresh Runtime. Module scope because it closes over nothing — as a
+ *  component-body arrow it was rebuilt every render and could not be named in
+ *  an effect's dependencies without lying about what it depends on. */
+const baseRuntime = (cur: Runtime | undefined): Runtime =>
+  cur ?? {
+    title: "",
+    project: "",
+    messages: [],
+    assistantCount: 0,
+    working: false,
+    parked: false,
+    cost: 0,
+    loaded: false,
+    queued: [],
+    agentsRunning: 0,
+    queuePaused: false,
+    queuedEngineCount: 0,
+  };
 const MAX_EXPANDED = 2;
 
 // The durable identity of a docked session (persisted). Everything live —
@@ -50,6 +75,11 @@ export type CompactMsg =
   | { role: "assistant"; text: string }
   | { role: "tools"; steps: { tool: string; target: string }[] };
 
+export interface DockQueuedMessage {
+  id: string;
+  text: string;
+}
+
 // Live per-session state the runtime host writes; read by heads + panels.
 export interface Runtime {
   title: string;
@@ -66,9 +96,14 @@ export interface Runtime {
   model?: string;
   account?: string;
   permissionMode?: string;
-  // 1.5 queue-capable composer: messages typed while the session is working wait
-  // here in order; the runtime host drains the head the moment it goes idle.
-  queued: string[];
+  // Pre-ack bridge for the queue-capable composer. The runtime host submits
+  // these to the engine immediately; accepted work no longer lives here.
+  queued: DockQueuedMessage[];
+  /** Authoritative live sub-agent count projected from spawn/task events. */
+  agentsRunning: number;
+  /** Engine-owned queue state; local `queued` is only the pre-ack bridge. */
+  queuePaused: boolean;
+  queuedEngineCount: number;
   // The last turn's PRE-STREAM rejection, if any — a plain JSON 4xx from
   // POST /api/chat, before an SSE stream ever existed (see the runtime host's
   // sendTurn). It needs a field of its own because nothing else here can carry a
@@ -120,12 +155,12 @@ interface DockCtx {
   isDocked: (id: string) => boolean;
   setRuntime: (id: string, patch: Partial<Runtime>) => void;
   markViewed: (id: string) => void;
-  // 1.5: append a message to a session's send queue (drained by the runtime host
-  // once idle). Kept in the store, not panel-local, so it survives minimize.
+  // Append a message to the local pre-ack bridge. Kept in the store, not
+  // panel-local, so it survives minimize until the engine acknowledges it.
   enqueue: (id: string, text: string) => void;
   // Pop the head of the queue for sending — returns it and removes it atomically
   // so the runtime host never double-sends. Undefined when the queue is empty.
-  dequeue: (id: string) => string | undefined;
+  dequeue: (id: string) => DockQueuedMessage | undefined;
   // Stop an active turn (session view parity: POST /api/chat/stop + local
   // teardown). The runtime host registers the actual handler (it owns the
   // fetch/abort refs); this is a no-op if no host is mounted for the id.
@@ -155,6 +190,29 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setEntries(readJSON<DockEntry[]>(ENTRIES_KEY, []));
     setViewed(readJSON<Record<string, number>>(VIEWED_KEY, {}));
+    // Restore pending sends before the runtime host has fetched anything: the
+    // chips are the user's own words and should be on screen from the first
+    // paint after a reload, not once the tail arrives.
+    const restored = readJSON<Record<string, Array<string | DockQueuedMessage>>>(QUEUED_KEY, {});
+    const pending = Object.entries(restored).filter(
+      ([, queued]) => Array.isArray(queued) && queued.length > 0,
+    );
+    if (pending.length > 0) {
+      setRuntimeState((prev) => {
+        const next = { ...prev };
+        for (const [id, queued] of pending) {
+          next[id] = {
+            ...baseRuntime(next[id]),
+            queued: queued.map((item, index) =>
+              typeof item === "string"
+                ? { id: `dock-migrate-${id}-${index}`, text: item }
+                : item,
+            ),
+          };
+        }
+        return next;
+      });
+    }
     hydrated.current = true;
   }, []);
 
@@ -175,6 +233,35 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
       /* best effort */
     }
   }, [viewed]);
+
+  // ISSUE #5 — persist the queued slice of `runtime`, and ONLY that slice.
+  //
+  // `runtime` changes on every streamed frame, so this is deliberately gated on
+  // the serialized queue actually differing rather than on `runtime` identity:
+  // otherwise a busy session would rewrite localStorage several times a second
+  // to store a value that had not moved.
+  const queuedByIdSnapshot = useMemo(() => {
+    const out: Record<string, DockQueuedMessage[]> = {};
+    for (const [id, rt] of Object.entries(runtime)) {
+      if (rt && rt.queued.length > 0) out[id] = rt.queued;
+    }
+    return out;
+  }, [runtime]);
+
+  const lastQueuedWrite = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hydrated.current) return;
+    const serialized = JSON.stringify(queuedByIdSnapshot);
+    if (serialized === lastQueuedWrite.current) return;
+    lastQueuedWrite.current = serialized;
+    try {
+      // Every queue drained ⇒ remove the key rather than leave `{}` behind.
+      if (Object.keys(queuedByIdSnapshot).length === 0) localStorage.removeItem(QUEUED_KEY);
+      else localStorage.setItem(QUEUED_KEY, serialized);
+    } catch {
+      /* private mode — queue just won't survive a reload */
+    }
+  }, [queuedByIdSnapshot]);
 
   // markViewed needs the live assistant count — resolve it against runtime.
   const runtimeRef = useRef(runtime);
@@ -265,35 +352,29 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
         cost: 0,
         loaded: false,
         queued: [],
+        agentsRunning: 0,
+        queuePaused: false,
+        queuedEngineCount: 0,
       };
       return { ...prev, [id]: { ...base, ...patch } };
     });
   }, []);
 
-  const baseRuntime = (cur: Runtime | undefined): Runtime =>
-    cur ?? {
-      title: "",
-      project: "",
-      messages: [],
-      assistantCount: 0,
-      working: false,
-      parked: false,
-      cost: 0,
-      loaded: false,
-      queued: [],
-    };
-
   const enqueue = useCallback((id: string, text: string) => {
     setRuntimeState((prev) => {
       const base = baseRuntime(prev[id]);
-      return { ...prev, [id]: { ...base, queued: [...base.queued, text] } };
+      const queued = {
+        id: `dock-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${base.queued.length}`}`,
+        text,
+      };
+      return { ...prev, [id]: { ...base, queued: [...base.queued, queued] } };
     });
   }, []);
 
   // Atomic pop: reads the ref for the head, then removes it via a functional
   // update. The ref read + the update run in the same tick, and the host guards
   // sends behind its own in-flight flag, so a head is never sent twice.
-  const dequeue = useCallback((id: string): string | undefined => {
+  const dequeue = useCallback((id: string): DockQueuedMessage | undefined => {
     const q = runtimeRef.current[id]?.queued ?? [];
     if (q.length === 0) return undefined;
     const [head, ...rest] = q;

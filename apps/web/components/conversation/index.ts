@@ -82,6 +82,7 @@ export {
   agentLabel,
   agentStatus,
   foldSettledTurn,
+  deriveAgentProjection,
   groupParts,
   isAsyncLaunchAck,
   isTrailingItem,

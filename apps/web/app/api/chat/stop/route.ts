@@ -1,4 +1,5 @@
 import { stopChatRun } from "@/lib/chat-runs";
+import { pauseSessionQueue } from "@telar/core";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ export async function POST(req: Request) {
   if (!key) {
     return Response.json({ error: "runId or sessionId required" }, { status: 400 });
   }
+  // Stop means stop. Later intents stay durable, but the engine will not claim
+  // another until the user explicitly resumes this session queue.
+  if (typeof sessionId === "string" && sessionId) pauseSessionQueue(sessionId);
   const stopped = stopChatRun(key);
   return Response.json({ ok: stopped });
 }

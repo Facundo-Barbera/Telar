@@ -52,6 +52,39 @@ describe("the event vocabulary", () => {
     expect(e).toEqual({ type: "session", sessionId: "s1" });
   });
 
+  test("spawn and spawn_result expose an explicit start then terminal lifecycle", () => {
+    const started = HarnessEvent.parse({
+      type: "spawn",
+      parentThreadId: "root",
+      childThreadId: "child",
+      prompt: "inspect the adapter",
+      model: "gpt-5",
+    });
+    expect(started).toMatchObject({ type: "spawn", childThreadId: "child" });
+
+    for (const status of ["completed", "failed", "stopped"] as const) {
+      const terminal = HarnessEvent.parse({
+        type: "spawn_result",
+        childThreadId: "child",
+        output: status,
+        isError: status !== "completed",
+        status,
+      });
+      expect(terminal).toMatchObject({ status });
+    }
+  });
+
+  test("spawn_result refuses a provider-specific or missing terminal status", () => {
+    const base = {
+      type: "spawn_result",
+      childThreadId: "child",
+      output: "",
+      isError: true,
+    } as const;
+    expect(HarnessEvent.safeParse(base).success).toBe(false);
+    expect(HarnessEvent.safeParse({ ...base, status: "errored" }).success).toBe(false);
+  });
+
   test("rate_limits relays raw windows, nulls included", () => {
     const e = HarnessEvent.parse({
       type: "rate_limits",
