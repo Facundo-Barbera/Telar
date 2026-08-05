@@ -1,0 +1,7 @@
+name = "telar-updates-proxy"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[r2_buckets]]
+binding = "TELAR_UPDATES"
+bucket_name = "telar-updates"

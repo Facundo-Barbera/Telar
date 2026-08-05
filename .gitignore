@@ -32,6 +32,9 @@ apps/web/.next-codex-*/
 # pnpm's content-addressed store, if a tool reaches for pnpm in this tree.
 .pnpm-store/
 
+# wrangler's local miniflare state (sqlite emulation of R2/cache), per machine.
+.wrangler/
+
 # BMAD And others
 _bmad/
 .claude/
