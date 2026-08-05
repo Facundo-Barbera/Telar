@@ -210,10 +210,15 @@ log "installed: $DEST_APP"
 # --- copy any distributable artifacts (zip/dmg + electron-updater's
 # <channel>-mac.yml/.blockmap, when a "publish" config triggered them) out
 # before the snapshot is cleaned up, staple notarization tickets where present
+#
+# Matched narrowly as *-mac.yml, not *.yml: electron-builder also drops a
+# builder-debug.yml holding the fully-resolved config, and that config carries
+# the injected extraMetadata.updateProxyKey. A blanket *.yml would publish the
+# shared update secret into the bucket as a readable file.
 ARTIFACTS=()
 shopt -s nullglob
 for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip \
-         "$SNAP/apps/desktop/release/"*.yml "$SNAP/apps/desktop/release/"*.blockmap; do
+         "$SNAP/apps/desktop/release/"*-mac.yml "$SNAP/apps/desktop/release/"*.blockmap; do
   DEST_ARTIFACT="$OUT_DIR/$(basename "$f")"
   cp "$f" "$DEST_ARTIFACT"
   if xcrun stapler validate "$DEST_ARTIFACT" >/dev/null 2>&1; then
