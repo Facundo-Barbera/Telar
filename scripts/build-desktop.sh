@@ -18,19 +18,26 @@ set -euo pipefail
 REF="origin/main"
 OUT="apps/desktop/release/from-origin"
 TARGETS="dir"
+PUBLISH_R2=0
+CHANNEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="${2:?--ref needs a value}"; shift 2 ;;
     --out) OUT="${2:?--out needs a value}"; shift 2 ;;
     --targets) TARGETS="${2:?--targets needs a value}"; shift 2 ;;
+    --channel) CHANNEL="${2:?--channel needs a value}"; shift 2 ;;
+    --publish-r2) PUBLISH_R2=1; shift ;;
     --ref=*) REF="${1#*=}"; shift ;;
     --out=*) OUT="${1#*=}"; shift ;;
     --targets=*) TARGETS="${1#*=}"; shift ;;
+    --channel=*) CHANNEL="${1#*=}"; shift ;;
     -h|--help)
       cat <<'HELP'
 usage: build-desktop.sh [--ref <git ref, default origin/main>]
                          [--out <dir, default apps/desktop/release/from-origin>]
                          [--targets <csv electron-builder mac targets, default dir>]
+                         [--channel beta|nightly]
+                         [--publish-r2]
 
 --targets controls what electron-builder produces (e.g. "dir", "zip,dmg").
 Signing and notarization are NOT flags here — electron-builder picks them up
@@ -38,11 +45,29 @@ automatically: it signs when a "Developer ID Application" cert is discoverable
 in Keychain, and notarizes when APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER
 are set in the environment. With no cert present, --targets zip,dmg still
 produces unsigned artifacts.
+
+--channel bumps the snapshot's own apps/desktop/package.json version to the
+next beta/nightly prerelease (via scripts/set-desktop-version.mjs, run inside
+the pristine snapshot — never the working tree) before packaging. Omit it to
+build whatever version is already committed at --ref.
+
+--publish-r2 uploads the produced artifacts (zip/dmg + electron-updater's
+<channel>-mac.yml + .blockmap files) to a Cloudflare R2 bucket via the S3-
+compatible API, for electron-updater's generic provider to serve from later.
+Requires R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET,
+UPDATE_PROXY_URL, UPDATE_PROXY_KEY in the environment, and the "aws" CLI on PATH.
 HELP
       exit 0 ;;
     *) echo "build-desktop: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$PUBLISH_R2" -eq 1 ]; then
+  for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET UPDATE_PROXY_URL UPDATE_PROXY_KEY; do
+    [ -n "${!v:-}" ] || { echo "build-desktop: --publish-r2 needs \$$v set" >&2; exit 2; }
+  done
+  command -v aws >/dev/null 2>&1 || { echo "build-desktop: --publish-r2 needs the aws CLI on PATH" >&2; exit 1; }
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -120,12 +145,38 @@ cat > "$STANDALONE/build-info.json" <<JSON
 JSON
 log "stamped build-info.json ($SHORT_SHA)"
 
+# --- bump version for a channel (mutates the SNAPSHOT's package.json only) ---
+if [ -n "$CHANNEL" ]; then
+  VERSION="$(NODE_OPTIONS= node "$SNAP/scripts/set-desktop-version.mjs" --channel "$CHANNEL")"
+  log "channel '$CHANNEL' -> version $VERSION"
+fi
+
 # --- package -----------------------------------------------------------------
+# When publishing for real, override the placeholder publish.url with the
+# actual update-proxy Worker, and bake the shared auth header secret into the
+# packaged package.json (via extraMetadata) so main.js can read it at runtime
+# — electron-updater has no way to embed custom request headers into the
+# generated app-update.yml itself, so this is how the client learns the key.
+#
+# publish.channel is deliberately absent from package.json: electron-builder
+# only derives the channel from the version's prerelease tag when the field is
+# unset, and an explicit value wins over that. Pinning it would make every
+# channel publish <channel>-mac.yml under the same name, so beta and nightly
+# would clobber each other in one bucket and every client would follow whichever
+# ran last. Set it here, from the same --channel that picked the version.
+CONFIG_OVERRIDES=()
+if [ "$PUBLISH_R2" -eq 1 ]; then
+  CONFIG_OVERRIDES+=("-c.publish.url=$UPDATE_PROXY_URL" "-c.extraMetadata.updateProxyKey=$UPDATE_PROXY_KEY")
+fi
+if [ -n "$CHANNEL" ]; then
+  CONFIG_OVERRIDES+=("-c.publish.channel=$CHANNEL")
+fi
+
 # shellcheck disable=SC2206 # intentional word-split of a CSV into --mac args
 TARGET_ARGS=(${TARGETS//,/ })
 log "electron-builder --mac ${TARGET_ARGS[*]}"
 cd "$SNAP/apps/desktop"
-NODE_OPTIONS= bunx electron-builder --mac "${TARGET_ARGS[@]}"
+NODE_OPTIONS= bunx electron-builder --mac "${TARGET_ARGS[@]}" "${CONFIG_OVERRIDES[@]}"
 
 BUILT_APP="$SNAP/apps/desktop/release/mac-arm64/Telar.app"
 if [ ! -d "$BUILT_APP" ]; then
@@ -156,11 +207,13 @@ mv "$STAGE" "$DEST_APP"          # atomic rename on the same filesystem
 rm -rf "$BACKUP"
 log "installed: $DEST_APP"
 
-# --- copy any distributable artifacts (zip/dmg) out before the snapshot is
-# cleaned up, staple their notarization ticket if they carry one -------------
+# --- copy any distributable artifacts (zip/dmg + electron-updater's
+# <channel>-mac.yml/.blockmap, when a "publish" config triggered them) out
+# before the snapshot is cleaned up, staple notarization tickets where present
 ARTIFACTS=()
 shopt -s nullglob
-for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip; do
+for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip \
+         "$SNAP/apps/desktop/release/"*.yml "$SNAP/apps/desktop/release/"*.blockmap; do
   DEST_ARTIFACT="$OUT_DIR/$(basename "$f")"
   cp "$f" "$DEST_ARTIFACT"
   if xcrun stapler validate "$DEST_ARTIFACT" >/dev/null 2>&1; then
@@ -169,6 +222,22 @@ for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip; 
   ARTIFACTS+=("$DEST_ARTIFACT")
 done
 shopt -u nullglob
+
+# --- publish to R2 (opt-in) ---------------------------------------------------
+if [ "$PUBLISH_R2" -eq 1 ]; then
+  if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
+    echo "build-desktop: --publish-r2 requested but no artifacts were produced (check --targets)" >&2
+    exit 1
+  fi
+  R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+  log "publishing ${#ARTIFACTS[@]} artifact(s) to r2://$R2_BUCKET"
+  for a in "${ARTIFACTS[@]}"; do
+    AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+    AWS_DEFAULT_REGION="auto" \
+      aws s3 cp "$a" "s3://$R2_BUCKET/$(basename "$a")" --endpoint-url "$R2_ENDPOINT"
+  done
+fi
 
 # --- smoke the packaged binary (fail unless SMOKE_OK) ------------------------
 log "smoke: $DEST_APP --smoke"
@@ -187,12 +256,21 @@ echo
 echo "BUILD OK"
 echo "  app: $DEST_APP"
 echo "  sha: $SHORT_SHA ($REF)"
+if [ -n "$CHANNEL" ]; then
+  echo "$VERSION" > "$OUT_DIR/VERSION"
+  echo "  version: $VERSION (channel $CHANNEL)"
+fi
 if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
   echo "  artifacts:"
   for a in "${ARTIFACTS[@]}"; do
     echo "    $a"
   done
-  echo
-  echo "To publish to a private GitHub Release, run e.g.:"
-  echo "  gh release create v<version> --repo <owner>/<repo> ${ARTIFACTS[*]}"
+  if [ "$PUBLISH_R2" -eq 1 ]; then
+    echo
+    echo "  published to r2://$R2_BUCKET"
+  else
+    echo
+    echo "To publish to a private GitHub Release, run e.g.:"
+    echo "  gh release create v<version> --repo <owner>/<repo> ${ARTIFACTS[*]}"
+  fi
 fi
