@@ -29,6 +29,9 @@ import {
   getProject,
   getUltraManifest,
   launchUltra,
+  listUltraAgentOrdinals,
+  readJournal,
+  readUltraAgentTranscript,
   resumeUltraRun,
   readUltraEvents,
   stopUltraRun,
@@ -52,6 +55,7 @@ export const ULTRA_AUTO_TOOLS = [
   "mcp__ultra__ultra",
   "mcp__ultra__ultra_status",
   "mcp__ultra__ultra_stop",
+  "mcp__ultra__ultra_inspect",
 ] as const;
 
 export type UltraMcpOpts = {
@@ -153,6 +157,28 @@ watch: true records — durably, surviving a server restart — that THIS run is
 // for a reader to infer from a zero. Exported so a test can pin it.
 export const ULTRA_STATUS_NOTE =
   "This snapshot carries NO cost figure, deliberately: spend is a human-facing readout and there is nothing you can do with it. `updatedAt` moves only at agent settles and at the terminal, because that is when a run's durable record is rewritten. `inFlight`, `started`, `phase` and `lastEventAt` come from the run's own event stream and ARE live. There is no total-agents denominator because the script decides how many agents to spawn as it runs; do not infer progress from a ratio.";
+
+// WHY THIS TOOL EXISTS, and it is a debt being paid rather than a feature.
+//
+// A run writes journal.jsonl (what each agent RETURNED), agents/<n>.ndjson
+// (every tool call it made, and the result subtype saying WHY it stopped),
+// manifest.json and script.js. All of it, on disk, for every run. None of it
+// was reachable: the only readouts were ultra_status's counts and a narration
+// window, so "why did that agent produce nothing" could not be answered at all.
+//
+// On 2026-08-05 three agents in one run were diagnosed for hours as "hung".
+// They had each ended `error_max_turns` — 41, 61 and 61 turns — and said so, in
+// these exact files, the whole time. The counts could not show it, and nothing
+// could read the files. This tool is that hour back.
+const ULTRA_INSPECT_DESCRIPTION = `Read what a run and its agents ACTUALLY did — the durable record, not the live counters.
+
+Call it with runId alone for the ROSTER: every agent ordinal the run has spawned, whether each one settled, what it returned (truncated), what it cost, and why any dead one died. An ordinal that appears here with settled:false either is still working or DIED WITHOUT SETTLING — the roster says which.
+
+Call it with runId AND ordinal for ONE agent: its journal record plus the tail of its transcript — the tools it called, their results, and the harness's own result subtype. That subtype is usually the answer: "error_max_turns" means it ran out of agent turns rather than failing, so RAISING maxTurns is the fix and re-running it unchanged will hit the same wall.
+
+REACH FOR THIS BEFORE GUESSING, and specifically before re-running or re-authoring anything. A run that "returned nothing useful", an agent that came back null, a parallel() stage that produced fewer results than it had thunks — all of those are answered here in one call. Guessing from counts is how an afternoon gets spent on agents that were never stuck.
+
+Reads only this session's own runs.`;
 
 const ULTRA_STOP_DESCRIPTION = `Abort a live Ultra run: its shared AbortController fires, every in-flight child agent() interrupts, and the run ends state "stopped" with its journal prefix intact (a later resume replays that prefix instantly and runs only what's left live). A no-op (stopped:false) if the run isn't currently live in this process — e.g. already terminal, or the server restarted since it launched.`;
 
@@ -445,7 +471,108 @@ export function ultraTools(opts: UltraMcpOpts) {
           return okResult(JSON.stringify({ runId, stopped, state: manifest?.state ?? "unknown" }, null, 2));
         },
       ),
+      tool(
+        "ultra_inspect",
+        ULTRA_INSPECT_DESCRIPTION,
+        { runId: z.string().min(1), ordinal: z.number().int().min(0).optional() },
+        async ({ runId, ordinal }) => {
+          const manifest = getUltraManifest(runId);
+          if (!manifest) return errResult(`Ultra run "${runId}" not found.`);
+          // Same ownership rule as resume, for the same reason: a runId is just
+          // a string, and a transcript can contain anything the agent read.
+          const mine = opts.getSessionId();
+          if (!mine || manifest.sessionId !== mine) {
+            return errResult(`Ultra run "${runId}" belongs to a different session.`);
+          }
+
+          const journal = readJournal(runId);
+          const settled = new Map(journal.map((r) => [r.ordinal, r]));
+
+          if (ordinal === undefined) {
+            // THE ROSTER. Joined from two independent sources on purpose: the
+            // agents/ directory says who was SPAWNED (a file exists from the
+            // first streamed event, so a live agent is visible), the journal
+            // says who SETTLED. The difference between those two sets is the
+            // question worth asking, and neither file answers it alone.
+            const ordinals = listUltraAgentOrdinals(runId);
+            const agents = ordinals.map((n) => {
+              const rec = settled.get(n);
+              return {
+                ordinal: n,
+                settled: rec !== undefined,
+                ...(rec?.deadReason ? { deadReason: rec.deadReason } : {}),
+                ...(rec?.costUsd !== undefined ? { costUsd: rec.costUsd } : {}),
+                ...(rec?.turns !== undefined ? { turns: rec.turns } : {}),
+                ...(rec !== undefined ? { result: preview(rec.result) } : {}),
+              };
+            });
+            const unsettled = agents.filter((a) => !a.settled).map((a) => a.ordinal);
+            return okResult(
+              JSON.stringify(
+                {
+                  runId,
+                  state: manifest.state,
+                  spawned: ordinals.length,
+                  settled: journal.length,
+                  unsettled,
+                  agents,
+                  // Said rather than left to be inferred from two numbers, because
+                  // inferring it wrongly is exactly what cost a day.
+                  note:
+                    unsettled.length === 0
+                      ? "Every spawned agent settled."
+                      : `Ordinals ${unsettled.join(", ")} spawned but never settled — still working, or died without settling. Inspect one with ordinal to see its result subtype.`,
+                },
+                null,
+                2,
+              ),
+            );
+          }
+
+          const transcript = readUltraAgentTranscript(runId, ordinal);
+          if (transcript.length === 0 && !settled.has(ordinal)) {
+            return errResult(`Ultra run "${runId}" has no agent at ordinal ${ordinal}.`);
+          }
+          // The LAST result event is the one that says how the agent ended. It
+          // is pulled out rather than left for the caller to find in the tail,
+          // because it is the single most useful field here and a tail long
+          // enough to be useful is long enough to bury it.
+          const lastResult = [...transcript].reverse().find((e) => e.type === "result");
+          const rec = settled.get(ordinal);
+          return okResult(
+            JSON.stringify(
+              {
+                runId,
+                ordinal,
+                settled: rec !== undefined,
+                ...(rec?.deadReason ? { deadReason: rec.deadReason } : {}),
+                ...(rec !== undefined ? { result: rec.result } : {}),
+                endedWith: lastResult ?? null,
+                events: transcript.length,
+                // Tail, not head: how it ENDED is the question. Capped because
+                // a transcript is unbounded and this goes into a context window.
+                tail: transcript.slice(-TRANSCRIPT_TAIL),
+              },
+              null,
+              2,
+            ),
+          );
+        },
+      ),
   ];
+}
+
+// How many trailing transcript events one inspect returns. Enough to see the
+// last few tool calls and the result event that ends them; small enough that
+// inspecting three agents does not fill a context window.
+const TRANSCRIPT_TAIL = 12;
+
+// A result is arbitrary script data and can be enormous. The roster shows
+// enough to recognise which agent is which; `ordinal` gives the full record.
+function preview(value: unknown): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text === undefined) return "undefined";
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
 export const ULTRA_MCP_VERSION = "1.0.0";

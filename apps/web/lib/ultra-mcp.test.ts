@@ -51,6 +51,14 @@ const getUltraManifestCalls: string[] = [];
 
 let readUltraEventsReturn: { events: Record<string, unknown>[] } = { events: [] };
 
+// The durable record ultra_inspect reads. Shaped like the real thing: the
+// journal holds only SETTLED ordinals, while the agents/ directory holds a file
+// for every ordinal that streamed at least one event — so the two disagree
+// exactly when an agent died without settling, which is the case worth seeing.
+let readJournalReturn: Record<string, unknown>[] = [];
+let listUltraAgentOrdinalsReturn: number[] = [];
+let readUltraAgentTranscriptReturn: Record<number, Record<string, unknown>[]> = {};
+
 let stopUltraRunReturn = true;
 const stopUltraRunCalls: string[] = [];
 
@@ -93,6 +101,9 @@ mock.module("@telar/core", () => ({
     return launchUltraReturn;
   },
   readUltraEvents: () => readUltraEventsReturn,
+  readJournal: () => readJournalReturn,
+  listUltraAgentOrdinals: () => listUltraAgentOrdinalsReturn,
+  readUltraAgentTranscript: (_runId: string, ordinal: number) => readUltraAgentTranscriptReturn[ordinal] ?? [],
   stopUltraRun: (runId: string) => {
     stopUltraRunCalls.push(runId);
     return stopUltraRunReturn;
@@ -162,6 +173,9 @@ beforeEach(() => {
   getUltraManifestCalls.length = 0;
   resumeUltraRunCalls.length = 0;
   readUltraEventsReturn = { events: [] };
+  readJournalReturn = [];
+  listUltraAgentOrdinalsReturn = [];
+  readUltraAgentTranscriptReturn = {};
   stopUltraRunReturn = true;
   stopUltraRunCalls.length = 0;
   watchUltraRunReturn = { ok: true, runId: "u-mockrun", state: "running", name: "t", alreadyWatching: false };
@@ -169,12 +183,19 @@ beforeEach(() => {
 });
 
 describe("ultra MCP server — tool registration", () => {
-  test("registers exactly ultra / ultra_status / ultra_stop, matching ULTRA_AUTO_TOOLS", () => {
-    expect(ULTRA_AUTO_TOOLS).toEqual(["mcp__ultra__ultra", "mcp__ultra__ultra_status", "mcp__ultra__ultra_stop"]);
+  test("registers exactly ultra / ultra_status / ultra_stop / ultra_inspect, matching ULTRA_AUTO_TOOLS", () => {
+    expect(ULTRA_AUTO_TOOLS).toEqual([
+      "mcp__ultra__ultra",
+      "mcp__ultra__ultra_status",
+      "mcp__ultra__ultra_stop",
+      "mcp__ultra__ultra_inspect",
+    ]);
     const server = makeServer();
     const tools = (server as unknown as { instance: { _registeredTools: Record<string, unknown> } }).instance
       ._registeredTools;
-    expect(new Set(Object.keys(tools))).toEqual(new Set(["ultra", "ultra_status", "ultra_stop"]));
+    expect(new Set(Object.keys(tools))).toEqual(
+      new Set(["ultra", "ultra_status", "ultra_stop", "ultra_inspect"]),
+    );
   });
 
   test("the ultra tool's input schema carries no project/account/identity field", () => {
@@ -188,6 +209,101 @@ describe("ultra MCP server — tool registration", () => {
     expect(keys).not.toContain("project");
     expect(keys).not.toContain("account");
     expect(keys).not.toContain("sessionId");
+  });
+});
+
+describe("ultra_inspect — the durable record, which nothing could read", () => {
+  // THE CASE THIS TOOL WAS BUILT FOR, reproduced from the real one. Run
+  // u-893ce7701785 spawned 10 agents and journaled 6; ordinals 2, 6 and 7 ended
+  // `error_max_turns` with the subtype in their own transcripts. The counters
+  // said `dead: 0` and three in flight, and nothing could open the files that
+  // held the answer. Hours went into calling them "hung".
+  const owned = () => {
+    getUltraManifestReturn = { runId: "u-mockrun", state: "stopped", sessionId: "sess-1" };
+  };
+  const diedOnTurns = {
+    type: "result",
+    subtype: "error_max_turns",
+    turns: 41,
+    costUsd: 1.3,
+  };
+
+  test("the roster names the ordinals that spawned but never settled", () => {
+    owned();
+    listUltraAgentOrdinalsReturn = [0, 1, 2];
+    readJournalReturn = [
+      { ordinal: 0, result: { text: "brief one" } },
+      { ordinal: 1, result: { text: "brief two" } },
+    ];
+    return toolHandler(makeServer(), "ultra_inspect")({ runId: "u-mockrun" }).then((res) => {
+      const parsed = JSON.parse(textOf(res));
+      expect(parsed.spawned).toBe(3);
+      expect(parsed.settled).toBe(2);
+      expect(parsed.unsettled).toEqual([2]);
+      // The sentence, not just the numbers. Two counts side by side are what a
+      // reader has to subtract and then interpret, and interpreting them wrongly
+      // is the whole reason this exists.
+      expect(parsed.note).toContain("2");
+      expect(parsed.note).toContain("never settled");
+    });
+  });
+
+  test("a clean run says so plainly rather than leaving an empty list to read", async () => {
+    owned();
+    listUltraAgentOrdinalsReturn = [0];
+    readJournalReturn = [{ ordinal: 0, result: "done" }];
+    const res = await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-mockrun" });
+    const parsed = JSON.parse(textOf(res));
+    expect(parsed.unsettled).toEqual([]);
+    expect(parsed.note).toContain("Every spawned agent settled");
+  });
+
+  test("inspecting one agent surfaces the result subtype that says WHY it stopped", async () => {
+    owned();
+    listUltraAgentOrdinalsReturn = [2];
+    readUltraAgentTranscriptReturn = {
+      2: [{ type: "tool", name: "Read" }, diedOnTurns],
+    };
+    const res = await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-mockrun", ordinal: 2 });
+    const parsed = JSON.parse(textOf(res));
+    // Pulled out of the tail deliberately: it is the single most useful field,
+    // and a tail long enough to be useful is long enough to bury it.
+    expect(parsed.endedWith.subtype).toBe("error_max_turns");
+    expect(parsed.settled).toBe(false);
+  });
+
+  test("the transcript is TAILED, not headed — how it ended is the question", async () => {
+    owned();
+    listUltraAgentOrdinalsReturn = [0];
+    readUltraAgentTranscriptReturn = {
+      0: [...Array.from({ length: 40 }, (_, i) => ({ type: "tool", name: `t${i}` })), diedOnTurns],
+    };
+    const res = await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-mockrun", ordinal: 0 });
+    const parsed = JSON.parse(textOf(res));
+    expect(parsed.events).toBe(41);
+    expect(parsed.tail.length).toBeLessThan(41);
+    expect(parsed.tail[parsed.tail.length - 1].subtype).toBe("error_max_turns");
+    // The first tool call must NOT be in a tail — a head would show the setup
+    // and hide the death.
+    expect(parsed.tail[0].name).not.toBe("t0");
+  });
+
+  test("a run belonging to another session cannot be inspected", async () => {
+    // A transcript contains everything an agent read. Same ownership rule as
+    // resume, and for a stronger reason.
+    getUltraManifestReturn = { runId: "u-other", state: "done", sessionId: "sess-99" };
+    const res = await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-other" });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("different session");
+  });
+
+  test("an unknown run and an unknown ordinal both fail cleanly", async () => {
+    getUltraManifestReturn = null;
+    expect(isError(await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-nope" }))).toBe(true);
+    owned();
+    listUltraAgentOrdinalsReturn = [0];
+    const res = await toolHandler(makeServer(), "ultra_inspect")({ runId: "u-mockrun", ordinal: 99 });
+    expect(isError(res)).toBe(true);
   });
 });
 
@@ -665,13 +781,23 @@ describe("ultra_stop — abort plumbing", () => {
 // already takes exactly this one runId, so the registered NAME SET is untouched
 // and every one of those pins stays green. ultra-mcp.ts carries the same note.
 describe("AC-E5 — ultra_status can register interest in ONE run, without becoming a fourth tool", () => {
-  test("the registered tool NAME SET is still exactly three — the pins in four unowned files stay green", () => {
-    // The whole reason the capability is a flag. If this ever grows a fourth
-    // name, MCP_INVENTORY / ULTRA_AUTO_TOOL_NAMES / both BASE_ALLOWED_TOOLS
-    // counts must move in the SAME commit.
+  test("the registered tool NAME SET matches the count-pinned files, which move together", () => {
+    // This was "still exactly three", and the note above explains why a fourth
+    // name is expensive: MCP_INVENTORY (ordered), core's ULTRA_AUTO_TOOL_NAMES
+    // and the BASE_ALLOWED_TOOLS count all pin it, in files no lane owns, with
+    // no edit order that avoids a red window.
+    //
+    // `ultra_inspect` paid that cost deliberately rather than riding an
+    // existing tool as a flag. It is not a variant of status: status answers
+    // "what is happening now" from live counters, inspect answers "what
+    // happened" from the durable record, and folding a journal/transcript read
+    // into the counters tool would have made the one call a reader reaches for
+    // in a crisis the one that also means something else.
     const tools = server_registry(makeServer()) as Record<string, unknown>;
-    expect(new Set(Object.keys(tools))).toEqual(new Set(["ultra", "ultra_status", "ultra_stop"]));
-    expect(ULTRA_AUTO_TOOLS.length).toBe(3);
+    expect(new Set(Object.keys(tools))).toEqual(
+      new Set(["ultra", "ultra_status", "ultra_stop", "ultra_inspect"]),
+    );
+    expect(ULTRA_AUTO_TOOLS.length).toBe(4);
   });
 
   test("ultra_status's input schema gained `watch` and nothing else", () => {

@@ -1020,7 +1020,11 @@ const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
       "watch_loom",
     ],
   },
-  ultra: { file: ULTRA_MCP, tools: ["ultra", "ultra_status", "ultra_stop"] },
+  // ORDERED, like every other row here: registration order in ultra-mcp.ts.
+  // `ultra_inspect` is last because it was added last — it reads a run's own
+  // journal and per-agent transcripts, which were written from the start and
+  // reachable by nothing.
+  ultra: { file: ULTRA_MCP, tools: ["ultra", "ultra_status", "ultra_stop", "ultra_inspect"] },
   // Story 5.1 — the workspace item store's tool surface, the ONLY path a session
   // has to TELAR_HOME/workspace. THE ORDER IS THE REGISTRATION ORDER and this
   // list is compared as an ORDERED one, which is deliberate here: the same four

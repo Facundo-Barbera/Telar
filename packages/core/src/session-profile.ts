@@ -224,6 +224,12 @@ export const ULTRA_AUTO_TOOL_NAMES = [
   "mcp__ultra__ultra",
   "mcp__ultra__ultra_status",
   "mcp__ultra__ultra_stop",
+  // ultra_inspect reads a run's own durable record — journal.jsonl and the
+  // per-agent transcripts — and spends nothing, so it auto-runs on the same
+  // terms as the other three. It exists because that record was unreachable:
+  // three agents were diagnosed for hours as "hung" while their own
+  // transcripts said `error_max_turns`.
+  "mcp__ultra__ultra_inspect",
 ] as const;
 
 // The workspace MCP server's four auto-run tool names — same duplication
