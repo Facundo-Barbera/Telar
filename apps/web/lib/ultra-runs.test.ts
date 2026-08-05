@@ -46,6 +46,7 @@ import {
   filterRunsBySession,
   isSessionRoute,
   launchedRunId,
+  liveRunCountsBySession,
   narratorLines,
   phaseGroups,
   progressFraction,
@@ -732,6 +733,39 @@ describe("4.2 C1/D5 — filterRunsBySession is defined-and-equal, never truthy",
     // truthiness test would return everything for the empty string.
     expect(filterRunsBySession(rows, "").map((r) => r.runId)).toEqual([]);
     expect(filterRunsBySession(rows, "s-nope")).toEqual([]);
+  });
+});
+
+// ── issue #17 — background-run liveness for the sidebar ─────────────────────
+
+describe("liveRunCountsBySession counts only running runs, keyed by session", () => {
+  test("counts running runs per session and ignores terminal ones", () => {
+    const runs = [
+      { runId: "a", sessionId: "s1", state: "running" as const },
+      { runId: "b", sessionId: "s1", state: "running" as const },
+      { runId: "c", sessionId: "s1", state: "done" as const },
+      { runId: "d", sessionId: "s2", state: "failed" as const },
+      { runId: "e", sessionId: "s2", state: "running" as const },
+    ];
+    const counts = liveRunCountsBySession(runs);
+    expect(counts.get("s1")).toBe(2);
+    expect(counts.get("s2")).toBe(1);
+    expect(counts.has("s3")).toBe(false);
+  });
+
+  test("a run with no sessionId counts toward nothing, not the empty-string key", () => {
+    const runs = [{ runId: "a", state: "running" as const }];
+    const counts = liveRunCountsBySession(runs);
+    expect(counts.size).toBe(0);
+    expect(counts.get("")).toBeUndefined();
+  });
+
+  test("no running runs at all returns an empty map, not a zeroed one", () => {
+    const runs = [
+      { runId: "a", sessionId: "s1", state: "done" as const },
+      { runId: "b", sessionId: "s1", state: "stopped" as const },
+    ];
+    expect(liveRunCountsBySession(runs).size).toBe(0);
   });
 });
 

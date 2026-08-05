@@ -598,6 +598,36 @@ export function filterRunsBySession<T extends { sessionId?: string }>(
   return runs.filter((r) => r.sessionId === sessionId);
 }
 
+// ── per-session liveness for the sidebar (issue #17) ────────────────────────
+
+// A session row's "Working…" dot is sourced ONLY from the in-flight chat-turn
+// registry (lib/chat-runs.ts's isSessionRunLive), which knows nothing about
+// Ultra: a launched run keeps going as its own detached process (its manifest
+// lives under TELAR_HOME/ultra/*) long after the HTTP turn that launched it
+// has returned and the registry entry is gone. So a session can have real,
+// user-visible work in flight while every signal the sidebar already reads
+// says idle. This is that missing signal, folded down to the one shape a row
+// needs: how many of ITS runs are `running` right now.
+//
+// Generic over the manifest/snapshot shape for the same reason
+// `filterRunsBySession` above is: `/api/chats` counts raw `UltraManifest[]`
+// server-side (a `@telar/core` VALUE import, fine there — it is a route, not
+// a client component), while a client caller in possession of `RunSnapshot[]`
+// gets the identical answer without needing that server-only type in scope.
+export function liveRunCountsBySession<T extends { sessionId?: string; state: UltraRunState }>(
+  runs: readonly T[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const run of runs) {
+    // DEFINED-AND-EQUAL, same rule `filterRunsBySession` states above: a run
+    // launched outside any chat has no `sessionId` and must count toward
+    // nothing, never toward the empty-string key.
+    if (run.sessionId === undefined || run.state !== "running") continue;
+    counts.set(run.sessionId, (counts.get(run.sessionId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 // ── the journal-stream reconciler (review round 1 — B1 and SF-1) ────────────
 
 // WHICH RUNS NEED AN OPEN JOURNAL STREAM, AND WHAT TO DO ABOUT IT. Both
