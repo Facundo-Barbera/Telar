@@ -945,13 +945,36 @@ export function agentModelLabel(model: string): string {
  *
  *  ABSENT IS NOT ZERO, and the caller must keep them apart — this returns
  *  `undefined` when the provider reported no usage, and the row renders that as
- *  a placeholder rather than as a confident `0`. Cache reads and cache writes
- *  are INCLUDED: they are tokens the provider processed and billed for, and the
- *  session's own context readout already counts them the same way. */
+ *  a placeholder rather than as a confident `0`.
+ *
+ *  INPUT + OUTPUT, THE SAME PAIR A SESSION COUNTS. `lib/spend-readout.ts`
+ *  already settled this for the session readout and spelled out why: cache
+ *  reads and cache writes are re-presentations of content already sent, so
+ *  folding them in makes the figure climb every turn purely from re-sending the
+ *  same transcript. Its header names this surface directly — "story 4.2's
+ *  per-run anchor can compute the identical figure ... Whatever the anchor
+ *  chooses, it must be able to choose THIS" — and this function used to choose
+ *  the other thing, summing all four fields.
+ *
+ *  WHAT THAT COST, and it is the reason the rule is now stated in both places
+ *  rather than only in `spend-readout.ts`. A per-agent row read `1.7M tok`
+ *  beside a `Claude Sonnet 1M` model chip: two figures in the same unit, on the
+ *  same row, one a cumulative sum over every turn and the other a per-turn
+ *  ceiling. The reading it invites — that the agent overran its window and
+ *  compacted — is false, and the run it was read off had in fact spent almost
+ *  all of that on cache reads, which is why its dollar total was a fifth of
+ *  what 1.7M fresh input tokens would have cost. The count was not wrong; it
+ *  was answering a question nobody was asking next to a number that made it
+ *  look like an answer to a different one.
+ *
+ *  So this is NOT context occupancy either, and must not be presented as one:
+ *  it is still a lifetime sum across the agent's turns and can exceed the
+ *  model's window. `ContextUsageSnapshot` is where occupancy lives, with a
+ *  `maxTokens` beside it to divide by. */
 export function agentTokenTotal(agent: {
   tokens?: { input: number; output: number; cacheRead: number; cacheCreate: number };
 }): number | undefined {
   const t = agent.tokens;
   if (!t) return undefined;
-  return t.input + t.output + t.cacheRead + t.cacheCreate;
+  return t.input + t.output;
 }
