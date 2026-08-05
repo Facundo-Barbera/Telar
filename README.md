@@ -46,25 +46,50 @@ cd apps/web && bun run dev   # the web cockpit
 
 ### Local desktop install (unsigned)
 
-For a usable local macOS app built from the current working tree:
+Builds a macOS **arm64** (Apple Silicon) `.app` from the current working tree,
+uncommitted changes included. One command packages, smoke-tests, installs, and
+launches:
 
 ```bash
-bun run desktop:package                 # build + smoke-test apps/desktop/release/mac-arm64/Telar.app
 bun run desktop:install -- --open       # install to ~/Applications and launch it
 ```
 
-The install command does not need `sudo`. Use `--system` when you specifically
-want `/Applications/Telar.app`:
+`desktop:install` packages first — it is a full build, not a cheap step after
+`desktop:package`, so running the two back to back builds everything twice.
+Reach for the halves separately only when you want them apart:
+
+```bash
+bun run desktop:package                             # build + smoke only, no install
+bun run --cwd apps/desktop install:app -- --open    # install the packed app, no rebuild
+```
+
+Neither needs `sudo`. Use `--system` when you specifically want
+`/Applications/Telar.app`:
 
 ```bash
 bun run desktop:install -- --system --open
 ```
+
+The packed app lands at `apps/desktop/release/mac-arm64/Telar.app`, stamped with
+the commit it came from — the smoke log prints `BUILD Telar <sha>`, so you can
+confirm you launched what you just built.
 
 This is intentionally an unsigned, local-only `.app` flow; it does not publish,
 auto-update, sign, or notarize anything. On the first launch, macOS may block
 the app because it is unsigned. In Finder, Control-click `Telar.app`, choose
 **Open**, then confirm **Open**. Apple signing and notarized distribution can be
 added later without changing this local workflow.
+
+#### When the build fails on a route that does not exist
+
+A type error naming a route absent from the tree — say
+`Cannot find module '../../app/api/proxy/adopt/route.js'` — means a stale
+`.next/` from an older build is being type-checked alongside `.next-desktop/`,
+since `apps/web/tsconfig.json` includes both. Clear it and package again:
+
+```bash
+rm -rf apps/web/.next
+```
 
 ## Design docs
 
