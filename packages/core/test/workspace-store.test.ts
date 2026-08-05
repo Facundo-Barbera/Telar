@@ -42,17 +42,26 @@ afterAll(() => {
 });
 
 const {
+  addSubtask,
+  agentsAddedCount,
   attachmentTally,
   createItem,
+  createLane,
   deskSlice,
   ensureWorkspace,
   getWorkspaceItem,
   listItems,
   migratePacket,
+  promoteSubtask,
   queueSlice,
   rankOf,
   readLanes,
+  readLanesReport,
   readPacketAttachments,
+  renameLane,
+  reorderLane,
+  retireLane,
+  setSubtaskDone,
   updateItem,
   workspaceDir,
   workspaceHomeDir,
@@ -1225,5 +1234,288 @@ describe("A5 the pure projections take already-read data and touch no disk", () 
 
     expect(readPacketAttachments(it.id)).toEqual(["brief.md"]);
     expect(attachmentTally(readPacketAttachments(it.id))).toEqual({ files: 1, mockups: 0 });
+  });
+});
+
+// ── story 5.2 — lane structure (NFR-OW-10: human-only, and none of these four
+//    functions is reachable from an MCP tool — see their block comment) ──────
+
+describe("5.2 createLane mints a key, dedupes it, and never disturbs another row", () => {
+  test("createLane mints a slug from the label and appends an empty stack", () => {
+    ensureWorkspace(); // seeds the "unfiled" row — createLane must not disturb it
+    const made = createLane({ label: "Evenings & Weekends", window: "after 6pm" });
+    expect(made).toEqual({ key: "evenings-weekends", label: "Evenings & Weekends", window: "after 6pm", items: [] });
+    expect(readLanes().map((l) => l.key)).toEqual(["unfiled", "evenings-weekends"]);
+    expect(readLanes()[1]).toEqual(made);
+  });
+
+  test("createLane dedupes a key collision by suffix, and reads existing keys off the RAW rows, not just the parsed ones", () => {
+    ensureWorkspace();
+    // A malformed row (no `window:`) still claims the key "office" — createLane
+    // must not mint a second "office" just because that row cannot be parsed.
+    fs.writeFileSync(
+      lanesPath(),
+      YAML.stringify([
+        { key: "office", label: "Office", window: "work hours", items: [] },
+        { key: "office-2", label: "Office (old)", items: [] }, // missing window: — unreadable
+      ]),
+    );
+    const made = createLane({ label: "Office", window: "work hours" });
+    expect(made.key).toBe("office-3");
+    // Both prior rows, including the unreadable one, survive byte-for-byte.
+    expect(YAML.parse(fs.readFileSync(lanesPath(), "utf8"))).toEqual([
+      { key: "office", label: "Office", window: "work hours", items: [] },
+      { key: "office-2", label: "Office (old)", items: [] },
+      { key: "office-3", label: "Office", window: "work hours", items: [] },
+    ]);
+  });
+
+  test("createLane appends after every existing row, including one this build cannot parse, and rewrites none of them", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "already filed", lane: "unfiled" });
+    const before = hashOf(packetPath(item.id));
+    fs.writeFileSync(
+      lanesPath(),
+      YAML.stringify([{ key: "unfiled", label: "Unfiled", window: "n/a", items: [item.id] }, "not a mapping"]),
+    );
+    createLane({ label: "Free", window: "whenever", note: "split from Office" });
+    const rows = YAML.parse(fs.readFileSync(lanesPath(), "utf8"));
+    expect(rows).toEqual([
+      { key: "unfiled", label: "Unfiled", window: "n/a", items: [item.id] },
+      "not a mapping",
+      { key: "free", label: "Free", window: "whenever", note: "split from Office", items: [] },
+    ]);
+    expect(hashOf(packetPath(item.id))).toBe(before); // no packet touched by a lane-only write
+  });
+});
+
+describe("5.2 renameLane rewrites `label` ONLY — the key never moves once a lane exists", () => {
+  test("renameLane changes the label and leaves the key, window, items and unknown hand-added keys untouched", () => {
+    ensureWorkspace();
+    fs.writeFileSync(
+      lanesPath(),
+      YAML.stringify([{ key: "office", label: "Office", window: "work hours", items: ["i-a"], color: "blue" }]),
+    );
+    const renamed = renameLane("office", "Day Job");
+    expect(renamed).toEqual({ key: "office", label: "Day Job", window: "work hours", items: ["i-a"] });
+    expect(YAML.parse(fs.readFileSync(lanesPath(), "utf8"))).toEqual([
+      { key: "office", label: "Day Job", window: "work hours", items: ["i-a"], color: "blue" },
+    ]);
+  });
+
+  test("renameLane on an unknown key writes nothing and returns null — the seed-lane-rename hazard, closed: the KEY that resolveLane falls back to can never move under existing data", () => {
+    ensureWorkspace();
+    writeLanes([lane("unfiled", ["i-a"])]);
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    expect(renameLane("does-not-exist", "New Label")).toBeNull();
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before);
+    // …and renaming the SEED lane's label still routes an unresolvable-lane
+    // create to the same stored key "unfiled" — renaming a label never touches
+    // resolveLane's routing, because there is no function anywhere that can
+    // change a `key`.
+    renameLane("unfiled", "Everything Else");
+    const item = createItem({ title: "unresolvable lane request", lane: "nope-not-a-real-key" });
+    expect(item.unplaced).toBe(true); // unknown lane -> seed key fallback, marked unplaced (desk asks)
+    expect(readLanes().find((l) => l.key === "unfiled")!.items).toContain(item.id);
+  });
+});
+
+describe("5.2 retireLane refuses a non-empty stack and never partially applies", () => {
+  test("retireLane refuses when the STORED stack is non-empty, and writes nothing", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", ["i-a", "i-b"])]);
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    const result = retireLane("office");
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining("2 items") });
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before);
+  });
+
+  test("retireLane refuses even when every id in the stack is an unreadable ghost — a non-empty stored array always counts as non-empty", () => {
+    ensureWorkspace();
+    // Neither id resolves to a real packet — both are ghosts — but the STORED
+    // array still has length 2, and that is the number that decides.
+    writeLanes([lane("office", ["i-ghost-1", "i-ghost-2"])]);
+    const result = retireLane("office");
+    expect(result.ok).toBe(false);
+    expect(readLanes().map((l) => l.key)).toEqual(["office"]); // still there
+  });
+
+  test("retireLane succeeds when the stored stack is empty, and removes exactly that row", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", []), lane("free", ["i-a"])]);
+    const result = retireLane("office");
+    expect(result).toEqual({ ok: true });
+    expect(readLanes().map((l) => l.key)).toEqual(["free"]);
+  });
+
+  test("retireLane on an unknown key reports failure without touching the file", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    expect(retireLane("nope").ok).toBe(false);
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before);
+  });
+});
+
+describe("5.2 reorderLane sets a lane's stack to an exact permutation, and adopts across lanes", () => {
+  test("reorderLane within one lane rewrites only that lane's order", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const a = createItem({ title: "a", lane: "office" });
+    const b = createItem({ title: "b", lane: "office" });
+    const c = createItem({ title: "c", lane: "office" });
+    const result = reorderLane("office", [c.id, a.id, b.id]);
+    expect(result.items).toEqual([c.id, a.id, b.id]);
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([c.id, a.id, b.id]);
+  });
+
+  test("reorderLane adopts an id out of a DIFFERENT lane's stored stack — one call serves both an in-lane reorder and a cross-lane move", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", []), lane("free", [])]);
+    const a = createItem({ title: "a", lane: "office" });
+    const b = createItem({ title: "b", lane: "free" });
+    reorderLane("office", [a.id, b.id]);
+    const lanes = readLanes();
+    expect(lanes.find((l) => l.key === "office")!.items).toEqual([a.id, b.id]);
+    expect(lanes.find((l) => l.key === "free")!.items).toEqual([]); // evicted from its old row
+    // packet.lane is left as the stale hint — lanes.yaml alone decided this,
+    // exactly like AD-6's hand cross-lane move.
+    expect(getWorkspaceItem(b.id)!.lane).toBe("free");
+  });
+
+  test("reorderLane throws and writes NOTHING when an id does not resolve to a readable packet", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const a = createItem({ title: "a", lane: "office" });
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    expect(() => reorderLane("office", [a.id, "i-does-not-exist"])).toThrow(/does not resolve/);
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before);
+  });
+
+  test("reorderLane throws on an unknown lane key", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    expect(() => reorderLane("nope", [])).toThrow(/No lane named/);
+  });
+});
+
+describe("5.2 sub-tasks live INSIDE the item — NFR-OW-3's conservation law holds under the real disk writers too", () => {
+  test("addSubtask appends with a minted id, touches no lanes.yaml, and never changes queueSlice's row count", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const item = createItem({ title: "decompose me", lane: "office" });
+    const lanesHash = hashOf(lanesPath());
+    const before = queueSlice(readLanes(), listItems().items).length;
+
+    const next = addSubtask(item.id, "first step");
+    expect(next!.subtasks).toEqual([{ id: expect.any(String), title: "first step", done: false }]);
+    expect(next!.subtasks![0]!.id).toMatch(/^st-/); // distinct prefix from an item id
+    expect(hashOf(lanesPath())).toBe(lanesHash); // lanes.yaml untouched
+
+    addSubtask(item.id, "second step");
+    const after = queueSlice(readLanes(), listItems().items).length;
+    expect(after).toBe(before); // the count NEVER grows from breakdown
+    expect(getWorkspaceItem(item.id)!.subtasks!.map((s) => s.title)).toEqual(["first step", "second step"]);
+  });
+
+  test("addSubtask returns null and writes nothing for an id that does not resolve", () => {
+    ensureWorkspace();
+    expect(addSubtask("i-does-not-exist", "x")).toBeNull();
+  });
+
+  test("setSubtaskDone toggles exactly the named sub-task, in both directions, and leaves its siblings alone", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "with steps" });
+    addSubtask(item.id, "one");
+    addSubtask(item.id, "two");
+    const [st1, st2] = getWorkspaceItem(item.id)!.subtasks!;
+
+    const marked = setSubtaskDone(item.id, st1!.id, true);
+    expect(marked!.subtasks).toEqual([
+      { id: st1!.id, title: "one", done: true },
+      { id: st2!.id, title: "two", done: false },
+    ]);
+
+    const unmarked = setSubtaskDone(item.id, st1!.id, false);
+    expect(unmarked!.subtasks![0]!.done).toBe(false);
+  });
+
+  test("setSubtaskDone returns null for an unknown sub-task id, and writes nothing", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "with steps" });
+    addSubtask(item.id, "one");
+    const before = hashOf(packetPath(item.id));
+    expect(setSubtaskDone(item.id, "st-not-real", true)).toBeNull();
+    expect(hashOf(packetPath(item.id))).toBe(before);
+  });
+});
+
+describe("5.2 promoteSubtask — the ONLY promotion path in the codebase, and it is never reachable from an MCP tool", () => {
+  test("promoteSubtask mints a real item, removes the sub-task from the parent, lands at the BOTTOM of the parent's ACTUAL stack, and stamps actor \"you\"", () => {
+    ensureWorkspace();
+    writeLanes([lane("office", [])]);
+    const parent = createItem({ title: "parent", lane: "office", project: "aurora" });
+    addSubtask(parent.id, "spin this out");
+    const sibling = createItem({ title: "already in office", lane: "office" });
+    const [sub] = getWorkspaceItem(parent.id)!.subtasks!;
+
+    const result = promoteSubtask(parent.id, sub!.id);
+    expect(result).not.toBeNull();
+    const { parent: nextParent, promoted } = result!;
+
+    expect(nextParent.subtasks).toEqual([]);
+    expect(promoted.title).toBe("spin this out");
+    expect(promoted.promotedFrom).toBe(parent.id);
+    expect(promoted.project).toBe("aurora"); // inherits the parent's project
+    expect(promoted.provenance).toContain(parent.title);
+    // NOT built like create_item's output — a human click is neither "the
+    // master asking a question" nor a session filing something.
+    expect(promoted.desk).toBeUndefined();
+    expect(promoted.unplaced).toBeUndefined();
+    expect(promoted.timeline).toEqual([{ at: promoted.captured, actor: "you", text: expect.stringContaining(parent.title) }]);
+
+    // Lands at the BOTTOM of the parent's real stack — after the sibling that
+    // was already there, not wherever parent.lane's stale hint would imply.
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([parent.id, sibling.id, promoted.id]);
+    expect(getWorkspaceItem(parent.id)!.subtasks).toEqual([]);
+  });
+
+  test("promoteSubtask leaves the promoted sibling unfiled — not desk, not adopted into a lane nobody chose — when the parent itself has no stack", () => {
+    ensureWorkspace();
+    const parent = createItem({ title: "homeless parent" });
+    addSubtask(parent.id, "spin this out too");
+    // Hand-edit: wipe every lane row, so the parent is in no stack at all —
+    // arm 3, "lane gone" — the same resting state a retired lane leaves behind.
+    writeLanes([]);
+    const [sub] = getWorkspaceItem(parent.id)!.subtasks!;
+
+    const { promoted } = promoteSubtask(parent.id, sub!.id)!;
+    expect(promoted.desk).toBeUndefined();
+    expect(promoted.unplaced).toBeUndefined();
+    expect(readLanes()).toEqual([]); // no lane row exists to receive it, and none was created
+    expect(queueSlice(readLanes(), listItems().items).map((r) => r.item.id)).not.toContain(promoted.id);
+  });
+
+  test("promoteSubtask returns null, and writes nothing, for an unknown parent or an unknown sub-task id", () => {
+    ensureWorkspace();
+    expect(promoteSubtask("i-does-not-exist", "st-1")).toBeNull();
+    const parent = createItem({ title: "parent" });
+    const before = hashOf(packetPath(parent.id));
+    expect(promoteSubtask(parent.id, "st-not-real")).toBeNull();
+    expect(hashOf(packetPath(parent.id))).toBe(before);
+  });
+});
+
+describe("5.2 agentsAddedCount — the queue footer's \"agents added N\"", () => {
+  test("agentsAddedCount is zero over a fresh workspace, and becomes one after an agent files through create_item", () => {
+    ensureWorkspace();
+    expect(agentsAddedCount(listItems().items)).toBe(0);
+    createItem({ title: "filed by a session" }); // stamps provenance: "session" server-side
+    expect(agentsAddedCount(listItems().items)).toBe(1);
+  });
+
+  test("agentsAddedCount does not count an item with a different provenance, even a human-authored one that happens to mention a session", () => {
+    const item = Item.parse({ id: "i-x", title: "x", provenance: "pasted transcript", captured: "Tue 16:42" });
+    expect(agentsAddedCount([item])).toBe(0);
   });
 });
