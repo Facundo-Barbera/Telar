@@ -96,7 +96,18 @@ export default async function SessionPage({
         id: chat.id,
         model: chat.model,
         effort: chat.effort,
-        permissionMode: chat.permissionMode,
+        // The posture this session resolves to. `getChat` goes through
+        // readChats, which runs every row through the one legacy table — so a
+        // resumed session opens on its own stored mode and never on the
+        // composer's default for a new one.
+        //
+        // "What it was actually running under" is true of a Claude row and NOT
+        // of a Codex one written before the rename: nothing ever persisted a
+        // Codex session's {sandbox, approvalPolicy}, so those rows carry a
+        // Claude-shaped "default" and resolve to `approval-required`. Such a
+        // session opens Supervised and its posture has to be re-chosen once.
+        // See withRuntimeMode in lib/store.ts.
+        runtimeMode: chat.runtimeMode,
         messages: chat.messages,
         costUsd: chat.costUsd,
         inputTokens: chat.inputTokens ?? 0,

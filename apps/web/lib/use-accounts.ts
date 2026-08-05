@@ -15,6 +15,14 @@ import type { AccountProfile } from "@telar/core";
 export function useAccounts() {
   const [allAccounts, setAllAccounts] = useState<AccountProfile[]>([]);
   const [defaultAccount, setDefaultAccount] = useState<string>("personal");
+  // HAS THE FETCH ANSWERED — which is not the same question as "are there any
+  // accounts". A caller that needs to know whether a session's real provider is
+  // knowable yet cannot tell an in-flight request from a registry whose every
+  // account is switched off; both look like an empty list, and the difference
+  // decides whether "claude" is a guess or the answer. Set on completion
+  // whatever the outcome, including a failed request: after that point the list
+  // is as good as it is going to get.
+  const [loaded, setLoaded] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -25,6 +33,8 @@ export function useAccounts() {
       setDefaultAccount(d.default ?? "personal");
     } catch {
       // best-effort — an empty list just means the pickers fall back to defaults
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -36,6 +46,7 @@ export function useAccounts() {
     accounts: allAccounts.filter((a) => a.enabled !== false),
     allAccounts,
     defaultAccount,
+    loaded,
     reload,
   };
 }

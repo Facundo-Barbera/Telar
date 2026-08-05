@@ -24,7 +24,7 @@
 //   (1) The PreToolUse guardrail is wired OUTSIDE the profile and runs for
 //       every session regardless of profile. No field here can reach hook
 //       registration — there is no `hooks`, no `canUseTool`, no
-//       `permissionMode`, no `skipGuardrail`, and INV-6a in
+//       `permissionMode`, no `runtimeMode`, no `skipGuardrail`, and INV-6a in
 //       packages/core/test/invariants.test.ts pins the field set to exactly
 //       eight names so adding one is a deliberate act that fails a test.
 //   (2) ToolPolicy is intersect-only BY ITS TYPE (see below), not by review.
@@ -70,11 +70,11 @@
 // and returns a value. That is why its suite needs no TELAR_HOME sandbox.
 import type {
   McpServerConfig as SdkMcpServerConfig,
-  PermissionMode,
   SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ProjectManifest, ProviderId } from "./schemas";
 import { providerCapabilities, type ProviderCapability } from "./providers";
+import type { RuntimeMode } from "./runtime-mode";
 
 // --- The kinds ---------------------------------------------------------------
 
@@ -343,15 +343,14 @@ export type ResolvedToolPolicy = {
 // replace.
 export type ProfileSettingSource = Exclude<SettingSource, "user">;
 
-// The permission modes a profile context may carry, derived from the SDK's own
-// union rather than restated. The three excluded members are excluded for
-// cause: "bypassPermissions" skips canUseTool entirely, and "plan"/"dontAsk"
-// are not choices this product offers. The route already 400s all three; making
-// the type narrower than the SDK's means a context cannot even carry one.
-export type ProfilePermissionMode = Exclude<
-  PermissionMode,
-  "bypassPermissions" | "plan" | "dontAsk"
->;
+// The per-kind runtime-mode ceiling lives in ./runtime-mode, beside the ladder
+// it caps against and the function that applies it — and, more to the point,
+// where the COMPOSER can read it. A control that offers a rung the route always
+// caps away is a control that does nothing, and the only way the surface can
+// avoid offering it is to be able to ask the same question the route asks.
+// Re-exported here because this file is where a session KIND is defined and
+// where every server-side caller already looks.
+export { runtimeModeCeiling } from "./runtime-mode";
 
 // --- The two profile types ----------------------------------------------------
 
@@ -435,7 +434,19 @@ export type SessionResolutionContext = {
   // project's loom. Whoever changes where this value comes from owns that
   // sentence.
   readonly loomId?: string;
-  readonly permissionMode: ProfilePermissionMode;
+  // How much the agent may do on its own, in the ONE vocabulary both harnesses
+  // now share (./runtime-mode). This is the EFFECTIVE mode — the route has
+  // already put the session's choice through profileRuntimeModeCeiling — so a
+  // builder reading it sees what the turn will actually run under rather than
+  // what was asked for.
+  //
+  // CARRIED, NOT CONSUMED — and now structurally so: `SessionProfileBuilder`
+  // takes this context minus this field, so a builder cannot read it at all.
+  // That closes the one hazard the prose used to be holding alone, since a
+  // builder authors `settingSources` and `addDisallowedTools` and a
+  // runtime-mode-shaped input reaching either is a session's own choice moving
+  // the verifier's capability wall.
+  readonly runtimeMode: RuntimeMode;
   // The composer Ultra chip's annotation for THIS TURN ONLY (docs/plans/
   // ultra-harness.md §4 — "opt-in is a REQUEST, not a behavior flag"; never a
   // stored or session-level flag). It reaches the context because the note it
@@ -480,7 +491,19 @@ export type SessionResolutionContext = {
 };
 
 // A surface's contribution: a pure function from the context to a spec.
-export type SessionProfileBuilder = (ctx: SessionResolutionContext) => SessionProfileSpec;
+//
+// MINUS `runtimeMode`, and that subtraction is the whole point. A builder
+// authors `settingSources` and `addDisallowedTools` — the verifier's capability
+// wall — and receives the context whole, so nothing but prose stopped one from
+// writing `settingSources: ctx.runtimeMode === "auto" ? [...] : []` and making
+// a session's chosen posture decide its trust boundary. The field is carried on
+// the context for the resolver and the route; taking it away HERE makes "no
+// builder consumes it" a compile error rather than a convention, and costs
+// nothing today because no builder reads it. Omit, not Pick, so a field added
+// to the context later still reaches builders without a second edit.
+export type SessionProfileBuilder = (
+  ctx: Omit<SessionResolutionContext, "runtimeMode">,
+) => SessionProfileSpec;
 
 // --- The registry -------------------------------------------------------------
 

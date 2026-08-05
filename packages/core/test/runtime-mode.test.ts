@@ -96,20 +96,24 @@ describe("Codex translation", () => {
     });
   });
 
-  test("auto differs from auto-accept-edits by the REVIEWER alone", () => {
-    // The load-bearing row. If these two ever stop differing by exactly this
-    // one field, "Auto" has lost its meaning on this provider.
-    const edits = codexThreadConfig("auto-accept-edits");
-    const auto = codexThreadConfig("auto");
-    expect(auto.approvalPolicy).toBe(edits.approvalPolicy);
-    expect(auto.sandbox).toBe(edits.sandbox);
-    expect(edits.approvalsReviewer).toBe("user");
-    expect(auto.approvalsReviewer).toBe("auto_review");
+  test("NO mode delegates approvals to the harness's own reviewer", () => {
+    // THE GUARDRAIL REACHABILITY TEST, and the reason Telar diverges from
+    // t3code's `auto` row. Every approval request Codex raises is answered by
+    // route.ts's onCodexApproval, which is the single site where
+    // makeGuardrailDecision runs on this harness and the single site that
+    // raises a permission card. `auto_review` hands those requests to the
+    // harness's subagent instead, so the project's guardrails.disallowedTools /
+    // protectedPaths would go inert and no card would ever be shown. If this
+    // assertion is being changed, the Codex arm needs a guardrail seam that
+    // survives delegated review FIRST.
+    for (const m of RUNTIME_MODES) {
+      expect(codexThreadConfig(m).approvalsReviewer).toBe("user");
+    }
   });
 
   test("approvalsReviewer is ALWAYS set — never omitted", () => {
-    // Omitting it on resume keeps the thread's previous reviewer, leaving
-    // auto_review sticky after switching away from Auto.
+    // Omitting it on resume keeps the thread's previous reviewer, so a thread
+    // another client started under auto_review would stay there for life.
     for (const m of RUNTIME_MODES) {
       expect(codexThreadConfig(m).approvalsReviewer).toBeDefined();
     }
@@ -144,6 +148,86 @@ describe("the two harnesses agree", () => {
     expect(promptsForApproval("claude", "full-access")).toBe(false);
     expect(promptsForApproval("codex", "auto")).toBe(true);
   });
+
+  test("promptsForApproval reads the REVIEWER, not just the policy", () => {
+    // A policy that raises approval requests plus a reviewer that answers them
+    // for the user is not a human in the loop. Nothing in this build sends
+    // auto_review (see codexThreadConfig), so this exercises the predicate
+    // against a hand-built config rather than a shipped row — the point is that
+    // the function would report the truth if the table ever changed.
+    for (const m of RUNTIME_MODES) {
+      const config = codexThreadConfig(m);
+      const humanAsked = config.approvalPolicy !== "never" && config.approvalsReviewer === "user";
+      expect(promptsForApproval("codex", m)).toBe(humanAsked);
+    }
+  });
+});
+
+// THE PROOF THAT THE TWO HARNESSES NOW AGREE, as one table read left to right.
+// The per-provider describes above check each side against its own source; this
+// one exists so a reviewer can see BOTH answers for a single mode without
+// holding two tables in their head — which is the thing that was impossible
+// while "how careful is this session" had two vocabularies.
+//
+// The Codex column is the FULL thread config, reviewer included, because that
+// third field is where a widening would hide. Two of its rows are currently
+// identical — `auto` and `auto-accept-edits` — and the table prints them that
+// way on purpose rather than eliding one: the difference between those modes is
+// real on Claude and is deliberately not yet expressible on Codex.
+describe("the end-to-end table", () => {
+  const TABLE: ReadonlyArray<{
+    mode: (typeof RUNTIME_MODES)[number];
+    claude: ReturnType<typeof claudePermissionMode>;
+    codex: ReturnType<typeof codexThreadConfig>;
+    turn: ReturnType<typeof codexTurnSandboxPolicy>;
+  }> = [
+    {
+      mode: "approval-required",
+      claude: undefined,
+      codex: { approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" },
+      turn: { type: "readOnly" },
+    },
+    {
+      mode: "auto-accept-edits",
+      claude: "acceptEdits",
+      codex: { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "user" },
+      turn: { type: "workspaceWrite" },
+    },
+    {
+      mode: "auto",
+      claude: "auto",
+      // IDENTICAL to auto-accept-edits on this provider, and that is the
+      // deliberate state: the field that would distinguish them
+      // (approvalsReviewer "auto_review") takes the approval requests away from
+      // Telar's only Codex guardrail seam. See codexThreadConfig's own block.
+      codex: {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        approvalsReviewer: "user",
+      },
+      turn: { type: "workspaceWrite" },
+    },
+    {
+      mode: "full-access",
+      claude: "bypassPermissions",
+      codex: { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" },
+      turn: { type: "dangerFullAccess" },
+    },
+  ];
+
+  test("covers the vocabulary exactly — no mode is missing a row", () => {
+    // Without this, adding a fifth mode leaves it untranslated on both sides and
+    // every row below still passes.
+    expect(TABLE.map((r) => r.mode)).toEqual([...RUNTIME_MODES]);
+  });
+
+  for (const row of TABLE) {
+    test(`${row.mode} → Claude ${row.claude ?? "(no permissionMode field)"} / Codex ${row.codex.sandbox} ${row.codex.approvalPolicy} ${row.codex.approvalsReviewer}`, () => {
+      expect(claudePermissionMode(row.mode)).toBe(row.claude);
+      expect(codexThreadConfig(row.mode)).toEqual(row.codex);
+      expect(codexTurnSandboxPolicy(row.mode)).toEqual(row.turn);
+    });
+  }
 });
 
 describe("a profile may restrict but never widen", () => {

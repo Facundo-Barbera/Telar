@@ -18,8 +18,7 @@
 
 import { useSyncExternalStore } from "react";
 import { DEFAULT_MODEL } from "./models";
-import type { ClientPermissionMode } from "./permission-modes";
-import { isValidPermissionMode } from "./permission-modes";
+import { DEFAULT_RUNTIME_MODE, runtimeModeFromLegacy, type RuntimeMode } from "./permission-modes";
 import type { ProviderSort } from "./provider-order";
 import { isProviderSort } from "./provider-order";
 
@@ -31,7 +30,11 @@ export type UiPrefs = {
   theme: ThemeMode;
   // Initial composer values for NEW sessions only — a fallback, not an override.
   defaultModel: string;
-  defaultPermissionMode: ClientPermissionMode;
+  // In the ONE vocabulary both harnesses share. It used to be Claude's
+  // `defaultPermissionMode`, which was the last copy of the old three-word set
+  // and meant this pane and the composer showed different words for the same
+  // three rungs. Old payloads are read forward by sanitize() below.
+  defaultRuntimeMode: RuntimeMode;
   notifications: {
     enabled: boolean; // master toggle
     loomParked: boolean; // a loom parked and needs you
@@ -55,7 +58,7 @@ export type UiPrefs = {
 export const DEFAULT_PREFS: UiPrefs = {
   theme: "dark",
   defaultModel: DEFAULT_MODEL,
-  defaultPermissionMode: "auto",
+  defaultRuntimeMode: DEFAULT_RUNTIME_MODE,
   notifications: { enabled: false, loomParked: true, loomReady: true },
   providerCheckIntervalSec: 300,
   // Grouped by provider is the order this list has always had, so it stays the
@@ -89,9 +92,15 @@ function sanitize(raw: unknown): UiPrefs {
         : DEFAULT_PREFS.providerDisabledLast,
     defaultModel:
       typeof r.defaultModel === "string" && r.defaultModel ? r.defaultModel : DEFAULT_PREFS.defaultModel,
-    defaultPermissionMode: isValidPermissionMode(r.defaultPermissionMode)
-      ? r.defaultPermissionMode
-      : DEFAULT_PREFS.defaultPermissionMode,
+    // New spelling first, then the old one through the same legacy table the
+    // route and the Chat store use, then the default — so a browser that has
+    // been carrying "acceptEdits" since before the rename keeps the preference
+    // it set rather than silently reverting.
+    defaultRuntimeMode:
+      runtimeModeFromLegacy({
+        runtimeMode: r.defaultRuntimeMode,
+        permissionMode: r.defaultPermissionMode,
+      }) ?? DEFAULT_PREFS.defaultRuntimeMode,
     notifications: {
       enabled: typeof n.enabled === "boolean" ? n.enabled : DEFAULT_PREFS.notifications.enabled,
       loomParked:

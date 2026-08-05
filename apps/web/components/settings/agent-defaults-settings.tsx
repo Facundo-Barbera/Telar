@@ -1,6 +1,6 @@
 "use client";
 
-// Agent defaults — the INITIAL permission mode + model for a BRAND-NEW session in
+// Agent defaults — the INITIAL runtime mode + model for a BRAND-NEW session in
 // a project that has no remembered composer config. Per-project memory
 // (telar:composer:<project>) and per-session choices always win over these; the
 // composer reads them only as the seed for a never-configured project (see
@@ -8,13 +8,21 @@
 //
 // Loom Doctrine: a UI preference, never an engine flag. Nothing here writes
 // telar.yaml / .telar or any engine env — it only changes what a new composer
-// starts on. import type keeps models/permission-modes client-safe (data only).
+// starts on.
+//
+// ONE LIST OF WORDS, ONE MAP OF GLYPHS. This pane used to speak the old
+// Claude-only vocabulary ("Ask me / Accept edits / Auto", most-permissive
+// first) while the composer showed "Supervised / Auto-accept edits / Auto",
+// least-permissive first, with different icons — two names and two pictures for
+// the same three rungs of one preference. Both now render
+// SELECTABLE_RUNTIME_MODE_OPTIONS through ACCESS_GLYPH, so they are
+// structurally unable to disagree.
 
-import type { ReactNode } from "react";
-import { BotIcon, CheckIcon, ShieldCheckIcon, SparklesIcon, ZapIcon } from "lucide-react";
 import { useUiPrefs, setUiPrefs } from "@/lib/ui-prefs";
+import { ShieldCheckIcon, SparklesIcon } from "lucide-react";
 import { modelsForProvider } from "@/lib/models";
-import { type ClientPermissionMode } from "@/lib/permission-modes";
+import { SELECTABLE_RUNTIME_MODE_OPTIONS, type RuntimeMode } from "@/lib/permission-modes";
+import { ACCESS_GLYPH } from "@/components/session/composer-settings";
 import {
   Select,
   SelectContent,
@@ -22,47 +30,53 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { SettingsGroup, Row, Segmented } from "./settings-shell";
+import { SettingsGroup, Row } from "./settings-shell";
 
-// Claude-only: the composer's default seed is a Claude session; Codex sessions
-// pick their own model + approval preset and ignore these.
+// The MODEL row is Claude-only — a Codex session picks from its own catalog and
+// this seed never reaches it. The access row above it is NOT: one runtime mode
+// means the same thing on both harnesses, and the composer seeds both from it.
 const MODEL_OPTIONS = modelsForProvider("claude");
 
-const PERM_LABEL: Record<ClientPermissionMode, ReactNode> = {
-  auto: <><ZapIcon className="size-3.5" />Auto</>,
-  acceptEdits: <><CheckIcon className="size-3.5" />Accept edits</>,
-  default: <><BotIcon className="size-3.5" />Ask me</>,
-};
-
-const PERM_HINT: Record<ClientPermissionMode, string> = {
-  auto: "A classifier approves routine tool calls automatically — the loom happy path.",
-  acceptEdits: "File edits apply without asking; other actions still prompt.",
-  default: "Every tool call asks first.",
-};
-
 export function AgentDefaultsSettings() {
-  const { defaultModel, defaultPermissionMode } = useUiPrefs();
+  const { defaultModel, defaultRuntimeMode } = useUiPrefs();
   const model = MODEL_OPTIONS.find((m) => m.id === defaultModel);
+  const mode = SELECTABLE_RUNTIME_MODE_OPTIONS.find((o) => o.value === defaultRuntimeMode);
 
   return (
     <SettingsGroup
       title="New-session defaults"
       description="The starting point for a new session in a project you haven't configured yet. A project's remembered config and any per-session change always win."
     >
+      {/* A Select, not the Segmented strip the old three-value control used:
+          these labels are the composer's own, and "Auto-accept edits" does not
+          survive a third of a settings row any better than it survived a third
+          of the popover. */}
       <Row
-        label="Default permission mode"
-        hint={PERM_HINT[defaultPermissionMode]}
+        label="Default access"
+        hint={mode?.description ?? "How much a new session's agent may do on its own."}
         icon={ShieldCheckIcon}
         control={
-          <Segmented<ClientPermissionMode>
-            value={defaultPermissionMode}
-            onChange={(v) => setUiPrefs({ defaultPermissionMode: v })}
-            options={[
-              { value: "auto", label: PERM_LABEL.auto },
-              { value: "acceptEdits", label: PERM_LABEL.acceptEdits },
-              { value: "default", label: PERM_LABEL.default },
-            ]}
-          />
+          <Select
+            value={defaultRuntimeMode}
+            onValueChange={(v) => v && setUiPrefs({ defaultRuntimeMode: v as RuntimeMode })}
+          >
+            <SelectTrigger className="h-8 w-44 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SELECTABLE_RUNTIME_MODE_OPTIONS.map((o) => {
+                const { Icon, tone } = ACCESS_GLYPH[o.value];
+                return (
+                  <SelectItem key={o.value} value={o.value}>
+                    <span className="flex items-center gap-1.5">
+                      <Icon className={`size-3.5 ${tone}`} />
+                      {o.label}
+                    </span>
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
         }
       />
       <Row

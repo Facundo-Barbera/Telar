@@ -58,7 +58,8 @@ interface ChatDetail {
   project?: string;
   model: string;
   account: string;
-  permissionMode?: string;
+  runtimeMode?: string;
+  effort?: string;
   costUsd: number;
   loomId?: string;
   messages: StoreMessage[];
@@ -263,7 +264,18 @@ export function SessionRuntimeHost({ id }: { id: string }) {
             model: d.model,
             project: d.project,
             account: d.account,
-            ...(d.permissionMode ? { permissionMode: d.permissionMode } : {}),
+            // The session's own runtime mode, resent verbatim. The route's
+            // fallback for a turn that says nothing is the MOST CAUTIOUS mode,
+            // so dropping this field would not merely be untidy — it would
+            // silently re-run a session at a posture nobody chose.
+            ...(d.runtimeMode ? { runtimeMode: d.runtimeMode } : {}),
+            // …and its reasoning effort, for the OPPOSITE reason: an omitted
+            // effort means "Auto" rather than "unstated", so appendTurn writes
+            // the absence through and a dock turn would erase a session's
+            // reasoning level — the control on the session page then reads Auto
+            // for a session the user set to Max. The two fields need resending
+            // for different reasons; both need it.
+            ...(d.effort ? { effort: d.effort } : {}),
           }),
           signal: sendAbort.signal,
         });
@@ -350,7 +362,8 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           cost: chat.costUsd,
           model: chat.model,
           account: chat.account,
-          permissionMode: chat.permissionMode,
+          runtimeMode: chat.runtimeMode,
+          effort: chat.effort,
           loaded: true,
         });
         // Park state rides along when the session drives a loom.

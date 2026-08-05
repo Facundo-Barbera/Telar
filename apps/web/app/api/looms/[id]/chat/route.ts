@@ -42,7 +42,7 @@ export async function GET(
     id: chat.id,
     model: chat.model,
     effort: chat.effort,
-    permissionMode: chat.permissionMode,
+    runtimeMode: chat.runtimeMode,
     messages: chat.messages,
     costUsd: chat.costUsd,
     inputTokens: chat.inputTokens ?? 0,

@@ -250,12 +250,26 @@ export function isOfferedRule(options: Array<{ rule: string; label: string }>, r
   return options.some((o) => o.rule === rule);
 }
 
-// The client-selectable permission modes live in the SDK-free ./permission-modes
-// module so "use client" components can import them at runtime — importing any
-// runtime value from THIS file drags ./loom-mcp -> the Agent SDK
-// (node:async_hooks) into the client bundle. Re-exported here so server call
-// sites (route.ts) and permissions.test.ts keep a single import site.
-export { PERMISSION_MODES, isValidPermissionMode, type ClientPermissionMode } from "./permission-modes";
+// The session's runtime mode lives in the SDK-free ./permission-modes module so
+// "use client" components can import it at runtime — importing any runtime value
+// from THIS file drags ./loom-mcp -> the Agent SDK (node:async_hooks) into the
+// client bundle. Re-exported here so server call sites (route.ts) and
+// permissions.test.ts keep a single import site.
+//
+// The three PERMISSION_MODES names below are the OLD Claude-only vocabulary,
+// alive for one release while the composer and the settings pane finish moving
+// (see their @deprecated notes). Nothing on the wire speaks them any more.
+export {
+  MOST_CAUTIOUS_RUNTIME_MODE,
+  SELECTABLE_RUNTIME_MODES,
+  isSelectableRuntimeMode,
+  runtimeModeFromLegacy,
+  runtimeModeOrDefault,
+  type RuntimeMode,
+  PERMISSION_MODES,
+  isValidPermissionMode,
+  type ClientPermissionMode,
+} from "./permission-modes";
 
 // Shell separators/substitution/redirection that chain or divert a second
 // command/target onto the first: ; & | ` newline, $( ), and < > (which also

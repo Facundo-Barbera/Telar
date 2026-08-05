@@ -27,6 +27,13 @@ import {
   XIcon,
 } from "lucide-react";
 import type { AccountHealth, AccountIdentity, ProviderStatus } from "@telar/core";
+// VALUE import, and legal: @telar/core/providers is a declared client-safe leaf
+// (INV-4c/INV-4d) whose own graph is type-only, so this reaches no runtime. It
+// is here because this card was re-deriving two things the descriptor already
+// states — the config-dir env var and the vendor an unproxied account talks to
+// — and a settings page that spells its own copy of those can disagree with the
+// process that actually sets them.
+import { providerOf } from "@telar/core/providers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -477,7 +484,7 @@ export function ProviderInstanceRow({
                 Keychain entry. So it is stated, not offered as a field. */}
             <label className="block">
               <span className="text-xs font-medium text-foreground">
-                {providerId === "codex" ? "CODEX_HOME path" : "CLAUDE_CONFIG_DIR path"}
+                {providerOf(providerId).configDirEnv} path
               </span>
               {account.isMain ? (
                 <p className="mt-1.5 text-[11px] text-muted-foreground">
@@ -549,8 +556,7 @@ export function ProviderInstanceRow({
                   </>
                 ) : (
                   <span className="block text-[11px] text-muted-foreground">
-                    Off: this account talks to {providerId === "codex" ? "OpenAI" : "Anthropic"}{" "}
-                    directly.
+                    Off: this account talks to {providerOf(providerId).vendor} directly.
                   </span>
                 )}
               </div>

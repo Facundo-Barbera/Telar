@@ -1,89 +1,112 @@
 "use client";
 
-// 1.2 — collapse the composer's button crowd (permission · model · effort)
-// into ONE settings popover fronted by a compact config chip that reads back
-// the active model, approval mode and effort at a glance. Ported from the
-// owner-verdicted demo (lib/demo-gallery/input/settings-popover.tsx +
-// shared.tsx). Provider/account stay as their own pre-session controls in the
-// footer; this chip is the config trio.
+// THE ONE AGENT-CONFIGURATION MENU. Access · model · whatever else the provider
+// publishes, in a single popover fronted by a chip that reads the session's
+// posture back at a glance.
 //
-// ONE MENU, BOTH PROVIDERS. This used to be the CLAUDE config trio, and Codex
-// got three loose selects beside it instead — approval preset, model, effort —
-// so the composer changed shape depending on which agent you picked, and the
-// same three decisions were made through two different UIs with two different
-// vocabularies. There is no reason for that: the decisions are identical
-// (how much may it do on its own · which model · how hard should it think),
-// only the option VALUES differ.
+// NOTHING IN THIS FILE KNOWS WHICH HARNESS IS DRIVING. The previous version
+// said the same thing and was only half true: it took the approval section's
+// options as data, but it still drew their icons by ARRAY POSITION, and the two
+// providers handed it lists of different lengths ordered on different
+// principles. Position is not a property of a permission; the result was the
+// most cautious mode on Claude wearing the accent-coloured lightning bolt and
+// Codex's `danger-full-access` wearing a checked shield. Icons are now keyed by
+// the mode's own value through ACCESS_GLYPH below, which is a Record over
+// RuntimeMode — so reordering the ladder cannot move a glyph, and adding a rung
+// fails the build until someone decides what it looks like.
 //
-// So the popover is now provider-neutral and every provider-specific thing
-// arrives as data: the approval section takes its own title, options and
-// current value (Claude's permission modes, Codex's sandbox+approval presets),
-// and the header badge names whichever provider is active. Nothing in this file
-// branches on a provider id — if it ever needs to, the abstraction is wrong.
-//
-// Real data only: the model list is the live catalog fetched by the composer
-// (modelOptions), the effort list is the provider's real EFFORT_OPTIONS, and
-// the approval options are the provider's real ones — nothing is hardcoded.
+// The remaining sections are generic by construction. The provider publishes
+// `ProviderOptionGroup`s (lib/provider-options.ts) and this renders whatever it
+// finds, in order, with one loop — Claude's Reasoning group and a future Codex
+// Service Tier group are the same code path. A provider that publishes nothing
+// gets no section and no separator, because an empty menu is a worse answer
+// than a shorter one.
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ComponentType, type ReactNode } from "react";
 import {
-  BotIcon,
   CheckIcon,
-  GaugeIcon,
+  FilePenIcon,
   SettingsIcon,
   ShieldCheckIcon,
+  ShieldOffIcon,
+  SlidersHorizontalIcon,
   SparklesIcon,
   ZapIcon,
 } from "lucide-react";
+import { profileRuntimeModeCeiling, type RuntimeMode } from "@telar/core/runtime-mode";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { DEFAULT_MODEL, type ModelInfo } from "@/lib/models";
+import { groupDefault, triggerLabel, type ProviderOptionGroup } from "@/lib/provider-options";
 import { getUiPrefs } from "@/lib/ui-prefs";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 
-type EffortOpt = { id: string; label: string; blurb: string };
-
-/** One choice in the approval section. Provider-neutral by construction: a
- *  Claude permission mode and a Codex sandbox+approval preset both flatten to
- *  this, which is what lets the two share a control instead of a shape. */
-export type ApprovalOption = { value: string; label: string; description: string };
-
-/** Everything the approval section needs, supplied by whoever knows the
- *  provider. `defaultValue` is the one that reads as "Default for new
- *  projects"; `seedValue` (optional) is what a project with no remembered
- *  config should start at, taken from the global Agent-defaults preference.
- *
- *  `seedValue` is a FUNCTION, not a value, so the caller never has to read
- *  localStorage-backed preferences during render — SSR would return the
- *  defaults and the client the stored ones, which is a hydration mismatch
- *  waiting to happen. It is called inside the seed effect, client-side only. */
-export type ApprovalConfig = {
-  title: string;
-  value: string;
-  options: readonly ApprovalOption[];
-  onChange: (v: string) => void;
-  defaultValue: string;
-  seedValue?: () => string | undefined;
+/** One rung of the access ladder, in `RUNTIME_MODE_OPTIONS`' own publication
+ *  order and its own words. Passed in rather than imported so the caller owns
+ *  WHICH rungs this build lets a client select (see SELECTABLE_RUNTIME_MODES)
+ *  and this file owns only how they look. */
+export type AccessOption = {
+  value: RuntimeMode;
+  label: string;
+  description: string;
 };
 
-// Icons are positional, not value-keyed: the first option is the permissive
-// "just do it" one on both providers, the last is the most cautious. Keying on
-// a Claude value here would reintroduce the branch this refactor removed.
-const approvalIcon = (index: number, total: number) =>
-  index === 0 ? (
-    <ZapIcon className="size-3.5 text-primary" />
-  ) : index === total - 1 ? (
-    <BotIcon className="size-3.5" />
-  ) : (
-    <CheckIcon className="size-3.5" />
-  );
+/** Everything the access section needs. `seedValue` is a FUNCTION, not a value,
+ *  so the caller never reads localStorage-backed preferences during render —
+ *  SSR would return the defaults and the client the stored ones, which is a
+ *  hydration mismatch waiting to happen. It is called inside the seed effect,
+ *  client-side only. */
+export type AccessConfig = {
+  value: RuntimeMode;
+  options: readonly AccessOption[];
+  onChange: (v: RuntimeMode) => void;
+  /** The rung a brand-new session starts on. Marks its row and guards the seed
+   *  below: a session already sitting somewhere else has been configured, and a
+   *  preference must never move it. */
+  defaultValue: RuntimeMode;
+  seedValue?: () => RuntimeMode | undefined;
+  /** The most permissive rung THIS SESSION KIND may reach, whatever the user
+   *  picks — the same `runtimeModeCeiling(kind)` the chat route applies before
+   *  the turn runs. Rungs above it render disabled with `ceilingReason` in
+   *  place of their description, because the alternative is a live button that
+   *  moves and changes nothing. Absent means no cap. */
+  ceiling?: RuntimeMode;
+  ceilingReason?: string;
+};
+
+// VALUE-KEYED, EXHAUSTIVE, AND THAT IS THE POINT. A `Record<RuntimeMode, …>`
+// cannot be satisfied by three entries, so a fifth mode arriving in core is a
+// type error here rather than a silently-wrong glyph — which is precisely how
+// the positional version failed.
+//
+// The tone ladder says one thing and one thing only: how much runs unattended.
+// `--warning` is spent on `full-access` alone because that is the single rung
+// where no tool call stops to ask (`promptsForApproval` returns false there on
+// both harnesses, and only there). `--info` marks the rung where a reviewer is
+// in the loop rather than the human, which is Auto's own description. The two
+// most cautious rungs stay muted on purpose: an alarm colour on the safest
+// choice is the bug this control was rebuilt to remove.
+//
+// EXPORTED so settings › Agent defaults draws the same rung with the same
+// glyph. Two surfaces showing the same permission state under different icons
+// (and different words) is what the shared vocabulary exists to stop, and a map
+// each pane keeps privately is how they drift apart again.
+export const ACCESS_GLYPH: Record<
+  RuntimeMode,
+  { Icon: ComponentType<{ className?: string }>; tone: string }
+> = {
+  "approval-required": { Icon: ShieldCheckIcon, tone: "text-muted-foreground" },
+  "auto-accept-edits": { Icon: FilePenIcon, tone: "text-muted-foreground" },
+  auto: { Icon: ZapIcon, tone: "text-info" },
+  "full-access": { Icon: ShieldOffIcon, tone: "text-warning" },
+};
 
 function chipClass(active: boolean) {
   return cn(
-    "flex h-8 items-center gap-2 rounded-lg border border-input bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+    "flex h-8 items-center gap-2 rounded-control border border-input bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors",
     "hover:bg-accent hover:text-foreground",
     active && "border-ring bg-accent text-foreground",
   );
@@ -98,54 +121,45 @@ function SectionLabel({ icon, children }: { icon?: ReactNode; children: ReactNod
   );
 }
 
-// A labelled segmented control — single-tap, no dropdown-inside-a-dropdown.
-function Segmented<T extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string; icon?: ReactNode }[];
-}) {
-  return (
-    <div className="flex gap-1 rounded-lg bg-muted/60 p-1">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => onChange(o.value)}
-          className={cn(
-            "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-            value === o.value
-              ? "bg-background text-foreground shadow-sm ring-1 ring-border"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {o.icon}
-          <span className="truncate">{o.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ModelRow({
-  model,
+// STACKED ROWS, NOT A SEGMENTED STRIP. The strip gave each option an equal
+// fraction of a 340px popover and then truncated: Codex's four labels rendered
+// as "Read…", "Appro…", "Ask f…", "Full …", leaving the (wrong) icons as the
+// only way to tell them apart. A permission control whose labels you cannot
+// read is worse than no control. Three rungs render today and the vocabulary
+// holds four, but the count is not the argument: at three the strip is still
+// wrong, because "Auto-accept edits" does not fit a third of a 340px popover
+// either. A row gets the full column width, its whole label, and its own
+// one-line description, and that holds at any length.
+function OptionRow({
+  icon,
+  title,
+  badge,
+  subtitle,
   selected,
+  disabled,
   onClick,
 }: {
-  model: ModelInfo;
+  icon?: ReactNode;
+  title: string;
+  badge?: ReactNode;
+  subtitle?: string;
   selected: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      aria-pressed={selected}
       className={cn(
-        "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+        "flex w-full items-start gap-2.5 rounded-control px-2.5 py-2 text-left transition-colors",
         selected ? "bg-accent" : "hover:bg-accent/60",
+        // Not hidden. A rung this session cannot have is still information
+        // about the session, and a list that silently gets shorter reads as a
+        // different product rather than as a restricted one.
+        disabled && "cursor-not-allowed opacity-45 hover:bg-transparent",
       )}
     >
       <span
@@ -158,14 +172,54 @@ function ModelRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="text-sm font-medium">{model.name}</span>
-          <span className="rounded border border-border px-1 py-0 text-[10px] text-muted-foreground">
-            {model.context}
-          </span>
+          {icon}
+          <span className="text-sm font-medium">{title}</span>
+          {badge}
         </span>
-        <span className="mt-0.5 block text-xs text-muted-foreground">{model.blurb}</span>
+        {subtitle && (
+          <span className="mt-0.5 block text-xs text-muted-foreground">{subtitle}</span>
+        )}
       </span>
     </button>
+  );
+}
+
+// One published group, whatever it is. The chips wrap rather than divide the
+// width, so a group of six values costs a second line instead of six ellipses.
+function GroupSection({
+  group,
+  value,
+  onChange,
+}: {
+  group: ProviderOptionGroup;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const active = group.values.find((v) => v.value === value);
+  return (
+    <div className="space-y-2">
+      <SectionLabel icon={<SlidersHorizontalIcon className="size-3" />}>
+        {group.label}
+      </SectionLabel>
+      <div className="flex flex-wrap gap-1 rounded-control bg-muted/60 p-1">
+        {group.values.map((v) => (
+          <button
+            key={v.value}
+            type="button"
+            onClick={() => onChange(v.value)}
+            className={cn(
+              "rounded-control px-2 py-1.5 text-xs font-medium transition-colors",
+              value === v.value
+                ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {v.label}
+          </button>
+        ))}
+      </div>
+      {active?.blurb && <p className="px-0.5 text-xs text-muted-foreground">{active.blurb}</p>}
+    </div>
   );
 }
 
@@ -176,11 +230,11 @@ export function ComposerSettings({
   onOpenChange,
   model,
   setModel,
-  effort,
-  setEffort,
-  approval,
   modelOptions,
-  effortOptions,
+  access,
+  groups,
+  values,
+  onValueChange,
 }: {
   project: string;
   provider: "claude" | "codex";
@@ -188,22 +242,24 @@ export function ComposerSettings({
   onOpenChange: (v: boolean) => void;
   model: string;
   setModel: (v: string) => void;
-  effort: string;
-  setEffort: (v: string) => void;
-  approval: ApprovalConfig;
   modelOptions: ModelInfo[];
-  effortOptions: EffortOpt[];
+  access: AccessConfig;
+  /** What this provider publishes about itself, in publication order. */
+  groups: readonly ProviderOptionGroup[];
+  /** Current value per group id; a missing entry reads as the group's default. */
+  values: Readonly<Record<string, string>>;
+  onValueChange: (groupId: string, value: string) => void;
 }) {
   // New-session fallback: for a project with NO remembered composer config, seed
   // the still-untouched hardcoded defaults from the global UI preference (see
   // settings › Agent defaults). Per-project memory (telar:composer:<project>)
   // and any explicit choice always win — hence the guards below:
   //   • only when this project has no remembered config yet;
-  //   • only while model/permission are still the session's hardcoded defaults
-  //     (DEFAULT_MODEL / "auto"), so a resumed session's own values are never
-  //     clobbered;
-  //   • only for a Claude session (the global model appears in modelOptions),
-  //     so a Codex session's model list isn't seeded a Claude id.
+  //   • only while the control is still on the value a fresh session starts at,
+  //     so a resumed session's own choice is never clobbered.
+  // The ACCESS seed is no longer nested inside the model gate the way the old
+  // approval seed was: that nesting was how "only Claude seeds a posture"
+  // was expressed, and posture is not a per-provider question any more.
   // This effect (a child of the composer) runs before the parent's own seed +
   // persist effects, so it reads the pre-existing memory state correctly.
   const seededRef = useRef(false);
@@ -219,22 +275,27 @@ export function ComposerSettings({
     const prefs = getUiPrefs();
     if (model === DEFAULT_MODEL && modelOptions.some((m) => m.id === prefs.defaultModel)) {
       setModel(prefs.defaultModel);
-      // Only when the caller supplied one AND the control is still untouched —
-      // a resumed session's own choice is never clobbered.
-      const seed = approval.seedValue?.();
-      if (seed && approval.value === approval.defaultValue) approval.onChange(seed);
     }
+    const seed = access.seedValue?.();
+    if (seed && access.value === access.defaultValue) access.onChange(seed);
     // Seed once per project mount; deliberately not reacting to model changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
-  const activeModel = modelOptions.find((m) => m.id === model);
-  const modelLabel = activeModel?.name ?? model;
-  const active = approval.options.find((o) => o.value === approval.value);
-  const approvalLabel = active?.label ?? approval.options[0]?.label ?? "";
-  const approvalDescription = active?.description;
-  const isDefault = approval.value === approval.defaultValue;
-  const effortLabel = effortOptions.find((e) => e.id === effort)?.label;
+  const modelLabel = modelOptions.find((m) => m.id === model)?.name ?? model;
+  const accessLabel = access.options.find((o) => o.value === access.value)?.label ?? access.value;
+  // TOTAL, not merely exhaustive. `Record<RuntimeMode, …>` is a compile-time
+  // guarantee and this is indexed with a value that reached us from disk (a
+  // chats.json row) — a hand-edited "plan" there would destructure `undefined`
+  // and take the whole session view down. The store caps what it reads; this is
+  // the second half of the same belt.
+  const accessGlyph = ACCESS_GLYPH[access.value] ?? ACCESS_GLYPH[access.options[0]!.value];
+  const { Icon: AccessIcon, tone: accessTone } = accessGlyph;
+  // The rest of the chip is whatever the provider publishes that is NOT on its
+  // default — triggerLabel() stays quiet until something is actually set, so
+  // the bar reads "<model> · Auto" most of the time and grows a third term only
+  // once a session asks for one.
+  const published = triggerLabel(groups, values);
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -244,18 +305,18 @@ export function ComposerSettings({
             <SparklesIcon className="size-3.5 text-foreground/70" />
             <span className="text-foreground">{modelLabel}</span>
             <span className="text-muted-foreground/40">·</span>
+            {/* Access is the one value the chip states unconditionally, default
+                or not. Every other control is quiet at rest; how much the agent
+                may do without asking is not a detail you should have to open a
+                menu to recover. */}
             <span className="flex items-center gap-1">
-              {isDefault ? (
-                <ZapIcon className="size-3 text-primary" />
-              ) : (
-                <ShieldCheckIcon className="size-3" />
-              )}
-              {approvalLabel}
+              <AccessIcon className={cn("size-3", accessTone)} />
+              {accessLabel}
             </span>
-            {effort !== "default" && effortLabel && (
+            {published && (
               <>
                 <span className="text-muted-foreground/40">·</span>
-                <span>{effortLabel}</span>
+                <span>{published}</span>
               </>
             )}
           </button>
@@ -274,25 +335,45 @@ export function ComposerSettings({
         </div>
 
         <div className="max-h-[min(66vh,560px)] space-y-4 overflow-y-auto p-3.5">
-          {/* Approval — whatever the provider calls it, in the provider's own
-              option set. The control is the same on both. */}
-          <div className="space-y-2">
-            <SectionLabel icon={<ShieldCheckIcon className="size-3" />}>{approval.title}</SectionLabel>
-            <Segmented<string>
-              value={approval.value}
-              onChange={approval.onChange}
-              options={approval.options.map((o, i) => ({
-                value: o.value,
-                label: o.label,
-                icon: approvalIcon(i, approval.options.length),
-              }))}
-            />
-            <p className="px-0.5 text-xs text-muted-foreground">
-              {approvalDescription}
-              {isDefault && (
-                <span className="ml-1 font-medium text-primary">Default for new projects.</span>
-              )}
-            </p>
+          {/* ACCESS — the same rungs, in the same words, on every harness.
+              Rendered in the order core publishes them, which is
+              least-permissive first: a list that opens on its most permissive
+              entry teaches the wrong reflex before a single label is read. */}
+          <div className="space-y-1.5">
+            <SectionLabel icon={<ShieldCheckIcon className="size-3" />}>Access</SectionLabel>
+            <div className="space-y-0.5">
+              {access.options.map((o) => {
+                const { Icon, tone } = ACCESS_GLYPH[o.value] ?? ACCESS_GLYPH["approval-required"];
+                // Above this session kind's ceiling — the route would cap it
+                // anyway, so the row says so instead of accepting a click and
+                // letting the server quietly disagree. Asked through core's own
+                // comparator rather than by comparing positions in this list:
+                // the ceiling can legitimately be a mode this build does not
+                // offer (`full-access`), which no index into `options` can
+                // express.
+                const capped =
+                  access.ceiling !== undefined &&
+                  profileRuntimeModeCeiling(o.value, access.ceiling) !== o.value;
+                return (
+                  <OptionRow
+                    key={o.value}
+                    icon={<Icon className={cn("size-3.5", tone)} />}
+                    title={o.label}
+                    badge={
+                      o.value === access.defaultValue ? (
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                          default
+                        </span>
+                      ) : undefined
+                    }
+                    subtitle={capped ? (access.ceilingReason ?? o.description) : o.description}
+                    selected={access.value === o.value}
+                    disabled={capped}
+                    onClick={() => access.onChange(o.value)}
+                  />
+                );
+              })}
+            </div>
           </div>
 
           <Separator />
@@ -302,9 +383,15 @@ export function ComposerSettings({
             <SectionLabel icon={<SparklesIcon className="size-3" />}>Model</SectionLabel>
             <div className="space-y-0.5">
               {modelOptions.map((m) => (
-                <ModelRow
+                <OptionRow
                   key={m.id}
-                  model={m}
+                  title={m.name}
+                  badge={
+                    <span className="rounded border border-border px-1 py-0 text-[10px] text-muted-foreground">
+                      {m.context}
+                    </span>
+                  }
+                  subtitle={m.blurb}
                   selected={model === m.id}
                   onClick={() => setModel(m.id)}
                 />
@@ -312,35 +399,19 @@ export function ComposerSettings({
             </div>
           </div>
 
-          <Separator />
-
-          {/* Effort — "Auto" (default) omits effort from the POST body; the
-              rest map 1:1 to the provider's EFFORT_OPTIONS. */}
-          <div className="space-y-2">
-            <SectionLabel icon={<GaugeIcon className="size-3" />}>Reasoning effort</SectionLabel>
-            <div className="flex flex-wrap gap-1 rounded-lg bg-muted/60 p-1">
-              {[{ id: "default", label: "Auto" }, ...effortOptions].map((e) => (
-                <button
-                  key={e.id}
-                  type="button"
-                  onClick={() => setEffort(e.id)}
-                  className={cn(
-                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                    effort === e.id
-                      ? "bg-background text-foreground shadow-sm ring-1 ring-border"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {e.label}
-                </button>
-              ))}
+          {/* Whatever else this provider publishes. No section, and no
+              separator above it, when the answer is nothing — an empty menu
+              reads as a broken one. */}
+          {groups.map((g) => (
+            <div key={g.id} className="space-y-4">
+              <Separator />
+              <GroupSection
+                group={g}
+                value={values[g.id] ?? groupDefault(g)}
+                onChange={(v) => onValueChange(g.id, v)}
+              />
             </div>
-            <p className="px-0.5 text-xs text-muted-foreground">
-              {effort === "default"
-                ? "Let the model choose its own effort."
-                : effortOptions.find((e) => e.id === effort)?.blurb}
-            </p>
-          </div>
+          ))}
         </div>
 
         <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-3.5 py-2.5">

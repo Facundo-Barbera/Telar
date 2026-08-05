@@ -16,7 +16,12 @@ import fs from "fs";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import type { HarnessToolNamespace } from "@telar/core";
-import { findTool, toContentItems, toDynamicTools } from "@/lib/harness-tools";
+import {
+  codexThreadConfig,
+  codexTurnSandboxPolicy,
+  type RuntimeMode,
+} from "@telar/core/runtime-mode";
+import { findTool, qualifiedToolName, toContentItems, toDynamicTools } from "@/lib/harness-tools";
 
 export type CodexNormalizedEvent =
   // `threadId` is present (and non-root) only for events belonging to a
@@ -76,14 +81,21 @@ export type CodexRunOptions = {
   env: Record<string, string | undefined>;
   model: string;
   reasoningEffort?: string;
-  sandbox: "read-only" | "workspace-write" | "danger-full-access";
   resume?: string | null;
   signal?: AbortSignal;
-  // Mirrors the app-server's AskForApproval union. "never" keeps the old
-  // behavior (sandbox alone governs, no prompts); "untrusted"/"on-request"
-  // let the server send back the item/*/requestApproval (or legacy
-  // execCommandApproval/applyPatchApproval) REQUESTS handled below.
-  approvalPolicy: "untrusted" | "on-request" | "never";
+  // HOW MUCH THE AGENT MAY DO ON ITS OWN, in the one vocabulary both harnesses
+  // share — and the ONLY access field this adapter takes.
+  //
+  // It used to take three (`sandbox`, `approvalPolicy`, `approvalsReviewer`)
+  // and the route spread them from `codexThreadConfig(mode)`, which left this
+  // file deriving the per-TURN sandbox policy from the sandbox string on its
+  // own. Two derivations of the same decision, one of them a private copy: a
+  // turn could be started under a policy wider than its thread's and nothing
+  // would notice. Taking the mode means both come from
+  // packages/core/src/runtime-mode.ts, which is where the translation belongs —
+  // one enum crossing the boundary, spelled into this harness's words at the
+  // last possible moment.
+  runtimeMode: RuntimeMode;
   // Called for every server->client approval REQUEST when approvalPolicy
   // isn't "never" — route.ts wires this to the same canUseTool/pending-
   // approval machinery the Claude branch uses. Absent (or approvalPolicy
@@ -95,6 +107,26 @@ export type CodexRunOptions = {
     reason?: string;
     kind: "command" | "file";
   }) => Promise<"accept" | "decline">;
+  // THE PRE-TOOL GATE FOR TELAR'S OWN TOOLS, and the Codex arm's answer to the
+  // Claude arm's PreToolUse hook.
+  //
+  // `dynamicTools` do not go through approvalPolicy at all — the app-server
+  // sends a `dynamicToolCall` REQUEST and expects the result, with no approval
+  // request in between whatever the mode. That is correct for a read tool and
+  // wrong for `mcp__loom__start_loom` / `mcp__loom__answer_blocked`, which
+  // docs/loom-model.md §M.6 says must raise an interactive card in EVERY mode
+  // because the human's Approve click IS the provenance stamp. It is also where
+  // a session's own deny list has to be applied, since nothing else on this
+  // harness reads it.
+  //
+  // Called with the Claude spelling of the tool name (`mcp__ns__tool`) so the
+  // route can compare against the same constants both arms use. Absent means no
+  // gate — every declared tool runs — which is only correct for a caller that
+  // declares no privileged tools.
+  onDynamicToolGate?: (call: {
+    name: string;
+    input: Record<string, unknown>;
+  }) => Promise<{ allow: true } | { allow: false; message: string }>;
   // TELAR'S OWN TOOLS, reaching Codex as `dynamicTools` on thread/start.
   //
   // This is the capability gap that made a Codex session unable to run an
@@ -211,6 +243,11 @@ class AppServerClient {
   // possibly be processed — see runCodexTurn) rather than threaded through
   // the constructor, so it can be omitted entirely for approvalPolicy:"never".
   onApproval?: CodexRunOptions["onApproval"];
+  // Same assignment discipline as onApproval, and for a sharper reason: a
+  // dynamicToolCall answered before this is set would run a privileged tool
+  // ungated. See runCodexTurn, where both are assigned synchronously right
+  // after construction, before any line of stdout can be read.
+  onDynamicToolGate?: CodexRunOptions["onDynamicToolGate"];
   // Set before the first turn, same discipline as onApproval: assigned
   // synchronously before any await, so no stdout line can be processed (hence
   // no dynamicToolCall answered) against an empty tool set.
@@ -369,6 +406,29 @@ class AppServerClient {
       return;
     }
     const args = (p.arguments ?? {}) as Record<string, unknown>;
+    // THE GATE, between resolving the tool and running it — see
+    // CodexRunOptions.onDynamicToolGate. After the unknown-tool answer above so
+    // a typo still reads as "no such tool" rather than as a refusal, and before
+    // the handler so a refusal means the tool did not run. A refusal is
+    // reported as a FAILED tool call, exactly like a handler that threw: the
+    // model reads the reason and carries on, and the turn does not die.
+    if (this.onDynamicToolGate) {
+      const verdict = await this.onDynamicToolGate({
+        name: qualifiedToolName(namespace, name),
+        input: args,
+      });
+      if (!verdict.allow) {
+        this.write({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            contentItems: [{ type: "inputText", text: verdict.message }],
+            success: false,
+          },
+        });
+        return;
+      }
+    }
     // The handler is the SAME function the Claude path calls through MCP.
     const result = await (descriptor.handler as (a: unknown) => Promise<
       { content: Array<{ type: string; [k: string]: unknown }>; isError?: boolean }
@@ -406,14 +466,19 @@ class AppServerClient {
 // --- Sandbox mapping ---------------------------------------------------
 
 // thread/start takes the simple SandboxMode enum; turn/start's richer
-// SandboxPolicy is what actually toggles network — replicate the old
-// adapter's rule (network on for anything that isn't strictly read-only) by
-// building it here rather than at thread/start time.
-function sandboxPolicy(sandbox: CodexRunOptions["sandbox"], cwd: string): Record<string, unknown> {
-  if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
-  if (sandbox === "read-only") return { type: "readOnly", networkAccess: false };
+// SandboxPolicy is what actually toggles network and names the writable roots.
+//
+// The `type` comes from core's `codexTurnSandboxPolicy` — the SAME mode the
+// thread's own sandbox is derived from — so a turn can never run under a wider
+// policy than the thread it belongs to. What is added here is only the part
+// core cannot know: this session's cwd, and the old adapter's network rule
+// (on for anything that is not strictly read-only).
+function sandboxPolicy(mode: RuntimeMode, cwd: string): Record<string, unknown> {
+  const base = codexTurnSandboxPolicy(mode);
+  if (base.type === "dangerFullAccess") return base;
+  if (base.type === "readOnly") return { ...base, networkAccess: false };
   return {
-    type: "workspaceWrite",
+    ...base,
     writableRoots: [cwd],
     networkAccess: true,
     excludeTmpdirEnvVar: false,
@@ -483,6 +548,7 @@ export async function* runCodexTurn(
   // (hence no approval REQUEST answered) until the event loop turns, which
   // can't happen before this assignment runs.
   client.onApproval = opts.onApproval;
+  client.onDynamicToolGate = opts.onDynamicToolGate;
   client.tools = opts.tools ?? [];
   const onAbort = () => client.kill();
   opts.signal?.addEventListener("abort", onAbort, { once: true });
@@ -503,10 +569,15 @@ export async function* runCodexTurn(
       ...(opts.tools?.length ? { dynamicTools: toDynamicTools(opts.tools) } : {}),
       ...(opts.instructions?.trim() ? { developerInstructions: opts.instructions } : {}),
     };
+    // ALL THREE ACCESS FIELDS FROM ONE MODE — sandbox, approvalPolicy and
+    // approvalsReviewer — spread together so no call site can supply two of
+    // them and forget the third. The reviewer is always "user" in this build
+    // and is sent EXPLICITLY rather than omitted; see codexThreadConfig for
+    // both reasons.
+    const threadAccess = codexThreadConfig(opts.runtimeMode);
     const threadStartParams = {
       cwd: opts.cwd,
-      approvalPolicy: opts.approvalPolicy,
-      sandbox: opts.sandbox,
+      ...threadAccess,
       model: opts.model,
       ...harnessParams,
     };
@@ -514,8 +585,12 @@ export async function* runCodexTurn(
       ? await client.request<{ thread: { id: string } }>("thread/resume", {
           threadId: opts.resume,
           cwd: opts.cwd,
-          approvalPolicy: opts.approvalPolicy,
-          sandbox: opts.sandbox,
+          // The arm that MATTERS. A resume that stayed silent about the
+          // reviewer would keep whatever the thread was started with, which is
+          // how a thread another client put under auto_review stays there for
+          // life — and how a mode change becomes a control that visibly moves
+          // and changes nothing.
+          ...threadAccess,
           model: opts.model,
           // A RESUMED thread re-declares them too. The tool set lives in this
           // process, not in the harness's persisted thread state, so a resume
@@ -536,8 +611,8 @@ export async function* runCodexTurn(
       input: [{ type: "text", text: opts.prompt, text_elements: [] }],
       ...(opts.reasoningEffort ? { effort: opts.reasoningEffort } : {}),
       model: opts.model,
-      approvalPolicy: opts.approvalPolicy,
-      sandboxPolicy: sandboxPolicy(opts.sandbox, opts.cwd),
+      approvalPolicy: threadAccess.approvalPolicy,
+      sandboxPolicy: sandboxPolicy(opts.runtimeMode, opts.cwd),
     });
     const rootTurnId = turnStartResult.turn.id;
 

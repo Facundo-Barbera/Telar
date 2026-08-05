@@ -99,23 +99,35 @@ import { UsagePill } from "@/components/session/usage-pill";
 import type { PlanSnapshot } from "@/lib/store";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
 import type { Watch, WorkUnitState } from "@telar/core";
+// The ONE exception, and a structural one: @telar/core/providers is a declared
+// client-safe leaf (INV-4c/INV-4d) whose own import graph is type-only, so this
+// reaches no runtime. It is what lets the composer ask whether this harness runs
+// slash commands instead of testing its id.
+import { providerPublishes } from "@telar/core/providers";
 import {
-  CODEX_APPROVAL_PRESETS,
-  CODEX_EFFORT_OPTIONS,
-  DEFAULT_CODEX_APPROVAL_ID,
-  DEFAULT_CODEX_MODEL,
   DEFAULT_MODEL,
-  EFFORT_OPTIONS,
+  defaultModelFor,
   modelById,
   modelsForProvider,
-  type CodexApprovalPolicy,
-  type CodexSandbox,
   type ModelInfo,
 } from "@/lib/models";
-// Client-safe: permission-modes has NO SDK dependency. Importing these from
-// @/lib/permissions instead would pull loom-mcp -> the Agent SDK
+// Client-safe: permission-modes has NO SDK dependency (it re-exports the
+// `@telar/core/runtime-mode` SUBPATH, never the package index). Importing these
+// from @/lib/permissions instead would pull loom-mcp -> the Agent SDK
 // (node:async_hooks) into the client bundle.
-import { isValidPermissionMode, type ClientPermissionMode } from "@/lib/permission-modes";
+import {
+  DEFAULT_RUNTIME_MODE,
+  SELECTABLE_RUNTIME_MODE_OPTIONS,
+  profileRuntimeModeCeiling,
+  runtimeModeCeiling,
+  runtimeModeFromLegacy,
+  type RuntimeMode,
+} from "@/lib/permission-modes";
+// What the active provider publishes about itself. The composer renders these
+// groups through one loop and knows the name of none of them — see the header
+// of lib/provider-options.ts for why the alternative (a fork per provider) is
+// what made the two composers drift apart in the first place.
+import { groupAccepts, groupDefault, providerOptionGroups } from "@/lib/provider-options";
 // Read only inside ComposerSettings' seed effect (via the seedValue thunk),
 // never during render — a localStorage-backed value read at render time is a
 // hydration mismatch by construction.
@@ -273,10 +285,11 @@ export type InitialChat = {
   id: string;
   model: string;
   effort?: string;
-  // Absent on chats persisted before mode selection existed — reads as
-  // "default" (the prior hardcoded behavior), same fallback the state below
-  // uses.
-  permissionMode?: ClientPermissionMode;
+  // How much the agent may do on its own, in the one vocabulary both providers
+  // share. Optional because a Chat row may predate the field — store.ts's
+  // readChats fills it forward from the old `permissionMode` on the way out, so
+  // in practice a resumed session always carries one.
+  runtimeMode?: RuntimeMode;
   messages: StoreMessage[];
   // Reload seed for the heartbeat bar — a live turn's "done" events add on
   // top of the token fields (costUsd is replaced outright, see the sessionCost
@@ -340,31 +353,63 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
   }));
 }
 
-// "Ask me" / "Auto" / "Accept edits" — the only three permissionMode values
-// a client may pick (see lib/permissions.ts's PERMISSION_MODES); the mode
-// select in the composer footer renders these, one-line description and
-// all, same idiom as the model select above it.
-const PERMISSION_MODE_OPTIONS: Array<{
-  value: ClientPermissionMode;
-  label: string;
-  description: string;
-}> = [
-  {
-    value: "default",
-    label: "Ask me",
-    description: "Prompt for every tool call that isn't already allowed.",
-  },
-  {
-    value: "auto",
-    label: "Auto",
-    description: "A classifier approves routine tool calls automatically.",
-  },
-  {
-    value: "acceptEdits",
-    label: "Accept edits",
-    description: "Auto-accept file edits; still ask about everything else.",
-  },
-];
+// WHAT A PROJECT REMEMBERS ABOUT ITS COMPOSER, and why the shape changed.
+//
+// v1 was `{model, effort, perm}`, written only for Claude sessions — so a Codex
+// session's approval preset survived nothing at all (not a reload, not a
+// resume) while the popover's footer promised "Remembered for <project>" to
+// both. Worse, the one flat record was restored into whichever provider the
+// session turned out to be, which is how a Claude model id ended up seeded into
+// a Codex session.
+//
+// The posture is now provider-neutral and lives at the top level, because it is
+// the same question on both harnesses. Everything whose VALUES are
+// provider-specific — the model id, and each published group's value — is
+// stored under the provider it was chosen for. v1 records read forward as the
+// Claude slot; nothing rewrites them in place.
+type ProviderMemory = { model?: string; options?: Record<string, string> };
+type ComposerMemory = { mode?: RuntimeMode; claude?: ProviderMemory; codex?: ProviderMemory };
+
+const composerMemoryKey = (project: string) => `telar:composer:${project}`;
+
+function providerMemory(v: unknown): ProviderMemory | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const rec = v as { model?: unknown; options?: unknown };
+  const model = typeof rec.model === "string" ? rec.model : undefined;
+  const options =
+    rec.options && typeof rec.options === "object"
+      ? Object.entries(rec.options as Record<string, unknown>).reduce<Record<string, string>>(
+          (acc, [k, val]) => (typeof val === "string" ? { ...acc, [k]: val } : acc),
+          {},
+        )
+      : undefined;
+  return model || options ? { ...(model ? { model } : {}), ...(options ? { options } : {}) } : undefined;
+}
+
+function readComposerMemory(project: string): ComposerMemory {
+  if (typeof window === "undefined") return {};
+  let saved: Record<string, unknown>;
+  try {
+    const raw = window.localStorage.getItem(composerMemoryKey(project));
+    if (!raw) return {};
+    saved = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+  // `runtimeModeFromLegacy` is the SAME table the chat route and the chat store
+  // read old values through, so a project's remembered posture and a resumed
+  // session's cannot disagree about what `perm: "acceptEdits"` meant.
+  const mode = runtimeModeFromLegacy({ runtimeMode: saved.mode, permissionMode: saved.perm });
+  const v1 = providerMemory({
+    model: saved.model,
+    ...(typeof saved.effort === "string" ? { options: { effort: saved.effort } } : {}),
+  });
+  return {
+    ...(mode ? { mode } : {}),
+    claude: providerMemory(saved.claude) ?? v1,
+    codex: providerMemory(saved.codex),
+  };
+}
 
 // `permissionPreview` and `ThinkingRow` moved to components/conversation/kinds.tsx,
 // and `PermissionCard` became the `ApprovalCard` PRIMITIVE there — merged with the
@@ -861,20 +906,48 @@ function SessionViewInner({
   // context so an out-of-provider render (dev gallery) simply hides the button.
   const dock = useDockOptional();
   const [model, setModel] = useState(initialChat?.model ?? DEFAULT_MODEL);
-  // "default" = omit `effort` from the POST body entirely (let the model/SDK
-  // pick). Any other value is a real EffortLevel string sent as-is.
-  const [effort, setEffort] = useState(initialChat?.effort ?? "default");
+  // EVERY TUNABLE THE PROVIDER PUBLISHES, by group id — not a named `effort`
+  // state. Reasoning effort is simply the one group both providers publish
+  // today; a second one (t3code's service tier, say) becomes a row in this
+  // record and a section in the popover with no code here to change. A group
+  // sitting on its default is omitted from the POST body entirely, which is
+  // what `effort: "default"` used to mean and now means for all of them.
+  const [optionValues, setOptionValues] = useState<Record<string, string>>(() =>
+    initialChat?.effort ? { effort: initialChat.effort } : ({} as Record<string, string>),
+  );
   // Gates the composer textarea — see its own comment at the render site, and
   // lib/use-hydrated.ts for the cmux attribute this closes over.
   const hydrated = useHydrated();
-  // Auto Mode is the DEFAULT for a fresh session (owner-locked 1.2 decision):
-  // a classifier approves routine tool calls automatically. A resumed session
-  // keeps whatever was last persisted (route.ts's appendTurn), so an existing
-  // chat that ran under "Ask me" restores exactly that — the Auto default only
-  // seeds brand-new sessions with no persisted permissionMode yet.
-  const [permissionMode, setPermissionMode] = useState<ClientPermissionMode>(
-    initialChat?.permissionMode ?? "auto",
+  // HOW MUCH THE AGENT MAY DO ON ITS OWN — one value, one vocabulary, whichever
+  // harness is driving. This replaced two states in two vocabularies (Claude's
+  // `permissionMode`, Codex's `{sandbox, approvalPolicy}` pair), which is why
+  // "how careful is this session" used to have no answer you could state
+  // without first asking which agent was behind it.
+  //
+  // `auto` stays the default (DEFAULT_RUNTIME_MODE, and deliberately not the
+  // reference's `full-access`): a reviewer approves routine actions and risky
+  // ones still ask. A resumed session keeps whatever was last persisted, so an
+  // existing chat that ran supervised restores exactly that — the default only
+  // seeds a brand-new session.
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(
+    initialChat?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
   );
+  // WHAT THIS SESSION KIND MAY ACTUALLY REACH, asked with the same core
+  // function the chat route asks before it builds the turn. The escalation
+  // surface is the only kind this component can be beyond a plain project
+  // session (planner and steerer sit at the top of the ladder anyway), and it
+  // is capped at `approval-required` — a read-only "discuss with the
+  // orchestrator" chat.
+  //
+  // The cap is applied HERE, not only at the route, because the route applying
+  // it alone produced a control that moved and changed nothing: the chip read
+  // "Auto", the empty state quoted Auto's description, the turn ran supervised,
+  // and the capped value was then persisted back as though the user had chosen
+  // it. Everything downstream — the chip, the empty state, the POST body, the
+  // per-project memory — reads `effectiveRuntimeMode`, so the surface and the
+  // server cannot disagree about what this session is doing.
+  const runtimeCeiling = runtimeModeCeiling(escalation ? "escalation" : "project");
+  const effectiveRuntimeMode = profileRuntimeModeCeiling(runtimeMode, runtimeCeiling);
   // The caller already resolves the effective account (chat.account for an
   // existing session, the manifest default for a fresh one — contract #5:
   // resume transcripts live under the account's config dir, so an existing
@@ -884,25 +957,15 @@ function SessionViewInner({
   // Which agent backend the composer is talking to. Defaults to "claude" —
   // the overwhelmingly common case and the only thing we can assume before
   // the account registry (fetched async, below) resolves `activeAccount`'s
-  // real provider. Drives which model/effort/sandbox-or-permission controls
-  // render and which fields go in the POST body.
+  // real provider. It selects which model catalog and which published option
+  // groups render; it no longer selects which ACCESS control renders, because
+  // there is only one.
   const [provider, setProvider] = useState<Provider>("claude");
-  // Codex's counterpart to `permissionMode` — an approval preset (sandbox +
-  // approvalPolicy pair, see CODEX_APPROVAL_PRESETS in lib/models.ts) now that
-  // the app-server can prompt mid-turn. Kept as its own state rather than
-  // reusing permissionMode's slots since the two providers' option sets don't
-  // line up 1:1.
-  const defaultCodexApproval =
-    CODEX_APPROVAL_PRESETS.find((p) => p.id === DEFAULT_CODEX_APPROVAL_ID) ?? CODEX_APPROVAL_PRESETS[0];
-  const [sandbox, setSandbox] = useState<CodexSandbox>(defaultCodexApproval.sandbox);
-  const [approvalPolicy, setApprovalPolicy] = useState<CodexApprovalPolicy>(
-    defaultCodexApproval.approvalPolicy,
-  );
   // Full account registry (name + provider + auth, unlike the server-resolved
   // `accounts` prop which predates multi-provider and only carries
   // name/displayTier). Used to scope the account picker to the selected
   // provider and to recover a resumed session's real provider below.
-  const { accounts: accountProfiles } = useAccounts();
+  const { accounts: accountProfiles, loaded: accountsLoaded } = useAccounts();
   // `account`'s real provider may be either one (a fresh session's account
   // is the project manifest's default, which can itself be a Codex account;
   // a resumed session's is whatever it was created with) — re-derive
@@ -920,6 +983,13 @@ function SessionViewInner({
   // selector's scoped account picker. Falls back to the server-resolved
   // `accounts` prop for "claude" so the picker isn't empty for the one
   // provider we can resolve before the client-side /api/accounts fetch lands.
+  //
+  // NOT A PROVIDER DECISION, and no descriptor can absorb it: `accounts` is a
+  // pre-multi-provider prop shape that carries UNTAGGED rows, and they happen
+  // to be Claude's. The ternary is asserting what the prop contains, not asking
+  // what a provider supports — so there is nothing for providers.ts to publish.
+  // The real fix is tagging the prop with its provider at the server boundary,
+  // after which this whole hydration fallback becomes a plain filter.
   const providerAccounts = useMemo<Array<{ name: string; displayTier?: string }>>(() => {
     const fromRegistry = accountProfiles.filter((a) => (a.provider ?? "claude") === provider);
     if (fromRegistry.length > 0) return fromRegistry;
@@ -951,16 +1021,68 @@ function SessionViewInner({
       cancelled = true;
     };
   }, [provider, activeAccount]);
-  // Switching the agent selector: sets the provider, resets model/effort to
-  // that provider's defaults (a Claude model id sent to Codex, or vice versa,
-  // is meaningless), and — unless the currently active account already
-  // belongs to the new provider — jumps to that provider's first account.
+  // What this provider publishes. The composer renders these and names none of
+  // them; see lib/provider-options.ts.
+  const optionGroups = useMemo(() => providerOptionGroups(provider), [provider]);
+  // The subset of the remembered values this provider actually publishes. A
+  // value it does not — Claude's "max" effort after a switch to Codex, which
+  // has no such level — is dropped rather than shown or sent, which is the
+  // question `groupAccepts` exists to answer. The raw record keeps it, so
+  // switching back restores it instead of resetting to the default.
+  const optionValuesForProvider = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    for (const g of optionGroups) {
+      const v = optionValues[g.id];
+      if (v !== undefined && groupAccepts(g, v)) out[g.id] = v;
+    }
+    return out;
+  }, [optionGroups, optionValues]);
+  // Only the groups that are OFF their default, which is exactly what goes on
+  // the wire — the same rule triggerLabel() uses to decide what the collapsed
+  // chip says, so the bar and the POST body can never disagree about what this
+  // turn asked for. Reasoning effort behaves as it always has ("Auto" omits the
+  // field); every future group inherits the behaviour for free.
+  const wireOptionValues = useMemo<Record<string, string>>(
+    () =>
+      Object.fromEntries(
+        optionGroups.flatMap((g) => {
+          const fallback = groupDefault(g);
+          const v = optionValuesForProvider[g.id] ?? fallback;
+          return v === fallback ? [] : [[g.id, v] as const];
+        }),
+      ),
+    [optionGroups, optionValuesForProvider],
+  );
+  // Has the account registry confirmed the provider guess above? Until it has,
+  // `provider` is a GUESS, and neither reading this project's remembered config
+  // into it nor writing this session's config back out would be about the right
+  // provider — which is how a remembered Claude model id used to be seeded into
+  // a session that turned out to be Codex. `null` means "still in flight".
+  //
+  // The gate is `accountsLoaded`, not a non-empty list: a registry whose every
+  // account is switched off answers with `[]`, and an unanswered fetch also
+  // reads as `[]`. Waiting on the list would leave such a machine permanently
+  // unsettled — the composer would stop remembering anything at all — while
+  // waiting on the ANSWER settles it on "claude", which is what the derivation
+  // effect above will leave `provider` as anyway when it finds no match.
+  const registryProvider = useMemo<Provider | null>(() => {
+    if (providerTouched.current) return provider;
+    if (!accountsLoaded) return null;
+    return accountProfiles.find((a) => a.name === activeAccount)?.provider ?? "claude";
+  }, [accountsLoaded, accountProfiles, activeAccount, provider]);
+  const providerSettled = registryProvider === provider;
+  // Switching the agent selector: sets the provider and resets the model to
+  // that provider's default (a Claude model id sent to Codex, or vice versa, is
+  // meaningless), and — unless the currently active account already belongs to
+  // the new provider — jumps to that provider's first account. The published
+  // option values need no reset: optionValuesForProvider already hides any the
+  // new provider does not offer, and the access mode is provider-neutral now,
+  // so switching harness no longer silently changes the session's posture.
   const selectProvider = useCallback(
     (next: Provider) => {
       providerTouched.current = true;
       setProvider(next);
-      setModel(next === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
-      setEffort("default");
+      setModel(defaultModelFor(next));
       const stillValid = accountProfiles.find(
         (a) => a.name === activeAccount && (a.provider ?? "claude") === next,
       );
@@ -1037,41 +1159,51 @@ function SessionViewInner({
   // 1.2 composer settings popover open/pin state.
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 1.2 remembered config: a fresh session boots from this project's last-used
-  // Claude config (model · effort · permission); a project never configured
-  // stays on the Auto default. Persisted per project in localStorage. The seed
-  // runs once and only for a brand-new session — a resumed chat keeps its own
-  // persisted config (route.ts) and must never be clobbered.
+  // composer state; a project never configured stays on the defaults. Both
+  // halves run only for a brand-new session — a resumed chat carries its own
+  // persisted config and must never be clobbered.
+  //
+  // THE POSTURE RESTORES IMMEDIATELY, because it means the same thing on both
+  // harnesses and so does not have to wait to learn which one this is.
   const rememberedSeeded = useRef(false);
   useEffect(() => {
     if (rememberedSeeded.current) return;
     rememberedSeeded.current = true;
-    if (initialChat || typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem(`telar:composer:${project}`);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as {
-        model?: string;
-        effort?: string;
-        perm?: unknown;
-      };
-      if (typeof saved.model === "string") setModel(saved.model);
-      if (typeof saved.effort === "string") setEffort(saved.effort);
-      if (isValidPermissionMode(saved.perm)) setPermissionMode(saved.perm);
-    } catch {
-      // ignore malformed / storage-blocked
-    }
+    if (initialChat) return;
+    const mode = readComposerMemory(project).mode;
+    if (mode) setRuntimeMode(mode);
   }, [initialChat, project]);
+  // The provider-specific half waits for the registry to confirm which provider
+  // this is, then restores that provider's slot — and does it again if the
+  // provider changes, which is what makes flipping the agent selector back and
+  // forth return you to the config you last used on each.
+  const restoredFor = useRef<Provider | null>(null);
   useEffect(() => {
-    if (provider !== "claude" || typeof window === "undefined") return;
+    if (initialChat || !providerSettled) return;
+    if (restoredFor.current === provider) return;
+    restoredFor.current = provider;
+    const mem = readComposerMemory(project)[provider];
+    if (mem?.model) setModel(mem.model);
+    if (mem?.options) setOptionValues(mem.options);
+  }, [initialChat, project, provider, providerSettled]);
+  useEffect(() => {
+    if (typeof window === "undefined" || !providerSettled) return;
+    // Read-modify-write rather than replace: the other provider's slot belongs
+    // to a session that isn't this one and must survive this write.
+    const next: ComposerMemory = {
+      ...readComposerMemory(project),
+      // The EFFECTIVE mode, so what a project remembers is what its sessions
+      // actually ran under rather than a rung one kind of session can never
+      // reach.
+      mode: effectiveRuntimeMode,
+      [provider]: { model, options: optionValuesForProvider },
+    };
     try {
-      window.localStorage.setItem(
-        `telar:composer:${project}`,
-        JSON.stringify({ model, effort, perm: permissionMode }),
-      );
+      window.localStorage.setItem(composerMemoryKey(project), JSON.stringify(next));
     } catch {
       // ignore storage-blocked
     }
-  }, [provider, project, model, effort, permissionMode]);
+  }, [providerSettled, provider, project, model, optionValuesForProvider, effectiveRuntimeMode]);
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   // The current turn's server run id (docs/runtime-architecture.md §A.4) — sent
@@ -1957,8 +2089,15 @@ function SessionViewInner({
             model,
             project,
             account: activeAccount,
-            ...(effort !== "default" ? { effort } : {}),
-            ...(provider === "codex" ? { sandbox, approvalPolicy } : { permissionMode }),
+            // ONE field for the posture, and it is sent on every turn from both
+            // providers. The route's fallback for a body that says nothing is
+            // the MOST CAUTIOUS mode, so omitting it is never the way to get
+            // more freedom; the translation into each harness's own words
+            // happens at the two adapter call sites, from this one value.
+            runtimeMode: effectiveRuntimeMode,
+            // Every published group that is off its default, by group id. This
+            // is where `effort` still comes from — by publication, not by name.
+            ...wireOptionValues,
             // Session<->Loom link (docs/loom-model.md §5): tells route.ts
             // this is a planner turn BEFORE any Chat record exists (turn 1
             // has no persisted chat.role yet) — see its own comment on why
@@ -2047,7 +2186,7 @@ function SessionViewInner({
         runIdRef.current = null;
       }
     },
-    [sessionId, model, effort, permissionMode, provider, sandbox, approvalPolicy, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
+    [sessionId, model, effectiveRuntimeMode, wireOptionValues, provider, project, activeAccount, planner, steerer, escalation, loomId, applyServerEvent],
   );
 
   // M11 finding-1 — auto-fire the escalation opening turn ONCE, on mount.
@@ -2573,7 +2712,14 @@ function SessionViewInner({
   // select) and fall back to the static list for a model id seeded from a
   // resumed chat before the fetch resolves.
   const activeModel = modelOptions.find((m) => m.id === model) ?? modelById(model);
-  const effortOptions = provider === "codex" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
+  // The rung this session is on, resolved once from the one published list so
+  // the composer chip and the empty state below cannot describe two different
+  // postures. Falls back to the first (most cautious) entry rather than to the
+  // product default: if a mode we cannot name is somehow current, the honest
+  // thing to show is the strictest label, not the friendliest.
+  const accessOption =
+    SELECTABLE_RUNTIME_MODE_OPTIONS.find((o) => o.value === effectiveRuntimeMode) ??
+    SELECTABLE_RUNTIME_MODE_OPTIONS[0];
 
   // 1.4 working indicator: the current main-thread tool call still in flight
   // (no output yet) — the thing the agent is actively doing right now. Scans
@@ -2613,6 +2759,11 @@ function SessionViewInner({
           ? { kind: "thinking", elapsed }
           : { kind: "working", elapsed };
 
+  // Does this session's harness run slash commands at all? One question, asked
+  // once, used by all three places the menu used to name a provider — the list,
+  // the open condition, and the empty-state copy.
+  const runsSlashCommands = providerPublishes(provider, "slash-commands");
+
   // Merge project's scanned commands+skills with what the live SDK session
   // actually reports (once known) — the SDK's slash_commands list includes
   // repo skills alongside .claude/commands entries, so a name match here
@@ -2620,15 +2771,18 @@ function SessionViewInner({
   // and plugin commands we don't advertise, so this only ever narrows, never
   // adds names the project scan didn't already find.
   const availableCommands = useMemo(() => {
-    // Codex sessions don't run slash commands (a Claude-session feature today),
-    // so a Codex session offers none — regardless of what .claude/commands the
-    // repo has. The menu still opens (below) to say so honestly, rather than
-    // listing commands that would only be sent as literal text.
-    if (provider === "codex") return [];
+    // A harness that does not publish `slash-commands` offers none, regardless
+    // of what .claude/commands the repo has — the names would only be sent as
+    // literal text. The menu still opens (below) to say so honestly. Asked of
+    // the provider descriptor rather than of a `provider === "codex"` test: the
+    // capability is measured on the stream (Claude's system:init carries
+    // slash_commands; the Codex arm sends []), so this surface and the route
+    // are reading the same fact instead of two people agreeing by memory.
+    if (!runsSlashCommands) return [];
     if (sdkSlashCommands === null) return projectCommands;
     const known = new Set(sdkSlashCommands);
     return projectCommands.filter((c) => known.has(c.name));
-  }, [projectCommands, sdkSlashCommands, provider]);
+  }, [projectCommands, sdkSlashCommands, runsSlashCommands]);
 
   const slashQuery =
     textInput.value.startsWith("/") && !textInput.value.includes(" ")
@@ -2651,9 +2805,9 @@ function SessionViewInner({
     !menuDismissed &&
     (filteredCommands.length > 0 ||
       projectCommands.length === 0 ||
-      // Codex: open even with a non-empty project scan, to show the honest
-      // "commands are a Claude-session feature" copy instead of nothing.
-      provider === "codex");
+      // A harness that runs none: open even with a non-empty project scan, to
+      // show the honest "this session cannot run them" copy instead of nothing.
+      !runsSlashCommands);
 
   // Reset the selection whenever the query text changes so it never points
   // past a shrunk list or feels stale after typing.
@@ -2937,7 +3091,12 @@ function SessionViewInner({
         description={
           initialRole === "planner"
             ? "Describe what you want built. Once the spec is ready, say “make this real” and this session commits the bundle and starts the loom."
-            : "Ask about the code, plan a change, or make edits directly. Reads run freely; writes and commands ask for your approval — or go automatically in Auto mode."
+            : // The second sentence USED TO BE A CONSTANT describing Auto — shown
+              // unchanged to a supervised session and to a Codex session that
+              // could not write at all. It now quotes the mode's own
+              // description, from the same list the composer renders, so the
+              // empty state cannot claim a posture the session is not in.
+              `Ask about the code, plan a change, or make edits directly. ${accessOption.description}`
         }
       />
     );
@@ -3185,9 +3344,13 @@ function SessionViewInner({
               <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
                 {filteredCommands.length === 0 ? (
                   <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                    {provider === "codex"
-                      ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
-                      : "No commands — add .claude/commands/*.md or skills to this repo."}
+                    {/* The capability decides which sentence; the descriptor
+                        supplies the name in it. Neither half names a harness
+                        this file knows about — a third provider gets correct
+                        copy with no edit here. */}
+                    {runsSlashCommands
+                      ? "No commands — add .claude/commands/*.md or skills to this repo."
+                      : `${PROVIDER_LABEL[provider]} sessions don't run slash commands — a /name is sent as plain text.`}
                   </p>
                 ) : (
                   filteredCommands.map((c, i) => (
@@ -3350,17 +3513,15 @@ function SessionViewInner({
                       </SelectContent>
                     </Select>
                   )}
-                  {/* THE SINGLE AGENT-CONFIGURATION MENU — identical on both
-                      providers. Approval, model and effort are the same three
-                      decisions whichever agent is driving; only the option
-                      VALUES differ, so they arrive as data and the control
-                      stays one control.
-
-                      This replaced a real fork: Claude had this popover while
-                      Codex had three loose selects beside it, so the composer
-                      changed shape with the agent and the same decisions were
-                      made through two vocabularies. `provider` here only names
-                      the badge — nothing below branches on it. */}
+                  {/* THE SINGLE AGENT-CONFIGURATION MENU. Not "the same control
+                      fed two option sets" — the same control fed ONE option set
+                      for access, and whatever else the provider publishes for
+                      the rest. The previous version still handed it a Claude
+                      list of three and a Codex list of four, in different
+                      vocabularies, ordered on different principles; there is now
+                      nothing left in this call that a `provider === "codex"`
+                      could branch on. `provider` names the badge and picks the
+                      published groups, and that is all. */}
                   <ComposerSettings
                     project={project}
                     provider={provider}
@@ -3368,52 +3529,32 @@ function SessionViewInner({
                     onOpenChange={setSettingsOpen}
                     model={model}
                     setModel={setModel}
-                    effort={effort}
-                    setEffort={setEffort}
                     modelOptions={modelOptions}
-                    effortOptions={effortOptions}
-                    approval={
-                      provider === "codex"
-                        ? {
-                            title: "Approval",
-                            value:
-                              CODEX_APPROVAL_PRESETS.find(
-                                (p) => p.sandbox === sandbox && p.approvalPolicy === approvalPolicy,
-                              )?.id ?? DEFAULT_CODEX_APPROVAL_ID,
-                            options: CODEX_APPROVAL_PRESETS.map((p) => ({
-                              value: p.id,
-                              label: p.label,
-                              description: p.blurb,
-                            })),
-                            // One id in, two pieces of state out — the pair is
-                            // what the app-server actually takes, and keeping
-                            // the preset as the UI's unit is what lets Codex
-                            // share a single-value control with Claude.
-                            onChange: (v: string) => {
-                              const preset = CODEX_APPROVAL_PRESETS.find((p) => p.id === v);
-                              if (!preset) return;
-                              setSandbox(preset.sandbox);
-                              setApprovalPolicy(preset.approvalPolicy);
-                            },
-                            defaultValue: DEFAULT_CODEX_APPROVAL_ID,
-                          }
-                        : {
-                            title: "Permissions",
-                            value: permissionMode,
-                            options: PERMISSION_MODE_OPTIONS.map((p) => ({
-                              value: p.value,
-                              label: p.label,
-                              description: p.description,
-                            })),
-                            onChange: (v: string) => setPermissionMode(v as ClientPermissionMode),
-                            defaultValue: "auto",
-                            // Only Claude seeds from the global Agent-defaults
-                            // preference: that preference is expressed in
-                            // Claude permission modes and means nothing to
-                            // Codex's sandbox presets.
-                            seedValue: () => getUiPrefs().defaultPermissionMode,
-                          }
-                    }
+                    groups={optionGroups}
+                    values={optionValuesForProvider}
+                    onValueChange={(id, v) => setOptionValues((prev) => ({ ...prev, [id]: v }))}
+                    access={{
+                      value: effectiveRuntimeMode,
+                      // In publication order — least permissive first, which is
+                      // load-bearing and belongs to core, not to this call site.
+                      options: SELECTABLE_RUNTIME_MODE_OPTIONS,
+                      onChange: setRuntimeMode,
+                      defaultValue: DEFAULT_RUNTIME_MODE,
+                      ceiling: runtimeCeiling,
+                      ceilingReason: escalation
+                        ? "A discussion session always asks first."
+                        : undefined,
+                      // The global Agent-defaults preference — but ONLY for a
+                      // session that has never been configured. A resumed chat
+                      // carries its own posture, and `value === defaultValue`
+                      // cannot tell "brand new" from "deliberately on the
+                      // default rung"; `initialChat` can, and the parent's own
+                      // memory-restore effect already gates on it. Passing
+                      // undefined here is what makes the two agree.
+                      seedValue: initialChat
+                        ? undefined
+                        : () => getUiPrefs().defaultRuntimeMode,
+                    }}
                   />
                   {/* Story 4.2 / AC6 — THE ULTRA CHIP. Arming only: no ceiling
                       editor, no submenu (NFR-UW-7 and `ui-contract.md` §6).
@@ -3422,10 +3563,11 @@ function SessionViewInner({
                       controls, and deliberately NOT inside `ComposerSettings` —
                       that popover is per-project REMEMBERED config, and the AC
                       forbids a submenu. It is also not persisted anywhere:
-                      `telar:composer:${project}` remembers model, effort and
-                      permission mode across sessions, and a remembered chip
-                      would be the behaviour flag NFR-UW-1 says opt-in must never
-                      become ("Opt-in is a request, not a behavior flag").
+                      `telar:composer:${project}` remembers the model, the
+                      runtime mode and every published option across sessions,
+                      and a remembered chip would be the behaviour flag NFR-UW-1
+                      says opt-in must never become ("Opt-in is a request, not a
+                      behavior flag").
 
                       CLAUDE BRANCH ONLY: `app/api/chat/route.ts` constructs the
                       ultra MCP server only in the non-Codex fork, so on Codex

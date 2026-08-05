@@ -1,3 +1,4 @@
+import { providerOf } from "@telar/core/providers";
 import { cn } from "@/lib/utils";
 
 // Real brand marks, inlined so the app doesn't carry a heavy icon dependency
@@ -18,6 +19,12 @@ export function ProviderIcon({
   className?: string;
   size?: number;
 }) {
+  // IRREDUCIBLE, and already the right shape. A brand mark is a path string and
+  // a brand colour, not a descriptor field — publishing SVG geometry through
+  // the provider table would make `providers.ts` an asset registry. So the fork
+  // is localized to this one leaf, and every surface that shows a mark
+  // (composer, settings, session header) renders <ProviderIcon provider={p}/>
+  // and branches on nothing.
   if (provider === "codex") {
     return (
       <svg
@@ -48,7 +55,11 @@ export function ProviderIcon({
   );
 }
 
+// Read from the descriptor rather than restated here. This was a second copy of
+// packages/core/src/providers.ts's `label`, and two copies of what a provider is
+// called is how a rename lands in the settings page and not in the composer.
+// The Record shape is kept because every caller indexes it.
 export const PROVIDER_LABEL: Record<"claude" | "codex", string> = {
-  claude: "Claude",
-  codex: "Codex",
+  claude: providerOf("claude").label,
+  codex: providerOf("codex").label,
 };

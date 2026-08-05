@@ -237,6 +237,10 @@ export function ProxyCard({
       body: JSON.stringify({
         upstream: u.name,
         accountName,
+        // Not a provider fork — a narrowing of the gateway's untrusted
+        // free-text `provider` onto the union before it goes back out on a
+        // wire. Nothing downstream behaves differently per arm; both are the
+        // same assignment. Input validation wearing a ternary's clothes.
         provider: u.provider === "codex" ? "codex" : "claude",
       }),
     }).catch(() => null);

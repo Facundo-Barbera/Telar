@@ -259,6 +259,13 @@ export async function fetchModels(
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.models;
 
   const proxied = Boolean(env.ANTHROPIC_BASE_URL || env.OPENAI_BASE_URL);
+  // IRREDUCIBLE, and the adapter doing its job: these are two different
+  // retrieval MECHANISMS, not two spellings of one — Anthropic answers an HTTP
+  // /v1/models call, Codex has no catalog endpoint at all and the list is read
+  // out of models_cache.json on this disk. A descriptor can publish what a
+  // provider offers; it cannot publish "and fetch it over the network" as data.
+  // The fork stays behind this one function and every caller of fetchModels
+  // branches on nothing.
   const fetched = provider === "claude" ? await fetchClaudeModels(env) : await fetchCodexModels(env);
   const all = proxied ? fixupForGateway(fetched) : fetched;
   const models = opts.prefix ? narrowToPrefix(all, opts.prefix) : all;

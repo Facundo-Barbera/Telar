@@ -704,3 +704,106 @@ describe("deletePlanUsage — a snapshot must not outlive its account", () => {
     expect("ephemeral" in onDisk).toBe(false);
   });
 });
+
+// ── The rename, read off disk ────────────────────────────────────────────────
+
+// A Chat row written before the two permission vocabularies became one still has
+// to resume at the posture its owner configured. The migration is on READ rather
+// than a one-shot rewrite of chats.json, so this exercises the seam every read
+// surface actually goes through: a row is planted on disk in the old shape and
+// then asked for through getChat/listChats.
+describe("Chat.runtimeMode migrates forward on read", () => {
+  const plant = (rows: Array<Record<string, unknown>>) =>
+    fs.writeFileSync(
+      path.join(process.env.TELAR_HOME as string, "chats.json"),
+      JSON.stringify({ chats: rows }, null, 2),
+    );
+
+  const row = (over: Record<string, unknown>) => ({
+    id: "m1",
+    title: "t",
+    model: "sonnet",
+    account: "personal",
+    createdAt: 1,
+    updatedAt: 1,
+    costUsd: 0,
+    turns: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    messages: [],
+    ...over,
+  });
+
+  test('an old "acceptEdits" row reads as auto-accept-edits', () => {
+    plant([row({ permissionMode: "acceptEdits" })]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("auto-accept-edits");
+  });
+
+  test('an old "default" row reads as approval-required — still ask-every-time', () => {
+    plant([row({ permissionMode: "default" })]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("approval-required");
+  });
+
+  test("a row predating mode selection reads the same as an explicit default", () => {
+    // The absent-reads-as-default rule the old field always had, applied before
+    // the vocabulary map rather than after it — so these two rows cannot
+    // disagree, which they would if the fallback lived downstream.
+    plant([row({})]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("approval-required");
+  });
+
+  test("a Codex row's meaningless permissionMode does not become a posture", () => {
+    // Codex sessions never chose a permissionMode; the route defaulted the field
+    // and the store wrote it. "default" is noise on those rows, and it maps to
+    // the most cautious mode — never to something wider than they ran at.
+    plant([row({ permissionMode: "default", model: "gpt-5.1-codex" })]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("approval-required");
+  });
+
+  test("a new row's runtimeMode is left alone", () => {
+    plant([row({ runtimeMode: "auto", permissionMode: "default" })]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("auto");
+  });
+
+  test("a stored full-access is CAPPED, not passed through", () => {
+    // The row can only come from a hand-edit or a build that shipped the mode,
+    // and the cap is only applied if the stored value goes through the table —
+    // an early return on "the field is set" would hand it to the composer,
+    // whose glyph map is exhaustive at compile time and a bare lookup at run
+    // time.
+    plant([row({ runtimeMode: "full-access" })]);
+    expect(store.getChat("m1")?.runtimeMode).toBe("auto");
+  });
+
+  test("a stored value outside the vocabulary falls to the most cautious mode", () => {
+    // "plan" and "dontAsk" are real SDK permission modes and entirely plausible
+    // in a hand-edited file. A row that cannot be read is the same situation as
+    // a request that said nothing, and the route answers that the same way.
+    for (const bogus of ["plan", "dontAsk", "", 7]) {
+      plant([row({ runtimeMode: bogus })]);
+      expect(store.getChat("m1")?.runtimeMode).toBe("approval-required");
+    }
+  });
+
+  test("listChats migrates too — the two read surfaces cannot disagree", () => {
+    plant([row({ permissionMode: "acceptEdits" })]);
+    expect(store.listChats().find((c) => c.id === "m1")?.runtimeMode).toBe("auto-accept-edits");
+  });
+
+  test("a turn that states no mode does not erase the one the row carries", () => {
+    // appendTurn's assignment is undefined-guarded, unlike the one it replaced.
+    // The row is what the dock reads back to resume this session.
+    plant([row({ runtimeMode: "approval-required" })]);
+    store.appendTurn({
+      id: "m1",
+      model: "sonnet",
+      account: "personal",
+      userMessage: { role: "user", parts: [{ type: "text", text: "hi" }] },
+      assistantMessage: { role: "assistant", parts: [{ type: "text", text: "yo" }] },
+      costUsd: 0,
+    });
+    expect(store.getChat("m1")?.runtimeMode).toBe("approval-required");
+  });
+});

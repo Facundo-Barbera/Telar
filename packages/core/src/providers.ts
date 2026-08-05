@@ -21,6 +21,16 @@
 // symbol that proves each one. If that fork moves, re-measure and this list
 // changes with it — a capability nobody can point at is a 400 waiting to
 // happen to a session that works.
+//
+// THE MEASUREMENT IS THE ROUTE, NOT THE ARGUMENT LIST. That rule used to be
+// written as "a query() option Codex has no counterpart for", which was an
+// accurate description of the first six and a wrong description of the rule:
+// what a harness can be ASKED to do and what a harness REPORTS are the same
+// question to a surface deciding whether to offer a control. `slash-commands`
+// below is measured on the other side of the same fork — an event the Claude
+// stream carries and the Codex stream cannot — and it is cited with the same
+// precision. What is still forbidden is unchanged and is the only thing that
+// ever mattered: a capability with no line of route.ts behind it.
 import type { AuthMode, ProviderId } from "./schemas";
 
 // What a provider's harness can actually be asked to do. A profile that needs
@@ -61,7 +71,18 @@ export type ProviderCapability =
   // canUseTool. Naming it as a divergence would be a FALSE divergence, and a
   // false divergence is worse than a missing capability — it 400s a session
   // that works today.
-  | "interactive-approval";
+  | "interactive-approval"
+  // The harness reports the slash commands it will actually run. Claude: the
+  // Agent SDK's system:init event carries `slash_commands`, which the route
+  // forwards as `slashCommands: init.slash_commands ?? []`. Codex: the
+  // app-server emits no such event and the Codex arm sends the literal
+  // `slashCommands: []` — a "/foo" typed at a Codex session is sent as text.
+  //
+  // MEASURED ON THE STREAM rather than in the options object, which is the
+  // header's amended rule. The two arms of the same fork disagree, and a
+  // composer that offers a command menu on a harness that will never run one
+  // is exactly the silent degradation AD-11 exists to refuse.
+  | "slash-commands";
 
 // Every value the union can take, in one place, so a test can enumerate the
 // whole capability space (the ADMISSION_CLASSES idiom, admission.ts). A
@@ -74,11 +95,20 @@ export const PROVIDER_CAPABILITIES: readonly ProviderCapability[] = [
   "setting-sources",
   "system-prompt-append",
   "interactive-approval",
+  "slash-commands",
 ] as const;
 
 export interface ProviderDescriptor {
   id: ProviderId;
   label: string;
+  // WHOSE API THE REQUESTS REACH, which is not the same question as `label`.
+  // `label` names the harness a session is driving ("Codex"); this names the
+  // company at the other end of the socket ("OpenAI"). A settings surface
+  // explaining what an account does when its proxy is off means THIS one — the
+  // sentence is about the endpoint, not about which CLI is in the loop — and it
+  // was spelling the answer as its own `providerId === "codex" ? "OpenAI" :
+  // "Anthropic"` until this field existed to be asked instead.
+  vendor: string;
   // Env var that relocates this provider's whole config/credential dir.
   // Claude: CLAUDE_CONFIG_DIR (creds in the macOS Keychain, keyed per dir).
   // Codex:  CODEX_HOME (creds in auth.json inside the dir — file-based, portable).
@@ -129,6 +159,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
   claude: {
     id: "claude",
     label: "Claude",
+    vendor: "Anthropic",
     configDirEnv: "CLAUDE_CONFIG_DIR",
     tokenEnvByMode: {
       "oauth-token": "CLAUDE_CODE_OAUTH_TOKEN", // `claude setup-token`, subscription-billed
@@ -154,12 +185,14 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
     // The Agent SDK's query() takes every one of these. Measured against the
     // route's options object: systemPrompt.append, settingSources,
     // allowedTools/disallowedTools, mcpServers, hooks.PreToolUse, plus
-    // canUseTool's interactive permission card.
+    // canUseTool's interactive permission card — and, on the stream side,
+    // system:init's `slash_commands`.
     capabilities: PROVIDER_CAPABILITIES,
   },
   codex: {
     id: "codex",
     label: "Codex",
+    vendor: "OpenAI",
     configDirEnv: "CODEX_HOME",
     tokenEnvByMode: {
       "api-key": "OPENAI_API_KEY", // Codex has no subscription setup-token analogue
@@ -182,13 +215,16 @@ export const PROVIDERS: Record<ProviderId, ProviderDescriptor> = {
     //     landed on.
     //   · "system-prompt-append" — `developerInstructions` on thread/start.
     //
-    // THE OTHER THREE REMAIN ABSENT, and are absent for a reason rather than
+    // THE OTHER FOUR REMAIN ABSENT, and are absent for a reason rather than
     // for want of wiring. `pre-tool-use-hooks` and `tool-allow-deny-lists`
     // have no app-server equivalent at all: Codex governs tool access with
     // `sandbox` + `approvalPolicy`, which is a different mechanism, not a
     // spelling of the same one — publishing them would 400-proof a profile
     // that then silently ran unguarded. `setting-sources` likewise: Codex
     // reads its own AGENTS.md, which is not Claude's settingSources tiers.
+    // `slash-commands` is the stream-side one: no app-server event announces
+    // any, and the Codex arm sends `slashCommands: []` because there is
+    // nothing to send — a "/review" typed here reaches the model as text.
     //
     // Publishing a capability you cannot honour is worse than lacking it: the
     // gate stops refusing and the model is left to improvise, which is exactly

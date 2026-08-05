@@ -16,25 +16,25 @@ import {
   pendingUltraWakes,
   providerOf,
   resolveProjectMcpServers,
+  claudePermissionMode,
+  profileRuntimeModeCeiling,
   resolveSessionKind,
   resolveSessionProfile,
+  runtimeModeCeiling,
   sessionRoleFromWire,
   signInCommand,
   unmetCapabilities,
   type AccountProfile,
   type ProjectManifest,
+  type RuntimeMode,
   type SessionRole,
 } from "@telar/core";
 import {
-  CODEX_EFFORT_OPTIONS,
   CODEX_SANDBOX_PRESETS,
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_SANDBOX,
-  DEFAULT_MODEL,
-  EFFORT_OPTIONS,
+  defaultModelFor,
   type CodexReasoningEffort,
-  type CodexSandbox,
 } from "@/lib/models";
+import { EFFORT_UNSET, groupAccepts, providerOptionGroup } from "@/lib/provider-options";
 import { runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import {
@@ -86,8 +86,10 @@ import {
   ruleMatches,
   ruleOptionsFor,
   makeGuardrailDecision,
+  isSelectableRuntimeMode,
   isValidPermissionMode,
-  type ClientPermissionMode,
+  runtimeModeFromLegacy,
+  MOST_CAUTIOUS_RUNTIME_MODE,
   type PermissionDecision,
 } from "@/lib/permissions";
 import {
@@ -130,20 +132,10 @@ const toIso = (epoch?: number) =>
 // blow up chats.json or the blocking write it forces on every other chat.
 const MAX_DETAILED_TOOL_PARTS = 200;
 
-// The SDK's full EffortLevel set, single-sourced from lib/models.ts (also
-// what the composer's Select renders) so the API's validation and the UI's
-// offered choices can never drift apart. Typed as Set<string> (not the
-// inferred Set<EffortLevel>) so the `.has(effort)` check below — where
-// `effort` is narrowed to plain `string` by the `typeof effort === "string"`
-// guard, not to the literal union — type-checks; the runtime membership test
-// is identical either way.
-const EFFORT_LEVELS: Set<string> = new Set(EFFORT_OPTIONS.map((o) => o.id));
-
-// Same idea as EFFORT_LEVELS but for Codex's distinct reasoning-effort union
-// ("minimal" instead of Claude's "max") and its static sandbox choice —
-// both single-sourced from lib/models.ts so this route's validation can't
-// drift from what the composer offers.
-const CODEX_EFFORT_LEVELS: Set<string> = new Set(CODEX_EFFORT_OPTIONS.map((o) => o.id));
+// LEGACY, and it goes when the compatibility window closes. A Codex sandbox is
+// no longer a thing a client chooses — the runtime mode decides it — so this
+// set now exists only to keep validating the old wire field for the one release
+// that still accepts it.
 const CODEX_SANDBOXES: Set<string> = new Set(CODEX_SANDBOX_PRESETS.map((p) => p.sandbox));
 
 // Title generation must never delay teardown beyond this — see the `finally`
@@ -172,8 +164,12 @@ export async function POST(req: Request) {
     model: rawModel,
     project,
     account,
-    effort,
-    permissionMode: rawPermissionMode = "default",
+    effort: rawEffort,
+    // How much the agent may do on its own, in the ONE vocabulary both
+    // harnesses now share (packages/core/src/runtime-mode.ts). See the gate
+    // below for what the three fields under it are still doing here.
+    runtimeMode: rawRuntimeMode,
+    permissionMode: rawPermissionMode,
     sandbox: rawSandbox,
     approvalPolicy: rawApprovalPolicy,
     // Session<->Loom link (docs/loom-model.md §5): the client (session-view.tsx)
@@ -333,70 +329,111 @@ export async function POST(req: Request) {
   // present-but-invalid value is rejected. Validated up front, alongside
   // project/account, so a bad value is a plain 400 before any stream opens
   // rather than an opaque SDK error mid-turn.
-  if (effort != null) {
+  //
+  // ASKED OF THE PROVIDER'S OWN PUBLISHED GROUP, which is the same call the
+  // composer makes before it offers or restores a value. Two hand-kept Sets
+  // stood here — one per harness, behind a `provider === "codex" ?` — and the
+  // point of collapsing them is not brevity: it is that "would the server take
+  // this?" and "may the client offer this?" become literally one predicate, so
+  // a level added to one provider cannot be offered by a menu the route then
+  // rejects. A provider publishing no effort group at all rejects everything,
+  // which is what an absent group has to mean.
+  const effortGroup = providerOptionGroup(provider, "effort");
+  if (rawEffort != null) {
     const valid =
-      typeof effort === "string" &&
-      (provider === "codex" ? CODEX_EFFORT_LEVELS.has(effort) : EFFORT_LEVELS.has(effort));
+      typeof rawEffort === "string" && effortGroup != null && groupAccepts(effortGroup, rawEffort);
     if (!valid) {
       return Response.json(
-        { error: `Invalid effort "${effort}".` },
+        { error: `Invalid effort "${rawEffort}".` },
         { status: 400 },
       );
     }
   }
+  // EFFORT_UNSET is a published value whose whole meaning is "send no effort
+  // field", so it is spent here rather than forwarded. Every use below is
+  // `effort ? { … } : {}` or a persisted Chat column, and both would read the
+  // sentinel as a level — the SDK would be handed the literal string "default"
+  // and the chat row would remember a setting nobody chose. The composer omits
+  // the field instead of sending the sentinel; this is for every other client.
+  const effort: string | undefined = rawEffort === EFFORT_UNSET ? undefined : rawEffort;
 
-  // Codex-only: the sandbox is a static, up-front choice paired with the
-  // approvalPolicy validated just below (see CODEX_APPROVAL_PRESETS in
-  // lib/models.ts, which the composer's preset picker sources both from —
-  // this route validates each independently rather than trusting a
-  // preset id, since the client sends the resolved sandbox/approvalPolicy
-  // pair, not the preset id itself). Ignored for Claude, where the
-  // interactive canUseTool/permissionMode flow below governs access instead.
-  let sandbox: CodexSandbox = DEFAULT_CODEX_SANDBOX;
-  if (provider === "codex" && rawSandbox != null) {
-    if (typeof rawSandbox !== "string" || !CODEX_SANDBOXES.has(rawSandbox)) {
-      return Response.json(
-        { error: `Invalid sandbox "${rawSandbox}".` },
-        { status: 400 },
-      );
-    }
-    sandbox = rawSandbox as CodexSandbox;
-  }
-
-  // Codex-only: mirrors the app-server's AskForApproval union. Deliberately
-  // an INLINE set here, not imported from lib/models.ts's CODEX_APPROVAL_
-  // PRESETS — that file also feeds the client bundle (composer UI), and this
-  // route's own validation is meant to stand alone rather than trust
-  // whatever the client-side preset list happens to contain. Defaults to
-  // "on-request" (CODEX_APPROVAL_PRESETS' "auto" preset's policy) when
-  // omitted, matching the composer's own default preset.
-  const CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
-  let approvalPolicy: "untrusted" | "on-request" | "never" = "on-request";
-  if (provider === "codex" && rawApprovalPolicy != null) {
-    if (typeof rawApprovalPolicy !== "string" || !CODEX_APPROVAL_POLICIES.has(rawApprovalPolicy)) {
-      return Response.json(
-        { error: `Invalid approvalPolicy "${rawApprovalPolicy}".` },
-        { status: 400 },
-      );
-    }
-    approvalPolicy = rawApprovalPolicy as "untrusted" | "on-request" | "never";
-  }
-
-  // Only "default"/"auto"/"acceptEdits" are ever accepted from a client —
-  // never "bypassPermissions" (skips canUseTool entirely), "dontAsk", or
-  // "plan", regardless of what the request body claims. See
-  // isValidPermissionMode. Codex turns don't consult this — approvalPolicy
-  // (validated above) is Codex's own analogous knob — but it's still
-  // validated uniformly for both providers.
-  if (!isValidPermissionMode(rawPermissionMode)) {
+  // ── HOW MUCH MAY THE AGENT DO ON ITS OWN ────────────────────────────────
+  //
+  // ONE field, one vocabulary, both providers. What stood here was three
+  // independent gates over two vocabularies — a Codex `sandbox`, a Codex
+  // `approvalPolicy` and a Claude `permissionMode` — which is why the question
+  // had no answer you could state without first asking which agent was driving.
+  // The translation back into each harness's own words now happens at the two
+  // adapter call sites below, from this single value.
+  //
+  // WHY `isSelectableRuntimeMode` AND NOT `isRuntimeMode`: the vocabulary can
+  // spell `full-access`, and this build cannot honour it. On Claude it maps to
+  // `permissionMode: "bypassPermissions"`, which the Agent SDK obeys only
+  // alongside `allowDangerouslySkipPermissions: true` — a field this route does
+  // not set. Accepting it would accept a request we would then quietly not
+  // perform, so it is a 400 with the reason in the sentence rather than a
+  // silent no-op. Wiring that flag is a reviewed change to the query() options,
+  // not a filter to delete.
+  if (rawRuntimeMode !== undefined && !isSelectableRuntimeMode(rawRuntimeMode)) {
     return Response.json(
-      { error: `Invalid permissionMode "${rawPermissionMode}".` },
+      {
+        error:
+          rawRuntimeMode === "full-access"
+            ? `Runtime mode "full-access" is not available: it requires the SDK's ` +
+              `allowDangerouslySkipPermissions opt-in, which this build does not set.`
+            : `Invalid runtimeMode "${rawRuntimeMode}".`,
+      },
       { status: 400 },
     );
   }
-  const permissionMode: ClientPermissionMode = rawPermissionMode;
 
-  const model: string = rawModel ?? (provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL);
+  // THE ONE-RELEASE COMPATIBILITY WINDOW, and nothing more. A tab left open
+  // across a deploy still POSTs the old body shape; it must not get an error,
+  // and it must not get a silent upgrade either. So the old values are still
+  // validated exactly as strictly as they were — an unknown one is the same 400
+  // it has always been — and then mapped forward by the SAME table the three
+  // persisted stores use (runtimeModeFromLegacy), so no two of them can
+  // disagree about what an old value meant. Delete this block and the three raw
+  // fields together, one release on.
+  //
+  // The Codex sandbox/approvalPolicy set stays INLINE rather than imported from
+  // lib/models.ts, for the reason the deleted gate gave and which still holds:
+  // that module also feeds the client bundle, and this route's validation is
+  // meant to stand alone rather than trust whatever the composer happens to
+  // offer.
+  if (rawRuntimeMode === undefined) {
+    const CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
+    if (rawPermissionMode !== undefined && !isValidPermissionMode(rawPermissionMode)) {
+      return Response.json({ error: `Invalid permissionMode "${rawPermissionMode}".` }, { status: 400 });
+    }
+    if (rawSandbox != null && (typeof rawSandbox !== "string" || !CODEX_SANDBOXES.has(rawSandbox))) {
+      return Response.json({ error: `Invalid sandbox "${rawSandbox}".` }, { status: 400 });
+    }
+    if (
+      rawApprovalPolicy != null &&
+      (typeof rawApprovalPolicy !== "string" || !CODEX_APPROVAL_POLICIES.has(rawApprovalPolicy))
+    ) {
+      return Response.json({ error: `Invalid approvalPolicy "${rawApprovalPolicy}".` }, { status: 400 });
+    }
+  }
+
+  // THE FALLBACK IS THE BOTTOM RUNG, not the product default, and the two are
+  // different questions. `DEFAULT_RUNTIME_MODE` answers "what should a person
+  // get when they start a session" and lives in the composer; this answers
+  // "what should we assume when the request never said", where the only safe
+  // answer is the most cautious one. Every real client sends the field — the
+  // composer always has, and a Chat row always carries one after readChats
+  // migrates it — so this arm is for a request that is underspecified, and an
+  // underspecified request must not be the way to get more freedom.
+  const chosenRuntimeMode: RuntimeMode =
+    runtimeModeFromLegacy({
+      runtimeMode: rawRuntimeMode,
+      permissionMode: rawPermissionMode,
+      sandbox: rawSandbox,
+      approvalPolicy: rawApprovalPolicy,
+    }) ?? MOST_CAUTIOUS_RUNTIME_MODE;
+
+  const model: string = rawModel ?? defaultModelFor(provider);
 
   // Session<->Loom link (docs/loom-model.md §5), hoisted out of the stream
   // closure by story 2.2 because the session KIND is a function of it and the
@@ -482,8 +519,27 @@ export async function POST(req: Request) {
   // is load-bearing: a resumed chat persisted as `steerer` whose client also
   // sends `role: "planner"` satisfies two predicates and must resolve as
   // STEERER, exactly as it did before.
+  const sessionKind = resolveSessionKind({ role, linkRole: loomLink.role, loomId: loomLink.loomId });
+
+  // A PROFILE MAY RESTRICT WHAT THE SESSION CHOSE, NEVER WIDEN IT.
+  // profileRuntimeModeCeiling returns the more cautious of the two by the
+  // vocabulary's own least-permissive-first order — whichever way round the
+  // arguments come, so there is no call shape here that turns a cap into an
+  // upgrade. A kind whose ceiling sits ABOVE the person's choice changes
+  // nothing at all.
+  //
+  // The cap is a function of the KIND, from core, and not a SessionProfileSpec
+  // field. That is what keeps "a profile cannot select full-access on a user's
+  // behalf" structural rather than reviewed: a surface declares a kind and
+  // never supplies a mode, so there is no field to mis-author. `runtimeMode`
+  // is on INV-6a's GRANT_SHAPED_FIELDS list precisely so adding one fails.
+  //
+  // From here down there is ONE mode. Both adapters translate from this value
+  // and neither reads the wire again.
+  const runtimeMode = profileRuntimeModeCeiling(chosenRuntimeMode, runtimeModeCeiling(sessionKind));
+
   const sessionProfile = resolveSessionProfile({
-    kind: resolveSessionKind({ role, linkRole: loomLink.role, loomId: loomLink.loomId }),
+    kind: sessionKind,
     provider,
     manifest,
     project: typeof project === "string" ? project : undefined,
@@ -493,7 +549,7 @@ export async function POST(req: Request) {
     // that could reach an unvalidated id is a builder that can read another
     // project's loom.
     loomId: loomLink.loomId,
-    permissionMode,
+    runtimeMode,
     ultraAnnotated,
     // Story 4.1 / AC2 — lets the project/planner/steerer composers read this
     // session's completed-Ultra-run mailbox and fold it into the appendix, so
@@ -942,14 +998,26 @@ export async function POST(req: Request) {
 
       try {
         if (provider === "codex") {
+          // THE HARNESS FORK, and the one no descriptor can absorb: the two
+          // arms call different SDKs with different argument shapes, and this
+          // arm is where a guardrail is or is not installed. Everything a
+          // provider merely PUBLISHES about itself — its options, its default
+          // model, its config-dir env var, how a runtime mode is spelled in its
+          // own words — has moved to a table asked by both arms. What is left
+          // is the dispatch itself, which is what an adapter is.
+          //
           // Codex path: same session/text/thinking/tool/tool_result/done/
           // saved send() vocabulary as the Claude branch below, produced by
           // normalizing the `codex app-server` JSON-RPC stream in
           // lib/codex-app-server.ts — see the mapping there. No hooks/
-          // permissionMode (those are Claude SDK concepts), but approvalPolicy
-          // (validated above) now drives the SAME interactive canUseTool-style
-          // prompt via onCodexApproval below — the sandbox chosen up front is
-          // no longer the only access control for this turn.
+          // permissionMode (those are Claude SDK concepts), but this session's
+          // runtime mode reaches the adapter whole and is spelled there into an
+          // approvalPolicy, a sandbox and a reviewer; the policy drives the
+          // SAME interactive canUseTool-style prompt via onCodexApproval below,
+          // so the sandbox chosen up front is no longer the only access control
+          // for this turn. Telar's OWN tools bypass approvalPolicy entirely
+          // (they are dynamicTools, answered by this process), which is what
+          // onCodexDynamicTool below exists to gate.
           //
           // Subagents: a "spawn" event names a Codex collabAgentToolCall's
           // new child thread — resolved through the SAME parentFlatten used
@@ -1055,6 +1123,89 @@ export async function POST(req: Request) {
             }
             return decision.behavior === "allow" ? "accept" : "decline";
           };
+          // THE CODEX ARM'S PRE-TOOL GATE, and the mirror of the Claude
+          // branch's preToolUseGuardrail above. Called for every one of
+          // Telar's OWN tools before its handler runs.
+          //
+          // WHY IT HAS TO EXIST SEPARATELY. onCodexApproval above covers what
+          // the app-server asks about: commands, file changes, sandbox escapes.
+          // It never sees a `dynamicToolCall` — those come back to this process
+          // as a plain request/response and run whatever the approval policy
+          // is. So without this, `mcp__loom__start_loom` dispatched a real loom
+          // from a Codex session in EVERY mode with no card, while the same
+          // call on Claude is force-routed to one in every mode. The §M.6
+          // provenance claim ("the human's Approve click IS the stamp") was
+          // Claude-only in practice; this is what makes it true of the product
+          // rather than of one adapter.
+          //
+          // Three checks, in the same order and with the same sources as the
+          // Claude hook: the profile's own deny list (which on Claude is
+          // handed to query() as disallowedTools and has no equivalent here),
+          // then the project's guardrails, then the two moat tools.
+          const onCodexDynamicTool = async (call: {
+            name: string;
+            input: Record<string, unknown>;
+          }): Promise<{ allow: true } | { allow: false; message: string }> => {
+            // AD-10: toolPolicy is the whole truth about tool grants. On the
+            // Claude arm the SDK enforces `deny` for us; here nothing does,
+            // which is how an escalation session's LOOM_ESCALATION_DISALLOWED_
+            // TOOLS reached a Codex model as a live write toolset.
+            if (sessionProfile.toolPolicy.deny.includes(call.name)) {
+              return {
+                allow: false,
+                message: `${call.name} is not available in this session.`,
+              };
+            }
+            const guardrail = makeGuardrailDecision(
+              sessionProfile,
+              sessionProfile.cwd,
+              call.name,
+              call.input,
+            );
+            if (guardrail.behavior === "deny") {
+              return { allow: false, message: guardrail.message };
+            }
+            if (call.name !== LOOM_START_TOOL && call.name !== LOOM_ANSWER_BLOCKED_TOOL) {
+              return { allow: true };
+            }
+            // §M.6, on this provider. The card is built exactly as the Claude
+            // branch's canUseTool builds it — real tool name, real input, the
+            // same createPending/send("permission")/resolvePending machinery —
+            // and, exactly as there, an "always allow" is NEVER persisted for
+            // these two: every commit gets its own approval, no exceptions.
+            const rule = ruleFor(call.name, call.input);
+            const ruleOptions = ruleOptionsFor(call.name, call.input);
+            const { id, promise } = createPending(
+              project,
+              call.name,
+              call.input,
+              rule,
+              undefined,
+              ruleOptions,
+            );
+            myPending.add(id);
+            const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
+            abort.signal.addEventListener("abort", onAbort, { once: true });
+            send("permission", { id, toolName: call.name, input: call.input, rule, ruleOptions });
+            let decision: PermissionDecision;
+            try {
+              decision = await promise;
+            } finally {
+              abort.signal.removeEventListener("abort", onAbort);
+              myPending.delete(id);
+            }
+            send("permission_result", { id, behavior: decision.behavior });
+            if (decision.behavior === "allow") return { allow: true };
+            return {
+              allow: false,
+              message:
+                decision.reason === "timeout"
+                  ? "No response from the user in time; treat as not yet decided."
+                  : decision.reason === "aborted"
+                    ? "The request was cancelled before the user responded."
+                    : "Denied by the user in telar.",
+            };
+          };
           // TELAR'S OWN TOOLS, ON CODEX. The same three tool sets the Claude
           // branch registers as in-process MCP servers, handed to the
           // app-server as `dynamicTools` — same definitions, same handlers,
@@ -1092,11 +1243,16 @@ export async function POST(req: Request) {
             env: accountEnv(profile),
             model,
             ...(effort ? { reasoningEffort: effort as CodexReasoningEffort } : {}),
-            sandbox,
+            // ONE FIELD, not the three the adapter used to take. The sandbox,
+            // the approval policy, the reviewer and the per-turn sandbox policy
+            // are all spelled out of this single mode INSIDE the adapter (see
+            // codex-app-server.ts's runtimeMode), which is the only way the
+            // thread's access and the turn's cannot disagree.
+            runtimeMode,
             resume: resumeTarget,
             signal: abort.signal,
-            approvalPolicy,
             onApproval: onCodexApproval,
+            onDynamicToolGate: onCodexDynamicTool,
             tools: codexToolNamespaces,
             // The same appendix the Claude branch passes as
             // systemPrompt.append. It used to be built and then dropped on the
@@ -1135,7 +1291,7 @@ export async function POST(req: Request) {
                   effort,
                   account: profile.name,
                   project,
-                  permissionMode,
+                  runtimeMode,
                   loomId: loomLink.loomId,
                   role: loomLink.role,
                   userText: displayText,
@@ -1358,6 +1514,7 @@ export async function POST(req: Request) {
         // and steerer carry it when the chip is on; escalation never does, and
         // that is enforced by escalationAppendix having no `ultraAnnotated`
         // parameter at all rather than by a branch here.
+        const claudePermission = claudePermissionMode(runtimeMode);
         const q = query({
           prompt: message,
           options: {
@@ -1391,7 +1548,14 @@ export async function POST(req: Request) {
                   append: sessionProfile.systemPromptAppendix,
                 }
               : { type: "preset", preset: "claude_code" },
-            permissionMode,
+            // SPREAD, NOT ASSIGNED, and the difference is the whole translation.
+            // `claudePermissionMode` returns undefined for `approval-required`
+            // because t3code's own table has no row for it: sending NO
+            // permissionMode is the SDK's ask-every-time default, so omitting
+            // the field IS the mode. Writing `permissionMode: undefined` would
+            // put the key in the object and is a different statement to the
+            // SDK. Do not "fix" the undefined into a string.
+            ...(claudePermission ? { permissionMode: claudePermission } : {}),
             // Load the repo's own .claude: CLAUDE.md, skills, slash commands,
             // settings, hooks, and MCP servers. User-level settings stay out
             // on purpose (keeps the developer's personal config/tokens out of
@@ -1555,7 +1719,7 @@ export async function POST(req: Request) {
               effort,
               account: profile.name,
               project,
-              permissionMode,
+              runtimeMode,
               // Best-available loom link at init (existing chat's, else the
               // turn-1 wire seed); appendTurn narrows in any link a loom tool
               // establishes during the turn.
@@ -2033,7 +2197,7 @@ export async function POST(req: Request) {
               effort,
               account: profile.name,
               project,
-              permissionMode,
+              runtimeMode,
               // Session<->Loom link (docs/loom-model.md §5): undefined
               // means "no change" (appendTurn only ever narrows a link in,
               // see its own comment) — loomLink stays untouched for a plain

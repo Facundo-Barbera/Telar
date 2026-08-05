@@ -102,6 +102,19 @@ export function findTool(
   return null;
 }
 
+/** The ONE name for a tool, in the spelling the rest of Telar uses.
+ *
+ *  Claude surfaces an in-process MCP tool as `mcp__loom__start_loom`; Codex
+ *  calls the same thing `{namespace: "loom", tool: "start_loom"}`. Every
+ *  policy constant in the repo — LOOM_START_TOOL, LOOM_AUTO_TOOLS, a project's
+ *  guardrails.disallowedTools, a profile's toolPolicy.deny — is written in the
+ *  first spelling, so the Codex adapter translates INTO it before asking any
+ *  policy question. Doing that conversion here rather than at the comparison
+ *  keeps "which tool is this" from having two answers. */
+export function qualifiedToolName(namespace: string | null, tool: string): string {
+  return namespace ? `mcp__${namespace}__${tool}` : tool;
+}
+
 /** A tool result → the `contentItems` a DynamicToolCallResponse carries.
  *
  *  Non-text content is DROPPED WITH A NOTE rather than silently: Telar's tools

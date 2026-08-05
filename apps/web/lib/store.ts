@@ -5,7 +5,12 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
-import type { ClientPermissionMode } from "./permission-modes";
+import {
+  MOST_CAUTIOUS_RUNTIME_MODE,
+  runtimeModeFromLegacy,
+  type ClientPermissionMode,
+  type RuntimeMode,
+} from "./permission-modes";
 
 // The spend ledger itself lives in @telar/core (usage-ledger.ts) — it is
 // shared runtime state that belongs to no module, so its owning core service
@@ -123,10 +128,25 @@ export type Chat = {
   effort?: string; // reasoning effort level for this chat's turns (optional: model default when absent)
   account: string;
   project?: string; // registry name of the anchoring project (optional: old entries predate it)
-  // Client-choosable SDK permission mode for this session's turns — see
-  // lib/permissions.ts's ClientPermissionMode. Optional: absent on entries
-  // predating mode selection, which read as "default" (the prior hardcoded
-  // behavior).
+  // How much the agent may do on its own during this session's turns, in the
+  // one vocabulary both providers share (packages/core/src/runtime-mode.ts).
+  // Optional on the TYPE because a row on disk may predate the field; never
+  // absent on a row that came through readChats, which fills it (see
+  // withRuntimeMode).
+  runtimeMode?: RuntimeMode;
+  // THE OLD FIELD, read-only from here on. It held Claude's SDK permission mode
+  // — "default" | "auto" | "acceptEdits" — and Codex rows carried a meaningless
+  // "default" because the composer sent {sandbox, approvalPolicy} instead and
+  // the route defaulted this one. Rows are NOT rewritten on upgrade: readChats
+  // maps it forward on the way out, so a session written before the rename and
+  // never touched again still resolves.
+  //
+  // For a CLAUDE row that resolution is exact. For a Codex one it cannot be:
+  // this column never described a Codex session and there is no other column to
+  // read, so every such row resolves to `approval-required`. withRuntimeMode
+  // says what that costs the user.
+  // Absent means the row predates mode selection entirely, which read as
+  // "default" — the prior hardcoded behaviour — and maps forward as such.
   permissionMode?: ClientPermissionMode;
   // Session<->Loom link (docs/loom-model.md §5): the loom this session is
   // planning/steering/discussing, and which of the three roles it holds.
@@ -169,9 +189,52 @@ function ensureDir() {
   fs.mkdirSync(stateRoot(), { recursive: true });
 }
 
+// MIGRATE ON READ, never by rewriting chats.json. Every read surface goes
+// through readChats, so filling the field here is the one place that can make
+// "a chat always knows its runtime mode" true — and a row that is never written
+// again still resolves, which a one-shot rewrite pass would not guarantee for a
+// file restored from a backup or synced from another machine.
+//
+// The `?? "default"` is the old field's own absent-reads-as-default rule,
+// applied BEFORE the vocabulary map rather than after it, so an ancient row and
+// a row that explicitly said "default" resolve identically — to
+// `approval-required`, which sends no permissionMode and is the SDK's own
+// ask-every-time behaviour. That is what those sessions have always done.
+//
+// EVERY ROW GOES THROUGH THE TABLE, including one that already carries a
+// `runtimeMode`. An early return on a truthy field would trust a string read
+// off disk: a hand-edited file, a backup from a build that shipped
+// `full-access`, or a sync from a later release then reaches the composer,
+// where `ACCESS_GLYPH[value]` is an exhaustive Record at COMPILE time and a
+// plain lookup at runtime. runtimeModeFromLegacy is the function that caps
+// `full-access` to something this build can run, and it can only do that if it
+// is actually called.
+//
+// A row that resolves to nothing at all falls to MOST_CAUTIOUS_RUNTIME_MODE,
+// not to the product default: a stored posture that cannot be read is the same
+// epistemic situation as a request that never stated one, and the route already
+// answers that question this way.
+//
+// WHAT THIS MEANS FOR A CODEX ROW WRITTEN BEFORE THE RENAME, stated plainly
+// because a user will notice: `Chat` has no sandbox/approvalPolicy column and
+// never had one, so there is nothing Codex-shaped to migrate from. Those rows
+// carry the route-defaulted literal "default" in a field that only ever
+// described a Claude session, and they resolve to `approval-required`. A Codex
+// session that had been running workspace-write comes back Supervised and its
+// posture has to be re-chosen once. That is the safe direction and it is the
+// only honest reading of the data, but it IS a change the user sees.
+function withRuntimeMode(chat: Chat): Chat {
+  const runtimeMode =
+    runtimeModeFromLegacy({
+      runtimeMode: chat.runtimeMode,
+      permissionMode: chat.permissionMode ?? "default",
+    }) ?? MOST_CAUTIOUS_RUNTIME_MODE;
+  return runtimeMode === chat.runtimeMode ? chat : { ...chat, runtimeMode };
+}
+
 function readChats(): Chat[] {
   try {
-    return JSON.parse(fs.readFileSync(chatsFile(), "utf8")).chats as Chat[];
+    return (JSON.parse(fs.readFileSync(chatsFile(), "utf8")).chats as Chat[]).map(withRuntimeMode);
   } catch {
     return [];
   }
@@ -407,7 +470,7 @@ export function upsertChatStub(opts: {
   effort?: string;
   account: string;
   project?: string;
-  permissionMode?: ClientPermissionMode;
+  runtimeMode?: RuntimeMode;
   loomId?: string;
   role?: "planner" | "steerer" | "escalation";
   title?: string;
@@ -424,7 +487,7 @@ export function upsertChatStub(opts: {
     effort: opts.effort,
     account: opts.account,
     project: opts.project,
-    permissionMode: opts.permissionMode,
+    runtimeMode: opts.runtimeMode,
     loomId: opts.loomId,
     role: opts.role,
     createdAt: now,
@@ -446,7 +509,7 @@ export function appendTurn(opts: {
   effort?: string;
   account: string;
   project?: string;
-  permissionMode?: ClientPermissionMode;
+  runtimeMode?: RuntimeMode;
   // Session<->Loom link — set once a session is attached to a loom (see
   // Chat.loomId/role). Undefined means "no change"; only ever narrows a
   // link in, never clears one (see the guarded assignment below).
@@ -490,7 +553,7 @@ export function appendTurn(opts: {
       effort: opts.effort,
       account: opts.account,
       project: opts.project,
-      permissionMode: opts.permissionMode,
+      runtimeMode: opts.runtimeMode,
       createdAt: now,
       updatedAt: now,
       costUsd: 0,
@@ -523,8 +586,20 @@ export function appendTurn(opts: {
   chat.costUsd += opts.costUsd;
   chat.turns += 1;
   chat.model = opts.model;
+  // UNGUARDED, unlike runtimeMode below, and the asymmetry is the contract:
+  // absent `effort` MEANS "Auto" on the wire (the composer omits every option
+  // group sitting on its default), so a guard here would make Auto the one
+  // choice a user could never return to. Every caller that wants to keep an
+  // effort must therefore RESEND it — which is why the mini-dock now puts the
+  // session's stored effort on its body beside the model, and why omitting it
+  // there erased the session's reasoning level until it did.
   chat.effort = opts.effort;
-  chat.permissionMode = opts.permissionMode;
+  // UNDEFINED-GUARDED, like the loom-link fields below and unlike the old
+  // unguarded assignment this replaces. A turn that does not state a runtime
+  // mode must not erase the one the session already resolved — the row is what
+  // the dock reads back to resume this session, so clobbering it there is how a
+  // supervised session comes back at something else.
+  if (opts.runtimeMode !== undefined) chat.runtimeMode = opts.runtimeMode;
   if (opts.usage) {
     // chat.inputTokens === undefined means this chat predates per-turn token
     // accumulation (getChat's tokensFromUsageLog fallback is the canary's

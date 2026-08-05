@@ -1,6 +1,6 @@
 import { accountEnv, getAccount, getDefaultAccountName } from "@telar/core";
 import { fetchModels } from "@/lib/model-registry";
-import { DEFAULT_CODEX_MODEL, DEFAULT_MODEL } from "@/lib/models";
+import { defaultModelFor } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,9 @@ export const dynamic = "force-dynamic";
 // offer models that session cannot reach, and hide the ones it can.
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
+  // Not a provider fork — a narrowing of an untrusted query string onto the
+  // union, where anything unrecognized has to land somewhere and "claude" is
+  // the pre-multi-provider default every legacy caller already means.
   const provider = searchParams.get("provider") === "codex" ? "codex" : "claude";
   // Unknown/absent account falls back to the default — the old behavior, kept
   // so every existing caller keeps working without passing the parameter.
@@ -25,7 +28,7 @@ export async function GET(req: Request) {
 
   return Response.json({
     models,
-    default: provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL,
+    default: defaultModelFor(provider),
     // Named so a surface can say WHERE this catalog came from rather than
     // implying every account sees the same list.
     account: account?.name ?? null,

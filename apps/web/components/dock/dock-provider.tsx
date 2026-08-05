@@ -65,7 +65,11 @@ export interface Runtime {
   // the first detail fetch lands.
   model?: string;
   account?: string;
-  permissionMode?: string;
+  runtimeMode?: string;
+  // The session's reasoning effort, carried for the same reason model is: the
+  // dock composer's POST has to restate it or the turn silently drops it (and,
+  // since an absent effort means Auto on the wire, erases it from the row).
+  effort?: string;
   // 1.5 queue-capable composer: messages typed while the session is working wait
   // here in order; the runtime host drains the head the moment it goes idle.
   queued: string[];

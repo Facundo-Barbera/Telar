@@ -1,5 +1,3 @@
-"use client";
-
 // WHAT A PROVIDER PUBLISHES ABOUT ITSELF — the mechanism that lets one composer
 // render two harnesses without branching on either.
 //
@@ -23,6 +21,19 @@
 // composer shows it with no UI change. That is the whole point of the seam.
 //
 // CLIENT-SAFE: imports only ./models (import-free data). No SDK, no node:*.
+//
+// AND DELIBERATELY NOT "use client". This module is now read from BOTH sides —
+// the composer renders the groups, app/api/chat/route.ts validates an incoming
+// value against the same ones — and that is the entire point: one predicate, so
+// a menu cannot offer what the route then 400s. The directive would forbid
+// exactly that. Next turns a direct server-layer import of a "use client"
+// module into a client REFERENCE, so calling groupAccepts() from the route
+// throws "Attempted to call groupAccepts() from the server but groupAccepts is
+// on the client" at request time — a 500 on the live path that tsc, eslint and
+// bun test all stay green through, because none of them runs the RSC transform.
+// A module with no hooks and no browser API has no reason to declare a side;
+// what makes it safe for the client bundle is its import graph, which the line
+// above states and INV-4c enforces.
 
 import {
   CODEX_EFFORT_OPTIONS,
@@ -90,7 +101,23 @@ const codexEffort: ProviderOptionGroup = {
  *  their active labels with "·" for the trigger, exactly as t3code does
  *  ("Medium · Standard"). */
 export function providerOptionGroups(provider: "claude" | "codex"): readonly ProviderOptionGroup[] {
+  // THE ONLY PROVIDER FORK LEFT IN THE OPTION PATH, and it belongs here: this
+  // is the table's own dispatch, at the seam whose entire job is to hold it.
+  // Pushing it anywhere else means a caller asking which harness it landed on
+  // again, which is the shape this module was written to end.
   return provider === "codex" ? [codexEffort] : [claudeEffort];
+}
+
+/** One published group by id, or undefined when this provider publishes none
+ *  under that name. The question a caller asks when it wants a specific knob —
+ *  the chat route validating an incoming `effort`, say — rather than the whole
+ *  menu. Undefined is a real answer and means "this provider does not offer
+ *  this at all", which a validator must read as "reject", never as "allow". */
+export function providerOptionGroup(
+  provider: "claude" | "codex",
+  id: string,
+): ProviderOptionGroup | undefined {
+  return providerOptionGroups(provider).find((g) => g.id === id);
 }
 
 /** The value a group falls back to. Every group must declare exactly one

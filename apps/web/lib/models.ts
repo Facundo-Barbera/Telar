@@ -110,6 +110,25 @@ export const MODELS: ModelInfo[] = [
 export const DEFAULT_MODEL = "claude-sonnet-5";
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 
+// WHICH MODEL A FRESH SESSION OPENS ON, asked of a table instead of of a
+// ternary. `provider === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_MODEL` was
+// written out three separate times — the composer's provider switch, the chat
+// route's model fallback, and /api/models' advertised default — and three
+// copies of one answer is three places for a fourth provider to be forgotten.
+//
+// A Record over the provider union rather than a lookup by tag: the type
+// checker then requires an entry per provider, so adding one is a build error
+// here instead of a session that quietly opens on a model belonging to somebody
+// else's harness. models.test.ts asserts each id is a real model OF that
+// provider, which is the half a Record cannot check.
+const DEFAULT_MODEL_BY_PROVIDER: Record<"claude" | "codex", string> = {
+  claude: DEFAULT_MODEL,
+  codex: DEFAULT_CODEX_MODEL,
+};
+
+export const defaultModelFor = (p: "claude" | "codex"): string =>
+  DEFAULT_MODEL_BY_PROVIDER[p];
+
 export const modelById = (id: string): ModelInfo | undefined =>
   MODELS.find((m) => m.id === id);
 
@@ -170,65 +189,21 @@ export const CODEX_EFFORT_OPTIONS: { id: CodexReasoningEffort; label: string; bl
   { id: "xhigh", label: "Extra high", blurb: "Maximum reasoning." },
 ];
 
-// Codex sandbox presets. The Codex SDK (`codex exec`) can't prompt mid-turn, so
-// each preset is a STATIC choice made before the turn — approvalPolicy is always
-// "never"; an action the sandbox blocks fails back to the model, never to a card.
+// THE LAST OF THE OLD CODEX ACCESS VOCABULARY, kept alive for exactly one
+// release and for exactly one caller: the chat route's legacy-body gate, which
+// validates a pre-rename `sandbox` field as strictly as it ever did before
+// mapping it forward through runtimeModeFromLegacy. Everything else that used
+// to live here — CODEX_APPROVAL_PRESETS, DEFAULT_CODEX_APPROVAL_ID,
+// DEFAULT_CODEX_SANDBOX — is deleted: a session's access is one RuntimeMode
+// now, and leaving a second table describing the same thing meant the next
+// reader had two answers and no compiler signal telling them which was live.
+//
+// @deprecated Dies with the route's legacy gate. Nothing new may read it.
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 
-export const CODEX_SANDBOX_PRESETS: {
-  id: string;
-  label: string;
-  blurb: string;
-  sandbox: CodexSandbox;
-}[] = [
-  { id: "read-only", label: "Read-only", blurb: "Analysis only — no edits, no network.", sandbox: "read-only" },
-  { id: "auto", label: "Auto", blurb: "Edits + network (gh, npm, git); writes stay in the repo.", sandbox: "workspace-write" },
-  { id: "full", label: "Full access", blurb: "Unrestricted edits and network access.", sandbox: "danger-full-access" },
+/** @deprecated The route's one-release wire-compatibility gate only. */
+export const CODEX_SANDBOX_PRESETS: { id: string; sandbox: CodexSandbox }[] = [
+  { id: "read-only", sandbox: "read-only" },
+  { id: "auto", sandbox: "workspace-write" },
+  { id: "full", sandbox: "danger-full-access" },
 ];
-
-export const DEFAULT_CODEX_SANDBOX: CodexSandbox = "workspace-write";
-
-// Codex approval policy — mirrors the app-server's AskForApproval union. The
-// app-server can now prompt mid-turn (see lib/codex-app-server.ts), so each
-// preset below pairs a sandbox with an approvalPolicy, mirroring the Codex
-// desktop app's own approval dropdown.
-export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
-
-export const CODEX_APPROVAL_PRESETS: {
-  id: string;
-  label: string;
-  blurb: string;
-  sandbox: CodexSandbox;
-  approvalPolicy: CodexApprovalPolicy;
-}[] = [
-  {
-    id: "read-only",
-    label: "Read-only",
-    blurb: "Analysis only — no edits, no network.",
-    sandbox: "read-only",
-    approvalPolicy: "never",
-  },
-  {
-    id: "auto",
-    label: "Approve for me",
-    blurb: "Only asks for actions detected as risky.",
-    sandbox: "workspace-write",
-    approvalPolicy: "on-request",
-  },
-  {
-    id: "ask",
-    label: "Ask for approval",
-    blurb: "Asks before editing external files or using the network.",
-    sandbox: "workspace-write",
-    approvalPolicy: "untrusted",
-  },
-  {
-    id: "full",
-    label: "Full access",
-    blurb: "Unrestricted.",
-    sandbox: "danger-full-access",
-    approvalPolicy: "never",
-  },
-];
-
-export const DEFAULT_CODEX_APPROVAL_ID = "auto";

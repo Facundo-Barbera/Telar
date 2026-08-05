@@ -1320,6 +1320,32 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
             `preToolUseGuardrail.`,
         );
       }
+      // THE OTHER HARNESS. The PreToolUse hook is a Claude SDK concept; on
+      // Codex these same tools arrive as `dynamicTools` and are dispatched
+      // straight to their handlers with no approval request in between, in
+      // every runtime mode. The route's onCodexDynamicTool is the gate that
+      // makes §M.6 true of the product rather than of one adapter — without it
+      // a Codex session dispatches a real loom with no card while the identical
+      // call on Claude is force-routed to one.
+      if (!route.code.includes(`call.name !== ${name}`)) {
+        broken.push(
+          `${CHAT_ROUTE}'s Codex dynamic-tool gate no longer names ${name}. ` +
+            HOOK +
+            `CONSEQUENCE: on Codex that tool runs with no permission card in EVERY mode — the ` +
+            `human's Approve click is the §M.6 provenance stamp, and there would be no click. ` +
+            `NEXT STEP: restore the comparison in onCodexDynamicTool.`,
+        );
+      }
+    }
+    if (!route.code.includes("onDynamicToolGate")) {
+      broken.push(
+        `${CHAT_ROUTE} no longer passes onDynamicToolGate to runCodexTurn. ` +
+          HOOK +
+          `CONSEQUENCE: the Codex arm has no pre-tool seam at all for Telar's own tools — the ` +
+          `profile's deny list, the project's guardrails and the two moat tools are all ` +
+          `unenforced there, silently, with the Claude arm still green. NEXT STEP: restore the ` +
+          `gate; it is the mirror of preToolUseGuardrail.`,
+      );
     }
     if (!/hooks\s*:\s*\{\s*PreToolUse\s*:/.test(route.code)) {
       broken.push(
@@ -2136,6 +2162,42 @@ function resolveLocalImport(fromRel: string, spec: string): string | null {
   return null;
 }
 
+// THE ONE EXCEPTION, and it is a structural one rather than an exemption.
+//
+// The rule above is "a client file may import core TYPES only", and it was
+// written against the package INDEX, which is a runtime barrel. Core also
+// publishes leaf modules on their own subpath — declared in packages/core/
+// package.json's `exports`, so the spelling resolves to that file and cannot
+// fall through to the barrel — whose entire import graph is type-only. Such a
+// module compiles to nothing but its own constants and pure functions, so
+// value-importing it drags no runtime anywhere, and the consequence the
+// violation message describes cannot occur.
+//
+// WHY ALLOW IT AT ALL, since the rule was survivable before: it was survivable
+// by DUPLICATION. apps/web/lib/permission-modes.ts held a second copy of the
+// session permission vocabulary for exactly this reason, and two copies of
+// "how careful is this session" is the bug packages/core/src/runtime-mode.ts
+// exists to end. A rule that can only be obeyed by copying core's data into the
+// web app buys bundle safety with drift, and the drift is the more expensive
+// half.
+//
+// INV-4d below is what keeps this honest: it re-derives each leaf's purity from
+// the file rather than trusting this list, so a leaf that grows a value import
+// fails there instead of quietly widening the exception here. Adding an entry
+// is a deliberate act with a test attached, which is the same shape every other
+// pinned list in this file has.
+const CLIENT_SAFE_CORE_LEAVES: ReadonlyArray<[string, string]> = [
+  ["@telar/core/runtime-mode", "packages/core/src/runtime-mode.ts"],
+  // The provider descriptor table. Same argument, second subject: the settings
+  // surface was spelling `providerId === "codex" ? "CODEX_HOME path" : …` over
+  // values this table already publishes, and a component that re-derives
+  // configDirEnv is a component that can disagree with the process that reads
+  // it. Its own only edge is `import type { AuthMode, ProviderId }`.
+  ["@telar/core/providers", "packages/core/src/providers.ts"],
+];
+const isClientSafeCoreLeaf = (spec: string): boolean =>
+  CLIENT_SAFE_CORE_LEAVES.some(([s]) => s === spec);
+
 const isCoreSpecifier = (spec: string): boolean =>
   spec === "@telar/core" || spec.startsWith("@telar/core/");
 // The SAME runtime, reached by a different spelling. A relative
@@ -2184,7 +2246,7 @@ const CLIENT_SCAN = (() => {
       if (isCoreSpecifier(spec) || (!!target && target.startsWith(CORE_SRC))) {
         coreImportsSeen++;
         if (roots.has(rel)) clientCoreImports++;
-        if (!isTypeOnlyImport(stmt)) {
+        if (!isTypeOnlyImport(stmt) && !isClientSafeCoreLeaf(spec)) {
           violations.push(
             `${chain(rel)} → ${spec} (VALUE import of core runtime). AD-3 — @telar/core is ` +
               `server-side only ` +
@@ -2260,6 +2322,60 @@ describe("INV-4 client components import no core runtime — AD-3, the CLIENT-BU
     expect(CLIENT_SCAN.violations).toEqual([]);
   });
 
+  test("INV-4c the client-safe core leaves are PROVABLY runtime-free, and published as their own subpath", () => {
+    // The exception INV-4c grants, re-derived from the tree instead of trusted.
+    // Two things have to hold for a leaf to be safe to value-import from the
+    // browser, and neither is a matter of opinion:
+    //
+    //   (1) its whole import graph is type-only, so it compiles to its own
+    //       constants and nothing else; and
+    //   (2) package.json publishes it on its own subpath, so the specifier
+    //       resolves to THAT file rather than falling back to src/index.ts —
+    //       which is the runtime barrel this whole invariant is about.
+    //
+    // Without (2) the check is theatre: the client would still be importing the
+    // barrel, just spelled differently.
+    const exports = JSON.parse(
+      fs.readFileSync(path.join(REPO, "packages/core/package.json"), "utf8"),
+    ).exports as Record<string, string>;
+    const broken: string[] = [];
+    if (CLIENT_SAFE_CORE_LEAVES.length === 0) {
+      broken.push(
+        `CLIENT_SAFE_CORE_LEAVES is empty, so every assertion below holds over nothing while ` +
+          `INV-4c's exception branch stays live. NEXT STEP: if the last leaf was genuinely ` +
+          `removed, remove the exception from the BFS too.`,
+      );
+    }
+    for (const [spec, rel] of CLIENT_SAFE_CORE_LEAVES) {
+      const file = byRel.get(rel);
+      if (!file) {
+        broken.push(`${rel} is not in the scan index — the leaf moved, or the path is a typo.`);
+        continue;
+      }
+      const subpath = "." + spec.slice("@telar/core".length);
+      if (exports[subpath] !== "./" + rel.slice("packages/core/".length)) {
+        broken.push(
+          `packages/core/package.json does not publish "${subpath}" pointing at ${rel}. ` +
+            `CONSEQUENCE: a client importing "${spec}" resolves through the package INDEX — ` +
+            `the runtime barrel — and INV-4c's exception waves it through. NEXT STEP: add the ` +
+            `subpath to \`exports\`, or drop the leaf from CLIENT_SAFE_CORE_LEAVES.`,
+        );
+      }
+      for (const stmt of moduleEdgeStatements(file.code)) {
+        if (!importSource(stmt) || isTypeOnlyImport(stmt)) continue;
+        broken.push(
+          `${rel} has a VALUE edge: ${stmt.replace(/\s+/g, " ").trim()}. THE RULE: a module ` +
+            `INV-4c lets client code value-import must reach no runtime at all, so its own ` +
+            `imports are type-only, always. CONSEQUENCE: whatever that edge pulls in now rides ` +
+            `into the browser bundle through every client file that imports this leaf, and ` +
+            `INV-4c will not see it. NEXT STEP: make the edge \`import type\`, or move the value ` +
+            `it needs into this file.`,
+        );
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
   test("INV-4d the import scan DISCRIMINATES — multi-line type-only passes, one value specifier fails", () => {
     // T-4 in both directions, through the SAME parser the BFS uses.
     const CORE = "@telar/" + "core";
@@ -2331,6 +2447,110 @@ describe("INV-4 client components import no core runtime — AD-3, the CLIENT-BU
     // one, because a client file's own imports are checked directly while
     // godview.ts's only matter transitively.
     expect(substringOnly).toContain(GODVIEW);
+  });
+
+  // ── INV-4f — the same boundary, crossed the other way ─────────────────────
+  //
+  // INV-4c asks "does client code drag server runtime into the browser". This
+  // asks the mirror question: does a ROUTE HANDLER call into a module that
+  // declared itself client-side. Next answers a direct server-layer import of a
+  // "use client" module with a client REFERENCE — a stub whose only behaviour is
+  // to throw `Attempted to call groupAccepts() from the server but groupAccepts
+  // is on the client` the first time anybody calls it.
+  //
+  // WHY THIS NEEDS AN INVARIANT RATHER THAN A REVIEWER. That failure is
+  // invisible to every gate this repo runs: the types line up (it is the real
+  // module's types), eslint sees an ordinary import, and `bun test` imports the
+  // module directly with no RSC transform in the way, so the unit tests of the
+  // very function that will throw all pass. The first thing that knows is a
+  // request, and the shape it takes is a 500 with an empty body. This is not
+  // hypothetical — it is how the effort-validation call in app/api/chat/route.ts
+  // behaved for the length of one dev-server session while `lib/provider-options
+  // .ts` still opened with the directive.
+  //
+  // SCOPED TO route.ts DELIBERATELY. A server PAGE importing a "use client"
+  // module is the framework working as designed — it renders it — and no static
+  // scan can tell rendering from calling. A route handler renders nothing, so
+  // every value it imports is a value it intends to CALL, and the question has a
+  // single answer. Type-only edges are erased and cannot throw.
+  //
+  // THE FIX IS ALMOST NEVER TO COPY THE MODULE. A module that both a route and
+  // a component need is a module with no side to declare: delete the directive
+  // and let its import graph (which INV-4c checks) be what keeps it bundle-safe.
+  test('INV-4f no route handler value-imports a "use client" module', () => {
+    const ROUTES = NON_TEST.filter((f) => /^apps\/web\/app\/.*\/route\.tsx?$/.test(f.rel));
+    // ANTI-VACUITY: if the glob stops matching — routes move, or the index stops
+    // walking apps/web/app — every assertion below holds over nothing.
+    expect(ROUTES.length).toBeGreaterThan(20);
+
+    // ONE HOP FURTHER THAN THE ROUTE'S OWN IMPORTS, because a barrel is the
+    // ordinary way this hazard hides: the chat route reaches
+    // lib/permission-modes through lib/permissions, which re-exports it, and
+    // permission-modes carried the directive until this phase's rewrite. Put it
+    // back and the route gets client references through a module whose own
+    // header has no directive — the exact F3 500, invisible to a depth-1 scan.
+    // Depth 2 is where it stops: past that the reported path stops naming a
+    // file anyone would recognise, and INV-4c already governs the interior.
+    const clientEdgesOf = (rel: string): Array<{ spec: string; target: string }> => {
+      const file = byRel.get(rel);
+      if (!file) return [];
+      const out: Array<{ spec: string; target: string }> = [];
+      for (const stmt of moduleEdgeStatements(file.code)) {
+        const spec = importSource(stmt);
+        if (!spec || isTypeOnlyImport(stmt)) continue;
+        const target = resolveLocalImport(rel, spec);
+        if (target) out.push({ spec, target });
+      }
+      return out;
+    };
+
+    const broken: string[] = [];
+    for (const f of ROUTES) {
+      for (const direct of clientEdgesOf(f.rel)) {
+        const hops: string[][] = byRel.get(direct.target)?.isClient
+          ? [[f.rel, direct.target]]
+          : clientEdgesOf(direct.target)
+              .filter((next) => byRel.get(next.target)?.isClient)
+              .map((next) => [f.rel, direct.target, next.target]);
+        for (const path of hops) {
+          broken.push(
+            `${path.join(" → ")} — ${path[path.length - 1]} opens with "use client" and the ` +
+              `route reaches it through a value edge${path.length > 2 ? " (via a re-export)" : ""}. ` +
+              `CONSEQUENCE: every symbol it binds is a client reference at request time, and the ` +
+              `first call throws — a 500 with an empty body that tsc, eslint and bun test are all ` +
+              `green through. NEXT STEP: if the module has no hooks and no browser API, drop its ` +
+              `directive (its import graph is what makes it client-safe, and INV-4c checks that); ` +
+              `otherwise move the value the route needs into a module with no side.`,
+          );
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
+  test("INV-4f DISCRIMINATES — it can see a client module through the resolver it uses", () => {
+    // The scan is only worth its runtime if both halves work on today's tree:
+    // the route glob finds the file the hazard actually landed in, and the
+    // resolver + isClient pair really identifies a directive-bearing module.
+    const CHAT = "apps/web/app/api/chat/route.ts";
+    expect(byRel.has(CHAT)).toBe(true);
+    expect(/^apps\/web\/app\/.*\/route\.tsx?$/.test(CHAT)).toBe(true);
+
+    // A real "use client" module, reached by the same `@/`-spelling a route
+    // would use. If this stops resolving, the scan above silently passes.
+    const UI_PREFS = "apps/web/lib/ui-prefs.ts";
+    expect(resolveLocalImport(CHAT, "@/lib/ui-prefs")).toBe(UI_PREFS);
+    expect(byRel.get(UI_PREFS)!.isClient).toBe(true);
+
+    // And the module this invariant was written over is NOT client-side, on
+    // purpose — the composer and the chat route validate against one predicate.
+    const OPTIONS = "apps/web/lib/provider-options.ts";
+    expect(byRel.get(OPTIONS)!.isClient).toBe(false);
+    expect(byRel.get(CHAT)!.code).toContain("@/lib/provider-options");
+
+    // A type-only edge to a client module is erased and must NOT be reported.
+    expect(isTypeOnlyImport(`import type { UiPrefs } from "@/lib/ui-prefs";`)).toBe(true);
+    expect(isTypeOnlyImport(`import { getUiPrefs } from "@/lib/ui-prefs";`)).toBe(false);
   });
 });
 
@@ -2712,6 +2932,21 @@ const GRANT_SHAPED_FIELDS = [
   "hooks",
   "canUseTool",
   "permissionMode",
+  // The same hazard under its new name. "How much may this agent do on its own"
+  // is now ONE provider-neutral value (packages/core/src/runtime-mode.ts) rather
+  // than an SDK permissionMode on one provider and a {sandbox, approvalPolicy}
+  // pair on the other — so a profile field spelled `runtimeMode` would widen a
+  // grant exactly as `permissionMode` would have. Both spellings stay listed:
+  // the SDK's word still exists inside the Claude adapter, so a field could be
+  // authored under either.
+  //
+  // The session's mode reaches the profile layer as
+  // SessionResolutionContext.runtimeMode, which this test deliberately does not
+  // scan (see the note on that type) — a context is an INPUT the route supplies
+  // and has already capped through profileRuntimeModeCeiling, where a
+  // SessionProfile field would be an AUTHORED output that could hand a session
+  // more than it asked for.
+  "runtimeMode",
   "skipGuardrail",
   "allowedTools",
   "bypassPermissions",
@@ -3004,15 +3239,44 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
     // close). The floor is what makes "every site reads sessionProfile" mean
     // something: over zero sites it is trivially true.
     const guardSites = code.split("makeGuardrailDecision(").length - 1;
-    if (guardSites < 3) {
+    if (guardSites < 4) {
       broken.push(
         `AD-1 / INV-6e: makeGuardrailDecision has ${guardSites} call sites in the chat route ` +
-          `(floor 3: canUseTool, preToolUseGuardrail, onCodexApproval). THE RULE: the moat is ` +
-          `enforced at the tool layer on BOTH providers — the Codex fork reaches the SDK through ` +
-          `none of query()'s options, so its approval callback is the one pre-tool seam it has. ` +
-          `CONSEQUENCE: a project's guardrails.disallowedTools / protectedPaths go silently ` +
-          `inert on half the traffic, which is the gap story 2.2's AC6 closed. NEXT STEP: ` +
-          `restore the call site; do not lower this floor.`,
+          `(floor 4: canUseTool, preToolUseGuardrail, onCodexApproval, onCodexDynamicTool). ` +
+          `THE RULE: the moat is enforced at the tool layer on BOTH providers — the Codex fork ` +
+          `reaches the SDK through none of query()'s options, so its approval callback and its ` +
+          `dynamic-tool gate are the only two pre-tool seams it has. CONSEQUENCE: a project's ` +
+          `guardrails.disallowedTools / protectedPaths go silently inert on half the traffic, ` +
+          `which is the gap story 2.2's AC6 closed. NEXT STEP: restore the call site; do not ` +
+          `lower this floor.`,
+      );
+    }
+    // …AND THE SEAM IS REACHABLE. The count above is a source scan: it says the
+    // call site exists, not that the callback containing it is ever invoked.
+    // Codex's `approvalsReviewer` decides that — "auto_review" routes every
+    // approval request to the harness's own subagent, so onCodexApproval stops
+    // firing and the guardrail becomes unreachable with its call site still
+    // lexically present and this whole test still green. Pinned here, over
+    // core's own table, because that is the only file that can send the field.
+    const RUNTIME_MODE_SRC = byRel.get("packages/core/src/runtime-mode.ts");
+    if (!RUNTIME_MODE_SRC) {
+      broken.push(
+        `AD-1 / INV-6e: packages/core/src/runtime-mode.ts is not in the scan index, so the ` +
+          `reachability clause below holds vacuously. NEXT STEP: fix the walk, not the assertion.`,
+      );
+      // The needle is an ASSIGNMENT, not the word: `approvalsReviewer`'s own
+      // type union legitimately spells "auto_review" as a value the protocol
+      // has, and a scan that failed on that would be uneditable.
+    } else if (/approvalsReviewer\s*:\s*"auto_review"/.test(RUNTIME_MODE_SRC.code)) {
+      broken.push(
+        `AD-1 / INV-6e: packages/core/src/runtime-mode.ts's codexThreadConfig can send ` +
+          `approvalsReviewer "auto_review". THE RULE: every Codex approval request is answered ` +
+          `by the route's onCodexApproval, which is the single site where makeGuardrailDecision ` +
+          `runs on that harness and the single site that raises a permission card. ` +
+          `CONSEQUENCE: for every mode that sends it, the ${guardSites}-site floor above is ` +
+          `satisfied by a callback nothing calls — a project's guardrails go inert and no card ` +
+          `is ever shown, with every test in this file still passing. NEXT STEP: the Codex arm ` +
+          `needs a guardrail seam that survives delegated review BEFORE this value ships.`,
       );
     }
     // …and every one of them is fed the PROFILE, not the raw manifest. Checked
@@ -4117,7 +4381,13 @@ const SHELL_DENYLIST: ReadonlyArray<[string, string]> = [
   ["localStorage", "browser storage"],
   ["/api/", "a server route"],
   ["sessionId", "session identity"],
+  // BOTH SPELLINGS, because the vocabulary was renamed and a denylist over a
+  // needle that no longer exists is a check that passes over nothing. The
+  // session's permission posture is now `runtimeMode`; `permissionMode` remains
+  // the SDK's own word for the Claude half of the translation, so a shell file
+  // could still grow either.
   ["permissionMode", "session permission policy"],
+  ["runtimeMode", "session permission policy"],
   ["runId", "turn identity"],
   ["accountEnv", "account resolution"],
 ];

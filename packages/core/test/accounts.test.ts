@@ -52,6 +52,22 @@ describe("providers", () => {
     expect(providerOf("codex").id).toBe("codex");
   });
 
+  // `vendor` and `label` answer two different questions and a surface that
+  // conflates them says the wrong thing: "this account talks to Codex directly"
+  // names a CLI, not the company at the other end of the socket. The settings
+  // card spelled its own `providerId === "codex" ? "OpenAI" : "Anthropic"`
+  // until this field existed, so assert both that the values are right and that
+  // every provider actually declares one — a blank vendor renders as a sentence
+  // with a hole in it, not as a type error.
+  test("every provider names the company its requests reach, distinctly from its label", () => {
+    expect(PROVIDERS.claude.vendor).toBe("Anthropic");
+    expect(PROVIDERS.codex.vendor).toBe("OpenAI");
+    for (const d of Object.values(PROVIDERS)) {
+      expect(d.vendor.length, `${d.id}: vendor is blank`).toBeGreaterThan(0);
+      expect(d.vendor, `${d.id}: vendor restates the product name`).not.toBe(d.label);
+    }
+  });
+
   // STRUCTURAL, not behavioral: a behavioral test passes on a provider that
   // merely happens not to be exercised. Every provider must declare which env
   // vars an account owns, and — the arm that actually catches drift — every

@@ -96,7 +96,7 @@ const ctx = (over: Partial<SessionResolutionContext> = {}): SessionResolutionCon
   provider: "claude",
   manifest,
   project: "demo",
-  permissionMode: "default",
+  runtimeMode: "auto",
   ultraAnnotated: false,
   ...over,
 });
@@ -614,7 +614,7 @@ describe("the steerer/escalation builders thread the VALIDATED loomId into the l
           `import { buildSteererProfile, buildEscalationProfile } from ${JSON.stringify(
             path.join(here, "session-profiles"),
           )};`,
-          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", permissionMode: "default" };`,
+          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", runtimeMode: "auto" };`,
           `const app = (o) => (o.systemPromptAppendix ?? "");`,
           `console.log(JSON.stringify({`,
           `  steererWithId: app(buildSteererProfile({ ...base, kind: "steerer", loomId: "loom_probe", ultraAnnotated: false })).includes("LIVE LOOM CONTEXT"),`,
@@ -715,7 +715,7 @@ describe("the project/planner/steerer builders thread ctx.sessionId into the wak
           `import { buildProjectProfile, buildPlannerProfile, buildSteererProfile, buildEscalationProfile } from ${JSON.stringify(
             path.join(here, "session-profiles"),
           )};`,
-          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", permissionMode: "default" };`,
+          `const base = { provider: "claude", manifest: { name: "demo", root: "/repos/demo", account: "personal", guardrails: { disallowedTools: [], protectedPaths: [] } }, project: "demo", runtimeMode: "auto" };`,
           `const app = (o) => (o.systemPromptAppendix ?? "");`,
           `const H = "COMPLETED ULTRA RUNS";`,
           `console.log(JSON.stringify({`,

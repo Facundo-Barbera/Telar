@@ -150,6 +150,11 @@ export async function POST(req: Request) {
       continue;
     }
     try {
+      // IRREDUCIBLE — two mechanisms, not two spellings. Claude's plan limits
+      // come back from a live SDK handshake that costs a subprocess; Codex
+      // publishes no such call and its limits are whatever its last session
+      // rollout cached on this disk. There is no descriptor field that makes
+      // "spawn a subprocess" and "read a file" the same operation.
       if ((profile.provider ?? "claude") === "codex") {
         // Zero-cost: read the latest limits cached in Codex's session rollouts.
         const snap = codexUsageSnapshot(profile.configDir);

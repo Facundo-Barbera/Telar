@@ -72,6 +72,9 @@ export async function POST(req: Request) {
   try {
     const account = upsertAccount({
       name,
+      // Narrowing, not a fork: `provider` arrives as untrusted JSON and has to
+      // land on the union before an account is written with it. Both arms do
+      // the same thing with the result.
       provider: (provider === "codex" ? "codex" : "claude") as ProviderId,
       authMode: "subscription",
       proxy: { prefix: pin },

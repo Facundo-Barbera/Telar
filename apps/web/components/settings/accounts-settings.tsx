@@ -381,6 +381,16 @@ export function GeneralSettings() {
     (latest, p) => (!latest || p.checkedAt > latest ? p.checkedAt : latest),
     null,
   );
+  // NOT A PROVIDER FORK — a count over provider-tagged rows, feeding a rule
+  // this file does not own. packages/core/src/accounts.ts:186 is the authority
+  // ("Codex supports one account for now"), and it throws whether or not this
+  // Select ever disables the option; the disable is only so the form says no
+  // before the server does. Left as a duplicate ON PURPOSE rather than pushed
+  // into a descriptor field: publishing "maxAccounts: 1" would read as a
+  // permanent property of the provider, and core's own comment says the limit
+  // is an open investigation about CODEX_HOME swapping a config tree — a
+  // temporary constraint dressed as a capability is the harder thing to delete
+  // once it stops being true.
   const hasCodex = accounts.some((a) => (a.provider ?? "claude") === "codex");
   // EVERY ENABLED ACCOUNT gets a row, whether or not it has usage.
   //

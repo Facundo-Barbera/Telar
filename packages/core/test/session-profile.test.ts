@@ -46,6 +46,7 @@ import {
   PROVIDER_CAPABILITIES,
   PROVIDERS,
   ProjectManifest,
+  profileRuntimeModeCeiling,
   providerCapabilities,
   providerPublishes,
   registerSessionProfile,
@@ -53,6 +54,8 @@ import {
   resetSessionProfiles,
   resolveSessionKind,
   resolveSessionProfile,
+  RUNTIME_MODES,
+  runtimeModeCeiling,
   SESSION_KINDS,
   sessionKindFromRole,
   sessionRoleFromWire,
@@ -87,7 +90,7 @@ const ctx = (over: Partial<SessionResolutionContext> = {}): SessionResolutionCon
   provider: "claude",
   manifest: manifestWith(),
   project: "demo",
-  permissionMode: "default",
+  runtimeMode: "auto",
   // The per-turn Ultra chip (story 2.2). Required on the context, so the
   // default here is the ordinary turn and every test that cares says so.
   ultraAnnotated: false,
@@ -754,15 +757,22 @@ describe("AC4 the provider port publishes what it supports", () => {
     expect(providerPublishes("codex", "interactive-approval")).toBe(true);
   });
 
-  test("AC4 the three Claude-only capabilities are exactly the measured divergences", () => {
-    // Was five. `mcp-servers` and `system-prompt-append` were closed by the
-    // adapter upgrade (dynamicTools + developerInstructions on thread/start),
-    // which is the point of measuring rather than assuming: this list shrinks
-    // when the adapter genuinely grows, and only then.
+  test("AC4 the four Claude-only capabilities are exactly the measured divergences", () => {
+    // Was five, then three, now four. `mcp-servers` and `system-prompt-append`
+    // were closed by the adapter upgrade (dynamicTools +
+    // developerInstructions on thread/start), which is the point of measuring
+    // rather than assuming: this list shrinks when the adapter genuinely grows,
+    // and only then. It GREW by `slash-commands`, measured on the stream side
+    // of the same fork — Claude's system:init carries `slash_commands` and the
+    // route forwards it; the Codex arm sends the literal `slashCommands: []`
+    // because the app-server announces none. That divergence existed before it
+    // was named; naming it is what let the composer stop testing a provider id
+    // in three places to find it out.
     const claudeOnly = PROVIDER_CAPABILITIES.filter((c) => !providerPublishes("codex", c));
     expect([...claudeOnly].sort()).toEqual([
       "pre-tool-use-hooks",
       "setting-sources",
+      "slash-commands",
       "tool-allow-deny-lists",
     ]);
     // Every one of those is published by Claude, or the list above is naming a
@@ -1006,7 +1016,7 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
 
   test("AC3 ToolPolicy is EXACTLY { deny, allow? } — adding a field breaks this compile", () => {
     // A type-level identity assertion, so a third field (a `grant`, a
-    // `permissionMode`, a `hooks`) breaks the build even when every runtime
+    // `runtimeMode`, a `hooks`) breaks the build even when every runtime
     // test still passes. `Equal` is the standard conditional-type identity
     // trick; the shape here is session-lease.test.ts's `AC11 the union is
     // EXACTLY held | reclaimable` pin, adapted.
@@ -1098,6 +1108,54 @@ describe("prove-run L6", () => {
       `a "${escalation.kind}" profile requires ${escalation.requiredCapabilities.join(", ")}; ` +
         `codex publishes ${providerCapabilities("codex").join(", ")}; unmet = ${unmet.join(", ")} ` +
         `→ a pre-SSE 400, and INV-6c pins the call site ahead of new ReadableStream`,
+    );
+  });
+});
+
+// ── The ceiling — a profile restricts, never widens ─────────────────────────
+
+// The kind→cap table and the clamp that consumes it. The clamp itself is proved
+// exhaustively in runtime-mode.test.ts; what is proved HERE is the pairing —
+// that every kind names a cap, and that the two together cannot hand a session
+// more than its composer asked for.
+describe("runtimeModeCeiling — the cap a session kind puts on the runtime mode", () => {
+  test("every kind has a ceiling, and it is a real runtime mode", () => {
+    for (const kind of SESSION_KINDS) {
+      expect(RUNTIME_MODES).toContain(runtimeModeCeiling(kind));
+    }
+  });
+
+  test("no kind's ceiling can UPGRADE any choice — the clamp is a floor on caution", () => {
+    // The property the whole mechanism exists for, stated over the entire
+    // space rather than sampled: for every kind and every mode a client could
+    // send, the effective mode is never more permissive than what was sent.
+    for (const kind of SESSION_KINDS) {
+      for (const chosen of RUNTIME_MODES) {
+        const effective = profileRuntimeModeCeiling(chosen, runtimeModeCeiling(kind));
+        expect(RUNTIME_MODES.indexOf(effective)).toBeLessThanOrEqual(RUNTIME_MODES.indexOf(chosen));
+      }
+    }
+  });
+
+  test("a profile cannot select full-access on a user's behalf", () => {
+    // The moat-adjacent claim, checked from the only direction that matters: a
+    // session that did not ask for full access never gets it, whatever kind it
+    // resolves to. Note the argument the table CANNOT supply — there is no
+    // ceiling value that makes this fail, because the ceiling is only ever a
+    // cap and the session's own choice is the other input.
+    for (const kind of SESSION_KINDS) {
+      for (const chosen of RUNTIME_MODES.filter((m) => m !== "full-access")) {
+        expect(profileRuntimeModeCeiling(chosen, runtimeModeCeiling(kind))).not.toBe("full-access");
+      }
+    }
+  });
+
+  test("escalation is capped — the read-only discussion chat cannot run write-capable", () => {
+    // The one kind that is not at the top of the ladder, named so a future
+    // edit to the table has to argue with a test rather than a comment.
+    expect(runtimeModeCeiling("escalation")).toBe("approval-required");
+    expect(profileRuntimeModeCeiling("auto", runtimeModeCeiling("escalation"))).toBe(
+      "approval-required",
     );
   });
 });
