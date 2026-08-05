@@ -58,7 +58,7 @@
           "arch": "arm64"
         }
       ],
-      "identity": null
+      "hardenedRuntime": true
     }
   },
   "devDependencies": {

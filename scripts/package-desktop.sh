@@ -84,7 +84,9 @@ echo "==> stamped local build: $SHORT_SHA (dirty=$DIRTY)"
 
 echo "==> package unsigned macOS arm64 app"
 cd "$DESKTOP_DIR"
-NODE_OPTIONS= bunx electron-builder --dir
+# Force unsigned regardless of any Developer ID cert sitting in Keychain — this
+# script is for fast local iteration, not a release build.
+CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir
 
 APP="$DESKTOP_DIR/release/mac-arm64/Telar.app"
 test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }

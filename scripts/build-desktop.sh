@@ -17,14 +17,28 @@ set -euo pipefail
 # --- args --------------------------------------------------------------------
 REF="origin/main"
 OUT="apps/desktop/release/from-origin"
+TARGETS="dir"
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="${2:?--ref needs a value}"; shift 2 ;;
     --out) OUT="${2:?--out needs a value}"; shift 2 ;;
+    --targets) TARGETS="${2:?--targets needs a value}"; shift 2 ;;
     --ref=*) REF="${1#*=}"; shift ;;
     --out=*) OUT="${1#*=}"; shift ;;
+    --targets=*) TARGETS="${1#*=}"; shift ;;
     -h|--help)
-      echo "usage: build-desktop.sh [--ref <git ref, default origin/main>] [--out <dir, default apps/desktop/release/from-origin>]"
+      cat <<'HELP'
+usage: build-desktop.sh [--ref <git ref, default origin/main>]
+                         [--out <dir, default apps/desktop/release/from-origin>]
+                         [--targets <csv electron-builder mac targets, default dir>]
+
+--targets controls what electron-builder produces (e.g. "dir", "zip,dmg").
+Signing and notarization are NOT flags here — electron-builder picks them up
+automatically: it signs when a "Developer ID Application" cert is discoverable
+in Keychain, and notarizes when APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER
+are set in the environment. With no cert present, --targets zip,dmg still
+produces unsigned artifacts.
+HELP
       exit 0 ;;
     *) echo "build-desktop: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -107,14 +121,25 @@ JSON
 log "stamped build-info.json ($SHORT_SHA)"
 
 # --- package -----------------------------------------------------------------
-log "electron-builder --dir"
+# shellcheck disable=SC2206 # intentional word-split of a CSV into --mac args
+TARGET_ARGS=(${TARGETS//,/ })
+log "electron-builder --mac ${TARGET_ARGS[*]}"
 cd "$SNAP/apps/desktop"
-NODE_OPTIONS= bunx electron-builder --dir
+NODE_OPTIONS= bunx electron-builder --mac "${TARGET_ARGS[@]}"
 
 BUILT_APP="$SNAP/apps/desktop/release/mac-arm64/Telar.app"
 if [ ! -d "$BUILT_APP" ]; then
   echo "build-desktop: expected app not found at $BUILT_APP" >&2
   exit 1
+fi
+
+# --- verify signing (only meaningful once a Developer ID cert is in play) ----
+if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
+  log "app is signed — verifying"
+  codesign --verify --deep --strict "$BUILT_APP"
+  spctl -a -vvv --type execute "$BUILT_APP"
+else
+  log "app is unsigned (no Developer ID cert discovered) — skipping signature verification"
 fi
 
 # --- atomically swap into --out (build beside, then swap) --------------------
@@ -130,6 +155,20 @@ fi
 mv "$STAGE" "$DEST_APP"          # atomic rename on the same filesystem
 rm -rf "$BACKUP"
 log "installed: $DEST_APP"
+
+# --- copy any distributable artifacts (zip/dmg) out before the snapshot is
+# cleaned up, staple their notarization ticket if they carry one -------------
+ARTIFACTS=()
+shopt -s nullglob
+for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip; do
+  DEST_ARTIFACT="$OUT_DIR/$(basename "$f")"
+  cp "$f" "$DEST_ARTIFACT"
+  if xcrun stapler validate "$DEST_ARTIFACT" >/dev/null 2>&1; then
+    log "stapled notarization ticket verified: $(basename "$DEST_ARTIFACT")"
+  fi
+  ARTIFACTS+=("$DEST_ARTIFACT")
+done
+shopt -u nullglob
 
 # --- smoke the packaged binary (fail unless SMOKE_OK) ------------------------
 log "smoke: $DEST_APP --smoke"
@@ -148,3 +187,12 @@ echo
 echo "BUILD OK"
 echo "  app: $DEST_APP"
 echo "  sha: $SHORT_SHA ($REF)"
+if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+  echo "  artifacts:"
+  for a in "${ARTIFACTS[@]}"; do
+    echo "    $a"
+  done
+  echo
+  echo "To publish to a private GitHub Release, run e.g.:"
+  echo "  gh release create v<version> --repo <owner>/<repo> ${ARTIFACTS[*]}"
+fi
