@@ -14,6 +14,7 @@
 // here is everything that does not earn permanent space beside every title.
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
@@ -27,7 +28,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { deleteChat, patchChat } from "@/lib/chat-actions";
-import { isUnread, type SidebarSession } from "@/lib/session-list";
+import { isUnread, newSessionHref, type SidebarSession } from "@/lib/session-list";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -42,6 +43,7 @@ export function SessionInboxMenu({
   session,
   settled,
   snoozed,
+  active = false,
   onRename,
   onDone,
   className,
@@ -56,11 +58,21 @@ export function SessionInboxMenu({
    * real clock during render is both a hydration hazard and impure.
    */
   snoozed: boolean;
+  /**
+   * Whether this row is the session currently open in the main view. Settling
+   * or archiving THAT session must hand the user off to a fresh one rather
+   * than leave them stranded on a view whose row just left "Recent" — see
+   * session-row.tsx's inline Settle button for the identical rule and the
+   * survivor-rule explanation. Restoring/unsettling never navigates: it makes
+   * the row MORE reachable, not less.
+   */
+  active?: boolean;
   /** Switches the row into its inline editor. The row owns that state. */
   onRename?: () => void;
   onDone?: () => void;
   className?: string;
 }) {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -75,6 +87,10 @@ export function SessionInboxMenu({
       onDone?.();
       setBusy(false);
     }
+  };
+
+  const leaveIfActive = () => {
+    if (active && session.project) router.push(newSessionHref(session.project));
   };
 
   // Settling is explicit, but a row can also be shelved by the derived
@@ -126,7 +142,9 @@ export function SessionInboxMenu({
           )
         ) : (
           <DropdownMenuItem
-            onClick={() => void run(() => patchChat(session.id, { settled: true }))}
+            onClick={() =>
+              void run(() => patchChat(session.id, { settled: true })).then(leaveIfActive)
+            }
           >
             <CircleCheckIcon />
             Settle
@@ -162,9 +180,15 @@ export function SessionInboxMenu({
         </DropdownMenuItem>
 
         <DropdownMenuItem
-          onClick={() =>
-            void run(() => patchChat(session.id, { archived: !session.archived }))
-          }
+          onClick={() => {
+            // Captured before the toggle: only the archiving direction sends
+            // the user away. Restoring makes the row more reachable, not
+            // less, and must leave you exactly where you are.
+            const willArchive = !session.archived;
+            void run(() => patchChat(session.id, { archived: willArchive })).then(() => {
+              if (willArchive) leaveIfActive();
+            });
+          }}
         >
           {session.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
           {session.archived ? "Restore" : "Archive"}

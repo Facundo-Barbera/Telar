@@ -28,6 +28,15 @@ export type SidebarSession = {
   // never persisted, so a row can only claim to be running while a turn
   // actually is.
   live?: boolean;
+  // Also derived per request by GET /api/chats, from a SEPARATE source: the
+  // Ultra run registry (TELAR_HOME/ultra/*), joined on sessionId. A run
+  // launched from this session keeps going as its own detached process after
+  // the HTTP turn that launched it returns, so `live` above can already be
+  // false while this session is still doing real work (issue #17) — the two
+  // signals are independent and a row must be able to show either without
+  // conflating them. Absent or 0 both mean "nothing running in the
+  // background"; only a positive count is ever rendered.
+  liveBackgroundRuns?: number;
 };
 
 // Which slice of the inbox the list is showing. "all" is the banded default
@@ -208,6 +217,20 @@ export function deriveSessionList<T extends SidebarSession>({
     hasMoreSnoozed: snoozedPage.hasMore,
     flat: false,
   };
+}
+
+/**
+ * Where settling or archiving the session you are currently viewing should
+ * send you (issue #12). A fresh, unpersisted composer in the SAME project —
+ * not `/`, which server-redirects to whichever project's most-recently-
+ * updated chat happens to be (app/page.tsx), and could easily be a different
+ * project than the one you were just working in. The session's own already-
+ * known `project` is a fact the caller already has; this just spells the
+ * route consistently everywhere it is needed (session-row.tsx,
+ * session-inbox-menu.tsx, app/projects/[name]/page.tsx's own inline copy).
+ */
+export function newSessionHref(project: string): string {
+  return `/projects/${encodeURIComponent(project)}/sessions/new`;
 }
 
 export function activeSessionFromPathname(pathname: string): string | undefined {
