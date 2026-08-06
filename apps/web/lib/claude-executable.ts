@@ -6,4 +6,10 @@
 // and every child agent died in milliseconds. This file stays as the app-layer
 // import path its three call sites already use; it must never grow a second
 // copy of the logic.
-export { claudeExecutableOptions } from "@telar/core";
+export {
+  claudeExecutableOptions,
+  claudeCliUsable,
+  resolveClaudeCli,
+  type ClaudeCliResolution,
+  type ClaudeCliStatus,
+} from "@telar/core";
