@@ -43,6 +43,8 @@ import {
 } from "@/components/session/ultra-run-views";
 import {
   AGENT_STATUS_LABEL,
+  PHASE_STATUS_NOTE,
+  agentLabelInPhase,
   agentModelLabel,
   agentRunStatus,
   agentTokenTotal,
@@ -50,6 +52,7 @@ import {
   anchorSpend,
   type AgentRow,
   type AgentRunStatus,
+  type PhaseStatus,
   type RunSnapshot,
 } from "@/lib/ultra-runs";
 import { fmtTokens } from "@/lib/format";
@@ -217,17 +220,20 @@ export function UltraTabView({
             // named "unphased", and a separator character here is how this repo
             // has shipped a NUL byte four times.
             <div key={`phase:${group.title}`} className="min-w-0">
-              {group.title && (
-                <div className="mb-1 min-w-0 truncate px-0.5 text-xs font-medium uppercase tracking-wider text-muted-foreground/70">
-                  {group.title}
-                </div>
-              )}
+              {group.title && <PhaseHeader title={group.title} status={group.status} />}
+              {/* HEADERS ONLY FOR A PHASE THAT HAS NOT RUN — no skeleton rows,
+                  ever. The script decides at runtime how many agents a phase
+                  spawns (one per lens; one only if the previous agent survived),
+                  so a placeholder row here would be a count nobody knows. A
+                  pending phase is a titled empty group and that is the whole of
+                  it. */}
               <div className="flex min-w-0 flex-col gap-0.5">
                 {group.agents.map((agent) => (
                   <WideAgentRow
                     key={agent.ordinal}
                     runId={run.runId}
                     agent={agent}
+                    groupTitle={group.title}
                     provider={provider}
                     isOpen={isOpen}
                     setOpen={setOpen}
@@ -252,24 +258,64 @@ export function UltraTabView({
   );
 }
 
+// ── one phase heading ───────────────────────────────────────────────────────
+
+// A DECLARED PHASE IS SHOWN BEFORE IT RUNS (issue #27), so a heading now has to
+// carry which of the four states it is in. Only two of them get a word — the
+// ones with no agent rows beneath to speak for them — and that table lives in
+// `lib/ultra-runs.ts` beside the vocabulary, not here.
+//
+// `never reached` IS DIMMED, NOT HIDDEN. The run ended without ever entering
+// this phase (a script that returns early — `fix` runs only if the author
+// survived), and that is a fact worth reading: it says the run took the short
+// path, which a missing box cannot. Dropping to the faintest tone puts it behind
+// the phases that actually happened without pretending it never existed.
+function PhaseHeader({ title, status }: { title: string; status: PhaseStatus }) {
+  const note = PHASE_STATUS_NOTE[status];
+  return (
+    <div className="mb-1 flex min-w-0 items-baseline gap-1.5 px-0.5">
+      <span
+        className={cn(
+          "min-w-0 truncate text-xs font-medium uppercase tracking-wider",
+          status === "never-reached" ? "text-muted-foreground/40" : "text-muted-foreground/70",
+        )}
+      >
+        {title}
+      </span>
+      {note && (
+        <span className="shrink-0 text-[10px] lowercase tracking-normal text-muted-foreground/40">
+          {note}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── one agent, at readable size ─────────────────────────────────────────────
 
 function WideAgentRow({
   runId,
   agent,
+  groupTitle,
   provider,
   isOpen,
   setOpen,
 }: {
   runId: string;
   agent: AgentRow;
+  /** the enclosing phase, for the label's de-prefixing ONLY — a row inside a
+   *  `SURVEY` header does not repeat `survey:` */
+  groupTitle: string;
   provider: SpendProvider;
   isOpen: (renderKey: string, fallback?: boolean) => boolean;
   setOpen: (renderKey: string, open: boolean) => void;
 }) {
   const key = `agent:${agent.ordinal}`;
   const open = isOpen(key, false);
-  const label = agent.label ?? `agent ${agent.ordinal}`;
+  // THE STORED LABEL IS UNTOUCHED — this strips the header's own word off the
+  // front for THIS position only, and the rule (with its exact-match and
+  // empty-result cases) lives in `lib/ultra-runs.ts` where a test drives it.
+  const label = agentLabelInPhase(agent.label ?? `agent ${agent.ordinal}`, groupTitle);
   // `Model Name Context·effort`, resolved through the product's own registry —
   // never the bare alias the script typed. `model·effort` when effort is
   // present, model ALONE when it is not: never a chip whose second half is a

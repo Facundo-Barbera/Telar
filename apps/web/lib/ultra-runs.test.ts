@@ -31,11 +31,13 @@ import { LIVE_SNIPPET_CLASS } from "@/components/session/ultra-rail";
 import { cn } from "@/lib/utils";
 import {
   ACCOUNTING_LOG_PREFIXES,
+  PHASE_STATUS_NOTE,
   ULTRA_ANCHOR_KIND,
   ULTRA_TOOL_NAME,
   ultraTabId,
   ultraTabRunId,
   UNPHASED,
+  agentLabelInPhase,
   agentRows,
   agentTokenTotal,
   orderRunsForPanel,
@@ -44,6 +46,7 @@ import {
   anchorShape,
   anchorSpend,
   armReducer,
+  declaredPhases,
   extractRunId,
   filterRunsBySession,
   isSessionRoute,
@@ -352,6 +355,302 @@ describe("4.2 T5 — phase membership is stream order, and grouping is idempoten
     const groups = phaseGroups(s, agentRows(s, []));
     expect(groups).toHaveLength(1);
     expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0, 1]);
+  });
+
+  test("with NO manifest every observed group is `done` except the current one — the old two-state reading", () => {
+    // The status field is new (issue #27) and the manifest-less call is the one
+    // every pre-existing caller makes, so this pins that the addition did not
+    // change what an observed-only grouping SAYS: the last phase seen is the
+    // running one, everything before it has been left behind, and nothing is
+    // pending because nothing was declared.
+    const s: UltraEventLike[] = [ev.phase("Scan"), ev.start(0), ev.phase("Rewrite"), ev.start(1)];
+    expect(phaseGroups(s, agentRows(s, [])).map((g) => g.status)).toEqual(["done", "running"]);
+  });
+});
+
+// ── issue #27 part 1 — the DECLARED phases are shown before they run ─────────
+
+describe("issue #27 — a declared phase is a group before it happens, and has four states", () => {
+  // The reported run: `ci-verification-gate`, four phases declared at launch,
+  // one box on screen. The user knows more is coming; the surface did not say so.
+  const declared = (over: Partial<UltraManifestLike> = {}) =>
+    manifest({
+      meta: { name: "ci-verification-gate", phases: ["survey", "author", "verify", "fix"] },
+      ...over,
+    });
+
+  test("all four declared phases are groups on a run that has only reached the first", () => {
+    const s: UltraEventLike[] = [ev.phase("survey"), ev.start(0), ev.start(1)];
+    const groups = phaseGroups(s, agentRows(s, []), declared());
+    expect(groups.map((g) => g.title)).toEqual(["survey", "author", "verify", "fix"]);
+    expect(groups.map((g) => g.status)).toEqual(["running", "pending", "pending", "pending"]);
+  });
+
+  test("HEADERS ONLY — a pending phase has NO agent rows, because nothing knows how many it will spawn", () => {
+    // The constraint that makes this safe to render at all: `verify` spawns one
+    // agent per lens and `fix` spawns one only if the author survived, so a
+    // skeleton row would be a fabricated count (this module's hard rule 3).
+    const s: UltraEventLike[] = [ev.phase("survey"), ev.start(0)];
+    const groups = phaseGroups(s, agentRows(s, []), declared());
+    expect(groups.filter((g) => g.status === "pending").every((g) => g.agents.length === 0)).toBe(true);
+    expect(groups.flatMap((g) => g.agents.map((a) => a.ordinal))).toEqual([0]);
+  });
+
+  test("a phase that never began on a TERMINAL run is `never-reached`, never a spinner", () => {
+    // The script returns early when the author dies, so `fix` legitimately never
+    // happens. Left as `pending` it would spin forever on a finished run.
+    const s: UltraEventLike[] = [
+      ev.phase("survey"),
+      ev.start(0),
+      ev.agent(0),
+      ev.phase("author"),
+      ev.start(1),
+      ev.agent(1, { ok: false }),
+    ];
+    const groups = phaseGroups(s, agentRows(s, [], "failed"), declared({ state: "failed" }));
+    expect(groups.map((g) => g.status)).toEqual(["done", "done", "never-reached", "never-reached"]);
+    // NOTHING IS `running` ON A RUN THAT HAS ENDED — including the phase that
+    // was current when it died. `done` here means "began and is no longer in
+    // progress"; whether the work went well is what the agent rows say, and this
+    // one's did not.
+    expect(groups.some((g) => g.status === "running")).toBe(false);
+    expect(groups[1]!.agents[0]!.ok).toBe(false);
+  });
+
+  test("stopped and done are terminal for this too — it is the RUN's state, not a phase event", () => {
+    // AD-15's on-read `running` → `stopped` rewrite emits no event at all, which
+    // is why the manifest is the source here.
+    const s: UltraEventLike[] = [ev.phase("survey")];
+    for (const state of ["done", "stopped", "failed"] as const) {
+      expect(phaseGroups(s, [], declared({ state })).map((g) => g.status)).toEqual([
+        "done",
+        "never-reached",
+        "never-reached",
+        "never-reached",
+      ]);
+    }
+    expect(phaseGroups(s, [], declared({ state: "running" })).map((g) => g.status)).toEqual([
+      "running",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+  });
+
+  test("THE DECLARED LIST SEEDS THE ORDER; IT DOES NOT RESTRICT IT — an undeclared phase is appended", () => {
+    // A script may call `phase()` with a title that is not in `meta.phases`.
+    // Those must still appear, exactly as they did before this change.
+    const s: UltraEventLike[] = [ev.phase("survey"), ev.phase("triage"), ev.start(0)];
+    const groups = phaseGroups(s, agentRows(s, []), declared());
+    expect(groups.map((g) => g.title)).toEqual(["survey", "author", "verify", "fix", "triage"]);
+    expect(groups.find((g) => g.title === "triage")!.status).toBe("running");
+    expect(groups.find((g) => g.title === "triage")!.agents.map((a) => a.ordinal)).toEqual([0]);
+  });
+
+  test("declared order wins over observed order for a phase in both", () => {
+    // A script that runs its declared phases out of order gets the order it
+    // PUBLISHED, because that is the order the user was promised at launch and
+    // the one the group list is a preview of.
+    const s: UltraEventLike[] = [ev.phase("verify"), ev.phase("survey")];
+    expect(phaseGroups(s, [], declared()).map((g) => g.title)).toEqual([
+      "survey",
+      "author",
+      "verify",
+      "fix",
+    ]);
+  });
+
+  test("a duplicated title in `meta.phases` is still ONE group — the title is the identity", () => {
+    const m = manifest({ meta: { name: "n", phases: ["a", "b", "a"] } });
+    expect(phaseGroups([], [], m).map((g) => g.title)).toEqual(["a", "b"]);
+  });
+
+  test("CASE DRIFT between the declaration and the call is ONE group, spelled the way it was DECLARED", () => {
+    // Nothing type-checks `meta.phases`, so `phases: ["Survey"]` +
+    // `phase("survey")` is a legal run. Byte-exact identity made those two
+    // groups — and the header uppercases, so the screen read SURVEY *pending*
+    // directly above SURVEY with its agents running: two identical headers, one
+    // of them stating as fact that the phase had not begun, beside a sliver
+    // reading "1 of 2" next to three boxes.
+    const m = manifest({ meta: { name: "n", phases: ["Survey", "Author"] } });
+    const s: UltraEventLike[] = [ev.phase("survey"), ev.start(0)];
+    const groups = phaseGroups(s, agentRows(s, []), m);
+    expect(groups.map((g) => g.title)).toEqual(["Survey", "Author"]);
+    expect(groups.map((g) => g.status)).toEqual(["running", "pending"]);
+    expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0]);
+    // …and the two readers of the same declared array now agree on screen.
+    expect(progressFraction(m, s)).toEqual({ seen: 1, declared: 2 });
+    // Surrounding whitespace drifts the same way, and the row's own label still
+    // loses the prefix under the canonical title (the label rule is already
+    // case-insensitive).
+    expect(phaseGroups([ev.phase("  SURVEY ")], [], m).map((g) => g.title)).toEqual(["Survey", "Author"]);
+    expect(agentLabelInPhase("survey:measure", groups[0]!.title)).toBe("measure");
+    // BOTH DRIFTED SPELLINGS OF ONE PHASE COUNT ONCE in the sliver too — folding
+    // them in the group list alone would have moved the disagreement rather than
+    // removed it ("2 of 2" beside one running box and one pending).
+    const twice: UltraEventLike[] = [ev.phase("survey"), ev.phase("SURVEY")];
+    expect(progressFraction(m, twice)).toEqual({ seen: 1, declared: 2 });
+    expect(phaseGroups(twice, [], m).map((g) => g.title)).toEqual(["Survey", "Author"]);
+  });
+
+  test("an UNDECLARED title is still appended verbatim — canonicalisation is not a whitelist", () => {
+    // The seed-not-whitelist rule survives the case fold: a title with no
+    // declared spelling to answer to keeps its own, exactly as before.
+    const m = manifest({ meta: { name: "n", phases: ["Survey"] } });
+    const groups = phaseGroups([ev.phase("survey"), ev.phase("TrIaGe")], [], m);
+    expect(groups.map((g) => g.title)).toEqual(["Survey", "TrIaGe"]);
+  });
+
+  test("an EMPTY declared title seeds no phantom group — that string is the unphased group's identity", () => {
+    // `declaredPhases` accepts any array of strings, so `["survey", ""]` is a
+    // legal read. Seeded, it drew a headerless box that still consumed the
+    // parent's gap — and worse, planted UNPHASED mid-list, so agents that ran
+    // before the first `phase()` call landed there instead of at the top.
+    const m = manifest({ meta: { name: "n", phases: ["survey", "", "   "] } });
+    // Dropped in the SHARED read, so the sliver's denominator does not go on
+    // counting a phase the group list refuses to draw.
+    expect(declaredPhases(m)).toEqual(["survey"]);
+    expect(progressFraction(m, [ev.phase("survey")])).toEqual({ seen: 1, declared: 1 });
+    expect(phaseGroups([], [], m).map((g) => g.title)).toEqual(["survey"]);
+    const s: UltraEventLike[] = [ev.start(0), ev.phase("survey"), ev.start(1)];
+    const groups = phaseGroups(s, agentRows(s, []), m);
+    expect(groups.map((g) => g.title)).toEqual([UNPHASED, "survey"]);
+    expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0]);
+    // A declaration of nothing but blanks is not a declaration at all — no
+    // sliver, no seed, exactly as a malformed `phases` behaves.
+    const blank = manifest({ meta: { name: "n", phases: ["", " "] } });
+    expect(declaredPhases(blank)).toBeUndefined();
+    expect(progressFraction(blank, [])).toBeUndefined();
+    expect(phaseGroups([], [], blank)).toEqual([]);
+  });
+
+  test("the unphased group KEEPS ITS PLACE at the top — declared headers do not slide above it", () => {
+    // Agents that ran before the first `phase()` call are chronologically first.
+    // Seeding the declared titles ahead of them would file the run's opening
+    // agents underneath every header on screen.
+    const s: UltraEventLike[] = [ev.start(0), ev.phase("survey"), ev.start(1)];
+    const groups = phaseGroups(s, agentRows(s, []), declared());
+    expect(groups.map((g) => g.title)).toEqual([UNPHASED, "survey", "author", "verify", "fix"]);
+    expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0]);
+    expect(groups[0]!.status).toBe("done");
+  });
+
+  test("ONE DEFENSIVE READ, TWO READERS — a `phases` the sliver rejects seeds no groups either", () => {
+    // The reuse is the point: if the group list validated `meta.phases`
+    // separately from `progressFraction`, the sliver could read `1 of 4` beside
+    // a single box, or four boxes could appear with no sliver at all. Nothing
+    // type-checks `ScriptMeta`, so both readers go through `declaredPhases`.
+    const events: UltraEventLike[] = [ev.phase("survey")];
+    const malformed = [
+      undefined,
+      3,
+      [],
+      [{ title: "x" }],
+      ["ok", 7],
+      "survey,author",
+    ];
+    for (const phases of malformed) {
+      const m = manifest({ meta: { name: "n", ...(phases === undefined ? {} : { phases }) } });
+      expect(declaredPhases(m)).toBeUndefined();
+      expect(progressFraction(m, events)).toBeUndefined();
+      // …and the grouping falls back to observed-only, byte for byte.
+      expect(phaseGroups(events, [], m)).toEqual(phaseGroups(events, []));
+    }
+    // The positive half, so the pin cannot pass by rejecting everything.
+    const good = declared();
+    expect(declaredPhases(good)).toEqual(["survey", "author", "verify", "fix"]);
+    expect(progressFraction(good, events)).toEqual({ seen: 1, declared: 4 });
+    expect(phaseGroups(events, [], good)).toHaveLength(4);
+    expect(declaredPhases(null)).toBeUndefined();
+  });
+
+  test("runSnapshot seeds the groups ONLY once the journal has been read (B1's rule, unchanged)", () => {
+    const finished = declared({ state: "done" });
+    // NOT READ: four `never reached` headers over a run that in fact ran all
+    // four would be exactly the wrong-number-stated-as-fact B1 removed. So the
+    // group list and the sliver stay absent together, on the same fact.
+    const unread = runSnapshot(finished, null, [], "u-27");
+    expect(unread.phases).toEqual([]);
+    expect("progress" in unread).toBe(false);
+    // SUPPRESSING THE SEED IS NOT THE SAME FACT AS "no manifest". The agent
+    // INDEX answers for a run whose journal was never streamed, so those rows
+    // reach the unphased group with `events` still null — and reading the state
+    // off a nulled manifest defaulted them to `running` on a run that is done.
+    const byIndex = runSnapshot(finished, null, [{ ordinal: 0, settled: true, attempt: 1, lastText: "x" }], "u-27");
+    expect(byIndex.phases.map((g) => ({ title: g.title, status: g.status }))).toEqual([
+      { title: UNPHASED, status: "done" },
+    ]);
+    // READ: the seed applies, and the two phases that never ran say so.
+    const read = runSnapshot(finished, [ev.phase("survey"), ev.start(0), ev.agent(0), ev.phase("author")]);
+    expect(read.phases.map((g) => ({ title: g.title, status: g.status }))).toEqual([
+      { title: "survey", status: "done" },
+      { title: "author", status: "done" },
+      { title: "verify", status: "never-reached" },
+      { title: "fix", status: "never-reached" },
+    ]);
+    expect(read.progress).toEqual({ seen: 2, declared: 4 });
+  });
+
+  test("every status has a note, and only the two silent ones are empty", () => {
+    // The closed table the header renders. `done`/`running` have agent rows
+    // beneath them saying more than a word could; the other two have nothing
+    // beneath them at all, which is precisely why they need one.
+    expect(Object.keys(PHASE_STATUS_NOTE).sort()).toEqual(
+      ["done", "never-reached", "pending", "running"].sort(),
+    );
+    expect(PHASE_STATUS_NOTE.pending).toBe("pending");
+    expect(PHASE_STATUS_NOTE["never-reached"]).toBe("not reached");
+    expect(PHASE_STATUS_NOTE.done).toBe("");
+    expect(PHASE_STATUS_NOTE.running).toBe("");
+  });
+});
+
+// ── issue #27 part 2 — a row does not repeat the header above it ─────────────
+
+describe("issue #27 — an agent label drops the phase prefix INSIDE that phase", () => {
+  test("the reported rows: `survey:measure` under SURVEY reads `measure`", () => {
+    expect(agentLabelInPhase("survey:measure", "survey")).toBe("measure");
+    expect(agentLabelInPhase("survey:style", "survey")).toBe("style");
+    expect(agentLabelInPhase("survey:desktop", "survey")).toBe("desktop");
+  });
+
+  test("case-insensitive, and the optional space goes with the colon", () => {
+    // A header renders uppercase, so the label a script wrote in lower case must
+    // still match the title it was written for.
+    expect(agentLabelInPhase("SURVEY:measure", "survey")).toBe("measure");
+    expect(agentLabelInPhase("Survey: measure", "SURVEY")).toBe("measure");
+    expect(agentLabelInPhase("survey:  measure", "survey")).toBe("measure");
+  });
+
+  test("EXACT TITLE MATCH ONLY — a prefix that merely starts the same is left alone", () => {
+    // A substring rule would eat the first word of a real label.
+    expect(agentLabelInPhase("fixup:lint", "fix")).toBe("fixup:lint");
+    expect(agentLabelInPhase("survey", "survey")).toBe("survey");
+    expect(agentLabelInPhase("measure:survey", "survey")).toBe("measure:survey");
+    expect(agentLabelInPhase("verify:lens", "survey")).toBe("verify:lens");
+  });
+
+  test("stripping to nothing renders the ORIGINAL — a nameless row says less than a redundant one", () => {
+    expect(agentLabelInPhase("survey:", "survey")).toBe("survey:");
+    expect(agentLabelInPhase("survey:   ", "survey")).toBe("survey:   ");
+  });
+
+  test("the UNPHASED group strips nothing — its title is the empty string", () => {
+    // Otherwise a label that happens to begin with a colon would silently lose
+    // it in the one group that has no header to supply the context.
+    expect(agentLabelInPhase(":odd", UNPHASED)).toBe(":odd");
+    expect(agentLabelInPhase("survey:measure", UNPHASED)).toBe("survey:measure");
+  });
+
+  test("THE STORED LABEL IS UNTOUCHED — this is a rendering rule, not a projection one", () => {
+    // The prefix is genuinely useful in flat contexts (`ultra_inspect` output,
+    // the run anchor, any list with no header to supply the context), so the
+    // event, the row and every other reader keep it. Only the position that
+    // already says `SURVEY` above the row drops it.
+    const s: UltraEventLike[] = [ev.phase("survey"), ev.start(0, { label: "survey:measure" })];
+    const rows = agentRows(s, []);
+    expect(rows[0]!.label).toBe("survey:measure");
+    expect(phaseGroups(s, rows)[0]!.agents[0]!.label).toBe("survey:measure");
   });
 });
 
@@ -1586,6 +1885,21 @@ describe("AC-U3 — the wide view reuses the projection and the routes, and inve
     // explaining the removal satisfied it, so it would have stayed green while
     // measuring a comment. The projection still computes the field for the rail.
     expect(src).toContain("run.agentsDone !== undefined");
+    // ISSUE #27 — both new rules are the PROJECTION's, not the renderer's. The
+    // pane calls them; it does not re-derive "is this phase still coming" from
+    // `group.agents.length === 0`, and it does not slice the prefix off a label
+    // with its own `indexOf(":")`. A local re-derivation is the failure this
+    // whole module exists to prevent, and it is invisible in a repo with no DOM
+    // harness — a static read is the only place it can be caught.
+    //
+    // STRIPPED, for the reason spelled out four lines above: `src` is RAW, so a
+    // future edit that inlines the rule and leaves behind a comment naming the
+    // call it removed would keep these three green while measuring prose. All
+    // three appear in real code, so the stricter read costs nothing.
+    const code = stripComments(src);
+    expect(code).toContain("agentLabelInPhase(");
+    expect(code).toContain("PHASE_STATUS_NOTE[");
+    expect(code).toContain("group.status");
   });
 
   test("it shares the three readers rather than writing a fourth copy of the fetch", () => {

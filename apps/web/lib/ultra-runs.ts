@@ -122,7 +122,36 @@ export type AgentRow = {
   live: boolean;
 };
 
-export type PhaseGroup = { title: string; agents: AgentRow[] };
+/** WHERE A PHASE IS, AS ONE CLOSED VOCABULARY (issue #27). A group used to be
+ *  purely a fact — it existed because it had happened — and could therefore be
+ *  drawn with no state at all. Pre-displaying a DECLARED phase breaks that: a
+ *  group can now exist before anything has happened in it, and the difference
+ *  between "not yet" and "never" is not cosmetic. A run that returns early
+ *  (`fix` runs only if the author survived) leaves a declared phase that will
+ *  never begin, and rendering that as pending on a run that has already ended is
+ *  a worse lie than not showing the phase at all.
+ *
+ *  `done` here means BEGAN AND IS NO LONGER IN PROGRESS — not "succeeded". Phase
+ *  events carry no outcome; whether the work inside went well is what the agent
+ *  rows say. */
+export type PhaseStatus = "done" | "running" | "pending" | "never-reached";
+
+export type PhaseGroup = { title: string; agents: AgentRow[]; status: PhaseStatus };
+
+/** The word a header adds beside its title, or "" for the two states that need
+ *  none. A `done` or `running` group has AGENT ROWS UNDER IT saying so in more
+ *  detail, and a second word above them is noise; the two empty states are
+ *  exactly the ones with nothing beneath them to explain themselves. Kept as a
+ *  closed table beside the vocabulary — the same shape `AGENT_STATUS_LABEL`
+ *  uses — so a new status cannot reach the renderer without a DECISION about
+ *  what it says. (`Record` forces a key, not a word: `""` is legal and is used
+ *  twice above. What it rules out is the state nobody thought about.) */
+export const PHASE_STATUS_NOTE: Record<PhaseStatus, string> = {
+  done: "",
+  running: "",
+  pending: "pending",
+  "never-reached": "not reached",
+};
 
 export type RunSnapshot = {
   runId: string;
@@ -396,23 +425,73 @@ export const UNPHASED = "";
 // cheap re-run: membership is last-assignment-wins over a Map keyed by ordinal,
 // and group identity is the phase TITLE, so replaying the same stream twice
 // produces the same groups rather than doubling them.
+//
+// SEEDED FROM THE DECLARED PHASES, NEVER RESTRICTED BY THEM (issue #27). A
+// script names its phases at launch and the run view rendered only the ones that
+// had already happened, so a four-phase run showed one box and a long first
+// phase read as though it might be the whole run. `meta.phases` orders
+// `titleOrder` before the walk begins; a `phase()` call with a title that is NOT
+// declared still appears, appended where it is first observed, exactly as
+// before. The declared list is a seed, not a whitelist — a script is free to
+// disagree with its own metadata and the surface reports what actually ran.
+//
+// HEADERS ONLY. NEVER SKELETON AGENT ROWS. A phase's NAME is knowable in
+// advance and its CONTENTS are not: a script decides at runtime how many agents
+// to spawn (one per lens, or one only if a previous agent survived), so nothing
+// here can know a pending phase's row count. A pending phase is a titled EMPTY
+// group; inventing rows for it would be exactly the fabrication this module's
+// header refuses.
 export function phaseGroups(
   events: readonly UltraEventLike[],
   rows: readonly AgentRow[],
+  /** The manifest, for its DECLARED phases and for the run's own state — which
+   *  is what separates `pending` from `never-reached`. Omitted (or null) ⇒ the
+   *  observed-only grouping this function has always produced. */
+  manifest: UltraManifestLike | null = null,
+  /** Whether the declared phases may SEED groups. Split from the manifest
+   *  because the two facts are independent: whether this reader has read the
+   *  journal (B1) decides the seed, while the run's STATE is knowable from the
+   *  manifest either way. Folding them — passing `null` to suppress the seed —
+   *  also threw the state away, and reported a finished run's groups as
+   *  `running`. */
+  seedDeclared = true,
 ): PhaseGroup[] {
+  const declared = declaredPhases(manifest) ?? [];
   const titleOrder: string[] = [];
   const phaseOf = new Map<number, string>();
+  /** Titles a `phase` event or an agent was actually observed under. A declared
+   *  title absent from this has not begun — the whole pending/never distinction
+   *  rests on it, so it is tracked separately from `titleOrder`, which now
+   *  contains titles that may never have happened. */
+  const begun = new Set<string>();
   let current = UNPHASED;
   const note = (title: string) => {
     if (!titleOrder.includes(title)) titleOrder.push(title);
   };
+  // THE UNPHASED GROUP KEEPS ITS PLACE AT THE TOP when it exists because agents
+  // ran BEFORE the first `phase()` call. It is chronologically first by
+  // construction, and seeding the declared titles ahead of it would file the
+  // run's opening agents underneath every header on screen — a reordering of
+  // rows that were already rendering correctly.
+  for (const e of events) {
+    if (e.type === "phase") break;
+    if (e.type === "agent-start" || e.type === "agent") {
+      note(UNPHASED);
+      break;
+    }
+  }
+  if (seedDeclared) for (const title of declared) note(title);
   for (const e of events) {
     if (e.type === "phase") {
-      current = e.title;
+      // The DECLARED spelling wins over the one the call typed — see
+      // `canonicalPhaseTitle`; byte-exact identity drew the same phase twice.
+      current = canonicalPhaseTitle(e.title, declared);
       note(current);
+      begun.add(current);
     } else if (e.type === "agent-start" || e.type === "agent") {
       phaseOf.set(e.ordinal, current);
       note(current);
+      begun.add(current);
     }
   }
   const byTitle = new Map<string, AgentRow[]>();
@@ -423,11 +502,34 @@ export function phaseGroups(
       byTitle.set(title, []);
       note(title);
     }
+    // A row that reached this group did so under a title the run was really in
+    // — the agent index can answer for an ordinal whose `agent-start` this
+    // reader has not seen yet (`agentRows`' two-channels-one-truth merge).
+    begun.add(title);
     byTitle.get(title)!.push(row);
   }
+  // THE RUN'S STATE, NOT THE PHASE'S — there is no per-phase terminal event and
+  // there cannot be one, so "this declared phase will never happen" is a
+  // deduction from the RUN having ended, and `stopped` and `failed` end it just
+  // as `done` does. AD-15's on-read `running` → `stopped` rewrite is why this is
+  // read off the manifest rather than off a `state` event: a run killed by a
+  // server restart emits none, and a phase left spinning on it is the exact lie
+  // this state exists to prevent.
+  const runIsLive = (manifest?.state ?? "running") === "running";
+  const statusOf = (title: string): PhaseStatus => {
+    if (!begun.has(title)) return runIsLive ? "pending" : "never-reached";
+    // Phases are sequential in the stream — a `phase()` call ends the one before
+    // it — so the RUNNING phase is the last one observed, and only while the run
+    // itself is still going.
+    return runIsLive && title === current ? "running" : "done";
+  };
   // A phase that declared itself but has no agents yet is still a real group —
   // it is the run telling the user where it is.
-  return titleOrder.map((title) => ({ title, agents: byTitle.get(title) ?? [] }));
+  return titleOrder.map((title) => ({
+    title,
+    agents: byTitle.get(title) ?? [],
+    status: statusOf(title),
+  }));
 }
 
 // ── the progress sliver (AC11 proof 4) ──────────────────────────────────────
@@ -443,16 +545,47 @@ export function phaseGroups(
 // reads it ONLY when it is an array whose entries are all strings, exactly as
 // story 4.1's `ultraRunLabel` reads `meta.name` only when it is a non-empty
 // string. Anything else ⇒ `undefined` ⇒ NO SLIVER.
-export function progressFraction(
-  manifest: UltraManifestLike | null,
-  events: readonly UltraEventLike[],
-): { seen: number; declared: number } | undefined {
+//
+// ONE READ, TWO READERS (issue #27). The sliver's denominator and the phase
+// group list are now both fractions of the same declared array, so they are both
+// this function. A second copy of the four checks below is a way for the sliver
+// to say "1 of 4" while the group list shows one box — the two disagreeing on
+// screen about a `phases` nothing type-checks.
+export function declaredPhases(manifest: UltraManifestLike | null): string[] | undefined {
   const meta: unknown = manifest === null ? undefined : manifest.meta;
   const phases = isRecord(meta) ? meta.phases : undefined;
   if (!Array.isArray(phases) || phases.length === 0) return undefined;
   if (!phases.every((p) => typeof p === "string")) return undefined;
+  // A TITLE THAT RENDERS AS NOTHING IS NOT A PHASE — the same reading story 4.1
+  // gives `meta.name`, one paragraph up. The empty string is the UNPHASED
+  // group's own identity, so seeding it plants that group mid-list (where the
+  // run's pre-phase agents then land instead of at the top) behind a header the
+  // renderer draws blank. Dropped HERE and not at one reader, so the sliver's
+  // denominator and the group list keep counting the same array.
+  const named = (phases as string[]).filter((p) => p.trim() !== "");
+  return named.length === 0 ? undefined : named;
+}
+
+/** THE DECLARED SPELLING IS THE IDENTITY. Nothing type-checks `meta.phases`, so
+ *  a script may declare `"Survey"` and then call `phase("survey")` — and both
+ *  readers of that array have to fold the two together or they disagree on
+ *  screen: the group list drawing SURVEY *pending* above SURVEY (the header
+ *  uppercases) while the sliver counts the drifted call as a second phase
+ *  reached. An undeclared title has nothing to answer to and keeps its own
+ *  spelling, because the declared list is a seed and never a whitelist. */
+function canonicalPhaseTitle(title: string, declared: readonly string[]): string {
+  const key = title.trim().toLowerCase();
+  return declared.find((d) => d.trim().toLowerCase() === key) ?? title;
+}
+
+export function progressFraction(
+  manifest: UltraManifestLike | null,
+  events: readonly UltraEventLike[],
+): { seen: number; declared: number } | undefined {
+  const phases = declaredPhases(manifest);
+  if (phases === undefined) return undefined;
   const seen = new Set<string>();
-  for (const e of events) if (e.type === "phase") seen.add(e.title);
+  for (const e of events) if (e.type === "phase") seen.add(canonicalPhaseTitle(e.title, phases));
   return { seen: Math.min(seen.size, phases.length), declared: phases.length };
 }
 
@@ -494,7 +627,20 @@ export function runSnapshot(
     updatedAt: manifest?.updatedAt ?? 0,
     ...(sourced ? { agentsDone: rows.filter((r) => r.settled).length } : {}),
     agentsTotal: undefined,
-    phases: phaseGroups(journal, rows),
+    // THE DECLARED PHASES ARE SEEDED ONLY ONCE THE JOURNAL HAS BEEN READ, and
+    // the `events !== null` term is the same one `progress` above carries, for
+    // the same reason (B1). Unread means this reader does not know which phases
+    // BEGAN — so seeding a terminal run's four declared phases from its manifest
+    // alone would draw four `never reached` headers over a run that in fact ran
+    // all four. Absent until sourced; the group list and the sliver appear
+    // together, on the same fact.
+    //
+    // THE MANIFEST ITSELF GOES THROUGH EITHER WAY. Suppressing the seed by
+    // nulling it also threw away the run's STATE, and the agent INDEX can put
+    // rows in the unphased group with the journal still unread — so a finished
+    // run's one group came back `running`, the exact lie the fourth state exists
+    // to prevent.
+    phases: phaseGroups(journal, rows, manifest, events !== null),
     narrator: narratorLines(journal),
     ...(progress !== undefined ? { progress } : {}),
     pending: manifest === null,
@@ -919,11 +1065,13 @@ export function spliceRunAnchors(
   return out;
 }
 
-// ── the agent row's three derived fields (owner ruling, 2026-07-31) ──────────
+// ── the agent row's derived fields (owner ruling, 2026-07-31) ────────────────
 //
-// All three live HERE and not in the component for this file's stated reason:
+// All of them live HERE and not in the component for this file's stated reason:
 // what a row SAYS is a decision and gets a test; what it looks like is layout
-// and does not. The component that renders them owns no rule at all.
+// and does not. The component that renders them owns no rule at all. (Three when
+// this section was written; issue #27 added the label's de-prefixing as the
+// fourth, for exactly the same reason — it is a rule about what a row says.)
 
 /** THE ROW'S STATUS, as one closed vocabulary. `AgentRow` carries three
  *  independent booleans (`live`, `settled`, `ok`) whose combinations a renderer
@@ -949,6 +1097,36 @@ export const AGENT_STATUS_LABEL: Record<AgentRunStatus, string> = {
   done: "done",
   failed: "failed",
 };
+
+/** THE LABEL AS READ UNDER ITS OWN HEADER (issue #27). Scripts write
+ *  `label: "survey:measure"`, so under a `SURVEY` header the rows read
+ *  `survey:measure`, `survey:style`, `survey:desktop` — the header supplies that
+ *  word and every row repeats it.
+ *
+ *  STRIPPED IN THE RENDERER AND NOT AT THE SOURCE, deliberately. The stored
+ *  label is UNTOUCHED: the prefix is genuinely useful in every FLAT context —
+ *  `ultra_inspect` output, the run anchor, any list with no group header to
+ *  supply the context — and removing it from the event would lose that
+ *  everywhere to fix it in one place. Fixing it here also fixes every script
+ *  already written, including ones authored outside this repo, which an
+ *  authoring-guide note cannot.
+ *
+ *  EXACT TITLE MATCH ONLY, case-insensitively. `fix` does not strip `fixup:`,
+ *  because the prefix must be the group's own name and nothing else — a
+ *  substring rule would eat a real label's first word. An empty group title
+ *  (`UNPHASED`) strips nothing at all; otherwise a label beginning with a bare
+ *  colon would lose it. And a label that IS only its prefix (`"survey:"`) comes
+ *  back whole, because a nameless row says less than a redundant one. */
+export function agentLabelInPhase(label: string, groupTitle: string): string {
+  if (groupTitle === "") return label;
+  if (label.slice(0, groupTitle.length).toLowerCase() !== groupTitle.toLowerCase()) return label;
+  if (label[groupTitle.length] !== ":") return label;
+  // `trimStart` rather than one optional space: the separator scripts actually
+  // write varies, and a row rendered with leading whitespace truncates from a
+  // blank.
+  const stripped = label.slice(groupTitle.length + 1).trimStart();
+  return stripped === "" ? label : stripped;
+}
 
 /** THE MODEL, NAMED THE WAY THE PRODUCT NAMES IT. A script passes a bare alias
  *  (`"sonnet"`, `"opus"`) straight to `agent()`, and the row printed that alias
