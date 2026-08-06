@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { fitQueueMapToBudget, retainOnSurfaceLoss } from "@/lib/message-queue";
 
 const ENTRIES_KEY = "telar:dock-entries"; // persisted: docked set + order
 const VIEWED_KEY = "telar:dock-viewed"; // persisted: assistant-count at last view
@@ -37,8 +38,10 @@ const QUEUED_KEY = "telar:dock-queued";
 
 /** A fresh Runtime. Module scope because it closes over nothing — as a
  *  component-body arrow it was rebuilt every render and could not be named in
- *  an effect's dependencies without lying about what it depends on. */
-const baseRuntime = (cur: Runtime | undefined): Runtime =>
+ *  an effect's dependencies without lying about what it depends on. Exported so
+ *  the reducers below can be tested against the REAL shape: a test that spells
+ *  its own 3-field stand-in stops noticing when a field is added here. */
+export const baseRuntime = (cur: Runtime | undefined): Runtime =>
   cur ?? {
     title: "",
     project: "",
@@ -53,6 +56,52 @@ const baseRuntime = (cur: Runtime | undefined): Runtime =>
     queuePaused: false,
     queuedEngineCount: 0,
   };
+/**
+ * ISSUE #7 — REMOVING A HEAD DROPS THE VIEWPORT, NEVER THE PRE-ACK QUEUE.
+ *
+ * Both removal paths used to `delete next[id]`, which took the queued messages
+ * with it — and because the `telar:dock-queued` effect below persists exactly
+ * the queued slice of `runtime`, the next write then erased them from disk too.
+ * For a session that still exists, the user's words were gone from both places.
+ *
+ * Everything else in Runtime is a projection of the server and is refetched the
+ * moment the session is docked again. The queue is the one field the server has
+ * never been told about, so it is the one field kept — on a blank Runtime, so a
+ * closed bubble parks the words and nothing else.
+ *
+ * `retainOnSurfaceLoss` IS INERT HERE AND THAT IS FINE. `DockQueuedMessage` is
+ * `{id, text}` and nothing ever writes `state`/`accepted` onto it — the host
+ * projects engine state to `queuedEngineCount`, never onto the items — so this
+ * bridge is 100% pre-ack by construction and the filter keeps everything. It is
+ * called anyway because it is the general ownership rule (message-queue.ts), and
+ * the day the host does project item state, THIS is the line that must already
+ * be asking. What actually bounds retention is the byte ceiling on the persist
+ * effect below, not this filter.
+ */
+export const releaseRuntime = (
+  prev: Record<string, Runtime | undefined>,
+  id: string,
+): Record<string, Runtime | undefined> => {
+  const retained = retainOnSurfaceLoss(prev[id]?.queued ?? []);
+  const next = { ...prev };
+  if (retained.length === 0) delete next[id];
+  else next[id] = { ...baseRuntime(undefined), queued: retained };
+  return next;
+};
+
+/** The only slice of `runtime` that is ever persisted (see the effect below).
+ *  Module scope + exported for the same reason as `releaseRuntime`: it is a
+ *  rule, and a rule copied into a test is a rule with two versions. */
+export const queuedSlice = (
+  runtime: Record<string, Runtime | undefined>,
+): Record<string, DockQueuedMessage[]> => {
+  const out: Record<string, DockQueuedMessage[]> = {};
+  for (const [id, rt] of Object.entries(runtime)) {
+    if (rt && rt.queued.length > 0) out[id] = rt.queued;
+  }
+  return out;
+};
+
 const MAX_EXPANDED = 2;
 
 // The durable identity of a docked session (persisted). Everything live —
@@ -240,13 +289,16 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
   // the serialized queue actually differing rather than on `runtime` identity:
   // otherwise a busy session would rewrite localStorage several times a second
   // to store a value that had not moved.
-  const queuedByIdSnapshot = useMemo(() => {
-    const out: Record<string, DockQueuedMessage[]> = {};
-    for (const [id, rt] of Object.entries(runtime)) {
-      if (rt && rt.queued.length > 0) out[id] = rt.queued;
-    }
-    return out;
-  }, [runtime]);
+  //
+  // ISSUE #7 — AND IT IS BUDGETED, because retention removed this key's only
+  // pruner. Undock/clearAutoDock used to delete an id's queue; now a 202 is the
+  // sole exit, so a session that can never send one (deleted server-side) never
+  // leaves. `fitQueueMapToBudget` gives it the ceiling `writeQueue` already gives
+  // the session surface's per-session key.
+  const queuedByIdSnapshot = useMemo(
+    () => fitQueueMapToBudget(queuedSlice(runtime)).map,
+    [runtime],
+  );
 
   const lastQueuedWrite = useRef<string | null>(null);
   useEffect(() => {
@@ -305,21 +357,13 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
     if (!existing || !existing.autoDocked) return; // manual heads untouched
     setEntries((prev) => prev.filter((e) => e.id !== id));
     setExpanded((prev) => prev.filter((x) => x !== id));
-    setRuntimeState((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    setRuntimeState((prev) => releaseRuntime(prev, id));
   }, []);
 
   const undock = useCallback((id: string) => {
     setEntries((prev) => prev.filter((e) => e.id !== id));
     setExpanded((prev) => prev.filter((x) => x !== id));
-    setRuntimeState((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    setRuntimeState((prev) => releaseRuntime(prev, id));
   }, []);
 
   const toggleExpand = useCallback((id: string) => {

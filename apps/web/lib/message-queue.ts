@@ -184,6 +184,53 @@ export function partitionQueue<
   return partition;
 }
 
+/**
+ * ISSUE #7 — WHAT A CLOSING SURFACE IS ALLOWED TO TAKE WITH IT.
+ *
+ * Undocking a bubble is a change of viewport, not a decision to abandon what is
+ * queued in it. What bounds the damage is OWNERSHIP, not lifecycle: once the
+ * engine has acknowledged an item it lives in `queue.json` and drains
+ * server-side whether or not any surface is mounted, so dropping the client's
+ * copy of it loses nothing. A PRE-ACK item — between the user's Enter and the
+ * engine's 202 — exists ONLY in the client, and is the one thing a closing
+ * surface can actually destroy.
+ *
+ * `accepted` and `state` are each sufficient on their own: the session surface
+ * sets `accepted` on acknowledgement, the engine projection supplies `state`,
+ * and an item carrying either already has a durable home elsewhere.
+ *
+ * `id` is required rather than incidental — it is the idempotency key the
+ * acceptance POST is keyed by, so an item without one could not be handed over
+ * without risking a double send.
+ */
+export type QueueOwnership = {
+  id: string;
+  state?: QueueItemLifecycle;
+  accepted?: boolean;
+};
+
+export const isEngineOwned = (item: QueueOwnership): boolean =>
+  item.accepted === true || item.state !== undefined;
+
+/**
+ * The items a surface must keep rather than unmount with.
+ *
+ * An engine-REFUSED local item (`error`, never accepted) is deliberately
+ * retained: it is still the user's words, and #31 already refused to let that
+ * message vanish out of the queue box — it may not vanish through a close
+ * button either.
+ *
+ * THE RULE IS GENERAL; ITS FIRST CALLER IS NOT. The dock's bridge is pre-ack by
+ * construction (nothing writes `state`/`accepted` onto its items), so there this
+ * filter keeps everything — see `releaseRuntime` in the dock provider. It is
+ * written as a filter anyway because the session surface DOES set `accepted`,
+ * and a second caller getting the split backwards re-sends work the engine ran.
+ * `fitQueueMapToBudget` below is what bounds what retention accumulates.
+ */
+export function retainOnSurfaceLoss<T extends QueueOwnership>(items: readonly T[]): T[] {
+  return items.filter((item) => !isEngineOwned(item));
+}
+
 /** The trimmer `fitToBudget`/`writeQueue` apply when a queue will not fit. */
 export const stripQueuedAttachments = <T extends { files?: unknown }>(m: T): T => {
   if (!m.files) return m;
@@ -257,6 +304,49 @@ export function fitToBudget<T>(
     dropped += 1;
   }
   return { items: kept, shedAttachments: true, droppedCount: dropped };
+}
+
+/** What `fitQueueMapToBudget` had to evict, so a caller can say so. */
+export type QueueMapFit<T> = {
+  map: Record<string, T[]>;
+  /** Session keys dropped whole, oldest-first, because the map overflowed. */
+  droppedSessions: string[];
+};
+
+/**
+ * ISSUE #7 — A CEILING FOR A MAP WHOSE ONLY EXIT IS A SUCCESSFUL SEND.
+ *
+ * `fitToBudget` above bounds ONE session's queue under its own key. The dock
+ * keeps every docked session's pre-ack queue in a SINGLE key
+ * (`telar:dock-queued`), and since #7 stopped undock/clearAutoDock from
+ * discarding queues, the only thing that removes an entry from it is a 202 from
+ * the engine. A session that can never accept one (deleted server-side, so the
+ * POST keeps failing) would otherwise sit there forever, in the same ~5 MB
+ * origin budget the header weighs.
+ *
+ * EVICTION IS WHOLE-SESSION AND OLDEST-FIRST, which is the same rule and the
+ * same reason as `fitToBudget`'s step 3: the newest parked words are the ones
+ * still on the user's mind. Iteration order IS the eviction order — the caller
+ * builds the map from its runtime record, whose keys are in dock order.
+ *
+ * A half-written session (some of its messages) would be worse than a dropped
+ * one: the queue advertises "sends in order", and a queue missing its middle
+ * silently breaks that promise. So a session is kept entire or not at all.
+ */
+export function fitQueueMapToBudget<T>(
+  map: Record<string, T[]>,
+  maxBytes: number = MAX_QUEUE_BYTES,
+): QueueMapFit<T> {
+  if (bytesOf(map) <= maxBytes) return { map, droppedSessions: [] };
+
+  const kept = { ...map };
+  const dropped: string[] = [];
+  for (const id of Object.keys(map)) {
+    if (bytesOf(kept) <= maxBytes) break;
+    delete kept[id];
+    dropped.push(id);
+  }
+  return { map: kept, droppedSessions: dropped };
 }
 
 /**

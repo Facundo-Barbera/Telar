@@ -94,7 +94,10 @@ const ev = {
   phase: (title: string): UltraEventLike => ({ type: "phase", title }),
   log: (msg: string): UltraEventLike => ({ type: "log", msg }),
   state: (state: "running" | "done" | "failed" | "stopped"): UltraEventLike => ({ type: "state", state }),
-  start: (ordinal: number, over: Partial<{ label: string; model: string; effort: string }> = {}): UltraEventLike => ({
+  start: (
+    ordinal: number,
+    over: Partial<{ label: string; model: string; effort: string; phase: string }> = {},
+  ): UltraEventLike => ({
     type: "agent-start",
     ordinal,
     model: "sonnet",
@@ -102,7 +105,15 @@ const ev = {
   }),
   agent: (
     ordinal: number,
-    over: Partial<{ label: string; model: string; effort: string; ok: boolean; costUsd: number; cached: true }> = {},
+    over: Partial<{
+      label: string;
+      model: string;
+      effort: string;
+      phase: string;
+      ok: boolean;
+      costUsd: number;
+      cached: true;
+    }> = {},
   ): UltraEventLike =>
     ({
       type: "agent",
@@ -363,8 +374,24 @@ describe("4.2 T5 — phase membership is stream order, and grouping is idempoten
     // change what an observed-only grouping SAYS: the last phase seen is the
     // running one, everything before it has been left behind, and nothing is
     // pending because nothing was declared.
-    const s: UltraEventLike[] = [ev.phase("Scan"), ev.start(0), ev.phase("Rewrite"), ev.start(1)];
+    //
+    // "LEFT BEHIND" IS A FACT ABOUT THE AGENTS, so `Scan`'s settles are part of
+    // the fixture rather than assumed: a bare `await agent()` script has settled
+    // its ordinal before the next `phase()` call runs, and a phase still holding
+    // an unsettled agent is not behind anything (see the case below).
+    const s: UltraEventLike[] = [ev.phase("Scan"), ev.start(0), ev.agent(0), ev.phase("Rewrite"), ev.start(1)];
     expect(phaseGroups(s, agentRows(s, [])).map((g) => g.status)).toEqual(["done", "running"]);
+  });
+
+  test("a phase the run has moved PAST but whose agent is still live reads `running`, not `done`", () => {
+    // The premise "phases are sequential in the stream" retired with `opts.phase`
+    // (issue #40): stages overlap, so the last event seen is not the only place
+    // work is happening. Ordinal 0 never settled — `Scan` is still running.
+    const s: UltraEventLike[] = [ev.phase("Scan"), ev.start(0), ev.phase("Rewrite"), ev.start(1)];
+    expect(phaseGroups(s, agentRows(s, [])).map((g) => g.status)).toEqual(["running", "running"]);
+    // …and settling it hands `Scan` back to the sequential reading.
+    const settled = [...s, ev.agent(0)];
+    expect(phaseGroups(settled, agentRows(settled, [])).map((g) => g.status)).toEqual(["done", "running"]);
   });
 });
 
@@ -528,7 +555,9 @@ describe("issue #27 — a declared phase is a group before it happens, and has f
     // Agents that ran before the first `phase()` call are chronologically first.
     // Seeding the declared titles ahead of them would file the run's opening
     // agents underneath every header on screen.
-    const s: UltraEventLike[] = [ev.start(0), ev.phase("survey"), ev.start(1)];
+    // Ordinal 0 settles before `survey` opens — the pre-phase agent has finished,
+    // which is what makes the unphased group `done` rather than still running.
+    const s: UltraEventLike[] = [ev.start(0), ev.agent(0), ev.phase("survey"), ev.start(1)];
     const groups = phaseGroups(s, agentRows(s, []), declared());
     expect(groups.map((g) => g.title)).toEqual([UNPHASED, "survey", "author", "verify", "fix"]);
     expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0]);
@@ -602,6 +631,226 @@ describe("issue #27 — a declared phase is a group before it happens, and has f
     expect(PHASE_STATUS_NOTE["never-reached"]).toBe("not reached");
     expect(PHASE_STATUS_NOTE.done).toBe("");
     expect(PHASE_STATUS_NOTE.running).toBe("");
+  });
+});
+
+// ── issue #40 — an agent's OWN opts.phase beats the ambient one ──────────────
+
+describe("issue #40 — a pipeline whose stages set opts.phase groups by the phase they DECLARED", () => {
+  // THE REPORTED RUN: `wave-a-cli-links-comments`, three phases, seven agents,
+  // every one spawned with an explicit `{ phase: … }` inside `pipeline()` — and
+  // all seven drawn under IMPLEMENT with REVIEW and CLOSE empty and `pending`.
+  // The engine dropped `opts.phase` before the stream, so the only signal here
+  // was the ambient `phase()` state, which in a pipeline is whatever the last
+  // call happened to set. That is precisely the race `opts.phase` exists to
+  // avoid, and `pipeline()` is the shape the authoring reference recommends, so
+  // an author following the docs got the broken result.
+  const threePhase = (over: Partial<UltraManifestLike> = {}) =>
+    manifest({ meta: { name: "wave-a", phases: ["implement", "review", "close"] }, ...over });
+
+  /** The failing case exactly: NO `phase` event anywhere, so the ambient never
+   *  moves off UNPHASED, and interleaved ordinals because pipeline has no
+   *  inter-stage barrier. */
+  const interleaved: UltraEventLike[] = [
+    ev.start(0, { phase: "implement", label: "impl:35-links" }),
+    ev.start(1, { phase: "implement", label: "impl:39-37-cli" }),
+    ev.start(2, { phase: "implement", label: "impl:30-comments" }),
+    ev.start(3, { phase: "review", label: "review:35-links" }),
+    ev.start(4, { phase: "review", label: "review:39-37-cli" }),
+    ev.start(5, { phase: "close", label: "close:35-links" }),
+    ev.start(6, { phase: "review", label: "review:30-comments" }),
+  ];
+
+  test("each agent lands in the phase IT declared, not in the ambient one", () => {
+    const groups = phaseGroups(interleaved, agentRows(interleaved, []), threePhase());
+    expect(groups.map((g) => g.title)).toEqual(["implement", "review", "close"]);
+    expect(groups.map((g) => g.agents.map((a) => a.ordinal))).toEqual([[0, 1, 2], [3, 4, 6], [5]]);
+    // …and there is NO headerless group above them. Before this, the first agent
+    // event with no preceding `phase()` call opened the unphased box; an agent
+    // that named its own phase is not unphased, so the scan looks past it.
+    expect(groups.some((g) => g.title === UNPHASED)).toBe(false);
+  });
+
+  test("the ambient phase is still the fallback — a bare phase() script is untouched", () => {
+    // The regression this fix must not cause. Nothing here sets `opts.phase`, and
+    // a bare script `await`s each call, so ordinal 0 has settled by the time
+    // `review` opens — the shape that makes `implement` genuinely behind.
+    const s: UltraEventLike[] = [
+      ev.phase("implement"),
+      ev.start(0),
+      ev.agent(0),
+      ev.phase("review"),
+      ev.start(1),
+    ];
+    const groups = phaseGroups(s, agentRows(s, []), threePhase());
+    expect(groups.map((g) => g.agents.map((a) => a.ordinal))).toEqual([[0], [1], []]);
+    expect(groups.map((g) => g.status)).toEqual(["done", "running", "pending"]);
+  });
+
+  test("OPTS DOES NOT LEAK INTO THE AMBIENT — a later bare agent() belongs to the last phase() call", () => {
+    // `opts.phase` is scoped to the one call that names it. Letting it become the
+    // new ambient would reintroduce the same race one call later, with the
+    // pipeline's non-deterministic interleaving deciding where a bare call lands.
+    const s: UltraEventLike[] = [ev.phase("implement"), ev.start(0, { phase: "close" }), ev.start(1)];
+    const groups = phaseGroups(s, agentRows(s, []), threePhase());
+    expect(groups.find((g) => g.title === "implement")!.agents.map((a) => a.ordinal)).toEqual([1]);
+    expect(groups.find((g) => g.title === "close")!.agents.map((a) => a.ordinal)).toEqual([0]);
+  });
+
+  test("a phase named ONLY via opts still creates its group, ORDERED against meta.phases", () => {
+    // Declared → the published position, even though the events arrive in a
+    // different order (`close` before `review` here).
+    const s: UltraEventLike[] = [ev.start(0, { phase: "close" }), ev.start(1, { phase: "review" })];
+    expect(phaseGroups(s, agentRows(s, []), threePhase()).map((g) => g.title)).toEqual([
+      "implement",
+      "review",
+      "close",
+    ]);
+    // UNDECLARED → appended where first observed, exactly as an undeclared
+    // `phase()` call is. The declared list is a seed and never a whitelist, and
+    // that rule does not change because the title arrived on a different event.
+    const undeclared: UltraEventLike[] = [ev.start(0, { phase: "implement" }), ev.start(1, { phase: "triage" })];
+    const groups = phaseGroups(undeclared, agentRows(undeclared, []), threePhase());
+    expect(groups.map((g) => g.title)).toEqual(["implement", "review", "close", "triage"]);
+    expect(groups.find((g) => g.title === "triage")!.agents.map((a) => a.ordinal)).toEqual([1]);
+    // With NO manifest at all it still groups — the seed is what needs a
+    // manifest, the membership never did.
+    expect(phaseGroups(undeclared, agentRows(undeclared, []), null).map((g) => g.title)).toEqual([
+      "implement",
+      "triage",
+    ]);
+  });
+
+  test("CASE DRIFT folds for opts.phase too — `{ phase: 'Review' }` is not a fourth box", () => {
+    // Nothing type-checks `meta.phases` and nothing type-checks `opts.phase`, so
+    // the same fold a `phase()` title gets has to apply here or the group list
+    // draws REVIEW *pending* above REVIEW with its agents running.
+    const s: UltraEventLike[] = [ev.start(0, { phase: " Review " })];
+    const groups = phaseGroups(s, agentRows(s, []), threePhase());
+    expect(groups.map((g) => g.title)).toEqual(["implement", "review", "close"]);
+    expect(groups[1]!.agents.map((a) => a.ordinal)).toEqual([0]);
+  });
+
+  test("a BLANK opts.phase means `named none` — it never plants the unphased group mid-list", () => {
+    // `UltraEventLike` is JSON.parsed off events.ndjson with nothing validating
+    // it, and `""` is the unphased group's own identity, so a blank must read as
+    // absent rather than as a title.
+    const s: UltraEventLike[] = [ev.start(0, { phase: "   " }), ev.phase("implement"), ev.start(1)];
+    const groups = phaseGroups(s, agentRows(s, []), threePhase());
+    expect(groups.map((g) => g.title)).toEqual([UNPHASED, "implement", "review", "close"]);
+    expect(groups[0]!.agents.map((a) => a.ordinal)).toEqual([0]);
+  });
+
+  test("A PHASE HOLDING LIVE AGENTS IS RUNNING — several at once, and independent of event order", () => {
+    // Without a running marker at all the reported run read as three `done` boxes
+    // while it was still going: the ambient never moved, so no group matched it.
+    // But "the last phase observed" is the wrong repair, because `opts.phase`
+    // exists exactly BECAUSE pipeline() stages overlap — all seven agents here
+    // are unsettled, so CLOSE was rendering `done` around a live row, and which
+    // single group won depended on which stage's event happened to land last.
+    const live = phaseGroups(interleaved, agentRows(interleaved, []), threePhase());
+    expect(live.map((g) => g.status)).toEqual(["running", "running", "running"]);
+    // ORDER-INDEPENDENT: pipeline() has no inter-stage barrier, so two identical
+    // runs interleave differently and must still draw the same markers.
+    const reordered = [interleaved[5]!, interleaved[6]!, ...interleaved.slice(0, 5)];
+    expect(phaseGroups(reordered, agentRows(reordered, []), threePhase()).map((g) => g.status)).toEqual([
+      "running",
+      "running",
+      "running",
+    ]);
+    // …and a stage whose agents have ALL settled is done even while later ones
+    // run, so this is not "everything begun is running".
+    const implementDone = [...interleaved, ev.agent(0), ev.agent(1), ev.agent(2)];
+    expect(phaseGroups(implementDone, agentRows(implementDone, []), threePhase()).map((g) => g.status)).toEqual([
+      "done",
+      "running",
+      "running",
+    ]);
+    // …and nothing spins once the run has ended. That is the RUN's state, as it
+    // has always been.
+    const done = phaseGroups(interleaved, agentRows(interleaved, [], "done"), threePhase({ state: "done" }));
+    expect(done.map((g) => g.status)).toEqual(["done", "done", "done"]);
+  });
+
+  test("A DEAD AGENT KEEPS ITS PHASE — a settle that names none cannot drag it into UNPHASED", () => {
+    // The engine now emits `phase` on the failure settle too (executor.ts's
+    // fourth emit site), but this grouping is last-assignment-wins per ordinal
+    // and every `events.ndjson` written before issue #40 carries `phase` on NO
+    // settle — so the reader has to be robust on its own or a run re-groups
+    // itself the moment it is read back off disk.
+    const s: UltraEventLike[] = [
+      ev.start(0, { phase: "implement" }),
+      ev.start(1, { phase: "review" }),
+      ev.agent(1, { ok: false }), // the pre-#40 shape: no `phase` on the settle
+      ev.agent(0, { phase: "implement" }),
+    ];
+    const groups = phaseGroups(s, agentRows(s, []), threePhase());
+    expect(groups.map((g) => g.agents.map((a) => a.ordinal))).toEqual([[0], [1], []]);
+    // No phantom headerless box, and the failed row is findable under REVIEW.
+    expect(groups.some((g) => g.title === UNPHASED)).toBe(false);
+    expect(groups[1]!.agents[0]!.ok).toBe(false);
+  });
+
+  test("THE SLIVER COUNTS THE SAME PHASES THE BOXES DO — one read, two readers, still", () => {
+    // The rule issue #27 established: the group list and the progress sliver are
+    // fractions of the same declared array, so a phase that opens a box must
+    // advance the sliver. Left unchanged, this run drew three begun boxes beside
+    // "0 of 3" — the sliver saying the run had not started while it was in its
+    // last phase, which is the "looks stalled" half of the report.
+    const m = threePhase();
+    // PHASES ENTERED, NOT WORK FINISHED: this reads a full 3 of 3 while five of
+    // the seven agents are still outstanding, because a pipeline enters its last
+    // stage with its first item while later items are still in stage one. That is
+    // `phase()`'s own long-standing reading of the sliver, reached sooner — and
+    // the running group markers beside it are what say the run is not done.
+    expect(progressFraction(m, interleaved)).toEqual({ seen: 3, declared: 3 });
+    expect(phaseGroups(interleaved, agentRows(interleaved, []), m).some((g) => g.status === "running")).toBe(
+      true,
+    );
+    // A bare-`phase()` stream is unaffected, and the two sources add up when a
+    // script mixes them.
+    expect(progressFraction(m, [ev.phase("implement")])).toEqual({ seen: 1, declared: 3 });
+    expect(progressFraction(m, [ev.phase("implement"), ev.start(0, { phase: "review" })])).toEqual({
+      seen: 2,
+      declared: 3,
+    });
+    // …and the same drifted spelling counts ONCE across both sources.
+    expect(progressFraction(m, [ev.phase("Implement"), ev.start(0, { phase: "implement" })])).toEqual({
+      seen: 1,
+      declared: 3,
+    });
+  });
+
+  test("IDEMPOTENT UNDER A RESUME, which re-emits opts.phase on the cached settle", () => {
+    // The engine does NOT journal `phase`: a resume re-runs the script, so every
+    // hash-matched call names its phase again and the cache-hit `agent` event
+    // carries it off this run's opts (see ultra-executor.test.ts). A replayed
+    // ordinal has only that event — never `agent-start` — so this is the whole
+    // grouping signal on a resume, and replaying it twice must not double.
+    const resumed: UltraEventLike[] = [
+      ...interleaved,
+      ...interleaved.map((e) =>
+        e.type === "agent-start" ? ev.agent(e.ordinal, { phase: e.phase, cached: true }) : e,
+      ),
+    ];
+    const groups = phaseGroups(resumed, agentRows(resumed, []), threePhase());
+    expect(groups.map((g) => g.title)).toEqual(["implement", "review", "close"]);
+    expect(groups.map((g) => g.agents.map((a) => a.ordinal))).toEqual([[0, 1, 2], [3, 4, 6], [5]]);
+  });
+
+  test("the agent INDEX (a journal-less reader) still falls back to unphased — B1 unchanged", () => {
+    // `agentRows`' second channel has no events behind it at all, so it can say
+    // nothing about phases and must not pretend to. Rows that reach a group by
+    // ordinal alone land in UNPHASED exactly as before.
+    const snap = runSnapshot(
+      threePhase({ state: "done" }),
+      null,
+      [{ ordinal: 0, settled: true, attempt: 1, lastText: "x" }],
+      "u-40",
+    );
+    expect(snap.phases.map((g) => ({ title: g.title, status: g.status }))).toEqual([
+      { title: UNPHASED, status: "done" },
+    ]);
   });
 });
 

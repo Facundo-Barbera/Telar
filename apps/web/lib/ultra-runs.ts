@@ -415,11 +415,22 @@ export function agentRows(
 /** Agents seen before any `phase` event. Rendered without a heading. */
 export const UNPHASED = "";
 
-// GROUPED BY STREAM ORDER, because there is no phase id, no `kind` and no
-// agent→phase link anywhere in the data (the demo gallery's `PhaseDef.id` /
-// `AgentDef.phaseId` are fabricated). An agent belongs to the MOST RECENT
-// PRECEDING `phase` event — `ultra_status`'s own idiom, which nothing pinned
-// until now.
+// AN AGENT'S OWN `phase` WINS; THE AMBIENT ONE IS THE FALLBACK (issue #40).
+// `agent()` takes `opts.phase` and the authoring reference documents it as the
+// remedy for pipeline()/parallel() stages racing on the global `phase()` state.
+// The engine dropped it before the event stream, so this read the ambient value
+// for every agent — the exact race, and a three-phase run drew all seven of its
+// agents under phase one. The engine emits it now; this prefers it.
+//
+// THE FALLBACK IS NOT A FALLBACK FOR MEMBERSHIP ONLY. `opts.phase` is scoped to
+// the ONE call that names it and deliberately does NOT become the new ambient:
+// a bare `agent()` after a `{ phase: "review" }` stage still belongs to whatever
+// `phase()` last said, or the leak would reintroduce the race one call later.
+//
+// GROUPED BY STREAM ORDER OTHERWISE, because there is no phase id and no other
+// agent→phase link in the data (the demo gallery's `PhaseDef.id` /
+// `AgentDef.phaseId` are fabricated). An agent that named no phase belongs to
+// the MOST RECENT PRECEDING `phase` event — `ultra_status`'s own idiom.
 //
 // IDEMPOTENT UNDER A RESUME, which re-emits the whole phase sequence from the
 // cheap re-run: membership is last-assignment-wins over a Map keyed by ordinal,
@@ -465,17 +476,42 @@ export function phaseGroups(
    *  contains titles that may never have happened. */
   const begun = new Set<string>();
   let current = UNPHASED;
+  /** Where the run most recently ENTERED — a `phase()` call, or an agent
+   *  STARTING under one it named itself. SEPARATE FROM `current` on purpose:
+   *  `current` answers "which phase does a call that named none belong to" and
+   *  must stay the ambient, while a script that phases ONLY through `opts.phase`
+   *  never moves the ambient at all. A SETTLE never moves this — it says work
+   *  ended, not where the run is, and letting it count made the marker jump
+   *  backwards into a phase that had already finished. */
+  let latest = UNPHASED;
   const note = (title: string) => {
     if (!titleOrder.includes(title)) titleOrder.push(title);
   };
+  /** THE PHASE AN ORDINAL NAMED FOR ITSELF, resolved across the WHOLE stream
+   *  before the walk begins, because an ordinal's `agent-start` and its settle
+   *  are two events about ONE agent and only some of them carry `phase`: a
+   *  pre-#40 `events.ndjson` has it on no settle at all, and a reader that took
+   *  the events one at a time let the phase-less one win by arriving last. */
+  const ownOf = new Map<number, string>();
+  for (const e of events) {
+    if (e.type !== "agent-start" && e.type !== "agent") continue;
+    const own = ownPhaseTitle(e.phase, declared);
+    if (own !== undefined) ownOf.set(e.ordinal, own);
+  }
   // THE UNPHASED GROUP KEEPS ITS PLACE AT THE TOP when it exists because agents
   // ran BEFORE the first `phase()` call. It is chronologically first by
   // construction, and seeding the declared titles ahead of it would file the
   // run's opening agents underneath every header on screen — a reordering of
   // rows that were already rendering correctly.
+  //
+  // An agent that named its OWN phase is not unphased even when it ran first, so
+  // the scan looks past it rather than stopping — otherwise a script that phases
+  // purely through `opts.phase` grows a phantom headerless group at the top. It
+  // is `ownOf` and not this event that decides that, or the settle of a
+  // perfectly well phased agent opens the box its own start closed.
   for (const e of events) {
     if (e.type === "phase") break;
-    if (e.type === "agent-start" || e.type === "agent") {
+    if ((e.type === "agent-start" || e.type === "agent") && !ownOf.has(e.ordinal)) {
       note(UNPHASED);
       break;
     }
@@ -486,12 +522,20 @@ export function phaseGroups(
       // The DECLARED spelling wins over the one the call typed — see
       // `canonicalPhaseTitle`; byte-exact identity drew the same phase twice.
       current = canonicalPhaseTitle(e.title, declared);
+      latest = current;
       note(current);
       begun.add(current);
     } else if (e.type === "agent-start" || e.type === "agent") {
-      phaseOf.set(e.ordinal, current);
-      note(current);
-      begun.add(current);
+      // A phase named ONLY here still gets its group and its place in the order:
+      // `note` appends an undeclared title where it is first observed, and a
+      // declared one is already seeded in its published position. The ordinal's
+      // OWN phase (from either of its events — see `ownOf`) beats the ambient;
+      // only an agent that named none anywhere falls back to it.
+      const title = ownOf.get(e.ordinal) ?? current;
+      phaseOf.set(e.ordinal, title);
+      if (e.type === "agent-start") latest = title;
+      note(title);
+      begun.add(title);
     }
   }
   const byTitle = new Map<string, AgentRow[]>();
@@ -516,12 +560,22 @@ export function phaseGroups(
   // server restart emits none, and a phase left spinning on it is the exact lie
   // this state exists to prevent.
   const runIsLive = (manifest?.state ?? "running") === "running";
+  /** Titles holding at least one agent that has not settled. THE FACT `latest`
+   *  WAS STANDING IN FOR: "the last phase observed" assumed phases are
+   *  sequential in the stream, and `opts.phase` exists precisely because
+   *  pipeline()/parallel() stages are NOT — with no inter-stage barrier, the
+   *  last agent event is whichever one happened to land, so two identical runs
+   *  drew different markers and a phase holding live agents rendered `done`. A
+   *  group with work still in flight is running, and several may be at once
+   *  (`PHASE_STATUS_NOTE.running` is empty, so the header reads the same). */
+  const hasLive = new Set<string>();
+  for (const [title, group] of byTitle) if (group.some((r) => r.live)) hasLive.add(title);
   const statusOf = (title: string): PhaseStatus => {
     if (!begun.has(title)) return runIsLive ? "pending" : "never-reached";
-    // Phases are sequential in the stream — a `phase()` call ends the one before
-    // it — so the RUNNING phase is the last one observed, and only while the run
-    // itself is still going.
-    return runIsLive && title === current ? "running" : "done";
+    if (!runIsLive) return "done";
+    // `latest` still answers for a group with no rows YET — a `phase()` call the
+    // run has reached but not yet spawned into.
+    return hasLive.has(title) || title === latest ? "running" : "done";
   };
   // A phase that declared itself but has no agents yet is still a real group —
   // it is the run telling the user where it is.
@@ -578,6 +632,19 @@ function canonicalPhaseTitle(title: string, declared: readonly string[]): string
   return declared.find((d) => d.trim().toLowerCase() === key) ?? title;
 }
 
+/** The phase an agent event named for ITSELF (`agent()`'s `opts.phase`), or
+ *  `undefined` when it named none. Canonicalised against the declared spelling
+ *  exactly as a `phase()` title is: a script may declare `"Review"` and pass
+ *  `{ phase: "review" }`, and folding one but not the other draws the same phase
+ *  twice. The `typeof` check is not defensive dressing — these events are
+ *  JSON.parsed off `events.ndjson` with no validation between disk and here. A
+ *  blank string is "named none", the same reading `declaredPhases` gives a blank
+ *  declaration. */
+function ownPhaseTitle(phase: unknown, declared: readonly string[]): string | undefined {
+  if (typeof phase !== "string" || phase.trim() === "") return undefined;
+  return canonicalPhaseTitle(phase, declared);
+}
+
 export function progressFraction(
   manifest: UltraManifestLike | null,
   events: readonly UltraEventLike[],
@@ -585,7 +652,23 @@ export function progressFraction(
   const phases = declaredPhases(manifest);
   if (phases === undefined) return undefined;
   const seen = new Set<string>();
-  for (const e of events) if (e.type === "phase") seen.add(canonicalPhaseTitle(e.title, phases));
+  for (const e of events) {
+    if (e.type === "phase") seen.add(canonicalPhaseTitle(e.title, phases));
+    // AN AGENT'S OWN `opts.phase` COUNTS TOO (issue #40) — for the same reason
+    // the group list reads it, and it has to be the same reason or the two
+    // readers of one declared array disagree on screen: a pipeline that phases
+    // only through `opts.phase` would draw three begun boxes beside "0 of 3".
+    //
+    // SO THE FRACTION IS PHASES ENTERED, NOT WORK COMPLETED — the reading
+    // `phase()` has always given it, now reachable sooner because a pipeline
+    // enters its last stage while earlier items are still in their first. A
+    // full sliver therefore means "every phase has begun", and the RUNNING
+    // group markers are what still say work is in flight.
+    else if (e.type === "agent-start" || e.type === "agent") {
+      const own = ownPhaseTitle(e.phase, phases);
+      if (own !== undefined) seen.add(own);
+    }
+  }
   return { seen: Math.min(seen.size, phases.length), declared: phases.length };
 }
 

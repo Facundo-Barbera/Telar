@@ -347,6 +347,15 @@ export function SubagentRail({
   // of the gallery, so the gallery must keep passing seven props and getting
   // exactly what it gets now.
   workflows,
+  // THE SECOND COUNT, and it can drift. `workflowCount` is the TOTAL number of
+  // runs — the same number `ultra-rail.tsx`'s header prints at its far right —
+  // because the collapsed edge and the expanded header are one claim shown
+  // twice. This rail cannot derive it: `workflows` arrives PRE-RENDERED and no
+  // component can count a ReactNode, so the caller supplies it and nothing
+  // structural keeps the two honest. If the Workflows section ever splits live
+  // runs from a "Done · N" group and its header starts meaning "live only",
+  // this number and the empty state below are the other two readers that must
+  // move with it.
   workflowCount,
   surface = "rail",
 }: {
@@ -469,6 +478,8 @@ export function SubagentRail({
       {workflows}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {/* The third reader of `workflowCount` (see its declaration): the
+            "nothing yet" copy is only true while NO run exists, live or not. */}
         {live.length === 0 ? (
           <p className="px-1 py-2 text-[11px] text-muted-foreground/60">
             {surface === "panel" && history.length === 0 && (workflowCount ?? 0) === 0

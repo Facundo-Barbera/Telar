@@ -327,14 +327,32 @@ export function SessionRuntimeHost({ id }: { id: string }) {
 
   // This is an acceptance bridge, not a scheduler: it may run while the session
   // is busy because the engine decides when the accepted item executes.
+  //
+  // ISSUE #7 — `detailLoaded` IS A DEPENDENCY, not just a guard. `detailRef` is a
+  // ref, so a queue that already existed when this host mounted (the one the
+  // provider restores from `telar:dock-queued` on reload) ran this effect once
+  // against a null detail and was never revisited: neither `queuedLen` nor
+  // `queuedHead` changes when the fetch lands, so nothing re-triggered it and
+  // the restored message sat pre-ack forever. `loaded` is set in the same patch
+  // that assigns `detailRef`, so it is exactly the readiness signal, and the ref
+  // check below stays as the guard.
+  //
+  // NOT A RETRY, and the gap now matters more than it did. `sendTurn`'s catch
+  // writes `error`, which moves no dependency here, so a failed POST wedges its
+  // item until this host remounts — and since #7 that item is also retained
+  // rather than lost, i.e. it waits. What keeps that honest is the head's unsent
+  // badge (dock.tsx): a host only exists where a head is, so the wait is visible
+  // and the eventual resume is attended. A real backoff is deferred work, not a
+  // silent degradation of this one.
   const rt = runtime[id];
+  const detailLoaded = rt?.loaded ?? false;
   const queuedLen = rt?.queued.length ?? 0;
   const queuedHead = rt?.queued[0];
   useEffect(() => {
     if (sendingRef.current) return;
-    if (queuedLen === 0 || !detailRef.current) return;
+    if (!detailLoaded || queuedLen === 0 || !detailRef.current) return;
     if (queuedHead !== undefined) void sendTurn(queuedHead);
-  }, [id, queuedLen, queuedHead, sendTurn]);
+  }, [id, detailLoaded, queuedLen, queuedHead, sendTurn]);
 
   // Stop an active turn — session-view parity (POST /api/chat/stop + local
   // teardown). Prefers the in-flight runId (resolvable from t=0, see
