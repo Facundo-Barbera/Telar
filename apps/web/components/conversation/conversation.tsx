@@ -73,6 +73,23 @@ export type ConversationProps = {
    * would silently steal its liveness.
    */
   trailing?: ReactNode;
+  /** Changing this remounts the scroll viewport, which lands it at the bottom.
+   *
+   *  WHY IT EXISTS. The shell owns scrolling (see the header), and the viewport
+   *  is a StickToBottom that follows only while it is already at the bottom.
+   *  Swapping `items` for a DIFFERENT transcript — leaving an Ultra or a
+   *  sub-agent tab for the main chat — replaces the content underneath a scroll
+   *  position that belonged to the old one, so the reader arrives at the TOP of
+   *  a conversation whose newest message is what they came back for.
+   *
+   *  A remount rather than an imperative scroll: `initial` already means "start
+   *  at the bottom", so the behaviour is the one the viewport was configured
+   *  with, not a second mechanism competing with it. The caller passes whatever
+   *  identifies "which transcript is this" — for a session that is the tab id.
+   *
+   *  ABSENT MEANS TODAY'S BEHAVIOUR. A surface with one transcript never
+   *  changes it and never remounts. */
+  scrollKey?: string;
   className?: string;
 };
 
@@ -140,6 +157,7 @@ export function Conversation({
   live = false,
   empty,
   trailing,
+  scrollKey,
   className,
 }: ConversationProps) {
   return (
@@ -157,6 +175,11 @@ export function Conversation({
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TranscriptViewport
+            // Remounts the viewport when the transcript IDENTITY changes, so a
+            // return to the main chat lands at the newest message rather than
+            // inheriting a scroll position from the tab just left. See
+            // `scrollKey`'s own note above.
+            key={scrollKey}
             items={items}
             kinds={kinds}
             live={live}

@@ -523,12 +523,21 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
         if (e.type === "result") {
           lastCostUsd = e.costUsd;
           lastTurns = e.turns;
-          // WHY THE CHILD STOPPED, kept beside what it cost. engine.agent()
-          // returns `null` for every non-emitting outcome — hit the turn limit,
-          // crashed, refused — so the RETURN VALUE cannot tell them apart. This
-          // event can: the SDK's `subtype` is the only place the difference
-          // survives, and it was being read for cost and turns while the reason
-          // was dropped on the floor.
+          // WHY THE CHILD STOPPED, kept beside what it cost.
+          //
+          // CORRECTED (#22): this comment used to say engine.agent() "returns
+          // `null` for every non-emitting outcome — hit the turn limit,
+          // crashed, refused". For the TURN LIMIT that is false — it THROWS —
+          // and the false version cost real time: it is why the
+          // `exhaustedTurns` branch in the retry loop below looks like it
+          // handles max-turns and cannot, since the throw happens inside
+          // runOnce before anything returns. Three agents on 2026-08-05 were
+          // diagnosed for hours as "hung" on the strength of that sentence.
+          //
+          // What remains true is the useful half: a return value cannot tell
+          // these outcomes apart, and this event can. The SDK's `subtype` is
+          // the only place the difference survives, and it was being read for
+          // cost and turns while the reason was dropped on the floor.
           lastSubtype = e.subtype;
           // ABSENT STAYS ABSENT. A provider that reported no usage at all leaves
           // this undefined rather than becoming four zeroes, so a reader can
@@ -651,7 +660,31 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
         // one would claim the money was spent once.
         settleId: crypto.randomUUID(),
       });
-      throw e;
+      // A DEAD AGENT IS A VALUE, NOT AN EXCEPTION — issue #22.
+      //
+      // This used to re-throw, which parallel()/pipeline() caught and coerced
+      // to null. A BARE `await agent(...)` had no such catch, so the throw
+      // propagated out of the script and failed the whole run: one
+      // under-budgeted agent could destroy a thirty-agent run that was
+      // otherwise succeeding. Verified on run u-ed1031c7b0c2, where a healthy
+      // agent had already settled and its work went down with the run.
+      //
+      // Whether a failure was survivable therefore depended on whether the
+      // author happened to wrap the call — and bare calls are the common shape,
+      // including in the authoring reference's own worked example.
+      //
+      // Returning null is what the engine contract already SAYS in three
+      // places ("no emit = null"), so this makes the code agree with the
+      // documentation rather than the other way round. Control signals (Stop,
+      // MissingModel, the lifetime backstop) still throw above — they end the
+      // RUN and are not an agent outcome.
+      //
+      // KNOWN CONSEQUENCE for pipeline(): a stage whose agent() dies now
+      // receives `null` and runs the NEXT stage with it, instead of the item
+      // being dropped and its remaining stages skipped. A stage that cannot
+      // work with null should check for it. This is the same null every other
+      // dead-agent path already hands over, so it is one rule instead of two.
+      return null;
     }
     // This live call IS a new billable event even when an earlier run already
     // billed this same ordinal: `cacheValid` latched false above, so the

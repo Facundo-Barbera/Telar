@@ -176,12 +176,36 @@ describe("Ultra executor — a THROWN agent still reports that it settled", () =
   });
 
   test("the script still sees the ordinary dead-agent null", async () => {
-    // Behaviour the scripts depend on is unchanged: parallel() coerces a thrown
-    // call to null. This fix adds reporting, it does not change control flow.
     const run = startUltra(script, { agent: boom });
     const res = await run.finished;
     expect(res.state).toBe("done");
     expect(res.result).toBeNull();
+  });
+
+  test("a BARE agent() call gets the same null — it does not fail the run (#22)", async () => {
+    // The regression this pins. A bare call used to let the throw propagate out
+    // of the script and fail the whole run, so one under-budgeted agent could
+    // destroy a run whose other agents had already succeeded — measured on
+    // u-ed1031c7b0c2. Whether a failure was survivable depended entirely on
+    // whether the author had wrapped the call in parallel().
+    const bare = `${META}\nexport default async function ({ agent }) {\n  const a = await agent("p0", { model: "sonnet" });\n  return { sawNull: a === null };\n}`;
+    const run = startUltra(bare, { agent: boom });
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toEqual({ sawNull: true });
+  });
+
+  test("a control signal STILL fails the run — only agent failures became values", async () => {
+    // The carve-out that must survive #22: Stop / MissingModel / the lifetime
+    // backstop end the run, and coercing those to null would make a stopped run
+    // look like a successful one.
+    const bare = `${META}\nexport default async function ({ agent }) {\n  return agent("p0", { model: "sonnet" });\n}`;
+    const aborted: Fake = async () => {
+      throw abortErr();
+    };
+    const run = startUltra(bare, { agent: aborted });
+    const res = await run.finished;
+    expect(res.state).not.toBe("done");
   });
 
   test("a control signal is NOT reported as an agent settle", async () => {

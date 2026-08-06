@@ -4457,6 +4457,20 @@ const EXPECTED_CONVERSATION_PROPS = [
   "live",
   "empty",
   "trailing",
+  // A SIXTH non-slot prop, added deliberately — which is what this pin exists
+  // to force. `scrollKey` is an OPAQUE identity token: the shell compares it
+  // for change and remounts its viewport, and never reads, parses or branches
+  // on the value. That keeps it in the same category as `live` — view
+  // configuration — rather than session semantics, which is the line AD-12/13
+  // and INV-8a draw. A session happens to pass its active tab id; a gallery
+  // could pass "a"/"b" and get the identical behaviour.
+  //
+  // It exists because the shell OWNS SCROLLING (conversation.tsx's header says
+  // so) and had no way to be told the transcript had been swapped for a
+  // different one. Leaving an Ultra or sub-agent tab kept the old tab's scroll
+  // position, so returning to the main chat landed at the top, above the
+  // message the reader came back for.
+  "scrollKey",
   "className",
 ].sort();
 

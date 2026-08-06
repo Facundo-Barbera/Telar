@@ -3747,6 +3747,11 @@ function SessionWorkspace({
         )}
         items={transcriptItems}
         kinds={SESSION_KINDS}
+        // Leaving an Ultra or sub-agent tab swaps in a DIFFERENT transcript,
+        // and the old tab's scroll position came with it — so returning to the
+        // main chat landed at the top, above the message you came back to read.
+        // The tab id is exactly "which transcript is this".
+        scrollKey={activeTab}
         // The donor's `isCurrentMessage`: the shell marks only the LAST
         // top-level item live, and the turn renderer derives per-child
         // `isTrailing` from there. On a subagent tab, "the spawn hasn't
