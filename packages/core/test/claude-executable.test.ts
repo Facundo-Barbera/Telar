@@ -26,7 +26,13 @@ describe("expectedCliVersion", () => {
 });
 
 describe("claudeCliUsable", () => {
-  const at = (status: ClaudeCliResolution["status"]): ClaudeCliResolution => ({ status });
+  // `id`/`label` are part of the resolution now that both CLIs share one shape —
+  // a surface reporting two of these must not have to map ids to names itself.
+  const at = (status: ClaudeCliResolution["status"]): ClaudeCliResolution => ({
+    id: "claude",
+    label: "Claude Code",
+    status,
+  });
 
   test("refuses a missing CLI", () => {
     expect(claudeCliUsable(at("missing"))).toBe(false);
@@ -58,6 +64,12 @@ describe("resolveClaudeCli", () => {
     expect(["ok", "drifted", "incompatible", "missing", "unknown"]).toContain(r.status);
     if (r.status === "missing") expect(r.path).toBeUndefined();
     else expect(typeof r.path).toBe("string");
+  });
+
+  test("identifies itself, so one surface can report both CLIs", () => {
+    const r = resolveClaudeCli();
+    expect(r.id).toBe("claude");
+    expect(r.label).toBe("Claude Code");
   });
 
   test("every non-ok status carries an actionable message", () => {

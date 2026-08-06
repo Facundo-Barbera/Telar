@@ -22,47 +22,28 @@
 // see that resolver. Every interactive session worked and every CHILD agent died
 // on the missing binary — invisible in the one surface anybody watches. The
 // resolution belongs beside the code that spawns.
+//
+// WHAT IS LEFT HERE, now that codex-executable.ts exists: only what is TRUE OF
+// CLAUDE — the candidate binary name, the derived wrapper/CLI pairing, and the
+// verdict that pairing implies. Finding the binary, detecting its version,
+// caching that, announcing it and deciding whether a turn may proceed are the
+// same problem for both CLIs and live in cli-resolution.ts. Two copies of that
+// is how Codex ended up shipping a resolver that never looked in ~/.local/bin.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import os from "node:os";
-import path from "node:path";
+import {
+  cliUsable,
+  resolveCli,
+  resolveCliAsync,
+  type CliResolution,
+  type CliSpec,
+  type CliStatus,
+} from "./cli-resolution";
 
-export type ClaudeCliStatus =
-  /** Resolved, and its version is the one this wrapper was built against. */
-  | "ok"
-  /** Resolved, same protocol family, different patch. Works in practice; worth
-   *  surfacing because it is the first thing to suspect when the control
-   *  protocol misbehaves. */
-  | "drifted"
-  /** Resolved, but a different major/minor. Not a compatibility promise. */
-  | "incompatible"
-  /** Nothing found on any candidate path. */
-  | "missing"
-  /** Found, but it would not report a version. */
-  | "unknown";
-
-export type ClaudeCliResolution = {
-  status: ClaudeCliStatus;
-  /** Absent only when status is "missing". */
-  path?: string;
-  /** The CLI's own reported version, e.g. "2.1.222". */
-  version?: string;
-  /** What this wrapper was built against, e.g. "2.1.204". */
-  expected?: string;
-  /** Set for every status except "ok" — user-facing and actionable, saying what
-   *  to do rather than only what is wrong. */
-  message?: string;
-};
-
-const candidatePaths = (): string[] =>
-  [
-    process.env.CLAUDE_CODE_EXECUTABLE,
-    path.join(os.homedir(), ".local", "bin", "claude"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ].filter((c): c is string => Boolean(c));
+/** Kept as its own name because three app-layer modules and the chat route
+ *  already import it; it is the shared shape, narrowed to nothing. */
+export type ClaudeCliStatus = CliStatus;
+export type ClaudeCliResolution = CliResolution;
 
 /** THE MAPPING IS DERIVED, NOT HARDCODED. Wrapper and CLI are versioned
  *  differently — wrapper 0.3.204 ships CLI 2.1.204 — but the PATCH component is
@@ -80,130 +61,56 @@ export function expectedCliVersion(): string | undefined {
   }
 }
 
-/** Keyed on (path, mtime) rather than cached for the process lifetime, so a
- *  Claude Code that upgrades ITSELF while telar runs is noticed on the next turn
- *  instead of being reported at whatever it was at boot. Spawning a subprocess
- *  per turn is the obvious alternative and is a cost every session pays forever. */
-const versionCache = new Map<string, string | null>();
-
-function detectVersion(executable: string): string | null {
-  let key = executable;
-  try {
-    key = `${executable}:${statSync(executable).mtimeMs}`;
-  } catch {
-    // Unreadable stat — fall back to the bare path as the key.
-  }
-  const cached = versionCache.get(key);
-  if (cached !== undefined) return cached;
-
-  let version: string | null = null;
-  try {
-    // `claude --version` prints e.g. "2.1.222 (Claude Code)".
-    const out = execFileSync(executable, ["--version"], {
-      encoding: "utf8",
-      timeout: 10_000,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    version = /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? null;
-  } catch {
-    version = null;
-  }
-  versionCache.set(key, version);
-  return version;
-}
-
-const INSTALL_HINT =
-  "Install Claude Code (https://claude.com/claude-code) and sign in, then restart telar. " +
-  "If it is installed somewhere unusual, set CLAUDE_CODE_EXECUTABLE to its full path.";
-
-/** Announced ONCE per process, not per turn. Which CLI a session is actually
- *  talking to was unknowable before this — a 0.3.204 wrapper drove a 2.1.222
- *  binary for weeks and nothing anywhere said so, which is most of why #28 took
- *  days. One line at startup makes every later report attributable. */
-let announced = false;
-
-function announce(r: ClaudeCliResolution): void {
-  if (announced) return;
-  announced = true;
-  const where = r.path ?? "not found";
-  const what = r.version ? `${r.version}` : "version unknown";
-  const against = r.expected ? ` (wrapper expects ${r.expected})` : "";
-  console.log(`[telar] Claude CLI: ${r.status} · ${what}${against} · ${where}`);
-  if (r.message) console.log(`[telar] Claude CLI: ${r.message}`);
-}
+const CLAUDE_CLI: CliSpec = {
+  id: "claude",
+  label: "Claude Code",
+  bin: "claude",
+  overrideEnv: "CLAUDE_CODE_EXECUTABLE",
+  installHint:
+    "Install Claude Code (https://claude.com/claude-code) and sign in, then restart telar. " +
+    "If it is installed somewhere unusual, set CLAUDE_CODE_EXECUTABLE to its full path.",
+  expectedVersion: expectedCliVersion,
+  verdict: (version, expected, executable) => {
+    const [major, minor] = version.split(".");
+    const [xMajor, xMinor] = expected.split(".");
+    if (major !== xMajor || minor !== xMinor) {
+      return {
+        status: "incompatible",
+        message:
+          `Claude Code ${version} at ${executable} is not compatible with this build of telar, ` +
+          `which speaks the ${xMajor}.${xMinor}.x control protocol (expects ${expected}). ` +
+          "Update telar, or install a matching Claude Code.",
+      };
+    }
+    if (version !== expected) {
+      return {
+        status: "drifted",
+        message:
+          `Claude Code ${version} differs from the ${expected} this build was tested against. ` +
+          "This usually works — but if tool calls are cancelled without you refusing them, suspect this first.",
+      };
+    }
+    return { status: "ok" };
+  },
+};
 
 /** The whole answer: where the CLI is, what version it is, and whether that is a
  *  version this wrapper expects to be able to talk to. */
 export function resolveClaudeCli(): ClaudeCliResolution {
-  const resolution = resolveUncached();
-  announce(resolution);
-  return resolution;
+  return resolveCli(CLAUDE_CLI);
 }
 
-function resolveUncached(): ClaudeCliResolution {
-  const executable = candidatePaths().find((candidate) => existsSync(candidate));
-  const expected = expectedCliVersion();
-
-  if (!executable) {
-    return {
-      status: "missing",
-      expected,
-      message: `No Claude Code installation found. telar does not bundle one. ${INSTALL_HINT}`,
-    };
-  }
-
-  const version = detectVersion(executable);
-  if (!version) {
-    return {
-      status: "unknown",
-      path: executable,
-      expected,
-      message:
-        `Found Claude Code at ${executable} but it would not report a version. ` +
-        "It may be a broken install, a wrapper script, or not executable by this user.",
-    };
-  }
-  if (!expected) {
-    // The wrapper's own version was unreadable, so there is nothing to compare
-    // against. Report what was found rather than inventing a verdict.
-    return { status: "unknown", path: executable, version };
-  }
-
-  const [major, minor] = version.split(".");
-  const [xMajor, xMinor] = expected.split(".");
-  if (major !== xMajor || minor !== xMinor) {
-    return {
-      status: "incompatible",
-      path: executable,
-      version,
-      expected,
-      message:
-        `Claude Code ${version} at ${executable} is not compatible with this build of telar, ` +
-        `which speaks the ${xMajor}.${xMinor}.x control protocol (expects ${expected}). ` +
-        "Update telar, or install a matching Claude Code.",
-    };
-  }
-  if (version !== expected) {
-    return {
-      status: "drifted",
-      path: executable,
-      version,
-      expected,
-      message:
-        `Claude Code ${version} differs from the ${expected} this build was tested against. ` +
-        "This usually works — but if tool calls are cancelled without you refusing them, suspect this first.",
-    };
-  }
-  return { status: "ok", path: executable, version, expected };
+/** The same verdict without blocking the event loop — for HTTP handlers, which
+ *  must not stall every other request (including live chat streams) on a
+ *  subprocess. Shares the cache and the classification with resolveClaudeCli. */
+export function resolveClaudeCliAsync(): Promise<ClaudeCliResolution> {
+  return resolveCliAsync(CLAUDE_CLI);
 }
 
-/** Whether a turn may proceed. `drifted` and `unknown` pass DELIBERATELY: a hard
- *  gate on every unrecognised version would lock a user out of their own app the
- *  day Claude Code ships a release we have not blessed, and the common case — a
- *  patch ahead — demonstrably works. Only "no CLI at all" and "wrong protocol
- *  family" are refusals. */
+/** Whether a turn may proceed. `drifted` and `unknown` pass DELIBERATELY — see
+ *  cliUsable, which is the one rule both CLIs are judged by. */
 export function claudeCliUsable(resolution: ClaudeCliResolution): boolean {
-  return resolution.status !== "missing" && resolution.status !== "incompatible";
+  return cliUsable(resolution);
 }
 
 /** Spread into the SDK's `options`. Empty when nothing was found — the caller is
