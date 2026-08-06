@@ -1008,3 +1008,28 @@ export function agentTokenTotal(agent: {
   if (!t) return undefined;
   return t.input + t.output;
 }
+
+// PANEL ORDER FOR THE WORKFLOWS SECTION — live work first, finished work last.
+//
+// WHAT WAS WRONG. The section rendered `[...ultraRuns.values()]` in map
+// insertion order, which is arrival order, which after a busy session is
+// neither. A run that finished an hour ago sat above one working right now, and
+// the only thing distinguishing them was a word inside the card. Ten runs in,
+// the section is mostly history with the live one somewhere in it.
+//
+// STABLE WITHIN EACH GROUP, deliberately. This is a partition, not a re-sort:
+// runs keep their existing relative order inside "live" and inside "finished",
+// so a row never moves for any reason except its own state changing. A sort on
+// a timestamp would shuffle neighbours whenever one settled, which is exactly
+// the kind of motion that makes a list hard to click.
+//
+// `running` IS THE ONLY LIVE STATE — done, failed and stopped are all terminal
+// and all sink. Failed does NOT get a middle tier: a failure is finished, and
+// promoting it above other finished runs would make the list argue with the
+// counts in the header rather than agree with them.
+export function orderRunsForPanel<T extends { state: UltraRunState }>(runs: readonly T[]): T[] {
+  const live: T[] = [];
+  const finished: T[] = [];
+  for (const run of runs) (run.state === "running" ? live : finished).push(run);
+  return [...live, ...finished];
+}

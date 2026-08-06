@@ -38,6 +38,7 @@ import {
   UNPHASED,
   agentRows,
   agentTokenTotal,
+  orderRunsForPanel,
   anchorControls,
   anchorForm,
   anchorShape,
@@ -1509,13 +1510,39 @@ describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken f
 
   test("session-view.tsx wires the tab through those helpers, not through a local literal", () => {
     const src = readSource("apps/web/components/session/session-view.tsx");
-    expect(src).toContain("ultraTabKind");
-    expect(src).toContain("SESSION_ULTRA_TAB");
+    // `ultraTabKind`/`SESSION_ULTRA_TAB` DELIBERATELY DROPPED (issue #13). Those
+    // named the composite item kind that used to render the Ultra pane BY
+    // REPLACING `transcriptItems` — the exact mechanism traced as "renders on top
+    // of the main chat", since a scroll column that owns the transcript has no
+    // way to show one item INSTEAD of it. The pane now renders in the
+    // right-panel Activity dock (a sibling surface, not a transcript swap), so
+    // there is no local item-kind literal left for this half of the guard to
+    // find. `ultraTabRunId`/`ultraTabId` are unchanged below: `activeTab` still
+    // names the selected run, it just feeds the dock instead of this memo.
     expect(src).toContain("ultraTabRunId(activeTab)");
     expect(src).toContain("ultraTabId(runId)");
     // INV-10b's positive half: the anchor kind is still registered in the
     // ADAPTER's registry (and, elsewhere, still absent from the gallery's).
     expect(src).toContain("ultraRunAnchorKind");
+  });
+
+  test("all three run-focus call sites reveal the dock, not just name the run", () => {
+    // Proved as a REGRESSION GAP first: `sidebar-mount.test.ts` pins the
+    // arrival effect's dependency array growing by `resolvedRightPanelScopeKey`,
+    // but a dependency-array pin does not prove the call inside the effect
+    // still exists — deleting the `openRightPanelActivity(...)` line and
+    // leaving the (now-unused-looking but still-referenced-elsewhere) dep in
+    // place left the whole suite green. `setActiveTab(ultraTabId(...))` alone
+    // only names WHICH run; since #13(b) moved the pane out of the transcript,
+    // naming the run no longer reveals anything by itself (see the removed
+    // memo arm above) — the dock must be told to open, separately, at EVERY
+    // site that focuses a run: the two inline anchor `onFocus` callbacks
+    // (`ultraAnchorPayloads`, `pendingUltraAnchor`) and the `?run=` arrival
+    // effect. Three call sites, three calls — counted, not just asserted present.
+    const src = readSource("apps/web/components/session/session-view.tsx");
+    expect(
+      src.split("openRightPanelActivity(resolvedRightPanelScopeKey)").length - 1,
+    ).toBe(3);
   });
 
   test("the rail is the INDEX that opens the pane, and says which run is open", () => {
@@ -1624,5 +1651,46 @@ describe("AC-U4 — the rail stays w-60; nothing here widened it", () => {
 
   test("ultra-rail.tsx still documents the 240px budget it is built to", () => {
     expect(readSource("apps/web/components/session/ultra-rail.tsx")).toContain("240px");
+  });
+});
+
+describe("orderRunsForPanel — live work first, finished work last", () => {
+  const run = (runId: string, state: RunSnapshot["state"]) => ({ runId, state });
+
+  test("a finished run never sits above a running one", () => {
+    // The reported symptom: the Workflows section rendered map insertion order,
+    // so a run that settled an hour ago appeared above one working right now
+    // and only the word inside the card told them apart.
+    const ordered = orderRunsForPanel([
+      run("done-1", "done"),
+      run("live-1", "running"),
+      run("failed-1", "failed"),
+      run("live-2", "running"),
+    ]);
+    expect(ordered.map((r) => r.runId)).toEqual(["live-1", "live-2", "done-1", "failed-1"]);
+  });
+
+  test("order is STABLE inside each group — a row moves only when its own state changes", () => {
+    // A partition, not a sort. Sorting on a timestamp would shuffle neighbours
+    // every time one settled, which is what makes a list hard to click.
+    const ordered = orderRunsForPanel([
+      run("a", "done"),
+      run("b", "stopped"),
+      run("c", "failed"),
+    ]);
+    expect(ordered.map((r) => r.runId)).toEqual(["a", "b", "c"]);
+  });
+
+  test("failed does NOT get a middle tier — every terminal state sinks together", () => {
+    // Promoting failures above other finished runs would make the list argue
+    // with the header's counts instead of agreeing with them.
+    const ordered = orderRunsForPanel([run("f", "failed"), run("d", "done")]);
+    expect(ordered.map((r) => r.runId)).toEqual(["f", "d"]);
+  });
+
+  test("an all-live and an all-finished list are both returned untouched", () => {
+    expect(orderRunsForPanel([run("x", "running"), run("y", "running")]).map((r) => r.runId)).toEqual(["x", "y"]);
+    expect(orderRunsForPanel([run("x", "done"), run("y", "done")]).map((r) => r.runId)).toEqual(["x", "y"]);
+    expect(orderRunsForPanel([])).toEqual([]);
   });
 });
