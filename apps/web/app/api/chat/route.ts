@@ -6,7 +6,7 @@ import {
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
-import { claudeExecutableOptions } from "@/lib/claude-executable";
+import { claudeCliUsable, claudeExecutableOptions, resolveClaudeCli } from "@/lib/claude-executable";
 import {
   fromClaudeContextUsage,
   fromCodexContextUsage,
@@ -661,6 +661,26 @@ export async function POST(req: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // THE CLI GATE, in the same pre-SSE 400 shape and for the same AD-11 reason:
+  // telar no longer bundles the Claude Code binary, so "is there one, and can we
+  // talk to it" is a real precondition rather than an assumption. Refusing here
+  // states the problem once, in words the user can act on; letting it through
+  // produces a control-protocol failure that surfaces as tool calls being
+  // cancelled with nobody able to say why (#28).
+  //
+  // Only "missing" and "incompatible" refuse. A drifted patch version passes —
+  // gating on every unrecognised release would lock a user out of their own app
+  // the day Claude Code ships faster than telar does.
+  //
+  // Codex-backed sessions never touch the Claude CLI, so they are not gated on
+  // it: a Codex user with no Claude Code installed is a supported configuration.
+  if (provider !== "codex") {
+    const cli = resolveClaudeCli();
+    if (!claudeCliUsable(cli)) {
+      return Response.json({ error: cli.message, claudeCli: cli }, { status: 400 });
+    }
   }
 
   // Reserve the session before consuming any one-shot context. This is the
