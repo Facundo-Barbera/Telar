@@ -9,6 +9,7 @@ import {
   BotIcon,
   CheckIcon,
   ExternalLinkIcon,
+  FoldVerticalIcon,
   FolderGit2Icon,
   PencilIcon,
   PictureInPicture2Icon,
@@ -1086,6 +1087,14 @@ function SessionWorkspace({
   const statusRef = useRef(status);
   statusRef.current = status;
   const [thinking, setThinking] = useState(false);
+  // True while EITHER harness is rewriting this session's own history down to
+  // a summary — driven by the "compacting"/"compacted" SSE pair (see
+  // applyServerEvent below), fired for a manual Compact press exactly the
+  // same way it is for a harness's own auto-compaction on an ordinary turn.
+  // Deliberately not folded into `status`/`thinking`: those describe a TURN
+  // producing output, and a compaction produces none — collapsing them would
+  // make an idle composer's Compact press look like a new turn started.
+  const [compacting, setCompacting] = useState(false);
   // True once the chat record is actually confirmed persisted server-side —
   // NOT the same as `sessionId` being set. sessionId is assigned the moment
   // the "session" SSE event arrives, right at the START of a turn (just
@@ -1276,6 +1285,11 @@ function SessionWorkspace({
   // one-line failure text shown above the composer, since the app has no toast
   // primitive and a cap rejection that says nothing reads as a dead button.
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  // Same one-line-banner idiom as attachmentError above, for the Compact
+  // affordance's own failure path — compactNow never appends a message, so
+  // there is no assistant bubble to carry an "**Error:**" line the way a
+  // normal turn's send() does.
+  const [compactError, setCompactError] = useState<string | null>(null);
 
   // `@` file mentions. `caret` is tracked because — unlike the slash menu, which
   // only ever fires when the WHOLE value starts with "/" — a mention is typed
@@ -1670,6 +1684,21 @@ function SessionWorkspace({
         ...ms,
         { id: userId, role: "user", parts: [{ type: "text", text: payload.text, done: true }] },
       ]);
+      return;
+    }
+    // Compaction is not a turn — no assistant text, no tool calls, and (on
+    // the Codex side especially) no `session`/`done` events at all — so it
+    // gets its own early return, mirroring the "user" case above, rather than
+    // falling into the "every other event targets this turn's assistant
+    // message" block below. Falling through there would spuriously open an
+    // empty assistant bubble for a Compact press, which is exactly the
+    // landmine this guards against. `compact_boundary` (Claude-only, richer
+    // token-count metadata) rides the same pair but changes nothing further
+    // yet — it deliberately does not reset `compacting`, since Claude's own
+    // "compacted" event (PostCompact) already does, and always fires after.
+    if (event === "compacting" || event === "compacted" || event === "compact_boundary") {
+      if (event === "compacting") setCompacting(true);
+      if (event === "compacted") setCompacting(false);
       return;
     }
     // Every other event targets this turn's assistant message. On the POST path
@@ -2353,6 +2382,52 @@ function SessionWorkspace({
     },
     [sessionId, buildTurnPayload, applyServerEvent],
   );
+
+  // The composer's Compact affordance. Deliberately NOT a `send(..., {hidden:
+  // true})` call: `send` always appends a fresh assistant bubble (`asstId`)
+  // and sets it in `asstIdRef` BEFORE the fetch even starts, so applyServerEvent
+  // has somewhere to write text/tool events — but a compaction produces
+  // neither, and applyServerEvent's own "compacting"/"compacted" case (above)
+  // returns early without touching any bubble at all. Reusing `send` here
+  // would leave that pre-created bubble permanently empty. This posts the
+  // SAME `/api/chat` route with `compact: true` (see route.ts's trigger-design
+  // comment) and drains the identical SSE contract, but touches no message
+  // list — `compacting` (state, set true optimistically here and by the
+  // "compacting" SSE event either way, reset by "compacted" or the `finally`
+  // below as a backstop) is the only visible effect until the harness's own
+  // next reply.
+  const compactNow = useCallback(async () => {
+    if (!sessionId || compacting || busy) return;
+    setCompacting(true);
+    setCompactError(null);
+    const runId = globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...buildTurnPayload("", [], runId), compact: true }),
+      });
+      if (!res.ok || !res.body) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) detail = body.error;
+        } catch {
+          /* not JSON — keep the status line */
+        }
+        throw new Error(detail);
+      }
+      const reader = res.body.getReader();
+      await consumeSSE(reader, applyServerEvent);
+    } catch (err) {
+      setCompactError(String(err));
+    } finally {
+      // Backstop: a thrown fetch/network error never reaches the "compacted"
+      // SSE event that would otherwise clear this, so the indicator would
+      // hang forever without an unconditional reset here.
+      setCompacting(false);
+    }
+  }, [sessionId, compacting, busy, buildTurnPayload, applyServerEvent]);
 
   // M11 finding-1 — auto-fire the escalation opening turn ONCE, on mount.
   // The SACRED no-auto-start rule is enforced one level up: discuss-escalation
@@ -3907,6 +3982,18 @@ function SessionWorkspace({
                 </button>
               </div>
             )}
+            {compactError && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-2.5 py-1.5 text-[11px] text-destructive">
+                <span className="min-w-0 flex-1">{compactError}</span>
+                <button
+                  type="button"
+                  onClick={() => setCompactError(null)}
+                  className="shrink-0 rounded px-1 hover:bg-destructive/10"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             <PromptInput
               onSubmit={handleSubmit}
               // Drops land anywhere over the CONVERSATION COLUMN, not only on
@@ -3985,6 +4072,35 @@ function SessionWorkspace({
                       <PromptInputActionAddScreenshot />
                     </PromptInputActionMenuContent>
                   </PromptInputActionMenu>
+                  {/* The compact affordance (this task's part 3): only meaningful
+                      once a real session/thread exists to compact — route.ts's
+                      own 400 guard refuses `compact: true` without a sessionId,
+                      so the button never offers a request the server would just
+                      reject. Same icon-sm ghost Button pattern as the dock
+                      minimize control above; `compacting` drives the same
+                      pulsing-icon treatment busy state uses elsewhere rather
+                      than inventing a second "in progress" visual language. */}
+                  {sessionId && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={compacting ? "Compacting…" : "Compact conversation"}
+                      title={
+                        compacting
+                          ? "Compacting…"
+                          : "Compact this conversation — summarize history to free up context"
+                      }
+                      disabled={compacting || busy}
+                      className={cn(
+                        "shrink-0 text-muted-foreground hover:text-foreground",
+                        compacting && "animate-pulse text-primary",
+                      )}
+                      onClick={() => void compactNow()}
+                    >
+                      <FoldVerticalIcon className="size-4" />
+                    </Button>
+                  )}
                   <ComposerControls
                     project={project}
                     provider={provider}
