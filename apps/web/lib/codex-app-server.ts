@@ -12,9 +12,13 @@
 // `codex app-server generate-ts --experimental -o <dir>` emits (ClientRequest
 // / ServerNotification / ServerRequest unions and their referenced types) —
 // not vendored wholesale, just the fields this adapter actually reads/sends.
-import fs from "fs";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
+// Subpath, not the "@telar/core" barrel: this is the only VALUE import in a
+// file whose other core import is type-only, and pulling the barrel in would
+// drag the engine, the schemas and everything else behind them into every
+// process that runs a Codex turn.
+import { codexExecutablePath } from "@telar/core/codex-executable";
 import type { HarnessToolNamespace, SubagentTerminalStatus } from "@telar/core";
 import { findTool, toContentItems, toDynamicTools } from "@/lib/harness-tools";
 
@@ -170,14 +174,24 @@ export type CodexRunOptions = {
   instructions?: string;
 };
 
-// Resolve the system Codex binary: an explicit override, else the common
-// Homebrew location, else bare "codex" (resolved off PATH by the child
-// process spawn) — unchanged from the old adapter.
-const resolveCodexBin = (): string => {
-  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
-  if (fs.existsSync("/opt/homebrew/bin/codex")) return "/opt/homebrew/bin/codex";
-  return "codex";
-};
+// THE CODEX CLI GATE, and the resolution behind it.
+//
+// This used to be three lines that checked CODEX_BIN, then
+// /opt/homebrew/bin/codex, then spawned a bare "codex" and hoped PATH had it.
+// It never looked in ~/.local/bin — the official standalone installer's own
+// directory — so the common install resolved off PATH, which a Finder-launched
+// app does not reliably have. resolveCodexCli() (packages/core) checks the same
+// candidates Claude does, in the same order, and reports a version and a status
+// with it.
+//
+// A MISSING CODEX FAILS THE TURN (AD-11), exactly as a missing Claude Code does
+// at the chat route's own gate: spawning a binary that is not there produced an
+// ENOENT inside a JSON-RPC client, surfaced as "codex app-server exited
+// (code=null...)", and told the user nothing about what to install.
+// codexExecutablePath() throws the resolution's own actionable message, and it
+// is called at BOTH spawn sites below — a gate on only the turn path would let
+// a compaction die the old way.
+const resolveCodexBin = (): string => codexExecutablePath();
 
 const dropUndefined = (env: Record<string, string | undefined>): Record<string, string> => {
   const out: Record<string, string> = {};

@@ -13,6 +13,7 @@ import {
   RotateCwIcon,
   SparklesIcon,
   StethoscopeIcon,
+  TerminalIcon,
 } from "lucide-react";
 import type { ProviderStatus } from "@telar/core/detect";
 import {
@@ -45,6 +46,7 @@ import { AgentDefaultsSettings } from "@/components/settings/agent-defaults-sett
 import { NotificationsSettings } from "@/components/settings/notifications-settings";
 import { UpdatesSettings } from "@/components/settings/updates-settings";
 import { DoctorSettings } from "@/components/settings/doctor-settings";
+import { CliSettings } from "@/components/settings/cli-settings";
 import {
   ProviderInstanceRow,
   type AccountWire,
@@ -235,6 +237,9 @@ const SECTIONS: SettingsSection[] = [
   { id: "providers", label: "Providers", icon: BotIcon, group: "Provider" },
   { id: "integrations", label: "Integrations", icon: PlugIcon, group: "Provider" },
   { id: "usage", label: "Usage", icon: GaugeIcon, group: "Provider" },
+  // Beside Doctor, not under Provider: these are facts about this MACHINE's
+  // installs (which binary, which version), not about a login.
+  { id: "clis", label: "CLI tools", icon: TerminalIcon, group: "Machine" },
   { id: "doctor", label: "Doctor", icon: StethoscopeIcon, group: "Machine" },
 ];
 
@@ -487,6 +492,7 @@ export function GeneralSettings({ initialData }: { initialData?: SettingsInitial
       {active === "agent" && <AgentDefaultsSettings />}
       {active === "notifications" && <NotificationsSettings />}
       {active === "updates" && <UpdatesSettings />}
+      {active === "clis" && <CliSettings />}
       {active === "doctor" && <DoctorSettings />}
 
       {active === "providers" && (

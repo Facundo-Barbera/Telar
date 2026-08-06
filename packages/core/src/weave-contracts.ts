@@ -1,11 +1,8 @@
-// Per-Thread bundle wiring (docs/loom-model.md §2, §M.1, §W). A woven root's
-// children are created lazily in the weaver's spawnChild (dispatcher.ts:
-// runWeaveWiring), NOT at charter-assign time — so this is where each Thread
-// gets its OWN Spec Bundle: the root's context files copied in, its objective
-// narrowed to the SubGoal, and its Verification Contract filtered down to just
-// that workstream's slice (the assertions carrying its subGoalId, plus the
-// cross-cutting ALL/unlabelled ones). The child then reads its own bundle via
-// its own readContract in the executor — proving its SubGoal in isolation.
+// Per-Thread bundle wiring (docs/loom-model.md §2, §M.1, §W) plus the M1/M11
+// contract synthesis and tightening machinery. Full design reasoning — the
+// M-series finding history, the conservatism arguments and the sanctioned
+// repair sources — lives in docs/weave-contracts.md; keep this file to
+// point-of-use notes only.
 import { CONTRACT_FILE, listBundleFiles, snapshotBundle, writeBundleFile } from "./bundle";
 import { validateContract, type Charter, type ContractAssertion, type SubGoal, type VerificationContract } from "./schemas";
 import { charterHasGateIntent, deriveDeliverableSignal } from "./deliverable-signal";
@@ -13,23 +10,12 @@ import { partitionAssertions } from "./executor";
 import { isRunnableShape } from "./runnable-shape";
 import type { Loom } from "./looms";
 
-// M11 (finding 6). PURE. Classifies a set of validateContract errors as
-// AUTHOR-REPAIRABLE — every error is one the sanctioned tightening machinery can
-// fix from the author's own material, so a readContract-null AUTHORED contract is
-// worth REVIVING+repairing instead of throwing away and re-synthesizing. Two
-// repairable classes, matched by their exact validateContract substrings:
-//   1. "non-runnable expected" — a command whose `expected` failed isRunnableShape
-//      (finding 2a/7): repaired to a matching hint / adopted observable /
-//      manifest.verifyCommand by tightenAuthoredContract.
-//   2. "observable is only valid on live-critic" — a command/gate carrying a
-//      mis-placed runnable in `observable` (finding 6): the field-inverted run #3
-//      shape, whose observable is adopted as the repair source.
-// A finding-6-shaped legacy contract yields BOTH errors at once (prose expected +
-// stray observable), so a naive `.every(e => e.includes("non-runnable expected"))`
-// would REFUSE to revive it. This helper accepts a contract iff EVERY error is one
-// of these two classes — deliberately NARROW: malformed JSON, a dangling
-// expectedFile, a prose-only assertion, an all-live-critic floor breach etc. are
-// NOT author-repairable and must still fall through to synthesizeContract.
+// M11 (finding 6). PURE. Is this set of validateContract errors
+// AUTHOR-REPAIRABLE — every error one the sanctioned tightening machinery
+// below can fix from the author's own material, so a readContract-null
+// AUTHORED contract is worth REVIVING+repairing rather than thrown away and
+// re-synthesized? Deliberately NARROW (two exact substrings only) — reasoning
+// and the finding-6 dual-error case: docs/weave-contracts.md
 export function contractErrorsRepairable(errors: string[]): boolean {
   if (errors.length === 0) return false; // nothing to repair ⇒ nothing to revive
   return errors.every(
@@ -37,19 +23,12 @@ export function contractErrorsRepairable(errors: string[]): boolean {
   );
 }
 
-// PURE. A runnable that ALWAYS exits 0 without checking anything — `true`, `:`,
-// `exit 0`, `echo …` — is an always-green "check": honoring it as a proofHint
-// would mint a `command` assertion that can never fail, silently REPLACING a real
-// judge (a live-critic) or a real runnable with an unconditional pass. That is a
-// verdict-floor breach (adaptive-verification review, finding 2: a hallucinated
-// `run:"true"` neuters the floor with only a mislabeled "tightening" event). A
-// proofHint is agent-supplied (planWeaveFromBundle emit); its criterion→runnable
-// is trusted for ROUTING, but its content must still be a genuine check. A command
-// is trivial-pass IFF EVERY sequenced segment is such a no-op — a single real
-// segment (e.g. `node cli.js --nope; test $? -eq 2`) makes the whole thing a
-// genuine check and is honored. Rejecting a trivial-pass hint makes it INERT (as
-// if unauthored) so the criterion keeps today's routing — fail-safe, worst case
-// unchanged, never always-green.
+// PURE. An always-green runnable ("true", ":", "exit 0", "echo …") must never
+// be honored as a proofHint — it would mint a `command` assertion that can
+// never fail, silently replacing a real judge with an unconditional pass (a
+// verdict-floor breach). Trivial-pass IFF every sequenced segment is a no-op;
+// a single real segment makes the whole thing a genuine check. Full
+// reasoning: docs/weave-contracts.md
 function isTrivialPass(run: string): boolean {
   const segments = run.split(/&&|\|\||;|\||\n/).map((s) => s.trim()).filter(Boolean);
   if (segments.length === 0) return true; // nothing actually runs
@@ -61,21 +40,14 @@ function isTrivialPass(run: string): boolean {
   });
 }
 
-// M11.1. PURE. Flattens the charter's per-criterion proof hints (charter-level
-// plus every SubGoal's) into ONE criterion-text → runnable map, trimmed on both
-// sides. First hint wins on a duplicate criterion (charter-level outranks
-// subgoal, document order after that) — deterministic, never a merge surprise.
-// Blank OR trivially-passing (isTrivialPass) OR non-runnable-shaped
-// (isRunnableShape false — M11 finding 2b) run entries are dropped: a degenerate
-// hint must never mint a command assertion with an empty runnable (validateContract
-// would reject it), NOR an always-green one (validateContract would NOT catch it —
-// see isTrivialPass), NOR one carrying PROSE / a JS expression that would reach
-// sh -c verbatim ("process exits with code 0…", `parse(…) === {…}` — the live
-// loom_mrirhfm4 bug). A hint whose criterion matches nothing is simply inert —
-// fail-safe, the unmatched criteria keep today's routing. Both consumers
-// (synthesizeContract tightening 1, tightenAuthoredContract) read through here, so
-// the content check protects every hint-driven command mint in one place — a
-// non-runnable hint is inert everywhere, never installed into an `expected`.
+// M11.1. PURE. Flattens the charter's per-criterion proof hints into ONE
+// criterion-text → runnable map. First hint wins on a duplicate criterion.
+// Blank, trivially-passing, or non-runnable-shaped entries are dropped — a
+// degenerate hint must never mint a broken or always-green command
+// assertion, nor one carrying prose that would reach sh -c verbatim. An
+// unmatched criterion is simply inert (fail-safe). Both synthesizeContract
+// and tightenAuthoredContract read through here, so this is the ONE place a
+// hint is content-checked. Full reasoning: docs/weave-contracts.md
 function collectProofHints(charter: Charter | undefined): Map<string, string> {
   const hints = new Map<string, string>();
   if (!charter) return hints;
@@ -88,77 +60,28 @@ function collectProofHints(charter: Charter | undefined): Map<string, string> {
   return hints;
 }
 
-// M1 (D0.2, D1.2). PURE. Forces a Verification Contract onto a loom that was
-// created WITHOUT one (a plain custom loom with only acceptanceCriteria, or
-// nothing) — the M1 creation-time invariant that EVERY loom ends up with a
-// contract. Each acceptanceCriteria line becomes one `live-critic` assertion
-// (the only kind that maps prose to live judgment without a fabricated exit-
-// code gate); with zero criteria it falls back to a single assertion from the
-// prompt/title. Every assertion is scoped subGoalId:"ALL" so (a) the weave-of-
-// one child inherits the whole slice via wireChildBundle's ALL filter, and
-// (b) runIntegrationVerify's ALL slice is non-empty → full re-verify fires.
-// synthesized:true honestly labels the result so validateContract skips only
-// the hard-gate floor (D0.1). Never throws; always ≥1 assertion (prompt/title
-// always exist from createLoom, so this adds NO new mandatory user input).
-// M10.5 — `manifest` is OPTIONAL (default undefined ⇒ existing callers
-// byte-identical, e.g. m1-forced-contracts). It is the flag-gated structural hook
-// (proposerStructuralPlan B). Flag-off (or no manifest) EVERY criterion still maps
-// to type:"live-critic" / subGoalId:"ALL" / blocker:true / synthesized:true, so
-// the m1/weave-planner/contract tests stay byte-identical. Flag-on, this
-// DETERMINISTIC no-LLM fallback stays CONSERVATIVE by construction: it NEVER
-// invents a `subjective` classification from prose (a keyword scan risks
-// false-positives that would DROP an objective criterion — a moat violation). The
-// one structural tightening it makes is precise and deterministic: a criterion
-// whose text EXACTLY names a configured project gate becomes a `gate` assertion
-// (an offline exit-code check) instead of a live-critic — a live-critic→gate
-// TIGHTENING contractLoosenings never flags, and objective/fail-closed. Every
-// other criterion keeps live-critic. The rich per-criterion authoring (command/
-// gate + the subjective marker) lives in the LLM charter proposer.
+// M1 (D0.2, D1.2). PURE. Forces a Verification Contract onto a loom created
+// WITHOUT one — every acceptanceCriteria line becomes a `live-critic`
+// assertion (falls back to prompt/title with zero criteria), scoped
+// subGoalId:"ALL", synthesized:true. Never throws; always ≥1 assertion.
 //
-// M11.1 (docs/adaptive-verification.md §3.1) — the
-// modality DERIVATION the M10.5 header above reserved. When a manifest is
-// present, two additional PRECISE tightenings run, in order, after the exact-gate-name
-// rule; everything they cannot map STAYS live-critic (worst case = today):
-//   1. HONOR a charter-authored per-criterion proofHint (schemas.ProofHint):
-//      a criterion whose exact text carries a hint becomes
-//      {type:"command", expected: hint.run} — how a CLI/DS criterion gets its
-//      concrete runnable (authored where the criteria live — by the proposer or
-//      a human, never invented here from prose; the module's own conservatism
-//      rule above).
-//   2. DERIVE from the deliverable (deriveDeliverableSignal — the same PURE,
-//      never-throwing, bounded-filesystem signal the M11.0 pre-flight reads;
-//      flag-on this function trades strict purity for that bounded read):
-//      when the signal says "test-gate" (a real test script exists TODAY) the
-//      remaining criteria become {type:"command", expected: signal.run} (the
-//      lockfile-aware `bun|pnpm|yarn|npm run test`) — but ONLY under an
-//      explicit SANCTION, because "the suite proves it" must be a claim
-//      somebody actually made, never an inference from the repo alone:
-//        (a) the criteria are the PROMPT FALLBACK (zero authored
-//            acceptanceCriteria — the loom_mrigs3zo_vxgrsr greenfield shape,
-//            where the one synth-0 assertion IS "the deliverable works" and
-//            the suite is exactly its proof), OR
-//        (b) the charter carries gate-shaped proof intent
-//            (charterHasGateIntent — PROOF_TEMPLATES.verifyMechanism==="gate"),
-//            the same authored trust channel as a proofHint.
-//      WITHOUT a sanction, authored multi-criteria prose keeps live-critic:
-//      a pre-existing green suite must never rubber-stamp a criterion it says
-//      nothing about (credentials-bound work, taste — doc §4 "a mis-derived
-//      method can never rubber-stamp; the worst it can do is produce NO
-//      evidence", §3.2 park semantics). Those criteria tighten only via an
-//      exactly-matching proofHint, or land the fail-closed no-evidence demote.
-//      The web shape short-circuits to plannable:false inside the signal, so a
-//      dev-server app can never be blanket-tightened either way.
-//      deferred-gate/cli-harness/sandbox-eval carry NO runnable today, so they
-//      tighten ONLY via hints — never a fabricated command.
-// Both directions are live-critic → gate/command TIGHTENINGS (the direction
-// contractLoosenings never flags); the reverse (gate → live-critic) has no code
-// path here — the exact-gate-name rule stays FIRST, so a criterion that is a
-// named gate stays a named gate. A derived gate/command never
-// carries `subjective` (this deterministic path never authors the marker;
-// validateContract additionally rejects it on any non-live-critic type).
-// `synthesized: true` stays carried verbatim. The `manifest ? … : false` guard
-// mirrors the M10.5 routing line: a bare 1-arg caller runs no modality
-// tightening (worst case = today's blanket live-critic).
+// M10.5 — `manifest` is OPTIONAL; flag-off (or no manifest) is byte-identical
+// to the pre-M10.5 behavior. Flag-on this stays CONSERVATIVE by construction
+// (never infers `subjective` from prose): the one structural tightening is a
+// criterion whose text EXACTLY names a configured project gate → `gate`.
+//
+// M11.1 (docs/adaptive-verification.md §3.1) — two further PRECISE
+// tightenings run when a manifest is present, after the exact-gate-name rule;
+// anything they cannot map STAYS live-critic (worst case = today):
+//   1. HONOR a charter-authored proofHint for this exact criterion text.
+//   2. DERIVE from the deliverable when a real test script exists TODAY —
+//      but ONLY under an explicit SANCTION (prompt-fallback criteria, or a
+//      charter with gate-shaped proof intent), never as a blanket inference
+//      from a green repo. Full sanction reasoning, the deferred-gate/
+//      cli-harness/sandbox-eval carve-out, and why the web shape
+//      short-circuits: docs/weave-contracts.md
+// Both directions are live-critic → gate/command TIGHTENINGS only; the
+// reverse has no code path here (the exact-gate-name rule stays FIRST).
 export function synthesizeContract(
   loom: Loom,
   manifest?: {
@@ -197,78 +120,45 @@ export function synthesizeContract(
   return { version: 1, assertions, synthesized: true };
 }
 
-// M11.1 (docs/adaptive-verification.md §3.1). PURE. The
-// TIGHTENING-ONLY derivation over an AUTHORED contract — the choke-point sibling
-// of synthesizeContract for the case synthesizeContract never reaches. Today
-// synthesizeContract runs ONLY when readContract is null; a human/agent-AUTHORED
-// bundle contract (readContract non-null) bypasses ALL derivation, so its golden-
-// diff / live-critic assertions stay agent-judged and a malformed command
-// assertion (expected = a PROSE description, not a runnable — the loom_mrinlb18
-// "bun-test-suite-passes" case) stays unrunnable. This closes that gap WITHOUT
-// touching authored intent it cannot improve: it only ever TIGHTENS toward a
-// charter-authored proofHint (the same authored trust channel synthesizeContract
-// honors), and only when the tightening still validates.
+// M11.1 (docs/adaptive-verification.md §3.1). PURE. The TIGHTENING-ONLY
+// derivation over an AUTHORED contract (readContract non-null) — the
+// choke-point sibling of synthesizeContract for the case it never reaches.
+// Closes the gap where a human/agent-authored malformed command `expected`
+// (prose, not a runnable) stays unrunnable forever, WITHOUT touching authored
+// intent it cannot improve.
 //
-// Conservatism (mirrors synthesizeContract's header): the ONLY signal consulted
-// is collectProofHints(loom.charter) — a hint is a claim SOMEBODY authored, never
-// inferred from the repo or from prose, AND (collectProofHints) never a trivially-
-// passing runnable. An assertion is matched to a hint by EXACT criterion text
-// against its `id` (primary — the live evidence had id "bun-test-suite-passes" ==
-// hint.criterion) OR `description` (fallback), both trimmed.
+// Conservatism: the ONLY signal consulted is collectProofHints(loom.charter)
+// — never inferred from the repo or from prose. Matched by exact criterion
+// text against `id` (primary) or `description` (fallback), both trimmed.
 //
-// ONE direction only — CONVERT, never EDIT (adaptive-verification review, finding 1):
-//   An AGENT-JUDGED assertion (isDeterministic=false — a live-critic or golden-diff,
-//   which carries NO runnable `expected` of its own) that matches a hint becomes
-//   {type:"command", expected: hint.run}. observable/expectedFile are cleared and
-//   any stray subjective marker stripped (validateContract rejects subjective on a
-//   non-live-critic type). This is the live-critic → command TIGHTENING the design
-//   doc blesses (§3.1) and contractLoosenings never flags — it ADDS a real,
-//   validated (non-trivial) runnable check where there was only agent judgment.
+// ONE direction only — CONVERT, never EDIT (adaptive-verification review,
+// finding 1): an agent-judged assertion (live-critic/golden-diff, no runnable
+// of its own) that matches a hint becomes {type:"command", expected:
+// hint.run}. A DETERMINISTIC assertion with a RUNNABLE `expected` is NEVER
+// touched — that runnable is a human/proposer-authored yardstick, and text
+// cannot tell a stricter runnable from a looser one, so "tightening" it
+// toward a hint could silently WEAKEN an approved gate (the original
+// finding-1 breach).
 //
-// A DETERMINISTIC assertion with a RUNNABLE `expected` is NEVER touched here. It
-// already carries a human/proposer-authored runnable, and editing that runnable is
-// "editing the yardstick" — exactly what §M.2 exists to catch: text CANNOT tell a
-// stricter runnable from a looser one, so replacing e.g. `bun test --coverage
-// --min 90` with a charter hint's `bun test` would silently WEAKEN a human-approved
-// gate under a "tightening" label (the original finding-1 breach). So: never a
-// deterministic→live-critic downgrade, never any edit of a RUNNABLE deterministic
-// assertion, never touch a hint-LESS agent-judged assertion — worst case unchanged.
+// M11 finding 2c/3 — the ONE sanctioned exception: a DETERMINISTIC `command`
+// whose `expected` is NON-runnable-shaped (a bug, not a yardstick — it can
+// only ever fail closed) gets REPAIRED to a sanctioned runnable: a matching
+// proofHint, the human-answered manifest.verifyCommand (finding 3), or a
+// field-inverted `observable` already on the assertion (finding 6, see
+// below). Scoped to `command` only; recorded as an event-trailed tightening,
+// never a silent edit. Full reasoning for all three repair sources:
+// docs/weave-contracts.md
 //
-// M11 finding 2c/3 — the ONE sanctioned exception (the item-2c nuance the invariant
-// blesses): a DETERMINISTIC `command` whose `expected` is NON-runnable-shaped
-// (isRunnableShape false — the loom_mrinlb18 "process exits with code 0…" prose that
-// reaches sh -c verbatim and can only ever fail closed) is a BUG, not a yardstick.
-// When such a broken command has a SANCTIONED runnable — a matching charter proofHint
-// OR the HUMAN-answered manifest.verifyCommand (finding 3: the authoritative runnable
-// the human supplied at escalation, persisted to telar.yaml) — its `expected` is
-// REPAIRED to that runnable, recorded as a tightening (event-trailed, co-signed
-// auto:tighten-authored by the dispatcher). This is not a weakening: the original was
-// unrunnable garbage that always fails closed; replacing it with a real check can only
-// raise the floor from "never verifiable" to "verifiable." A RUNNABLE authored
-// expected stays forbidden to replace (above); the repair is SCOPED to `command`
-// (a `gate` expected is a name, a `db` expected is legitimately SQL-shaped) and to
-// the NON-runnable case only. contractLoosenings sees the content change on a still-
-// blocking assertion — that is WHY the tightening is emitted and routed through the
-// dispatcher's sanctioned auto: co-sign, never a silent edit.
-//
-// Every candidate is re-validated (validateContract over the whole contract with the
-// one assertion replaced); if it would produce an INVALID contract the tightening
-// for THAT assertion is DISCARDED and the original kept — fail-safe, an invalid
-// contract is never emitted. Flag-off (or no manifest) is a strict no-op: the input
-// contract is returned unchanged with an empty tightenings list.
-//
-// IDEMPOTENT: a re-dispatch reads the already-tightened contract from disk; a
-// converted assertion is now a DETERMINISTIC `command`, which this function never
-// touches → zero events, no rewrite. A tightening is recorded ONLY when an assertion
-// actually converts.
+// Every candidate is re-validated against the WHOLE contract; an invalid
+// result discards that one tightening and keeps the original — fail-safe.
+// IDEMPOTENT: a repaired/converted assertion is deterministic-with-runnable
+// on the next pass, so a re-dispatch touches nothing and emits zero events.
 export function tightenAuthoredContract(
   contract: VerificationContract,
   loom: Loom,
-  // M11 finding 3 — `verifyCommand` is the HUMAN-answered verification runnable
-  // (answerBlocked's strategy answer, persisted to telar.yaml). Threaded here so a
-  // broken (non-runnable) command assertion can be repaired to it even without a
-  // matching charter hint. The dispatcher already passes the full ProjectManifest
-  // (which carries verifyCommand), so this widening needs NO call-site change.
+  // M11 finding 3 — the HUMAN-answered verification runnable (answerBlocked's
+  // strategy answer, persisted to telar.yaml). The dispatcher already passes
+  // the full ProjectManifest, so this widening needs no call-site change.
   manifest?: { verifyCommand?: string },
 ): {
   contract: VerificationContract;
@@ -277,19 +167,16 @@ export function tightenAuthoredContract(
   const hints = collectProofHints(loom.charter);
   const verifyCommand = manifest?.verifyCommand?.trim();
   const sanctionedVerify = verifyCommand && isRunnableShape(verifyCommand) ? verifyCommand : undefined;
-  // M11 finding 6 — a THIRD sanctioned repair source lives INSIDE the contract: a
-  // command whose runnable is field-inverted into `observable` (run #3). It repairs
-  // even with no hint and no verifyCommand, so the cheap no-op guard must also let
-  // that case through. This term keeps the guard exact: if no assertion carries an
-  // adoptable inverted observable AND there are no hints/verifyCommand, the loop
-  // would record nothing, so we still short-circuit (returning the original
-  // contract reference — byte-identical).
+  // M11 finding 6 — the THIRD sanctioned repair source: a command whose
+  // runnable is field-inverted into `observable` (run #3, legacy shape).
+  // Repairs even with no hint and no verifyCommand, so the no-op guard below
+  // must let that case through too. Full reasoning: docs/weave-contracts.md
   const hasInvertibleObservable = contract.assertions.some(
     (a) =>
       a.type === "command" &&
       !!a.observable?.trim() &&
       isRunnableShape(a.observable!) &&
-      !isTrivialPass(a.observable!) && // finding-6 repair: an always-green observable ("true"/":"/"echo ok"/"exit 0") is NOT an adoptable check — it would repair a fail-closed prose gate into a fake green
+      !isTrivialPass(a.observable!) && // an always-green observable is not an adoptable check
       (a.expected == null || !isRunnableShape(a.expected)),
   );
   if (hints.size === 0 && !sanctionedVerify && !hasInvertibleObservable) return { contract, tightenings: [] };
@@ -305,54 +192,30 @@ export function tightenAuthoredContract(
     let tightened: ContractAssertion | null = null;
 
     if (!deterministic) {
-      // CONVERT (Direction 1) — an agent-judged assertion (live-critic / golden-diff,
-      // no runnable of its own) that matches a hint → command. Clear observable/
-      // expectedFile + strip any stray subjective marker so the result passes
-      // validateContract's non-live-critic rules; id/description/subGoalId/blocker
-      // preserved verbatim. A hint-less agent-judged assertion keeps today's routing.
+      // CONVERT (Direction 1). observable/expectedFile cleared + any stray
+      // subjective marker stripped, so the result passes validateContract's
+      // non-live-critic rules. A hint-less agent-judged assertion is skipped.
       if (!run) continue;
       tightened = { ...a, type: "command", expected: run, observable: undefined, expectedFile: undefined, subjective: undefined };
     } else {
-      // REPAIR (finding 2c/3) — a DETERMINISTIC assertion. A RUNNABLE `expected` is
-      // the yardstick and is NEVER edited (§M.2). The ONE exception: a `command`
-      // whose `expected` is NON-runnable prose/JS — a bug that only ever fails closed.
-      // Repair it to a SANCTIONED runnable: the matching hint, else the human-answered
-      // verifyCommand. Scoped to `command` (a gate expected is a name; a db expected is
-      // legitimately SQL-shaped); the runnable is guaranteed shaped (collectProofHints
-      // drops non-runnable hints; sanctionedVerify is pre-checked). Idempotent: the
-      // repaired expected is runnable, so a re-dispatch skips it.
+      // REPAIR (finding 2c/3) — a runnable `expected` is never edited (§M.2).
+      // The one exception: NON-runnable `expected` on a `command` (a bug).
       if (a.type !== "command") continue;
       if (a.expected == null || isRunnableShape(a.expected)) continue; // runnable/absent stays as-authored
-      // M11 finding 6 — the field-inverted case (run #3): the planner put PROSE in
-      // `expected` and the actual RUNNABLE in `observable` ("bun test"). validateContract
-      // now rejects that observable at author time, but a LEGACY/started contract may
-      // already carry it. Adopt a runnable `observable` as a sanctioned repair SOURCE —
-      // it is exactly the command the author meant, just mis-placed — ahead of the
-      // human-answered verifyCommand. Repair SOURCE only: `observable` is never read as
-      // a live gate field (the gate layer still runs `expected`); this moves the
-      // mis-placed runnable INTO `expected` where the gate layer will run it, event-
-      // trailed like every other tightening.
-      // isTrivialPass guard (finding-6 repair): mirror collectProofHints (:87) and
-      // hasInvertibleObservable — an always-green observable ("true", ":", "echo ok",
-      // "exit 0") is runnable-SHAPED but not a genuine check; adopting it as `expected`
-      // would rewrite a fail-closed prose gate into an unconditional pass (the exact
-      // verdict-floor breach isTrivialPass exists to prevent), then persist it under
-      // the auto:tighten-authored self-cosign whose safety justification assumes only
-      // non-trivial runnables reach here. Never adopt a trivial-pass observable.
+      // Finding 6 — adopt a runnable, non-trivial `observable` as the repair
+      // SOURCE (never as a live gate field): the author's runnable, just
+      // mis-placed. Preferred ahead of the human-answered verifyCommand.
       const inverted =
         a.observable && isRunnableShape(a.observable) && !isTrivialPass(a.observable) ? a.observable : undefined;
       const repair = run ?? inverted ?? sanctionedVerify;
       if (!repair) continue; // no sanctioned runnable — leave to human escalation, fails closed
-      // Clear any stray `observable`: validateContract (finding 6) now rejects a
-      // non-blank observable on a command, so the re-validation below would DISCARD
-      // this repair if we left the inverted observable in place. Clearing it is
-      // always correct — a command never legitimately carries observable.
+      // Clear any stray `observable`: validateContract rejects a non-blank
+      // observable on a command, so leaving it would discard this repair.
       tightened = { ...a, expected: repair, observable: undefined };
     }
 
-    // Fail-safe: validate the WHOLE candidate (prior tightenings applied, this one
-    // replaced). If it would be invalid, DISCARD this tightening and keep the
-    // original — never emit an invalid contract.
+    // Fail-safe: validate the WHOLE candidate (prior tightenings applied,
+    // this one replaced). Invalid ⇒ discard this tightening, keep original.
     const candidate: VerificationContract = {
       ...contract,
       assertions: working.map((x, j) => (j === i ? tightened! : x)),
@@ -368,17 +231,16 @@ export function tightenAuthoredContract(
 }
 
 // PURE w.r.t. the child object except for the two fields it stamps
-// (contractRequired / acceptanceCriteria) — the caller saves the child. Copies
-// every root bundle file into the child EXCEPT contract.json and objective.md,
-// which are set explicitly below so a child never inherits the root's whole
-// contract or objective.
+// (contractRequired / acceptanceCriteria) — the caller saves the child.
+// Copies every root bundle file into the child EXCEPT contract.json and
+// objective.md, which are set explicitly below so a child never inherits the
+// root's whole contract or objective.
 //
 // The filtered slice = root assertions whose subGoalId is this SubGoal's id,
-// OR "ALL", OR unlabelled (cross-cutting). If that slice has a falsifiable
-// hard-gate (validateContract passes — needs >=1 non-live-critic assertion),
-// the child gets its own contract.json and contractRequired:true (panel path).
-// If it doesn't, no contract.json is written (readContract stays null) and the
-// child falls back to the SubGoal's acceptanceCriteria (legacy verifier path).
+// OR "ALL", OR unlabelled (cross-cutting). A falsifiable hard-gate slice gets
+// its own contract.json + contractRequired:true (panel path); otherwise no
+// contract.json is written and the child falls back to the SubGoal's
+// acceptanceCriteria (legacy verifier path).
 export function wireChildBundle(
   rootId: string,
   child: Loom,

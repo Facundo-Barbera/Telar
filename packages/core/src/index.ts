@@ -1,7 +1,12 @@
 export * from "./schemas";
 export * from "./providers";
 export * from "./claude-runtime";
+// Resolving an external CLI telar does not ship: the shared half, then the two
+// providers' own facts. Both resolvers are re-exported here because the surface
+// that reports them (/api/clis) has to name both in one answer.
+export * from "./cli-resolution";
 export * from "./claude-executable";
+export * from "./codex-executable";
 export * from "./guardrails";
 // The provider-neutral harness contract: one event vocabulary and one tool
 // shape that both the Claude Agent SDK adapter and the Codex app-server
