@@ -17,6 +17,11 @@
 // localStorage matches the existing `telar:*` convention (composer prefs, dock
 // entries, sidebar width) and survives exactly the events that were losing data:
 // navigation, reload, and a closed panel.
+//
+// The one import is TYPE-ONLY and erased at compile time, so this module still
+// carries no runtime dependency on the server-side @telar/core — see
+// `QueueItemLifecycle` for why the union has to come from there.
+import type { SessionQueueState } from "@telar/core";
 
 /** Per-session key. Namespaced like every other `telar:*` client key. */
 export const queueStorageKey = (sessionId: string) => `telar:queue:${sessionId}`;
@@ -64,6 +69,120 @@ export type QueuedMessage<F = unknown> = {
   text: string;
   files?: F[];
 };
+
+/**
+ * The engine's lifecycle for an item it has durably accepted.
+ *
+ * IMPORTED, NOT RE-SPELLED. This used to be a hand copy of core's union, which
+ * made the "closed list" below closed over nothing: TypeScript never requires
+ * an array to cover a union, so a state added to the engine would have compiled
+ * here, defaulted into `waiting`, and reproduced the exact bug #31 fixes. The
+ * union that decides this belongs to the module that persists it
+ * (packages/core/src/session-queue.ts) and there may be only one of it.
+ *
+ * TYPE-ONLY, which is what makes it legal in a module the client bundle pulls
+ * in: `import type` is erased, so no @telar/core runtime edge is created. Same
+ * boundary the loom components document.
+ *
+ * `committed` and `cancelled` are the two TERMINAL states; they are named
+ * separately because a terminal item is not a queue entry in any sense — it is
+ * history.
+ */
+export type QueueItemLifecycle = SessionQueueState;
+/** The lifecycle minus history: every state an item can be IN the queue in. */
+export type QueueItemState = Exclude<QueueItemLifecycle, "committed" | "cancelled">;
+
+/**
+ * ISSUE #31 — A QUEUE ITEM'S STATE DECIDES WHICH SURFACE OWNS IT.
+ *
+ * The queue box used to be populated by a filter that removed only the terminal
+ * states, so `claimed`/`running` — both of which mean the engine has ALREADY
+ * TAKEN the message and is answering it — kept rendering under "Queued · sends
+ * in order" while the same message was also a sent user bubble in the
+ * transcript. It read as a pending duplicate send.
+ *
+ * The fix is a partition and not a wider filter, because the states fall into
+ * three groups with three different owners, and collapsing them to two loses
+ * the one that matters most:
+ *
+ *   waiting   — `queued`, and local pre-ack items the engine has not seen yet
+ *               (no state at all). This is what the queue box is FOR.
+ *   inFlight  — `claimed`/`running`. The transcript and the working indicator
+ *               already represent these; a queue chip is a second, contradictory
+ *               representation of one message.
+ *   attention — `failed`/`ambiguous`, AND a local item the engine REFUSED
+ *               (`error` set, never accepted). NOT queue entries — they are
+ *               errors, and a blanket "keep only queued" would make a message
+ *               that failed to send vanish with no trace, which is worse than
+ *               showing it twice. The refused local item belongs here for the
+ *               same reason it belongs nowhere else: the view's retry effect
+ *               skips anything carrying an `error`, so it will never send, and
+ *               under "sends in order" it was a promise no one was keeping.
+ *
+ * Terminal items are dropped from all three. Keeping them would also strand the
+ * 2s queue poll, whose stop condition is an empty queue.
+ *
+ * PURE AND HERE rather than inline in the view: this is the whole membership
+ * rule for a surface users curate, and the app has no component harness, so a
+ * function over plain objects is the only executable form of the claim.
+ */
+export type QueuePartition<T> = {
+  waiting: T[];
+  inFlight: T[];
+  attention: T[];
+};
+
+export const isTerminalQueueState = (state?: QueueItemLifecycle): boolean =>
+  state === "committed" || state === "cancelled";
+
+export function partitionQueue<
+  T extends { state?: QueueItemLifecycle; accepted?: boolean; error?: string },
+>(items: readonly T[]): QueuePartition<T> {
+  const partition: QueuePartition<T> = { waiting: [], inFlight: [], attention: [] };
+  for (const item of items) {
+    if (item.state === undefined) {
+      // NO STATE AT ALL is a purely local item — between the user's Enter and
+      // the engine's acknowledgement. Its `error` is the only thing that
+      // distinguishes "still uploading" from "the engine said no", and the
+      // second one never sends.
+      if (item.error && !item.accepted) partition.attention.push(item);
+      else partition.waiting.push(item);
+      continue;
+    }
+    // A SWITCH, NOT A CHAIN, and the `never` below is the whole point: adding a
+    // state to core's SessionQueueState now fails to COMPILE here instead of
+    // silently defaulting into `waiting` — which is precisely how `claimed` and
+    // `running` came to be advertised as "sends in order".
+    switch (item.state) {
+      case "committed":
+      case "cancelled":
+        break; // history; belongs to no surface
+      case "claimed":
+      case "running":
+        partition.inFlight.push(item);
+        break;
+      case "failed":
+      case "ambiguous":
+        partition.attention.push(item);
+        break;
+      case "queued":
+        partition.waiting.push(item);
+        break;
+      default: {
+        const unreachable: never = item.state;
+        // Compile-time exhaustiveness is the guard; this is the runtime
+        // fallback for a state that reached the browser anyway (an envelope
+        // written by a newer build). It goes to `attention` and never to
+        // `waiting`: showing an unknown item beside a promise that it will send
+        // is the failure mode being fixed, and showing it as needing a human is
+        // true of anything this code cannot classify.
+        partition.attention.push(item);
+        void unreachable;
+      }
+    }
+  }
+  return partition;
+}
 
 /** The trimmer `fitToBudget`/`writeQueue` apply when a queue will not fit. */
 export const stripQueuedAttachments = <T extends { files?: unknown }>(m: T): T => {

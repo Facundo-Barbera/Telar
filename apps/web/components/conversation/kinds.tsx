@@ -630,11 +630,12 @@ const permissionKind: ItemKind<PermissionPayload> = {
   },
 };
 
-// Ships with no production PRODUCER, and that is correct rather than
-// speculative: it has two consumers on day one — the gallery lane, and the
+// Shipped with no production producer, and that was correct rather than
+// speculative: it had two consumers on day one — the gallery lane, and the
 // shell's own tombstone for an unregistered kind — and it is the shape Track F's
 // `loom:*` markers will copy. "Born on it rather than migrated to it" is the
-// whole point of epic 3.
+// whole point of epic 3. The first production producer arrived with issue #25:
+// session-view.tsx's compaction divider, interleaved between turns.
 const markerKind: ItemKind<MarkerPayload> = {
   id: CONVERSATION_KINDS.marker,
   render: (payload) => <Marker attention={payload.attention}>{payload.text}</Marker>,

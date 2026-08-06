@@ -128,10 +128,22 @@ import {
   appendTurn,
   getChat,
   logUsage,
+  recordCompactions,
   sessionSpendUsd,
   upsertChatStub,
   type Part,
 } from "@/lib/store";
+// The compaction record (issue #25) — the same shapes and the same
+// one-key-per-compaction reducer the client folds its transcript divider from,
+// so the marker a reader sees live and the marker they see after a reload come
+// out of one rule rather than two that agree by inspection.
+import {
+  compactionFacts,
+  emptyCompactionFold,
+  foldCompactionEvent,
+  type CompactionEventName,
+  type CompactionFacts,
+} from "@/lib/compaction";
 import {
   agentMetaFromInput,
   AGENT_SPAWN_TOOL_CANDIDATES,
@@ -837,6 +849,33 @@ export async function POST(req: Request) {
       // of retaining a request that teardown can invalidate.
       let contextUsage: ContextUsageSnapshot | undefined;
       let contextUsageWarningSent = false;
+      // ISSUE #25 — every compaction this stream observes, persisted once at
+      // teardown so the transcript keeps a record of where its history was
+      // replaced by a summary.
+      //
+      // ONE COMPACTION IS TWO OR THREE EVENTS AND CARRIES NO ID (Claude:
+      // PreCompact + PostCompact + the SDK's `compact_boundary`; Codex:
+      // compact_start/compact_end, and its own auto-compaction through
+      // compact_end ALONE — normalizeCodexAutoCompact has no start to pair
+      // with). Which events belong to which compaction is therefore a rule, and
+      // that rule lives in lib/compaction.ts, folded HERE over the events this
+      // route sends and folded again on the client over the events it receives.
+      // Same function, same order, same list: that is what keeps a reloaded
+      // transcript from showing a different number of dividers than the reader
+      // just watched appear.
+      let compactionFold = emptyCompactionFold<CompactionFacts & { key: string }>();
+      // Has anything measured the context since the newest compaction? A
+      // compaction invalidates every measurement taken before it, and the next
+      // one taken after it is what makes the persisted number true again (both
+      // `contextUsage` assignments set this). Read at teardown, so the reloaded
+      // wheel knows whether `Chat.contextTokens` post-dates the boundary or
+      // predates it — the whole difference between a mid-turn auto-compaction
+      // and a compact-only request, which the record's anchor cannot express.
+      let contextRemeasured = false;
+      const noteCompaction = (event: CompactionEventName, facts: CompactionFacts) => {
+        compactionFold = foldCompactionEvent(compactionFold, event, facts);
+        contextRemeasured = false;
+      };
       // The last "result" message seen this POST — captured, not acted on
       // immediately. A backgrounded subagent (forwardSubagentText) can wake
       // an SDK auto-continuation that runs a second full turn (and hence a
@@ -1120,11 +1159,26 @@ export async function POST(req: Request) {
       // shape by a different name.
       const preCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
         if (input.hook_event_name !== "PreCompact") return { continue: true };
+        // Opens a compaction (records nothing yet — nothing has been compacted).
+        noteCompaction("compacting", {
+          at: Date.now(),
+          trigger: input.trigger === "auto" ? "auto" : "manual",
+        });
         send("compacting", { trigger: input.trigger });
         return { continue: true };
       };
       const postCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
         if (input.hook_event_name !== "PostCompact") return { continue: true };
+        // Records what this hook knows — the trigger, and that it FINISHED.
+        // `compact_boundary` carries the counts and merges into the same record
+        // whichever of the two arrives first (foldCompactionEvent takes no
+        // position on an ordering this codebase has never traced). The summary
+        // text is not recorded on purpose: a marker states, it does not narrate
+        // (see compactionMarkerText).
+        noteCompaction("compacted", {
+          at: Date.now(),
+          trigger: input.trigger === "auto" ? "auto" : "manual",
+        });
         send("compacted", { trigger: input.trigger, summary: input.compact_summary });
         return { continue: true };
       };
@@ -1174,9 +1228,16 @@ export async function POST(req: Request) {
             })) {
               switch (nev.type) {
                 case "compact_start":
+                  noteCompaction("compacting", { at: Date.now(), trigger: nev.trigger });
                   send("compacting", { trigger: nev.trigger });
                   break;
                 case "compact_end":
+                  // The whole record for a Codex compaction: VERIFIED against
+                  // runCodexCompact — `compact_end` carries a null summary and
+                  // NO token counts of any kind, so this record is trigger-only
+                  // and the client's wheel says it does not know rather than
+                  // inventing a post-compaction number.
+                  noteCompaction("compacted", { at: Date.now(), trigger: nev.trigger });
                   send("compacted", { trigger: nev.trigger, summary: nev.summary });
                   break;
               }
@@ -1557,6 +1618,8 @@ export async function POST(req: Request) {
                 break;
               }
               case "usage": {
+                // A measurement newer than any compaction so far (issue #25).
+                contextRemeasured = true;
                 contextUsage = fromCodexContextUsage({
                   model,
                   totalTokens: nev.usage.total_tokens,
@@ -1581,6 +1644,27 @@ export async function POST(req: Request) {
                   totalCostUsd: 0,
                   usage: nev.usage,
                 };
+                break;
+              }
+              case "compact_start":
+              case "compact_end": {
+                // CODEX'S OWN AUTO-COMPACTION, MID-TURN — and until issue #25
+                // this switch had no case for it at all, so the one compaction
+                // nobody asked for was the one the client was never told about.
+                // normalizeCodexAutoCompact yields `compact_end` alone (there
+                // is no start to pair with: this connection never requested the
+                // compaction), and TWO of them in one turn are two compactions —
+                // which is exactly what foldCompactionEvent's "a repeated event
+                // opens a new compaction" rule reads them as. Same two client
+                // events as the on-demand branch above; the client's indicator
+                // and divider do not care which door a compaction came through.
+                if (nev.type === "compact_start") {
+                  noteCompaction("compacting", { at: Date.now(), trigger: nev.trigger });
+                  send("compacting", { trigger: nev.trigger });
+                } else {
+                  noteCompaction("compacted", { at: Date.now(), trigger: nev.trigger });
+                  send("compacted", { trigger: nev.trigger, summary: nev.summary });
+                }
                 break;
               }
               case "rate_limits": {
@@ -2099,6 +2183,11 @@ export async function POST(req: Request) {
                 // arrives it deliberately ends stdin and a new request can no
                 // longer be written.
                 contextUsage = fromClaudeContextUsage(await q.getContextUsage());
+                // A measurement newer than any compaction so far (issue #25) —
+                // set only on success, so a failed control call leaves the last
+                // compaction's verdict standing rather than claiming a
+                // re-measurement that never happened.
+                contextRemeasured = true;
               } catch (error) {
                 // Older Claude Code builds may not expose this control call.
                 // Preserve the provider-neutral estimate, but make a real
@@ -2258,12 +2347,20 @@ export async function POST(req: Request) {
                 duration_ms?: number;
               };
             };
-            send("compact_boundary", {
-              trigger: cb.compact_metadata?.trigger ?? "manual",
+            const boundary: CompactionFacts = {
+              at: Date.now(),
+              trigger: cb.compact_metadata?.trigger === "auto" ? "auto" : "manual",
               preTokens: cb.compact_metadata?.pre_tokens,
               postTokens: cb.compact_metadata?.post_tokens,
               durationMs: cb.compact_metadata?.duration_ms,
-            });
+            };
+            // The counts, merged into the same record the PostCompact hook
+            // above records (issue #25) — in whichever order the two arrive.
+            // `postTokens` is the post-compaction context size the client's
+            // wheel adopts instead of waiting for an unrelated turn to
+            // re-measure.
+            noteCompaction("compact_boundary", boundary);
+            send("compact_boundary", boundary);
           } else if (msg.type === "result") {
             // Capture only — do NOT log usage / send
             // "done" here. A backgrounded subagent can wake an SDK
@@ -2451,7 +2548,24 @@ export async function POST(req: Request) {
               contextUsage,
             });
           }
-          if (capturedSession) {
+          // A COMPACT-ONLY REQUEST APPENDS NO TURN (issue #25). The Codex
+          // branch has always been this way by construction — it leaves
+          // `capturedSession`/`lastResult` unset precisely so "the harness
+          // reorganized its own history" never manufactures a transcript entry
+          // — but Claude's `/compact` runs a REAL query(), so it reaches this
+          // block on the same path an ordinary turn does. REASONED, NOT TRACED:
+          // whatever that query() leaves in `parts` (empty, on the reading that
+          // a compaction produces no assistant output), a compaction is not a
+          // turn and must not persist one — the rule holds without depending on
+          // what was in the bubble. That is the same landmine session-view.tsx
+          // guards against live ("a compaction must not become an empty
+          // assistant bubble"), arriving by the persistence door; it also keeps
+          // appendTurn's `delete chat.settledAt` off a path no human drove.
+          // The compaction is still recorded — as a compaction, below —
+          // and its tokens are still in usage.ndjson, which every spend readout
+          // projects over (AD-18), so nothing is lost but the phantom turn.
+          let turnPersisted = false;
+          if (capturedSession && !compact) {
             // Hand this turn's attachments to the chat that now exists. Until
             // this runs they are unowned uploads, which the orphan sweep in
             // lib/attachments.ts collects after a day — and after it, they are
@@ -2539,7 +2653,43 @@ export async function POST(req: Request) {
               contextTokens: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
               contextUsage,
             });
+            turnPersisted = true;
             send("saved", { chatId: capturedSession });
+          }
+          // ISSUE #25 — the compaction boundary itself, written LAST so its
+          // anchor is the transcript as it stands after this turn landed: a
+          // compaction that happened mid-turn reloads BELOW that turn, which is
+          // where the reader watched the divider appear. `resumeTarget` is the
+          // fallback for the Codex compact-only branch, which never captures a
+          // session because it never runs a turn (recordCompactions is a no-op
+          // for an id with no chat record, so an untrusted one writes nothing).
+          if (compactionFold.entries.length) {
+            const compactionTarget = capturedSession ?? resumeTarget;
+            if (compactionTarget) {
+              const recorded = recordCompactions(
+                compactionTarget,
+                compactionFold.entries.map(compactionFacts),
+                // Did the number this stream just persisted post-date the
+                // compaction? Only then may the reloaded wheel trust it (see
+                // seedCompactedContext): a mid-turn auto-compaction is followed
+                // by more of the same turn, which measures again, while a
+                // compact-only request persists nothing at all and leaves the
+                // pre-compaction figure on disk.
+                turnPersisted && contextRemeasured,
+              );
+              // A COMPACTION SPENDS TOKENS AND SAVES NO TURN. "saved" is the
+              // only event that makes an open surface re-project the ledger
+              // (AD-18 — the client's handler refreshes chats + usage), and the
+              // branch above skipped it for this path, so a manual Compact
+              // wrote to usage.ndjson while every spend readout kept its old
+              // total until something unrelated happened. Sent only once the
+              // store has confirmed the chat exists, which is also the only
+              // thing "saved" claims: `chatPersisted`. Compaction is blocked
+              // while a turn is in flight, so this never races the branch above.
+              if (recorded && compact) {
+                send("saved", { chatId: compactionTarget });
+              }
+            }
           }
         } catch {
           // persistence failure must never mask the stream teardown

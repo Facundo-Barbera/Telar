@@ -27,6 +27,7 @@ export function ContextPill({
   used,
   windowTokens,
   provider,
+  unknown = false,
   onCompact,
   compacting = false,
   compactDisabled = false,
@@ -34,6 +35,13 @@ export function ContextPill({
   used: number;
   windowTokens?: number;
   provider?: string;
+  /** The context was just compacted and the harness reported no new size, so
+   *  every number we hold describes a context that no longer exists (issue
+   *  #25 — Codex's `compact_end` carries no token counts). SAYING SO IS THE
+   *  POINT: the alternative is a stale percentage that reads as current, and
+   *  a guess would be worse than either. Cleared by the next turn, which
+   *  measures for real. */
+  unknown?: boolean;
   /** Absent ⇒ no Compact action. The pill stays a pure readout wherever a
    *  caller has nothing to offer (the demo gallery, a read-only surface). */
   onCompact?: () => void;
@@ -42,12 +50,18 @@ export function ContextPill({
    *  so the control says so rather than offering a request that would fail. */
   compactDisabled?: boolean;
 }) {
-  const usedPct = windowTokens
-    ? Math.min(100, Math.max(0, (used / windowTokens) * 100))
-    : null;
-  const readout = windowTokens
-    ? `${usedPct?.toFixed(1)}% · ${compactTokens(used)}/${compactTokens(windowTokens)}`
-    : compactTokens(used);
+  const usedPct = unknown
+    ? null
+    : windowTokens
+      ? Math.min(100, Math.max(0, (used / windowTokens) * 100))
+      : null;
+  const readout = unknown
+    ? windowTokens
+      ? `— / ${compactTokens(windowTokens)}`
+      : "—"
+    : windowTokens
+      ? `${usedPct?.toFixed(1)}% · ${compactTokens(used)}/${compactTokens(windowTokens)}`
+      : compactTokens(used);
 
   return (
     <Popover>
@@ -57,7 +71,13 @@ export function ContextPill({
             type="button"
             {...props}
             className="relative flex size-8 items-center justify-center rounded-full text-[9px] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
-            aria-label={`Context window${usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
+            aria-label={`Context window${
+              unknown
+                ? ", size unknown since the last compaction"
+                : usedPct === null
+                  ? ""
+                  : ` ${usedPct.toFixed(1)}% used`
+            }`}
             title="View context window"
           >
             <svg className="absolute inset-0 size-8 -rotate-90" viewBox="0 0 32 32" aria-hidden>
@@ -84,11 +104,13 @@ export function ContextPill({
               />
             </svg>
             <span>
-              {usedPct === null
-                ? used >= 1000
-                  ? `${Math.round(used / 1000)}k`
-                  : used
-                : `${Math.round(usedPct)}%`}
+              {unknown
+                ? "—"
+                : usedPct === null
+                  ? used >= 1000
+                    ? `${Math.round(used / 1000)}k`
+                    : used
+                  : `${Math.round(usedPct)}%`}
             </span>
           </button>
         )}
@@ -116,8 +138,17 @@ export function ContextPill({
 
           <div className="mt-4 flex items-center justify-between text-sm">
             <span className="text-muted-foreground">Total processed</span>
-            <span className="font-mono font-medium">{compactTokens(used)}</span>
+            <span className="font-mono font-medium">
+              {unknown ? "—" : compactTokens(used)}
+            </span>
           </div>
+
+          {unknown && (
+            <p className="mt-3 max-w-56 text-sm leading-snug text-muted-foreground">
+              Compacted — {harnessName(provider)} did not report the new size.
+              The next turn will measure it.
+            </p>
+          )}
 
           <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">
             {harnessName(provider)} automatically compacts its context when needed.

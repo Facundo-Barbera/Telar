@@ -110,6 +110,10 @@ export default async function SessionPage({
         cacheCreateTokens: chat.cacheCreateTokens ?? 0,
         contextTokens: chat.contextTokens ?? 0,
         contextUsage: chat.contextUsage,
+        // Where this session was compacted (issue #25) — the transcript's
+        // dividers survive a reload, and the wheel learns from the newest one
+        // that the persisted context size predates it.
+        compactions: chat.compactions,
         loomId: chat.loomId,
         role: chat.role,
       }

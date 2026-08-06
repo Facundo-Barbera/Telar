@@ -50,6 +50,9 @@ export async function GET(
     cacheReadTokens: chat.cacheReadTokens ?? 0,
     cacheCreateTokens: chat.cacheCreateTokens ?? 0,
     contextTokens: chat.contextTokens ?? 0,
+    // Compaction boundaries ride along with the transcript (issue #25) — a
+    // steerer chat reattached here reads the same dividers as the session page.
+    compactions: chat.compactions,
     loomId: chat.loomId,
     role: chat.role,
   };
