@@ -50,6 +50,7 @@ import {
 import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { autoDenialMessage } from "@/lib/permission-denial";
+import { isCancelledToolResult } from "@/lib/tool-cancellation";
 
 /** The in-process MCP servers telar itself constructs and whose whole tool
  *  surface it wrote. Kept beside the `mcpServers` literal's own key list, which
@@ -2249,9 +2250,22 @@ export async function POST(req: Request) {
               if (part.output !== undefined) continue;
               const output = capToolOutput(extractToolResultText(block.content));
               const isError = !!block.is_error;
+              // #28: a call the CLI filled in after an interrupt is NOT a
+              // refusal, and telar rendered the two identically. Flagged here,
+              // where the result is first seen, so the surface and the persisted
+              // transcript agree — a reader coming back tomorrow should not have
+              // to re-derive this from the message text.
+              const cancelled = isCancelledToolResult(output);
               part.output = output;
               part.isError = isError;
-              send("tool_result", { id, output, isError, ...(parent ? { parent } : {}) });
+              if (cancelled) part.cancelled = true;
+              send("tool_result", {
+                id,
+                output,
+                isError,
+                ...(cancelled ? { cancelled: true } : {}),
+                ...(parent ? { parent } : {}),
+              });
             }
           } else if (msg.type === "system" && msg.subtype === "task_notification") {
             // Authoritative completion signal for a backgrounded subagent.

@@ -111,6 +111,14 @@ export type Part =
       // never touches this field (the permission card's own status covers
       // that case instead).
       autoDenied?: boolean;
+      // #28 — set when the CLI filled this call in AFTER AN INTERRUPT rather
+      // than anyone refusing it. Distinct from `autoDenied` on purpose: that is
+      // a decision (a rule, a classifier, a guardrail), this is the absence of
+      // one. Persisted rather than derived at render time because the evidence
+      // is a sentence in `output` that only lib/tool-cancellation.ts knows how
+      // to read — a transcript reopened tomorrow should not have to re-derive
+      // it, and the message is the CLI's to change.
+      cancelled?: boolean;
     }
   // What the user attached to a message, as METADATA ONLY — id, name, media
   // type, size. The bytes live under <stateRoot>/attachments (see

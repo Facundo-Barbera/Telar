@@ -1426,6 +1426,10 @@ export const PromptInputActionMenuItem = ({
 export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton> & {
   status?: ChatStatus;
   onStop?: () => void;
+  /** One Escape has been pressed and a second will stop the turn. The control
+   *  relabels itself so the first press is visible — an arming state nobody can
+   *  see is indistinguishable from a keystroke that did nothing. */
+  escArmed?: boolean;
 };
 
 export const PromptInputSubmit = ({
@@ -1434,11 +1438,16 @@ export const PromptInputSubmit = ({
   size = "icon-sm",
   status,
   onStop,
+  escArmed = false,
   onClick,
   children,
   ...props
 }: PromptInputSubmitProps) => {
   const isGenerating = status === "submitted" || status === "streaming";
+  // Only meaningful while something is running: arming implies there is a turn
+  // to stop, and the caller already gates on `busy`, but a stale prop must not
+  // be able to paint ESC over an idle send button.
+  const showEsc = escArmed && isGenerating;
 
   let Icon = <CornerDownLeftIcon className="size-4" />;
 
@@ -1448,6 +1457,12 @@ export const PromptInputSubmit = ({
     Icon = <SquareIcon className="size-4" />;
   } else if (status === "error") {
     Icon = <XIcon className="size-4" />;
+  }
+
+  // The word, not a glyph. "ESC" names the key the user just pressed and the
+  // key that will finish the job, which no icon can say.
+  if (showEsc) {
+    Icon = <span className="text-[10px] leading-none font-semibold tracking-tight">ESC</span>;
   }
 
   const handleClick = useCallback(
@@ -1468,7 +1483,7 @@ export const PromptInputSubmit = ({
 
   return (
     <InputGroupButton
-      aria-label={isGenerating ? "Stop" : "Submit"}
+      aria-label={showEsc ? "Press Escape again to stop" : isGenerating ? "Stop" : "Submit"}
       className={cn(className)}
       onClick={handleClick}
       size={size}
