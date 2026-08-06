@@ -1525,6 +1525,25 @@ describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken f
     expect(src).toContain("ultraRunAnchorKind");
   });
 
+  test("all three run-focus call sites reveal the dock, not just name the run", () => {
+    // Proved as a REGRESSION GAP first: `sidebar-mount.test.ts` pins the
+    // arrival effect's dependency array growing by `resolvedRightPanelScopeKey`,
+    // but a dependency-array pin does not prove the call inside the effect
+    // still exists — deleting the `openRightPanelActivity(...)` line and
+    // leaving the (now-unused-looking but still-referenced-elsewhere) dep in
+    // place left the whole suite green. `setActiveTab(ultraTabId(...))` alone
+    // only names WHICH run; since #13(b) moved the pane out of the transcript,
+    // naming the run no longer reveals anything by itself (see the removed
+    // memo arm above) — the dock must be told to open, separately, at EVERY
+    // site that focuses a run: the two inline anchor `onFocus` callbacks
+    // (`ultraAnchorPayloads`, `pendingUltraAnchor`) and the `?run=` arrival
+    // effect. Three call sites, three calls — counted, not just asserted present.
+    const src = readSource("apps/web/components/session/session-view.tsx");
+    expect(
+      src.split("openRightPanelActivity(resolvedRightPanelScopeKey)").length - 1,
+    ).toBe(3);
+  });
+
   test("the rail is the INDEX that opens the pane, and says which run is open", () => {
     // Comments stripped: this file's own header says "NOT HERE" about its
     // decisions, and the chip is JSX TEXT rather than a quoted string.
