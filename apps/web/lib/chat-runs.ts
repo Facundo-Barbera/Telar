@@ -10,6 +10,8 @@
 // globalThis-backed so the registry survives Next dev HMR module reloads, the
 // same way lib/permissions.ts keeps its pending map.
 
+import { logStop } from "@/lib/permission-diagnostics";
+
 type ChatRun = { abort: AbortController; sessionId: string | null };
 
 const g = globalThis as unknown as { __telarChatRuns?: Map<string, ChatRun> };
@@ -56,18 +58,28 @@ export function endChatRun(runId: string): void {
 }
 
 // Abort a live run by runId OR session id. Returns whether anything was found.
-export function stopChatRun(key: string): boolean {
+//
+// #28: THIS IS THE ONLY PATH THAT CANCELS A LIVE TURN, which makes it the only
+// place inside telar that can produce the CLI's interrupted-tool-use text. All
+// three known callers of POST /api/chat/stop are explicit user Stop actions, so
+// a Stop logged here that no human clicked IS the bug. Instrumented rather than
+// asserted, because "nothing else calls it" is exactly the kind of claim that is
+// true of the source and false of the running process.
+export function stopChatRun(key: string, via = "unknown"): boolean {
   const byRunId = runs.get(key);
   if (byRunId) {
+    logStop(key, true, via);
     byRunId.abort.abort();
     return true;
   }
   for (const run of runs.values()) {
     if (run.sessionId === key) {
+      logStop(key, true, via);
       run.abort.abort();
       return true;
     }
   }
+  logStop(key, false, via);
   return false;
 }
 
