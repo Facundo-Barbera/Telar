@@ -60,6 +60,7 @@ import {
   runSnapshot,
   sendOptionsFor,
   spliceRunAnchors,
+  splitRunsForRail,
   summarizeRuns,
   unwrapManifest,
   unwrapManifests,
@@ -2255,5 +2256,76 @@ describe("orderRunsForPanel — live work first, finished work last", () => {
     expect(orderRunsForPanel([run("x", "running"), run("y", "running")]).map((r) => r.runId)).toEqual(["x", "y"]);
     expect(orderRunsForPanel([run("x", "done"), run("y", "done")]).map((r) => r.runId)).toEqual(["x", "y"]);
     expect(orderRunsForPanel([])).toEqual([]);
+  });
+});
+
+describe("splitRunsForRail — issue #45: only `done` collapses", () => {
+  const run = (runId: string, state: RunSnapshot["state"]) => ({ runId, state });
+  const ids = (rows: readonly { runId: string }[]) => rows.map((r) => r.runId);
+
+  test("the reported case: thirteen settled runs stop burying the one that is live", () => {
+    // One running, thirteen done — the shape the issue was filed against. The
+    // live run is the whole pinned group; nothing else competes with it for card
+    // size, and the thirteen are still all present, one row each.
+    const runs = [
+      ...Array.from({ length: 13 }, (_, i) => run(`d${i}`, "done" as const)),
+      run("live", "running"),
+    ];
+    const { pinned, done } = splitRunsForRail(runs);
+    expect(ids(pinned)).toEqual(["live"]);
+    expect(done).toHaveLength(13);
+  });
+
+  test("a FAILED or STOPPED run is pinned beside the live ones, never filed under Done", () => {
+    // The care note in the issue, and #44's wrongly-failed run: a run that ended
+    // badly is the one thing a user is scrolling to find. A `Done · N` heading
+    // over a failure would also be lying in its own words.
+    const { pinned, done } = splitRunsForRail([
+      run("d", "done"),
+      run("f", "failed"),
+      run("s", "stopped"),
+      run("l", "running"),
+    ]);
+    expect(ids(pinned)).toEqual(["l", "f", "s"]);
+    expect(ids(done)).toEqual(["d"]);
+  });
+
+  test("the ORDER is `orderRunsForPanel`'s — this partitions what that sorted, and adds no rule", () => {
+    // The issue's own instruction ("the rail should not grow a second ordering
+    // rule"). Live first inside the pinned group, and stable within each group:
+    // `f` was authored before `s` and stays before it.
+    const runs = [run("f", "failed"), run("s", "stopped"), run("l1", "running"), run("l2", "running")];
+    const { pinned } = splitRunsForRail(runs);
+    expect(ids(pinned)).toEqual(["l1", "l2", "f", "s"]);
+    // …and it is exactly the ordered list with the `done` rows lifted out.
+    const { pinned: p2, done: d2 } = splitRunsForRail([...runs, run("d", "done")]);
+    expect(ids([...p2, ...d2])).toEqual(ids(orderRunsForPanel([...runs, run("d", "done")])));
+  });
+
+  test("EVERY state lands in exactly one group — the four-state vocabulary, closed", () => {
+    // `UltraRunState` has four members and a partition that silently drops one
+    // would delete runs from the rail rather than mis-file them.
+    const all = [run("a", "running"), run("b", "done"), run("c", "failed"), run("d", "stopped")];
+    const { pinned, done } = splitRunsForRail(all);
+    expect(ids([...pinned, ...done]).sort()).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("the two degenerate lists, and the empty one", () => {
+    // All-live ⇒ no group at all (the section is exactly what it was before this
+    // change). All-done ⇒ no pinned cards, which is the calm empty state: the
+    // heading sits directly under the section header and the counts agree.
+    expect(splitRunsForRail([run("x", "running")]).done).toEqual([]);
+    expect(splitRunsForRail([run("x", "done")]).pinned).toEqual([]);
+    expect(splitRunsForRail([])).toEqual({ pinned: [], done: [] });
+  });
+
+  test("THE COUNT CONTRACT — the two groups still sum to the total the header prints", () => {
+    // `ultra-rail.tsx`'s header prints `runs.length`, `subagent-rail.tsx`'s
+    // collapsed edge prints the same figure from `workflowCount`, and neither
+    // can derive the other. This is the arithmetic those two readers depend on:
+    // the split hides nothing, so `pinned + done` is still the total.
+    const runs = [run("a", "running"), run("b", "done"), run("c", "failed"), run("d", "done")];
+    const { pinned, done } = splitRunsForRail(runs);
+    expect(pinned.length + done.length).toBe(runs.length);
   });
 });

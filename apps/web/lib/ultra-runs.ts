@@ -1287,10 +1287,45 @@ export function agentTokenTotal(agent: {
 // `running` IS THE ONLY LIVE STATE — done, failed and stopped are all terminal
 // and all sink. Failed does NOT get a middle tier: a failure is finished, and
 // promoting it above other finished runs would make the list argue with the
-// counts in the header rather than agree with them.
+// counts in the header rather than agree with them. (`splitRunsForRail` below
+// promotes failures by GROUP instead, which is a different question — see its
+// note; the header's total stays honest there because both groups are on
+// screen.)
 export function orderRunsForPanel<T extends { state: UltraRunState }>(runs: readonly T[]): T[] {
   const live: T[] = [];
   const finished: T[] = [];
   for (const run of runs) (run.state === "running" ? live : finished).push(run);
   return [...live, ...finished];
+}
+
+// WHICH RUNS GET A CARD AND WHICH GET A ROW (issue #45) — a different question
+// from ORDER, and that is why it is a second function rather than a third tier
+// inside the one above.
+//
+// WHAT WAS WRONG. The rail drew EVERY run as a full card, so a day's work was a
+// wall of `done` with the one live run somewhere inside it. `subagent-rail.tsx`
+// already solved this one section up: not-done stays a card, done collapses into
+// a compact `Done · N` group. This is the same cut, for the same reason.
+//
+// `done` IS THE ONLY COLLAPSIBLE STATE. `failed` and `stopped` stay pinned at
+// card size beside the live ones, because a run that ended badly is the single
+// thing a user is most likely scrolling to find (#44) — and a `Done · N` group
+// holding a failure would be lying in its own heading.
+//
+// THE ORDER IS NOT REDECIDED HERE. `orderRunsForPanel` runs first and each group
+// keeps the order it produced, so a row still moves only when its own state
+// changes. Its refusal to give `failed` a middle TIER stands: nothing is
+// reordered here, the failure is promoted by which GROUP draws it.
+//
+// THE PINNED GROUP IS NOT BOUNDED, and one path can grow it without the user
+// doing anything: AD-15's on-read `running` → `stopped` rewrite turns every
+// in-flight run into a `stopped` one after a server restart. Recorded rather
+// than solved — capping the group that holds the live runs is the worse failure.
+export function splitRunsForRail<T extends { state: UltraRunState }>(
+  runs: readonly T[],
+): { pinned: T[]; done: T[] } {
+  const pinned: T[] = [];
+  const done: T[] = [];
+  for (const run of orderRunsForPanel(runs)) (run.state === "done" ? done : pinned).push(run);
+  return { pinned, done };
 }
