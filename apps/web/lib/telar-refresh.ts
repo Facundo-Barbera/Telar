@@ -8,7 +8,8 @@ export type TelarRefreshDomain =
   | "looms"
   | "projects"
   | "ultra"
-  | "usage";
+  | "usage"
+  | "workspace";
 
 export type TelarRefreshDetail = {
   domains: readonly TelarRefreshDomain[];

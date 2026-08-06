@@ -17,6 +17,7 @@ import {
   FolderGit2Icon,
   FolderPlusIcon,
   LayoutDashboardIcon,
+  ListTodoIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
@@ -108,6 +109,7 @@ const NAV = [
   { href: "/?overview=1", label: "Overview", icon: LayoutDashboardIcon },
   { href: "/projects", label: "Projects", icon: FolderGit2Icon },
   { href: "/looms", label: "Looms", icon: ActivityIcon },
+  { href: "/workspace", label: "Workspace", icon: ListTodoIcon },
 ] as const;
 
 function TelarSidebarHeader({ activeLooms }: { activeLooms: number }) {

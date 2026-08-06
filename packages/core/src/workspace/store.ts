@@ -129,6 +129,14 @@ const PACKET_FILE = "packet.yaml";
 // is the one operation this store exists to make cheap.
 const newItemId = () => `i-${crypto.randomBytes(6).toString("hex")}`;
 
+// Same shape, different prefix — a sub-task minted by addSubtask below. NOT the
+// same generator as migratePacket's LADDER, which derives an id from content
+// (sha1 of [itemId, title, occurrence]) because it is backfilling ids for
+// sub-tasks that already existed with none. A sub-task minted by this store
+// always has an id already, so there is nothing to derive — a fresh random one
+// is the honest choice, matching newItemId's own reasoning.
+const newSubtaskId = () => `st-${crypto.randomBytes(6).toString("hex")}`;
+
 // ── the seed lane ────────────────────────────────────────────────────────────
 
 // AC5 needs "the right lane" to file into; AC8 proof 4 forbids any TOOL creating
@@ -138,11 +146,29 @@ const newItemId = () => `i-${crypto.randomBytes(6).toString("hex")}`;
 // row — and the store is not a tool. That distinction is the whole of what makes
 // it legal.
 //
-// IT CARRIES NO SPECIAL BEHAVIOUR IN CODE. It is renameable and retireable like
-// any other row, and nothing re-creates it. `resolveLane` below uses this key
-// only as a FALLBACK TARGET; if the user renames the row, the fallback finds no
-// such lane and the item comes to rest UNFILED — the same resting state, reached
-// by the same arm, with no lane resurrected behind the user's back.
+// RENAME CARRIES NO SPECIAL BEHAVIOUR: it is renameable like any other row,
+// and nothing re-creates it under its old label. `resolveLane` below uses
+// this KEY, never the label, as its FALLBACK TARGET, and renameLane can only
+// ever rewrite `label` — so a rename can never silently redirect where an
+// unresolvable capture lands (see "THE SEED-LANE-RENAME HAZARD, RESOLVED"
+// beside renameLane below).
+//
+// RETIRE IS THE ONE PLACE THIS ROW DOES CARRY SPECIAL BEHAVIOUR, and it is a
+// 5.2 decision, not a 5.1 one: retireLane below refuses to retire THIS key
+// specifically, for as long as it is create_item's only fallback target.
+// createItem never fails to resolve SOME target — resolveLane always returns
+// `{lane: SEED_LANE_KEY, unplaced: true}` when a requested lane is missing —
+// so if this row could be retired out from under that fallback, the very next
+// unresolvable capture would mint an item with `lane: "unfiled"` naming a row
+// that no longer exists. createItem does not create lanes (NFR-OW-10), so
+// nothing would receive it: the item would carry desk:true and unplaced:true,
+// readable via listItems and deskSlice, but absent from queueSlice and from
+// this story's own queue surface — invisible everywhere this story renders,
+// until a later story ships the desk rail (5.3). That is a strictly worse
+// resting state than "unfiled, in the Unfiled lane", so retirement of this
+// one row is refused until a later story gives resolveLane a different
+// fallback to fall back to. Every OTHER lane retires exactly as documented
+// below, no special case.
 //
 // The fixtures' aurora/office/school/free are one user's life, not a default
 // set; they are deliberately not seeded.
@@ -615,6 +641,23 @@ const PATCHABLE = [
   "verdict",
 ] as const;
 
+// THE ADDRESS IS THE DIRECTORY, NEVER THE CONTENT (AD-6). Shared by updateItem
+// and 5.2's new sub-task writers (addSubtask/setSubtaskDone/promoteSubtask) —
+// every one of them resolves a packet by id and then writes back to that same
+// id's directory, so every one of them needs the same guard against a
+// hand-edited packet.yaml whose `id:` line no longer matches the directory it
+// sits in. Extracted rather than duplicated, because a guard copied four times
+// is a guard three of those places can drift out of.
+function assertPacketAddressMatches(id: string, current: Item): void {
+  if (current.id !== id) {
+    throw new Error(
+      `AD-6: packets/${id}/${PACKET_FILE} carries \`id: ${JSON.stringify(current.id)}\`, which is not the directory it sits in. ` +
+        `A packet's ADDRESS is its directory; writing this update would rewrite packets/${current.id}/${PACKET_FILE} instead, ` +
+        `clobbering an item nobody named. Nothing was written. Fix the \`id:\` line by hand, or move the directory.`,
+    );
+  }
+}
+
 // ── the reconcile rule (AD-15's "reconcile on read", applied to a two-file
 //    write, because this repo has no multi-file transaction to copy) ──────────
 //
@@ -709,6 +752,17 @@ const rowItems = (row: unknown): unknown[] | null => {
   if (row === null || typeof row !== "object" || Array.isArray(row)) return null;
   const items = (row as { items?: unknown }).items;
   return Array.isArray(items) ? items : null;
+};
+
+// A raw row's own `key`, when it still has a readable one — the same read
+// readLanesReport's malformed-row diagnostic uses inline, pulled out here so
+// createLane (dedupe) and retireLane (address a row this build cannot parse)
+// share it rather than re-deriving it.
+const rawKeyOf = (row: unknown): string | undefined => {
+  if (row !== null && typeof row === "object" && typeof (row as { key?: unknown }).key === "string") {
+    return (row as { key: string }).key;
+  }
+  return undefined;
 };
 
 function placeIdInRows(entries: LaneEntry[], id: string, targetIndex: number): unknown[] {
@@ -821,13 +875,7 @@ export function updateItem(id: string, patch: ItemPatch): Item | null {
   // never named. AD-6 invites the hand-edit, so the mismatch has to be diagnosed
   // rather than assumed away. It THROWS: the surface turns it into an actionable
   // sentence, where a silent null would read as "no such item".
-  if (current.id !== id) {
-    throw new Error(
-      `AD-6: packets/${id}/${PACKET_FILE} carries \`id: ${JSON.stringify(current.id)}\`, which is not the directory it sits in. ` +
-        `A packet's ADDRESS is its directory; writing this update would rewrite packets/${current.id}/${PACKET_FILE} instead, ` +
-        `clobbering an item nobody named. Nothing was written. Fix the \`id:\` line by hand, or move the directory.`,
-    );
-  }
+  assertPacketAddressMatches(id, current);
 
   // A LANE CHANGE IS A TWO-FILE MOVE, and lanes.yaml is the half that decides.
   // D9 gives lanes.yaml authority over membership and order; packet.lane is the
@@ -893,6 +941,290 @@ export function updateItem(id: string, patch: ItemPatch): Item | null {
 
 function writePacket(item: Item): void {
   atomicWrite(packetFile(item.id), YAML.stringify(item));
+}
+
+// ── lane structure changes (story 5.2, NFR-OW-10's human-only reservation) ───
+//
+// THESE FOUR FUNCTIONS ARE THE ONLY WAY LANE STRUCTURE EVER CHANGES, and none
+// of them is reachable from an MCP tool (5.2's own scope decision: the four
+// tools stay exactly list_items/list_lanes/create_item/update_item — see
+// apps/web/lib/workspace-mcp.ts's header). They are called straight from
+// apps/web's /api/workspace/lanes/** route handlers, the same "thin route over
+// a tested @telar/core function" shape apps/web/app/api/looms/route.ts already
+// uses for startLoom/listLooms. That is what makes "human-only" true by
+// construction rather than by a permission check: nothing in the agent-facing
+// tool surface names any of these.
+//
+// THE SEED-LANE-RENAME HAZARD, RESOLVED (deferred-work.md's item owned by this
+// story): resolveLane's fallback target is the STORED KEY "unfiled", not the
+// row's label — so the hazard was never "renaming changes routing", it was
+// "changing the KEY changes routing", and the fix is to make the key immutable
+// after creation FOR EVERY LANE, not just this one. renameLane below can only
+// ever rewrite `label`. There is no function anywhere in this file — not here,
+// not in updateItem, not in createItem — that can change a `key` once a lane
+// exists. There is therefore nothing left to "offer a choice" about at rename
+// time: the field that decides where an unplaced item lands can never move
+// under existing data, full stop. This is the decision, and it is final for
+// this story, not a placeholder pending a rename-time prompt.
+
+// Turns a lane label into a stack-safe key: lowercase, non-alphanumeric runs
+// collapse to one hyphen, edges trimmed. `existingKeys` is read from the RAW
+// rows (rawKeyOf), not just the parsed ones, so a new lane can never collide
+// with a row this build cannot fully read either.
+function slugifyLaneKey(label: string, existingKeys: ReadonlySet<string>): string {
+  const base =
+    label
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "lane";
+  if (!existingKeys.has(base)) return base;
+  let n = 2;
+  while (existingKeys.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+// Mint a lane. The key is minted ONCE, here, from the label — never supplied by
+// a caller, so there is no path by which two lanes could be asked to share one.
+// APPENDS ONLY: every other row is written back byte-for-byte from `entries`,
+// matching createItem's own "hand-edited/malformed rows survive a write they
+// were not part of" discipline.
+export function createLane(input: { label: string; window: string; note?: string }): WorkspaceLane {
+  ensureWorkspace();
+  const read = readLanesReport();
+  const existingKeys = new Set(
+    read.entries.map(({ row }) => rawKeyOf(row)).filter((k): k is string => k !== undefined),
+  );
+  const newLane: WorkspaceLane = WorkspaceLane.parse({
+    key: slugifyLaneKey(input.label, existingKeys),
+    label: input.label,
+    window: input.window,
+    ...(input.note ? { note: input.note } : {}),
+    items: [],
+  });
+  writeLaneRows([...read.entries.map((e) => e.row), newLane]);
+  return newLane;
+}
+
+// Decision A's executable half: rewrites `label` and NOTHING else. Returns
+// `null` (writes nothing) when no row carries the key — an honest "fix it by
+// hand" outcome for a key so malformed even its own row can't be found, rather
+// than a crash. Spreads over the RAW row, so unknown/hand-added keys on that
+// row survive exactly as placeIdInRows already keeps them for item placement.
+export function renameLane(key: string, label: string): WorkspaceLane | null {
+  const read = readLanesReport();
+  const idx = read.entries.findIndex((e) => rawKeyOf(e.row) === key);
+  if (idx < 0) return null;
+  const nextRow = { ...(read.entries[idx]!.row as object), label };
+  writeLaneRows(read.entries.map((e, i) => (i === idx ? nextRow : e.row)));
+  // The row that was just written is, by construction, the one this function
+  // built — parsed here rather than re-read from disk so the return value
+  // cannot silently diverge from what was actually written.
+  return WorkspaceLane.parse(nextRow);
+}
+
+// Decision B: refuses, never partially applies, unless the lane's STORED
+// `items` array (lanes.yaml — never the rendered queue, which drops tombstones
+// and orphans queueSlice would otherwise adopt elsewhere) is empty. A lane
+// whose only members are unreadable ids still counts as non-empty on purpose:
+// dropping those ids to let the retirement through would be a second silent
+// deletion path of exactly the shape the reconcile rule's "projection-only,
+// never writes back" rule exists to forbid. The reason string reports the raw
+// count so a human can tell "still has real work" from "still has ghosts" —
+// but nothing here resolves that distinction for them. See the plan's Risk 1:
+// this is a known, accepted rough edge, not an oversight.
+export function retireLane(key: string): { ok: true } | { ok: false; reason: string } {
+  // THE ONE SPECIAL CASE — see the block comment beside SEED_LANE_KEY above
+  // for why: retiring create_item's only fallback target would not free the
+  // key, it would strand every future unresolvable capture nowhere any
+  // current surface renders. Renaming this row's label is unrestricted;
+  // only retiring the row by this key is refused.
+  if (key === SEED_LANE_KEY) {
+    return {
+      ok: false,
+      reason:
+        `"${SEED_LANE_KEY}" is where create_item sends anything it cannot place — retiring it would not remove ` +
+        `that behaviour, it would make the next unplaceable capture land in a lane that no longer exists, invisible ` +
+        `on this queue until a later story gives it a different fallback. Rename its label instead if "Unfiled" is ` +
+        `the wrong word for it; the row itself has to stay until create_item's fallback can point somewhere else.`,
+    };
+  }
+  const read = readLanesReport();
+  const idx = read.entries.findIndex((e) => rawKeyOf(e.row) === key);
+  if (idx < 0) return { ok: false, reason: `No lane named "${key}" exists.` };
+  const entry = read.entries[idx]!;
+  if (!entry.lane) {
+    return {
+      ok: false,
+      reason: `Lane "${key}"'s own row in lanes.yaml could not be read as a lane, so its item count cannot be confirmed. Fix the row by hand, then retire it.`,
+    };
+  }
+  if (entry.lane.items.length > 0) {
+    return {
+      ok: false,
+      reason: `Lane "${key}" still holds ${entry.lane.items.length} item${entry.lane.items.length === 1 ? "" : "s"} in its stored stack. Move or clear them first — retiring never evicts an item on the human's behalf.`,
+    };
+  }
+  writeLaneRows(read.entries.filter((_, i) => i !== idx).map((e) => e.row));
+  return { ok: true };
+}
+
+// "This lane's stack becomes exactly these ids, in this order." Generalized
+// beyond a same-lane shuffle (see the plan's Risk 2): any id already sitting in
+// a DIFFERENT lane's stack is removed from that row and adopted into this one,
+// which is what lets one action serve both an in-lane reorder and a cross-lane
+// drag — and what lets a lane containing an ADOPTED ORPHAN (queueSlice's arm 1)
+// still be reordered as the human sees it rendered, rather than rejecting the
+// call because the permutation does not match lanes.yaml's stored stack.
+//
+// EVERY ID MUST RESOLVE TO A READABLE PACKET, OR THIS THROWS AND WRITES
+// NOTHING. Silently accepting a fabricated or tombstoned id would plant a new
+// dangling stack reference — exactly the fault queueSlice's arm 2 exists to
+// drop at READ time; a WRITE gets no such leniency.
+export function reorderLane(key: string, orderedItemIds: string[]): WorkspaceLane {
+  const read = readLanesReport();
+  const targetIndex = read.entries.findIndex((e) => e.lane?.key === key);
+  if (targetIndex < 0) {
+    throw new Error(`No lane named "${key}" exists — call list_lanes (or read lanes.yaml) before reordering one.`);
+  }
+  const unresolved = orderedItemIds.filter((id) => !getWorkspaceItem(id));
+  if (unresolved.length > 0) {
+    throw new Error(
+      `Cannot reorder lane "${key}": ${unresolved.map((id) => JSON.stringify(id)).join(", ")} ` +
+        `${unresolved.length === 1 ? "does" : "do"} not resolve to a readable packet. Nothing was written.`,
+    );
+  }
+  const rows = read.entries.map(({ row }, i) => {
+    if (i === targetIndex) return { ...(row as object), items: [...orderedItemIds] };
+    const items = rowItems(row);
+    if (items === null) return row;
+    const filtered = items.filter((x) => !orderedItemIds.includes(x as string));
+    return filtered.length === items.length ? row : { ...(row as object), items: filtered };
+  });
+  writeLaneRows(rows);
+  return WorkspaceLane.parse(rows[targetIndex]);
+}
+
+// ── sub-task mutation and promotion (story 5.2, NFR-OW-3's conservation valve
+//    and NFR-OW-15's human-only promotion) ───────────────────────────────────
+//
+// NFR-OW-3: decomposition lives INSIDE the item, so addSubtask/setSubtaskDone
+// never touch lanes.yaml and never change queueSlice's row count — the parent
+// item's own `subtasks` array is the only thing that grows.
+//
+// NFR-OW-15: "Agents have no promotion path, proposed or otherwise." Like the
+// lane functions above, promoteSubtask is called only from a thin
+// apps/web/app/api/workspace/** route — not from anything an agent's tool
+// surface can reach — and it is the ONE place in this store that stamps a
+// TimelineEvent `actor: "you"` itself, which is only honest because only a
+// human click reaches this function.
+
+// Appends one sub-task with a minted id (never a caller-supplied one — see
+// schema.ts's Subtask comment for why an id, not a title, is the address
+// promotedFrom eventually needs). `null`, writes nothing, when `itemId` does
+// not resolve to a readable packet.
+export function addSubtask(itemId: string, title: string): Item | null {
+  const current = getWorkspaceItem(itemId);
+  if (!current) return null;
+  assertPacketAddressMatches(itemId, current);
+  const next = Item.parse({
+    ...current,
+    subtasks: [...(current.subtasks ?? []), { id: newSubtaskId(), title, done: false }],
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+  writePacket(next);
+  return next;
+}
+
+// Toggles exactly the named sub-task's `done`; every other field of every
+// other sub-task is untouched. `null`, writes nothing, when the item or the
+// sub-task id does not resolve.
+export function setSubtaskDone(itemId: string, subtaskId: string, done: boolean): Item | null {
+  const current = getWorkspaceItem(itemId);
+  if (!current) return null;
+  assertPacketAddressMatches(itemId, current);
+  const subtasks = current.subtasks ?? [];
+  if (!subtasks.some((s) => s.id === subtaskId)) return null;
+  const next = Item.parse({
+    ...current,
+    subtasks: subtasks.map((s) => (s.id === subtaskId ? { ...s, done } : s)),
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+  writePacket(next);
+  return next;
+}
+
+// THE ONLY PROMOTION PATH IN THE WHOLE CODEBASE. `null`, nothing written on
+// either side, when the parent or the named sub-task does not resolve.
+//
+// The promoted item is deliberately NOT built like a create_item item:
+//   - `provenance` is free text naming the parent ("promoted from \"<title>\""),
+//     never the literal "session" — so a promoted item is distinguishable in
+//     provenance data itself from anything an agent filed.
+//   - `desk` is left UNSET. item-model.md's desk boolean means "the master just
+//     touched this and is asking a question"; a human's own promotion click is
+//     neither, so putting it on the desk would misrepresent why it is there.
+//   - `unplaced` is left UNSET even when the parent has no stack (see below) —
+//     that flag means "the master could not file it", and nothing here is the
+//     master failing to file anything.
+export function promoteSubtask(
+  itemId: string,
+  subtaskId: string,
+): { parent: Item; promoted: Item } | null {
+  const parent = getWorkspaceItem(itemId);
+  if (!parent) return null;
+  assertPacketAddressMatches(itemId, parent);
+  const subtasks = parent.subtasks ?? [];
+  const subtask = subtasks.find((s) => s.id === subtaskId);
+  if (!subtask) return null;
+
+  const nextParent = Item.parse({
+    ...parent,
+    subtasks: subtasks.filter((s) => s.id !== subtaskId),
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+  const at = capturedLabel(new Date());
+  const promoted: Item = Item.parse({
+    id: newItemId(),
+    title: subtask.title,
+    provenance: `promoted from "${parent.title}"`,
+    captured: at,
+    schemaVersion: ITEM_SCHEMA_VERSION,
+    promotedFrom: parent.id,
+    ...(parent.project ? { project: parent.project } : {}),
+    // The one place in this store that stamps `actor: "you"` itself — every
+    // other writer takes its actor from the caller (create_item's "session")
+    // or does not write a timeline entry at all. Honest here because only a
+    // human click reaches this function (NFR-OW-15).
+    timeline: [{ at, actor: "you", text: `promoted out of "${parent.title}"` }],
+  });
+
+  // PACKETS FIRST, LANES SECOND — the same order createItem/updateItem pin,
+  // and for the same reason: a crash in the gap leaves both packets intact
+  // with the promoted id in no stack yet, which the orphan arm cannot adopt
+  // (it has no `lane` hint) — so the worst case is "unfiled", never a
+  // dangling reference.
+  writePacket(nextParent);
+  writePacket(promoted);
+
+  // Land at the BOTTOM of the parent's ACTUAL current stack — read off
+  // lanes.yaml, never off `parent.lane`'s recovery hint, for the same reason
+  // update_item's `summarise` reads lanes.yaml for the authoritative lane. If
+  // the parent itself has no stack (unfiled, or a lane retired out from under
+  // it), the promoted sibling is simply left unfiled too — not adopted into a
+  // lane nobody chose for it.
+  const read = readLanesReport();
+  const parentLaneIndex = read.entries.findIndex((e) => e.lane?.items.includes(parent.id));
+  if (parentLaneIndex >= 0) {
+    writeLaneRows(
+      read.entries.map(({ row }, i) => {
+        if (i !== parentLaneIndex) return row;
+        const items = rowItems(row);
+        return items === null ? row : { ...(row as object), items: [...items, promoted.id] };
+      }),
+    );
+  }
+  return { parent: nextParent, promoted };
 }
 
 // ── the pure projections (§5.5-D15) ──────────────────────────────────────────
@@ -967,6 +1299,19 @@ export function queueSlice(lanes: WorkspaceLane[], items: Item[]): QueueRow[] {
     nextRank.set(r.lane, rank);
     return { ...r, rank };
   });
+}
+
+// The queue footer's "agents added N" count (queue.tsx's demo line: "every one
+// traces to something you fed in or a mirror · agents added M"). createItem
+// above stamps `provenance: "session"` unconditionally — its own comment calls
+// that "the honest label for every write this store's only writer today can
+// produce" — so counting items with that EXACT provenance string is counting
+// items an agent filed via create_item, as distinct from a note, a pasted
+// transcript, a chat capture or a mirror sync a human drove by hand. Pure and
+// disk-free like every projection in this section: takes an already-read item
+// list, never rereads the store.
+export function agentsAddedCount(items: Item[]): number {
+  return items.filter((i) => i.provenance === "session").length;
 }
 
 export type DeskCard = {

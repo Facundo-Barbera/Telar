@@ -74,7 +74,7 @@ development_status:
 
   # Epic 5: Organization Workspace
   epic-5: in-progress
-  5-1-the-item-store-and-the-workspace-mcp-server: review
+  5-1-the-item-store-and-the-workspace-mcp-server: done
   5-2-the-queue-packet-detail-and-the-shared-chip-grammar: backlog
   5-3-the-master-session-profile-chat-surface-and-desk-rail: backlog
   5-4-experts-brain-dump-the-briefing-and-bed-mode: backlog
