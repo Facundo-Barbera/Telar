@@ -296,6 +296,22 @@ export function openRightPanelGit(scopeKey: string): void {
   write(scopeKey, { ...session, tabs, activeTabId: DEFAULT_GIT_TAB.id, open: true });
 }
 
+/** Reveal the Activity tab, minting it (pinned first) if the session does not
+ * already carry one. Exists as an IMPERATIVE export — not only a hook method —
+ * because issue #13's fix moved Ultra/agent detail rendering into this tab, so
+ * an inline anchor rendered deep in a transcript message (an Ultra run card,
+ * or the mini-dock's `?run=` arrival effect in session-view.tsx) now needs to
+ * reveal the dock itself, not just select a run inside it. Mirrors
+ * `openRightPanelGit`/`openRightPanelBrowser` above, and the hook's own
+ * `openActivity` below now just calls this. */
+export function openRightPanelActivity(scopeKey: string): void {
+  const session = read(scopeKey);
+  const tabs = session.tabs.some((tab) => tab.id === DEFAULT_ACTIVITY_TAB.id)
+    ? session.tabs
+    : [DEFAULT_ACTIVITY_TAB, ...session.tabs];
+  write(scopeKey, { ...session, tabs, activeTabId: DEFAULT_ACTIVITY_TAB.id, open: true });
+}
+
 /** Reveal the controlled browser owned by the currently mounted session. */
 export function openRightPanelBrowser(
   scopeKey: string,
@@ -363,17 +379,7 @@ export function useRightPanelStore(scopeKey: string) {
         : [...session.tabs, DEFAULT_GIT_TAB];
       write(scopeKey, { ...session, tabs, activeTabId: DEFAULT_GIT_TAB.id, open: true });
     },
-    openActivity: () => {
-      const tabs = session.tabs.some((tab) => tab.id === DEFAULT_ACTIVITY_TAB.id)
-        ? session.tabs
-        : [DEFAULT_ACTIVITY_TAB, ...session.tabs];
-      write(scopeKey, {
-        ...session,
-        tabs,
-        activeTabId: DEFAULT_ACTIVITY_TAB.id,
-        open: true,
-      });
-    },
+    openActivity: () => openRightPanelActivity(scopeKey),
     // The controlled browser owns its own tab strip. Reuse one Browser surface
     // instead of nesting duplicate surfaces around the shared runtime.
     openBrowser: (url = "about:blank") => openRightPanelBrowser(scopeKey, url),

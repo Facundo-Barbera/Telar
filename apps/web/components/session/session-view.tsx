@@ -103,8 +103,15 @@ import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
-import { adoptRightPanelSession, openRightPanelBrowser } from "@/lib/right-panel-store";
+import {
+  adoptRightPanelSession,
+  DEFAULT_ACTIVITY_TAB,
+  openRightPanelActivity,
+  openRightPanelBrowser,
+  useRightPanelStore,
+} from "@/lib/right-panel-store";
 import { TELAR_BROWSER_MUTATION_EVENT } from "@/lib/browser-runtime-contract";
+import { useDisclosureMap } from "@/lib/use-disclosure-map";
 import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -555,81 +562,25 @@ const agentBucketKind: ItemKind<AgentBucketPayload> = {
   ),
 };
 
-// THE FULL-PANE ULTRA TAB, as ONE composite item — the same mechanism a
-// sub-agent tab uses, and deliberately not a second one. `ConversationProps` is
-// CLOSED at nine names (INV-8i has a `@ts-expect-error` that fails if a tenth
-// compiles), so the only ways into the pane are an item, `empty`, `trailing`, or
-// bypassing the shell entirely; bypassing loses the rail, the composer and the
-// scroll column, `trailing` is documented as the wrong slot for anything that
-// must not steal liveness, and `empty` already holds three real empty states.
-// An item it is, exactly as `agentBucketKind` above already is.
+// THE FULL-PANE ULTRA VIEW USED TO LIVE HERE, AS A COMPOSITE ITEM KIND
+// (`session:ultra-tab`) rendered through this same registry — same mechanism
+// `agentBucketKind` above still uses. Issue #13's traced root cause is exactly
+// that choice: registering Ultra detail as a TRANSCRIPT ITEM meant selecting a
+// run could only ever show it by REPLACING `transcriptItems` with a
+// single-element array holding that item — there is no way to render "one
+// item, instead of the transcript" within a scroll column that also owns the
+// transcript. That is the mechanism behind "Ultra workflows render on top of
+// the main chat": it was never a z-index stacking bug, it was the main column
+// being handed different content.
 //
-// DECLARED HERE AND NOT IN `ultra-anchor.tsx`: INV-10's floor asserts that file
-// declares EXACTLY ONE `ItemKind`. Declaring it here costs nothing — `session`
-// is already a `MODULE_NAMESPACES` entry, and `KIND_DONOR_RELS` already scans
-// this file for renderer purity — so the new kind needs no invariants edit.
-// `pane` is the WHOLE data half, built by the adapter — run snapshot, spend
-// provider, the two controls, the busy flag. `isOpen`/`setOpen` are the only
-// things the renderer supplies, and they are SHELL-PROVIDED VIEW STATE rather
-// than ambient context: threading them down is what lets each agent's
-// transcript disclose independently without the pane owning local state that a
-// pure renderer may not have.
-type UltraTabPayload = {
-  banner: ReactNode;
-  pane: Omit<UltraTabViewProps, "isOpen" | "setOpen">;
-};
-
-const SESSION_ULTRA_TAB = "session:ultra-tab";
-
-const ultraTabKind: ItemKind<UltraTabPayload> = {
-  id: SESSION_ULTRA_TAB,
-  // THE PANE OWNS ITS OWN SCROLL, and that is what stops the viewport from
-  // lurching. This kind renders inside `ConversationViewport`, which is
-  // `StickToBottom(initial="smooth", resize="smooth")` — correct for a chat,
-  // where new content SHOULD pull the view down. But it means any height change
-  // inside this pane reads as "the transcript grew", so opening one agent's
-  // ~384px transcript smoothly scrolled the whole page to the bottom, past the
-  // very thing that had just been opened.
-  //
-  // Fixing it by relaxing `resize` was not an option: that setting belongs to
-  // every conversational surface in the app and chat depends on it. Instead the
-  // pane is given a FIXED height and its own `overflow-y-auto`, so the outer
-  // content height NEVER CHANGES no matter what is expanded in here — there is
-  // no resize for StickToBottom to react to. The transcript's own box scrolls
-  // inside this one.
-  //
-  // The banner sits OUTSIDE the scrolling half rather than `sticky` within it,
-  // which is strictly better than the sticky strip it replaces: the way out is
-  // now always visible and cannot be scrolled under anything.
-  //
-  // THE UNDERSCORES IN THE HEIGHT ARE LOAD-BEARING. `calc()` requires whitespace
-  // around its `-`, and a Tailwind arbitrary value cannot contain literal
-  // spaces — so `h-[calc(100vh-13rem)]` compiles to `height: calc(100vh-13rem)`,
-  // which is invalid CSS, is dropped by the parser, and leaves the pane free to
-  // grow to its content. Measured exactly that way before the fix: the box
-  // reported 878px inside a 656px viewport and the banner sat 110px above the
-  // fold, which is the bug this whole block exists to prevent.
-  render: (payload, view) => (
-    <div
-      // AN INLINE STYLE, NOT AN ARBITRARY CLASS, and deliberately. Two spellings
-      // of this height were tried as Tailwind arbitrary values and NEITHER
-      // reached the element: `h-[calc(100vh-13rem)]` compiles to invalid CSS
-      // (calc needs whitespace around its `-`), and the underscore form did not
-      // produce a rule either. Both were measured the same way — the pane
-      // reported 878px inside a 656px scroller, so the height was simply not
-      // being applied — and the second attempt was indistinguishable from the
-      // first from the user's side. A style attribute cannot fail to generate.
-      style={{ height: "calc(100vh - 13rem)", minHeight: "24rem" }}
-      className="mx-auto flex w-full max-w-3xl flex-col gap-2"
-    >
-      <div className="shrink-0">{payload.banner}</div>
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        <UltraTabView {...payload.pane} isOpen={view.isOpen} setOpen={view.setOpen} />
-      </div>
-    </div>
-  ),
-};
-
+// The #15 design comment on #13 is the settled call: Ultra/agent detail
+// belongs in the right-panel dock, which already owns resize + fullscreen and
+// is a SIBLING of the main chat rather than a replacement for it. `UltraTabView`
+// and `UltraTabBanner` (components/session/ultra-tab.tsx) are unchanged and
+// still do the rendering — the panel's `activity` slot below composes them
+// directly, with its own isOpen/setOpen (`useDisclosureMap`) rather than the
+// Conversation shell's, since the pane no longer renders inside that shell.
+//
 // Composed once, at module scope, and passed to the shell as a PROP — never read
 // by the shell from anywhere global (project-context.md forbids a global client
 // store, and a shared mutable registry would also let two surfaces on one page
@@ -644,7 +595,6 @@ const SESSION_KINDS = createItemKindRegistry([
   // INDEPENDENT INSTANCES passed as props, so registering here cannot reach
   // there — which is exactly the property that makes the tombstone honest.
   ultraRunAnchorKind as unknown as ItemKind<never>,
-  ultraTabKind as unknown as ItemKind<never>,
 ]);
 
 // A subagent's own tab, as ONE transcript item: the same rendering path as Main
@@ -658,30 +608,6 @@ const SESSION_KINDS = createItemKindRegistry([
 // The bucket's items get NO `agentSteps`/`onSelectAgent`: v1 doesn't track
 // sub-subagents, so a subagent's own tab renders nested tool calls as plain tool
 // rows — exactly as the donor's bucket did by omitting those props.
-// THE RUN TAB, as one item. Mirrors `agentBucketItem` deliberately: the adapter
-// builds the banner and the whole data half, the renderer places nodes and
-// threads the shell's disclosure map. `provider` is HARD-CODED "claude" for the
-// reason `ultraAnchorPayloads` states — the Ultra MCP server exists only on that
-// branch, and a session-level provider prop here would render a fabricated
-// figure the moment anyone flipped it.
-function ultraTabItem(
-  run: RunSnapshot,
-  onBack: () => void,
-  onStop: () => void,
-  busy: boolean,
-): TranscriptItem {
-  return {
-    kind: SESSION_ULTRA_TAB,
-    // The KEY NAMES THE RUN, not the slot: switching tabs must remount the pane
-    // rather than reuse the previous run's disclosure map.
-    key: `${SESSION_ULTRA_TAB}:${run.runId}`,
-    payload: {
-      banner: <UltraTabBanner run={run} onBack={onBack} />,
-      pane: { run, provider: "claude", onStop, busy },
-    } satisfies UltraTabPayload,
-  };
-}
-
 function agentBucketItem(bucket: AgentBucket, onBack: () => void): TranscriptItem {
   const agent = bucket.spawn.agent ?? { type: null, description: "" };
   const status = agentStatus(bucket.spawn);
@@ -927,6 +853,13 @@ function SessionWorkspace({
   const resolvedRightPanelScopeKey = sessionId
     ? `${project}:${sessionId}`
     : provisionalRightPanelScopeKey;
+  // READ-ONLY, for #14's composer disable below. `<RightPanel>` (further down
+  // this render) is the WRITER of this store; this is a second, independent
+  // subscription to the same external store, the same pattern `right-panel.tsx`
+  // itself already uses twice (`RightPanel` and `RightPanelTrigger`) and
+  // `workspace-inspector.tsx` uses a third time — subscribe/snapshot was built
+  // to have more than one reader.
+  const rightPanelSession = useRightPanelStore(resolvedRightPanelScopeKey).session;
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     seedMessages(initialChat),
   );
@@ -2620,11 +2553,14 @@ function SessionWorkspace({
         // it, which is a fabricated figure. If a Codex ultra path ever exists,
         // this literal and the dock signal's are where it changes.
         provider: "claude",
-        // OPEN THE FULL PANE, and expand the rail card alongside it. Both,
-        // because they answer different questions: the pane is where the run is
-        // read, the rail card is the index entry that stays visible while it is.
+        // OPEN THE DOCK TO THE RUN'S OWN PANE (issue #13). `setActiveTab` names
+        // which run the dock should show — see `activeRunTab` above — and
+        // `openRightPanelActivity` is what actually reveals the dock, since an
+        // inline anchor can be clicked while the panel is closed. Both calls:
+        // the first says WHAT to show, the second says SHOW SOMETHING.
         onFocus: () => {
           setActiveTab(ultraTabId(runId));
+          openRightPanelActivity(resolvedRightPanelScopeKey);
         },
         onStop: () => void ultraAct(runId, "stop"),
         onResume: () => void ultraAct(runId, "resume"),
@@ -2632,7 +2568,7 @@ function SessionWorkspace({
       });
     }
     return map;
-  }, [ultraRuns, ultraAct, ultraBusyRunId]);
+  }, [ultraRuns, ultraAct, ultraBusyRunId, resolvedRightPanelScopeKey]);
 
   // D8's PENDING form: a launch whose manifest has not arrived yet. The launch
   // is a FACT the moment the tool result carries a runId, and the window is real
@@ -2655,12 +2591,13 @@ function SessionWorkspace({
       provider: "claude",
       onFocus: () => {
         setActiveTab(ultraTabId(runId));
+        openRightPanelActivity(resolvedRightPanelScopeKey);
       },
       onStop: () => void ultraAct(runId, "stop"),
       onResume: () => void ultraAct(runId, "resume"),
       busy: ultraBusyRunId === runId,
     }),
-    [ultraAct, ultraBusyRunId],
+    [ultraAct, ultraBusyRunId, resolvedRightPanelScopeKey],
   );
 
   // AC7 proof 5 — FOCUS ON ARRIVAL. The dock's tap pushes
@@ -2681,8 +2618,11 @@ function SessionWorkspace({
     if (!focusRunId) return;
     // ARRIVAL OPENS THE PANE, not just the rail card. The dock tap's whole
     // premise is "come and look at this run", and the 240px card was only ever
-    // the best answer available before a pane existed.
+    // the best answer available before a pane existed. Since that pane is now
+    // the right-panel dock's Activity content rather than the main transcript
+    // (issue #13), opening the dock is a SEPARATE call from selecting the run.
     setActiveTab(ultraTabId(focusRunId));
+    openRightPanelActivity(resolvedRightPanelScopeKey);
     // This is URL housekeeping, not navigation. `router.replace(pathname)`
     // starts a new RSC request and leaves `focusRunId` truthy until that request
     // returns. Any intervening render can therefore enqueue the same replace
@@ -2691,7 +2631,7 @@ function SessionWorkspace({
     // Router, so this removes only `?run=` synchronously without fetching or
     // remounting the live session.
     window.history.replaceState(null, "", pathname);
-  }, [focusRunId, pathname]);
+  }, [focusRunId, pathname, resolvedRightPanelScopeKey]);
 
   const ultraRunList = useMemo(() => [...ultraRuns.values()], [ultraRuns]);
 
@@ -2701,13 +2641,36 @@ function SessionWorkspace({
   // `activeBucket` for one boring reason: `ultraRuns` does not exist yet up
   // there, and hook order is not negotiable.
   //
-  // A run tab whose run has fallen out of the map resolves to null and the pane
-  // falls back to Main, which is the same tombstone posture `activeBucket` takes
+  // FEEDS THE RIGHT-PANEL DOCK, NOT THE MAIN TRANSCRIPT (issue #13). This used
+  // to be the run rendered in place of `transcriptItems`; now it is read only by
+  // the `activity` slot passed to `<RightPanel>` below, which shows the Ultra
+  // pane instead of the sub-agent/Ultra index exactly while this is non-null.
+  // A run tab whose run has fallen out of the map resolves to null and the dock
+  // falls back to the index, the same tombstone posture `activeBucket` takes
   // for a vanished bucket (AD-8: a vanished reference is never a throw).
   const activeRunTab = useMemo(() => {
     const id = ultraTabRunId(activeTab);
     return id ? (ultraRuns.get(id) ?? null) : null;
   }, [activeTab, ultraRuns]);
+  // The Activity dock's OWN disclosure map for `UltraTabView`'s per-agent
+  // transcripts, now that the pane renders there instead of inside the
+  // Conversation shell (issue #13) and so can no longer borrow the shell's.
+  const activityDisclosure = useDisclosureMap();
+  // ISSUE #14, SCOPED TO THE ONE CASE THAT STILL EXISTS after #13(b): the dock
+  // is a SIBLING of the main chat at every width except its own fullscreen
+  // toggle (`right-panel.tsx`'s `absolute inset-0 z-40 w-full max-w-none`),
+  // which is the one state that visually covers this composer too. Disabling
+  // whenever the dock is merely OPEN would be wrong — side-by-side, sending is
+  // unambiguous, exactly the case #13(b) fixed. `activeRunTab` (not the
+  // sub-agent index) is the gate because only the Ultra pane is named in this
+  // issue; a fullscreen sub-agent index is unchanged behaviour predating this
+  // cluster and out of scope here. Per the #15 comment, this whole block is
+  // deletable once Ultra detail gets its own condensed dock-width layout and
+  // stops needing fullscreen to be readable — kept deliberately tiny for that.
+  const ultraOwnsScreen =
+    rightPanelSession.fullscreen &&
+    rightPanelSession.activeTabId === DEFAULT_ACTIVITY_TAB.id &&
+    activeRunTab !== null;
   const ultraLiveCount = useMemo(
     () => ultraRunList.filter((r) => r.state === "running").length,
     [ultraRunList],
@@ -3335,22 +3298,36 @@ function SessionWorkspace({
     [agentBuckets],
   );
 
-  // A newly-started sub-agent is an immediate runtime fact, not a turn-end
-  // summary. Reveal it once when its authoritative spawn event first enters the
-  // projection; persisted agents present at mount do not reopen old activity.
-  const seenAgentIdsRef = useRef<Set<string> | null>(null);
-  useEffect(() => {
-    const ids = new Set(railAgents.map((agent) => agent.id));
-    const seen = seenAgentIdsRef.current;
-    seenAgentIdsRef.current = ids;
-    if (seen === null) return;
-    const started = railAgents.find(
-      (agent) => agent.status === "running" && !seen.has(agent.id),
-    );
-    if (!started) return;
-    setActiveTab(started.id);
-    setWorkspaceInspectorOpen(true);
-  }, [railAgents]);
+  // ISSUE #18 — THE TRACED CASCADE, removed. This used to read: "a newly-started
+  // sub-agent is an immediate runtime fact, not a turn-end summary — reveal it
+  // once when its authoritative spawn event first enters the projection," and
+  // it did that by calling BOTH the tab setter with the new bucket's id (which
+  // swaps the MAIN transcript to the bucket — the same mechanism #13(b) fixed
+  // for Ultra runs) AND the inspector's open setter with `true` (which pops
+  // open the pinned env) THE MOMENT ANY spawn's first tool_result arrived,
+  // with no gate on whether a human was looking for it. That is the whole
+  // mechanism: ONE cascade forcing two of the three surfaces the issue names,
+  // not three surfaces independently rendering an agent they each separately
+  // noticed.
+  // (The third — the dock's `SubagentRail` highlighting this bucket's row via
+  // `activeId={activeTab}` — only ever happened as a SIDE EFFECT of the first,
+  // and only when the dock was already open; it never had its own trigger.)
+  //
+  // `agentStatus`'s own comment says why removing this loses nothing real:
+  // "Subagents run in the background by default" — there is no separate
+  // "background" flag to gate on, because EVERY spawn is background work by
+  // this app's own model, so a reveal keyed on "just started running" fires
+  // for literally every spawn, which is exactly the complaint.
+  //
+  // WHAT STAYS DISCOVERABLE WITHOUT A FORCED REVEAL: the pinned-summary
+  // trigger already renders a quiet dot whenever `activityRunning` is true —
+  // computed from the same `railAgents`/`workflows` data, never gated on a
+  // "just started" transition — so a session with live background work still
+  // reads as active the instant you glance at its own trigger. That is #17's
+  // ask (visible in passing) held alongside this one (not a takeover): #17
+  // never asked for panes to POP OPEN, and nothing here removes the dot.
+  // Opening the pinned env or the Activity dock and clicking the running row
+  // (#13's fixed hand-off) is how a user who wants the detail gets it now.
 
   // `renderAgentBucket` is gone. Its inline switch — the SECOND copy of the
   // RenderItem dispatch, whose own comment admitted it "mirrors Main's exhaustive
@@ -3426,22 +3403,17 @@ function SessionWorkspace({
   // composer, side panels and workspace chrome; without this memo any update in
   // those siblings makes the transcript replay markdown, syntax highlighting
   // and every tool renderer even though no conversation data changed.
-  // THE RUN-TAB ARM COMES FIRST so the two selectors cannot both resolve: an
-  // `ultra-run:` id can never also be a bucket id, but ordering says so
-  // structurally rather than relying on that.
+  // NO THIRD ARM HERE FOR AN ACTIVE ULTRA RUN (issue #13). Selecting a run no
+  // longer replaces this array with a single Ultra item — that replacement WAS
+  // the "renders on top of the main chat" bug, because this is the transcript
+  // the main column shows and there is no way to swap in one item without
+  // losing the rest. `activeRunTab` (below) still exists and still names the
+  // selected run, but it now feeds the right-panel dock's `activity` slot
+  // instead of this memo — see the note above `SESSION_KINDS`.
   const transcriptItems = useMemo<TranscriptItem[]>(() =>
-    activeRunTab
-      ? [
-          ultraTabItem(
-            activeRunTab,
-            () => setActiveTab("main"),
-            () => void ultraAct(activeRunTab.runId, "stop"),
-            ultraBusyRunId === activeRunTab.runId,
-          ),
-        ]
-      : activeBucket
-        ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
-        : messages.map((m) => {
+    activeBucket
+      ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
+      : messages.map((m) => {
         // Main renders only this message's OWN parts — anything a subagent
         // produced lives in its own tab (see agentBuckets), not interleaved
         // here even though it rode in on the same SSE stream and the same
@@ -3515,10 +3487,9 @@ function SessionWorkspace({
               ) : undefined,
           } satisfies TurnPayload,
         };
-          }),
+      }),
     [
       activeBucket,
-      activeRunTab,
       agentBucketById,
       agentProjection,
       busy,
@@ -3527,9 +3498,7 @@ function SessionWorkspace({
       pendingUltraAnchor,
       respondPermission,
       thinking,
-      ultraAct,
       ultraAnchorPayloads,
-      ultraBusyRunId,
     ],
   );
 
@@ -3579,9 +3548,13 @@ function SessionWorkspace({
   const freshWorkspace =
     messages.length === 0 && !sessionId && !planner && !escalation && !steerer;
 
+  // `!activeRunTab` DROPPED (issue #13): selecting an Ultra run no longer
+  // displaces this pane, so main chat — and its trailing loom rows — stays
+  // exactly as visible as when no run is selected. Only an active subagent
+  // bucket still hides them, same as before.
   const transcriptTrailing = useMemo(
     () =>
-      !activeBucket && !activeRunTab && loomEvents.length > 0 ? (
+      !activeBucket && loomEvents.length > 0 ? (
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pt-3">
           {loomEvents.map((row) => (
             <InlineLoomRow
@@ -3594,7 +3567,7 @@ function SessionWorkspace({
           ))}
         </div>
       ) : undefined,
-    [activeBucket, activeRunTab, loomEvents],
+    [activeBucket, loomEvents],
   );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;
@@ -3747,23 +3720,24 @@ function SessionWorkspace({
         )}
         items={transcriptItems}
         kinds={SESSION_KINDS}
-        // Leaving an Ultra or sub-agent tab swaps in a DIFFERENT transcript,
-        // and the old tab's scroll position came with it — so returning to the
-        // main chat landed at the top, above the message you came back to read.
-        // The tab id is exactly "which transcript is this".
-        scrollKey={activeTab}
+        // Leaving a sub-agent tab swaps in a DIFFERENT transcript, and the old
+        // tab's scroll position came with it — so returning to the main chat
+        // landed at the top, above the message you came back to read. Selecting
+        // an Ultra run is NOT one of these any more (issue #13): it no longer
+        // touches `transcriptItems`, so it must not touch the scroll key either
+        // — `activeTab` alone would reset this column's scroll every time a run
+        // is opened or closed in the dock, even though what it shows never
+        // changed. Only a real bucket switch changes what this key names.
+        scrollKey={activeBucket ? activeTab : "main"}
         // The donor's `isCurrentMessage`: the shell marks only the LAST
         // top-level item live, and the turn renderer derives per-child
         // `isTrailing` from there. On a subagent tab, "the spawn hasn't
         // produced a result yet" stands in for "currently streaming" — exactly
-        // what the bucket's own `bucketLive` meant.
-        live={
-          activeRunTab
-            ? activeRunTab.state === "running"
-            : activeBucket
-              ? agentStatus(activeBucket.spawn) === "running"
-              : busy
-        }
+        // what the bucket's own `bucketLive` meant. An active Ultra run is no
+        // longer a third case here — it never displaces this transcript, so
+        // this pane's own liveness (busy) is the honest answer whether or not
+        // a run happens to be open in the dock.
+        live={activeBucket ? agentStatus(activeBucket.spawn) === "running" : busy}
         empty={freshWorkspace ? undefined : emptyState}
         // Durable in-stream loom record (replaces the banner): a compact row
         // per lifecycle transition — started/parked/resumed/ready — carrying
@@ -3950,16 +3924,25 @@ function SessionWorkspace({
                 <PromptInputTextarea
                   ref={composerRef}
                   suppressHydrationWarning
+                  disabled={ultraOwnsScreen}
                   className="min-h-[76px] px-3 pb-2 pt-3 text-[15px] leading-6"
                   placeholder={
-                    // The busy half of this used to read "Agent is working —
-                    // Enter queues a message…". The transcript's status row and
-                    // this composer's own Stop button both already say the agent
-                    // is working; what the user cannot infer is what Enter does
-                    // RIGHT NOW, so only that survives.
-                    busy
-                      ? "Enter queues a message…"
-                      : "Ask for changes, explore the code, or attach context…"
+                    // ISSUE #14: this takes priority over the busy copy below —
+                    // a disabled textarea showing "queues a message…" would
+                    // promise something it cannot do. The reason names WHERE the
+                    // composer went, not just that it is off, since a silently
+                    // disabled box with no explanation is what the issue asked
+                    // to avoid.
+                    ultraOwnsScreen
+                      ? "Exit fullscreen to send a message to this session…"
+                      : // The busy half of this used to read "Agent is working —
+                        // Enter queues a message…". The transcript's status row and
+                        // this composer's own Stop button both already say the agent
+                        // is working; what the user cannot infer is what Enter does
+                        // RIGHT NOW, so only that survives.
+                        busy
+                        ? "Enter queues a message…"
+                        : "Ask for changes, explore the code, or attach context…"
                   }
                   onKeyDown={handleComposerKeyDown}
                   onChange={(e) => {
@@ -4027,6 +4010,10 @@ function SessionWorkspace({
                   />
                 <PromptInputSubmit
                   className="shrink-0"
+                  // ISSUE #14: match the textarea above. Enabling only Stop here
+                  // would need a second reason ("why can I stop but not send?"),
+                  // and this issue never asked for that distinction.
+                  disabled={ultraOwnsScreen}
                   status={status === "ready" ? undefined : status}
                   onStop={() => {
                     // Stop the DETACHED server run — a mere disconnect no longer
@@ -4074,22 +4061,48 @@ function SessionWorkspace({
           activityRunning={activityRunning}
           activityAttention={activityAttention}
           activity={
-            <SubagentRail
-              surface="panel"
-              agents={railAgents}
-              activeId={activeTab}
-              onSelect={setActiveTab}
-              sessionLabel={title}
-              mainNeedsAttention={mainNeedsAttention}
-              workflows={
-                <UltraRail
-                  runs={ultraRunList}
-                  activeRunId={ultraTabRunId(activeTab)}
-                  onOpen={(id) => setActiveTab(ultraTabId(id))}
-                />
-              }
-              workflowCount={ultraRunList.length}
-            />
+            // ISSUE #13(b): an active Ultra run now takes over the DOCK's
+            // activity slot, not the main transcript — the pane it opens is a
+            // SIBLING of the main chat, never a replacement for it. This is
+            // the one place `activeRunTab` decides what renders; everywhere
+            // else in this file it is inert data read by this branch alone.
+            activeRunTab ? (
+              <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden p-3">
+                <div className="shrink-0">
+                  <UltraTabBanner run={activeRunTab} onBack={() => setActiveTab("main")} />
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                  <UltraTabView
+                    run={activeRunTab}
+                    provider="claude"
+                    onStop={() => void ultraAct(activeRunTab.runId, "stop")}
+                    busy={ultraBusyRunId === activeRunTab.runId}
+                    isOpen={activityDisclosure.isOpen}
+                    setOpen={activityDisclosure.setOpen}
+                  />
+                </div>
+              </div>
+            ) : (
+              <SubagentRail
+                surface="panel"
+                agents={railAgents}
+                activeId={activeTab}
+                onSelect={setActiveTab}
+                sessionLabel={title}
+                mainNeedsAttention={mainNeedsAttention}
+                workflows={
+                  <UltraRail
+                    // NEVER a run id here (issue #13): this branch only renders
+                    // when `activeRunTab` is null, so there is no run for the
+                    // rail's own "Here" badge to point at.
+                    runs={ultraRunList}
+                    activeRunId={null}
+                    onOpen={(id) => setActiveTab(ultraTabId(id))}
+                  />
+                }
+                workflowCount={ultraRunList.length}
+              />
+            )
           }
         />
       )}

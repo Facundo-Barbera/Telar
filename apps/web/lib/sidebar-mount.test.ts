@@ -92,7 +92,13 @@ describe("the production sidebar mount", () => {
 
     expect(focusCleanup).toContain('window.history.replaceState(null, "", pathname)');
     expect(focusCleanup).not.toContain("\n    router.replace(");
-    expect(focusCleanup).toContain("}, [focusRunId, pathname]);");
+    // DEPS GREW BY ONE (issue #13): arrival used to reveal the run by putting it
+    // in `transcriptItems`, so selecting it was the whole job. Now that the pane
+    // lives in the right-panel dock rather than the transcript, arrival must ALSO
+    // open the dock — `openRightPanelActivity(resolvedRightPanelScopeKey)` — so
+    // the scope key the effect closes over has to be a real dependency, not an
+    // accidental stale closure.
+    expect(focusCleanup).toContain("}, [focusRunId, pathname, resolvedRightPanelScopeKey]);");
   });
 
   test("keeps stale inspector callbacks from crashing Fast Refresh", () => {

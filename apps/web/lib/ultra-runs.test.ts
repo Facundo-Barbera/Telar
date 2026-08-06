@@ -1509,8 +1509,15 @@ describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken f
 
   test("session-view.tsx wires the tab through those helpers, not through a local literal", () => {
     const src = readSource("apps/web/components/session/session-view.tsx");
-    expect(src).toContain("ultraTabKind");
-    expect(src).toContain("SESSION_ULTRA_TAB");
+    // `ultraTabKind`/`SESSION_ULTRA_TAB` DELIBERATELY DROPPED (issue #13). Those
+    // named the composite item kind that used to render the Ultra pane BY
+    // REPLACING `transcriptItems` — the exact mechanism traced as "renders on top
+    // of the main chat", since a scroll column that owns the transcript has no
+    // way to show one item INSTEAD of it. The pane now renders in the
+    // right-panel Activity dock (a sibling surface, not a transcript swap), so
+    // there is no local item-kind literal left for this half of the guard to
+    // find. `ultraTabRunId`/`ultraTabId` are unchanged below: `activeTab` still
+    // names the selected run, it just feeds the dock instead of this memo.
     expect(src).toContain("ultraTabRunId(activeTab)");
     expect(src).toContain("ultraTabId(runId)");
     // INV-10b's positive half: the anchor kind is still registered in the
