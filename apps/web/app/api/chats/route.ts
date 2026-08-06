@@ -1,4 +1,6 @@
+import { listUltraRuns } from "@telar/core";
 import { isSessionRunLive } from "@/lib/chat-runs";
+import { liveRunCountsBySession } from "@/lib/ultra-runs";
 import { listChats } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +21,21 @@ export async function GET(req: Request) {
   const project = url.searchParams.get("project") ?? undefined;
   const raw = url.searchParams.get("archived");
   const archived = raw === "include" || raw === "only" ? raw : "exclude";
+  // `live`'s registry (lib/chat-runs.ts) only knows about the MAIN turn's own
+  // HTTP request. An Ultra run keeps going as its own detached process long
+  // after that request returns (its manifest lives under TELAR_HOME/ultra/*),
+  // so a session can be doing real work while `live` alone says idle — issue
+  // #17. One directory walk here answers it for every chat in this response
+  // at once, the same cost /api/ultra's own list route already pays on its
+  // poll cadence; a manifest that fails to read degrades to "nothing running"
+  // rather than a 500 for the whole chat list, the same guard that route
+  // wraps around this exact call.
+  let liveUltraCounts: Map<string, number>;
+  try {
+    liveUltraCounts = liveRunCountsBySession(listUltraRuns());
+  } catch {
+    liveUltraCounts = new Map();
+  }
   const chats = listChats(project, { archived })
     .filter((c) => c.role !== "steerer" && c.role !== "escalation")
     // `live` is the sidebar's running dot. It is DERIVED per request from the
@@ -26,6 +43,15 @@ export async function GET(req: Request) {
     // dies with the server must not leave a row claiming to be running. This is
     // the same registry POST /api/chat/stop reaches, so the dot and the stop
     // button can never disagree about whether a turn exists.
-    .map((c) => ({ ...c, live: isSessionRunLive(c.id) }));
+    .map((c) => {
+      const liveBackgroundRuns = liveUltraCounts.get(c.id);
+      return {
+        ...c,
+        live: isSessionRunLive(c.id),
+        // Only present when positive — absent reads the same as "nothing
+        // running", same optional-field convention `live`'s own callers use.
+        ...(liveBackgroundRuns ? { liveBackgroundRuns } : {}),
+      };
+    });
   return Response.json({ chats });
 }

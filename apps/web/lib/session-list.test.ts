@@ -5,6 +5,7 @@ import {
   bandOf,
   deriveSessionList,
   isUnread,
+  newSessionHref,
   SETTLED_AFTER_MS,
   type SidebarSession,
 } from "./session-list";
@@ -179,4 +180,12 @@ test("activeSessionFromPathname only recognizes persisted session routes", () =>
   expect(activeSessionFromPathname("/projects/alpha/sessions/a%20b")).toBe("a b");
   expect(activeSessionFromPathname("/projects/alpha/sessions/new")).toBeUndefined();
   expect(activeSessionFromPathname("/projects/alpha")).toBeUndefined();
+});
+
+test("newSessionHref lands in the same project's fresh composer, not /", () => {
+  expect(newSessionHref("alpha")).toBe("/projects/alpha/sessions/new");
+  // Percent-encoded, same as every other session route builder in this app —
+  // a project name with a slash or space must not split the path or land on
+  // the wrong route.
+  expect(newSessionHref("my project/v2")).toBe("/projects/my%20project%2Fv2/sessions/new");
 });

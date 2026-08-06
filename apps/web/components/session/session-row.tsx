@@ -19,11 +19,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ClockIcon, CircleCheckIcon } from "lucide-react";
 import { fmtAgo, fmtCost, fmtTokens } from "@/lib/format";
 import { providerForModel } from "@/lib/models";
 import { patchChat } from "@/lib/chat-actions";
-import { bandOf, isUnread, type SidebarSession } from "@/lib/session-list";
+import { bandOf, isUnread, newSessionHref, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
 import { SnoozeMenu } from "@/components/session/snooze-menu";
@@ -89,6 +90,13 @@ function SessionDetails({
     session.snoozedUntil !== undefined && session.snoozedUntil > renderedAt
       ? session.snoozedUntil
       : undefined;
+  // Issue #17: the main turn (`live`) is not the only thing that can be
+  // happening for this session. An Ultra run launched from it keeps going as
+  // its own detached process long after the turn that launched it returns —
+  // see session-list.ts's SidebarSession comment on the field — so a row
+  // must be able to read as active on that alone.
+  const backgroundRuns = session.liveBackgroundRuns ?? 0;
+  const working = session.live || backgroundRuns > 0;
   return (
     <div>
       {/* The strip carries the one ambient fact: primary while the agent is
@@ -97,7 +105,7 @@ function SessionDetails({
       <div
         aria-hidden
         className={`h-0.5 ${
-          session.live
+          working
             ? "bg-gradient-to-r from-primary/70 via-primary/25 to-transparent"
             : "bg-gradient-to-r from-border to-transparent"
         }`}
@@ -118,6 +126,14 @@ function SessionDetails({
                   className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse"
                 />
                 Working…
+              </span>
+            ) : backgroundRuns > 0 ? (
+              <span className="flex items-center gap-1 font-medium text-primary">
+                <span
+                  aria-hidden
+                  className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse"
+                />
+                {backgroundRuns === 1 ? "1 run active in background" : `${backgroundRuns} runs active in background`}
               </span>
             ) : snoozedUntil ? (
               <span className="flex items-center gap-0.5 text-muted-foreground">
@@ -185,6 +201,7 @@ export function SessionRow({
   // Distinguishes the docked desktop sidebar from the mobile <Sheet>, which is
   // a modal and therefore cannot host a body-portaled hover card.
   const { isMobile } = useSidebar();
+  const router = useRouter();
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(session.title);
   const input = useRef<HTMLInputElement>(null);
@@ -196,7 +213,12 @@ export function SessionRow({
   }, [renaming]);
 
   if (!session.project) return null;
-  const href = `/projects/${encodeURIComponent(session.project)}/sessions/${encodeURIComponent(session.id)}`;
+  // Captured as a local so its non-optional narrowing survives into the
+  // closures below (leaveIfActive) — TypeScript does not carry a guard on
+  // `session.project` through a function defined afterward, only through a
+  // local const.
+  const project = session.project;
+  const href = `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(session.id)}`;
   const snoozedUntil =
     session.snoozedUntil !== undefined && session.snoozedUntil > renderedAt
       ? session.snoozedUntil
@@ -204,6 +226,23 @@ export function SessionRow({
   const settled = bandOf(session, renderedAt) === "settled";
   const unread = isUnread(session);
   const provider = providerForModel(session.model);
+  const backgroundRuns = session.liveBackgroundRuns ?? 0;
+
+  // Issue #12: settling or archiving the session you are currently VIEWING
+  // must not maroon you on it. `deriveSessionList`'s survivor rule (see
+  // session-list.ts) keeps this exact row visible in "Recent" for as long as
+  // the URL still names it, precisely so an open session stays reachable
+  // while you read it — but that rule fires just as reliably right after you
+  // settle/archive the one row you were looking at, which is the bug: the
+  // row survives its own settle because nothing ever stops naming it. The
+  // fix is not in the survivor rule (which is correct for every OTHER case)
+  // but here, at the point of the click — hand the user off to a fresh
+  // session in the same project so the URL stops naming this one, and the
+  // next refetch (already triggered by patchChat's own broadcast) shelves
+  // the row like any other settled/archived session.
+  const leaveIfActive = () => {
+    if (active) router.push(newSessionHref(project));
+  };
 
   const beginRename = () => {
     setDraft(session.title);
@@ -256,6 +295,14 @@ export function SessionRow({
             aria-hidden
             className="absolute -inset-1 animate-ping rounded-full bg-primary/30"
           />
+        ) : backgroundRuns > 0 ? (
+          // A slower, non-expanding pulse rather than the main turn's ping —
+          // background work is real activity but not the urgent "the agent
+          // is streaming to you right now" fact the ping communicates.
+          <span
+            aria-hidden
+            className="absolute -inset-1 rounded-full bg-primary/20 motion-safe:animate-pulse"
+          />
         ) : null}
       </span>
       <span className="min-w-0 flex-1">
@@ -269,6 +316,10 @@ export function SessionRow({
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-sidebar-foreground/45">
           {session.live ? (
             <span className="shrink-0 font-medium text-primary">Working…</span>
+          ) : backgroundRuns > 0 ? (
+            <span className="shrink-0 font-medium text-primary">
+              {backgroundRuns === 1 ? "1 running" : `${backgroundRuns} running`}
+            </span>
           ) : snoozedUntil ? (
             <span className="flex shrink-0 items-center gap-0.5">
               <ClockIcon className="size-2.5" />
@@ -416,7 +467,10 @@ export function SessionRow({
               title="Settle"
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void patchChat(session.id, { settled: true }).then(onRefresh);
+                void patchChat(session.id, { settled: true }).then(() => {
+                  onRefresh();
+                  leaveIfActive();
+                });
               }}
             >
               <CircleCheckIcon />
@@ -431,6 +485,7 @@ export function SessionRow({
             session={session}
             settled={settled}
             snoozed={snoozedUntil !== undefined}
+            active={active}
             onRename={beginRename}
             onDone={onRefresh}
           />
