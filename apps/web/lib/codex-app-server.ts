@@ -80,9 +80,12 @@ export type CodexNormalizedEvent =
   // HarnessEvent (this adapter and the port agree on field names on
   // purpose). "manual" is Telar's own on-demand runCodexCompact below;
   // "auto" is the app-server compacting a normal turn's thread on its own,
-  // observed as a `thread/compacted` notification runCodexTurn never asked
-  // for. Codex's wire carries no summary text either way — null, not
-  // omitted, matching the port's own "no presence check" rule.
+  // observed as a `contextCompaction` item completing on runCodexTurn's
+  // connection, which never asked for it — see normalizeCodexAutoCompact's
+  // own comment for why this is keyed on the item, not the (unemitted, in
+  // practice) `thread/compacted` notification. Codex's wire carries no
+  // summary text either way — null, not omitted, matching the port's own
+  // "no presence check" rule.
   | { type: "compact_start"; trigger: "manual" | "auto" }
   | { type: "compact_end"; trigger: "manual" | "auto"; summary: string | null };
 
@@ -725,19 +728,30 @@ export function normalizeCodexObservedChild(
 /**
  * Root-thread AUTO-compaction, observed mid-turn. `runCodexTurn` never sends
  * `thread/compact/start` itself (that's `runCodexCompact`, the on-demand
- * path below) — so a `thread/compacted` notification arriving on a normal
- * turn's connection is the app-server compacting the thread on its own to
- * stay under `model_auto_compact_token_limit`, unasked. Pure and threadId-
- * gated (same discipline as the other normalizers here) so it is testable
- * without a subprocess and never fires for a subagent thread's own
- * compaction, which this adapter has no bucket to attribute yet.
+ * path below) — so a `contextCompaction` item completing on a normal turn's
+ * connection is the app-server compacting the thread on its own to stay
+ * under `model_auto_compact_token_limit`, unasked.
+ *
+ * NOT keyed on the `thread/compacted` notification (`ContextCompactedNotification`,
+ * per the generated bindings) despite that being the type this adapter
+ * originally watched for — live-traced against `codex app-server` 0.145.0
+ * with a real ChatGPT-authenticated thread (`thread/compact/start` ->
+ * `turn/started` -> `item/started`/`item/completed` with
+ * `item.type: "contextCompaction"` -> `turn/completed`; NO `thread/compacted`
+ * notification was ever emitted, on-demand or otherwise). The generated
+ * `ContextCompactedNotification.ts` even says so: "Deprecated: Use
+ * `ContextCompaction` item type instead." Keyed on `item/completed`'s
+ * `item.type` for exactly that reason. Pure and threadId-gated (same
+ * discipline as the other normalizers here) so it is testable without a
+ * subprocess, and never fires for a subagent thread's own compaction, which
+ * this adapter has no bucket to attribute yet.
  */
 export function normalizeCodexAutoCompact(
-  method: string,
+  itemType: string,
   threadId: unknown,
   rootThreadId: string,
 ): Extract<CodexNormalizedEvent, { type: "compact_end" }>[] {
-  if (method !== "thread/compacted" || threadId !== rootThreadId) return [];
+  if (itemType !== "contextCompaction" || threadId !== rootThreadId) return [];
   return [{ type: "compact_end", trigger: "auto", summary: null }];
 }
 
@@ -895,6 +909,14 @@ export async function* runCodexTurn(
           seenThinking.add(item.id);
           yield { type: "thinking_start", itemId: item.id, ...(tag ? { threadId: tag } : {}) };
         }
+        return;
+      }
+      if (item.type === "contextCompaction") {
+        // Only on completion — an in-progress compaction item carries nothing
+        // a surface can render differently from "started", and runCodexTurn
+        // (unlike runCodexCompact below) never itself asked for this, so
+        // there is no compact_start to pair it with here.
+        if (terminal) yield* normalizeCodexAutoCompact(item.type, threadId, rootThreadId);
         return;
       }
       if (item.type === "collabAgentToolCall") {
@@ -1061,9 +1083,6 @@ export async function* runCodexTurn(
           if (lastUsage) yield { type: "usage", usage: lastUsage };
           return;
         }
-        case "thread/compacted":
-          yield* normalizeCodexAutoCompact(notif.method, params.threadId, rootThreadId);
-          break;
         default:
           break; // every other notification (progress deltas we don't surface, account/updated, etc.) is ignored
       }
@@ -1122,17 +1141,52 @@ export async function* runCodexCompact(
     for (;;) {
       const { value: notif, done } = await client.notifications.next();
       if (done) throw new Error("codex app-server closed the connection mid-compact");
+      const params = (notif.params ?? {}) as Record<string, any>;
       if (notif.method === "error") {
-        const params = (notif.params ?? {}) as Record<string, any>;
         throw new Error(params.error?.message ?? "Codex compaction failed");
       }
-      if (notif.method === "thread/compacted") {
+      // Success signal — confirmed by driving `thread/compact/start` against
+      // a REAL `codex app-server` 0.145.0 process on a live, ChatGPT-
+      // authenticated thread. It is NOT `thread/compacted`
+      // (ContextCompactedNotification): that notification was never once
+      // observed, on a clean compaction or a failed one — its own generated
+      // binding says why ("Deprecated: Use `ContextCompaction` item type
+      // instead"). The real sequence is `turn/started` -> `item/started`/
+      // `item/completed` with `item.type: "contextCompaction"` ->
+      // `turn/completed`. Waiting on the old name meant this loop never
+      // returned on a SUCCESSFUL compaction: compact_end never yielded, the
+      // for-await in route.ts never advanced past this call, the SSE stream
+      // never closed, and the client's `compacting` indicator (whose only
+      // reset besides this event is a thrown fetch/network error, per
+      // session-view.tsx's own comment) hung forever. Keyed on item/completed
+      // rather than turn/completed because it arrives first.
+      if (
+        notif.method === "item/completed" &&
+        params.item?.type === "contextCompaction" &&
+        params.threadId === opts.threadId
+      ) {
         yield { type: "compact_end", trigger: "manual", summary: null };
         return;
       }
-      // Everything else (token-usage/rate-limit notifications the app-server
-      // keeps sending on this connection regardless of what was asked) is
-      // not this operation's concern.
+      // Defensive fallback, not the primary signal: this connection never
+      // calls turn/start itself, so ANY turn/completed here can only be the
+      // compaction's own turn — if the item above is ever skipped (a future
+      // app-server revision, a race), this still terminates the loop instead
+      // of reproducing the hang above. "failed" without a preceding "error"
+      // notification is belt-and-suspenders (every failure observed live
+      // also sent one) but still throws rather than silently yielding
+      // compact_end for a compaction that didn't actually happen.
+      if (notif.method === "turn/completed" && params.threadId === opts.threadId) {
+        if (params.turn?.status === "failed") {
+          throw new Error(params.turn?.error?.message ?? "Codex compaction failed");
+        }
+        yield { type: "compact_end", trigger: "manual", summary: null };
+        return;
+      }
+      // Everything else (turn/started, item/started, thread/status/changed,
+      // token-usage/rate-limit notifications — the app-server keeps sending
+      // all of this on this connection regardless of what was asked) is not
+      // this operation's concern.
     }
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);

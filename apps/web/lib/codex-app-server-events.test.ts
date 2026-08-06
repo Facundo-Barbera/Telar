@@ -165,18 +165,26 @@ describe("Codex subagent lifecycle", () => {
     expect(events).toEqual([]);
   });
 
-  test("normalizes a root-thread thread/compacted into an auto compact_end", () => {
-    expect(normalizeCodexAutoCompact("thread/compacted", "root", "root")).toEqual([
+  // Keyed on a completed "contextCompaction" ITEM, not the `thread/compacted`
+  // notification method — live-traced against a real `codex app-server`
+  // 0.145.0 process (see codex-app-server.ts's comment on this function):
+  // thread/compact/start never actually produced a `thread/compacted`
+  // notification, success or failure. The (deprecated)
+  // ContextCompactedNotification type is why the earlier version of this
+  // test — and the code it exercised — was wrong in a way `tsc` and a mocked
+  // unit test both happily missed.
+  test("normalizes a root-thread contextCompaction item into an auto compact_end", () => {
+    expect(normalizeCodexAutoCompact("contextCompaction", "root", "root")).toEqual([
       { type: "compact_end", trigger: "auto", summary: null },
     ]);
   });
 
   test("ignores a subagent thread's own compaction — no bucket to attribute it to yet", () => {
-    expect(normalizeCodexAutoCompact("thread/compacted", "child-1", "root")).toEqual([]);
+    expect(normalizeCodexAutoCompact("contextCompaction", "child-1", "root")).toEqual([]);
   });
 
-  test("ignores every other notification method", () => {
-    expect(normalizeCodexAutoCompact("thread/tokenUsage/updated", "root", "root")).toEqual([]);
+  test("ignores every other item type", () => {
+    expect(normalizeCodexAutoCompact("agentMessage", "root", "root")).toEqual([]);
   });
 
   test("a later wait snapshot can settle a child that was already started", () => {
