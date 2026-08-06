@@ -28,10 +28,29 @@ export type TelarDesktopUpdateStatus = {
   message?: string;
 };
 
+/** Which stream of builds this INSTALL follows, and whether quitting is also
+ *  consent to install. Persisted in the desktop shell's userData — a property
+ *  of this machine's installation, never of a project or of the engine. */
+export type TelarDesktopUpdatePrefs = {
+  channel: string;
+  installOnQuit: boolean;
+};
+
+export type TelarDesktopUpdatePrefsInfo = TelarDesktopUpdatePrefs & {
+  /** The channels this build knows how to follow — enumerated by the shell so
+   *  the UI never hard-codes a list that could drift from what is published. */
+  channels: string[];
+  /** False for a locally-packaged build with no feed baked in. The controls
+   *  still render, and say why they will not do anything. */
+  configured: boolean;
+};
+
 export type TelarDesktopUpdatesBridge = {
   check: () => Promise<{ status: string }>;
   install: () => Promise<void>;
   onStatus: (listener: (status: TelarDesktopUpdateStatus) => void) => () => void;
+  getPrefs: () => Promise<TelarDesktopUpdatePrefsInfo>;
+  setPrefs: (patch: Partial<TelarDesktopUpdatePrefs>) => Promise<TelarDesktopUpdatePrefs>;
 };
 
 export type TelarDesktopBrowserBridge = {

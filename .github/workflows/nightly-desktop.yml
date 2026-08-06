@@ -22,7 +22,17 @@ name: Nightly channel build
 # This input existed and was used exactly once, on 2026-08-05, to build a
 # nightly from `fix/ultra-hardening` — which is what made the hazard concrete
 # rather than theoretical. Landing on main is now the only way to ship.
+#
+# AUTOMATIC ON A TAG, and the tag is the trigger rather than a push to main
+# because not every merge deserves a build that installs itself on people's
+# machines. Tagging is the deliberate act; the workflow is the consequence.
+#
+# `v*-nightly.*` only — the beta workflow owns `v*-beta.*`. Two workflows
+# watching one pattern would both fire and race for the same version number.
 on:
+  push:
+    tags:
+      - "v*-nightly.*"
   workflow_dispatch:
 
 permissions:
@@ -38,6 +48,25 @@ jobs:
           # set-desktop-version.mjs counts existing tags to pick the next
           # nightly number — both need an unshallow clone with tags.
           fetch-depth: 0
+
+      # THE MAIN-ONLY RULE, ENFORCED RATHER THAN DOCUMENTED. Removing the `ref`
+      # input stops a build being AIMED off main; it does not stop a tag being
+      # PLACED off main, and a tag push is now a trigger. Without this a tag on
+      # any branch would publish to the update channel and install itself.
+      #
+      # Ancestry, not equality: the tagged commit must be reachable from
+      # origin/main, so tagging an older main commit stays legal while tagging
+      # an unmerged branch does not.
+      - name: Refuse to build a tag that is not on main
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not an ancestor of origin/main. Releases come from main."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is on main."
 
       - uses: oven-sh/setup-bun@v2
 
@@ -98,7 +127,14 @@ jobs:
           UPDATE_PROXY_URL: ${{ secrets.UPDATE_PROXY_URL }}
           UPDATE_PROXY_KEY: ${{ secrets.UPDATE_PROXY_KEY }}
         run: |
-          bash scripts/build-desktop.sh --ref origin/main --targets zip,dmg \
+          # A TAG NAMES A COMMIT, so a tag-triggered run builds THAT commit and
+          # not the tip — main may already have moved past it, and shipping the
+          # tip under a tag's name would make the tag a lie. The ancestry guard
+          # above has already established the commit is on main, so this is
+          # still main-only. A manual dispatch has no tag and builds the tip.
+          REF="origin/main"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then REF="$GITHUB_SHA"; fi
+          bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg \
             --channel nightly --publish-r2
 
       # Tags the commit that was actually built. That used to be a defence
@@ -106,7 +142,12 @@ jobs:
       # builds the two coincide, and it is resolved rather than assumed anyway
       # so the tag names the exact commit this run compiled. The tag is also
       # what set-desktop-version.mjs counts to pick the next nightly number.
+      # ONLY ON A MANUAL DISPATCH. When a tag triggered this run the tag already
+      # exists — that is what started it — and re-creating it would fail the
+      # push, or worse, mint a SECOND tag at a different version because
+      # set-desktop-version.mjs counts tags to pick the next number.
       - name: Tag the nightly version (no GitHub Release)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           VERSION="$(cat apps/desktop/release/from-origin/VERSION)"

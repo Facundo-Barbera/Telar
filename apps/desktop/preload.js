@@ -23,5 +23,7 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     install: () => ipcRenderer.invoke("telar:updates:install"),
     onStatus: (listener) => on("telar:updates:status", listener),
+    getPrefs: () => ipcRenderer.invoke("telar:updates:getPrefs"),
+    setPrefs: (patch) => ipcRenderer.invoke("telar:updates:setPrefs", patch),
   },
 });

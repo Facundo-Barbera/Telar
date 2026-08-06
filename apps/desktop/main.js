@@ -447,6 +447,51 @@ function updateProxyKey() {
   }
 }
 
+// --- Update preferences (userData, same idiom as the persisted port) ---------
+//
+// TWO THINGS THE USER OWNS, and neither was expressible before: WHICH stream of
+// builds this install follows, and WHETHER a downloaded update installs itself
+// on quit. Both were hardcoded — the channel came from whatever the build was
+// published as, and installing always waited for an explicit click.
+//
+// Stored beside server-port.json rather than in telar.yaml or ~/.telar: this is
+// a property of THIS INSTALLATION on THIS MACHINE, not of a project and not of
+// the engine. A second checkout must not inherit it, and syncing it would be
+// wrong.
+const UPDATE_CHANNELS = ["beta", "nightly"];
+const DEFAULT_UPDATE_PREFS = { channel: "beta", installOnQuit: false };
+
+function updatePrefsPath() {
+  return path.join(app.getPath("userData"), "update-prefs.json");
+}
+
+function readUpdatePrefs() {
+  const fs = require("node:fs");
+  try {
+    const raw = JSON.parse(fs.readFileSync(updatePrefsPath(), "utf8"));
+    return {
+      // Validated, not trusted: this file is user-editable and a bad channel
+      // name would point electron-updater at a feed that does not exist, which
+      // surfaces as a permanent, mystifying update error rather than a default.
+      channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
+      installOnQuit: raw.installOnQuit === true,
+    };
+  } catch {
+    // Missing / corrupt / unreadable — first run, never a crash.
+    return { ...DEFAULT_UPDATE_PREFS };
+  }
+}
+
+function writeUpdatePrefs(prefs) {
+  const fs = require("node:fs");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(updatePrefsPath(), JSON.stringify(prefs), "utf8");
+  } catch (err) {
+    console.error("[telar-desktop] failed to persist update prefs:", err.message);
+  }
+}
+
 let updaterWindow = null;
 function broadcastUpdateStatus(status, extra = {}) {
   const win = updaterWindow || BrowserWindow.getAllWindows()[0];
@@ -472,9 +517,22 @@ function checkForUpdates() {
 // lands the same day it is published.
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+function applyUpdatePrefs(prefs) {
+  // `channel` is electron-updater's own switch for WHICH feed file it fetches
+  // (beta-mac.yml vs nightly-mac.yml) from the same publish URL, which is
+  // exactly how build-desktop.sh publishes them — one bucket, one proxy, a feed
+  // per channel. So switching streams is a client-side choice and needs no
+  // reinstall and no second build.
+  autoUpdater.channel = prefs.channel;
+  // The user's answer to "install it for me when I quit, or wait for my click".
+  // Downloading stays automatic either way; what this decides is whether
+  // quitting is also consent to install.
+  autoUpdater.autoInstallOnAppQuit = prefs.installOnQuit;
+}
+
 function configureAutoUpdater() {
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = false;
+  applyUpdatePrefs(readUpdatePrefs());
   const key = updateProxyKey();
   if (key) autoUpdater.requestHeaders = { "X-Telar-Update-Key": key };
 
@@ -502,6 +560,33 @@ ipcMain.handle("telar:updates:install", () => {
   if (!app.isPackaged) return;
   app.isQuitting = true;
   autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle("telar:updates:getPrefs", () => ({
+  ...readUpdatePrefs(),
+  channels: UPDATE_CHANNELS,
+  // So the settings surface can explain itself rather than offering controls
+  // that silently do nothing on an unpublished local build.
+  configured: updatesConfigured(),
+}));
+
+ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
+  const current = readUpdatePrefs();
+  const next = {
+    channel:
+      typeof patch?.channel === "string" && UPDATE_CHANNELS.includes(patch.channel)
+        ? patch.channel
+        : current.channel,
+    installOnQuit: typeof patch?.installOnQuit === "boolean" ? patch.installOnQuit : current.installOnQuit,
+  };
+  writeUpdatePrefs(next);
+  applyUpdatePrefs(next);
+  // A CHANNEL CHANGE RE-CHECKS IMMEDIATELY, because the alternative is a
+  // control that appears to do nothing for up to six hours. Switching from
+  // nightly to beta is a request to find out what is on beta, now — and the
+  // check is what turns the choice into a visible answer.
+  if (next.channel !== current.channel && updatesConfigured()) void checkForUpdates();
+  return next;
 });
 
 // --- (f) Teardown ------------------------------------------------------------
