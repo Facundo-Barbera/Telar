@@ -32,7 +32,7 @@ import {
 import type { AttachmentRef } from "@/components/conversation";
 import { attachmentUrl } from "@/lib/attachment-contract";
 import type { RailAgent } from "@/components/session/subagent-rail";
-import type { RunSnapshot } from "@/lib/ultra-runs";
+import { orderRunsForPanel, type RunSnapshot } from "@/lib/ultra-runs";
 import type { GitOverviewResponse } from "@/components/projects/git-tab-shared";
 import { cachedJson } from "@/lib/client-json-cache";
 import { refreshIncludes } from "@/lib/telar-refresh";
@@ -60,6 +60,59 @@ function SectionHeading({ children, action }: {
       <span>{children}</span>
       {action && <span className="ml-auto">{action}</span>}
     </div>
+  );
+}
+
+// HOW MANY ROWS A SECTION SHOWS BEFORE IT STOPS.
+//
+// This popover is a GLANCE at the session's environment, and every list in it
+// grows without limit — sub-agents, Ultra runs, attachments, browser tabs all
+// accumulate for as long as the session lives. A busy evening put ten runs in
+// the Ultras section alone, at which point the panel is a scroll rather than a
+// glance and the things at the top are the OLDEST.
+//
+// Five is chosen to be smaller than any section is interesting: it is enough to
+// see what is happening and few enough that the sections below stay on screen.
+const SECTION_ROW_CAP = 5;
+
+/** A section body that shows the first `SECTION_ROW_CAP` rows and hides the
+ *  rest behind one toggle.
+ *
+ *  THE CALLER ORDERS, THIS ONLY CUTS. A cap over an arbitrary order can hide
+ *  the one row that matters — a running Ultra beneath eight finished ones — so
+ *  sorting belongs upstream where the domain is known, and this component takes
+ *  no view on which rows deserve to survive. It cuts from the END, so whatever
+ *  the caller put first is what stays.
+ *
+ *  The toggle is a row rather than a chevron on the heading: at this size a
+ *  heading affordance is a coin-flip target, and the count is the useful part
+ *  of the label ("7 more" says how much is hidden; a chevron says nothing). */
+function CappedRows<T>({
+  items,
+  render,
+  noun,
+}: {
+  items: readonly T[];
+  render: (item: T) => ReactNode;
+  /** Plural, lower-case — "runs", "sub-agents". Used only in the toggle. */
+  noun: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hidden = Math.max(0, items.length - SECTION_ROW_CAP);
+  const shown = expanded ? items : items.slice(0, SECTION_ROW_CAP);
+  return (
+    <>
+      <div className="space-y-0.5">{shown.map(render)}</div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          {expanded ? `Show fewer ${noun}` : `${hidden} more ${noun}`}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -460,8 +513,10 @@ export function WorkspaceInspector({
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Subagents</SectionHeading>
-              <div className="space-y-0.5">
-                {agents.map((agent) => (
+              <CappedRows
+                items={agents}
+                noun="sub-agents"
+                render={(agent) => (
                   <InspectorRow
                     key={agent.id}
                     icon={BotIcon}
@@ -470,16 +525,22 @@ export function WorkspaceInspector({
                     tone={agentTone(agent.status)}
                     onClick={() => openActivity(() => onSelectAgent(agent.id))}
                   />
-                ))}
-              </div>
+                )}
+              />
             </>
           )}
 
           {workflows.length > 0 && (
             <>
               <SectionHeading>Ultras</SectionHeading>
-              <div className="space-y-0.5">
-                {workflows.map((run) => (
+              {/* ORDERED BEFORE IT IS CUT. `CappedRows` slices from the end, so
+                  without this a live run could be the eleventh row and get
+                  hidden behind the toggle while eight finished ones stayed
+                  visible — the exact inversion the cap exists to prevent. */}
+              <CappedRows
+                items={orderRunsForPanel(workflows)}
+                noun="runs"
+                render={(run) => (
                   <InspectorRow
                     key={run.runId}
                     icon={WorkflowIcon}
@@ -488,8 +549,8 @@ export function WorkspaceInspector({
                     tone={run.state === "running" ? "live" : "default"}
                     onClick={() => openActivity(() => onSelectWorkflow(run.runId))}
                   />
-                ))}
-              </div>
+                )}
+              />
             </>
           )}
 

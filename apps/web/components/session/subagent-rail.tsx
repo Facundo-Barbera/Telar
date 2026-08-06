@@ -444,13 +444,17 @@ export function SubagentRail({
         )}
       </div>
 
-      {/* Story 4.2's Workflows section, ABOVE the Main anchor's divider so a
-          run the user is watching stays put while the sub-agent list scrolls
-          beneath it. Absent ⇒ nothing renders and the rail is byte-identical to
-          what it was. */}
-      {workflows}
+      {/* THE ORDER OF THIS PANEL IS ITS ORDER OF IMPORTANCE, top to bottom: the
+          conversation you are in, the runs working for it, the agents, then
+          what is already finished.
 
-      {/* pinned Main anchor — always visible, never scrolls with the cards */}
+          MAIN IS FIRST. It used to sit BELOW the Workflows section, reasoned as
+          "a run the user is watching stays put while the sub-agent list scrolls
+          beneath it" — but both are pinned above the scroll area, so that goal
+          never depended on the order of the two. What the old order actually
+          did was bury the way back to the conversation under however many runs
+          existed: with ten of them, "Main" was the eleventh thing in a panel
+          whose whole purpose is getting back to the first. */}
       <div className="border-b border-border p-2">
         <MainRow
           active={activeId === "main"}
@@ -459,6 +463,10 @@ export function SubagentRail({
           needsAttention={mainNeedsAttention}
         />
       </div>
+
+      {/* Story 4.2's Workflows section. Absent ⇒ nothing renders and the rail
+          is byte-identical to what it was. */}
+      {workflows}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {live.length === 0 ? (

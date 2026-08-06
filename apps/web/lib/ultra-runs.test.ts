@@ -38,6 +38,7 @@ import {
   UNPHASED,
   agentRows,
   agentTokenTotal,
+  orderRunsForPanel,
   anchorControls,
   anchorForm,
   anchorShape,
@@ -1650,5 +1651,46 @@ describe("AC-U4 — the rail stays w-60; nothing here widened it", () => {
 
   test("ultra-rail.tsx still documents the 240px budget it is built to", () => {
     expect(readSource("apps/web/components/session/ultra-rail.tsx")).toContain("240px");
+  });
+});
+
+describe("orderRunsForPanel — live work first, finished work last", () => {
+  const run = (runId: string, state: RunSnapshot["state"]) => ({ runId, state });
+
+  test("a finished run never sits above a running one", () => {
+    // The reported symptom: the Workflows section rendered map insertion order,
+    // so a run that settled an hour ago appeared above one working right now
+    // and only the word inside the card told them apart.
+    const ordered = orderRunsForPanel([
+      run("done-1", "done"),
+      run("live-1", "running"),
+      run("failed-1", "failed"),
+      run("live-2", "running"),
+    ]);
+    expect(ordered.map((r) => r.runId)).toEqual(["live-1", "live-2", "done-1", "failed-1"]);
+  });
+
+  test("order is STABLE inside each group — a row moves only when its own state changes", () => {
+    // A partition, not a sort. Sorting on a timestamp would shuffle neighbours
+    // every time one settled, which is what makes a list hard to click.
+    const ordered = orderRunsForPanel([
+      run("a", "done"),
+      run("b", "stopped"),
+      run("c", "failed"),
+    ]);
+    expect(ordered.map((r) => r.runId)).toEqual(["a", "b", "c"]);
+  });
+
+  test("failed does NOT get a middle tier — every terminal state sinks together", () => {
+    // Promoting failures above other finished runs would make the list argue
+    // with the header's counts instead of agreeing with them.
+    const ordered = orderRunsForPanel([run("f", "failed"), run("d", "done")]);
+    expect(ordered.map((r) => r.runId)).toEqual(["f", "d"]);
+  });
+
+  test("an all-live and an all-finished list are both returned untouched", () => {
+    expect(orderRunsForPanel([run("x", "running"), run("y", "running")]).map((r) => r.runId)).toEqual(["x", "y"]);
+    expect(orderRunsForPanel([run("x", "done"), run("y", "done")]).map((r) => r.runId)).toEqual(["x", "y"]);
+    expect(orderRunsForPanel([])).toEqual([]);
   });
 });

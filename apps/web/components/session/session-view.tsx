@@ -164,6 +164,7 @@ import { useUltraWake } from "@/lib/use-ultra-wake";
 // components below render it and read nothing else.
 import {
   launchedRunId,
+  orderRunsForPanel,
   runSnapshot,
   spliceRunAnchors,
   ultraTabId,
@@ -2633,7 +2634,10 @@ function SessionWorkspace({
     window.history.replaceState(null, "", pathname);
   }, [focusRunId, pathname, resolvedRightPanelScopeKey]);
 
-  const ultraRunList = useMemo(() => [...ultraRuns.values()], [ultraRuns]);
+  // Live runs first, finished ones sunk — see `orderRunsForPanel`. Map
+  // insertion order is arrival order, which after a busy session put a run that
+  // finished an hour ago above one working right now.
+  const ultraRunList = useMemo(() => orderRunsForPanel([...ultraRuns.values()]), [ultraRuns]);
 
   // THE THIRD BRANCH OF `activeTab`, beside `"main"` and a spawn tool_use id.
   // It reads the SAME map `useUltraRuns` already produces — no second fetch, no
