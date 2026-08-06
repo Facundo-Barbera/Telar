@@ -3,6 +3,7 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  normalizeCodexAutoCompact,
   normalizeCodexSubagentActivity,
   normalizeCodexSubagentLifecycle,
   normalizeCodexObservedChild,
@@ -162,6 +163,20 @@ describe("Codex subagent lifecycle", () => {
       new Set(),
     );
     expect(events).toEqual([]);
+  });
+
+  test("normalizes a root-thread thread/compacted into an auto compact_end", () => {
+    expect(normalizeCodexAutoCompact("thread/compacted", "root", "root")).toEqual([
+      { type: "compact_end", trigger: "auto", summary: null },
+    ]);
+  });
+
+  test("ignores a subagent thread's own compaction — no bucket to attribute it to yet", () => {
+    expect(normalizeCodexAutoCompact("thread/compacted", "child-1", "root")).toEqual([]);
+  });
+
+  test("ignores every other notification method", () => {
+    expect(normalizeCodexAutoCompact("thread/tokenUsage/updated", "root", "root")).toEqual([]);
   });
 
   test("a later wait snapshot can settle a child that was already started", () => {

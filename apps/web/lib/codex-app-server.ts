@@ -75,7 +75,16 @@ export type CodexNormalizedEvent =
       output: string;
       isError: boolean;
       status: SubagentTerminalStatus;
-    };
+    }
+  // Root-thread compaction — same vocabulary as harness-port.ts's
+  // HarnessEvent (this adapter and the port agree on field names on
+  // purpose). "manual" is Telar's own on-demand runCodexCompact below;
+  // "auto" is the app-server compacting a normal turn's thread on its own,
+  // observed as a `thread/compacted` notification runCodexTurn never asked
+  // for. Codex's wire carries no summary text either way — null, not
+  // omitted, matching the port's own "no presence check" rule.
+  | { type: "compact_start"; trigger: "manual" | "auto" }
+  | { type: "compact_end"; trigger: "manual" | "auto"; summary: string | null };
 
 /**
  * One composer attachment, as `runCodexTurn` needs it. Structurally the
@@ -713,6 +722,25 @@ export function normalizeCodexObservedChild(
   }];
 }
 
+/**
+ * Root-thread AUTO-compaction, observed mid-turn. `runCodexTurn` never sends
+ * `thread/compact/start` itself (that's `runCodexCompact`, the on-demand
+ * path below) — so a `thread/compacted` notification arriving on a normal
+ * turn's connection is the app-server compacting the thread on its own to
+ * stay under `model_auto_compact_token_limit`, unasked. Pure and threadId-
+ * gated (same discipline as the other normalizers here) so it is testable
+ * without a subprocess and never fires for a subagent thread's own
+ * compaction, which this adapter has no bucket to attribute yet.
+ */
+export function normalizeCodexAutoCompact(
+  method: string,
+  threadId: unknown,
+  rootThreadId: string,
+): Extract<CodexNormalizedEvent, { type: "compact_end" }>[] {
+  if (method !== "thread/compacted" || threadId !== rootThreadId) return [];
+  return [{ type: "compact_end", trigger: "auto", summary: null }];
+}
+
 // Runs exactly one Codex turn against `codex app-server` and yields
 // normalized events as they arrive — same generator contract as the old
 // @openai/codex-sdk adapter (route.ts drives it with `for await`).
@@ -1033,9 +1061,78 @@ export async function* runCodexTurn(
           if (lastUsage) yield { type: "usage", usage: lastUsage };
           return;
         }
+        case "thread/compacted":
+          yield* normalizeCodexAutoCompact(notif.method, params.threadId, rootThreadId);
+          break;
         default:
           break; // every other notification (progress deltas we don't surface, account/updated, etc.) is ignored
       }
+    }
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+    client.kill();
+  }
+}
+
+// Runs Codex's OWN on-demand compaction against an ALREADY-EXISTING thread —
+// not a turn: no `turn/start`, no model-visible prompt, no tool/approval
+// plumbing. `thread/compact/start` is its own top-level request (confirmed
+// against `codex app-server generate-ts`'s ClientRequest union — a sibling of
+// `thread/start`/`turn/start`, not a parameter on either), so this reuses
+// AppServerClient's request/notification plumbing directly rather than
+// routing through runCodexTurn, whose loop assumes a turn is in flight.
+//
+// A FRESH SUBPROCESS, same as every turn. runCodexTurn already pays this
+// cost per turn (see its own comment on `resume`), so a compaction paying it
+// too is consistent, not a new tradeoff — and it means a compaction can be
+// requested even while the session is otherwise idle, with no long-lived
+// connection to leak if the caller never asks again.
+export type CodexCompactOptions = {
+  threadId: string;
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
+export async function* runCodexCompact(
+  opts: CodexCompactOptions,
+): AsyncGenerator<CodexNormalizedEvent> {
+  const client = new AppServerClient(resolveCodexBin(), dropUndefined(opts.env));
+  const onAbort = () => client.kill();
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await client.request("initialize", {
+      clientInfo: { name: "telar", title: "Telar", version: "0.1.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    client.notify("initialized");
+    // Load the persisted thread into THIS process. `threadId` is the only
+    // required field on ThreadResumeParams (every other field — cwd,
+    // sandbox, approvalPolicy, model — is optional per the generated
+    // bindings): a compaction summarizes what's already on disk, it doesn't
+    // open a turn against a sandbox or approval policy, so none of the
+    // knobs runCodexTurn's own thread/resume call passes are needed here.
+    await client.request("thread/resume", { threadId: opts.threadId });
+    // The response is an empty ack (ThreadCompactStartResponse is
+    // `Record<string, never>` per the generated bindings) — it means
+    // "started", not "done". Only yield compact_start once the server has
+    // actually confirmed it, same discipline as "session" only firing after
+    // thread/start's own response arrives above.
+    await client.request("thread/compact/start", { threadId: opts.threadId });
+    yield { type: "compact_start", trigger: "manual" };
+    for (;;) {
+      const { value: notif, done } = await client.notifications.next();
+      if (done) throw new Error("codex app-server closed the connection mid-compact");
+      if (notif.method === "error") {
+        const params = (notif.params ?? {}) as Record<string, any>;
+        throw new Error(params.error?.message ?? "Codex compaction failed");
+      }
+      if (notif.method === "thread/compacted") {
+        yield { type: "compact_end", trigger: "manual", summary: null };
+        return;
+      }
+      // Everything else (token-usage/rate-limit notifications the app-server
+      // keeps sending on this connection regardless of what was asked) is
+      // not this operation's concern.
     }
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
