@@ -50,6 +50,7 @@ import {
 import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { autoDenialMessage } from "@/lib/permission-denial";
+import { logPermissionCheck, logPermissionOutcome } from "@/lib/permission-diagnostics";
 
 /** The in-process MCP servers telar itself constructs and whose whole tool
  *  surface it wrote. Kept beside the `mcpServers` literal's own key list, which
@@ -954,6 +955,10 @@ export async function POST(req: Request) {
           agentID,
         }: { signal: AbortSignal; suggestions?: PermissionUpdate[]; agentID?: string },
       ): Promise<PermissionResult> => {
+        // #28 (opt-in, TELAR_DEBUG_PERMISSIONS=1). The ABSENCE of this line
+        // beside a decline is the finding: it means the SDK never asked telar,
+        // so telar decided nothing and the refusal came from somewhere else.
+        logPermissionCheck(toolName, agentID);
         // disallowedTools / protectedPaths — shared with the PreToolUse hook
         // below (options.hooks) so the same checks apply whether or not this
         // particular call ever reaches canUseTool at all (auto/acceptEdits
@@ -1076,6 +1081,10 @@ export async function POST(req: Request) {
             : decision.reason === "aborted"
               ? "The request was cancelled before the user responded."
               : "Denied by the user in telar.";
+        // #28: records WHICH of telar's three denial texts the model got, so a
+        // genuine telar denial is never mistaken for the CLI's interrupt
+        // sentence. They are different strings; this makes that checkable.
+        logPermissionOutcome(toolName, "deny", decision.reason);
         return { behavior: "deny", message };
       };
 
