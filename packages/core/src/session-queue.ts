@@ -391,6 +391,48 @@ export function cancelQueuedSessionTurn<T extends JsonValue = JsonValue>(
   });
 }
 
+/**
+ * A HUMAN DISMISSING A MESSAGE THE ENGINE WILL NEVER RETRY.
+ *
+ * `failed` and `ambiguous` are the two settled states nothing transitions out
+ * of: the dispatcher settles the item and pauses the queue behind it, so the
+ * item stays in the envelope for as long as the session exists. The renderer
+ * has to show it — a message that did not send may not vanish — and until now
+ * had no way to ever stop showing it, because the only removal path is
+ * `cancelQueuedSessionTurn`, which correctly refuses anything but `queued`.
+ *
+ * DELIBERATELY NOT A WIDENING OF THAT FUNCTION. Retracting a queued message is
+ * a claim that nothing happened; acknowledging a failed one is not, and
+ * `ambiguous` means specifically "this may already have reached the provider".
+ * Two names force the caller to say which it means, and leave "only queued
+ * items may be cancelled" true. Neither dismissal resumes the queue: the pause
+ * is the engine asking a human to look, and clearing the evidence is not the
+ * same act as saying "continue".
+ */
+export function dismissFailedSessionTurn<T extends JsonValue = JsonValue>(
+  sessionId: string,
+  key: string,
+  expectedRevision: number,
+  now: () => number = nowDefault,
+): SessionQueueItem<T> {
+  return mutate<T, SessionQueueItem<T>>(sessionId, (envelope) => {
+    const item = findByKey(envelope, key);
+    if (!item) throw new SessionQueueConflictError(`unknown queue item ${JSON.stringify(key)}`);
+    assertItemRevision(item, expectedRevision);
+    if (item.state !== "failed" && item.state !== "ambiguous") {
+      throw new SessionQueueConflictError(
+        `only failed or ambiguous items may be dismissed; found ${item.state}`,
+      );
+    }
+    item.state = "cancelled";
+    item.settledAt = now();
+    // `error` is kept: the item is history now, and history that drops the
+    // reason it exists is worse than no history.
+    touch(item, item.settledAt);
+    return { changed: true, result: copyItem(item) };
+  });
+}
+
 export function setSessionQueuePaused(
   sessionId: string,
   paused: boolean,

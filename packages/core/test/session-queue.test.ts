@@ -246,6 +246,60 @@ describe("engine-owned durable session queue", () => {
     expect(failed.settledAt).toBe(90);
   });
 
+  test("a settled failure can be dismissed by a human, and only a settled failure", () => {
+    // Nothing transitions out of `failed`/`ambiguous`, so before this the item
+    // stayed in the envelope for the life of the session and the surface that
+    // must show it ("a message that did not send may not vanish") could never
+    // be emptied: its remove button reached cancelQueuedSessionTurn and 409'd.
+    queue.enqueueSessionTurn("s-dismiss", { idempotencyKey: "a", payload: null });
+    const claim = queue.claimNextSessionTurn("s-dismiss", "engine")!;
+    const failed = queue.failSessionTurn("s-dismiss", "a", claim.claimToken, "boom");
+    // The two transitions stay apart: retracting work that never started is a
+    // different claim from acknowledging work that may have reached a provider.
+    expect(() => queue.cancelQueuedSessionTurn("s-dismiss", "a", failed.revision)).toThrow(
+      /only queued items/,
+    );
+    expect(() => queue.dismissFailedSessionTurn("s-dismiss", "a", failed.revision - 1)).toThrow(
+      /revision conflict/,
+    );
+    const dismissed = queue.dismissFailedSessionTurn("s-dismiss", "a", failed.revision, () => 120);
+    expect(dismissed.state).toBe("cancelled");
+    expect(dismissed.settledAt).toBe(120);
+    // The reason survives the dismissal — history that drops why it exists is
+    // worse than none.
+    expect(dismissed.error).toBe("boom");
+    // And a queue paused BEHIND that failure stays paused: clearing the
+    // evidence is not the same act as saying "continue".
+    queue.pauseSessionQueue("s-dismiss");
+    queue.enqueueSessionTurn("s-dismiss", { idempotencyKey: "b", payload: null });
+    const bFailed = (() => {
+      queue.resumeSessionQueue("s-dismiss");
+      const c = queue.claimNextSessionTurn("s-dismiss", "engine")!;
+      return queue.failSessionTurn("s-dismiss", "b", c.claimToken, "boom again");
+    })();
+    queue.pauseSessionQueue("s-dismiss");
+    queue.dismissFailedSessionTurn("s-dismiss", "b", bFailed.revision);
+    expect(queue.readSessionQueue("s-dismiss").paused).toBe(true);
+  });
+
+  test("dismissal refuses every state the engine may still act on", () => {
+    queue.enqueueSessionTurn("s-dismiss-guard", { idempotencyKey: "a", payload: null });
+    // `queued` — cancelQueuedSessionTurn owns this one, and mistaking the two
+    // would let a "dismiss" retract a message that is still going to send.
+    expect(() => queue.dismissFailedSessionTurn("s-dismiss-guard", "a", 0)).toThrow(
+      /only failed or ambiguous/,
+    );
+    const claim = queue.claimNextSessionTurn("s-dismiss-guard", "engine")!;
+    queue.markSessionTurnRunning("s-dismiss-guard", "a", claim.claimToken);
+    const running = queue.readSessionQueue("s-dismiss-guard").items[0]!;
+    expect(() =>
+      queue.dismissFailedSessionTurn("s-dismiss-guard", "a", running.revision),
+    ).toThrow(/only failed or ambiguous/);
+    expect(() => queue.dismissFailedSessionTurn("s-dismiss-guard", "nope", 0)).toThrow(
+      /unknown queue item/,
+    );
+  });
+
   test("recovery requeues definitely-unstarted claims but never replays running work", () => {
     for (const key of ["unstarted", "started", "later"]) {
       queue.enqueueSessionTurn("s-recover", { idempotencyKey: key, payload: { key } });

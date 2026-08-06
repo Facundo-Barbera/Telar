@@ -62,10 +62,27 @@ import {
   type PermissionPart,
   type PromptInputMessage,
   type StatusPayload,
+  type MarkerPayload,
   type StoreMessage,
   type TranscriptItem,
   type TurnPayload,
 } from "@/components/conversation";
+// The compaction record (issue #25). The divider is a MARKER, not a message —
+// no bubble, no role, no author — and the same pure rules the chat route uses
+// to persist a compaction are the ones this adapter uses to render it, so live
+// and reloaded transcripts cannot disagree about where the line goes.
+import {
+  compactionMarkerText,
+  currentCompaction,
+  emptyCompactionFold,
+  foldCompactionEvent,
+  seedCompactedContext,
+  seedTranscriptCompactions,
+  upsertCompaction,
+  type CompactedContext,
+  type CompactionRecord,
+  type TranscriptCompaction,
+} from "@/lib/compaction";
 import {
   SubagentRail,
   SubagentBanner,
@@ -84,11 +101,15 @@ import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session
 import type { WorkState } from "@/components/session/working-indicator";
 import {
   browserQueueStorage,
+  isTerminalQueueState,
+  partitionQueue,
   queueStorageKey,
   readQueue,
   stripQueuedAttachments,
   writeQueue,
   type QueuedMessage,
+  type QueueItemLifecycle,
+  type QueueItemState,
 } from "@/lib/message-queue";
 
 /** The queue's message type with THIS surface's attachment shape filled in —
@@ -97,7 +118,7 @@ type SessionQueuedMessage = QueuedMessage<PromptInputMessage["files"][number]> &
   /** Present only after the engine durably acknowledges this intent. */
   accepted?: boolean;
   revision?: number;
-  state?: "queued" | "claimed" | "running" | "failed" | "ambiguous";
+  state?: QueueItemState;
   error?: string;
 };
 import { ComposerControls } from "@/components/session/composer-settings";
@@ -323,6 +344,10 @@ export type InitialChat = {
   cacheCreateTokens: number;
   contextTokens: number;
   contextUsage?: ContextUsageSnapshot;
+  // Where this session's history was replaced by a summary (issue #25).
+  // Persisted beside the transcript rather than inside it — see lib/compaction
+  // .ts for why the divider survives a reload at all.
+  compactions?: CompactionRecord[];
   // Session<->Loom link (docs/loom-model.md §5, store.ts's Chat.loomId/role)
   // — set once this session's loom MCP tools have drafted/started a bundle.
   // Seeds the header's persistent "Planning loom" chip on reload.
@@ -429,24 +454,39 @@ function QueueChip({
   state,
   error,
 }: {
-  index: number;
+  /** Absent for chips outside the send order — see the "Not sent" block. */
+  index?: number;
   text: string;
   editing: boolean;
-  onEdit: () => void;
-  onCommit: (v: string) => void;
-  onRemove: () => void;
+  /**
+   * AN AFFORDANCE ONLY WHERE THE ENGINE ALLOWS THE ACT. Omitting these hides
+   * the control rather than disabling it, because the engine's answer is not
+   * "not now" but "never": core admits an edit only for a `queued` item and a
+   * cancel only for `queued`/`failed`/`ambiguous`, so a pencil on a `running`
+   * chip is a button whose entire behaviour is a 409 and a red banner. This
+   * was the state of both buttons on every chip in the "Not sent" block.
+   */
+  onEdit?: () => void;
+  onCommit?: (v: string) => void;
+  onRemove?: () => void;
   state?: SessionQueuedMessage["state"];
   error?: string;
 }) {
   const [draft, setDraft] = useState(text);
   useEffect(() => setDraft(text), [text, editing]);
+  // The engine's own word for where this message is. A LOCAL item has no state
+  // at all, so an engine refusal (`error`, never accepted) would otherwise wear
+  // no badge and read as an ordinary pending message — see partitionQueue.
+  const badge = state && state !== "queued" ? state : error ? "not sent" : null;
 
   return (
     <div className="group flex items-center gap-2 rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
-        {index}
-      </span>
-      {editing ? (
+      {index !== undefined && (
+        <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
+          {index}
+        </span>
+      )}
+      {editing && onCommit ? (
         <Input
           autoFocus
           value={draft}
@@ -463,7 +503,7 @@ function QueueChip({
           onBlur={() => onCommit(draft.trim() || text)}
           className="h-6 min-w-0 flex-1 border-0 border-b border-primary/40 bg-transparent px-0 text-sm shadow-none focus-visible:ring-0"
         />
-      ) : (
+      ) : onEdit ? (
         <button
           type="button"
           onClick={onEdit}
@@ -472,38 +512,48 @@ function QueueChip({
         >
           {text}
         </button>
+      ) : (
+        // No `title="Click to edit"` and no button: this text is not editable,
+        // and the tooltip was the loudest of the block's false promises.
+        <span className="min-w-0 flex-1 truncate text-left text-sm text-foreground" title={error}>
+          {text}
+        </span>
       )}
-      {state && state !== "queued" && (
+      {badge && (
         <span
           className={cn(
             "shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground",
-            (state === "failed" || state === "ambiguous") && "text-destructive",
+            badge !== "claimed" && badge !== "running" && "text-destructive",
           )}
           title={error}
         >
-          {state}
+          {badge}
         </span>
       )}
-      <Button
-        type="button"
-        size="icon-xs"
-        variant="ghost"
-        aria-label="Edit queued message"
-        className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-        onClick={onEdit}
-      >
-        <PencilIcon />
-      </Button>
-      <Button
-        type="button"
-        size="icon-xs"
-        variant="ghost"
-        aria-label="Remove queued message"
-        className="text-muted-foreground hover:text-destructive"
-        onClick={onRemove}
-      >
-        <XIcon />
-      </Button>
+      {onEdit && (
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Edit queued message"
+          className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+          onClick={onEdit}
+        >
+          <PencilIcon />
+        </Button>
+      )}
+      {onRemove && (
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Remove queued message"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={onRemove}
+        >
+          <XIcon />
+        </Button>
+      )}
     </div>
   );
 }
@@ -1035,6 +1085,31 @@ function SessionWorkspace({
   // and one triggered mid-turn started long after the turn did — reusing the
   // turn's clock would show an elapsed time that was never about compacting.
   const [compactStartedAt, setCompactStartedAt] = useState(0);
+  // ISSUE #25 — the compactions this transcript remembers, seeded from the
+  // store so the dividers are there on arrival and appended live as they
+  // happen. NOT part of `messages`: a compaction has no role and no author, so
+  // it is a fact ABOUT the transcript, and keeping it out of the message list
+  // is what stops the "empty assistant bubble for a Compact press" landmine the
+  // applyServerEvent comment below has always guarded against.
+  const [compactions, setCompactions] = useState<TranscriptCompaction[]>(() =>
+    // `messages` above is already the seeded transcript on this first render,
+    // and this initializer never runs again — so the ids come from the one
+    // place that mints them rather than from a second seedMessages pass
+    // spelling `seed-${i}` a second time.
+    seedTranscriptCompactions(initialChat?.compactions, messages.map((m) => m.id)),
+  );
+  // ONE COMPACTION, TWO OR THREE EVENTS, NO ID ON THE WIRE. Which events belong
+  // to which compaction is decided by foldCompactionEvent (lib/compaction.ts) —
+  // the same reducer route.ts folds the events it SENDS through, so the live
+  // transcript and the reloaded one cannot disagree about how many dividers
+  // there are. A ref, not state: applyServerEvent is a stable callback and must
+  // not re-create itself per compaction.
+  const compactionFoldRef = useRef(emptyCompactionFold<TranscriptCompaction>());
+  // The newest message id, read by the compaction handler for the divider's
+  // anchor. A ref because applyServerEvent deliberately closes over no message
+  // state; safe because a compaction adds no messages of its own, so whatever
+  // render last set this is still the bottom of the transcript.
+  const lastMessageIdRef = useRef<string | null>(null);
   // True once the chat record is actually confirmed persisted server-side —
   // NOT the same as `sessionId` being set. sessionId is assigned the moment
   // the "session" SSE event arrives, right at the START of a turn (just
@@ -1052,7 +1127,28 @@ function SessionWorkspace({
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>(
     initialChat?.contextUsage,
   );
+  // ISSUE #25, PART 2 — what the wheel reads once a compaction has invalidated
+  // the numbers above. Both of those are written by a TURN ("done"), and a
+  // compaction is not a turn, so without this the wheel keeps its
+  // pre-compaction reading until some unrelated turn happens to end — the one
+  // moment the number matters most is the one moment it is wrong.
+  //
+  // THREE VALUES, AND "unknown" IS THE HONEST ONE. A number is the harness's
+  // own post-compaction context size (Claude's `compact_boundary.postTokens`).
+  // "unknown" is a compaction that reported none — Codex's `compact_end`
+  // carries a null summary and no counts at all — and the wheel says so rather
+  // than showing a number that is now known to be wrong or one this app made
+  // up. null is "no compaction is standing between the wheel and its last real
+  // measurement". Seeded from the store for the same reason the dividers are:
+  // a session compacted and then closed would otherwise reload stale.
+  const [compactedContext, setCompactedContext] = useState<CompactedContext>(() =>
+    seedCompactedContext(initialChat?.compactions, initialChat?.messages.length ?? 0),
+  );
   const [turnStartedAt, setTurnStartedAt] = useState(Date.now);
+  // Assigned during render, exactly like `statusRef` above: the compaction
+  // handler needs the bottom of the transcript and must not become a dependency
+  // of it.
+  lastMessageIdRef.current = messages[messages.length - 1]?.id ?? null;
   const messageActivity = useMemo(
     () => ({ messages, at: Date.now() }),
     [messages],
@@ -1370,6 +1466,35 @@ function SessionWorkspace({
     );
   }, [sessionId, messageQueue]);
 
+  // ISSUE #31 — `messageQueue` tracks every item the engine has not finished
+  // with; it is NOT the list to render. Once the engine claims a message the
+  // transcript owns it, and leaving it under "Queued · sends in order" showed
+  // one message as both already answered and still waiting to send.
+  const queueView = useMemo(() => partitionQueue(messageQueue), [messageQueue]);
+
+  // AN EDIT CANNOT SURVIVE THE ENGINE TAKING THE MESSAGE — say so instead of
+  // dropping it. A chip whose item leaves the editable set unmounts, React
+  // fires no blur on unmount, and the draft inside it went nowhere: no
+  // `onCommit`, no request, and `editingQueueId` left pointing at a row that
+  // renders in no block. The engine would have refused the edit anyway ("only
+  // queued items may be edited"), so the honest ending is to close the editor
+  // and tell the user their words were not applied, rather than let them
+  // believe they amended a message mid-flight. The condition is the same one
+  // the chips gate their pencil on, so the two cannot drift apart.
+  useEffect(() => {
+    if (!editingQueueId) return;
+    const tracked = messageQueue.find((m) => m.id === editingQueueId);
+    // Gone entirely — removed by this user, or committed and dropped from the
+    // tracked set. Nothing to warn about; just do not leave a dangling id.
+    if (!tracked) {
+      setEditingQueueId(null);
+      return;
+    }
+    if (!tracked.accepted || tracked.state === "queued") return;
+    setEditingQueueId(null);
+    setAttachmentError("The agent took that message before your edit landed — the edit was not applied.");
+  }, [editingQueueId, messageQueue]);
+
   const busy = status === "submitted" || status === "streaming";
 
   // ── item 3: auto-dock on leaving a STANDALONE session mid-turn ────────────
@@ -1633,15 +1758,57 @@ function SessionWorkspace({
     // message" block below. Falling through there would spuriously open an
     // empty assistant bubble for a Compact press, which is exactly the
     // landmine this guards against. `compact_boundary` (Claude-only, richer
-    // token-count metadata) rides the same pair but changes nothing further
-    // yet — it deliberately does not reset `compacting`, since Claude's own
-    // "compacted" event (PostCompact) already does, and always fires after.
+    // token-count metadata) rides the same pair and still does NOT reset
+    // `compacting` — Claude's own "compacted" event (PostCompact) already does,
+    // whenever it arrives. NOTHING HERE DEPENDS ON THAT ORDER: this file used
+    // to claim "compacted" fires after the boundary and route.ts's own note
+    // claims the reverse, neither backed by a trace, so the machine below is
+    // built to give the same answer either way.
+    //
+    // WHAT CHANGED IN ISSUE #25: the three events now leave something behind.
+    // A DIVIDER IS NOT A MESSAGE — no bubble, no role, no author, closer to a
+    // date separator than to a turn — so appending one breaks none of the
+    // above; it is recorded in `compactions`, beside the transcript rather than
+    // in it, and rendered as a `conversation:marker` between two turns.
     if (event === "compacting" || event === "compacted" || event === "compact_boundary") {
       if (event === "compacting") {
         setCompacting(true);
         setCompactStartedAt(Date.now());
       }
       if (event === "compacted") setCompacting(false);
+      // WHICH COMPACTION IS THIS ONE? Not a question this file answers: it
+      // folds the events it receives through the same reducer route.ts folds
+      // the events it sends (lib/compaction.ts), so the dividers a reader
+      // watches appear and the records that reload from the store are the same
+      // list by construction — including the case that used to divide them, two
+      // Codex auto-compactions in one mount, which arrive as a bare "compacted"
+      // each and are two compactions on both sides.
+      const fold = foldCompactionEvent(compactionFoldRef.current, event, {
+        at: Date.now(),
+        trigger: payload.trigger === "auto" ? "auto" : "manual",
+        preTokens: typeof payload.preTokens === "number" ? payload.preTokens : undefined,
+        postTokens: typeof payload.postTokens === "number" ? payload.postTokens : undefined,
+        durationMs: typeof payload.durationMs === "number" ? payload.durationMs : undefined,
+        // The bottom of the transcript as the reader is watching it. The store
+        // anchors the same compaction the same way (after whatever turn was in
+        // flight has landed), so the divider does not move when the session is
+        // reopened.
+        afterMessageId: lastMessageIdRef.current,
+      });
+      compactionFoldRef.current = fold;
+      const entry = currentCompaction(fold);
+      // Absent only for "compacting", which records nothing: a divider reading
+      // "Compacted" must not appear while the compaction is still running.
+      if (entry) {
+        setCompactions((list) => upsertCompaction(list, entry));
+        // The wheel reads the MERGED record, not this one event, which is what
+        // makes it order-proof: whichever of Claude's two closing events lands
+        // first, the counts survive into the other one's read (the merge never
+        // erases a field it was given). "unknown" is then a compaction that
+        // reported no counts AT ALL — every Codex one — and the wheel says so
+        // rather than keeping a number it now knows to be wrong.
+        setCompactedContext(entry.postTokens ?? "unknown");
+      }
       return;
     }
     // Every other event targets this turn's assistant message. On the POST path
@@ -1996,6 +2163,20 @@ function SessionWorkspace({
                   payload.contextUsage?.source === "codex-app-server"
                 ) {
                   setContextUsage(payload.contextUsage as ContextUsageSnapshot);
+                }
+                // A post-compaction override stands down only for a turn that
+                // actually RE-MEASURED (issue #25). Gated rather than cleared
+                // unconditionally because a compact-only Claude request ends
+                // with a "done" of its own carrying no snapshot and a zero
+                // context — clearing on that would hand the wheel straight back
+                // to the stale pre-compaction number this override exists to
+                // replace.
+                if (
+                  payload.contextUsage?.source === "claude-sdk" ||
+                  payload.contextUsage?.source === "codex-app-server" ||
+                  (typeof payload.context === "number" && payload.context > 0)
+                ) {
+                  setCompactedContext(null);
                 }
                 break;
               case "saved":
@@ -2994,14 +3175,19 @@ function SessionWorkspace({
       items?: Array<{
         idempotencyKey: string;
         revision: number;
-        state: SessionQueuedMessage["state"] | "committed" | "cancelled";
+        state: QueueItemLifecycle;
         payload?: { message?: string };
         error?: string;
       }>;
     };
     setEngineQueuePaused(Boolean(envelope.paused));
+    // Terminal items are dropped HERE and nowhere else: `messageQueue` is the
+    // set the 2s poll's stop condition measures, so a committed item left in it
+    // would keep this session polling forever. Which of the survivors the user
+    // is actually shown is `queueView`'s decision, not this one — an in-flight
+    // item must stay tracked here so the poll keeps running until it commits.
     const active = (envelope.items ?? [])
-      .filter((item) => item.state !== "committed" && item.state !== "cancelled")
+      .filter((item) => !isTerminalQueueState(item.state))
       .map<SessionQueuedMessage>((item) => ({
         id: item.idempotencyKey,
         text: item.payload?.message ?? "Queued message",
@@ -3517,10 +3703,34 @@ function SessionWorkspace({
   // losing the rest. `activeRunTab` (below) still exists and still names the
   // selected run, but it now feeds the right-panel dock's `activity` slot
   // instead of this memo — see the note above `SESSION_KINDS`.
-  const transcriptItems = useMemo<TranscriptItem[]>(() =>
-    activeBucket
-      ? [agentBucketItem(activeBucket, () => setActiveTab("main"))]
-      : messages.map((m) => {
+  //
+  // COMPACTION DIVIDERS ARE INTERLEAVED HERE (issue #25), between turns rather
+  // than inside one: a marker has no bubble and belongs to no message, it marks
+  // the seam where the history above it stopped being what the model holds.
+  const transcriptItems = useMemo<TranscriptItem[]>(() => {
+    if (activeBucket) return [agentBucketItem(activeBucket, () => setActiveTab("main"))];
+    const lastMessageId = messages[messages.length - 1]?.id ?? null;
+    const markersAfter = (messageId: string | null): TranscriptItem[] =>
+      compactions
+        .filter((c) => c.afterMessageId === messageId)
+        // WITHHELD UNDER A STREAMING TURN, and this is a rule about the shell,
+        // not a hedge: `Conversation` marks only the LAST top-level item live,
+        // so a divider appended below the turn in flight would silently steal
+        // that turn's liveness (the same trap the `trailing` prop documents) —
+        // its tool group would stop spinning mid-work. A mid-turn
+        // auto-compaction's marker therefore lands the moment the turn settles,
+        // in the same place the store will remember it.
+        .filter(() => !(busy && messageId === lastMessageId))
+        .map((c) => ({
+          kind: CONVERSATION_KINDS.marker,
+          key: `compaction:${c.key}`,
+          payload: { text: compactionMarkerText(c) } satisfies MarkerPayload,
+        }));
+    return [
+      // A compaction recorded before this transcript had any messages at all —
+      // possible only for a session compacted before its first turn persisted.
+      ...markersAfter(null),
+      ...messages.flatMap((m) => {
         // Main renders only this message's OWN parts — anything a subagent
         // produced lives in its own tab (see agentBuckets), not interleaved
         // here even though it rode in on the same SSE stream and the same
@@ -3553,7 +3763,7 @@ function SessionWorkspace({
                 payload: { state: liveWork } satisfies StatusPayload,
               }
             : null;
-        return {
+        const turn: TranscriptItem = {
           kind: CONVERSATION_KINDS.turn,
           key: m.id,
           payload: {
@@ -3594,12 +3804,16 @@ function SessionWorkspace({
               ) : undefined,
           } satisfies TurnPayload,
         };
+        return [turn, ...markersAfter(m.id)];
       }),
+    ];
+  },
     [
       activeBucket,
       agentBucketById,
       agentProjection,
       busy,
+      compactions,
       liveWork,
       messages,
       pendingUltraAnchor,
@@ -3935,24 +4149,47 @@ function SessionWorkspace({
                 ))}
               </div>
             )}
-            {messageQueue.length > 0 && (
+            {/* PAUSED IS A PROPERTY OF THE QUEUE, NOT OF THE WAITING LIST, so
+                it is stated at the queue's level and not inside one of its
+                groups. It used to live in the waiting block's heading with
+                Resume beside it, which put the only control in the one place
+                it could not be reached: the engine pauses PRECISELY when it
+                mints an attention item (session-engine.ts fails a turn and
+                then pauses; recoverSessionQueue pauses behind an `ambiguous`
+                one), so the canonical paused state is one failed message and
+                nothing waiting. `claimNextSessionTurn` returns null while
+                `paused`, so that was a stopped queue with no visible way to
+                start it — a hang whose only escape was to queue an unrelated
+                message so the block reappeared. */}
+            {engineQueuePaused && (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.04] px-2.5 py-1.5">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Queue paused · review before resuming
+                </span>
+                <Button type="button" size="xs" variant="outline" onClick={() => void resumeEngineQueue()}>
+                  Resume
+                </Button>
+              </div>
+            )}
+            {/* WAITING ONLY. The badge counts this set and nothing else: a `1`
+                beside a message the agent is already answering is precisely
+                what read as a pending duplicate send (issue #31). In-flight
+                items get no chip here — while this mount is streaming, the
+                transcript and the working indicator already say where they
+                are; see the "Sending" block for the window where they do not. */}
+            {queueView.waiting.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
                 <div className="flex items-center justify-between px-1.5 pt-0.5">
                   <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    {engineQueuePaused ? "Queue paused · review before resuming" : "Queued · sends in order"}
+                    {/* "in order" is a promise about a send that is going to
+                        happen; while the queue is paused it is not. */}
+                    {engineQueuePaused ? "Queued · held until you resume" : "Queued · sends in order"}
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    {engineQueuePaused && (
-                      <Button type="button" size="xs" variant="outline" onClick={() => void resumeEngineQueue()}>
-                        Resume
-                      </Button>
-                    )}
-                    <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                      {messageQueue.length}
-                    </span>
-                  </div>
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                    {queueView.waiting.length}
+                  </span>
                 </div>
-                {messageQueue.map((m, i) => (
+                {queueView.waiting.map((m, i) => (
                   <QueueChip
                     key={m.id}
                     index={i + 1}
@@ -3966,6 +4203,89 @@ function SessionWorkspace({
                       setEditingQueueId(null);
                       if (m.accepted) void editEngineQueueItem(m, v);
                     }}
+                    onRemove={() => {
+                      if (m.accepted) void removeEngineQueueItem(m);
+                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
+                    }}
+                    state={m.state}
+                    error={m.error}
+                  />
+                ))}
+              </div>
+            )}
+            {/* THE ONE WINDOW WHERE NOTHING ELSE SPEAKS FOR AN IN-FLIGHT ITEM.
+                A queued turn is drained SERVER-SIDE (queue route →
+                kickSessionQueue → its own POST /api/chat), and this mount has
+                no feed for it: the §1b reconnect tail arms at most once per
+                session id and is long finished by then. So when the engine
+                takes a message while this window is idle, the transcript does
+                not gain the bubble, no working indicator runs — and hiding the
+                chip too would leave the message the user committed to with no
+                representation anywhere on screen until they navigate away and
+                come back.
+                GATED ON `!busy`, which is exactly the condition "this mount is
+                not itself streaming the answer": while it is, the transcript
+                owns the message and a chip here would be the duplicate #31 is
+                about. The missing feed is a separate defect in the same seam as
+                #24 and is NOT fixed here; this only keeps the message visible
+                while it stands. */}
+            {!busy && queueView.inFlight.length > 0 && (
+              <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
+                <div className="flex items-center justify-between px-1.5 pt-0.5">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Sending · the agent is answering this
+                  </span>
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
+                    {queueView.inFlight.length}
+                  </span>
+                </div>
+                {/* No edit, no remove, and no ordinal: core admits neither
+                    transition once an item is claimed, and this is no longer a
+                    send order — it is one message, already taken. */}
+                {queueView.inFlight.map((m) => (
+                  <QueueChip key={m.id} text={m.text} editing={false} state={m.state} error={m.error} />
+                ))}
+              </div>
+            )}
+            {/* NOT A QUEUE. These did not send, and the one thing they must never
+                do is disappear quietly — a lost message the user committed to is
+                the failure #5 and #7 exist to prevent. Deliberately NOT
+                numbered: an ordinal implies a send order these are no longer
+                part of. WHICH BUTTONS APPEAR IS THE ENGINE'S ANSWER, not a
+                style choice — an item the engine accepted and then failed can
+                be dismissed (dismissFailedSessionTurn) but never edited, while
+                one the engine REFUSED is still purely local, so editing it
+                clears the error and lets the retry effect try again. */}
+            {queueView.attention.length > 0 && (
+              <div className="mb-2 space-y-1.5 rounded-xl border border-destructive/30 bg-destructive/[0.06] p-2">
+                <div className="flex items-center justify-between px-1.5 pt-0.5">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-destructive">
+                    Not sent · needs your attention
+                  </span>
+                  <span className="rounded-full bg-destructive/15 px-1.5 text-[10px] font-medium text-destructive">
+                    {queueView.attention.length}
+                  </span>
+                </div>
+                {queueView.attention.map((m) => (
+                  <QueueChip
+                    key={m.id}
+                    text={m.text}
+                    editing={editingQueueId === m.id}
+                    onEdit={m.accepted ? undefined : () => setEditingQueueId(m.id)}
+                    onCommit={
+                      m.accepted
+                        ? undefined
+                        : (v) => {
+                            // Clearing `error` is the RETRY: the effect that
+                            // sends local items skips anything carrying one, so
+                            // without this an edited message would sit here
+                            // corrected and still never leave.
+                            setMessageQueue((q) =>
+                              q.map((x) => (x.id === m.id ? { ...x, text: v, error: undefined } : x)),
+                            );
+                            setEditingQueueId(null);
+                          }
+                    }
                     onRemove={() => {
                       if (m.accepted) void removeEngineQueueItem(m);
                       else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
@@ -4123,7 +4443,17 @@ function SessionWorkspace({
                 </PromptInputTools>
                 <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
                   <ContextPill
-                    used={contextUsage?.totalTokens ?? context}
+                    // A compaction outranks both persisted readings while they
+                    // describe a context the harness has already replaced
+                    // (issue #25). The WINDOW below is untouched by it: a
+                    // compaction changes what is in the window, never how big
+                    // it is, so the denominator stays the last snapshot's.
+                    used={
+                      typeof compactedContext === "number"
+                        ? compactedContext
+                        : contextUsage?.totalTokens ?? context
+                    }
+                    unknown={compactedContext === "unknown"}
                     windowTokens={
                       (contextUsage?.maxTokens && contextUsage.maxTokens > 0
                         ? contextUsage.maxTokens

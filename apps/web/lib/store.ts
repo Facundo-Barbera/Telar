@@ -6,6 +6,7 @@ import os from "os";
 import path from "path";
 import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
+import type { CompactionFacts, CompactionRecord } from "./compaction";
 import { previewPlainText } from "./preview-text";
 import type { ContextUsageSnapshot } from "./context-usage";
 import type { RuntimeMode } from "@telar/core/runtime-mode";
@@ -196,6 +197,15 @@ export type Chat = {
   // Optional and provider-neutral: old chats and harnesses without a breakdown
   // continue to use contextTokens plus the UI's conservative estimate.
   contextUsage?: ContextUsageSnapshot;
+  // Where this session's history was replaced by a summary (issue #25). A fact
+  // ABOUT the transcript, deliberately NOT an entry in it: a compaction has no
+  // role, no author and no parts, so folding it into `messages` would make it a
+  // turn — the exact landmine session-view.tsx guards against on the live side.
+  // Anchored by message COUNT (see CompactionRecord), so the pair renders as
+  // one interleaved list on reload. Optional: absent on every chat written
+  // before compactions were recorded, which reads as "none known", not "none
+  // happened".
+  compactions?: CompactionRecord[];
   messages: ChatMessage[];
 };
 
@@ -680,4 +690,49 @@ export function appendTurn(opts: {
   if (opts.role !== undefined) chat.role = opts.role;
   chat.updatedAt = now;
   writeChats(chats);
+}
+
+/**
+ * Records that this session's history was compacted (issue #25). Called once
+ * per stream, after `appendTurn` has landed whatever turn was in flight, so the
+ * anchor is the transcript AS THE READER SAW IT when the divider was drawn: a
+ * compaction that happened mid-turn sits below that turn on reload, exactly
+ * where the live marker sat.
+ *
+ * NOT A TURN, AND THEREFORE NOT ACTIVITY. This deliberately touches neither
+ * `turns`, `costUsd` (the compaction's own tokens are already in usage.ndjson,
+ * which every spend readout projects over — AD-18) nor `updatedAt`. Bumping
+ * updatedAt would re-sort the sidebar and re-mark the row unread because the
+ * harness reorganized its own memory, and would un-shelve a settled session
+ * without a human doing anything — settling stays user-driven.
+ *
+ * Returns false for a session with no chat record yet (a compaction during the
+ * very first turn of a session that has not persisted). The live marker still
+ * showed; there is simply nothing on disk to hang it from, and inventing a chat
+ * here would create one with no messages in it.
+ *
+ * `remeasured` is the caller's answer to "did a turn land after these, and did
+ * it measure the context again?" — true for a mid-turn auto-compaction, false
+ * for a compact-only request that appends no turn. It is stamped on the record
+ * because the anchor cannot express it (both cases land on the same
+ * `afterMessages`), and the wheel reads it on reload: see seedCompactedContext.
+ */
+export function recordCompactions(
+  id: string,
+  facts: readonly CompactionFacts[],
+  remeasured = false,
+): boolean {
+  if (facts.length === 0) return false;
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const afterMessages = chat.messages.length;
+  chat.compactions = [
+    ...(chat.compactions ?? []),
+    // Every compaction in one batch happened before the same turn landed, so
+    // they share its verdict. Only the newest is ever consulted.
+    ...facts.map((f) => ({ ...f, afterMessages, ...(remeasured ? { remeasured } : {}) })),
+  ];
+  writeChats(chats);
+  return true;
 }
