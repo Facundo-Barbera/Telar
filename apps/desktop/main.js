@@ -620,10 +620,20 @@ function configureAutoUpdater() {
   const key = updateProxyKey();
   if (key) autoUpdater.requestHeaders = { "X-Telar-Update-Key": key };
 
+  // electron-updater's download-progress payload carries only transfer figures
+  // (percent/bytesPerSecond/transferred/total) — never a version. The preceding
+  // update-available event is the only place the version is known, so it's held
+  // here and threaded onto every downloading broadcast rather than left absent.
+  let pendingVersion = null;
   autoUpdater.on("checking-for-update", () => broadcastUpdateStatus("checking"));
-  autoUpdater.on("update-available", (info) => broadcastUpdateStatus("available", { version: info.version }));
+  autoUpdater.on("update-available", (info) => {
+    pendingVersion = info.version;
+    broadcastUpdateStatus("available", { version: info.version });
+  });
   autoUpdater.on("update-not-available", (info) => broadcastUpdateStatus("not-available", { version: info.version }));
-  autoUpdater.on("download-progress", (progress) => broadcastUpdateStatus("downloading", { percent: progress.percent }));
+  autoUpdater.on("download-progress", (progress) =>
+    broadcastUpdateStatus("downloading", { percent: progress.percent, version: pendingVersion ?? undefined }),
+  );
   autoUpdater.on("update-downloaded", (info) => broadcastUpdateStatus("downloaded", { version: info.version }));
   autoUpdater.on("error", (err) =>
     broadcastUpdateStatus("error", { message: err && err.message ? err.message : String(err) }),

@@ -76,13 +76,20 @@ export function UpdatesSettings() {
     }
   };
 
+  // The shell threads the version from `update-available` onto every
+  // `downloading` broadcast (main.js), but it's still an optional field on the
+  // wire — fall back to unversioned copy rather than ever render "vundefined".
   const hint =
     status.status === "checking"
       ? "Checking for a newer build…"
       : status.status === "available"
-        ? `Downloading v${status.version}…`
+        ? status.version
+          ? `Downloading v${status.version}…`
+          : "Downloading…"
         : status.status === "downloading"
-          ? `Downloading v${status.version}… ${Math.round(status.percent ?? 0)}%`
+          ? status.version
+            ? `Downloading v${status.version}… ${Math.round(status.percent ?? 0)}%`
+            : `Downloading… ${Math.round(status.percent ?? 0)}%`
           : status.status === "downloaded"
             ? `v${status.version} is ready to install.`
             : status.status === "error"
@@ -91,23 +98,30 @@ export function UpdatesSettings() {
                 ? "This build has no update feed — it was packaged locally rather than published to a channel."
                 : "You're on the latest build.";
 
+  // Of the six statuses, only two have a useful action: idle/error → check,
+  // downloaded → install & restart. `available` and `downloading` are things
+  // happening TO you, not decisions waiting on you — offering "Check for
+  // updates" there is at best a no-op (the update is already found) and at
+  // worst restarts a check for something already arriving. So the control
+  // for those two states says what's happening instead of offering a button.
+  const control =
+    status.status === "downloaded" ? (
+      <Button size="sm" onClick={() => void window.telarDesktop?.updates.install()}>
+        <DownloadIcon /> Install & restart
+      </Button>
+    ) : status.status === "available" || status.status === "downloading" ? (
+      <span className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner /> {status.status === "downloading" ? "Downloading…" : "Found"}
+      </span>
+    ) : (
+      <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
+        {checking ? <Spinner /> : <RotateCwIcon />} Check for updates
+      </Button>
+    );
+
   return (
     <SettingsGroup title="Updates" description="Beta and nightly builds check in with a private Cloudflare-hosted update feed.">
-      <Row
-        label="Update status"
-        hint={hint}
-        control={
-          status.status === "downloaded" ? (
-            <Button size="sm" onClick={() => void window.telarDesktop?.updates.install()}>
-              <DownloadIcon /> Install & restart
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" onClick={checkNow} disabled={checking}>
-              {checking ? <Spinner /> : <RotateCwIcon />} Check for updates
-            </Button>
-          )
-        }
-      />
+      <Row label="Update status" hint={hint} control={control} />
       <Row
         label="Channel"
         hint={
