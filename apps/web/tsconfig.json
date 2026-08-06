@@ -36,21 +36,7 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts",
     ".next-desktop/types/**/*.ts",
-    ".next-desktop/dev/types/**/*.ts",
-    ".next-codex-right-panel/types/**/*.ts",
-    ".next-codex-right-panel/dev/types/**/*.ts",
-    ".next-desktop-e2e-19886/types/**/*.ts",
-    ".next-desktop-e2e-19886/dev/types/**/*.ts",
-    ".next-desktop-e2e-30393/types/**/*.ts",
-    ".next-desktop-e2e-30393/dev/types/**/*.ts",
-    ".next-desktop-e2e-89995/types/**/*.ts",
-    ".next-desktop-e2e-89995/dev/types/**/*.ts",
-    ".next-desktop-e2e-93005/types/**/*.ts",
-    ".next-desktop-e2e-93005/dev/types/**/*.ts",
-    ".next-desktop-e2e-20319/types/**/*.ts",
-    ".next-desktop-e2e-20319/dev/types/**/*.ts",
-    ".next-desktop-e2e-35304/types/**/*.ts",
-    ".next-desktop-e2e-35304/dev/types/**/*.ts"
+    ".next-desktop/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
