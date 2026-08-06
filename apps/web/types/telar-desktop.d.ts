@@ -43,6 +43,9 @@ export type TelarDesktopUpdatePrefsInfo = TelarDesktopUpdatePrefs & {
   /** False for a locally-packaged build with no feed baked in. The controls
    *  still render, and say why they will not do anything. */
   configured: boolean;
+  /** Where the shell writes the updater log, so it is findable without knowing
+   *  where userData lives. */
+  logPath: string;
 };
 
 export type TelarDesktopUpdatesBridge = {

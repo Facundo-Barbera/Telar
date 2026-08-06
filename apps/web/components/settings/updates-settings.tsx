@@ -146,7 +146,7 @@ export function UpdatesSettings() {
         label="Install on quit"
         hint={
           prefs?.installOnQuit
-            ? "A downloaded update installs itself the next time you quit Telar."
+            ? "A downloaded update installs itself the next time you quit Telar. Install & restart still works while this is on."
             : "Downloaded updates wait for you to press Install & restart."
         }
         control={

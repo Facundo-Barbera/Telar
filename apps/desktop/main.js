@@ -517,6 +517,37 @@ function checkForUpdates() {
 // lands the same day it is published.
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+// WHY THERE IS A LOG AT ALL. The install race above produced no error, no
+// dialog and no console output — the app simply relaunched on the same version,
+// and the only way it got diagnosed was a user toggling a setting and noticing
+// the difference. electron-updater reports its whole lifecycle to a logger and
+// had none attached, so all of it was being discarded.
+//
+// A file rather than console: a packaged mac app's stdout goes nowhere anyone
+// can read. Kept in userData beside the other per-install state, appended, and
+// deliberately not rotated — the volume is a handful of lines per check.
+function updateLogPath() {
+  return path.join(app.getPath("userData"), "update.log");
+}
+
+function updateLogger() {
+  const write = (level, message) => {
+    const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
+    try {
+      require("node:fs").appendFileSync(updateLogPath(), line);
+    } catch {
+      /* logging must never be the reason an update fails */
+    }
+    console.log(`[telar-updates] ${level} ${message}`);
+  };
+  return {
+    info: (m) => write("info", m),
+    warn: (m) => write("warn", m),
+    error: (m) => write("error", m),
+    debug: () => {}, // electron-updater's debug is very chatty; not useful here
+  };
+}
+
 function applyUpdatePrefs(prefs) {
   // `channel` is electron-updater's own switch for WHICH feed file it fetches
   // (beta-mac.yml vs nightly-mac.yml) from the same publish URL, which is
@@ -531,6 +562,7 @@ function applyUpdatePrefs(prefs) {
 }
 
 function configureAutoUpdater() {
+  autoUpdater.logger = updateLogger();
   autoUpdater.autoDownload = true;
   applyUpdatePrefs(readUpdatePrefs());
   const key = updateProxyKey();
@@ -558,6 +590,22 @@ ipcMain.handle("telar:updates:check", async () => {
 });
 ipcMain.handle("telar:updates:install", () => {
   if (!app.isPackaged) return;
+  // AN EXPLICIT INSTALL MUST NOT RACE THE ON-QUIT INSTALLER.
+  //
+  // `quitAndInstall()` stages the update and then quits. With
+  // autoInstallOnAppQuit ON, electron-updater has ALSO registered an installer
+  // on the app's own quit event — so that quit fires a second install while
+  // Squirrel is mid-swap. Observed symptom, reported 2026-08-06: pressing
+  // "Install & restart" relaunched the app on the SAME version, over and over,
+  // with no error anywhere; turning the setting off made the identical button
+  // work first time. That is the two paths colliding, not a broken download.
+  //
+  // Turning the flag off here is in-memory only and lasts exactly as long as
+  // this process, which is about to end. The stored preference is untouched and
+  // is re-applied from disk on the next launch, so a user who wants unattended
+  // installs keeps them — they simply do not also get one when they asked for
+  // an attended one.
+  autoUpdater.autoInstallOnAppQuit = false;
   app.isQuitting = true;
   autoUpdater.quitAndInstall();
 });
@@ -565,6 +613,9 @@ ipcMain.handle("telar:updates:install", () => {
 ipcMain.handle("telar:updates:getPrefs", () => ({
   ...readUpdatePrefs(),
   channels: UPDATE_CHANNELS,
+  // Surfaced so the log is findable without knowing where userData lives — the
+  // point of writing it is that someone can read it when an update misbehaves.
+  logPath: updateLogPath(),
   // So the settings surface can explain itself rather than offering controls
   // that silently do nothing on an unpublished local build.
   configured: updatesConfigured(),
