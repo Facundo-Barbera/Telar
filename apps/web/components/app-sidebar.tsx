@@ -56,6 +56,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { isLoomRunning } from "@/lib/project-signal";
+import { useCommandKeys } from "@/lib/use-command-keys";
 import { SessionRow } from "@/components/session/session-row";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -467,6 +468,13 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
     window.addEventListener("keydown", focusSearch);
     return () => window.removeEventListener("keydown", focusSearch);
   }, []);
+
+  // Issue #16 — new session / new tab / jump-to-conversation / settings.
+  // Delegated to a hook (lib/use-command-keys.ts) rather than inlined here:
+  // this is the one component already holding the session list cmd+1..9
+  // needs, but the binding table, focus rule, and desktop-menu wiring it
+  // depends on are shared with apps/desktop and belong in their own module.
+  useCommandKeys(chats);
 
   // Idle workspaces are event-driven. Poll only while a loom is genuinely in
   // flight; mutations already broadcast telar:refresh and a running loom is the

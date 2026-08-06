@@ -233,6 +233,36 @@ export function newSessionHref(project: string): string {
   return `/projects/${encodeURIComponent(project)}/sessions/new`;
 }
 
+/** The route a session's own row/dock links land on — shared here so the
+ *  command-keys jump bindings (issue #16) resolve to the exact same URL a
+ *  click on the row would, rather than a second, hand-rolled copy of it. */
+export function sessionHref(session: Pick<SidebarSession, "id" | "project">): string | undefined {
+  return session.project
+    ? `/projects/${encodeURIComponent(session.project)}/sessions/${encodeURIComponent(session.id)}`
+    : undefined;
+}
+
+/**
+ * What cmd+1..cmd+9 (issue #16) index into: exactly the sidebar's own
+ * unfiltered, unsearched "Recent" band — every user session (no
+ * steerer/escalation), newest-created-first, across every project — because
+ * that is the one ordering a person already sees and can predict without
+ * opening the sidebar to check. Reuses deriveSessionList itself rather than
+ * re-sorting, so "recent" can never drift from what the sidebar renders.
+ *
+ * `limit: 9` still allows a 10th entry through — deriveSessionList's own
+ * pageWithActive pins the currently-open session onto the page even past the
+ * limit if it would otherwise fall off. That pin is meaningless for
+ * indexing (it can land the open session anywhere, not just position 10), so
+ * the trailing slice always cuts back to the strict top 9.
+ */
+export function recentSessionsForCommandKeys<T extends SidebarSession>(
+  sessions: readonly T[],
+  now = Date.now(),
+): T[] {
+  return deriveSessionList({ sessions, now, limit: 9 }).sessions.slice(0, 9);
+}
+
 export function activeSessionFromPathname(pathname: string): string | undefined {
   const match = /^\/projects\/[^/]+\/sessions\/([^/?#]+)/.exec(pathname);
   if (!match || match[1] === "new") return undefined;

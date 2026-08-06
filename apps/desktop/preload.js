@@ -26,4 +26,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     getPrefs: () => ipcRenderer.invoke("telar:updates:getPrefs"),
     setPrefs: (patch) => ipcRenderer.invoke("telar:updates:setPrefs", patch),
   },
+  // Issue #16: the app menu's native accelerators fire in the main process,
+  // which has no DOM and so cannot apply the focus rule itself — it just
+  // forwards which binding fired, and the renderer (lib/use-command-keys.ts)
+  // decides what that means and whether focus allows it to happen.
+  commandKeys: {
+    onInvoke: (listener) => on("telar:command-keys:invoke", listener),
+  },
 });

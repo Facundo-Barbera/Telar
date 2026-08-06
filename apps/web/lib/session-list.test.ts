@@ -6,6 +6,8 @@ import {
   deriveSessionList,
   isUnread,
   newSessionHref,
+  recentSessionsForCommandKeys,
+  sessionHref,
   SETTLED_AFTER_MS,
   type SidebarSession,
 } from "./session-list";
@@ -85,6 +87,57 @@ describe("deriveSessionList", () => {
     expect(result.sessions.map((r) => r.id)).toEqual(["s0", "s1", "active"]);
     expect(result.settledCount).toBe(0);
     expect(result.hasMoreSessions).toBe(true);
+  });
+});
+
+describe("sessionHref", () => {
+  test("builds the same route a session row links to", () => {
+    expect(sessionHref({ id: "abc", project: "my project" })).toBe(
+      "/projects/my%20project/sessions/abc",
+    );
+  });
+
+  test("is undefined for a session with no project (never a broken link)", () => {
+    expect(sessionHref({ id: "abc", project: undefined })).toBeUndefined();
+  });
+});
+
+describe("recentSessionsForCommandKeys (issue #16's cmd+1..cmd+9)", () => {
+  test("is exactly the sidebar's own unfiltered Recent order, capped at 9", () => {
+    const rows = Array.from({ length: 12 }, (_, index) => session(`s${index}`, { createdAt: 100 - index }));
+    const recent = recentSessionsForCommandKeys(rows, NOW);
+    expect(recent.map((r) => r.id)).toEqual([
+      "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+    ]);
+    expect(
+      deriveSessionList({ sessions: rows, now: NOW }).sessions.slice(0, 9).map((r) => r.id),
+    ).toEqual(recent.map((r) => r.id));
+  });
+
+  test("never grows past 9 even when the open session is pinned past the limit", () => {
+    const rows = Array.from({ length: 9 }, (_, index) => session(`s${index}`, { createdAt: 100 - index }));
+    rows.push(session("open-but-old", { createdAt: 0, updatedAt: NOW - SETTLED_AFTER_MS }));
+    const recent = deriveSessionList({
+      sessions: rows,
+      activeSessionId: "open-but-old",
+      now: NOW,
+      limit: 9,
+    }).sessions;
+    // Sanity check on the fixture: without capping, the pin pushes a 10th
+    // entry onto the page (deriveSessionList's own documented behaviour).
+    expect(recent.length).toBe(10);
+    const capped = recentSessionsForCommandKeys(rows, NOW);
+    expect(capped.length).toBe(9);
+    expect(capped.map((r) => r.id)).not.toContain("open-but-old");
+  });
+
+  test("excludes steerer/escalation rows, same as the sidebar", () => {
+    const rows = [
+      session("visible"),
+      session("steerer", { role: "steerer" }),
+      session("escalation", { role: "escalation" }),
+    ];
+    expect(recentSessionsForCommandKeys(rows, NOW).map((r) => r.id)).toEqual(["visible"]);
   });
 });
 

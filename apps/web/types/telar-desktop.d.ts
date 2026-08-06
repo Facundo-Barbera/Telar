@@ -56,6 +56,14 @@ export type TelarDesktopUpdatesBridge = {
   setPrefs: (patch: Partial<TelarDesktopUpdatePrefs>) => Promise<TelarDesktopUpdatePrefs>;
 };
 
+/** Forwards an Electron menu accelerator click (issue #16's command keys) to
+ *  the renderer as a bare action id — the main process has no DOM, so it
+ *  cannot apply the focus rule itself; the listener re-applies it against
+ *  document.activeElement (see lib/use-command-keys.ts). */
+export type TelarDesktopCommandKeysBridge = {
+  onInvoke: (listener: (id: string) => void) => () => void;
+};
+
 export type TelarDesktopBrowserBridge = {
   getState: (scopeKey: string) => Promise<ControlledBrowserState>;
   action: (scopeKey: string, action: ControlledBrowserAction) => Promise<ControlledBrowserState>;
@@ -77,6 +85,7 @@ declare global {
       isDesktop: true;
       browser: TelarDesktopBrowserBridge;
       updates: TelarDesktopUpdatesBridge;
+      commandKeys: TelarDesktopCommandKeysBridge;
     };
   }
 }

@@ -1,6 +1,7 @@
 // Telar desktop shell (viable tier). Boots the standalone Next server as a
-// child process and points a BrowserWindow at it. No auto-update, no tray, no
-// custom menus — deliberately small.
+// child process and points a BrowserWindow at it. No tray, and no custom
+// menu beyond the one issue #16 needs for command-key accelerators —
+// deliberately small.
 //
 // Modes:
 //   (default)              single-instance app window
@@ -16,10 +17,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
+const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 
 const SMOKE = process.argv.includes("--smoke");
 const OVERRIDE_URL = process.env.TELAR_DESKTOP_URL;
@@ -413,6 +415,56 @@ function requireBrowserManager() {
   return browserManager;
 }
 
+// --- Application menu (issue #16 — command keys) -----------------------------
+// The ONE place accelerators are wired to Electron's native menu. Every
+// binding (id, label, accelerator) comes from ./command-keys.js — the single
+// source of truth apps/web/lib/command-keys.ts also reads, by relative
+// import, since this process runs under real Node with no TypeScript (see
+// the long comment there). This file never repeats a key combination; it
+// only turns the shared table into a Menu template and forwards clicks to
+// the renderer as a bare action id, over the same telar:* contextBridge
+// pattern every other IPC channel here uses. The renderer (lib/use-command-
+// keys.ts) owns the focus rule and what each action actually does — this
+// process has no DOM, so it could not apply either even if it wanted to.
+function sendCommandKey(browserWindow, id) {
+  const win = browserWindow || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+  win?.webContents.send("telar:command-keys:invoke", id);
+}
+
+function buildApplicationMenu() {
+  const toMenuItem = (binding) => ({
+    label: binding.label,
+    accelerator: binding.accelerator,
+    click: (_menuItem, browserWindow) => sendCommandKey(browserWindow, binding.id),
+  });
+  // jump-1..jump-9 nest under their own submenu so the top-level File menu
+  // reads as four commands, not thirteen — cosmetic only, `id`/`accelerator`
+  // for every one of them still comes straight from the shared table.
+  const jumpBindings = COMMAND_KEY_BINDINGS.filter((binding) => binding.jump);
+  const otherBindings = COMMAND_KEY_BINDINGS.filter((binding) => !binding.jump);
+  const isMac = process.platform === "darwin";
+  const template = [
+    // role: "appMenu" (macOS's app-name menu: About/Hide/Quit) and the
+    // role-based Edit/View/Window menus below are what keep native behavior
+    // — Quit, Cmd+C/V/X/Z, fullscreen, Minimize — working at all: replacing
+    // the whole application menu without them, rather than adding to it,
+    // would otherwise silently drop those OS-level accelerators.
+    ...(isMac ? [{ role: "appMenu" }] : []),
+    {
+      label: "File",
+      submenu: [
+        ...otherBindings.map(toMenuItem),
+        { type: "separator" },
+        { label: "Jump to Conversation", submenu: jumpBindings.map(toMenuItem) },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 ipcMain.handle("telar:browser:state", (_event, scopeKey) => requireBrowserManager().state(scopeKey));
 ipcMain.handle("telar:browser:action", (_event, input) =>
   requireBrowserManager().action(input?.scopeKey, input?.action),
@@ -756,6 +808,7 @@ if (SMOKE) {
     app.whenReady().then(async () => {
       try {
         applyDevelopmentAppIcon();
+        buildApplicationMenu();
         const configuredControlPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
         browserControlConfig = {
           port: Number.isInteger(configuredControlPort) && configuredControlPort > 0
