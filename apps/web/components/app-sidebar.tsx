@@ -474,7 +474,11 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
   // this is the one component already holding the session list cmd+1..9
   // needs, but the binding table, focus rule, and desktop-menu wiring it
   // depends on are shared with apps/desktop and belong in their own module.
-  useCommandKeys(chats);
+  // `pathname` is already read at the top of this component (line above the
+  // state declarations) purely to derive `activeSessionId` below it too —
+  // hoisted no further than needed, just read here a second time, so cmd+1..9
+  // pins the currently-open session the exact same way the main list does.
+  useCommandKeys(chats, activeSessionFromPathname(pathname));
 
   // Idle workspaces are event-driven. Poll only while a loom is genuinely in
   // flight; mutations already broadcast telar:refresh and a running loom is the

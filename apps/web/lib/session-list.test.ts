@@ -105,7 +105,7 @@ describe("sessionHref", () => {
 describe("recentSessionsForCommandKeys (issue #16's cmd+1..cmd+9)", () => {
   test("is exactly the sidebar's own unfiltered Recent order, capped at 9", () => {
     const rows = Array.from({ length: 12 }, (_, index) => session(`s${index}`, { createdAt: 100 - index }));
-    const recent = recentSessionsForCommandKeys(rows, NOW);
+    const recent = recentSessionsForCommandKeys(rows, undefined, NOW);
     expect(recent.map((r) => r.id)).toEqual([
       "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
     ]);
@@ -126,7 +126,14 @@ describe("recentSessionsForCommandKeys (issue #16's cmd+1..cmd+9)", () => {
     // Sanity check on the fixture: without capping, the pin pushes a 10th
     // entry onto the page (deriveSessionList's own documented behaviour).
     expect(recent.length).toBe(10);
-    const capped = recentSessionsForCommandKeys(rows, NOW);
+    // MUST pass the SAME activeSessionId recentSessionsForCommandKeys forwards
+    // in real use (use-command-keys.ts) — passing none here would make this
+    // pass for the wrong reason (deriveSessionList's own `limit: 9` already
+    // caps an unpinned list, so the function's own trailing slice would never
+    // even run). This was caught adversarially: with no activeSessionId
+    // threaded through, mutating or deleting recentSessionsForCommandKeys's
+    // slice bound passed every test in this file.
+    const capped = recentSessionsForCommandKeys(rows, "open-but-old", NOW);
     expect(capped.length).toBe(9);
     expect(capped.map((r) => r.id)).not.toContain("open-but-old");
   });
@@ -137,7 +144,7 @@ describe("recentSessionsForCommandKeys (issue #16's cmd+1..cmd+9)", () => {
       session("steerer", { role: "steerer" }),
       session("escalation", { role: "escalation" }),
     ];
-    expect(recentSessionsForCommandKeys(rows, NOW).map((r) => r.id)).toEqual(["visible"]);
+    expect(recentSessionsForCommandKeys(rows, undefined, NOW).map((r) => r.id)).toEqual(["visible"]);
   });
 });
 

@@ -250,17 +250,28 @@ export function sessionHref(session: Pick<SidebarSession, "id" | "project">): st
  * opening the sidebar to check. Reuses deriveSessionList itself rather than
  * re-sorting, so "recent" can never drift from what the sidebar renders.
  *
- * `limit: 9` still allows a 10th entry through — deriveSessionList's own
- * pageWithActive pins the currently-open session onto the page even past the
- * limit if it would otherwise fall off. That pin is meaningless for
- * indexing (it can land the open session anywhere, not just position 10), so
- * the trailing slice always cuts back to the strict top 9.
+ * `activeSessionId` (the session the caller is currently viewing, if any)
+ * is threaded straight through to deriveSessionList for the SAME reason the
+ * sidebar's own main list passes it: an open session that has aged into a
+ * shelf must not vanish out from under the person looking at it. That is
+ * also the one way `sessions` can come back longer than `limit: 9` —
+ * deriveSessionList's pageWithActive pins the open session onto the page
+ * even past the limit rather than dropping it — and that pin is meaningless
+ * for INDEXING (it can land the open session anywhere, not just position
+ * 10), which is what the trailing slice guards against. Without an
+ * activeSessionId, deriveSessionList's own limit already never returns more
+ * than 9, so the slice is a no-op there — this was previously unreachable
+ * because this function never forwarded the caller's active session at all
+ * (an adversarial-review catch: mutating the slice bound or deleting it
+ * outright did not fail any test until this parameter, and the test that
+ * exercises it below, existed).
  */
 export function recentSessionsForCommandKeys<T extends SidebarSession>(
   sessions: readonly T[],
+  activeSessionId?: string,
   now = Date.now(),
 ): T[] {
-  return deriveSessionList({ sessions, now, limit: 9 }).sessions.slice(0, 9);
+  return deriveSessionList({ sessions, activeSessionId, now, limit: 9 }).sessions.slice(0, 9);
 }
 
 export function activeSessionFromPathname(pathname: string): string | undefined {

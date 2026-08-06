@@ -13,8 +13,11 @@ import { recentSessionsForCommandKeys, sessionHref, type SidebarSession } from "
 /**
  * Wires issue #16's command keys into the running app. Mounted once, from
  * AppSidebar — the one component already alive on every route that already
- * holds the session list cmd+1..9 needs (its `chats` state), so this needs
- * no fetch of its own and can never disagree with what the sidebar shows.
+ * holds the session list cmd+1..9 needs (its `chats` state) and the current
+ * route's session id (`activeSessionId`, from the same `usePathname()` the
+ * sidebar itself derives its own active row from) — so this needs no fetch
+ * of its own and can never disagree with what the sidebar shows, including
+ * which session is pinned into view past the Recent band's usual cutoff.
  *
  * Two independent sources feed the same dispatch path, because only ONE of
  * them can see the DOM:
@@ -38,11 +41,11 @@ import { recentSessionsForCommandKeys, sessionHref, type SidebarSession } from "
  * this was not launched to verify (hard rule), so it is reported rather than
  * asserted.
  */
-export function useCommandKeys(chats: readonly SidebarSession[]) {
+export function useCommandKeys(chats: readonly SidebarSession[], activeSessionId?: string) {
   const router = useRouter();
 
   useEffect(() => {
-    const recentHrefs = recentSessionsForCommandKeys(chats).map((session) => sessionHref(session));
+    const recentHrefs = recentSessionsForCommandKeys(chats, activeSessionId).map((session) => sessionHref(session));
 
     const run = (id: CommandKeyId) => {
       const destination = commandKeyDestination(id, recentHrefs);
@@ -71,5 +74,5 @@ export function useCommandKeys(chats: readonly SidebarSession[]) {
       window.removeEventListener("keydown", onKeyDown);
       offInvoke?.();
     };
-  }, [chats, router]);
+  }, [chats, activeSessionId, router]);
 }

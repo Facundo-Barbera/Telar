@@ -19,7 +19,11 @@ describe("the web renderer is actually wired to useCommandKeys", () => {
   test("AppSidebar — the one component alive on every route — mounts the hook with the live session list", () => {
     const sidebar = read("components/app-sidebar.tsx");
     expect(sidebar).toContain('import { useCommandKeys } from "@/lib/use-command-keys"');
-    expect(sidebar).toContain("useCommandKeys(chats)");
+    // Passes activeSessionId too, not just chats — otherwise cmd+1..9 silently
+    // disagrees with the sidebar the moment the open session is old enough to
+    // have been pinned past the Recent band's usual cutoff (see
+    // recentSessionsForCommandKeys in session-list.ts for what the pin means).
+    expect(sidebar).toContain("useCommandKeys(chats, activeSessionFromPathname(pathname))");
   });
 
   test("the hook listens for both the in-page keydown AND the desktop menu's forwarded id", () => {
