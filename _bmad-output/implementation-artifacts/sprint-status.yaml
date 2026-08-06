@@ -1,5 +1,5 @@
 # generated: 2026-07-26 00:43
-# last_updated: 2026-07-27
+# last_updated: 2026-08-06
 # project: Telar
 # project_key: NOKEY
 # tracking_system: file-system
@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-07-26 00:43
-last_updated: 2026-07-27
+last_updated: 2026-08-06
 project: Telar
 project_key: NOKEY
 tracking_system: file-system
@@ -75,7 +75,7 @@ development_status:
   # Epic 5: Organization Workspace
   epic-5: in-progress
   5-1-the-item-store-and-the-workspace-mcp-server: done
-  5-2-the-queue-packet-detail-and-the-shared-chip-grammar: backlog
+  5-2-the-queue-packet-detail-and-the-shared-chip-grammar: done
   5-3-the-master-session-profile-chat-surface-and-desk-rail: backlog
   5-4-experts-brain-dump-the-briefing-and-bed-mode: backlog
   5-5-handoff-external-sources-codex-mcp-injection-and-the-workspace-prove-run: backlog
