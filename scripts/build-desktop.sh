@@ -197,8 +197,29 @@ fi
 # --- verify signing (only meaningful once a Developer ID cert is in play) ----
 if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
   log "app is signed — verifying"
+  # The SIGNATURE, always. This is the half that must hold for every signed
+  # build, notarized or not, and it is what Squirrel checks when it swaps an
+  # update into an installed app.
   codesign --verify --deep --strict "$BUILT_APP"
-  spctl -a -vvv --type execute "$BUILT_APP"
+  # GATEKEEPER ACCEPTANCE, only when the build was actually notarized.
+  #
+  # `spctl --assess` asks "would macOS let a user open this if they downloaded
+  # it", and for a Developer ID app the answer is NO until it has been
+  # notarized — it exits 3 with `source=Unnotarized Developer ID`. So running it
+  # unconditionally asserts a property an un-notarized build cannot have, and
+  # the nightly channel deliberately does not notarize (see nightly-desktop.yml:
+  # notarization was 57% of the build and is billed at a 10x multiplier).
+  #
+  # That is exactly how this broke: the nightly signed fine, correctly skipped
+  # notarization, produced its zip and blockmap, and then failed here on a check
+  # that could never have passed. Notarization is inferred the same way
+  # electron-builder infers it — from the App Store Connect credentials being
+  # present — so the two can never disagree about whether it happened.
+  if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
+    spctl -a -vvv --type execute "$BUILT_APP"
+  else
+    log "not notarized (no App Store Connect credentials) — skipping the Gatekeeper assessment"
+  fi
 else
   log "app is unsigned (no Developer ID cert discovered) — skipping signature verification"
 fi
