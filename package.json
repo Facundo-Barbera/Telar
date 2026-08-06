@@ -15,6 +15,13 @@
     "dev:desktop": "bun run --cwd apps/desktop dev",
     "desktop:package": "bun run --cwd apps/desktop package:local",
     "desktop:install": "bun run --cwd apps/desktop install:local",
+    "verify": "bun run typecheck && bun run lint && bun run test",
+    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd apps/web typecheck && bun run typecheck:core-tests",
+    "typecheck:core-tests": "bun scripts/typecheck-ceiling.mjs",
+    "lint": "bun scripts/lint-ceiling.mjs",
+    "test": "bun run test:core && bun run test:web && bun run test:desktop",
+    "test:core": "bun run --cwd packages/core test",
+    "test:web": "bun run --cwd apps/web test",
     "test:desktop": "bun run --cwd apps/desktop test:desktop:unit",
     "test:desktop:smoke": "bun run --cwd apps/desktop test:desktop:smoke",
     "test:desktop:e2e": "bun run --cwd apps/desktop test:desktop:e2e"

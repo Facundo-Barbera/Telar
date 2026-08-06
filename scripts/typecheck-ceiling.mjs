@@ -1,0 +1,175 @@
+#!/usr/bin/env bun
+/**
+ * packages/core TEST-TREE typecheck gate — A CEILING, NOT A CLEAN BILL OF HEALTH.
+ *
+ * WHY THIS FILE EXISTS AT ALL. `packages/core/tsconfig.json` excludes "test",
+ * so `tsc --noEmit -p tsconfig.json` — the check the root `typecheck` script
+ * runs, and the one the CI step advertises — never opened a single one of the
+ * 116 files under packages/core/test. Verified the blunt way: a file containing
+ * `const x: number = "definitely not a number"` dropped into that directory was
+ * typechecked green. `bun test` erases types rather than checking them, so
+ * nothing in the repo covered that tree. The same file under apps/web/lib IS
+ * caught, because apps/web's tsconfig includes `**​/*.ts` and therefore checks
+ * its 67 test files. The gate's coverage was asymmetric between the two
+ * workspaces and the step name overstated what it did.
+ *
+ * WHY A CEILING RATHER THAN A CLEAN CHECK. Turning the tree on produces 264
+ * errors on day one. They are not fake, but they are also not news: 116 of them
+ * are one-per-file `TS2307: Cannot find module 'bun:test'`, because this
+ * workspace has no `@types/bun` — apps/web works around exactly this with a
+ * `// @ts-expect-error no @types/bun in this workspace` line above the import,
+ * and packages/core never needed one because it was never checked. The
+ * remaining ~148 are real type drift inside test fixtures (test objects missing
+ * fields that were later added to the types they stand in for, implicit `any`
+ * in callbacks, and so on) that 1906 passing tests are entirely happy with.
+ *
+ * Making all 264 blocking would put this gate in the red on its first run,
+ * which is the failure mode the whole verification design is built to avoid —
+ * see the same argument at the top of scripts/lint-ceiling.mjs. Leaving the
+ * tree unchecked keeps a real hole open. So: pin the count. New type errors in
+ * core's test tree fail the build; the existing ones do not.
+ *
+ * HOW TO MAKE THE NUMBER GO DOWN. Adding `@types/bun` as a devDependency of
+ * packages/core deletes 116 of the 264 in one move (it needs a lockfile update,
+ * which is why this branch does not do it). The rest come off a file at a time.
+ * Either way this script notices, says so, and asks you to lower the ceiling.
+ *
+ * A DROP IS NEVER A FAILURE. Same reasoning as the lint ceiling: refusing to
+ * merge a fix because it made the pinned number stale is self-defeating.
+ */
+
+import { spawnSync } from "node:child_process";
+import { dirname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Lower this when the backlog shrinks. It may never be raised — that is the
+// single thing this file exists to prevent, and a PR that does it has to touch
+// this line, which is what makes it visible in review.
+const CEILING = 264;
+
+// The other half of the gate, for the same reason scripts/lint-ceiling.mjs has
+// a MIN_FILES floor: a ceiling counts findings, not coverage. If `include`
+// stops matching packages/core/test — a typo, a moved directory, someone
+// "fixing" this config back to the excluding one — the error count falls to
+// zero and a pure ceiling check reports that as an improvement and exits green.
+// So prove the test files were actually opened before trusting the count.
+const MIN_TEST_FILES = 110; // 116 today
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const coreDir = resolve(repoRoot, "packages/core");
+const testDirPrefix = resolve(coreDir, "test") + sep;
+const inActions = process.env.GITHUB_ACTIONS === "true";
+
+// `bunx --bun` rather than a bare `tsc`: there is no `node` on the maintainer's
+// PATH, so the `#!/usr/bin/env node` shebang on tsc's bin cannot be trusted to
+// resolve, and `--bun` makes the runtime the same one everywhere instead of
+// "node if the machine happens to have one".
+//
+// `--listFiles` is what makes the coverage floor above possible: it prints
+// every file the compiler actually loaded, which is the only honest answer to
+// "did you look at the tests?". `--pretty false` keeps diagnostics to one
+// machine-readable line each instead of ANSI code frames.
+const run = spawnSync(
+  "bunx",
+  ["--bun", "tsc", "--noEmit", "-p", "tsconfig.typecheck.json", "--pretty", "false", "--listFiles"],
+  { cwd: coreDir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+);
+
+if (run.error) {
+  console.error(`typecheck-ceiling: could not start tsc: ${run.error.message}`);
+  process.exit(1);
+}
+
+const stdout = run.stdout ?? "";
+
+// `file(line,col): error TSxxxx: message` — anchored, so the indented
+// continuation lines of a multi-line elaboration are not counted as separate
+// errors. The second form catches config-level diagnostics, which carry no file
+// position (e.g. TS5083 "Cannot read file").
+const positioned = /^(.+)\((\d+),(\d+)\): (error|message) (TS\d+): (.*)$/;
+const global = /^(error|message) (TS\d+): (.*)$/;
+
+const loadedFiles = [];
+const diagnostics = [];
+
+for (const line of stdout.split("\n")) {
+  if (!line) continue;
+  if (line.startsWith("/")) {
+    loadedFiles.push(line);
+    continue;
+  }
+  const m = positioned.exec(line);
+  if (m && m[4] === "error") {
+    diagnostics.push({ where: `${m[1]}(${m[2]},${m[3]})`, code: m[5], message: m[6] });
+    continue;
+  }
+  const g = global.exec(line);
+  if (g && g[1] === "error") {
+    diagnostics.push({ where: "(config)", code: g[2], message: g[3] });
+  }
+}
+
+// tsc's exit codes: 0 clean, 1/2 diagnostics reported, 3+ a project/config
+// failure. A crash that produced no file list at all must never be read as
+// "zero type errors" — that is the same fail-open this script's floor exists to
+// close, arriving through a different door.
+if (loadedFiles.length === 0) {
+  console.error(`typecheck-ceiling: tsc exited ${run.status} without listing any files.`);
+  console.error(stdout.slice(0, 4000));
+  console.error((run.stderr ?? "").slice(0, 4000));
+  process.exit(1);
+}
+
+const testFiles = loadedFiles.filter((f) => f.startsWith(testDirPrefix));
+
+console.log(
+  `tsc -p packages/core/tsconfig.typecheck.json: ${loadedFiles.length} files loaded, ` +
+    `${testFiles.length} of them under packages/core/test (floor ${MIN_TEST_FILES})\n`,
+);
+
+// Coverage before counts — see MIN_TEST_FILES.
+if (testFiles.length < MIN_TEST_FILES) {
+  const message =
+    `packages/core TEST TYPECHECK COVERAGE COLLAPSED: ${testFiles.length} test files loaded, ` +
+    `floor is ${MIN_TEST_FILES}. The include globs in packages/core/tsconfig.typecheck.json ` +
+    "have stopped matching the test tree, so the error count below proves nothing. Fix the " +
+    "config rather than lowering MIN_TEST_FILES.";
+  console.error(inActions ? `::error::${message}` : `\n${message}`);
+  process.exit(1);
+}
+
+// Print everything being tolerated. A ceiling that hides its contents teaches
+// nobody which files carry the debt, and the first question anyone asks when
+// the number moves is "moved because of what?".
+if (diagnostics.length) {
+  for (const d of diagnostics) console.log(`  ${d.where}  ${d.code}  ${d.message}`);
+  console.log("");
+}
+
+const byCode = new Map();
+for (const d of diagnostics) byCode.set(d.code, (byCode.get(d.code) ?? 0) + 1);
+console.log("errors by code:");
+for (const [code, count] of [...byCode.entries()].sort((a, b) => b[1] - a[1])) {
+  console.log(`  ${String(count).padStart(4)}  ${code}`);
+}
+
+console.log(`\ncore test-tree type errors ${diagnostics.length}/${CEILING}`);
+
+if (diagnostics.length > CEILING) {
+  const message =
+    `packages/core test-tree typecheck went UP: ${diagnostics.length} errors against a ceiling ` +
+    `of ${CEILING}. Fix the new ones above. Raising the ceiling in ` +
+    "scripts/typecheck-ceiling.mjs is not the fix.";
+  console.error(inActions ? `::error::${message}` : `\n${message}`);
+  process.exit(1);
+}
+
+if (diagnostics.length < CEILING) {
+  const message =
+    `packages/core test-tree typecheck went DOWN to ${diagnostics.length} errors. ` +
+    "Lower CEILING in scripts/typecheck-ceiling.mjs to lock the improvement in. " +
+    "Not failing the build for this — a fix should never be harder to merge than the defect.";
+  console.log(inActions ? `::warning::${message}` : `\n${message}`);
+}
+
+console.log("\npackages/core test-tree typecheck is at or under its ceiling.");

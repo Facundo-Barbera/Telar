@@ -6,6 +6,8 @@
     "dev": "TELAR_HOME=\"${TELAR_HOME:-$HOME/.telar-dev}\" next dev",
     "build": "next build",
     "start": "next start",
+    "test": "NODE_ENV=test bun test",
+    "typecheck": "bunx --bun tsc --noEmit",
     "lint": "eslint"
   },
   "dependencies": {
