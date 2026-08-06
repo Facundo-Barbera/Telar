@@ -22,9 +22,17 @@ function arg(name) {
 
 const channel = arg("channel");
 if (channel !== "beta" && channel !== "nightly") {
-  console.error("usage: set-desktop-version.mjs --channel beta|nightly");
+  console.error("usage: set-desktop-version.mjs --channel beta|nightly [--version X.Y.Z-channel.N]");
   process.exit(2);
 }
+
+// AN EXPLICIT VERSION WINS, and it exists because the tag-triggered workflows
+// need it. The derivation below picks the NEXT version by counting existing
+// tags — correct when a build is what MINTS the version, and wrong when a tag
+// already named it: a build triggered by `v0.1.0-beta.2` would count that very
+// tag and produce beta.3, then publish and create a release under a name
+// nobody asked for. When the tag is the trigger, the tag is the answer.
+const explicit = arg("version");
 
 const pkgPath = new URL("../apps/desktop/package.json", import.meta.url);
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
@@ -42,7 +50,17 @@ function existingTags(pattern) {
 }
 
 let version;
-if (channel === "nightly") {
+if (explicit) {
+  // Validated against the channel it claims, because a version whose
+  // prerelease tag disagrees with --channel would publish the artifacts to one
+  // feed while electron-builder derived the channel from the other — the two
+  // would silently diverge, and the symptom is an update that never arrives.
+  if (!new RegExp(`-${channel}\\.`).test(explicit)) {
+    console.error(`version "${explicit}" is not a ${channel} version`);
+    process.exit(2);
+  }
+  version = explicit;
+} else if (channel === "nightly") {
   const date = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const prefix = `v${base}-nightly.${date}.`;
   const nums = existingTags(`${prefix}*`).map((t) => Number(t.slice(prefix.length)) || 0);

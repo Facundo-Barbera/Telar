@@ -20,12 +20,17 @@ OUT="apps/desktop/release/from-origin"
 TARGETS="dir"
 PUBLISH_R2=0
 CHANNEL=""
+# An explicit version, used by the tag-triggered workflows: when a tag already
+# named the version, the build must not re-derive a different one.
+VERSION_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="${2:?--ref needs a value}"; shift 2 ;;
     --out) OUT="${2:?--out needs a value}"; shift 2 ;;
     --targets) TARGETS="${2:?--targets needs a value}"; shift 2 ;;
     --channel) CHANNEL="${2:?--channel needs a value}"; shift 2 ;;
+    --version) VERSION_OVERRIDE="${2:?--version needs a value}"; shift 2 ;;
+    --version=*) VERSION_OVERRIDE="${1#*=}"; shift ;;
     --publish-r2) PUBLISH_R2=1; shift ;;
     --ref=*) REF="${1#*=}"; shift ;;
     --out=*) OUT="${1#*=}"; shift ;;
@@ -147,8 +152,13 @@ log "stamped build-info.json ($SHORT_SHA)"
 
 # --- bump version for a channel (mutates the SNAPSHOT's package.json only) ---
 if [ -n "$CHANNEL" ]; then
-  VERSION="$(NODE_OPTIONS= node "$SNAP/scripts/set-desktop-version.mjs" --channel "$CHANNEL")"
-  log "channel '$CHANNEL' -> version $VERSION"
+  if [ -n "$VERSION_OVERRIDE" ]; then
+    VERSION="$(NODE_OPTIONS= node "$SNAP/scripts/set-desktop-version.mjs" --channel "$CHANNEL" --version "$VERSION_OVERRIDE")"
+    log "channel '$CHANNEL' -> version $VERSION (from tag)"
+  else
+    VERSION="$(NODE_OPTIONS= node "$SNAP/scripts/set-desktop-version.mjs" --channel "$CHANNEL")"
+    log "channel '$CHANNEL' -> version $VERSION"
+  fi
 fi
 
 # --- package -----------------------------------------------------------------

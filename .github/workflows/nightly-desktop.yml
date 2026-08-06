@@ -133,9 +133,16 @@ jobs:
           # above has already established the commit is on main, so this is
           # still main-only. A manual dispatch has no tag and builds the tip.
           REF="origin/main"
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then REF="$GITHUB_SHA"; fi
+          VERSION_ARG=()
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            REF="$GITHUB_SHA"
+            # The tag already named the version; set-desktop-version.mjs would
+            # otherwise COUNT this tag and derive the next one, publishing under
+            # a name nobody chose.
+            VERSION_ARG=(--version "${GITHUB_REF_NAME#v}")
+          fi
           bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg \
-            --channel nightly --publish-r2
+            --channel nightly "${VERSION_ARG[@]}" --publish-r2
 
       # Tags the commit that was actually built. That used to be a defence
       # against a build of an OLDER ref mislabelling the tip; with main-only

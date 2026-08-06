@@ -115,8 +115,14 @@ jobs:
           # rather than the tip main may already have moved to. The ancestry
           # guard above has established it is on main either way.
           REF="origin/main"
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then REF="$GITHUB_SHA"; fi
-          bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg \
+          VERSION_ARG=()
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            REF="$GITHUB_SHA"
+            # The tag already named the version; the derivation would COUNT this
+            # tag and produce the next one, releasing under a name nobody chose.
+            VERSION_ARG=(--version "${GITHUB_REF_NAME#v}")
+          fi
+          bash scripts/build-desktop.sh --ref "$REF" --targets zip,dmg "${VERSION_ARG[@]}" \
             --channel beta --publish-r2
 
       - name: Publish GitHub Release
