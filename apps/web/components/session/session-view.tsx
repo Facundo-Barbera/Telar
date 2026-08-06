@@ -2378,6 +2378,17 @@ function SessionWorkspace({
         setThinking(false);
         abortRef.current = null;
         runIdRef.current = null;
+        // Backstop, same reasoning as compactNow's own: PreCompact can fire
+        // on an ORDINARY turn (Claude auto-compacting to stay under its
+        // context window, mid-send()) with no `compact: true` anywhere on
+        // this request — so a turn that then errors or gets Stopped before
+        // its matching PostCompact ever lands would otherwise leave
+        // `compacting` permanently true (and the Compact button permanently
+        // disabled) for the rest of this mount, with no later "compacted"
+        // event ever coming to clear it. A normal turn finishing (success,
+        // error, or abort) always closes out whatever compaction it opened,
+        // exactly like `compactNow`'s own finally closes out its own.
+        setCompacting(false);
       }
     },
     [sessionId, buildTurnPayload, applyServerEvent],

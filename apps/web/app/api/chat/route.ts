@@ -1155,7 +1155,10 @@ export async function POST(req: Request) {
           // subprocess (per-turn subprocess architecture — see
           // lib/codex-app-server.ts) and speaks exactly two events:
           // compact_start when thread/compact/start acks, compact_end when
-          // the thread/compacted notification lands. `capturedSession` and
+          // runCodexCompact observes the compaction's own item/turn complete
+          // (see that function's comment — NOT the deprecated
+          // `thread/compacted` notification, which a live trace against a
+          // real app-server showed is never actually sent). `capturedSession` and
           // `lastResult` are deliberately left unset for this whole branch —
           // the finally block below only logs usage, appends a turn, and
           // sends "saved"/"done" when one of those is set, so a compact-only
