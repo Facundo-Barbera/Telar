@@ -27,6 +27,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { cn } from "@/lib/utils";
+import { retainOnSurfaceLoss } from "@/lib/message-queue";
 import {
   useDock,
   unreadOf,
@@ -189,6 +190,15 @@ function HeadTooltip({
                 <span className="truncate">{rt.ultraSummary}</span>
               </div>
             )}
+            {/* Issue #7 — the badge on the head marks WHICH bubble is holding
+                unsent words; this is the sentence for it, on the same hover,
+                with no dwell on a 16px target. */}
+            {pendingOf(rt) > 0 && (
+              <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                <ClockIcon className="size-2.5" />
+                <span>{pendingPhrase(pendingOf(rt))}</span>
+              </div>
+            )}
             {(rt?.agentsRunning ?? 0) > 0 && (
               <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-primary">
                 <BotIcon className="size-2.5" />
@@ -202,6 +212,34 @@ function HeadTooltip({
   );
 }
 
+/**
+ * ISSUE #7 — HOW MANY WORDS THIS BUBBLE IS HOLDING FOR YOU.
+ *
+ * `retainOnSurfaceLoss` and not `queued.length`: what the label promises to keep
+ * must be what `releaseRuntime` actually keeps, and the two agree today only
+ * because nothing yet writes engine state onto a dock item. Counting the raw
+ * array would start lying the moment one does.
+ */
+const pendingOf = (rt?: Pick<Runtime, "queued">): number =>
+  retainOnSurfaceLoss(rt?.queued ?? []).length;
+
+const pendingPhrase = (n: number) =>
+  `${n} unsent message${n === 1 ? "" : "s"} kept for later`;
+
+/**
+ * A dismiss affordance that holds unsent words says so.
+ *
+ * Closing a bubble no longer destroys its pre-ack queue (dock-provider's
+ * `releaseRuntime`), but "kept" is only honest if the user can find out. The
+ * count rides on the control that does it rather than in a confirm dialog: the
+ * act is no longer destructive, so interrupting it would be theatre.
+ */
+function dismissLabel(base: string, rt?: Pick<Runtime, "queued">): string {
+  const pending = pendingOf(rt);
+  if (pending === 0) return base;
+  return `${base} — ${pendingPhrase(pending)}`;
+}
+
 // ── a chat head ─────────────────────────────────────────────────────────────
 function Head({ entry }: { entry: DockEntry }) {
   const { runtime, viewed, expanded, toggleExpand, undock } = useDock();
@@ -210,6 +248,8 @@ function Head({ entry }: { entry: DockEntry }) {
   const unread = unreadOf(rt, viewed[entry.id]);
   const spinning = rt?.working ?? false;
   const parked = rt?.parked ?? false;
+  const pending = pendingOf(rt);
+  const dismiss = dismissLabel(`Undock ${rt?.title || entry.title}`, rt);
 
   return (
     <HeadTooltip entry={entry} rt={rt}>
@@ -265,13 +305,44 @@ function Head({ entry }: { entry: DockEntry }) {
           </span>
         )}
 
+        {/* ISSUE #7 — THE PARKED QUEUE HAS TO BE VISIBLE, NOT JUST KEPT.
+            Retention made a re-dock able to resume a send the user last saw
+            fail, and everything else that disclosed the queue was conditional:
+            the X above exists only on hover, and the queue chips render only
+            inside an EXPANDED panel. A minimized head therefore said nothing at
+            all about words it was holding.
+
+            This is what makes the resume attended rather than a sleeper. A
+            drain can only happen where a head is: `SessionRuntimeHost` is
+            rendered once per entry by <Dock/> below, so there is no host — and
+            no POST — without this badge on screen. It paints from the first
+            frame; the drain waits on a detail fetch. So the count is up before
+            the send, and clears when the engine takes the item.
+
+            Amber, like `parked` above: this is the dock's colour for "still
+            waiting on something", distinct from the primary unread count. */}
+        {pending > 0 && (
+          <span
+            title={pendingPhrase(pending)}
+            className="absolute -bottom-1 left-1/2 flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border border-amber-500/70 bg-background px-0.5 text-[9px] font-semibold text-amber-600 shadow-sm dark:text-amber-400"
+          >
+            {/* Bottom CENTRE, and no gap: the two corners below the head are
+                already spoken for (sub-agents left, ultra run right), and this
+                has to sit between them without touching either when all three
+                are live. */}
+            <ClockIcon className="size-2" />
+            {pending}
+          </span>
+        )}
+
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             undock(entry.id);
           }}
-          aria-label={`Undock ${rt?.title || entry.title}`}
+          aria-label={dismiss}
+          title={dismiss}
           className="absolute -left-1.5 -top-1.5 hidden size-4 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:text-foreground group-hover:flex"
         >
           <XIcon className="size-2.5" />
@@ -298,7 +369,9 @@ function IconBtn({ onClick, label, children }: { onClick: () => void; label: str
 // ── queue-capable composer ──────────────────────────────────────────────────
 // The acceptance path lives in the runtime host (POST to the engine queue), so
 // a message survives minimizing the panel. The composer only owns the brief
-// pre-ack bridge; scheduling and execution are server-side.
+// pre-ack bridge; scheduling and execution are server-side. Closing the bubble
+// outright is the one case the bridge outlives (issue #7): the items are parked
+// in the store instead of dropped, and resume when the session is docked again.
 function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
   const { enqueue, setRuntime } = useDock();
   const [text, setText] = useState("");
@@ -433,7 +506,7 @@ function DockPanel({ entry }: { entry: DockEntry }) {
         <IconBtn onClick={() => minimize(entry.id)} label="Minimize to head">
           <MinusIcon className="size-4" />
         </IconBtn>
-        <IconBtn onClick={() => undock(entry.id)} label="Close">
+        <IconBtn onClick={() => undock(entry.id)} label={dismissLabel("Close", rt)}>
           <XIcon className="size-4" />
         </IconBtn>
       </div>
