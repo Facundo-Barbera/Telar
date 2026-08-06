@@ -27,10 +27,20 @@ export function ContextPill({
   used,
   windowTokens,
   provider,
+  onCompact,
+  compacting = false,
+  compactDisabled = false,
 }: {
   used: number;
   windowTokens?: number;
   provider?: string;
+  /** Absent ⇒ no Compact action. The pill stays a pure readout wherever a
+   *  caller has nothing to offer (the demo gallery, a read-only surface). */
+  onCompact?: () => void;
+  compacting?: boolean;
+  /** A turn is in flight — compaction is refused server-side while one runs,
+   *  so the control says so rather than offering a request that would fail. */
+  compactDisabled?: boolean;
 }) {
   const usedPct = windowTokens
     ? Math.min(100, Math.max(0, (used / windowTokens) * 100))
@@ -112,6 +122,31 @@ export function ContextPill({
           <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">
             {harnessName(provider)} automatically compacts its context when needed.
           </p>
+
+          {/* COMPACT LIVES HERE, not loose in the composer row. It used to be a
+              bare icon button beside the send control, where it had no context:
+              a fold glyph among model and mode pickers, next to a percentage
+              that never explained what it had to do with it.
+              This popover is already about the context window and already ends
+              with the sentence about compaction — so the manual action belongs
+              directly under the automatic one it overrides. The reading is now
+              "here is how full it is, here is what happens on its own, here is
+              how to do it now", which is one thought instead of three. */}
+          {onCompact && (
+            <button
+              type="button"
+              onClick={onCompact}
+              disabled={compacting || compactDisabled}
+              className="mt-3 w-full rounded-lg border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:text-muted-foreground disabled:hover:bg-transparent"
+            >
+              {compacting ? "Compacting…" : "Compact now"}
+            </button>
+          )}
+          {onCompact && compactDisabled && !compacting && (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Available once the current turn finishes.
+            </p>
+          )}
         </div>
       </PopoverContent>
     </Popover>

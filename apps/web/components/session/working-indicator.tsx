@@ -23,6 +23,12 @@ export type WorkState =
   | { kind: "starting" }
   | { kind: "thinking"; startedAt: number }
   | { kind: "working"; startedAt: number }
+  // A COMPACTION IS NOT A TURN, and saying "Working" during one was wrong in a
+  // way that mattered: nothing is being worked on, no output is coming, and the
+  // user pressed a button whose whole promise is that something specific is
+  // happening. This is a kind rather than a label override so the verb travels
+  // with the state instead of being decided by whoever renders it.
+  | { kind: "compacting"; startedAt: number }
   | { kind: "tool"; tool: string; target: string; startedAt: number; lastActivityAt: number };
 
 const fmtElapsed = (s: number) => {
@@ -77,7 +83,8 @@ export function WorkingIndicator({
   const silent = silentFor >= SILENCE_THRESHOLD;
   // A tool call reads as "Working": the lane above says WHICH tool, and the two
   // rows disagreeing about the verb ("Ran command" / "Using Read") was noise.
-  const label = state.kind === "thinking" ? "Thinking" : "Working";
+  const label =
+    state.kind === "thinking" ? "Thinking" : state.kind === "compacting" ? "Compacting" : "Working";
 
   return (
     <div className={cn(base, silent && "text-amber-500/80", className)}>

@@ -1029,6 +1029,12 @@ function SessionWorkspace({
   // producing output, and a compaction produces none — collapsing them would
   // make an idle composer's Compact press look like a new turn started.
   const [compacting, setCompacting] = useState(false);
+  // When the CURRENT compaction started, so the indicator can count up. Set
+  // beside every `setCompacting(true)` rather than derived from the turn's
+  // `turnStartedAt`: a compaction triggered from an idle session has no turn,
+  // and one triggered mid-turn started long after the turn did — reusing the
+  // turn's clock would show an elapsed time that was never about compacting.
+  const [compactStartedAt, setCompactStartedAt] = useState(0);
   // True once the chat record is actually confirmed persisted server-side —
   // NOT the same as `sessionId` being set. sessionId is assigned the moment
   // the "session" SSE event arrives, right at the START of a turn (just
@@ -1631,7 +1637,10 @@ function SessionWorkspace({
     // yet — it deliberately does not reset `compacting`, since Claude's own
     // "compacted" event (PostCompact) already does, and always fires after.
     if (event === "compacting" || event === "compacted" || event === "compact_boundary") {
-      if (event === "compacting") setCompacting(true);
+      if (event === "compacting") {
+        setCompacting(true);
+        setCompactStartedAt(Date.now());
+      }
       if (event === "compacted") setCompacting(false);
       return;
     }
@@ -2344,6 +2353,7 @@ function SessionWorkspace({
   const compactNow = useCallback(async () => {
     if (!sessionId || compacting || busy) return;
     setCompacting(true);
+    setCompactStartedAt(Date.now());
     setCompactError(null);
     const runId = globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2);
     try {
@@ -3142,7 +3152,14 @@ function SessionWorkspace({
   // Derive the single live-work state the header indicator renders while busy.
   const liveWork = useMemo<WorkState | null>(
     () =>
-      !busy
+      // COMPACTING OUTRANKS EVERYTHING, including `busy`. A compaction can be
+      // running with `busy` false (the Compact button, on an idle session) or
+      // with it true (a harness auto-compacting mid-turn), and in both cases
+      // "Compacting" is the truer sentence — the turn it interrupts produces no
+      // output while it runs, so "Working" describes the wrong thing.
+      compacting
+        ? { kind: "compacting", startedAt: compactStartedAt }
+        : !busy
         ? null
         : status === "submitted"
           ? { kind: "starting" }
@@ -3157,7 +3174,7 @@ function SessionWorkspace({
             : thinking
               ? { kind: "thinking", startedAt: turnStartedAt }
               : { kind: "working", startedAt: turnStartedAt },
-    [busy, lastActivityAt, runningTool, status, thinking, turnStartedAt],
+    [busy, compacting, compactStartedAt, lastActivityAt, runningTool, status, thinking, turnStartedAt],
   );
 
   // Merge project's scanned commands+skills with what the live SDK session
@@ -4070,35 +4087,14 @@ function SessionWorkspace({
                       <PromptInputActionAddScreenshot />
                     </PromptInputActionMenuContent>
                   </PromptInputActionMenu>
-                  {/* The compact affordance (this task's part 3): only meaningful
-                      once a real session/thread exists to compact — route.ts's
-                      own 400 guard refuses `compact: true` without a sessionId,
-                      so the button never offers a request the server would just
-                      reject. Same icon-sm ghost Button pattern as the dock
-                      minimize control above; `compacting` drives the same
-                      pulsing-icon treatment busy state uses elsewhere rather
-                      than inventing a second "in progress" visual language. */}
-                  {sessionId && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={compacting ? "Compacting…" : "Compact conversation"}
-                      title={
-                        compacting
-                          ? "Compacting…"
-                          : "Compact this conversation — summarize history to free up context"
-                      }
-                      disabled={compacting || busy}
-                      className={cn(
-                        "shrink-0 text-muted-foreground hover:text-foreground",
-                        compacting && "animate-pulse text-primary",
-                      )}
-                      onClick={() => void compactNow()}
-                    >
-                      <FoldVerticalIcon className="size-4" />
-                    </Button>
-                  )}
+                  {/* The compact affordance MOVED INTO THE CONTEXT PILL below.
+                      It was a bare fold glyph sitting among the model and mode
+                      pickers, with nothing on the row explaining what it did or
+                      why it was next to a percentage. The pill's popover is
+                      already about the context window and already ends with the
+                      sentence about the harness compacting automatically, so
+                      the manual action now sits directly under the automatic
+                      one it overrides. */}
                   <ComposerControls
                     project={project}
                     provider={provider}
@@ -4138,6 +4134,13 @@ function SessionWorkspace({
                           ))
                     }
                     provider={provider}
+                    // Only offered once a real session exists to compact —
+                    // route.ts's own 400 guard refuses `compact: true` without
+                    // a sessionId, so the control never offers a request the
+                    // server would reject.
+                    onCompact={sessionId ? () => void compactNow() : undefined}
+                    compacting={compacting}
+                    compactDisabled={busy}
                   />
                 <PromptInputSubmit
                   className="shrink-0"
