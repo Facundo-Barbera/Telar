@@ -121,6 +121,31 @@ export const HarnessEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("usage"), usage: Usage }),
   z.object({ type: z.literal("error"), message: z.string(), threadId: z.string().optional() }),
 
+  // Compaction — the harness rewriting this turn's own history down to a
+  // summary, either because the user asked for it on demand or because the
+  // harness is about to run out of context window on its own. `compact_start`
+  // opens the window a surface renders "compacting…" in; `compact_end` closes
+  // it. Both carry `trigger` so a surface (or a log) can tell "the user
+  // pressed the button" from "the harness protected itself" without a second
+  // event pair — Claude's PreCompact/PostCompact hooks and Codex's
+  // thread/compact/start both distinguish exactly this, nothing finer.
+  // `summary` on compact_end is the harness's own account of what survived —
+  // Claude's PostCompact `compact_summary`, RAW. Codex's wire (a bare
+  // {threadId, turnId} notification) has no equivalent text, so it is null
+  // there rather than omitted: a surface renders "Compacted" either way
+  // without a presence check first.
+  z.object({
+    type: z.literal("compact_start"),
+    trigger: z.enum(["manual", "auto"]),
+    threadId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("compact_end"),
+    trigger: z.enum(["manual", "auto"]),
+    summary: z.string().nullable(),
+    threadId: z.string().optional(),
+  }),
+
   z.object({
     type: z.literal("rate_limits"),
     primary: RateWindow,

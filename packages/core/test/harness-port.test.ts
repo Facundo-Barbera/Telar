@@ -23,6 +23,8 @@ describe("the event vocabulary", () => {
     // which is the point: the enumeration is what a conformance suite iterates.
     expect([...HARNESS_EVENT_TYPES].sort()).toEqual(
       [
+        "compact_end",
+        "compact_start",
         "error",
         "rate_limits",
         "session",
@@ -37,6 +39,33 @@ describe("the event vocabulary", () => {
         "usage",
       ].sort(),
     );
+  });
+
+  test("compaction pairs a start with an end carrying the same trigger, and Codex's end has no summary text", () => {
+    // On-demand (this task's ask): the user pressed Compact.
+    const start = HarnessEvent.parse({ type: "compact_start", trigger: "manual" });
+    expect(start).toEqual({ type: "compact_start", trigger: "manual" });
+    // Claude's PostCompact hands back its own summary text, verbatim.
+    const claudeEnd = HarnessEvent.parse({
+      type: "compact_end",
+      trigger: "manual",
+      summary: "kept the last 12 turns, dropped the rest",
+    });
+    expect(claudeEnd).toMatchObject({ summary: "kept the last 12 turns, dropped the rest" });
+    // Codex's thread/compacted carries no summary text at all — null, not
+    // omitted, so a surface never has to presence-check before rendering.
+    const codexEnd = HarnessEvent.parse({ type: "compact_end", trigger: "manual", summary: null });
+    expect(codexEnd).toMatchObject({ summary: null });
+    // A harness compacting on its own to stay under its context window, not
+    // because anyone asked — same two events, the other trigger value.
+    const auto = HarnessEvent.parse({ type: "compact_end", trigger: "auto", summary: null });
+    expect(auto).toMatchObject({ trigger: "auto" });
+  });
+
+  test("compaction refuses a trigger outside manual/auto", () => {
+    expect(
+      HarnessEvent.safeParse({ type: "compact_start", trigger: "scheduled" }).success,
+    ).toBe(false);
   });
 
   test("a root-thread event omits threadId; a subagent event carries it", () => {

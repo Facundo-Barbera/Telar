@@ -47,7 +47,7 @@ import {
   EFFORT_OPTIONS,
   type CodexReasoningEffort,
 } from "@/lib/models";
-import { runCodexTurn } from "@/lib/codex-app-server";
+import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { autoDenialMessage } from "@/lib/permission-denial";
 
@@ -261,7 +261,18 @@ export async function POST(req: Request) {
     // attachments, which already holds the bytes. Resolved to absolute paths
     // below and handed to whichever harness is running — never inlined here.
     attachments: rawAttachments,
+    // On-demand compaction (this route's trigger for BOTH harnesses, per
+    // AD-11/AD-9's "resolve before the body runs" idiom — see the composer's
+    // Compact affordance). A flag rather than a dedicated route: compact needs
+    // the same project/account/session-profile resolution and the same SSE
+    // contract every other turn already gets here, so a second route would
+    // either duplicate ~300 lines of that setup or import this file's
+    // internals — neither is cheaper than one more field. Anything but a
+    // literal `true` collapses to false, the same fail-safe idiom as `ultra`
+    // above.
+    compact: rawCompact,
   } = await req.json();
+  const compact: boolean = rawCompact === true;
   // Ids only, from the wire, narrowed the same fail-safe way as `role`: an
   // entry that isn't a string, or that names an upload this server has no
   // record of, collapses away rather than reaching a harness as a path.
@@ -327,10 +338,23 @@ export async function POST(req: Request) {
   // through this string. Note the sentinel's session polarity is the OPPOSITE
   // of the kickoff's — a wake fires only on an already-resumed session — which
   // is why it is its own recognizer and not a case of this one.
-  const message: string = resolveUltraWakeMessage(
-    sessionId,
-    resolveEscalationMessage(role, sessionId, rawMessage),
-  );
+  // Compact is a third machinery turn in the same family as the kickoff/wake
+  // sentinels below: the wire carries no prompt text at all (the composer's
+  // Compact button sends `compact: true` with whatever `message` was sitting
+  // in the box, typically empty), and the server substitutes the real
+  // instruction. Unlike the other two, that instruction is the SAME literal
+  // string for both harnesses — Claude's slash command runs the SDK's own
+  // built-in compaction, and the Codex branch (below) never actually sends
+  // this text anywhere; it calls runCodexCompact() directly and this value
+  // only matters for the `displayText`/kickoff-style bookkeeping that turn
+  // shares with every other. Checked first because a compact turn can never
+  // also be a kickoff or a wake.
+  const message: string = compact
+    ? "/compact"
+    : resolveUltraWakeMessage(
+        sessionId,
+        resolveEscalationMessage(role, sessionId, rawMessage),
+      );
   // Bug-B fix — the kickoff's resolved instruction ("The human just opened
   // this escalation...") is machinery fed to the model, never something the
   // human said. `message` above (the resolved prompt) still drives the SDK
@@ -338,7 +362,7 @@ export async function POST(req: Request) {
   // marks this turn so persistence/logging (below) never writes that
   // instruction text anywhere it could render as a "user" bubble, and title
   // generation (further below) skips it entirely.
-  const isKickoff = isEscalationKickoff(role, sessionId, rawMessage);
+  const isKickoff = !compact && isEscalationKickoff(role, sessionId, rawMessage);
   // Story 4.1 — the wake trigger is machinery for exactly the same reason the
   // kickoff is: its wire text is a sentinel, and the text the model runs is
   // server-authored. `hidden: true` on the client suppresses the user BUBBLE and
@@ -346,13 +370,18 @@ export async function POST(req: Request) {
   // governed server-side — so without `hideUserMessage` below, the trigger would
   // be invisible during the session and would reappear as a user bubble after a
   // page reload. Both machinery turns share one flag so neither can drift.
-  const isUltraWake = isUltraWakeTrigger(sessionId, rawMessage);
-  const hiddenTurn = isKickoff || isUltraWake;
-  const displayText: string = isKickoff
-    ? "Discuss verification"
-    : isUltraWake
-      ? "Ultra run finished"
-      : message;
+  const isUltraWake = !compact && isUltraWakeTrigger(sessionId, rawMessage);
+  // Compact joins the hidden family too — "/compact" (or the Codex no-op
+  // prompt) is never something the human typed, so it never earns a user
+  // bubble either.
+  const hiddenTurn = compact || isKickoff || isUltraWake;
+  const displayText: string = compact
+    ? "Compact conversation"
+    : isKickoff
+      ? "Discuss verification"
+      : isUltraWake
+        ? "Ultra run finished"
+        : message;
 
   // Resolve the anchoring project up front — an unknown/missing project is a
   // plain 400, not an SSE error, so the client fails before any stream opens.
@@ -419,6 +448,20 @@ export async function POST(req: Request) {
   }
 
   const provider = profile.provider ?? "claude";
+
+  // On-demand compaction targets an EXISTING thread — there is nothing to
+  // compact before the harness has named one — so unlike every other turn
+  // kind here this is a plain 400 rather than a session-profile concern. Both
+  // harnesses need this: Claude's "/compact" only means something inside a
+  // resumed conversation, and Codex's runCodexCompact (below) resumes a
+  // threadId it must already have.
+  if (compact && !sessionId) {
+    return Response.json(
+      { error: "compact requires an existing sessionId." },
+      { status: 400 },
+    );
+  }
+
   // UltraCode and Ultrathink briefly existed as Telar-only Claude presets.
   // Existing chats may still carry either value; retire them as an ordinary
   // model-default turn instead of breaking the next resume with a 400.
@@ -1063,6 +1106,29 @@ export async function POST(req: Request) {
         return { continue: true };
       };
 
+      // The client's "compacting…" indicator, sourced from the SDK's own
+      // PreCompact/PostCompact hooks rather than from `compact` (this route's
+      // own on-demand flag) alone — the SDK fires PreCompact/PostCompact for
+      // its OWN auto-compaction too, whenever a normal turn is about to
+      // overrun its context window, and that case has no `compact: true` on
+      // the wire at all. One pair of hooks covers both origins; `input.trigger`
+      // ("manual" | "auto") is how the client tells them apart, same
+      // enumeration as HarnessEvent's compact_start/compact_end in
+      // packages/core. Always registered (not conditional on `compact`) for
+      // exactly that reason — see PARITY RULE / AD-11's neighbor concern: an
+      // auto-compaction the client never learns about is a silent-degradation
+      // shape by a different name.
+      const preCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
+        if (input.hook_event_name !== "PreCompact") return { continue: true };
+        send("compacting", { trigger: input.trigger });
+        return { continue: true };
+      };
+      const postCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
+        if (input.hook_event_name !== "PostCompact") return { continue: true };
+        send("compacted", { trigger: input.trigger, summary: input.compact_summary });
+        return { continue: true };
+      };
+
       try {
         if (provider === "codex") {
           // Codex path: same session/text/thinking/tool/tool_result/done/
@@ -1082,6 +1148,42 @@ export async function POST(req: Request) {
           // identical way. Every subsequent event tagged with that child's
           // threadId is attributed via parentId/`parent`, the same
           // contract the client already reads for the Claude path.
+          // On-demand compaction, dispatched before any of the turn-shaped
+          // machinery below is even built (approvals/dynamic tools/tool
+          // namespaces all belong to a REAL turn; compact runs none of them).
+          // runCodexCompact resumes the SAME threadId with a fresh app-server
+          // subprocess (per-turn subprocess architecture — see
+          // lib/codex-app-server.ts) and speaks exactly two events:
+          // compact_start when thread/compact/start acks, compact_end when
+          // runCodexCompact observes the compaction's own item/turn complete
+          // (see that function's comment — NOT the deprecated
+          // `thread/compacted` notification, which a live trace against a
+          // real app-server showed is never actually sent). `capturedSession` and
+          // `lastResult` are deliberately left unset for this whole branch —
+          // the finally block below only logs usage, appends a turn, and
+          // sends "saved"/"done" when one of those is set, so a compact-only
+          // request never manufactures a spurious transcript entry for "the
+          // harness reorganized its own history." `resumeTarget` is
+          // guaranteed non-null here: the 400 guard above already refused
+          // `compact: true` without a sessionId.
+          if (compact) {
+            for await (const nev of runCodexCompact({
+              threadId: resumeTarget!,
+              env: runtimeEnv,
+              signal: abort.signal,
+            })) {
+              switch (nev.type) {
+                case "compact_start":
+                  send("compacting", { trigger: nev.trigger });
+                  break;
+                case "compact_end":
+                  send("compacted", { trigger: nev.trigger, summary: nev.summary });
+                  break;
+              }
+            }
+            return;
+          }
+
           const resolveCodexParent = (threadId?: string): string | undefined => {
             if (!threadId || threadId === capturedSession) return undefined;
             return parentFlatten.resolve(threadId) ?? undefined;
@@ -1717,7 +1819,11 @@ export async function POST(req: Request) {
             // Explicit Telar servers are added beside MCP servers from the
             // selected Claude configuration, matching a native Claude launch.
             canUseTool,
-            hooks: { PreToolUse: [{ hooks: [preToolUseGuardrail] }] },
+            hooks: {
+              PreToolUse: [{ hooks: [preToolUseGuardrail] }],
+              PreCompact: [{ hooks: [preCompactNotify] }],
+              PostCompact: [{ hooks: [postCompactNotify] }],
+            },
             // NO TURN CEILING BY DEFAULT — omitted, not set to a big number.
             //
             // This used to be a bare `maxTurns: 25` with no comment and no way
@@ -2130,6 +2236,34 @@ export async function POST(req: Request) {
               });
               partOrigin.push(undefined);
             }
+          } else if (msg.type === "system" && msg.subtype === "compact_boundary") {
+            // The SDK's own record that it just rewrote this session's history
+            // down to a summary — fired for BOTH triggers: `manual` is this
+            // route's own "/compact" substitution above, `auto` is the SDK
+            // protecting itself from running out of context window on an
+            // ordinary turn nobody asked to compact. The PreCompact/PostCompact
+            // hooks below (query() options) already sent "compacting"/
+            // "compacted" for the client's live "compacting…" indicator; this
+            // message arrives on the SAME stream slightly later; carrying the
+            // token-count metadata neither hook receives (PreCompact only
+            // knows the trigger, PostCompact only knows the summary text) — so
+            // it is broadcast as its own event rather than folded into either
+            // hook's send(), which would mean inventing numbers the hook was
+            // never given.
+            const cb = msg as unknown as {
+              compact_metadata?: {
+                trigger?: "manual" | "auto";
+                pre_tokens?: number;
+                post_tokens?: number;
+                duration_ms?: number;
+              };
+            };
+            send("compact_boundary", {
+              trigger: cb.compact_metadata?.trigger ?? "manual",
+              preTokens: cb.compact_metadata?.pre_tokens,
+              postTokens: cb.compact_metadata?.post_tokens,
+              durationMs: cb.compact_metadata?.duration_ms,
+            });
           } else if (msg.type === "result") {
             // Capture only — do NOT log usage / send
             // "done" here. A backgrounded subagent can wake an SDK
