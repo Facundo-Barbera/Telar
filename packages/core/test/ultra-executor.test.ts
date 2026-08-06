@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentOpts, EngineEvent } from "../src/engine";
 import {
   startUltra,
@@ -708,6 +709,270 @@ describe("Ultra executor — agent-start is emitted once per LIVE ordinal, never
     });
     expect((await resumed.finished).state).toBe("done");
     expect(replayed.filter((e) => e.type === "agent-start").map((e) => e.ordinal)).toEqual([0, 1]);
+  });
+});
+
+// ── issue #40 — opts.phase reaches the stream, and the MAPPING is pinned whole ─
+describe("Ultra executor — every narrated agent() opt reaches the event stream (issue #40)", () => {
+  // WHY THIS IS A PARTITION AND NOT ONE MORE `phase` CASE. `effort` was accepted
+  // and dropped on the floor until story 4.2 gave it a reader. `phase` was
+  // accepted, DOCUMENTED as the remedy for pipeline()/parallel() races, and
+  // dropped until this issue — the same defect one field over, and it survived
+  // because every assertion here named one field at a time, so a field nobody
+  // named was a field nobody missed. This pins the WHOLE of `UltraAgentOpts`:
+  // each field is either narrated or listed below with its reason, and adding a
+  // field to that type without deciding which fails this test.
+  //
+  // `model` is narrated and required, so it has no absent case.
+  const NARRATED = ["model", "label", "effort", "phase"] as const;
+  /** The value each narrated opt is passed with. THE ASSERTIONS BELOW ARE DRIVEN
+   *  OFF THIS, script source included, so a field added to `NARRATED` and to
+   *  nothing else cannot pass by being `undefined` on both sides of an
+   *  `expect` — the way this list read before, where every entry nobody had
+   *  hand-written a value for compared undefined to undefined and passed. */
+  const VALUE: Record<(typeof NARRATED)[number], string> = {
+    model: "sonnet",
+    label: "scout",
+    effort: "high",
+    phase: "review",
+  };
+  const NOT_NARRATED: Record<string, string> = {
+    // A zod object. Not JSON, not renderable, and `events.ndjson` is JSON.
+    schema: "not serialisable",
+    // Budgets the engine enforces; no surface renders them, and inventing a
+    // reader for one is how a field ends up displayed and meaningless.
+    maxTurns: "engine-enforced, no reader",
+    isolation: "not honoured yet (surface.ts)",
+    allowStringifiedObject: "a guard escape, not a property of the work",
+  };
+
+  /** The agent events one run emitted, with the COUNT pinned: a path that
+   *  stopped emitting altogether would otherwise satisfy "every event carries
+   *  every field" with an empty list. */
+  const agentEvents = (seen: readonly UltraEvent[], n: number): Record<string, unknown>[] => {
+    const evs = seen.filter((e) => e.type === "agent-start" || e.type === "agent");
+    expect(evs.length).toBe(n);
+    return evs as unknown as Record<string, unknown>[];
+  };
+
+  test("THE CLOSED LIST — every UltraAgentOpts field is classified", () => {
+    expect(Object.keys(VALUE).sort()).toEqual([...NARRATED].sort());
+    const src = fs.readFileSync(fileURLToPath(new URL("../src/ultra/surface.ts", import.meta.url)), "utf8");
+    const body = /export type UltraAgentOpts = \{([\s\S]*?)\n\};/.exec(src)?.[1];
+    // A rename that breaks the parse must FAIL, never silently classify nothing.
+    expect(body).toBeDefined();
+    const fields = [
+      ...body!
+        .split("\n")
+        .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+        .join("\n")
+        .matchAll(/^ {2}(\w+)\??:/gm),
+    ].map((m) => m[1]!);
+    expect(fields.length).toBeGreaterThan(4); // anti-vacuity: the parse found real fields
+    expect(fields.sort()).toEqual([...NARRATED, ...Object.keys(NOT_NARRATED)].sort());
+  });
+
+  test("THE OTHER HALF OF THE LIST — every EMIT SITE in the executor names every narrated opt", () => {
+    // Classifying a field is not carrying it. `phase` was classified narrated
+    // and emitted from three of four sites, and the run-behaviour cases below
+    // can only cover the paths someone thought to write a case for — so the
+    // SOURCE is scanned for the population itself. A fifth `onEvent` agent
+    // literal, or one that forgets a field, fails here rather than at whichever
+    // surface later reads the gap as "this agent had no phase".
+    const src = fs.readFileSync(fileURLToPath(new URL("../src/ultra/executor.ts", import.meta.url)), "utf8");
+    const sites = [
+      ...src.matchAll(/onEvent\?\.\(\{\s*\n\s*type: "(agent|agent-start)",[\s\S]*?\n\s*\}\)/g),
+    ];
+    // Cache-hit replay, agent-start, the dead-agent settle, the live settle.
+    // A change to this number is a decision: add the new site to `emitSites`.
+    expect(sites.map((m) => m[1])).toEqual(["agent", "agent-start", "agent", "agent"]);
+    for (const [block, kind] of sites.map((m) => [m[0], m[1]] as const))
+      for (const k of NARRATED) expect({ kind, has: block.includes(`uOpts.${k}`) }).toEqual({ kind, has: true });
+  });
+
+  /** The script every emit-site case below runs — built FROM `VALUE`, so the
+   *  opts the script passes and the values asserted cannot drift apart. */
+  const SCRIPT = `${META}\nexport default async function ({ agent }) { return agent("hi", { ${NARRATED.map(
+    (k) => `${k}: ${JSON.stringify(VALUE[k])}`,
+  ).join(", ")} }); }`;
+
+  /** EVERY PATH THAT EMITS AN AGENT EVENT, because a mapping is only as good as
+   *  its worst site and asserting one happy-path call is how the last gap got
+   *  through: `phase` reached three of the four emit sites, and the fourth — the
+   *  settle of an agent whose provider threw — put the failed row back in the
+   *  headerless UNPHASED box, issue #40's own symptom for exactly the agents a
+   *  reader is hunting for. A fifth site added without its opts fails here. */
+  const emitSites: { site: string; events: () => Promise<Record<string, unknown>[]> }[] = [
+    {
+      site: "live: agent-start + settle",
+      events: async () => {
+        const seen: UltraEvent[] = [];
+        const run = startUltra(SCRIPT, {
+          agent: (async () => ({ text: "ok" })) as Fake as any,
+          onEvent: (e) => seen.push(e),
+        });
+        expect((await run.finished).state).toBe("done");
+        return agentEvents(seen, 2);
+      },
+    },
+    {
+      site: "DEAD AGENT: the provider threw",
+      events: async () => {
+        const seen: UltraEvent[] = [];
+        const run = startUltra(SCRIPT, {
+          agent: (async () => {
+            throw new Error("provider exploded");
+          }) as Fake as any,
+          onEvent: (e) => seen.push(e),
+        });
+        await run.finished;
+        const evs = agentEvents(seen, 2);
+        // The path really was the ok:false one — otherwise this case would be a
+        // second copy of the live case above.
+        expect(evs[1]!.ok).toBe(false);
+        expect(evs[1]!.deadReason).toBe("error");
+        return evs;
+      },
+    },
+    {
+      site: "CACHE HIT: a resume replays the settle",
+      events: async () => {
+        const first = startUltra(SCRIPT, { agent: (async () => ({ text: "ok" })) as Fake as any });
+        expect((await first.finished).state).toBe("done");
+        const seen: UltraEvent[] = [];
+        const resumed = resumeUltra(first.runId, SCRIPT, {
+          agent: (async () => {
+            throw new Error("must not be called — the call is cache-served");
+          }) as Fake as any,
+          onEvent: (e) => seen.push(e),
+        });
+        expect((await resumed.finished).state).toBe("done");
+        const evs = agentEvents(seen, 1);
+        expect(evs[0]!.cached).toBe(true);
+        return evs;
+      },
+    },
+  ];
+
+  for (const { site, events } of emitSites) {
+    test(`every narrated opt rides every agent event — ${site}`, async () => {
+      const emitted = await events();
+      for (const e of emitted) {
+        for (const k of NARRATED) {
+          // Anti-vacuity: the script above passed a real value for this field, so
+          // an `undefined === undefined` comparison is a failure, not a pass.
+          expect(VALUE[k]).toBeTypeOf("string");
+          expect(e[k]).toBe(VALUE[k]);
+        }
+      }
+    });
+  }
+
+  test("the exact agent-start shape — narrated opts and NOTHING else", async () => {
+    // The table above pins presence; this pins that nothing extra rode along.
+    const events: UltraEvent[] = [];
+    const run = startUltra(SCRIPT, {
+      agent: (async () => ({ text: "ok" })) as Fake as any,
+      onEvent: (e) => events.push(e),
+    });
+    expect((await run.finished).state).toBe("done");
+    expect(events[0]).toEqual({ type: "agent-start", ordinal: 0, ...VALUE });
+  });
+
+  test("an opt that was not passed is an ABSENT KEY on both events — never an empty string", async () => {
+    // The rail renders `model·effort` and the grouper falls back to the ambient
+    // phase, so "absent" has to be genuinely absent rather than falsy.
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("hi", { model: "sonnet" }); }`,
+      { agent: (async () => ({ text: "ok" })) as any, onEvent: (e) => events.push(e) },
+    );
+    await run.finished;
+    for (const k of ["label", "effort", "phase"]) {
+      expect(k in events[0]!).toBe(false);
+      expect(k in events[1]!).toBe(false);
+    }
+  });
+
+  test("`phase` is DISPLAY metadata — it reaches the events and NEVER engineOpts", async () => {
+    // Unlike `effort` (which the SDK does have a field for, and which story 4.2
+    // therefore threaded through), a phase is a fact about the RUN's shape. The
+    // child has no use for it and would only be told something it cannot act on.
+    const seen: AgentOpts<any>[] = [];
+    const events: UltraEvent[] = [];
+    const run = startUltra(
+      `${META}\nexport default async function ({ agent }) { return agent("hi", { model: "sonnet", phase: "review" }); }`,
+      {
+        agent: (async (_p: string, o: AgentOpts<any>) => {
+          seen.push(o);
+          return { text: "ok" };
+        }) as any,
+        onEvent: (e) => events.push(e),
+      },
+    );
+    await run.finished;
+    expect("phase" in seen[0]!).toBe(false);
+    expect(events[0]).toEqual({ type: "agent-start", ordinal: 0, model: "sonnet", phase: "review" });
+  });
+
+  test("A RESUME KEEPS THE GROUPING WITHOUT A JOURNAL FIELD — the replay re-presents phase off opts", async () => {
+    // THE DECISION THIS TEST IS THE PROOF OF: `phase` is deliberately NOT
+    // journaled. A resume re-runs the script, so the call that hash-matched has
+    // just named its phase again; the cache-hit path reads it off THIS run's
+    // opts exactly as it does `label`/`effort`. A copy on the journal record
+    // could only be a second source of truth able to disagree with the script on
+    // disk, on a record whose job is the identity of a SETTLE (hash, result,
+    // settleId, cost) rather than how to draw it.
+    const echoFake: Fake = async (p) => ({ text: p });
+    const script = `${META}\nexport default async function ({ agent, pipeline }) {\n  return pipeline([1], (p, i) => agent("impl" + i, { model: "sonnet", phase: "implement" }), (p, i) => agent("rev" + i, { model: "sonnet", phase: "review" }));\n}`;
+    const run = startUltra(script, { agent: echoFake as any });
+    expect((await run.finished).state).toBe("done");
+
+    const replayed: UltraEvent[] = [];
+    const resumed = resumeUltra(run.runId, script, {
+      agent: (async () => {
+        throw new Error("must not be called — the whole prefix is cache-served");
+      }) as Fake as any,
+      onEvent: (e) => replayed.push(e),
+    });
+    expect((await resumed.finished).state).toBe("done");
+    const settles = replayed.filter((e) => e.type === "agent");
+    expect(settles.length).toBe(2);
+    expect(settles.every((e) => e.type === "agent" && e.cached === true)).toBe(true);
+    expect(settles.map((e) => (e.type === "agent" ? e.phase : undefined))).toEqual(["implement", "review"]);
+    // …and it is genuinely not on disk, which is the half a passing replay alone
+    // cannot show.
+    expect(readJournal(run.runId).every((r) => !("phase" in r))).toBe(true);
+  });
+
+  test("THE REPORTED SHAPE — a pipeline whose stages set opts.phase while the ambient phase never moves", async () => {
+    // Issue #40's run: three phases declared, `phase()` called once at the top
+    // (or not at all), every agent tagged with `opts.phase`. The stream must
+    // carry the DECLARED phase per ordinal — not the ambient one, which is what
+    // a grouper had to fall back on when this field went nowhere.
+    const events: UltraEvent[] = [];
+    const script = `${META}\nexport default async function ({ agent, pipeline }) {
+      return pipeline([1, 2],
+        (p, i) => agent("impl" + i, { model: "sonnet", phase: "implement" }),
+        (p, i) => agent("rev" + i, { model: "sonnet", phase: "review" }),
+        (p, i) => agent("close" + i, { model: "sonnet", phase: "close" }));
+    }`;
+    const run = startUltra(script, {
+      agent: (async (p: string) => ({ text: p })) as Fake as any,
+      onEvent: (e) => events.push(e),
+    });
+    expect((await run.finished).state).toBe("done");
+    // NO `phase` EVENT AT ALL — the ambient never moved, so every one of these
+    // six ordinals would have grouped identically before this change.
+    expect(events.some((e) => e.type === "phase")).toBe(false);
+    const byOrdinal = new Map<number, string | undefined>();
+    for (const e of events) if (e.type === "agent-start") byOrdinal.set(e.ordinal, e.phase);
+    expect(byOrdinal.size).toBe(6);
+    // Two items × three stages; pipeline has no inter-stage barrier, so the
+    // ordinals interleave and the SET is what can be asserted, not the order.
+    expect([...byOrdinal.values()].filter((p) => p === "implement").length).toBe(2);
+    expect([...byOrdinal.values()].filter((p) => p === "review").length).toBe(2);
+    expect([...byOrdinal.values()].filter((p) => p === "close").length).toBe(2);
   });
 });
 

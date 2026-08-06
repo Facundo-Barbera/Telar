@@ -170,6 +170,16 @@ export type UltraEvent =
       // so before story 4.2 it was accepted and then dropped on the floor. The
       // rail's `model·effort` chip is the first reader it has ever had.
       effort?: string;
+      // THE SAME DEFECT, ONE FIELD OVER (issue #40). `opts.phase` was accepted,
+      // documented as the remedy for pipeline()/parallel() stages racing on the
+      // global `phase()` state, and then never emitted — so the ONLY signal a
+      // grouper had was the ambient phase, which is precisely the value the
+      // field exists to override. A seven-agent run declaring three phases drew
+      // all seven under the first.
+      //
+      // Absent means "this call named no phase", and a reader must then fall
+      // back to the ambient — a bare `phase()` script is unaffected.
+      phase?: string;
     }
   | {
       type: "agent";
@@ -180,6 +190,11 @@ export type UltraEvent =
       // the stream after an ordinal started (the anchor's SSE tail opens
       // mid-run) still gets the chip. Still NOT passed to the engine.
       effort?: string;
+      // Same field, same reason, on the settle event — and it is what makes
+      // grouping survive a RESUME without a journal field: the cache-hit replay
+      // emits only `agent`, and re-presents this off THIS run's opts, which the
+      // cheap re-run has just supplied again. See the replay site below.
+      phase?: string;
       ok: boolean; // result !== null — a dead agent (exhausted retries) is ok:false, never a run failure
       /** WHY this agent died, when known — `ok: false` alone cannot say. Today
        *  the one knowable cause is `"max-turns"`: the child ran out of agent
@@ -414,6 +429,11 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
           // The journal has never carried it and this story does not add it
           // there: `effort` is display metadata, not part of a settle's identity.
           ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+          // AND THIS IS WHY `phase` IS NOT JOURNALED (issue #40). A resume re-runs
+          // the script, so the call that hash-matched named its phase again a line
+          // ago — the live value is right here, and a copy on the record could only
+          // go stale against it. Read off opts exactly as `label`/`effort` are.
+          ...(uOpts.phase ? { phase: uOpts.phase } : {}),
           ok: cached.result !== null,
           // Re-presented from the RECORD, like costUsd/turns/tokens beside it —
           // a replay spends nothing and never re-learns why the agent died, so
@@ -472,10 +492,12 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ...(uOpts.label ? { label: uOpts.label } : {}),
       model: uOpts.model,
       ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+      ...(uOpts.phase ? { phase: uOpts.phase } : {}),
     });
 
-    // Only the doc's allowed opts reach the engine. `phase` stays journaled
-    // display metadata; isolation → worktree in a later cut.
+    // Only the doc's allowed opts reach the engine. `phase` is display metadata
+    // and rides the EVENT only (issue #40 — it used to ride nothing at all);
+    // isolation → worktree in a later cut.
     //
     // `effort` NOW REACHES THE MODEL, and until this change it did not. The
     // original note here read "effort/phase are journaled display metadata (no
@@ -642,6 +664,13 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
         ...(uOpts.label ? { label: uOpts.label } : {}),
         model: uOpts.model,
         ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+        // A DEAD AGENT KEEPS ITS PHASE. Omitting it here does not merely lose a
+        // label: the grouper is last-assignment-wins per ordinal, so a
+        // phase-less settle OVERWRITES the phase its own `agent-start` carried
+        // and drags the failed row into the headerless UNPHASED box — issue
+        // #40's reported symptom, restored for exactly the agents a reader most
+        // wants to find. Every one of the four emit sites has to agree.
+        ...(uOpts.phase ? { phase: uOpts.phase } : {}),
         ok: false,
         // Whatever the provider managed to report before it threw. A child that
         // died mid-flight still spent money, and dropping the figure is how a
@@ -724,6 +753,7 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       ...(uOpts.label ? { label: uOpts.label } : {}),
       model: uOpts.model,
       ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+      ...(uOpts.phase ? { phase: uOpts.phase } : {}),
       ok: result !== null,
       ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
       ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
