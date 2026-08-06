@@ -17,9 +17,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
-const { DesktopBrowserManager } = require("./browser-manager");
+const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 
@@ -369,6 +369,63 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
   });
 }
 
+// --- External links (issue #35) ----------------------------------------------
+// Anything that is not Telar's own UI leaves for the user's default browser.
+// Authentication is the reason: an OAuth flow in an in-app window has no
+// password manager, no session the user is already signed into and no address
+// bar, and MCP servers make that a flow users repeat rather than survive once.
+//
+// APPLIED TO THE APP WINDOW'S webContents AND NOTHING ELSE — deliberately not
+// through app.on("web-contents-created"), which would also catch the browser
+// manager's WebContentsView tabs. Those are the integrated browser: agents
+// drive them and they must keep rendering in-app.
+function openInSystemBrowser(url) {
+  // A refused hand-off to the OS must not become an unhandled rejection in the
+  // main process — there is nothing to retry, and the log is the only place
+  // this can be reported from.
+  shell.openExternal(url).catch((err) => {
+    console.error("[telar-desktop] failed to open externally:", url, err?.message || err);
+  });
+}
+
+function actOnLinkDecision(decision) {
+  if (decision.openExternal) openInSystemBrowser(decision.openExternal);
+  // The dedupe below deliberately drops the second arrival of one click, but a
+  // dropped hand-off and a broken link look identical from the outside, so say
+  // which one happened.
+  else if (decision.duplicateOf) {
+    console.log("[telar-desktop] suppressed duplicate external open:", decision.duplicateOf);
+  }
+}
+
+// createPolicy, not a policy: each webContents gets its own instance, because
+// the dedupe inside it is a per-surface burst window closing over one click's
+// window.open -> location.href fallback. Shared, a second window's first
+// hand-off would be swallowed by a first window's recent one.
+function applyExternalLinkPolicy(webContents, createPolicy) {
+  const policy = createPolicy();
+  webContents.setWindowOpenHandler(({ url }) => {
+    const decision = policy.decide(url);
+    actOnLinkDecision(decision);
+    return decision.action === "allow" ? { action: "allow" } : { action: "deny" };
+  });
+  // setWindowOpenHandler never sees a same-window navigation, and that is the
+  // path a blocked popup takes: window.open returns null when denied, and the
+  // usual fallback (Telar's own MCP OAuth connect included) assigns
+  // location.href instead.
+  webContents.on("will-navigate", (event, url) => {
+    const decision = policy.decide(url);
+    if (decision.action === "allow") return;
+    event.preventDefault();
+    actOnLinkDecision(decision);
+  });
+  // A window the app was allowed to open is still the app, so it gets the same
+  // policy; otherwise every link inside it is one un-policed hop.
+  webContents.on("did-create-window", (childWindow) => {
+    applyExternalLinkPolicy(childWindow.webContents, createPolicy);
+  });
+}
+
 // --- (e) Window --------------------------------------------------------------
 function createWindow(url) {
   const title = windowTitle();
@@ -388,6 +445,11 @@ function createWindow(url) {
     },
   });
   browserManager = new DesktopBrowserManager(win);
+  // The window's own URL is what "the app's own UI" means — it is the same
+  // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
+  // has to guess a port or a hostname. An unusable one throws, and createWindow
+  // runs inside whenReady's try/catch, which logs and quits.
+  applyExternalLinkPolicy(win.webContents, () => createExternalLinkPolicy({ appUrl: url }));
   // A native WebContentsView outlives a renderer reload and React never gets a
   // cleanup pass in that path. Hide it before the document is replaced; the
   // remounted Browser surface will publish fresh bounds and make it visible.

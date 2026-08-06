@@ -38,6 +38,79 @@ function normalizeUrl(value) {
   return parsed.href;
 }
 
+// --- External-link policy (issue #35) ---------------------------------------
+// The tabs this file owns are a feature: agents drive those WebContentsView
+// instances and they must keep rendering in-app. Every OTHER link is the
+// opposite case — an in-app window has no password manager, no session the user
+// is already signed into, and no address bar to check an origin against, which
+// is what makes MCP OAuth a repeated chore and a login page unverifiable. So
+// the shell needs a rule that separates the two, and it belongs beside
+// normalizeUrl: this file already owns every URL-scheme rule the desktop
+// applies, and both rules answer one question — what may render inside Telar.
+//
+// Pure on purpose. main.js wires it to the app window's webContents only;
+// nothing here ever reaches the tabs above.
+
+// A denied window.open returns null to the renderer, and the popup pattern
+// Telar's own MCP OAuth connect uses falls back to assigning location.href —
+// the same URL arriving a second time, through will-navigate. Without
+// suppression one click opens two browser tabs.
+const EXTERNAL_OPEN_DEDUPE_MS = 2_000;
+
+function parseUrl(value) {
+  try {
+    return new URL(String(value ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+function createExternalLinkPolicy({ appUrl, now = Date.now, dedupeMs = EXTERNAL_OPEN_DEDUPE_MS } = {}) {
+  const parsedAppUrl = parseUrl(appUrl);
+  // AD-11: without a usable origin this policy cannot tell Telar's own UI from
+  // the web, and the failure mode is not "fail closed" — it is the app handing
+  // its own pages to the system browser and refusing to render itself. The
+  // caller always has a real URL by construction; a mistyped TELAR_DESKTOP_URL
+  // is the one way to get here, and it has to stop the launch, not survive it.
+  if (!parsedAppUrl || (parsedAppUrl.protocol !== "http:" && parsedAppUrl.protocol !== "https:")) {
+    throw new Error(
+      `External-link policy needs an http(s) app URL to recognise Telar's own UI; got ${JSON.stringify(appUrl ?? null)}.`,
+    );
+  }
+  const appOrigin = parsedAppUrl.origin;
+  let lastHref = null;
+  let lastAt = 0;
+  return {
+    decide(target) {
+      const parsed = parseUrl(target);
+      // about:blank is the app opening a surface it navigates itself; that
+      // navigation returns through this same policy, so allowing the blank
+      // window costs nothing and leaves ordinary popup code working.
+      if (parsed && (parsed.href === "about:blank" || parsed.origin === appOrigin)) {
+        return { action: "allow", openExternal: null };
+      }
+      // shell.openExternal hands whatever it is given to the OS — file://,
+      // smb:// and every registered handler included — and model output can
+      // contain links, so only the two web schemes are ever passed on.
+      if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        return { action: "deny", openExternal: null };
+      }
+      const at = now();
+      if (parsed.href === lastHref && at - lastAt < dedupeMs) {
+        // Reported rather than dropped: a suppressed hand-off is
+        // indistinguishable from a broken link to the user, so the caller has
+        // somewhere to say so.
+        return { action: "deny", openExternal: null, duplicateOf: parsed.href };
+      }
+      lastHref = parsed.href;
+      lastAt = at;
+      // The parsed href, not the raw string: the OS receives exactly what was
+      // validated here.
+      return { action: "deny", openExternal: parsed.href };
+    },
+  };
+}
+
 function axValue(node, key) {
   const value = node?.[key]?.value;
   return value === undefined || value === null ? "" : String(value);
@@ -812,4 +885,4 @@ class DesktopBrowserManager {
   }
 }
 
-module.exports = { DesktopBrowserManager, normalizeUrl };
+module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl };
