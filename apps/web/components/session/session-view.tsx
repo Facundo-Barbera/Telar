@@ -319,6 +319,11 @@ type ProjectFile = { path: string; name: string };
 // is safe to share across every render and both readers below.
 const MENTION_AT_CARET = /(?:^|\s)@([^\s@]*)$/;
 
+/** How long an Escape stays armed before it forgets. Long enough that a
+ *  deliberate double-tap never misses, short enough that an Escape pressed a
+ *  minute ago cannot combine with an unrelated one to kill a turn. */
+const ESC_ARM_WINDOW_MS = 3_000;
+
 export type InitialChat = {
   id: string;
   model: string;
@@ -2531,6 +2536,92 @@ function SessionWorkspace({
   // "compacting" SSE event either way, reset by "compacted" or the `finally`
   // below as a backstop) is the only visible effect until the harness's own
   // next reply.
+  // ONE STOP, TWO TRIGGERS. The Stop button and Escape-Escape must do exactly
+  // the same thing — a second copy is how the keyboard path ends up forgetting
+  // the `turnInterruptedRef` latch and the queue quietly restarts the agent the
+  // user just halted.
+  const stopTurn = useCallback(() => {
+    // Stop the DETACHED server run — a mere disconnect no longer stops it
+    // (§A.4) — then close the local reader. A turn resumed via the §1b
+    // reconnect tail never sets runIdRef (this mount never started it, and the
+    // reconnect SSE never echoes the server-side runId back) — fall back to
+    // sessionId, which stopChatRun (lib/chat-runs.ts) already accepts as an
+    // alternate lookup key for exactly this case. The reconnect tail's own
+    // reader then unwinds on its own once the aborted run's "closed" event
+    // reaches it.
+    const rid = runIdRef.current;
+    if (rid || sessionId) {
+      void fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
+      }).catch(() => {});
+    }
+    // Stop means stop. Without this latch the queue drains the moment `status`
+    // returns to "ready", so the agent the user just halted restarts itself
+    // with their queued message.
+    turnInterruptedRef.current = true;
+    abortRef.current?.abort();
+  }, [sessionId]);
+
+  // ESCAPE, TWICE, TO STOP — and the first press must be VISIBLE.
+  //
+  // A single Escape stopping a turn is too easy to hit by accident: Escape is
+  // also "close this popover", "leave this field", "dismiss". Losing a
+  // long-running turn to a reflex is worse than needing one extra keystroke. So
+  // the first press ARMS and the second STOPS, and the send control relabels
+  // itself to `ESC` while armed — the same idiom Codex uses, and the reason it
+  // works is that the affordance appears exactly where the user is already
+  // looking when they want to interrupt.
+  //
+  // It disarms on a timer, on any other key, and whenever the turn ends. An
+  // armed state that outlives its turn would mean a later, unrelated Escape
+  // stops something the user never aimed at.
+  const [escArmed, setEscArmed] = useState(false);
+  const escArmedRef = useRef(false);
+  escArmedRef.current = escArmed;
+
+  useEffect(() => {
+    // Only while something is actually running — otherwise Escape is free to do
+    // its ordinary job, and arming would be a state with nothing to stop.
+    //
+    // AND ONLY IN THE FULL VIEW. This listens on `window`, and an embedded
+    // instance (a dock bubble) shares that window with the session behind it. If
+    // both were busy, one Escape-Escape would stop BOTH — the user aims at one
+    // turn and kills two, with no way to tell which they hit. The dock has its
+    // own stop affordance; the keyboard shortcut belongs to the surface that has
+    // the user's attention.
+    if (!busy || embedded) {
+      setEscArmed(false);
+      return;
+    }
+    let disarm: ReturnType<typeof setTimeout> | undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") {
+        // Any other key cancels the arming. Someone who pressed Escape and then
+        // carried on typing did not mean to stop the turn.
+        if (escArmedRef.current) setEscArmed(false);
+        return;
+      }
+      // Let a genuinely modal surface consume its own Escape first: closing a
+      // popover should not count as arming, and should certainly not count as
+      // the second press.
+      if (e.defaultPrevented) return;
+      if (escArmedRef.current) {
+        setEscArmed(false);
+        stopTurn();
+      } else {
+        setEscArmed(true);
+        disarm = setTimeout(() => setEscArmed(false), ESC_ARM_WINDOW_MS);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (disarm) clearTimeout(disarm);
+    };
+  }, [busy, embedded, stopTurn]);
+
   const compactNow = useCallback(async () => {
     if (!sessionId || compacting || busy) return;
     setCompacting(true);
@@ -4479,30 +4570,11 @@ function SessionWorkspace({
                   // and this issue never asked for that distinction.
                   disabled={ultraOwnsScreen}
                   status={status === "ready" ? undefined : status}
-                  onStop={() => {
-                    // Stop the DETACHED server run — a mere disconnect no longer
-                    // stops it (§A.4) — then close the local reader. A turn
-                    // resumed via the §1b reconnect tail never sets runIdRef
-                    // (this mount never started it, and the reconnect SSE never
-                    // echoes the server-side runId back) — fall back to
-                    // sessionId, which stopChatRun (lib/chat-runs.ts) already
-                    // accepts as an alternate lookup key for exactly this case.
-                    // The reconnect tail's own reader then unwinds on its own
-                    // once the aborted run's "closed" event reaches it.
-                    const rid = runIdRef.current;
-                    if (rid || sessionId) {
-                      void fetch("/api/chat/stop", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
-                      }).catch(() => {});
-                    }
-                    // Stop means stop. Without this latch the queue drains the
-                    // moment `status` returns to "ready", so the agent the user
-                    // just halted restarts itself with their queued message.
-                    turnInterruptedRef.current = true;
-                    abortRef.current?.abort();
-                  }}
+                  // ESC-ARMED LABEL. One press arms, the next stops — so the
+                  // control has to say which state it is in, or the first press
+                  // is invisible and the second is a surprise.
+                  escArmed={escArmed}
+                  onStop={stopTurn}
                 />
                 </div>
               </PromptInputFooter>

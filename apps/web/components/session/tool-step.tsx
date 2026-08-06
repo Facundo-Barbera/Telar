@@ -27,6 +27,7 @@ import {
 import { createElement } from "react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Badge } from "@/components/ui/badge";
+import { CANCELLED_TOOL_NOTE } from "@/lib/tool-cancellation";
 import { cn } from "@/lib/utils";
 
 // Pulled from a spawn tool call's AgentInput (description/prompt/subagent_type/
@@ -49,6 +50,11 @@ export type ToolPart = {
   agent?: AgentInfo;
   taskStatus?: "completed" | "failed" | "stopped";
   autoDenied?: boolean;
+  // #28 — the CLI filled this call in after an INTERRUPT; nobody refused it.
+  // Rendered differently from an error on purpose: an interrupted call is not a
+  // failure, and showing it as one is what sent an investigation looking for a
+  // permission bug that did not exist.
+  cancelled?: boolean;
 };
 
 // Primary-arg preview for a step row: the argument a human actually cares
@@ -302,6 +308,17 @@ export function ToolStepRow({
                 auto-denied
               </Badge>
             )}
+            {/* NOT destructive, and that is the whole point. A cancelled call is
+                not a failure and not a refusal — it is a call that never ran
+                because something interrupted the turn. Dressed in the same red
+                as `auto-denied` it reads as "the system blocked you", which is
+                the false reading that cost days on #28. Neutral, and the word
+                says what happened. */}
+            {part.cancelled && !part.autoDenied && (
+              <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+                cancelled
+              </Badge>
+            )}
             {interrupted && !part.isError && (
               <span className="shrink-0 text-[10px] text-muted-foreground/70">
                 (interrupted)
@@ -338,11 +355,26 @@ export function ToolStepRow({
               Interrupted — no result
             </div>
           )}
+          {/* TELAR'S SENTENCE, NOT THE CLI'S. The model still reads the CLI's
+              text — that is compiled into a binary and not ours to change — but
+              the human reading this pane gets the truth: the call did not run,
+              and nobody refused it. The CLI's version orders the reader to stop
+              and wait for a user who was never asked, which is exactly how a
+              sub-agent ends up burning its budget standing down from a refusal
+              that never happened. The original is still below, so nothing is
+              hidden. */}
+          {part.cancelled && (
+            <div className="flex items-start gap-1 text-[11px] font-medium text-muted-foreground">
+              <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" />
+              <span>{CANCELLED_TOOL_NOTE}</span>
+            </div>
+          )}
           <div className="font-medium text-muted-foreground">Result</div>
           <pre
             className={cn(
               "max-h-60 overflow-x-auto overflow-y-auto font-mono whitespace-pre-wrap break-words",
-              part.isError
+              // A cancelled result is not destructive — see the badge above.
+              part.isError && !part.cancelled
                 ? "text-destructive"
                 : "text-muted-foreground",
             )}
