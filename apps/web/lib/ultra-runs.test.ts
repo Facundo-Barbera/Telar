@@ -37,6 +37,7 @@ import {
   ultraTabRunId,
   UNPHASED,
   agentRows,
+  agentTokenTotal,
   anchorControls,
   anchorForm,
   anchorShape,
@@ -782,6 +783,25 @@ describe("4.2 AC7 proof 6 — one dock signal per session; concurrent live runs 
     // exactly the fabricated figure hard rule 3 forbids. Nothing on an ultra
     // surface may pass this provider.
     expect(anchorSpend("codex", 1.95).text).toBe("0 tok");
+  });
+
+  test("a per-agent token figure counts input + output, the same pair a session counts", () => {
+    // The cache fields are re-presentations of content the agent already sent,
+    // and `lib/spend-readout.ts` excludes them from the session figure for that
+    // reason. An agent row that included them read `1.7M tok` beside a
+    // `Claude Sonnet 1M` chip — a number that invites being read as a blown
+    // context window when it is a lifetime sum over every turn.
+    expect(
+      agentTokenTotal({ tokens: { input: 40, output: 10, cacheRead: 1_700_000, cacheCreate: 900 } }),
+    ).toBe(50);
+  });
+
+  test("absent usage stays absent — it never collapses into a confident 0", () => {
+    // Distinct from an agent that genuinely spent nothing: the row renders
+    // `undefined` as a dash, because "nothing was measured" and "nothing was
+    // consumed" are different claims and only one of them is true here.
+    expect(agentTokenTotal({})).toBeUndefined();
+    expect(agentTokenTotal({ tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 } })).toBe(0);
   });
 });
 

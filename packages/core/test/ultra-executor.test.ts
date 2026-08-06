@@ -140,6 +140,64 @@ describe("Ultra executor — a schema-less agent() resolves to a STRING", () => 
   });
 });
 
+describe("Ultra executor — a THROWN agent still reports that it settled", () => {
+  // THE BUG THIS PINS, measured rather than imagined. Run u-893ce7701785
+  // started 10 agents and journaled 6. Ordinals 2, 6 and 7 each ended
+  // `error_max_turns` with the subtype sitting in their transcripts, but the
+  // journal append and the settle event both live BELOW the throw point, so
+  // neither ran. `started - settled` never fell, the run reported three agents
+  // in flight forever, and `dead` stayed 0 — literally true, since nothing had
+  // marked a death. Hours went into diagnosing "hung agents" that were long
+  // dead, using counts that could not have shown it.
+  const boom: Fake = async () => {
+    throw new Error("child exploded");
+  };
+  const script = `${META}\nexport default async function ({ agent, parallel }) {\n  const r = await parallel([() => agent("p0", { model: "sonnet" })]);\n  return r[0];\n}`;
+
+  test("the throw emits a settle event, so in-flight accounting can fall", async () => {
+    const events: UltraEvent[] = [];
+    const run = startUltra(script, { agent: boom, onEvent: (e) => events.push(e) });
+    await run.finished;
+
+    const settles = events.filter((e) => e.type === "agent");
+    expect(settles).toHaveLength(1);
+    expect(settles[0]!.ok).toBe(false);
+    expect(settles[0]!.deadReason).toBe("error");
+  });
+
+  test("but it journals NOTHING, so a resume re-runs it instead of replaying a failure", async () => {
+    // The half that must NOT change. Skipping the journal on a throw is
+    // deliberate — an un-journaled ordinal re-runs live on the next resume.
+    // A fix that "helpfully" recorded the failure would cache it forever and
+    // turn a transient explosion into a permanent one.
+    const run = startUltra(script, { agent: boom });
+    await run.finished;
+    expect(readJournal(run.runId)).toHaveLength(0);
+  });
+
+  test("the script still sees the ordinary dead-agent null", async () => {
+    // Behaviour the scripts depend on is unchanged: parallel() coerces a thrown
+    // call to null. This fix adds reporting, it does not change control flow.
+    const run = startUltra(script, { agent: boom });
+    const res = await run.finished;
+    expect(res.state).toBe("done");
+    expect(res.result).toBeNull();
+  });
+
+  test("a control signal is NOT reported as an agent settle", async () => {
+    // Stop / MissingModel / the lifetime backstop end the RUN. They are not an
+    // agent outcome, and emitting a death for them would put a phantom dead
+    // agent in every stopped run's roster.
+    const aborted: Fake = async () => {
+      throw abortErr();
+    };
+    const events: UltraEvent[] = [];
+    const run = startUltra(script, { agent: aborted, onEvent: (e) => events.push(e) });
+    await run.finished;
+    expect(events.filter((e) => e.type === "agent")).toHaveLength(0);
+  });
+});
+
 describe("Ultra executor — MissingModel is a control signal, never a null result", () => {
   test("a model-less agent() ends the run `failed` without ever calling the engine", async () => {
     let called = false;

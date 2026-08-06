@@ -89,6 +89,9 @@ export type ApprovalCardProps = {
   ruleOptions?: ReadonlyArray<{ rule: string; label: string }>;
   status: "pending" | "allowed" | "denied";
   labels?: ApprovalLabels;
+  /** The sub-agent whose call this is. Absent ⇒ the session's own turn is
+   *  asking, which is the common case and reads without any attribution. */
+  agentId?: string;
   /** Absent ⇒ read-only. See the header. */
   onRespond?: (behavior: "allow" | "deny", always: boolean, rule?: string) => void;
   className?: string;
@@ -99,12 +102,29 @@ export type ApprovalCardProps = {
  * above is asserted rather than intended (`approval-card.test.ts`). A resolved
  * card has no header: its state is carried by the badge, and the header's own
  * vocabulary contradicts it.
+ *
+ * WHY THE ASKER GOES IN THE HEADER. The route gates every tool a sub-agent
+ * calls through the same permission path the main turn uses — deliberately, so
+ * a sub-agent cannot skip the project's guardrails. With several agents live
+ * that produces several cards at once, and until now they were identical:
+ * nothing on any of them said who was asking. A queue of anonymous prompts is a
+ * queue nobody can answer, which is exactly what it looked like in practice.
+ *
+ * An explicit `header` still wins. Callers that already name the moment (a loom
+ * gate, a weave) are naming something more specific than the asker, and this
+ * must not overwrite them.
  */
 export function approvalHeader(
   status: ApprovalCardProps["status"],
   header?: string,
+  agentId?: string,
 ): string | null {
-  return status === "pending" ? (header ?? PENDING_APPROVAL_HEADER) : null;
+  if (status !== "pending") return null;
+  if (header) return header;
+  // Absent agentId means the session's own turn is asking. That is the common
+  // case and it keeps the original wording — saying "main" here would be noise
+  // on every card in a single-agent session.
+  return agentId ? `subagent ${agentId} — awaiting your approval` : PENDING_APPROVAL_HEADER;
 }
 
 export function ApprovalCard({
@@ -115,6 +135,7 @@ export function ApprovalCard({
   ruleOptions = [],
   status,
   labels = TOOL_APPROVAL_LABELS,
+  agentId,
   onRespond,
   className,
 }: ApprovalCardProps) {
@@ -127,7 +148,7 @@ export function ApprovalCard({
   const [showOptions, setShowOptions] = useState(false);
   const otherOptions = ruleOptions.filter((o) => o.rule !== rule);
   const canAlways = labels.always !== undefined && rule !== undefined;
-  const headerLine = approvalHeader(status, header);
+  const headerLine = approvalHeader(status, header, agentId);
 
   return (
     <div

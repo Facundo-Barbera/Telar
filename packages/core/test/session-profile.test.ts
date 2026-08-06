@@ -924,7 +924,7 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
     ]);
     // Anti-vacuity: a tuple that emptied out would satisfy a `toEqual` against
     // an equally-empty derivation.
-    expect(BASE_ALLOWED_TOOLS.length).toBe(29);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(30);
     expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);

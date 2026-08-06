@@ -323,7 +323,18 @@ function WideAgentRow({
             when a figure arrives. `tabular-nums` keeps the digits themselves
             from changing the width as they change value. */}
         <AgentStatusBar status={status} />
-        <span className="w-20 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground">
+        {/* NAMED, because it sits inches from a chip reading `Claude Sonnet 1M`
+            and the two numbers share a unit without sharing a meaning: this one
+            is a lifetime sum across the agent's turns, that one is a per-turn
+            ceiling. Unlabelled, a large figure here reads as a blown window. */}
+        <span
+          title={
+            tokens === undefined
+              ? "No usage reported for this agent"
+              : "Input + output tokens across this agent's turns — a running total, not context occupancy"
+          }
+          className="w-20 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground"
+        >
           {tokens === undefined ? "—" : `${fmtTokens(tokens)} tok`}
         </span>
         <span className="w-32 shrink-0 truncate rounded border px-1 text-right text-[10px] text-muted-foreground">

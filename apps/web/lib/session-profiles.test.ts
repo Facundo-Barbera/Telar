@@ -262,7 +262,7 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
       ...LOOM_AUTO_TOOLS,
       ...ULTRA_AUTO_TOOLS,
     ];
-    expect(routesOldArray.length).toBe(20); // anti-vacuity + the measured count
+    expect(routesOldArray.length).toBe(21); // anti-vacuity + the measured count
     expect([...BASE_ALLOWED_TOOLS].slice(0, routesOldArray.length)).toEqual(routesOldArray);
     expect([...BASE_ALLOWED_TOOLS].slice(routesOldArray.length)).toEqual([
       ...WORKSPACE_AUTO_TOOLS,
@@ -272,7 +272,7 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     expect(BASE_ALLOWED_TOOLS.length).toBe(
       routesOldArray.length + WORKSPACE_AUTO_TOOLS.length + BROWSER_READ_TOOLS.length,
     );
-    expect(BASE_ALLOWED_TOOLS.length).toBe(29);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(30);
     // No duplicates: unionOrdered would silently absorb one, shortening the
     // resolved allow set rather than failing.
     expect(new Set(BASE_ALLOWED_TOOLS).size).toBe(BASE_ALLOWED_TOOLS.length);

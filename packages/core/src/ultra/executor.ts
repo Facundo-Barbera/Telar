@@ -185,8 +185,13 @@ export type UltraEvent =
        *  the one knowable cause is `"max-turns"`: the child ran out of agent
        *  turns rather than failing, which is worth distinguishing because such a
        *  child may already have edited files before it stopped. Absent means
-       *  "cause unknown", the pre-existing meaning of every `ok: false`. */
-      deadReason?: "max-turns";
+       *  "cause unknown", the pre-existing meaning of every `ok: false`.
+       *
+       *  `error` is the THROWN outcome, and it exists on the EVENT only — never
+       *  on the journal record, because a thrown call is deliberately not
+       *  journaled so a resume re-runs it. Keeping the two apart is what lets a
+       *  run report a failure it has intentionally not cached. */
+      deadReason?: "max-turns" | "error";
       costUsd?: number;
       turns?: number;
       // What this settle actually consumed, as the provider reported it.
@@ -570,6 +575,24 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
     // run).
     let result: unknown = null;
     let attemptPrompt = prompt;
+    // WHY THIS LOOP IS WRAPPED. Everything below the loop — the journal append
+    // AND the settle event — is skipped when a call throws. Skipping the JOURNAL
+    // is deliberate and load-bearing: an un-journaled ordinal re-runs live on
+    // the next resume instead of replaying a failure. Skipping the EVENT was
+    // not deliberate, and it is why a run could not describe its own failures.
+    //
+    // MEASURED, not theorised. Run u-893ce7701785 started 10 agents and
+    // journaled 6; ordinals 2, 6 and 7 each ended `error_max_turns` (41, 61 and
+    // 61 turns, $1.30/$2.27/$1.34) with the subtype sitting in their transcripts
+    // the whole time. With no settle event, `started - settled` never fell, so
+    // the run reported three agents in flight forever and `dead: 0` — literally
+    // true, since nothing had marked a death, and completely misleading. Hours
+    // went into diagnosing "hung agents" that had been dead for hours.
+    //
+    // So: emit the terminal event here, journal nothing, and re-throw unchanged
+    // so parallel()/pipeline() still coerce this to the dead-agent null the
+    // script expects. Behaviour is identical; the run can now say what happened.
+    try {
     for (attempt = 1; attempt <= VALIDATE_RETRY_K; attempt++) {
       result = await runOnce(attemptPrompt);
       const parsed = schema.safeParse(result);
@@ -598,6 +621,37 @@ function buildSurface(ctl: RunControl, opts: StartUltraOpts): UltraSurface {
       } else {
         result = null; // exhausted — dead agent, per the engine's own null contract
       }
+    }
+    } catch (e) {
+      // A control signal ends the RUN (Stop, MissingModel, the lifetime
+      // backstop). It is not an agent outcome, so it gets no settle event —
+      // the run's own terminal state is the report.
+      if (isControlSignal(e)) throw e;
+      opts.onEvent?.({
+        type: "agent",
+        ordinal,
+        ...(uOpts.label ? { label: uOpts.label } : {}),
+        model: uOpts.model,
+        ...(uOpts.effort ? { effort: uOpts.effort } : {}),
+        ok: false,
+        // Whatever the provider managed to report before it threw. A child that
+        // died mid-flight still spent money, and dropping the figure is how a
+        // run under-reports its own cost.
+        ...(lastCostUsd !== undefined ? { costUsd: lastCostUsd } : {}),
+        ...(lastTurns !== undefined ? { turns: lastTurns } : {}),
+        ...(lastTokens !== undefined ? { tokens: lastTokens } : {}),
+        // `max-turns` when the harness said so before throwing, `error`
+        // otherwise. The distinction is worth keeping: max-turns is a budget
+        // the SCRIPT chose and can raise, while an error is not.
+        deadReason: exhaustedTurns(lastSubtype) ? ("max-turns" as const) : ("error" as const),
+        // MINTED EVEN THOUGH NOTHING IS JOURNALED, because a settleId names a
+        // BILLING and this attempt really was billed. A later resume re-runs
+        // this ordinal and mints a different id for that second, equally real
+        // billing — two ids for two spends is the honest ledger, where reusing
+        // one would claim the money was spent once.
+        settleId: crypto.randomUUID(),
+      });
+      throw e;
     }
     // This live call IS a new billable event even when an earlier run already
     // billed this same ordinal: `cacheValid` latched false above, so the
