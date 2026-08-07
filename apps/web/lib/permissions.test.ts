@@ -439,11 +439,18 @@ describe("pending registry", () => {
     expect(resolvePending("perm_nope", { behavior: "deny" })).toBe(false);
   });
 
-  test("timeout auto-denies with a distinguishable reason and clears the entry", async () => {
-    const { id, promise } = createPending("proj", "Write", { file_path: "/x" }, "Write", 20);
-    await expect(promise).resolves.toEqual({ behavior: "deny", reason: "timeout" });
-    // the timer already removed it, so a late answer is rejected
-    expect(resolvePending(id, { behavior: "allow" })).toBe(false);
+  test("an unanswered pending parks — nothing auto-denies it (#28)", async () => {
+    const { id, promise } = createPending("proj", "Write", { file_path: "/x" }, "Write");
+    // Give any stray timer a chance to fire: the promise must still be
+    // unsettled afterwards — a non-answer is not a decision.
+    const settled = await Promise.race([
+      promise.then(() => true),
+      new Promise((r) => setTimeout(() => r(false), 50)),
+    ]);
+    expect(settled).toBe(false);
+    // Still resolvable by an actual decision, however late it arrives.
+    expect(resolvePending(id, { behavior: "allow" })).toBe(true);
+    await expect(promise).resolves.toEqual({ behavior: "allow" });
   });
 
   test("ids are unique across concurrent creations", () => {
@@ -486,7 +493,6 @@ describe("pending registry", () => {
       "Bash",
       { command: "git log --oneline -5" },
       "Bash(git log:*)",
-      undefined,
       ruleOptionsFor("Bash", { command: "git log --oneline -5" }),
     );
     const sibling = createPending(
@@ -505,7 +511,7 @@ describe("pending registry", () => {
     });
 
     // The sibling must NOT have been silently approved — it's still pending,
-    // waiting for its own prompt (or eventual timeout/deny).
+    // waiting for its own prompt.
     expect(resolvePending(sibling.id, { behavior: "deny" })).toBe(true);
   });
 
@@ -529,7 +535,6 @@ describe("pending registry", () => {
       LOOM_START_TOOL,
       { loomId: "loom_a" },
       LOOM_START_TOOL,
-      undefined,
       ruleOptionsFor(LOOM_START_TOOL, { loomId: "loom_a" }),
     );
     const second = createPending(
@@ -537,7 +542,6 @@ describe("pending registry", () => {
       LOOM_START_TOOL,
       { loomId: "loom_b" },
       LOOM_START_TOOL,
-      undefined,
       ruleOptionsFor(LOOM_START_TOOL, { loomId: "loom_b" }),
     );
 
@@ -565,7 +569,6 @@ describe("pending registry", () => {
       "Bash",
       { command: "git log --oneline" },
       "Bash(git log:*)",
-      undefined,
       options,
     );
     expect(pendingRuleOptions(id)).toEqual(options);

@@ -17,6 +17,9 @@ export async function POST(req: Request) {
   // Stop means stop. Later intents stay durable, but the engine will not claim
   // another until the user explicitly resumes this session queue.
   if (typeof sessionId === "string" && sessionId) pauseSessionQueue(sessionId);
-  const stopped = stopChatRun(key);
+  // #28: tagged so a Stop that reaches the registry is attributable to THIS
+  // endpoint. A logged Stop with any other `via` — or none — did not come
+  // through the user-facing Stop path, which is the thing worth catching.
+  const stopped = stopChatRun(key, "api/chat/stop");
   return Response.json({ ok: stopped });
 }
