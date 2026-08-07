@@ -90,3 +90,67 @@ describe("#28 — full access does not ask a sub-agent's caller for permission",
     }
   });
 });
+
+// ── The Codex half ─────────────────────────────────────────────────────────
+//
+// A CODEX session has no PreToolUse hook — that is an SDK concept — so
+// onCodexDynamicTool is the ONLY gate its tool calls ever pass. It used to
+// return "accept" for every non-browser namespace on its first line, while
+// `codexToolNamespaces` hands Codex the full loom toolset. So start_loom, the
+// one action in this toolset that spends money autonomously, was auto-accepted
+// in every runtime mode with no human in it. The handlers cannot catch this:
+// `by` is server-resolved, but nothing in loom-mcp.ts requires a click.
+//
+// INV-1g pins the Claude half of AD-1 and knows nothing about this path, which
+// is precisely how the hole survived. These are its Codex counterpart.
+const codexDynamicToolSource = (() => {
+  const start = route.indexOf("const onCodexDynamicTool = async (");
+  expect(start).toBeGreaterThan(-1);
+  // The DECLARATION, not the bare name — the name also appears inside this
+  // callback's own explanatory comment, and anchoring on it truncated the slice
+  // to the comment alone, which made every assertion below vacuously fail (and
+  // would just as happily have made them vacuously pass).
+  const end = route.indexOf("const codexToolNamespaces = [", start);
+  expect(end).toBeGreaterThan(start);
+  return route.slice(start, end).replace(/\s+/g, " ");
+})();
+
+describe("AD-1 §M.6 — the accept moat holds on the Codex path too", () => {
+  test("the moat is decided BEFORE the browser-namespace filter that returns accept", () => {
+    const moatAt = codexDynamicToolSource.indexOf("isMoatTool =");
+    const filterAt = codexDynamicToolSource.indexOf(
+      "req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE",
+    );
+    expect(moatAt).toBeGreaterThan(-1);
+    expect(filterAt).toBeGreaterThan(-1);
+    // Ordering IS the fix: below the filter, a loom call has already returned.
+    expect(moatAt).toBeLessThan(filterAt);
+  });
+
+  test("both moat tools are named, via the canonical mcp__<ns>__<tool> spelling", () => {
+    const at = codexDynamicToolSource.indexOf("isMoatTool =");
+    const decl = codexDynamicToolSource.slice(at, codexDynamicToolSource.indexOf(";", at));
+    for (const name of ["LOOM_START_TOOL", "LOOM_ANSWER_BLOCKED_TOOL"]) {
+      expect(decl).toContain(name);
+    }
+  });
+
+  test("a moat tool escapes NONE of the three accept paths", () => {
+    // Each of these would independently re-open the hole, and each is a
+    // different mechanism: the namespace filter, the runtime-mode delegation,
+    // and a persisted always-allow rule.
+    expect(codexDynamicToolSource).toContain("if (!isMoatTool) {");
+    expect(codexDynamicToolSource).toContain(
+      '!isMoatTool && (runtimeMode === "full-access" || runtimeMode === "auto")',
+    );
+    expect(codexDynamicToolSource).toContain("!isMoatTool && readRules(project)");
+  });
+
+  test("a moat tool's approval is never persisted as a standing rule", () => {
+    // The write half. Without it the readRules skip is load-bearing alone, and
+    // a rule sits on disk claiming an authorization the human never gave.
+    expect(codexDynamicToolSource).toContain(
+      "decision.always && !isMoatTool",
+    );
+  });
+});

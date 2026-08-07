@@ -1296,14 +1296,43 @@ export async function POST(req: Request) {
             tool: string;
             arguments: Record<string, unknown>;
           }): Promise<"accept" | "decline"> => {
+            // THE MOAT IS CHECKED FIRST, AND IT IS NOT BROWSER-SCOPED (#28,
+            // AD-1 §M.6). Everything below this block is about browser calls;
+            // this block is not, and putting it after the namespace filter is
+            // what left the hole it closes.
+            //
+            // On the Claude side, start_loom and answer_blocked are force-routed
+            // to an interactive card by the PreToolUse guardrail in EVERY
+            // permission mode. A CODEX session has no PreToolUse hook — that is
+            // an SDK concept — so this callback is the only gate its tool calls
+            // ever pass. And its first line used to return "accept" for every
+            // non-browser namespace, while `codexToolNamespaces` below hands
+            // Codex the full loom toolset. So an agent in a Codex session could
+            // call start_loom — the one action in this toolset that spends money
+            // autonomously — and have it auto-accepted, in every mode, with no
+            // human in it. The tool handlers cannot catch this: `by` is
+            // server-resolved, but nothing in loom-mcp.ts requires a click.
+            //
+            // Both names are checked against the CANONICAL mcp__<ns>__<tool>
+            // spelling, the same one the rules store, the permission card and
+            // LOOM_START_TOOL itself use, so the two sides cannot drift.
+            const canonicalToolName = req.namespace
+              ? `mcp__${req.namespace}__${req.tool}`
+              : req.tool;
+            const isMoatTool =
+              canonicalToolName === LOOM_START_TOOL ||
+              canonicalToolName === LOOM_ANSWER_BLOCKED_TOOL;
+
             // Other Telar dynamic tools retain their existing lifecycle gates.
             // Browser reads are safe to perform immediately; browser mutations
             // need the same user-facing permission card Claude receives unless
             // the selected runtime mode explicitly delegates approval.
-            if (req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE) return "accept";
-            if (isReadOnlyBrowserCall(req.tool, req.arguments)) return "accept";
+            if (!isMoatTool) {
+              if (req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE) return "accept";
+              if (isReadOnlyBrowserCall(req.tool, req.arguments)) return "accept";
+            }
 
-            const toolName = `mcp__browser__${req.tool}`;
+            const toolName = isMoatTool ? canonicalToolName : `mcp__browser__${req.tool}`;
             const guardrail = makeGuardrailDecision(
               sessionProfile,
               sessionProfile.cwd,
@@ -1314,10 +1343,22 @@ export async function POST(req: Request) {
               send("error", { message: guardrail.message });
               return "decline";
             }
-            if (runtimeMode === "full-access" || runtimeMode === "auto") return "accept";
+            // `!isMoatTool` on BOTH escapes below, for the two different ways a
+            // §M.6 tool could otherwise slip past: a runtime mode that delegates
+            // approval wholesale, and a persisted "always allow" rule. The
+            // second is the subtler one — it is why the Claude path skips its
+            // own readRules fast path for these two names as well. A single
+            // Approve click on one start_loom must never become standing
+            // authorization for every later one.
+            if (!isMoatTool && (runtimeMode === "full-access" || runtimeMode === "auto")) {
+              return "accept";
+            }
 
             const rule = ruleFor(toolName, req.arguments);
-            if (readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))) {
+            if (
+              !isMoatTool &&
+              readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))
+            ) {
               return "accept";
             }
             if (abort.signal.aborted) return "decline";
@@ -1350,7 +1391,13 @@ export async function POST(req: Request) {
               myPending.delete(id);
             }
             send("permission_result", { id, behavior: decision.behavior });
-            if (decision.behavior === "allow" && decision.always) {
+            // Never persist a rule for a §M.6 tool, matching the Claude path's
+            // own `always` guard. The readRules skip above already refuses to
+            // honour such a rule, so this is the second of two halves that must
+            // BOTH be present: one refuses to read it, this refuses to write it.
+            // Keeping only one leaves a rule on disk asserting a standing
+            // approval the human never gave.
+            if (decision.behavior === "allow" && decision.always && !isMoatTool) {
               addRule(project, decision.rule ?? rule);
             }
             return decision.behavior === "allow" ? "accept" : "decline";
