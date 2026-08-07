@@ -323,6 +323,13 @@ export type InitialChat = {
   // Seeds the header's persistent "Planning loom" chip on reload.
   loomId?: string;
   role?: "planner" | "steerer" | "escalation";
+  // STEP 5 (message-lifecycle): how many turns the persisted record holds —
+  // the expectedTurns a rollback declares — and the pencil's map: which
+  // bubbles are rollback-addressable. Projected server-side to
+  // {turn, startMessage, hidden, at}; a uuid never reaches this type. Both
+  // absent on legacy chats, which therefore show no pencil.
+  turns?: number;
+  turnAnchors?: Array<{ turn: number; startMessage: number; hidden?: boolean; at: number }>;
 };
 
 // consumeSSE (the frame-by-frame `event:`/`data:` reader shared by the POST

@@ -61,7 +61,8 @@ import {
   resolveUltraWakeMessage,
 } from "@/lib/ultra-wake";
 import { generateTitle } from "@/lib/titles";
-import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
+import { endChatRun, isSessionRunLive, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
+import { applyRollback } from "@/server/session/apply-rollback";
 import {
   acquireSessionRuntime,
   closeSessionRuntime,
@@ -287,6 +288,13 @@ export async function POST(req: Request) {
     // agent (a system-prompt note the `ultra` tool's own description tells
     // it to look for).
     ultra: rawUltra,
+    // STEP 5 (message-lifecycle): truncate-then-send in ONE request. When
+    // both are integers, the rollback applies BEFORE the stream starts —
+    // so a refusal comes back as an ordinary pre-stream rejection (one
+    // message's error, spec 3), and the runtime is recreated exactly once,
+    // consuming the fork this same request armed.
+    rollbackToTurn: rawRollbackToTurn,
+    rollbackExpectedTurns: rawRollbackExpectedTurns,
     // Composer attachments for THIS turn: ids minted by POST /api/chat/
     // attachments, which already holds the bytes. Resolved to absolute paths
     // below and handed to whichever harness is running — never inlined here.
@@ -533,6 +541,29 @@ export async function POST(req: Request) {
     legacyMode = "full-access";
   }
   const runtimeMode: RuntimeMode = isRuntimeMode(rawRuntimeMode) ? rawRuntimeMode : legacyMode;
+  // STEP 5: the one-request truncate-then-send. Applied HERE, before any
+  // stream or side effect: a refusal is a plain 4xx the client renders as
+  // that one message's error, and the turn below then consumes the fork this
+  // apply just armed — one runtime creation, exactly.
+  if (
+    typeof sessionId === "string" &&
+    sessionId &&
+    Number.isInteger(rawRollbackToTurn) &&
+    Number.isInteger(rawRollbackExpectedTurns)
+  ) {
+    if (isSessionRunLive(sessionId)) {
+      return Response.json(
+        { error: "A turn is still running — stop it first." },
+        { status: 409 },
+      );
+    }
+    const rb = applyRollback(
+      sessionId,
+      rawRollbackToTurn as number,
+      rawRollbackExpectedTurns as number,
+    );
+    if (!rb.ok) return Response.json({ error: rb.error }, { status: rb.status });
+  }
   const permissionMode = claudePermissionMode(runtimeMode);
   const profilePermissionMode =
     permissionMode === "bypassPermissions" ? "auto" : (permissionMode ?? "default");
