@@ -122,6 +122,7 @@ import {
   ComposerAutocompleteMenus,
   useComposerAutocomplete,
 } from "@/components/session/composer-autocomplete";
+import { ComposerDraft } from "@/components/session/composer-draft";
 import { ComposerControls } from "@/components/session/composer-settings";
 import { useLoomHandoff } from "@/components/session/use-loom-handoff";
 import { useSessionInjections } from "@/components/session/use-session-injections";
@@ -2003,6 +2004,9 @@ function SessionWorkspace({
                       type: "marker" as const,
                       text: String(payload.text ?? ""),
                       ...(payload.attention ? { attention: true as const } : {}),
+                      // The spawn id, when the projector attached one — what
+                      // makes the rendered line click through to the agent.
+                      ...(typeof payload.agentId === "string" ? { agentId: payload.agentId } : {}),
                     },
                   ],
                 }));
@@ -3864,6 +3868,9 @@ function SessionWorkspace({
             )}
           >
             <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
+            {/* Half-typed text survives reload/navigation — see the key
+                lifecycle note in composer-draft.tsx. Renders nothing. */}
+            <ComposerDraft sessionId={sessionId} project={project} />
             {/* BACKGROUND PRESENCE (feel contract rule 20): background work
                 that outlives the turn says so in WORDS, in one fixed place,
                 for exactly as long as it is true — never concurrent with the

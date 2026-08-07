@@ -342,9 +342,17 @@ export function projectClaudeMessage(
         const verb = tn.status === "completed" ? "finished" : tn.status;
         const text = label ? `agent ${verb} · ${label}` : `agent ${verb}`;
         const attention = tn.status === "failed" ? true : undefined;
-        parts.push({ type: "marker", text, ...(attention ? { attention } : {}) });
+        // The spawn's tool_use id rides along so the rendered marker can
+        // jump to that agent's tab — same id the tabs are keyed by.
+        const marker = {
+          type: "marker" as const,
+          text,
+          ...(attention ? { attention } : {}),
+          agentId: tn.tool_use_id,
+        };
+        parts.push(marker);
         partOrigin.push(undefined); // keep the supersedes index alignment
-        send("marker", { text, ...(attention ? { attention } : {}) });
+        send("marker", { text, ...(attention ? { attention } : {}), agentId: tn.tool_use_id });
       }
     }
     return { events };

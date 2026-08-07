@@ -79,7 +79,7 @@ export type Part =
   // are server-side (the projector's task_notification handling, the chat
   // route's ultra-wake announcement); the shell renders it without knowing
   // any domain. `attention` maps to the Marker's amber variant.
-  | { type: "marker"; text: string; attention?: boolean }
+  | { type: "marker"; text: string; attention?: boolean; agentId?: string }
   | {
       type: "tool";
       name: string;

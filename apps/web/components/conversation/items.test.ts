@@ -300,6 +300,50 @@ describe("groupParts — adjacent completion markers are ONE line", () => {
     const items = groupParts("m1", [marker("agent finished · explore lib")]);
     expect(payloadText(items[0])).toBe("agent finished · explore lib");
   });
+
+  test("provenance makes the line a link: display carries {lead, agents, extra}", () => {
+    const withId = (t: string, id: string): Part => ({ type: "marker", text: t, agentId: id });
+    const items = groupParts(
+      "m1",
+      ["a", "b", "c", "d", "e"].map((l, i) => withId(`agent finished · ${l}`, `t${i}`)),
+    );
+    const onSelectAgent = () => {};
+    const payload = toTranscriptItem(items[0], { onSelectAgent }).payload as {
+      display?: { lead: string; agents: Array<{ id: string; label: string }>; extra: number };
+      onSelectAgent?: unknown;
+    };
+    expect(payload.display).toEqual({
+      lead: "5 agents finished",
+      agents: [
+        { id: "t0", label: "a" },
+        { id: "t1", label: "b" },
+        { id: "t2", label: "c" },
+      ],
+      extra: 2,
+    });
+    expect(payload.onSelectAgent).toBe(onSelectAgent);
+  });
+
+  test("one missing id and the whole line falls back to plain text — no half-links", () => {
+    const items = groupParts("m1", [
+      { type: "marker", text: "agent finished · a", agentId: "t1" } as Part,
+      marker("agent finished · b"),
+    ]);
+    const payload = toTranscriptItem(items[0]).payload as { display?: unknown };
+    expect(payload.display).toBeUndefined();
+  });
+
+  test("a single completion with provenance links too, in the singular voice", () => {
+    const items = groupParts("m1", [
+      { type: "marker", text: "agent finished · explore lib", agentId: "t9" } as Part,
+    ]);
+    const payload = toTranscriptItem(items[0]).payload as {
+      display?: { lead: string; agents: Array<{ id: string }>; extra: number };
+    };
+    expect(payload.display?.lead).toBe("agent finished");
+    expect(payload.display?.agents).toEqual([{ id: "t9", label: "explore lib" }]);
+    expect(payload.display?.extra).toBe(0);
+  });
 });
 
 describe("liveStepWindow — a live group shows its current step, not its history", () => {
