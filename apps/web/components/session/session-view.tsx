@@ -125,6 +125,7 @@ import {
   useComposerAutocomplete,
 } from "@/components/session/composer-autocomplete";
 import { ComposerControls } from "@/components/session/composer-settings";
+import { useSessionInjections } from "@/components/session/use-session-injections";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
@@ -145,7 +146,7 @@ import { shortId } from "@/lib/format";
 import { consumeSSE } from "@/lib/sse";
 import type { ContextUsageSnapshot } from "@/lib/context-usage";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
-import type { Watch, WorkUnitState } from "@telar/core";
+import type { WorkUnitState } from "@telar/core";
 import {
   DEFAULT_RUNTIME_MODE,
   RUNTIME_MODE_OPTIONS,
@@ -176,11 +177,6 @@ import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
 } from "@/lib/escalation-kickoff";
-import {
-  freshUltraWakes,
-  shouldEnqueueUltraWake,
-  ULTRA_WAKE_SENTINEL,
-} from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
 import { sessionProviders } from "@/lib/account-visibility";
 import { useUltraWake } from "@/lib/use-ultra-wake";
@@ -1241,48 +1237,6 @@ function SessionWorkspace({
   // whether a given result belongs to start_loom. A ref, not state: purely
   // internal bookkeeping that never drives a render itself.
   const toolNamesRef = useRef<Map<string, string>>(new Map());
-
-  // ── Loom watchers (docs/watchers-design.md §6) ──────────────────────────
-  // Active watches for THIS session, seeded from the server on mount and after
-  // each turn (loadWatches). watchesRef mirrors it (like statusRef above) so the
-  // background subscriber's handlers read the LATEST triggerStates without
-  // `watches` being in the effect's dep set — which would re-subscribe on every
-  // edit rather than only when the watched-loom set changes.
-  const [watches, setWatches] = useState<Watch[]>([]);
-  const watchesRef = useRef<Watch[]>(watches);
-  watchesRef.current = watches;
-  // Fired alerts surfaced as cards near the loom-handoff banner.
-  const [watcherAlerts, setWatcherAlerts] = useState<
-    { id: string; loomId: string; title: string; state: WorkUnitState }[]
-  >([]);
-  // Synthetic turns waiting for the composer to go idle before they dispatch
-  // through send() (never mid-turn — the busy guard forbids it): the loom
-  // watcher's "[watcher] …" messages, and story 4.1's Ultra completion-wake
-  // trigger.
-  //
-  // `hidden` IS NEW IN 4.1 AND IS NOT OPTIONAL MACHINERY. Before it, the item
-  // type was `{ id; text }` and the §6.D drain dispatched `send(next.text)` with
-  // no options object at all — so `send`'s `opts?.hidden` read falsy and its
-  // `...(opts?.hidden ? [] : [{ role: "user", … }])` spread pushed a real user
-  // bubble. Enqueuing a sentinel and "letting the existing effect drain it"
-  // would therefore have rendered the raw sentinel as something the human
-  // appeared to type — the exact opposite of AC1. The watcher sets no flag, so
-  // its own "[watcher] …" turns stay VISIBLE, which is what they are meant to be.
-  const [injectionQueue, setInjectionQueue] = useState<
-    { id: string; text: string; hidden?: boolean }[]
-  >([]);
-  // De-dupe: watchId -> last trigger state we fired on. A ref, so it survives
-  // re-subscribes and a connect-time `run` snapshot of an already-fired state
-  // can't re-fire; re-arms only when the loom reaches a DIFFERENT trigger state.
-  const lastFiredRef = useRef<Map<string, WorkUnitState>>(new Map());
-  // Monotonic id source for alert / injection items.
-  const watcherSeqRef = useRef(0);
-  // Stable, sorted, comma-joined set of watched loomIds. The background
-  // subscriber keys on THIS primitive so it re-subscribes only when the SET
-  // changes — never on every render or an unrelated `watches` field edit.
-  const watchedLoomIds = Array.from(new Set(watches.map((w) => w.loomId)))
-    .sort()
-    .join(",");
 
   // Agent types the live SDK session reports as available (init message's
   // `agents` list) — surfaced as a subtle one-liner on the tab strip, not its
@@ -2619,93 +2573,6 @@ function SessionWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [escalation, sessionId, send]);
 
-  // ── Loom watchers (docs/watchers-design.md §6) ──────────────────────────
-  // Defined after send() so the injection effect below can reference it.
-  const loadWatches = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      const data = await cachedJson<Watch[] | { watches?: Watch[] }>(
-        `/api/chat/${encodeURIComponent(sessionId)}/watches`,
-        { force: true },
-      );
-      const list: Watch[] = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.watches)
-          ? data.watches
-          : [];
-      setWatches(list);
-    } catch {
-      // Route not ready / offline — keep whatever we already have.
-    }
-  }, [sessionId]);
-
-  // §6.B — load this session's active watches on mount (sessionId set) AND after
-  // each turn completes (status → "ready"), so a watch the agent just registered
-  // via watch_loom is picked up without a reload. Gated on "ready" so it never
-  // refetches mid-turn; the fresh-session case (sessionId null until the first
-  // turn's "session" event) is covered when that turn lands back on "ready".
-  useEffect(() => {
-    if (!sessionId || status !== "ready") return;
-    void loadWatches();
-  }, [sessionId, status, loadWatches]);
-
-  // §6.C — background subscriber, sibling to the §1b reconnect one (~1543) but
-  // UNGATED on status/idle: it must react while the user keeps chatting and
-  // while a turn is in flight. Keyed on the stable watchedLoomIds string, one
-  // EventSource per watched loom; the connect-time `run` snapshot (route.ts:63)
-  // also catches a state change missed while the tab was closed.
-  useEffect(() => {
-    const loomIds = watchedLoomIds ? watchedLoomIds.split(",") : [];
-    if (loomIds.length === 0) return;
-    const sources = loomIds.map((loomId) => {
-      const es = new EventSource(
-        `/api/looms/${encodeURIComponent(loomId)}/events`,
-      );
-      es.addEventListener("run", (e) => {
-        let loom: any;
-        try {
-          loom = JSON.parse((e as MessageEvent).data);
-        } catch {
-          return;
-        }
-        const state = loom?.state as WorkUnitState | undefined;
-        if (!state) return;
-        // Read the live watch from the ref, not a stale closure — triggerStates
-        // can change without the watched-loom SET (this effect's dep) changing.
-        const watch = watchesRef.current.find(
-          (w) => w.loomId === loomId && w.status === "active",
-        );
-        if (!watch || !watch.triggerStates.includes(state)) return;
-        // Fire once per (watch, state); re-arm only on a DIFFERENT trigger state.
-        if (lastFiredRef.current.get(watch.id) === state) return;
-        lastFiredRef.current.set(watch.id, state);
-        const title =
-          typeof loom.title === "string" && loom.title ? loom.title : loomId;
-        const seq = watcherSeqRef.current++;
-        setWatcherAlerts((prev) => [
-          ...prev,
-          { id: `wa${seq}`, loomId, title, state },
-        ]);
-        setInjectionQueue((q) => [
-          ...q,
-          {
-            id: `wi${seq}`,
-            text: `[watcher] loom ${loomId} (${title}) reached ${state}. How do you want to proceed?`,
-          },
-        ]);
-      });
-      // A terminal loom sends `end` then closes; stop EventSource's auto-reconnect
-      // so a done/failed/needs-review loom doesn't churn re-opening the stream.
-      es.addEventListener("end", () => es.close());
-      return es;
-    });
-    // CRITICAL: close EVERY source on unmount or when the watched-loom SET
-    // changes — no leaks, no double-subscribe.
-    return () => {
-      for (const es of sources) es.close();
-    };
-  }, [watchedLoomIds]);
-
   // Loom-notify (replaces the banner): tail THIS session's loom event stream so
   // the aggregate pill reflects the loom's real state and each transition lands
   // as a durable inline transcript row. Durable-minimum only — state word +
@@ -3013,119 +2880,18 @@ function SessionWorkspace({
     void reloadUltraWake();
   }, [settledRunKey, reloadUltraWake]);
 
-  // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
-  // all of them — its formatter takes a list — so three finished runs must not
-  // fire three turns. The wakes stay pending until the ROUTE acks them (which it
-  // does on the turn that consumes them), so without a latch every poll in that
-  // window would enqueue again.
-  //
-  // THE LATCH IS THE SET OF RUNS ALREADY ANNOUNCED, NOT A BOOLEAN (review SF-1).
-  // It was a boolean cleared only by `pendingWakes.length === 0`, and that has a
-  // reachable hole: several runs can be live for one session (§5.6-T10's own
-  // premise, and `packages/core/src/ultra/executor.ts`'s `RUN_CONCURRENCY = 3`
-  // is what bounds it), so run A settles and its wake turn streams for 30s, run B
-  // settles a second later, and every subsequent poll returns a NON-empty
-  // mailbox — so the latch never cleared, B was never enqueued, and when the
-  // session went idle no unprompted turn ever appeared for it. AC1's
-  // Given/When/Then was simply unmet for the second run.
-  //
-  // Keying on the run-ids themselves fixes it without re-opening T10: a poll
-  // enqueues exactly one trigger if it carries any run this component has not
-  // announced yet, however many that is. Pruning to the currently-pending set is
-  // what re-arms a RESUMED run — `deliveredTerminalAt` makes it pending again
-  // under the same id, and it must be announceable again — while a run that is
-  // merely still-unacked stays in the set and cannot re-fire.
-  //
-  // NOTE the deliberate non-re-arm: if the wake turn DIES before the route acks
-  // (the SDK binary missing, a mid-stream abort), the run stays pending and
-  // stays announced, so no second trigger fires for it. That is the old
-  // behaviour preserved on purpose — a permanently failing turn must not become
-  // a turn loop — and the outcome still reaches the model on the next turn the
-  // human starts, which is AC2's path and needs no trigger at all.
-  //
-  // The decision itself is `freshUltraWakes` in lib/ultra-wake.ts — pure, and
-  // out of this file precisely so a test can drive it. All this ref holds is the
-  // carry-over between polls.
-  const announcedWakesRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const { fresh, announced } = freshUltraWakes(
-      announcedWakesRef.current,
-      pendingWakes.map((w) => w.runId),
-    );
-    announcedWakesRef.current = announced;
-    if (fresh.length === 0) return;
-    const seq = watcherSeqRef.current++;
-    // BOTH HALVES OF T10 ARE IN THE SEAM, not here — `freshUltraWakes` decides
-    // WHICH runs are new, `shouldEnqueueUltraWake` decides whether a trigger may
-    // be added given what is already queued. Read that second one's header
-    // before touching this: dropping it re-opens exactly what T10 forbids, and
-    // it is asked inside the updater so it sees the real queue rather than a
-    // render-time closure over it. (`seq` is simply not consumed on the skip
-    // path; it is an id source, and a gap in it means nothing.)
-    setInjectionQueue((q) =>
-      shouldEnqueueUltraWake(fresh, q)
-        ? [
-            ...q,
-            // The SENTINEL, never the outcome text. route.ts swaps it for the
-            // server-authored instruction and the system-prompt appendix carries
-            // the facts, so this client authors the trigger and nothing else.
-            // `hidden` suppresses the local bubble; the route's `hideUserMessage`
-            // is what keeps it out of the persisted transcript (they are two
-            // different suppressions, and a wake needs both).
-            { id: `uw${seq}`, text: ULTRA_WAKE_SENTINEL, hidden: true },
-          ]
-        : q,
-    );
-  }, [pendingWakes]);
-
-  // §6.D — injection: when the composer is idle ("ready" — mid-turn is forbidden
-  // by the busy guard) and a watcher turn is queued, dequeue exactly ONE and
-  // dispatch it via the normal send() path. Removing the item BEFORE send()
-  // (which synchronously flips status to "submitted") plus this status gate
-  // guarantees no double-injection / infinite loop: the queue shrinks each pass
-  // and the next item can only fire once the turn settles back to "ready".
-  // Also require no active reader: during the §1b reconnect tail status is
-  // transiently "ready" while a detached turn still runs server-side (the
-  // reconnect effect only flips to "streaming" on its first live event), so
-  // injecting then would POST a second concurrent turn — the mid-turn injection
-  // the busy guard forbids. abortRef/reconnectAbortRef being null means truly idle.
-  useEffect(() => {
-    if (
-      status !== "ready" ||
-      abortRef.current ||
-      reconnectAbortRef.current ||
-      injectionQueue.length === 0
-    )
-      return;
-    const [next, ...rest] = injectionQueue;
-    setInjectionQueue(rest);
-    // A WAKE TRIGGER IS ONLY VALID WHILE THE MAILBOX IT SPEAKS FOR IS STILL FULL
-    // (review SF-2). Nothing else re-validates it: the server's
-    // `isUltraWakeTrigger` is `!!sessionId && message === ULTRA_WAKE_SENTINEL`
-    // and consults no state. So a trigger enqueued while the drain was blocked
-    // and dispatched after the wakes were already acked would run
-    // ULTRA_WAKE_PROMPT — "the COMPLETED ULTRA RUNS block in your context above
-    // carries each run's outcome" — against a prompt with no such block, on a
-    // turn that renders no user bubble. The reachable path is the §1b reconnect
-    // tail: `status` is transiently "ready" while `reconnectAbortRef.current` is
-    // non-null, so the composer is enabled and the drain is not; the human types;
-    // that POST acks and renders the wakes; the tail clears and this drains the
-    // stale trigger. Dropping it here (already removed from the queue above) is
-    // the whole fix. The sentinel IS the discriminator — the same seam the route
-    // recognizes on — so no second flag has to be kept in sync with it.
-    if (next.text === ULTRA_WAKE_SENTINEL && pendingWakes.length === 0) return;
-    // THE DISPATCH CHANGED IN STORY 4.1; THE GATE DID NOT. The three conditions
-    // above are untouched and must stay that way — writing a second idleness
-    // predicate is how "an assistant turn appears on its own" becomes "two turns
-    // fire at once". What changed is one line: the flag is threaded through, so
-    // a hidden item (the Ultra wake trigger) reaches send()'s `hidden` branch
-    // and renders no user bubble, while an unflagged item (the loom watcher)
-    // dispatches EXACTLY as before — `undefined` is what send() already received.
-    void send(next.text, next.hidden ? { hidden: true } : undefined);
-    // Same dependency, same reason as the message-queue drain below: this gate
-    // also reads `reconnectAbortRef`, so it also needs waking when that ref
-    // clears without a status change.
-  }, [status, injectionQueue, send, pendingWakes, reconnectLive]);
+  // Turns this session dispatches on its own — loom watchers and Ultra
+  // completion wakes — plus the one idleness gate that decides when they may
+  // fire. See use-session-injections.ts; that gate must not be duplicated here.
+  const { watcherAlerts, dismissAlert } = useSessionInjections({
+    sessionId,
+    status,
+    reconnectLive,
+    pendingWakes,
+    abortRef,
+    reconnectAbortRef,
+    send,
+  });
 
   const queueUploadsRef = useRef<Set<string>>(new Set());
 
@@ -3857,9 +3623,7 @@ function SessionWorkspace({
               size="icon-xs"
               aria-label="Dismiss"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() =>
-                setWatcherAlerts((prev) => prev.filter((x) => x.id !== a.id))
-              }
+              onClick={() => dismissAlert(a.id)}
             >
               <XIcon />
             </Button>

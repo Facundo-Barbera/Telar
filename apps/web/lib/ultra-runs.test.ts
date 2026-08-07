@@ -1856,16 +1856,24 @@ describe("4.2 §5.5-D1 item 7 — the wake's dispatch can never carry the chip's
     // edit cannot quietly route it through `sendOptionsFor`.
     //
     // WHY A STATIC PIN RATHER THAN A PURE TEST: the claim is about a line of
-    // JSX-adjacent code in a 3000-line client component, and there is no DOM
-    // harness in this repo to drive it. Asserting the line's SHAPE is the honest
-    // executable form; the reducer's own behaviour is asserted above.
-    const src = readSource("apps/web/components/session/session-view.tsx");
-    expect(src).toContain("void send(next.text, next.hidden ? { hidden: true } : undefined);");
+    // effect body in a client component, and there is no DOM harness in this
+    // repo to drive it. Asserting the line's SHAPE is the honest executable
+    // form; the reducer's own behaviour is asserted above.
+    //
+    // The drain now lives in the injections hook rather than in session-view —
+    // the dispatch literal is the SAME line, moved. Both files are read because
+    // the negative half of the claim is about what the COMPOSER may add to a
+    // send, and that still lives in the adapter.
+    const drain = readSource("apps/web/components/session/use-session-injections.ts");
+    const adapter = readSource("apps/web/components/session/session-view.tsx");
+    expect(drain).toContain("void send(next.text, next.hidden ? { hidden: true } : undefined);");
     // The composer no longer exposes an Ultra arm at all. A wake can therefore
     // only carry its hidden marker; no composer state can add an Ultra key.
-    expect(src).not.toContain("...(opts?.ultra ? { ultra: true } : {}),");
-    expect(src).not.toContain("...(ultraArmed ? { ultra: true } : {})");
-    expect(src).not.toContain("ultraArm.armed ? { ultra: true }");
+    for (const src of [drain, adapter]) {
+      expect(src).not.toContain("...(opts?.ultra ? { ultra: true } : {}),");
+      expect(src).not.toContain("...(ultraArmed ? { ultra: true } : {})");
+      expect(src).not.toContain("ultraArm.armed ? { ultra: true }");
+    }
   });
 
   test("the arm reducer says ARMED and the wake's options still carry no `ultra` key", () => {

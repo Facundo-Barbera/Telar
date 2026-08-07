@@ -4543,6 +4543,28 @@ const STAYED_IN_ADAPTER: ReadonlyArray<[string, string, number?]> = [
 const countOccurrences = (haystack: string, needle: string): number =>
   needle.length === 0 ? 0 : haystack.split(needle).length - 1;
 
+/**
+ * The adapter's own extracted parts: files under components/session/ that
+ * session-view.tsx imports directly. Used by INV-8g's STAYED half so the
+ * invariant tracks the SHELL BOUNDARY rather than one file's line count — see
+ * the note at its call site for why that distinction is the whole point.
+ *
+ * Deliberately one level deep and deliberately import-derived. A transitive
+ * walk would eventually reach the leaf renderers the MOVED set is about, and a
+ * directory glob would let any passing file vouch for the adapter.
+ */
+function adapterSiblings(donorCode: string) {
+  const rels = [...donorCode.matchAll(/from "@\/components\/session\/([\w.-]+)"/g)]
+    .map((m) => m[1]!)
+    .flatMap((name) =>
+      [".ts", ".tsx"].map((ext) => `apps/web/components/session/${name}${ext}`),
+    );
+  return [...new Set(rels)].flatMap((rel) => {
+    const f = byRel.get(rel);
+    return f ? [f] : [];
+  });
+}
+
 // ONE ROW HERE CONTRADICTS §5.5-D7's table, deliberately and with the record
 // corrected rather than the invariant bent: D7 lists `AgentStepRow` in the
 // STAYED column, and it MOVED — it is a leaf rendering with no session
@@ -5019,11 +5041,25 @@ describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-1
       );
     }
 
+    // THE ADAPTER IS A MODULE SET, NOT A FILE. The claim this half makes is that
+    // session semantics stayed on the ADAPTER side of the shell boundary — not
+    // that they stayed in one 4,000-line file. Splitting the adapter into
+    // siblings under components/session/ that session-view.tsx itself imports
+    // moves nothing across that boundary, and pinning the file would have made
+    // the invariant an argument against ever decomposing the donor.
+    //
+    // The set is derived from session-view.tsx's OWN imports rather than from a
+    // directory listing, so an unrelated file dropped into components/session/
+    // cannot satisfy a needle on the adapter's behalf: to count, a module has to
+    // be one the adapter actually composes itself out of.
+    const adapterCode = [donor.code, ...adapterSiblings(donor.code).map((f) => f.code)].join("\n");
+
     const missing = STAYED_IN_ADAPTER.filter(
-      ([needle, , min]) => countOccurrences(donor.code, needle) < (min ?? 1),
+      ([needle, , min]) => countOccurrences(adapterCode, needle) < (min ?? 1),
     ).map(
       ([needle, what, min]) =>
-        `${SESSION_VIEW_REL} contains "${needle}" ${countOccurrences(donor.code, needle)} ` +
+        `the ${SESSION_VIEW_REL} adapter contains "${needle}" ` +
+        `${countOccurrences(adapterCode, needle)} ` +
         `time(s), expected at least ${min ?? 1} — ${what}. RULE (AC6): the carve-out ` +
           `moved the RENDER SEAM and nothing else; route, state and API stayed in the adapter. ` +
           `CONSEQUENCE: session semantics have followed the transcript into the shell, which ` +
