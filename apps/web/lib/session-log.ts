@@ -176,9 +176,28 @@ export function startSessionFeedWindow(
       );
     }
     fs.writeFileSync(feedFile(sessionId), lines.join("\n") + "\n");
-  } catch {
-    // best-effort — never let the feed break the turn
+  } catch (err) {
+    // best-effort — never let the feed break the turn. But never silently:
+    // a feed that can't write is background output VANISHING for every
+    // subscriber, and that must leave a trace (creative-run defect).
+    reportFeedFailure(sessionId, "startSessionFeedWindow", err);
   }
+}
+
+// One line per fault burst, not one per event: a failing disk would other-
+// wise log for every append in the firehose. 30s per session is enough to
+// correlate "background output vanished" with its cause in the server log.
+const FEED_FAILURE_LOG_MS = 30_000;
+const feedFailureLoggedAt = new Map<string, number>();
+function reportFeedFailure(sessionId: string, op: string, err: unknown): void {
+  const now = Date.now();
+  const last = feedFailureLoggedAt.get(sessionId) ?? 0;
+  if (now - last < FEED_FAILURE_LOG_MS) return;
+  feedFailureLoggedAt.set(sessionId, now);
+  console.error(
+    `[session-feed] ${op} failed for ${sessionId} — background output is not reaching subscribers:`,
+    err,
+  );
 }
 
 /** Append one event to the current window. Callers keep the token firehose
@@ -198,7 +217,8 @@ export function appendFeedEvent(
       JSON.stringify({ win: state.win, seq: state.seq, event, data }) + "\n",
     );
     return { win: state.win, seq: state.seq };
-  } catch {
+  } catch (err) {
+    reportFeedFailure(sessionId, "appendFeedEvent", err);
     return null;
   }
 }

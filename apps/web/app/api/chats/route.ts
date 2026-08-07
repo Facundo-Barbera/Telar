@@ -1,5 +1,7 @@
 import { listUltraRuns } from "@telar/core";
 import { isSessionRunLive } from "@/lib/chat-runs";
+import { sessionsAwaitingApproval } from "@/lib/permissions";
+import { isSessionWindowLive } from "@/lib/server/session-runtime";
 import { liveRunCountsBySession } from "@/lib/ultra-runs";
 import { listChats } from "@/lib/store";
 
@@ -36,6 +38,7 @@ export async function GET(req: Request) {
   } catch {
     liveUltraCounts = new Map();
   }
+  const awaiting = sessionsAwaitingApproval();
   const chats = listChats(project, { archived })
     .filter((c) => c.role !== "steerer" && c.role !== "escalation")
     // `live` is the sidebar's running dot. It is DERIVED per request from the
@@ -47,10 +50,20 @@ export async function GET(req: Request) {
       const liveBackgroundRuns = liveUltraCounts.get(c.id);
       return {
         ...c,
-        live: isSessionRunLive(c.id),
+        // A session is alive to the sidebar when a turn is in flight OR its
+        // window is — background agents working between turns are exactly as
+        // live as a streaming turn (creative-run defect: the persistent
+        // runtime made the second state common, and the dot missed it).
+        live: isSessionRunLive(c.id) || isSessionWindowLive(c.id),
         // Only present when positive — absent reads the same as "nothing
         // running", same optional-field convention `live`'s own callers use.
         ...(liveBackgroundRuns ? { liveBackgroundRuns } : {}),
+        // An unanswered permission card outranks "running" in the row: work
+        // is PAUSED on the user. Derived per request from the same pending
+        // registry the cards resolve through (one registry pass for the
+        // whole response, membership per row), so row and card can never
+        // disagree about whether a question is open.
+        ...(awaiting.has(c.id) ? { needsApproval: true } : {}),
       };
     });
   return Response.json({ chats });

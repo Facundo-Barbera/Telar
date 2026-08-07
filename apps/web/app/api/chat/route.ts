@@ -1121,7 +1121,17 @@ export async function POST(req: Request) {
         // never a heuristic) — remembered on the pending entry so the
         // permission route can validate whichever one the client picks.
         const ruleOptions = ruleOptionsFor(toolName, input);
-        const { id, promise } = createPending(project, toolName, input, rule, ruleOptions);
+        // The session id rides along purely so the sidebar can say "needs
+        // you" (sessionsAwaitingApproval) — capturedSession once init has
+        // confirmed it, the client's resume target before that.
+        const { id, promise } = createPending(
+          project,
+          toolName,
+          input,
+          rule,
+          ruleOptions,
+          capturedSession ?? sessionId ?? undefined,
+        );
         myPending.add(id);
         // Respect the SDK's per-call signal: resolve the pending (deny) the
         // moment this tool call is aborted. There is no timeout — an
@@ -1344,7 +1354,14 @@ export async function POST(req: Request) {
             }
             const rule = ruleFor("Bash", input);
             const ruleOptions = ruleOptionsFor("Bash", input);
-            const { id, promise } = createPending(project, "Bash", input, rule, ruleOptions);
+            const { id, promise } = createPending(
+              project,
+              "Bash",
+              input,
+              rule,
+              ruleOptions,
+              capturedSession ?? sessionId ?? undefined,
+            );
             myPending.add(id);
             const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
             abort.signal.addEventListener("abort", onAbort, { once: true });
@@ -1442,6 +1459,7 @@ export async function POST(req: Request) {
               req.arguments,
               rule,
               ruleOptions,
+              capturedSession ?? sessionId ?? undefined,
             );
             myPending.add(id);
             const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });

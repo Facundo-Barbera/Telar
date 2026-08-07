@@ -37,6 +37,11 @@ export type SidebarSession = {
   // conflating them. Absent or 0 both mean "nothing running in the
   // background"; only a positive count is ever rendered.
   liveBackgroundRuns?: number;
+  // Derived per request by GET /api/chats from the pending-permission
+  // registry: this session has an unanswered approval card. Outranks both
+  // live signals in the row — the work is paused ON THE USER, which is the
+  // one state where the sidebar's job is to interrupt.
+  needsApproval?: boolean;
 };
 
 // Which slice of the inbox the list is showing. "all" is the banded default

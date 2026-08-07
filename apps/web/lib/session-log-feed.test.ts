@@ -122,4 +122,23 @@ describe("session feed", () => {
     const cursor = log.appendFeedEvent("never-started/nested", "text", { text: "x" });
     expect(cursor).toBeNull();
   });
+
+  test("a failed write leaves ONE trace per burst — never silence, never a firehose", () => {
+    // The creative-run defect: every caller drops appendFeedEvent's null, so
+    // a feed that can't write made background output vanish without a trace.
+    // The reporter lives INSIDE the writer (one place, five call sites) and
+    // throttles per session, because a failing disk fails for every event.
+    const seen: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...args: unknown[]) => void seen.push(args);
+    try {
+      expect(log.appendFeedEvent("no-dir/burst", "text", { text: "x" })).toBeNull();
+      expect(log.appendFeedEvent("no-dir/burst", "text", { text: "y" })).toBeNull();
+      const mine = seen.filter((a) => String(a[0]).includes("[session-feed]"));
+      expect(mine.length).toBe(1);
+      expect(String(mine[0]?.[0])).toContain("not reaching subscribers");
+    } finally {
+      console.error = orig;
+    }
+  });
 });

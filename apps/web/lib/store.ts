@@ -546,6 +546,24 @@ export function settleSpawnStatuses(id: string, toolUseIds?: string[]): boolean 
   return changed;
 }
 
+// A turn the server died under must SAY so (creative-run defect: after a
+// restart both liveness checks are false, the events route finishes silently,
+// and a half-finished turn reads as a completed one). Appends one attention
+// marker to the last assistant message — idempotent: an identical trailing
+// marker means the repair already ran. Returns whether anything changed.
+export function markLastTurnInterrupted(id: string, text: string): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const last = [...chat.messages].reverse().find((m) => m.role === "assistant");
+  if (!last) return false;
+  const tail = last.parts[last.parts.length - 1];
+  if (tail?.type === "marker" && tail.text === text) return false;
+  last.parts.push({ type: "marker", text, attention: true });
+  writeChats(chats);
+  return true;
+}
+
 // Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so
 // appendTurn's fallback title-on-create logic never matters again for this
 // chat — a user rename always wins. Returns false when the id is unknown.
