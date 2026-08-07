@@ -54,11 +54,13 @@ import {
   parentOf,
   showsLiveStatus,
   toTranscriptItems,
+  useProviderAttachments,
   type AgentBucket,
   type AttachmentRef,
   type ChatMessage,
   type ItemKind,
   type PermissionPart,
+  type PromptInputAttachmentItem,
   type PromptInputMessage,
   type StatusPayload,
   type MarkerPayload,
@@ -102,6 +104,7 @@ import {
   plainQueueError,
   queueStorageKey,
   readQueue,
+  recallTarget,
   stripQueuedAttachments,
   writeQueue,
   type QueuedMessage,
@@ -3206,26 +3209,132 @@ function SessionWorkspace({
     [removeEngineQueueItem],
   );
 
-  /** ArrowUp on an empty composer pulls the NEWEST pending message back into
-   *  the input as an ordinary draft (feel contract rule 10): the line leaves
-   *  the strip, its text enters the box, nothing is left behind. The value is
-   *  set through the native setter + input event so React and the prompt
-   *  controller both observe it. */
-  const recallPendingIntoComposer = useCallback(
-    (el: HTMLTextAreaElement) => {
-      const line = pendingLines.at(-1);
-      if (!line) return;
-      if (line.item.accepted) void removeEngineQueueItem(line.item);
-      setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(el, line.item.text);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    },
-    [pendingLines, removeEngineQueueItem],
+  /** THE WALK (message-lifecycle F1). ArrowUp/ArrowDown move a cursor over
+   *  the strip's editable lines (recallTarget — a pure index, tested in
+   *  message-queue.test.ts); the composer PREVIEWS the line under the cursor,
+   *  text and attachments both, while the strip keeps the line. Nothing is
+   *  removed until the user COMMITS — by typing (the keydown handler) or by
+   *  sending (handleSubmit) — so browsing costs nothing and Escape or
+   *  walking back out restores the displaced draft exactly.
+   *
+   *  The old single-shot recall copied only `line.item.text`: a queued
+   *  message with attachments came back silently lighter, the exact "never
+   *  hand back less than you were given" violation the design doc names. */
+  const recallCursorRef = useRef<number | null>(null);
+  const recallPreviewIdRef = useRef<string | null>(null);
+  const recallDisplacedRef = useRef<{ text: string; files: PromptInputAttachmentItem[] } | null>(
+    null,
   );
+  /** The lost race, as a strip line: "That one already went." + Stop (the
+   *  F1→F2 handoff). Never an error banner — see commitRecall. */
+  const [recallRace, setRecallRace] = useState<string | null>(null);
+  const attachmentsCtx = useProviderAttachments();
+
+  const setComposerValue = useCallback((el: HTMLTextAreaElement, text: string) => {
+    // Native setter + input event so React and the prompt controller both
+    // observe the change (the same idiom the old recall used).
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.setSelectionRange(text.length, text.length);
+  }, []);
+
+  /** Rebuild File objects from staged/queued attachment items (data: or
+   *  still-live blob: URLs). A URL whose bytes are gone is skipped — the text
+   *  still comes back, which beats refusing the whole recall. */
+  const filesFromItems = useCallback(async (items: readonly unknown[]): Promise<File[]> => {
+    const out: File[] = [];
+    for (const raw of items) {
+      const it = raw as { filename?: string; mediaType?: string; url?: string };
+      if (!it?.url) continue;
+      try {
+        const blob = await (await fetch(it.url)).blob();
+        out.push(new File([blob], it.filename ?? "attachment", { type: it.mediaType ?? blob.type }));
+      } catch {
+        /* bytes gone — skip */
+      }
+    }
+    return out;
+  }, []);
+
+  const previewInComposer = useCallback(
+    (el: HTMLTextAreaElement, text: string, files: readonly unknown[]) => {
+      setComposerValue(el, text);
+      attachmentsCtx.clear();
+      if (files.length) {
+        void filesFromItems(files).then((fs) => {
+          if (fs.length) attachmentsCtx.add(fs);
+        });
+      }
+    },
+    [setComposerValue, attachmentsCtx, filesFromItems],
+  );
+
+  const stepRecall = useCallback(
+    (el: HTMLTextAreaElement, dir: "up" | "down") => {
+      const step = recallTarget(pendingLines, recallCursorRef.current, dir);
+      if (recallCursorRef.current === null) {
+        if (!step.line) return; // nothing editable to recall
+        // Walk begins: remember what the composer held (text AND staged
+        // attachments) so the last ArrowDown can put it back.
+        recallDisplacedRef.current = { text: el.value, files: [...attachmentsCtx.files] };
+      }
+      recallCursorRef.current = step.cursor;
+      if (step.line) {
+        recallPreviewIdRef.current = step.line.item.id;
+        previewInComposer(el, step.line.item.text, (step.line.item.files as unknown[]) ?? []);
+      } else {
+        // Walked out the bottom — restore the displaced draft, whole.
+        recallPreviewIdRef.current = null;
+        const d = recallDisplacedRef.current;
+        recallDisplacedRef.current = null;
+        previewInComposer(el, d?.text ?? "", d?.files ?? []);
+      }
+    },
+    [pendingLines, attachmentsCtx, previewInComposer],
+  );
+
+  const cancelRecall = useCallback(
+    (el: HTMLTextAreaElement) => {
+      recallCursorRef.current = null;
+      recallPreviewIdRef.current = null;
+      const d = recallDisplacedRef.current;
+      recallDisplacedRef.current = null;
+      previewInComposer(el, d?.text ?? "", d?.files ?? []);
+    },
+    [previewInComposer],
+  );
+
+  /** The commit: the previewed line is the user's now — it leaves the strip
+   *  and the engine. A lost race (core admits no removal once claimed, and
+   *  the engine claims the instant the session goes idle) is NOT an error
+   *  banner: the message went, so the strip shows one line — "That one
+   *  already went." — with Stop right there (the F1→F2 handoff). */
+  const commitRecall = useCallback(() => {
+    const id = recallPreviewIdRef.current;
+    recallCursorRef.current = null;
+    recallPreviewIdRef.current = null;
+    recallDisplacedRef.current = null;
+    if (!id) return;
+    const item = messageQueue.find((x) => x.id === id);
+    setMessageQueue((q) => q.filter((x) => x.id !== id));
+    if (!item?.accepted || item.revision === undefined || !sessionId) return;
+    void (async () => {
+      const res = await fetch(
+        `/api/chat/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision }),
+        },
+      ).catch(() => null);
+      if (res && !res.ok) setRecallRace("That one already went.");
+      await refreshEngineQueue();
+    })();
+  }, [messageQueue, sessionId, refreshEngineQueue]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -3244,6 +3353,11 @@ function SessionWorkspace({
     // normal thing to want ("look at this"), so the empty-text guard now only
     // rejects a genuinely empty composer.
     if (!text && message.files.length === 0) return;
+    // Sending while a walk previews a line commits it (the line leaves the
+    // strip — otherwise the same message would send AND stay queued), and a
+    // send is the user acting, so the lost-race line has served its purpose.
+    if (recallPreviewIdRef.current) commitRecall();
+    setRecallRace(null);
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
@@ -3905,6 +4019,23 @@ function SessionWorkspace({
                 into the transcript, which is their one representation.
                 After a Stop, the strip holds everything un-sent and says so
                 in one line; Send now (or your next message) releases it. */}
+            {/* The F1→F2 handoff: a pull-back that lost the race to the
+                engine is not an error — the message went. One line says so,
+                with Stop right there for the user whose whole intent was
+                "actually, wait". Cleared by the next send. */}
+            {recallRace && (
+              <div className="mb-2 flex items-center justify-between rounded-xl border border-border bg-muted/40 px-3 py-1.5">
+                <span className="text-xs text-muted-foreground">{recallRace}</span>
+                <span className="flex items-center gap-1.5">
+                  <Button type="button" size="xs" variant="outline" onClick={() => stopTurn()}>
+                    Stop
+                  </Button>
+                  <Button type="button" size="xs" variant="ghost" onClick={() => setRecallRace(null)}>
+                    Dismiss
+                  </Button>
+                </span>
+              </div>
+            )}
             {pendingLines.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
                 {(heldAfterStop || pendingLines.length > 1) && (
@@ -4046,18 +4177,38 @@ function SessionWorkspace({
                         : "Ask for changes, explore the code, or attach context…"
                   }
                   onKeyDown={(e) => {
-                    // Up-recall (rule 10): an empty composer + ArrowUp pulls
-                    // the newest pending message back as an editable draft.
-                    // Everywhere else, native caret behavior and the
-                    // autocomplete's own handling are untouched.
+                    // The walk (F1, rule 10): ArrowUp on an empty composer
+                    // previews the newest pending message; each further press
+                    // walks one line older; ArrowDown walks back, and the
+                    // last one restores whatever draft was displaced. Escape
+                    // abandons the walk; typing anything COMMITS it (the line
+                    // leaves the strip for good). Everywhere else, native
+                    // caret behavior and the autocomplete's own handling are
+                    // untouched.
+                    const walking = recallCursorRef.current !== null;
                     if (
                       e.key === "ArrowUp" &&
-                      e.currentTarget.value === "" &&
+                      (walking || e.currentTarget.value === "") &&
                       pendingLines.length > 0
                     ) {
                       e.preventDefault();
-                      recallPendingIntoComposer(e.currentTarget);
+                      stepRecall(e.currentTarget, "up");
                       return;
+                    }
+                    if (e.key === "ArrowDown" && walking) {
+                      e.preventDefault();
+                      stepRecall(e.currentTarget, "down");
+                      return;
+                    }
+                    if (e.key === "Escape" && walking) {
+                      e.preventDefault();
+                      cancelRecall(e.currentTarget);
+                      return;
+                    }
+                    if (walking && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+                      // First real keystroke = the user is editing this one —
+                      // it is theirs now. (Enter commits via handleSubmit.)
+                      commitRecall();
                     }
                     autocomplete.onComposerKeyDown(e);
                   }}

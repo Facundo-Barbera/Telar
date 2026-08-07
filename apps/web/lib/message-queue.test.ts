@@ -160,3 +160,58 @@ describe("writeQueue — quota failures degrade, they do not throw", () => {
     expect(fit.items[0].text).toBe("x");
   });
 });
+
+// ── the ArrowUp/ArrowDown walk (message-lifecycle F1) ────────────────────────
+// A pure index over the EDITABLE lines, re-resolved per press. The walk's
+// contract: up from rest lands on the newest, further ups clamp at the oldest,
+// down walks back, and down past the newest ENDS the walk (cursor null) so the
+// caller restores the displaced draft. Non-editable lines are never targets.
+
+// The import sits here rather than at the top so the walk's block reads as one
+// unit — same file, same runtime, purely an organizational choice.
+import { recallTarget, type PendingLine } from "./message-queue";
+
+const line = (id: string, editable = true): PendingLine<{ id: string }> => ({
+  item: { id },
+  editable,
+});
+
+describe("recallTarget — the composer's walk over the strip", () => {
+  const lines = [line("oldest"), line("mid"), line("newest")];
+
+  test("up from rest lands on the NEWEST editable line", () => {
+    const step = recallTarget(lines, null, "up");
+    expect(step.cursor).toBe(2);
+    expect(step.line?.item.id).toBe("newest");
+  });
+
+  test("repeated up walks older and CLAMPS at the oldest — no wrap", () => {
+    expect(recallTarget(lines, 2, "up").line?.item.id).toBe("mid");
+    expect(recallTarget(lines, 1, "up").line?.item.id).toBe("oldest");
+    expect(recallTarget(lines, 0, "up").line?.item.id).toBe("oldest");
+    expect(recallTarget(lines, 0, "up").cursor).toBe(0);
+  });
+
+  test("down walks back toward newest; past the newest the walk ENDS", () => {
+    expect(recallTarget(lines, 0, "down").line?.item.id).toBe("mid");
+    expect(recallTarget(lines, 1, "down").line?.item.id).toBe("newest");
+    const out = recallTarget(lines, 2, "down");
+    expect(out.cursor).toBeNull();
+    expect(out.line).toBeNull();
+  });
+
+  test("down at rest is a no-op — there is no walk to walk back through", () => {
+    expect(recallTarget(lines, null, "down")).toEqual({ cursor: null, line: null });
+  });
+
+  test("non-editable lines are invisible to the walk", () => {
+    const mixed = [line("a"), line("failed", false), line("b")];
+    expect(recallTarget(mixed, null, "up").line?.item.id).toBe("b");
+    expect(recallTarget(mixed, 1, "up").line?.item.id).toBe("a");
+  });
+
+  test("an empty (or fully non-editable) strip recalls nothing", () => {
+    expect(recallTarget([], null, "up")).toEqual({ cursor: null, line: null });
+    expect(recallTarget([line("x", false)], null, "up")).toEqual({ cursor: null, line: null });
+  });
+});
