@@ -261,6 +261,17 @@ const PLANNER_GREETING =
 // nothing at all to a transcript.
 type Status = "ready" | "submitted" | "streaming" | "error";
 
+// #28 turn-as-event: what a turn's "done" hands the background tail — how many
+// tasks outlive the turn, the session they belong to (from the payload, never
+// React state), and the feed cursor the POST's rendering stopped at. Held in a
+// ref and read through this alias because TS narrows a ref's `.current` to its
+// last visible assignment (null) across the async send() body.
+type WindowHandoff = {
+  tasksLive: number;
+  sessionId: string | null;
+  cursor: { win: number; seq: number } | null;
+};
+
 // RE-EXPORTED, NOT REDECLARED. apps/web/lib/gallery-fixtures/showcase.ts imports
 // this type from THIS module, and lib/gallery-fixtures/** sits outside story
 // 3.1's write set — so the name has to keep resolving here. It is the same
@@ -1184,6 +1195,15 @@ function SessionWorkspace({
   const [reconnectLive, setReconnectLive] = useState(false);
   // Guard so the reconnect effect attaches at most once per session id.
   const reconnectedRef = useRef<string | null>(null);
+  // #28 turn-as-event: the turn's POST ends at `result`, and background agents
+  // keep working. The "done" event records the handoff (how many tasks live,
+  // and the feed cursor rendering stopped at); send() then opens the
+  // BACKGROUND TAIL — a feed subscription strictly after that cursor, so
+  // nothing the POST already rendered repeats. It renders through
+  // applyServerEvent but immediately re-settles status: background work must
+  // never re-busy the composer.
+  const windowHandoffRef = useRef<WindowHandoff | null>(null);
+  const backgroundTailRef = useRef<AbortController | null>(null);
 
   // The god-view handoff and the loom lifecycle it starts — see
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
@@ -2031,6 +2051,23 @@ function SessionWorkspace({
                 ) {
                   setCompactedContext(null);
                 }
+                // The window handoff (#28 turn-as-event): the turn ended at
+                // `result`, but background agents may still be working. Record
+                // where this stream's rendering stopped so send() can attach
+                // the background tail strictly AFTER it.
+                windowHandoffRef.current = {
+                  tasksLive: typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
+                  // From the payload, not React state: a fresh session's send()
+                  // closure captured sessionId before the "session" event set it.
+                  sessionId:
+                    typeof payload.sessionId === "string" ? payload.sessionId : null,
+                  cursor:
+                    payload.feedCursor &&
+                    typeof payload.feedCursor.win === "number" &&
+                    typeof payload.feedCursor.seq === "number"
+                      ? { win: payload.feedCursor.win, seq: payload.feedCursor.seq }
+                      : null,
+                };
                 break;
               case "saved":
                 setChatPersisted(true);
@@ -2184,6 +2221,79 @@ function SessionWorkspace({
     ],
   );
 
+  // #28 turn-as-event: render the BACKGROUND WINDOW after a turn's POST ended
+  // at `result`. A feed tail strictly after `cursor` — everything before it was
+  // already rendered by the POST itself, so nothing repeats. Events flow
+  // through the same applyServerEvent reducer, then status is immediately
+  // re-settled: text/tool events flip it to "streaming" for a live turn, and
+  // background work must never re-busy the composer (both updates land in one
+  // React batch, so nothing flickers). Ends at the window's "closed" marker;
+  // a transport drop reconnects from the last server-advanced cursor.
+  const startBackgroundTail = useCallback(
+    (sid: string, cursor: { win: number; seq: number }) => {
+      backgroundTailRef.current?.abort();
+      const abort = new AbortController();
+      backgroundTailRef.current = abort;
+      void (async () => {
+        try {
+          let retryMs = 250;
+          let after = cursor;
+          while (!abort.signal.aborted) {
+            let sawClosed = false;
+            const res = await fetch(
+              `/api/chat/${encodeURIComponent(sid)}/events?win=${after.win}&seq=${after.seq}`,
+              { signal: abort.signal },
+            );
+            if (!res.ok || !res.body) throw new Error(`background tail HTTP ${res.status}`);
+            let sawEvent = false;
+            await consumeSSE(res.body.getReader(), (event, payload) => {
+              sawEvent = true;
+              if (event === "closed") {
+                sawClosed = true;
+                return;
+              }
+              if (event === "cursor") {
+                if (
+                  typeof payload?.win === "number" &&
+                  typeof payload?.seq === "number"
+                ) {
+                  after = { win: payload.win, seq: payload.seq };
+                }
+                return;
+              }
+              // Feed bookkeeping a strictly-after tail should never see —
+              // skipped defensively (a stale-cursor replay carries them).
+              if (event === "window" || event === "user") return;
+              applyServerEvent(event, payload);
+              setStatus((s) => (s === "streaming" ? "ready" : s));
+            });
+            if (sawClosed || abort.signal.aborted) break;
+            // A silent first connect means the window was already dead (the
+            // route's first-tick gate finished it) — nothing more will come.
+            if (!sawEvent) break;
+            await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
+            retryMs = Math.min(4_000, retryMs * 2);
+          }
+        } catch {
+          // aborted (new turn / unmount) or dropped — the window itself is
+          // untouched server-side; a fresh mount's reconnect replays it.
+        } finally {
+          if (backgroundTailRef.current === abort) backgroundTailRef.current = null;
+        }
+      })();
+    },
+    [applyServerEvent],
+  );
+
+  // The background tail must not outlive this mount or survive into another
+  // session's view — its reducer writes into THIS session's messages.
+  useEffect(() => {
+    return () => {
+      backgroundTailRef.current?.abort();
+      backgroundTailRef.current = null;
+    };
+  }, [sessionId]);
+
   const send = useCallback(
     // `hidden` (M11 finding-1) fires a turn with NO user bubble — the escalation
     // kickoff, where `text` is the sentinel route.ts swaps for the real prompt.
@@ -2196,6 +2306,11 @@ function SessionWorkspace({
       // A new turn clears the interrupted latch: whatever killed the LAST turn
       // is no longer a reason to hold the queue back.
       turnInterruptedRef.current = false;
+      // A new turn owns rendering — the previous window's background tail (if
+      // any) stands down; its agents' output now rides this turn's stream.
+      backgroundTailRef.current?.abort();
+      backgroundTailRef.current = null;
+      windowHandoffRef.current = null;
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
       // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
@@ -2324,6 +2439,14 @@ function SessionWorkspace({
           setStatus("error");
         } else {
           setStatus("ready");
+          // The turn ended at `result`, but its background agents may not be
+          // done — attach the background tail where this stream's rendering
+          // stopped, so their work stays visible (and their tool parts keep
+          // resolving) without holding the composer.
+          const handoff = windowHandoffRef.current as WindowHandoff | null;
+          if (handoff && handoff.tasksLive > 0 && handoff.sessionId && handoff.cursor) {
+            startBackgroundTail(handoff.sessionId, handoff.cursor);
+          }
         }
       } catch (err) {
         // The server's teardown fail-closed-denies any permission still open

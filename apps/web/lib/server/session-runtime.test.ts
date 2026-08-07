@@ -1,9 +1,9 @@
 // THE TURN-END POLICY IS THE FIX (#28), so it is what these tests pin: a turn
-// feed ends at result-with-no-background-tasks, stays open while tasks are
-// live and talking, quiet-graces past a silent holder WITHOUT closing the
-// runtime, and messages with no turn attached are consumed — never able to
-// block the pump — while the input channel stays open for the next turn. The
-// query is faked; every behaviour here is host-side policy, not SDK behaviour.
+// feed ends AT THE RESULT, background tasks hold the RUNTIME (never the feed),
+// detached messages reach the window sink (rendered, not dropped), the roster
+// emptying while detached settles the window exactly once, and the input
+// channel stays open for the next turn. The query is faked; every behaviour
+// here is host-side policy, not SDK behaviour.
 
 // bun provides "bun:test" at runtime; @types/bun isn't a dependency of this Next
 // app, so the web tsconfig (which includes **/*.ts) can't resolve it. Suppress
@@ -47,13 +47,12 @@ function fakeQuery() {
 }
 
 let keyCounter = 0;
-function makeRuntime(opts?: { quietGraceMs?: number; fingerprint?: string; key?: string }) {
+function makeRuntime(opts?: { fingerprint?: string; key?: string }) {
   const fq = fakeQuery();
   const key = opts?.key ?? `test-run-${++keyCounter}`;
   const { runtime, created } = acquireSessionRuntime({
     key,
     fingerprint: opts?.fingerprint ?? "fp-1",
-    quietGraceMs: opts?.quietGraceMs ?? 40,
     create: ({ input }) => {
       // Drain the input channel in the background, recording what arrived —
       // the real query does exactly this over stdin.
@@ -110,32 +109,56 @@ describe("session runtime", () => {
     rt.runtime.closeNow("test over");
   });
 
-  test("live background tasks hold the feed open past the result until they settle", async () => {
+  test("the feed ends AT the result even while background tasks are live", async () => {
     const rt = makeRuntime();
     const feed = rt.runtime.beginTurn("run-1");
-    rt.emit(tasksChanged(1));
+    rt.emit(tasksChanged(1)); // a background agent is running
     rt.emit(result);
-    rt.emit(assistant); // post-result traffic from the background agent
-    rt.emit(tasksChanged(0)); // it settles → feed may now close
-    const seen = await collect(feed);
-    expect(seen.length).toBe(4);
+    const seen = await collect(feed); // returns immediately — no grace to wait out
+    expect(seen.length).toBe(2);
+    expect(rt.runtime.turnActive).toBe(false);
+    // The RUNTIME and its tasks survive the feed — that is the whole point.
     expect(rt.runtime.closed).toBe(false);
     rt.runtime.closeNow("test over");
   });
 
-  test("a silent background holder quiet-graces the FEED closed but leaves the RUNTIME alive", async () => {
-    const rt = makeRuntime({ quietGraceMs: 30 });
+  test("detached traffic reaches the window sink, and the roster emptying settles it once", async () => {
+    const rt = makeRuntime();
     const feed = rt.runtime.beginTurn("run-1");
-    rt.emit(tasksChanged(1)); // a parked dev server
+    const sank: string[] = [];
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: (m) => sank.push((m as { type: string }).type),
+      onSettled: () => settled++,
+    };
+    rt.emit(tasksChanged(1));
     rt.emit(result);
-    const seen = await collect(feed); // returns only once the grace fires
-    expect(seen.length).toBe(2);
-    expect(rt.runtime.turnActive).toBe(false);
-    expect(rt.runtime.closed).toBe(false);
-    // Late traffic is consumed and counted, never able to wedge the pump.
+    await collect(feed); // turn over; sink survives detach
+    rt.emit(assistant); // the background agent keeps talking
+    await tick();
+    expect(sank).toEqual(["assistant"]);
+    expect(settled).toBe(0);
+    expect(rt.runtime.detachedMessages).toBe(1);
+    rt.emit(tasksChanged(0)); // roster empties while detached → window closes
+    await tick();
+    expect(settled).toBe(1);
+    expect(rt.runtime.windowSink).toBeNull();
+    // Later strays are counted but the window does not settle twice.
     rt.emit(assistant);
     await tick();
-    expect(rt.runtime.detachedMessages).toBe(1);
+    expect(settled).toBe(1);
+    expect(rt.runtime.closed).toBe(false);
+    rt.runtime.closeNow("test over");
+  });
+
+  test("beginTurn clears a previous window's sink — the new POST owns rendering", async () => {
+    const rt = makeRuntime();
+    rt.runtime.windowSink = { canUseTool: null, onDetachedMessage: () => {}, onSettled: () => {} };
+    const feed = rt.runtime.beginTurn("run-2");
+    expect(rt.runtime.windowSink).toBeNull();
+    rt.emit(result);
+    await collect(feed);
     rt.runtime.closeNow("test over");
   });
 

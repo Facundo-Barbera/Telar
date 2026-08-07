@@ -1,34 +1,58 @@
 import { isSessionRunLive } from "@/lib/chat-runs";
-import { type DeltaCursor, readSessionDeltas, readSessionEvents } from "@/lib/session-log";
+import { isSessionWindowLive } from "@/lib/server/session-runtime";
+import {
+  type DeltaCursor,
+  type FeedCursor,
+  readFeedEvents,
+  readSessionDeltas,
+  readSessionEvents,
+} from "@/lib/session-log";
 
 export const dynamic = "force-dynamic";
 
 const POLL_MS = 300;
 
-// SSE tail of a session's CURRENT in-flight turn (docs/runtime-architecture.md
-// §A, Phase 1b). A client that returns to a session while its turn is still
-// running subscribes here and replays the live event log written by the POST
-// /api/chat run, so it watches the turn to completion instead of seeing the
-// pre-turn state until it finishes.
+// SSE tail of a session's CURRENT activity window (docs/runtime-architecture.md
+// §A, Phase 1b; #28 turn-as-event). Two forms:
 //
-// CRITICAL: only a LIVE run is tailed. A completed turn already lives in
-// chats.json (the page seeds from it on mount); replaying its log would
-// double-render. The first tick gates on isSessionRunLive and finishes silently
-// if the run isn't live.
+// - No cursor: replay the window from its start — the reconnect case (a client
+//   returning to a session mid-window rebuilds the whole in-flight turn from
+//   the live log) and the dock's per-reconnect rebuild.
+// - ?win=N&seq=M: tail the FEED strictly after that cursor — the background
+//   case (a client whose own POST just ended at `result` attaches here to keep
+//   rendering what its background agents produce, without replaying the turn
+//   it already rendered).
+//
+// LIVENESS is the window, not the run: a session whose POST ended but whose
+// background agents are still working is live to a subscriber — that is what
+// makes the work visibly background instead of silently vanishing. A session
+// with neither a run nor a window emits nothing and finishes on the first
+// tick (the anti-double-render gate: a completed window already lives in
+// chats.json, which the page seeds from on mount).
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   const { sessionId } = await params;
+  const url = new URL(req.url);
+  const winParam = url.searchParams.get("win");
+  const seqParam = url.searchParams.get("seq");
+  const afterCursor: FeedCursor | null =
+    winParam !== null && seqParam !== null
+      ? { win: Number(winParam), seq: Number(seqParam) }
+      : null;
   const encoder = new TextEncoder();
 
   let closed = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   let finish = () => {};
 
+  const windowOrRunLive = () => isSessionRunLive(sessionId) || isSessionWindowLive(sessionId);
+
   const stream = new ReadableStream({
     start(controller) {
       let line = 0;
+      let feedCursor: FeedCursor | null = afterCursor;
       // Live delta ring cursor (§2). gen:-1 forces the first read to replay the
       // whole current in-flight block; thereafter it advances incrementally and
       // re-bases on block boundaries (see readSessionDeltas).
@@ -64,32 +88,51 @@ export async function GET(
       const tick = () => {
         if (closed) return;
 
-        // Anti-double-render gate: on the FIRST tick, a run that isn't live is
-        // a completed (or never-started) turn the page already rendered from
-        // chats.json — finish silently, emit nothing.
+        // Anti-double-render gate: on the FIRST tick, a session with neither a
+        // live run nor an open window is a completed (or never-started) turn
+        // the page already rendered from chats.json — finish silently.
         if (firstTick) {
           firstTick = false;
-          if (!isSessionRunLive(sessionId)) return finish();
+          if (!windowOrRunLive()) return finish();
         }
 
-        const live = isSessionRunLive(sessionId);
-        // Finalized/structural events first (the skeleton) — so the current
-        // block's deltas below apply on top in the right order.
-        const { events, nextLine } = readSessionEvents(sessionId, line);
-        line = nextLine;
-        for (const { event, data } of events) {
-          send(event, data);
-          if (event === "closed") return finish();
+        const live = windowOrRunLive();
+        let sawClosed = false;
+        let structuralCount = 0;
+        if (afterCursor) {
+          // Feed mode: strictly-after-cursor tail of the window's events.
+          const { events, next } = readFeedEvents(sessionId, feedCursor);
+          feedCursor = next;
+          for (const { event, data } of events) {
+            structuralCount++;
+            send(event, data);
+            if (event === "closed") sawClosed = true;
+          }
+          // Advance the client's resume point: a transport drop reconnects
+          // with the LAST cursor it saw, not the one it started from, so
+          // nothing already applied replays.
+          if (structuralCount > 0 && !sawClosed) send("cursor", feedCursor);
+        } else {
+          // Replay mode: finalized/structural events first (the skeleton) — so
+          // the current block's deltas below apply on top in the right order.
+          const { events, nextLine } = readSessionEvents(sessionId, line);
+          line = nextLine;
+          for (const { event, data } of events) {
+            structuralCount++;
+            send(event, data);
+            if (event === "closed") sawClosed = true;
+          }
         }
+        if (sawClosed) return finish();
         // Then the in-flight block's tokens from the bounded delta ring (§2).
-        // Disjoint from the file above — deltas never touch the file — so no
-        // event is ever double-sent between the two surfaces.
+        // Disjoint from the structural surface — deltas never touch either
+        // file — so no event is ever double-sent between the two.
         const { events: deltas, next } = readSessionDeltas(sessionId, deltaCursor);
         deltaCursor = next;
         for (const { event, data } of deltas) send(event, data);
-        // Safety: the run went not-live and both surfaces are fully drained (no
+        // Safety: the window went dead and both surfaces are fully drained (no
         // "closed" seen, e.g. a crash) — nothing more will arrive.
-        if (!live && events.length === 0 && deltas.length === 0) finish();
+        if (!live && structuralCount === 0 && deltas.length === 0) finish();
       };
 
       if (req.signal.aborted) return finish();

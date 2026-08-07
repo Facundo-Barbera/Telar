@@ -76,6 +76,7 @@ import {
   clearSessionDeltas,
   endSessionDeltas,
   pushSessionDelta,
+  sessionFeedCursor,
   startSessionFeedWindow,
   startSessionLog,
 } from "@/lib/session-log";
@@ -162,6 +163,7 @@ import {
   newClaudeTurnState,
   projectClaudeMessage,
   rationToolDetail,
+  type ClaudeTurnState,
 } from "@/server/providers/claude/project-message";
 // SIDE-EFFECT IMPORT, and it is load-bearing. @/lib/session-profiles registers
 // the four SessionProfileSpec builders at MODULE SCOPE, and module scope only
@@ -873,6 +875,12 @@ export async function POST(req: Request) {
       // stream scope so the shared finally can detach the turn's wiring and
       // close a spawn that never reached init (#28 persistent runtime).
       let runtimeRef: SessionRuntime | null = null;
+      // Set when this turn installs a window sink. The finally stamps how many
+      // parts its own appendTurn covered, so the sink's settle-persist appends
+      // only what the background window added AFTER the turn — and nothing at
+      // all before the finally has run (until then the turn's persistence
+      // still covers every part).
+      let windowPersistMark: { n: number; done: boolean } | null = null;
       let usagePromise: Promise<any> | null = null;
       // Claude's stable control API returns the same structured attribution as
       // `/context`. It must be requested while the query is still
@@ -1962,17 +1970,21 @@ export async function POST(req: Request) {
             // notifiers are wired to a live SSE response — so the query gets a
             // trampoline that reads the runtime's slots at call time. The
             // active POST installs its closures right after acquisition and
-            // clears them in its finally. Between turns a gated call gets an
-            // honest deny that blames nobody (DETACHED_DENY_TEXT) — reachable
-            // only by a background agent that outlived its turn's quiet-grace
-            // and then asked for a non-pre-approved tool.
-            canUseTool: (toolName, toolInput, opts) =>
-              slots.canUseTool
-                ? slots.canUseTool(toolName, toolInput, opts)
+            // clears them in its finally. Between turns the WINDOW SINK's
+            // canUseTool takes over — the same closure, its card riding the
+            // feed instead of the dead SSE — so a background agent's ask
+            // parks a real card (#28 turn-as-event). The detached deny
+            // remains only as the no-sink fallback, an honest deny that
+            // blames nobody.
+            canUseTool: (toolName, toolInput, opts) => {
+              const live = slots.canUseTool ?? self().windowSink?.canUseTool;
+              return live
+                ? live(toolName, toolInput, opts)
                 : Promise.resolve({
                     behavior: "deny",
                     message: DETACHED_DENY_TEXT,
-                  } satisfies PermissionResult),
+                  } satisfies PermissionResult);
+            },
             hooks: {
               // Profile-scoped, not response-scoped — safe to bind at creation.
               PreToolUse: [{ hooks: [preToolUseGuardrail] }],
@@ -2049,6 +2061,73 @@ export async function POST(req: Request) {
         runtime.slots.preCompactNotify = preCompactNotify;
         runtime.slots.postCompactNotify = postCompactNotify;
         const q = runtime.query;
+        // Between-turns rendering (#28 turn-as-event): once this turn ends at
+        // `result`, background agents keep producing SDK messages with no turn
+        // attached. The sink projects them into the SAME surfaces send()
+        // writes — live log, feed, delta ring — so the client's background
+        // tail renders them; when the task roster empties while detached, it
+        // closes the window and persists the post-turn parts as a hidden
+        // follow-up turn so a reload keeps the background agents' report.
+        const installWindowSink = (sessionId: string) => {
+          if (!runtimeRef) return;
+          const persisted = { n: 0, done: false };
+          windowPersistMark = persisted;
+          runtimeRef.windowSink = {
+            // Read by the NEXT turn to carry spawn-flattening across the
+            // window boundary (see the carryover block before beginTurn).
+            turnState,
+            // The turn's own gate, kept answerable between turns: send()'s SSE
+            // half dies with the POST but its log/feed mirror doesn't, and the
+            // pending registry + /api/chat/permission never needed a live
+            // response — so a background agent's ask parks a real card in the
+            // feed instead of dying on the detached deny (the silent-death
+            // failure a live smoke test caught mid-migration).
+            canUseTool,
+            onDetachedMessage: (msg) => {
+              const projection = projectClaudeMessage(msg, turnState);
+              for (const ev of projection.events) {
+                if (ev.event === "delta" || ev.event === "thinking_delta") {
+                  pushSessionDelta(sessionId, ev.event, ev.data);
+                } else {
+                  if (ev.event === "text" || ev.event === "thinking") {
+                    clearSessionDeltas(sessionId);
+                  }
+                  appendSessionEvent(sessionId, ev.event, ev.data);
+                  appendFeedEvent(sessionId, ev.event, ev.data);
+                }
+              }
+            },
+            onSettled: () => {
+              // Fail-closed at the WINDOW's end, exactly as the turn's finally
+              // fails closed at the turn's — any card still parked belongs to
+              // an agent that just settled and can no longer act on an answer.
+              for (const id of myPending) {
+                resolvePending(id, { behavior: "deny", reason: "aborted" });
+              }
+              myPending.clear();
+              const extra = persisted.done ? turnState.parts.slice(persisted.n) : [];
+              if (extra.length) {
+                appendTurn({
+                  id: sessionId,
+                  model,
+                  effort,
+                  account: profile.name,
+                  project,
+                  runtimeMode,
+                  fastMode,
+                  serviceTier,
+                  userMessage: { role: "user", parts: [{ type: "text", text: "" }] },
+                  hideUserMessage: true,
+                  assistantMessage: { role: "assistant", parts: extra },
+                  costUsd: 0,
+                });
+              }
+              appendSessionEvent(sessionId, "closed", {});
+              appendFeedEvent(sessionId, "closed", {});
+              endSessionDeltas(sessionId);
+            },
+          } as SessionRuntime["windowSink"] & { turnState: ClaudeTurnState };
+        };
         // A REUSED runtime emits no system:init — that fires once per query,
         // and this query started on an earlier turn. The session id is the
         // runtime's own key, so the init-branch bookkeeping runs here instead:
@@ -2080,12 +2159,23 @@ export async function POST(req: Request) {
             .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
           usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
         }
+        // Carry spawn-flattening across the window boundary BEFORE beginTurn
+        // clears the previous window's sink: agents spawned last turn keep
+        // forwarding under their old tool_use ids, and a fresh flattener would
+        // render their text as main-thread output.
+        {
+          const prior = runtime.windowSink as { turnState?: ClaudeTurnState } | null;
+          if (prior?.turnState) turnState.parentFlatten = prior.turnState.parentFlatten;
+        }
         const turnFeed = runtime.beginTurn(runId);
         runtime.push({
           type: "user",
           parent_tool_use_id: null,
           message: { role: "user", content: claudePrompt },
         });
+        // The reused-runtime path knows its session id already; the created
+        // path installs in the init branch below, the moment the id exists.
+        if (capturedSession) installWindowSink(capturedSession);
         // TELAR'S OWN TOOLS ARE NOT THE CLASSIFIER'S BUSINESS.
         //
         // In `auto` mode a model classifier — a security monitor prompted to
@@ -2161,6 +2251,7 @@ export async function POST(req: Request) {
             // manufacture one for either (M11.3 finding).
             startSessionLog(capturedSession, displayText, hiddenTurn);
             startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
+            installWindowSink(capturedSession);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -2247,13 +2338,29 @@ export async function POST(req: Request) {
         if (!abort.signal.aborted) send("error", { message: String(e) });
       } finally {
         // Detach this turn's live wiring FIRST: a background agent's late
-        // canUseTool call must hit the runtime's detached deny, never a dead
-        // SSE controller (#28 persistent runtime).
+        // canUseTool call must route through the window sink (or the honest
+        // detached deny), never a dead SSE controller (#28 persistent runtime).
         runtimeRef?.detachTurn();
-        // Fail-closed teardown: deny any permission requests still open on this
-        // stream so their canUseTool promises unblock and no pending is leaked.
-        for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
-        myPending.clear();
+        // Whether this session's window outlives the POST: tasks still live
+        // and a sink installed to serve them. Read once — the pump updates
+        // liveTaskCount concurrently, and the teardown decisions below must
+        // all agree on one answer.
+        const windowContinues = !!(
+          runtimeRef &&
+          !runtimeRef.closed &&
+          runtimeRef.liveTaskCount > 0 &&
+          runtimeRef.windowSink
+        );
+        // Fail-closed teardown of open permission cards — UNLESS the window
+        // continues: a card a background agent parked (or is about to park)
+        // stays answerable for as long as the agent it belongs to is alive;
+        // the sink's onSettled drains whatever is left at the window's end.
+        if (!windowContinues) {
+          for (const id of myPending) {
+            resolvePending(id, { behavior: "deny", reason: "aborted" });
+          }
+          myPending.clear();
+        }
         // A runtime whose query never reached system:init is a broken spawn —
         // close it rather than leaving a keyed-by-runId zombie no later turn
         // will ever find.
@@ -2371,6 +2478,16 @@ export async function POST(req: Request) {
               // Real context-window occupancy (final call), not the step sum.
               context: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
+              // The window handoff (#28 turn-as-event): how many background
+              // tasks outlive this turn, and the feed cursor the client's
+              // background tail should attach AFTER — everything up to it was
+              // already rendered by this very stream.
+              tasksLive: windowContinues ? runtimeRef?.liveTaskCount ?? 0 : 0,
+              feedCursor: capturedSession ? sessionFeedCursor(capturedSession) : null,
+              // For the client's tail: a fresh session's send() closure
+              // captured a null sessionId, and the handoff must not depend on
+              // React state having caught up with the "session" event.
+              sessionId: capturedSession,
             });
           }
           // A COMPACT-ONLY REQUEST APPENDS NO TURN (issue #25). The Codex
@@ -2519,6 +2636,20 @@ export async function POST(req: Request) {
         } catch {
           // persistence failure must never mask the stream teardown
         }
+        // Stamp what the turn's persistence covered, whether or not it ran
+        // (a compact turn persists nothing and spawns nothing): from here on,
+        // parts the background window adds are the sink's to persist at
+        // settle, and only from here on — before this line the turn's own
+        // appendTurn still covered every part, so the sink persists none.
+        {
+          // Widened read: TS cannot see the closure assignment installWindowSink
+          // makes, and narrows the variable to its initializer otherwise.
+          const mark = windowPersistMark as { n: number; done: boolean } | null;
+          if (mark) {
+            mark.n = turnState.parts.length;
+            mark.done = true;
+          }
+        }
         // Never let title generation outlive this response. `titleAbort` is
         // the title's OWN controller (#28 persistent runtime: the turn's
         // `abort` now kills the whole session runtime, so it must never fire
@@ -2529,17 +2660,19 @@ export async function POST(req: Request) {
         // TITLE_RACE_MS race above, or the main query never reached
         // system:init so the persistence block — the only awaiter — never ran.
         if (titlePromise) titleAbort.abort();
-        // Terminal marker the live-tail subscriber closes on. Written BEFORE
+        // Terminal marker the live-tail subscriber closes on — written BEFORE
         // endChatRun so a still-connected subscriber reads "closed" while the
-        // run is technically still registered as live (Phase 1b).
-        if (capturedSession) {
+        // run is technically still registered as live (Phase 1b). UNLESS the
+        // window continues: then the marker belongs to the window's END, and
+        // the sink's onSettled writes it (with the delta-ring drop) when the
+        // task roster empties. A sink that never fires because tasks==0 at
+        // teardown is cleared here so it cannot linger armed.
+        if (capturedSession && !windowContinues) {
+          if (runtimeRef && !runtimeRef.closed) runtimeRef.windowSink = null;
           appendSessionEvent(capturedSession, "closed", {});
           appendFeedEvent(capturedSession, "closed", {});
+          endSessionDeltas(capturedSession);
         }
-        // Turn over — drop the current-turn delta ring (contract §2). The
-        // "closed" marker above lives in the file; the ring's in-flight tokens
-        // are all superseded by now, so a late reconnect reads the file only.
-        if (capturedSession) endSessionDeltas(capturedSession);
         endChatRun(runId);
         // The server, not a mounted renderer, owns advancing durable intent.
         // Release the active run first, then let the one session dispatcher

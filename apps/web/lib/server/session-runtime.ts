@@ -39,17 +39,19 @@
 // that read the slots at call time (see the route), so the same process can
 // serve turn after turn, each with its own response stream.
 //
-// TURN END IS A POLICY, NOT A STREAM EVENT. The pump ends a turn's message
-// feed when a `result` has been seen AND no background tasks are live — the
-// common case, identical to the old teardown point. When background tasks ARE
-// live, the turn stays open while they produce messages (the user keeps
-// watching their agents, exactly as before), and ends after QUIET_GRACE_MS of
-// silence — the silent-holder case (a dev server parked in background Bash),
-// where the turn's SSE closes but the RUNTIME stays: the process, the dev
-// server, and tool execution all survive to the next turn. Messages that
-// arrive while no turn is attached are consumed and counted but not rendered
-// (v1 limitation, recorded in deferred-work.md — the work itself completes,
-// which under the old shape it never did).
+// TURN END IS THE RESULT MESSAGE, FULL STOP. The pump ends a turn's message
+// feed the moment `result` lands — regardless of live background tasks. The
+// first version of this module instead held the feed open under a resettable
+// quiet-grace while tasks were live, and the user's report told the story:
+// working agents emit messages continuously, every message re-armed the
+// grace, and the UI never got its turn back (nine measured minutes past the
+// result). The coupling was rendering: ending the feed used to mean LOSING
+// post-turn output. The WINDOW SINK removes that coupling — a turn installs
+// one before it begins, and every message that arrives with no turn attached
+// is handed to it (the route projects it into the session feed, where the
+// client's background tail renders it). When the task roster empties while
+// detached, the sink's onSettled closes the window. Tasks visibly BECOME
+// background instead of holding the turn hostage.
 //
 // STOP MEANS STOP, UNCHANGED. stopChatRun's abort maps to `closeNow` — the
 // whole runtime dies, background tasks included, exactly what Stop killed
@@ -79,13 +81,6 @@ export const DETACHED_DENY_TEXT =
   "not shown to anyone — nobody refused it. Continue with your pre-approved " +
   "tools and include what you could not do in your report.";
 
-/** How long a turn's feed stays open after its result while background tasks
- *  hold the session, absent any message traffic. Working agents emit messages
- *  continuously and reset this; only silent holders (a parked dev server) let
- *  it fire. Generous on purpose: firing early costs rendering, never
- *  correctness — the runtime and its tasks live on either way. */
-const QUIET_GRACE_MS = 15_000;
-
 /** Idle runtimes (no turn attached, no message traffic) are reaped after this
  *  long. A reaped runtime's next POST recreates it with `resume` — the cost is
  *  a process spawn, the same cost every turn paid before this module. */
@@ -100,6 +95,24 @@ export type TurnSlots = {
   runId: string | null;
   preCompactNotify: ((input: HookInput) => Promise<HookJSONOutput>) | null;
   postCompactNotify: ((input: HookInput) => Promise<HookJSONOutput>) | null;
+};
+
+/** The between-turns rendering surface. Installed by a turn's POST alongside
+ *  its slots but NOT cleared by detachTurn — it exists precisely for the
+ *  messages that arrive after the turn is gone. The route's implementation
+ *  projects into the session feed; onSettled closes the window (terminal
+ *  marker + persistence of post-turn output) when the task roster empties
+ *  while no turn is attached. Cleared by beginTurn (the new turn's own POST
+ *  renders live traffic), by settle, and by close. */
+export type WindowSink = {
+  onDetachedMessage: (message: SDKMessage) => void;
+  onSettled: () => void;
+  /** The turn's own canUseTool closure, kept reachable for the window: its
+   *  card emission degrades to the log/feed mirror once the POST is gone, and
+   *  the pending registry + permission route work without a live response —
+   *  so a background agent asking between turns parks a real card instead of
+   *  dying on the detached deny. Null only if the installer had none. */
+  canUseTool: CanUseTool | null;
 };
 
 class AsyncQueue<T> {
@@ -147,9 +160,11 @@ export type SessionRuntime = {
   turnActive: boolean;
   lastActivity: number;
   closed: boolean;
-  /** Messages consumed while no turn was attached — the v1 rendering gap,
-   *  surfaced as a count so it is at least observable. */
+  /** Messages consumed while no turn was attached — kept as an observability
+   *  counter; with a window sink installed they are rendered, not dropped. */
   detachedMessages: number;
+  /** See WindowSink. Installed by the turn's POST, read by the pump. */
+  windowSink: WindowSink | null;
   push(message: SDKUserMessage): void;
   /** Single consumer at a time; enforced by chat-runs' single-active-turn
    *  reservation, asserted here as the last line of defence. */
@@ -168,32 +183,17 @@ export type SessionRuntime = {
 type RuntimeInternals = SessionRuntime & {
   _input: AsyncQueue<SDKUserMessage>;
   _turn: AsyncQueue<SDKMessage> | null;
-  _resultSeen: boolean;
-  _grace: ReturnType<typeof setTimeout> | null;
   _abort: AbortController;
   _pumpError: unknown;
-  _quietGraceMs: number;
 };
 
 const g = globalThis as unknown as { __telarSessionRuntimes?: Map<string, RuntimeInternals> };
 const runtimes = (g.__telarSessionRuntimes ??= new Map<string, RuntimeInternals>());
 
 function endTurnFeed(rt: RuntimeInternals): void {
-  if (rt._grace) clearTimeout(rt._grace);
-  rt._grace = null;
   rt._turn?.close();
   rt._turn = null;
   rt.turnActive = false;
-  rt._resultSeen = false;
-}
-
-function armGrace(rt: RuntimeInternals): void {
-  if (rt._grace) clearTimeout(rt._grace);
-  rt._grace = setTimeout(() => {
-    // Only silent holders reach here: result seen, tasks live, no traffic.
-    // The turn's feed closes; the runtime — and the tasks — stay.
-    if (rt.turnActive && rt._resultSeen) endTurnFeed(rt);
-  }, rt._quietGraceMs);
 }
 
 function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
@@ -205,14 +205,32 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
 
   if (rt.turnActive && rt._turn) {
     rt._turn.push(msg);
-    if (m.type === "result") rt._resultSeen = true;
-    if (rt._resultSeen) {
-      if (rt.liveTaskCount === 0) endTurnFeed(rt);
-      else armGrace(rt);
-    }
+    // Turn end IS the result — background tasks keep the RUNTIME, never the
+    // feed (see the header: the resettable quiet-grace this replaced held the
+    // UI hostage for exactly as long as the agents kept talking).
+    if (m.type === "result") endTurnFeed(rt);
     return;
   }
+
   rt.detachedMessages++;
+  const sink = rt.windowSink;
+  if (!sink) return;
+  try {
+    sink.onDetachedMessage(msg);
+  } catch {
+    // the sink is best-effort rendering — it must never wedge the pump
+  }
+  // The roster emptied while no turn was attached: the window is over. Settle
+  // AFTER handing the sink this message so a final task_notification is
+  // rendered before the terminal marker is written.
+  if (rt.liveTaskCount === 0) {
+    rt.windowSink = null;
+    try {
+      sink.onSettled();
+    } catch {
+      // best-effort, as above
+    }
+  }
 }
 
 async function pump(rt: RuntimeInternals): Promise<void> {
@@ -251,8 +269,6 @@ export function acquireSessionRuntime(args: {
     abort: AbortController;
     self: () => SessionRuntime;
   }) => Query;
-  /** Tests only — production callers take the default. */
-  quietGraceMs?: number;
 }): { runtime: SessionRuntime; created: boolean } {
   reapIdle(Date.now());
 
@@ -290,13 +306,11 @@ export function acquireSessionRuntime(args: {
     lastActivity: Date.now(),
     closed: false,
     detachedMessages: 0,
+    windowSink: null,
     _input: inputQueue,
     _turn: null,
-    _resultSeen: false,
-    _grace: null,
     _abort: abort,
     _pumpError: undefined,
-    _quietGraceMs: args.quietGraceMs ?? QUIET_GRACE_MS,
 
     push(message) {
       inputQueue.push(message);
@@ -306,8 +320,10 @@ export function acquireSessionRuntime(args: {
       if (rt.turnActive) throw new Error("session runtime already has an attached turn");
       const turnQueue = new AsyncQueue<SDKMessage>();
       rt._turn = turnQueue;
-      rt._resultSeen = false;
       rt.turnActive = true;
+      // The new turn's POST renders live traffic now — the previous window's
+      // sink is done (its still-live tasks' output rides THIS turn's feed).
+      rt.windowSink = null;
       rt.slots.runId = runId;
       const self = rt;
       return {
@@ -357,6 +373,7 @@ export function acquireSessionRuntime(args: {
       void reason; // named for call sites; the runtime does not log (yet)
       if (!rt.closed) {
         rt.closed = true;
+        rt.windowSink = null;
         endTurnFeed(rt);
         inputQueue.close();
         abort.abort();
@@ -384,6 +401,17 @@ export function closeSessionRuntime(key: string): boolean {
   if (!rt) return false;
   rt.closeNow("stopped");
   return true;
+}
+
+/** Whether this session's ACTIVITY WINDOW is still open — a turn attached, a
+ *  background task live, or a sink still awaiting settle. The events route's
+ *  liveness gate reads this alongside chat-runs' isSessionRunLive: a session
+ *  whose POST ended at `result` but whose agents are still working is LIVE to
+ *  a tail subscriber, which is what makes the work visibly background. */
+export function isSessionWindowLive(key: string): boolean {
+  const rt = runtimes.get(key);
+  if (!rt || rt.closed) return false;
+  return rt.turnActive || rt.liveTaskCount > 0 || rt.windowSink !== null;
 }
 
 /** Test/diagnostic surface. */
