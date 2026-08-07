@@ -1220,6 +1220,11 @@ function SessionWorkspace({
   // applyServerEvent but immediately re-settles status: background work must
   // never re-busy the composer.
   const windowHandoffRef = useRef<WindowHandoff | null>(null);
+  /** Background agents still working after the turn ended (feel contract
+   *  rule 20): rendered as ONE line above the composer — words, not a 2px
+   *  dot — for exactly as long as it is true. Seeded by the done handoff's
+   *  tasksLive, decremented per completion, cleared at the window's close. */
+  const [bgTasksLive, setBgTasksLive] = useState(0);
 
   // The god-view handoff and the loom lifecycle it starts — see
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
@@ -1974,6 +1979,9 @@ function SessionWorkspace({
                     ),
                   })),
                 );
+                // One agent came back — the presence line counts down (never
+                // below zero: nested completions can outnumber the roster).
+                setBgTasksLive((n) => Math.max(0, n - 1));
                 break;
               case "marker":
                 // A system-event line in the main flow ("agent finished ·
@@ -2142,6 +2150,9 @@ function SessionWorkspace({
                 // mint above, so a background continuation reads as its own
                 // response, not as growth on a turn that already ended.
                 asstIdRef.current = null;
+                setBgTasksLive(
+                  typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
+                );
                 break;
               case "saved":
                 setChatPersisted(true);
@@ -2209,6 +2220,9 @@ function SessionWorkspace({
           await consumeSSE(res.body.getReader(), (event, payload) => {
             sawEvent = true;
             if (event === "closed") {
+              // The window is over: nothing is still working (rule 20's line
+              // must vanish the moment it stops being true).
+              setBgTasksLive(0);
               exitTurn();
               return;
             }
@@ -3825,6 +3839,29 @@ function SessionWorkspace({
             )}
           >
             <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
+            {/* BACKGROUND PRESENCE (feel contract rule 20): background work
+                that outlives the turn says so in WORDS, in one fixed place,
+                for exactly as long as it is true — never concurrent with the
+                in-turn working line (rule 2: the !busy gate), never only a
+                dot on an icon. Stop here targets the SESSION (the whole
+                window), which is the only thing "stop the background work"
+                can mean. */}
+            {!busy && bgTasksLive > 0 && (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
+                <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                  <span className="relative flex size-2">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
+                    <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                  </span>
+                  {bgTasksLive === 1
+                    ? "1 agent still working"
+                    : `${bgTasksLive} agents still working`}
+                </span>
+                <Button type="button" size="xs" variant="outline" onClick={() => stopTurn()}>
+                  Stop
+                </Button>
+              </div>
+            )}
             {/* THE PENDING STRIP (feel contract rules 5-10) — the holding
                 place: your messages, in order, waiting to send, directly
                 above the composer. One block, message-styled lines, editable
