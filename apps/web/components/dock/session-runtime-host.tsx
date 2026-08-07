@@ -304,15 +304,7 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error ?? `HTTP ${res.status}`);
         }
-        const body = await res.json().catch(() => null);
         dequeue(id);
-        const engineItems = Array.isArray(body?.queue?.items) ? body.queue.items : [];
-        setRuntime(id, {
-          queuePaused: Boolean(body?.queue?.paused),
-          queuedEngineCount: engineItems.filter(
-            (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
-          ).length,
-        });
         dispatchTelarSessionRun(id);
       } catch (error) {
         setRuntime(id, {
@@ -402,25 +394,6 @@ export function SessionRuntimeHost({ id }: { id: string }) {
           permissionMode: chat.permissionMode,
           loaded: true,
         });
-        try {
-          const qr = await diagnosticFetch(
-            `/api/chat/${encodeURIComponent(id)}/queue`,
-            undefined,
-            "dock queue snapshot",
-          );
-          if (qr.ok && alive) {
-            const queue = await qr.json();
-            const items = Array.isArray(queue?.items) ? queue.items : [];
-            setRuntime(id, {
-              queuePaused: Boolean(queue?.paused),
-              queuedEngineCount: items.filter(
-                (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
-              ).length,
-            });
-          }
-        } catch {
-          /* queue projection is recovered by the next detail refresh */
-        }
         // Park state rides along when the session drives a loom.
         if (chat.loomId) {
           try {

@@ -61,7 +61,7 @@ const ids = (items: Item[]) => items.map((i) => i.id);
 
 // THE GENERAL RULE, WHICH THE DOCK DOES NOT YET EXERCISE. `DockQueuedMessage` is
 // `{id, text}` and nothing writes `state`/`accepted` onto one — the runtime host
-// projects engine state to `queuedEngineCount`, never onto the items — so at the
+// never projects engine state onto the items, in any form — so at the
 // dock's call site this filter is the identity function, and only the first test
 // below is reachable from production today. The rest pin the rule for the next
 // caller (the session surface DOES set `accepted`); they are not evidence that
