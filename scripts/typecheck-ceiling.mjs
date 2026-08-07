@@ -65,15 +65,65 @@ const inActions = process.env.GITHUB_ACTIONS === "true";
 // resolve, and `--bun` makes the runtime the same one everywhere instead of
 // "node if the machine happens to have one".
 //
-// `--listFiles` is what makes the coverage floor above possible: it prints
-// every file the compiler actually loaded, which is the only honest answer to
-// "did you look at the tests?". `--pretty false` keeps diagnostics to one
-// machine-readable line each instead of ANSI code frames.
-const run = spawnSync(
-  "bunx",
-  ["--bun", "tsc", "--noEmit", "-p", "tsconfig.typecheck.json", "--pretty", "false", "--listFiles"],
-  { cwd: coreDir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
-);
+// `--pretty false` keeps diagnostics to one machine-readable line each instead
+// of ANSI code frames.
+//
+// TWO PASSES, NOT ONE — SO A DYING TYPECHECKER CANNOT FAKE A COVERAGE FAILURE.
+//
+// This used to be a single `--noEmit --listFiles` run producing both halves.
+// In CI that run was being cut short, and because the file list came out of the
+// SAME process, a truncated run looked exactly like "the include globs stopped
+// matching the test tree". Measured across four runs on identical committed
+// content: 57, 118, 109, then 0 test files "loaded" — a number that cannot vary
+// unless the process producing it is being killed. Three of those four failed
+// as COVERAGE COLLAPSED and sent two investigations after a tsconfig that was
+// never wrong.
+//
+// The coverage half does not need type checking at all: `--listFilesOnly`
+// resolves the program, prints what it would have checked, and stops. So the
+// floor is now measured by a cheap pass whose output is nothing but paths, and
+// the expensive pass produces only diagnostics. If the typechecker dies, the
+// file list is still whole and `run.signal` says what happened.
+//
+// WHAT THIS DOES NOT DO IS SAVE MEMORY, and it was written believing it would.
+// Peak RSS, measured: old combined 1.08 GB, listing pass 431 MB, typecheck pass
+// 1.10 GB. The typechecker alone costs what the combined run cost. So this
+// isolates the measurement from the failure; it does not prevent the failure,
+// and 1.1 GB should not be exhausting a runner in the first place. The signal
+// check below is what will finally name the cause.
+//
+// Same project file for both, so the two cannot disagree about what is in
+// scope — which is the property the floor depends on.
+const tscArgs = (...extra) => [
+  "--bun",
+  "tsc",
+  "-p",
+  "tsconfig.typecheck.json",
+  "--pretty",
+  "false",
+  ...extra,
+];
+const spawnTsc = (extra, what) => {
+  const r = spawnSync("bunx", tscArgs(...extra), {
+    cwd: coreDir,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (r.signal) {
+    const message =
+      `typecheck-ceiling: the ${what} pass was KILLED by ${r.signal} — it did not finish, so ` +
+      `its output is truncated and neither the coverage floor nor the error count means ` +
+      `anything. This is an INFRASTRUCTURE failure, not a coverage or type finding. Most ` +
+      `likely the runner ran out of memory. NEXT STEP: give the compiler more headroom; do ` +
+      `not touch tsconfig.typecheck.json and do not lower MIN_TEST_FILES.`;
+    console.error(inActions ? `::error::${message}` : `\n${message}`);
+    process.exit(1);
+  }
+  return r;
+};
+
+const listRun = spawnTsc(["--listFilesOnly"], "file-listing");
+const run = spawnTsc(["--noEmit"], "typecheck");
 
 if (run.error) {
   console.error(`typecheck-ceiling: could not start tsc: ${run.error.message}`);
@@ -92,12 +142,15 @@ const global = /^(error|message) (TS\d+): (.*)$/;
 const loadedFiles = [];
 const diagnostics = [];
 
+// Paths from the LISTING pass, diagnostics from the CHECK pass — they are two
+// processes now and their outputs are no longer interleaved.
+for (const line of (listRun.stdout ?? "").split("\n")) {
+  if (line.startsWith("/")) loadedFiles.push(line);
+}
+
 for (const line of stdout.split("\n")) {
   if (!line) continue;
-  if (line.startsWith("/")) {
-    loadedFiles.push(line);
-    continue;
-  }
+  if (line.startsWith("/")) continue;
   const m = positioned.exec(line);
   if (m && m[4] === "error") {
     diagnostics.push({ where: `${m[1]}(${m[2]},${m[3]})`, code: m[5], message: m[6] });
