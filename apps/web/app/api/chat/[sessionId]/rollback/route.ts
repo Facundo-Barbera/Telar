@@ -32,7 +32,7 @@ export async function POST(
       { status: 409 },
     );
   }
-  const result = applyRollback(sessionId, toTurn as number, expectedTurns as number);
+  const result = await applyRollback(sessionId, toTurn as number, expectedTurns as number);
   if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
   return Response.json({ ok: true, turns: result.turns, messages: result.messages });
 }

@@ -557,7 +557,7 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
-    const rb = applyRollback(
+    const rb = await applyRollback(
       sessionId,
       rawRollbackToTurn as number,
       rawRollbackExpectedTurns as number,
