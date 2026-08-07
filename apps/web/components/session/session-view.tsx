@@ -1212,6 +1212,12 @@ function SessionWorkspace({
   /** Last server-advanced feed cursor — where this mount's rendering stopped.
    *  Null means "replay the open window from its start" (fresh mount). */
   const feedCursorRef = useRef<{ win: number; seq: number } | null>(null);
+  /** TRUE when the mount already rendered the window but holds no cursor —
+   *  a turn that ended WITHOUT a done handoff (Stop, error). The subscriber
+   *  then attaches strictly after NOW (?tail=1, cursor resolved server-side)
+   *  instead of replaying what this tab just showed: replay mode here was
+   *  the duplicate-bubble regression a live Stop exposed. */
+  const feedTailFromNowRef = useRef(false);
   // #28 turn-as-event: the turn's POST ends at `result`, and background agents
   // keep working. The "done" event records the handoff (how many tasks live,
   // and the feed cursor rendering stopped at); send() then opens the
@@ -2210,10 +2216,14 @@ function SessionWorkspace({
         let retryMs = 250;
         while (!abort.signal.aborted) {
           const cursor = feedCursorRef.current;
-          const cursorMode = cursor !== null;
+          // Tail-from-now counts as cursor mode: strictly-after semantics,
+          // background-chatter status rules, no replay of rendered content.
+          const cursorMode = cursor !== null || feedTailFromNowRef.current;
           const url = cursor
             ? `/api/chat/${encodeURIComponent(sid)}/events?win=${cursor.win}&seq=${cursor.seq}`
-            : `/api/chat/${encodeURIComponent(sid)}/events`;
+            : feedTailFromNowRef.current
+              ? `/api/chat/${encodeURIComponent(sid)}/events?tail=1`
+              : `/api/chat/${encodeURIComponent(sid)}/events`;
           let sawEvent = false;
           const res = await fetch(url, { signal: abort.signal });
           if (!res.ok || !res.body) throw new Error(`feed HTTP ${res.status}`);
@@ -2229,6 +2239,8 @@ function SessionWorkspace({
             if (event === "cursor") {
               if (typeof payload?.win === "number" && typeof payload?.seq === "number") {
                 feedCursorRef.current = { win: payload.win, seq: payload.seq };
+                // A real cursor supersedes the tail-from-now sentinel.
+                feedTailFromNowRef.current = false;
               }
               return;
             }
@@ -2295,6 +2307,7 @@ function SessionWorkspace({
   useEffect(() => {
     if (!sessionId) return;
     feedCursorRef.current = null; // fresh mount: replay the open window, if any
+    feedTailFromNowRef.current = false;
     armFeedSubscriber(sessionId);
     return () => {
       reconnectAbortRef.current?.abort();
@@ -2545,6 +2558,9 @@ function SessionWorkspace({
         {
           const handoff = windowHandoffRef.current as WindowHandoff | null;
           feedCursorRef.current = handoff?.cursor ?? null;
+          // No handoff (Stop/error before done): this mount rendered the
+          // window already — attach strictly after now, never replay it.
+          feedTailFromNowRef.current = !handoff?.cursor;
           const sid = handoff?.sessionId ?? sessionId;
           if (sid) armFeedSubscriber(sid);
         }

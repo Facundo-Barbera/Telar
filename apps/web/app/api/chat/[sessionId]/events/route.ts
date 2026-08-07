@@ -6,6 +6,7 @@ import {
   readFeedEvents,
   readSessionDeltas,
   readSessionEvents,
+  sessionFeedCursor,
 } from "@/lib/session-log";
 
 export const dynamic = "force-dynamic";
@@ -37,10 +38,17 @@ export async function GET(
   const url = new URL(req.url);
   const winParam = url.searchParams.get("win");
   const seqParam = url.searchParams.get("seq");
+  // ?tail=1 — feed mode from the CURRENT cursor, resolved server-side: the
+  // subscriber of a mount that already rendered the window (a turn that
+  // ended without a done handoff — Stop, error) must attach strictly after
+  // now, never replay what it just showed (the duplicate-bubble regression).
+  const tailFromNow = url.searchParams.get("tail") === "1";
   const afterCursor: FeedCursor | null =
     winParam !== null && seqParam !== null
       ? { win: Number(winParam), seq: Number(seqParam) }
-      : null;
+      : tailFromNow
+        ? sessionFeedCursor(sessionId)
+        : null;
   const encoder = new TextEncoder();
 
   let closed = false;
