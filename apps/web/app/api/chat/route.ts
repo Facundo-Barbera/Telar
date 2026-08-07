@@ -71,10 +71,12 @@ import {
   kickSessionQueue,
 } from "@/lib/server/session-engine";
 import {
+  appendFeedEvent,
   appendSessionEvent,
   clearSessionDeltas,
   endSessionDeltas,
   pushSessionDelta,
+  startSessionFeedWindow,
   startSessionLog,
 } from "@/lib/session-log";
 // LOOM_START_TOOL and LOOM_ANSWER_BLOCKED_TOOL are the MOAT CONSTANTS INV-1g
@@ -838,6 +840,10 @@ export async function POST(req: Request) {
               clearSessionDeltas(capturedSession);
             }
             appendSessionEvent(capturedSession, event, data);
+            // Shadow write to the cursor-addressed feed (session-log.ts §B) —
+            // the surface the turn-end flip makes primary. Same non-delta set
+            // as the file above; the firehose stays on the ring.
+            appendFeedEvent(capturedSession, event, data);
           }
         }
       };
@@ -1490,6 +1496,7 @@ export async function POST(req: Request) {
                 // a user bubble on its local POST path, so a mid-turn reconnect
                 // must not manufacture one for either.
                 startSessionLog(capturedSession, displayText, hiddenTurn);
+                startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
                 send("session", {
                   sessionId: capturedSession,
                   slashCommands: [],
@@ -2054,6 +2061,7 @@ export async function POST(req: Request) {
           capturedSession = reusedSession;
           setChatRunSession(runId, reusedSession);
           startSessionLog(reusedSession, displayText, hiddenTurn);
+          startSessionFeedWindow(reusedSession, runId, displayText, hiddenTurn);
           upsertChatStub({
             id: reusedSession,
             model,
@@ -2152,6 +2160,7 @@ export async function POST(req: Request) {
             // on its local POST path, so a mid-turn reconnect must not
             // manufacture one for either (M11.3 finding).
             startSessionLog(capturedSession, displayText, hiddenTurn);
+            startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
@@ -2523,7 +2532,10 @@ export async function POST(req: Request) {
         // Terminal marker the live-tail subscriber closes on. Written BEFORE
         // endChatRun so a still-connected subscriber reads "closed" while the
         // run is technically still registered as live (Phase 1b).
-        if (capturedSession) appendSessionEvent(capturedSession, "closed", {});
+        if (capturedSession) {
+          appendSessionEvent(capturedSession, "closed", {});
+          appendFeedEvent(capturedSession, "closed", {});
+        }
         // Turn over — drop the current-turn delta ring (contract §2). The
         // "closed" marker above lives in the file; the ring's in-flight tokens
         // are all superseded by now, so a late reconnect reads the file only.
