@@ -332,7 +332,9 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
     parts: m.parts.map((p) =>
       p.type === "text"
         ? { type: "text" as const, text: p.text, done: true, parentId: p.parentId }
-        : // Attachments seed straight through: the part IS its own render input
+        : p.type === "marker"
+          ? { type: "marker" as const, text: p.text, attention: p.attention }
+          : // Attachments seed straight through: the part IS its own render input
           // (metadata only), and the chip decides for itself whether the bytes
           // behind each id still exist. A chat archived since it was written
           // reloads to tombstones rather than to broken images.
@@ -1927,6 +1929,24 @@ function SessionWorkspace({
                       ? { ...p, taskStatus: payload.status }
                       : p,
                   ),
+                }));
+                break;
+              case "marker":
+                // A system-event line in the main flow ("agent finished ·
+                // explore lib", "ultra finished · sweep") — server-authored
+                // state, appended at the position it arrived so the transcript
+                // reads coherently. Renders via the Marker primitive
+                // (conversation:marker); persisted server-side as a part.
+                patch(asstId, (m) => ({
+                  ...m,
+                  parts: [
+                    ...m.parts,
+                    {
+                      type: "marker" as const,
+                      text: String(payload.text ?? ""),
+                      ...(payload.attention ? { attention: true as const } : {}),
+                    },
+                  ],
                 }));
                 break;
               case "permission":

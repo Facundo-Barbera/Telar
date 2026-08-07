@@ -138,18 +138,43 @@ describe("projectClaudeMessage", () => {
     expect(state.parts).toEqual([]);
   });
 
-  test("task_notification records taskStatus on the spawn part and emits task_status", () => {
+  test("task_notification records taskStatus, emits it, and posts the inline marker", () => {
     const state = newClaudeTurnState();
     projectClaudeMessage(assistantTool("spawn-1", "Agent", { prompt: "bg" }), state);
     const p = projectClaudeMessage(
       asMsg({ type: "system", subtype: "task_notification", tool_use_id: "spawn-1", status: "completed" }),
       state,
     );
-    expect(p.events).toEqual([
-      { event: "task_status", data: { id: "spawn-1", status: "completed" } },
-    ]);
+    expect(p.events[0]).toEqual({
+      event: "task_status",
+      data: { id: "spawn-1", status: "completed" },
+    });
+    // A TOP-LEVEL agent's completion also lands in the MAIN flow as a marker
+    // part + event, at the position it arrived.
+    expect(p.events[1]?.event).toBe("marker");
+    expect((p.events[1]?.data as { text: string }).text.startsWith("agent finished")).toBe(true);
     const part = state.parts[0] as Extract<(typeof state.parts)[number], { type: "tool" }>;
     expect(part.taskStatus).toBe("completed");
+    expect(state.parts.at(-1)?.type).toBe("marker");
+    // parts and partOrigin stay index-aligned (supersedes eviction walks both).
+    expect(state.partOrigin.length).toBe(state.parts.length);
+  });
+
+  test("a NESTED spawn's completion stays tab-only — no marker in the main flow", () => {
+    const state = newClaudeTurnState();
+    projectClaudeMessage(assistantTool("top", "Agent", { prompt: "parent" }), state);
+    projectClaudeMessage(
+      assistantTool("nested", "Task", { prompt: "helper" }, { parent: "top" }),
+      state,
+    );
+    const p = projectClaudeMessage(
+      asMsg({ type: "system", subtype: "task_notification", tool_use_id: "nested", status: "completed" }),
+      state,
+    );
+    expect(p.events).toEqual([
+      { event: "task_status", data: { id: "nested", status: "completed" } },
+    ]);
+    expect(state.parts.some((x) => x.type === "marker")).toBe(false);
   });
 
   test("a task_notification for an EARLIER turn's spawn still emits and is recorded", () => {
@@ -162,11 +187,16 @@ describe("projectClaudeMessage", () => {
       asMsg({ type: "system", subtype: "task_notification", tool_use_id: "prev-turn-spawn", status: "completed" }),
       state,
     );
-    expect(p.events).toEqual([
-      { event: "task_status", data: { id: "prev-turn-spawn", status: "completed" } },
-    ]);
+    expect(p.events[0]).toEqual({
+      event: "task_status",
+      data: { id: "prev-turn-spawn", status: "completed" },
+    });
+    // Cross-turn completions surface a (label-less) marker too — better
+    // announced than silent, since this state cannot resolve the label.
+    expect(p.events[1]).toEqual({ event: "marker", data: { text: "agent finished" } });
     expect(state.taskStatuses.get("prev-turn-spawn")).toBe("completed");
-    expect(state.parts).toEqual([]);
+    // The marker is the ONLY part this notification added.
+    expect(state.parts.map((x) => x.type)).toEqual(["marker"]);
   });
 
   test("permission_denied rewrites the SDK text and synthesizes a part when none exists", () => {

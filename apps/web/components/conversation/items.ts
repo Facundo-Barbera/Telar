@@ -40,6 +40,11 @@ import type { ItemKindId } from "./registry";
 // the right default.
 export type StorePart =
   | { type: "text"; text: string; parentId?: string }
+  // A system-event line in the transcript flow ("agent finished · explore
+  // lib") — the Marker primitive's voice, persisted at the chronological
+  // position the event arrived. Server-authored text; the shell renders it
+  // without knowing any domain.
+  | { type: "marker"; text: string; attention?: boolean }
   | {
       type: "tool";
       name: string;
@@ -91,6 +96,9 @@ export type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 export type Part =
   | { type: "text"; text: string; done: boolean; parentId?: string }
   | { type: "thinking"; text: string; done: boolean; parentId?: string }
+  // Identical to its StorePart twin — a marker is complete the moment it
+  // exists (nothing about it streams).
+  | { type: "marker"; text: string; attention?: boolean }
   | ToolPart
   // Identical to its StorePart twin: an attachment part is complete the moment
   // it exists (nothing about it streams), so unlike text it needs no `done`.
@@ -130,11 +138,14 @@ export type PermissionPart = Extract<Part, { type: "permission" }>;
 // lookup means every routing decision (grouping, streaming merge, bucketing)
 // agrees on what "main thread" means.
 export const parentOf = (p: Part): string | undefined =>
-  // Attachments join permission cards as a MAIN-THREAD-ONLY part: a subagent
-  // has no composer, so nothing can attach a file from inside a spawn. Naming
-  // both here rather than giving the variant an unused `parentId` field keeps
-  // "can this be parented" a fact about the union instead of a field nobody sets.
-  p.type === "permission" || p.type === "attachments" ? undefined : p.parentId;
+  // Attachments join permission cards — and markers — as MAIN-THREAD-ONLY
+  // parts: a subagent has no composer, and a marker is a system-event line
+  // whose whole purpose is to surface in the main flow. Naming them here
+  // rather than giving the variants an unused `parentId` field keeps "can
+  // this be parented" a fact about the union instead of a field nobody sets.
+  p.type === "permission" || p.type === "attachments" || p.type === "marker"
+    ? undefined
+    : p.parentId;
 
 // One spawned subagent's own transcript, reconstructed identically whether
 // it's arriving live (SSE events tagged with `parent`) or reconstructed from
@@ -307,6 +318,7 @@ export type RenderItem =
   | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
   | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
   | { kind: "attachments"; key: string; part: Extract<Part, { type: "attachments" }> }
+  | { kind: "marker"; key: string; part: Extract<Part, { type: "marker" }> }
   | { kind: "tools"; key: string; parts: ToolPart[] };
 
 export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
@@ -347,6 +359,8 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
       items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
     } else if (part.type === "attachments") {
       items.push({ kind: "attachments", key: `${messageId}:${idx}`, part });
+    } else if (part.type === "marker") {
+      items.push({ kind: "marker", key: `${messageId}:${idx}`, part });
     } else {
       items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
     }
@@ -537,6 +551,15 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
         kind: CONVERSATION_KINDS.permission,
         key: item.key,
         payload: { part: item.part, onRespond: hooks.onRespond } satisfies PermissionPayload,
+      };
+    case "marker":
+      return {
+        kind: CONVERSATION_KINDS.marker,
+        key: item.key,
+        payload: {
+          text: item.part.text,
+          attention: item.part.attention,
+        } satisfies MarkerPayload,
       };
     case "tools":
       return {

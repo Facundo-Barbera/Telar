@@ -781,13 +781,26 @@ export async function POST(req: Request) {
   // out; it stays pending for the next turn. Do not "fix" this into one read,
   // and do not restate it as "the newer wake simply stays pending" without the
   // gate — the gate is what makes that sentence true.
+  // Ultra completions this turn was woken by — announced in the visible flow
+  // as inline markers ("ultra finished · sweep") when the turn's bookkeeping
+  // opens, so the reader sees WHAT woke the session, not just the narration
+  // that follows. Captured here because the wake records are consumed (acked)
+  // in this same block.
+  let ultraWakeMarkers: Array<{ text: string; attention?: boolean }> = [];
   if (typeof sessionId === "string" && sessionId && provider !== "codex") {
     try {
-      const carried = pendingUltraWakes(sessionId)
+      const pendingWakes = pendingUltraWakes(sessionId);
+      const carried = pendingWakes
         .map((w) => w.runId)
         .filter((runId) =>
           appendixCarriesUltraWake(sessionProfile.systemPromptAppendix, runId),
         );
+      ultraWakeMarkers = pendingWakes
+        .filter((w) => carried.includes(w.runId))
+        .map((w) => ({
+          text: `ultra ${w.state === "done" ? "finished" : w.state} · ${w.name}`.slice(0, 80),
+          ...(w.state === "failed" ? { attention: true } : {}),
+        }));
       ackUltraWakes(sessionId, carried);
     } catch {
       // The mailbox could not be read. The wakes simply stay pending and are
@@ -867,6 +880,22 @@ export async function POST(req: Request) {
       // them directly, and the shared finally persists them.
       const turnState = newClaudeTurnState();
       const { parts, streamingText, parentFlatten } = turnState;
+      // Announce what woke this turn, first in the flow: one marker per acked
+      // ultra completion, pushed into the turn's parts (aligned with
+      // partOrigin — supersedes eviction walks both by index) and emitted
+      // live. Runs inside the one-time turn bookkeeping, whichever site does
+      // it, so a re-announced init can never double-post them.
+      const announceUltraMarkers = (emit: (event: string, data: unknown) => void): void => {
+        for (const m of ultraWakeMarkers) {
+          turnState.parts.push({
+            type: "marker",
+            text: m.text,
+            ...(m.attention ? { attention: true } : {}),
+          });
+          turnState.partOrigin.push(undefined);
+          emit("marker", m);
+        }
+      };
       // A window that ends leaves no one "running": any spawn part still
       // carrying only its launch ack (its task_notification was lost, or the
       // agent was stopped with the window) is marked stopped, live and
@@ -2204,6 +2233,7 @@ export async function POST(req: Request) {
           setChatRunSession(runId, reusedSession);
           startSessionLog(reusedSession, displayText, hiddenTurn);
           startSessionFeedWindow(reusedSession, runId, displayText, hiddenTurn);
+          announceUltraMarkers(send);
           upsertChatStub({
             id: reusedSession,
             model,
@@ -2324,6 +2354,7 @@ export async function POST(req: Request) {
               startSessionLog(capturedSession, displayText, hiddenTurn);
               startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
               installWindowSink(capturedSession);
+              announceUltraMarkers(send);
               // Register-at-create (contract §1): persist a stub chat row NOW
               // — the instant the session id is confirmed, before the first
               // turn finishes — then emit the SAME "saved" event the client

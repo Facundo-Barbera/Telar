@@ -326,6 +326,26 @@ export function projectClaudeMessage(
       // still holds those spawns and updates them by id — swallowing the
       // event here left their tabs "running" forever.
       send("task_status", { id: tn.tool_use_id, status: tn.status });
+      // The inline completion marker — a system-event line in the MAIN flow
+      // ("agent finished · explore lib") so a reader can follow when work
+      // ended relative to the narration, not just watch a tab's dot flip.
+      // TOP-LEVEL spawns only: a big window runs dozens of nested helpers
+      // (measured: 22 completions in one), and a marker per helper would
+      // drown the flow the marker exists to clarify — nested completions
+      // stay tab-only via task_status above. A cross-turn completion (no
+      // part in THIS state) cannot tell top-level from nested; it surfaces
+      // regardless — rare, and better announced than silent.
+      if (!part || (part.agent && !part.parentId)) {
+        const label = part?.agent
+          ? (part.agent.name ?? part.agent.description ?? part.agent.type ?? "").slice(0, 48)
+          : "";
+        const verb = tn.status === "completed" ? "finished" : tn.status;
+        const text = label ? `agent ${verb} · ${label}` : `agent ${verb}`;
+        const attention = tn.status === "failed" ? true : undefined;
+        parts.push({ type: "marker", text, ...(attention ? { attention } : {}) });
+        partOrigin.push(undefined); // keep the supersedes index alignment
+        send("marker", { text, ...(attention ? { attention } : {}) });
+      }
     }
     return { events };
   }

@@ -73,6 +73,13 @@ const chatsFile = () => path.join(stateRoot(), "chats.json");
 
 export type Part =
   | { type: "text"; text: string; parentId?: string }
+  // A system-event line in the transcript flow — the Marker primitive's
+  // voice ("agent finished · explore lib", "ultra failed · sweep"): state,
+  // never prose, at the chronological position the event arrived. Producers
+  // are server-side (the projector's task_notification handling, the chat
+  // route's ultra-wake announcement); the shell renders it without knowing
+  // any domain. `attention` maps to the Marker's amber variant.
+  | { type: "marker"; text: string; attention?: boolean }
   | {
       type: "tool";
       name: string;
