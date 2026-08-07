@@ -318,8 +318,50 @@ export type RenderItem =
   | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
   | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
   | { kind: "attachments"; key: string; part: Extract<Part, { type: "attachments" }> }
-  | { kind: "marker"; key: string; part: Extract<Part, { type: "marker" }> }
+  | { kind: "marker"; key: string; parts: MarkerPart[] }
   | { kind: "tools"; key: string; parts: ToolPart[] };
+
+type MarkerPart = Extract<Part, { type: "marker" }>;
+
+// Adjacent completion markers coalesce into ONE line ("2 agents finished ·
+// A · B") — two agents landing back-to-back with nothing rendered between
+// them are one event to a reader, however far apart the clock says they
+// were. Adjacency in the parts list IS the rule; there is no timing window.
+// Only same-noun same-verb markers merge, and an `attention` line (a
+// failure) never merges — amber is not to be buried in a list. Parts stay
+// individual in the store; merging is a projection, computed at render.
+//
+// The noun is deliberately ANY word, not an enumeration: the shell is frozen
+// and owns no module semantics (AD-12 / INV-10c), so it may not know which
+// domains produce completion markers — it knows only the grammar
+// "<noun> <verb> · <label>". The verb whitelist is what keeps other marker
+// voices ("nodes spawned · 4", compaction dividers) out of the merge.
+const MERGEABLE_MARKER = /^([a-z]+) (finished|stopped)(?: · (.*))?$/;
+
+const markersCoalesce = (a: MarkerPart, b: MarkerPart): boolean => {
+  if (a.attention || b.attention) return false;
+  const pa = MERGEABLE_MARKER.exec(a.text);
+  const pb = MERGEABLE_MARKER.exec(b.text);
+  return pa !== null && pb !== null && pa[1] === pb[1] && pa[2] === pb[2];
+};
+
+// The merged line keeps the marker voice — a terse clause, never prose. At
+// most three labels are named; the rest are a count, so a ten-agent settle
+// is one readable line instead of a paragraph-wide pill.
+export function mergedMarkerText(parts: readonly MarkerPart[]): string {
+  const first = parts[0];
+  if (!first) return "";
+  if (parts.length === 1) return first.text;
+  const parsed = parts.map((p) => MERGEABLE_MARKER.exec(p.text));
+  const head = parsed[0];
+  if (!head) return first.text; // unreachable: coalesce requires the parse
+  const labels = parsed.flatMap((m) => (m?.[3] ? [m[3]] : []));
+  const shown = labels.slice(0, 3);
+  const extra = labels.length - shown.length;
+  const tail = [...shown, ...(extra > 0 ? [`+${extra} more`] : [])].join(" · ");
+  const lead = `${parts.length} ${head[1]}s ${head[2]}`;
+  return tail ? `${lead} · ${tail}` : lead;
+}
 
 export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
   const items: RenderItem[] = [];
@@ -360,7 +402,13 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
     } else if (part.type === "attachments") {
       items.push({ kind: "attachments", key: `${messageId}:${idx}`, part });
     } else if (part.type === "marker") {
-      items.push({ kind: "marker", key: `${messageId}:${idx}`, part });
+      const last = items[items.length - 1];
+      const prev = last?.kind === "marker" ? last.parts[last.parts.length - 1] : undefined;
+      if (last?.kind === "marker" && prev && markersCoalesce(prev, part)) {
+        last.parts.push(part);
+      } else {
+        items.push({ kind: "marker", key: `${messageId}:${idx}`, parts: [part] });
+      }
     } else {
       items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
     }
@@ -557,8 +605,10 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
         kind: CONVERSATION_KINDS.marker,
         key: item.key,
         payload: {
-          text: item.part.text,
-          attention: item.part.attention,
+          text: mergedMarkerText(item.parts),
+          // attention never coalesces (markersCoalesce), so a group is
+          // either one attention line or all-quiet — never a mix.
+          attention: item.parts[0]?.attention,
         } satisfies MarkerPayload,
       };
     case "tools":
