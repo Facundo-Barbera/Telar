@@ -1,6 +1,7 @@
 import {
   query,
   type EffortLevel,
+  type HookInput,
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -63,6 +64,11 @@ import {
 } from "@/lib/ultra-wake";
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
+import {
+  acquireSessionRuntime,
+  DETACHED_DENY_TEXT,
+  type SessionRuntime,
+} from "@/lib/server/session-runtime";
 import {
   kickSessionQueue,
 } from "@/lib/server/session-engine";
@@ -788,15 +794,22 @@ export async function POST(req: Request) {
   // with the main turn below — only for a brand-new session (no resume
   // target: appendTurn only ever consults a supplied title when it's
   // CREATING the chat, so generating one for an existing session's turn
-  // would just be wasted inference). Forwarding `abort.signal` means a
-  // client disconnect/Stop click cancels this subprocess too, same as the
-  // main turn's. Also skipped for the escalation kickoff — `message` there is
-  // the server-authored instruction paragraph, not human intent to summarize,
-  // and upsertChatStub's own displayText fallback ("Discuss verification",
-  // below) is already the right title; wasting an LLM call to re-derive it
-  // from machinery text would be pure overhead.
+  // would just be wasted inference). Also skipped for the escalation kickoff —
+  // `message` there is the server-authored instruction paragraph, not human
+  // intent to summarize, and upsertChatStub's own displayText fallback
+  // ("Discuss verification", below) is already the right title; wasting an
+  // LLM call to re-derive it from machinery text would be pure overhead.
+  //
+  // ITS OWN CONTROLLER, no longer the turn's. The turn's `abort` now maps a
+  // Stop to killing the whole session RUNTIME (see the listener beside the
+  // runtime acquisition below) — a shared controller would mean "the title
+  // finished, kill the session", which is how the #28 persistent-runtime
+  // migration would have reintroduced the very sweep it exists to remove.
+  // A Stop still cancels the title via the forwarding listener on `abort`.
+  const titleAbort = new AbortController();
+  abort.signal.addEventListener("abort", () => titleAbort.abort(), { once: true });
   const titlePromise: Promise<string | null> | null =
-    sessionId || isKickoff ? null : generateTitle(message, profile, abort.signal);
+    sessionId || isKickoff ? null : generateTitle(message, profile, titleAbort.signal);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -861,6 +874,10 @@ export async function POST(req: Request) {
       // is why `capturedSession` (not `resumeTarget`) is what the finally block
       // persists against.
       let capturedSession: string | null = null;
+      // The session runtime this turn attached to (Claude path only) — held at
+      // stream scope so the shared finally can detach the turn's wiring and
+      // close a spawn that never reached init (#28 persistent runtime).
+      let runtimeRef: SessionRuntime | null = null;
       let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
       // Claude's stable control API returns the same structured attribution as
@@ -996,6 +1013,16 @@ export async function POST(req: Request) {
         // correct for telar sessions.
         if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(toolName)) {
           const { mode: _mode, isolation: _isolation, ...safeInput } = input;
+          // `run_in_background` passes through UNTOUCHED, and that is a
+          // measured decision, twice over (#28). Under the old one-query-per-
+          // turn shape, a backgrounded agent's tool calls were cancelled
+          // wholesale the instant the main turn's result landed (2026-08-07,
+          // session 9ec50a2e: 1-9ms turnarounds, `toolDenialKind: "cancelled"`,
+          // even a pre-allowed Glob) — an interim fix forced sync spawns here.
+          // The persistent session runtime (lib/server/session-runtime.ts)
+          // removed the kill-zone itself: the same scenario replayed under
+          // streaming input runs to completion, post-result tool calls and
+          // all. Backgrounded agents are a feature again.
           return { behavior: "allow", updatedInput: safeInput };
         }
         // FULL ACCESS MEANS FULL ACCESS — INCLUDING FOR A SUB-AGENT (#28).
@@ -1692,13 +1719,26 @@ export async function POST(req: Request) {
         // stamps it as startLoomFromBundle's `by`/provenance. `getSessionId`
         // reads `capturedSession` lazily: tool calls only ever run after the
         // SDK's system:init message below has already set it.
-        const loomMcpServer = createLoomMcpServer({
-          project,
-          objectiveSeed: message,
-          account: profile.name,
-          link: loomLink,
-          getSessionId: () => capturedSession,
-        });
+        // NOTE (#28 persistent runtime): these four servers are constructed
+        // inside the runtime's `create` callback below, ONCE per session
+        // runtime rather than once per POST. The getters they close over read
+        // live runtime state (`self().sessionId`, `slots.runId`) so a reused
+        // runtime's tool calls attribute to the CURRENT turn, not the creating
+        // one. The creating POST's other captures (project, profile, loomLink,
+        // sessionProfile) are all part of the runtime fingerprint, so a POST
+        // that would disagree about them gets a fresh runtime instead of a
+        // stale closure.
+        const makeTelarMcpServers = (ctx: {
+          slots: { runId: string | null };
+          self: () => { sessionId: string | null };
+        }) => ({
+          loom: createLoomMcpServer({
+            project,
+            objectiveSeed: message,
+            account: profile.name,
+            link: loomLink,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+          }),
         // The "ultra" in-process MCP server (docs/plans/ultra-harness.md §4) —
         // ultra/ultra_status/ultra_stop, auto-run like the loom read/draft
         // tools (see ULTRA_AUTO_TOOLS's own comment for why this differs from
@@ -1722,12 +1762,12 @@ export async function POST(req: Request) {
         // `mcpServers` should carry. The escalation surface stays a narrow
         // read-only discuss wall; the TOOLSET enforces that, not the server
         // list.
-        const ultraMcpServer = createUltraMcpServer({
-          project,
-          account: profile,
-          getSessionId: () => capturedSession,
-          getMessageId: () => runId,
-        });
+          ultra: createUltraMcpServer({
+            project,
+            account: profile,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+            getMessageId: () => ctx.slots.runId ?? runId,
+          }),
         // The "workspace" in-process MCP server (story 5.1) — the ONLY path any
         // session has to the user's item store, which lives under TELAR_HOME and
         // is deliberately outside every session's cwd. `project` and `account`
@@ -1738,15 +1778,16 @@ export async function POST(req: Request) {
         // `wsMcpServer` rather than anything starting with `workspace` because
         // INV-6e greps this file for the substring `const workspace` — a guard
         // left behind by story 2.2's removal of `const workspace = manifest.root`.
-        const wsMcpServer = createWorkspaceMcpServer({
-          project,
-          account: profile,
-          getSessionId: () => capturedSession,
-        });
+          workspace: createWorkspaceMcpServer({
+            project,
+            account: profile,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+          }),
         // One lazy, server-owned browser runtime backs both the human surface
         // and agent tools. Constructing this descriptor does not start a
         // browser; the Playwright MCP process launches only on first use.
-        const browserMcpServer = createBrowserMcpServer({ scopeKey: browserScopeKey });
+          browser: createBrowserMcpServer({ scopeKey: browserScopeKey }),
+        });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -1762,8 +1803,39 @@ export async function POST(req: Request) {
         // spread below tests one thing.
         const policyMaxTurns = loadPolicy().maxTurns ?? 0;
 
-        const q = query({
-          prompt: claudePrompt,
+        // THE QUERY IS PER-SESSION NOW, NOT PER-TURN (#28's complete fix — the
+        // post-result kill-zone; the whole story is lib/server/session-runtime.ts).
+        // Everything the query is created WITH is captured in this fingerprint;
+        // a turn that would disagree about any of it closes the old runtime
+        // (gracefully, with `resume` picking the session back up) rather than
+        // running under a stale closure. The appendix is the interesting entry:
+        // it carries occasional per-turn live context (an Ultra wake block), and
+        // restart-on-change is exactly the honest behaviour for it.
+        const runtimeFingerprint = JSON.stringify({
+          cwd: sessionProfile.cwd,
+          model,
+          effort: claudeEffort ?? null,
+          permissionMode: permissionMode ?? null,
+          fastMode: !!fastMode,
+          account: profile.name,
+          project: project ?? null,
+          browserScopeKey: browserScopeKey ?? null,
+          loomLink,
+          appendix: sessionProfile.systemPromptAppendix,
+          settingSources: sessionProfile.settingSources,
+          allow: sessionProfile.toolPolicy.allow,
+          deny: sessionProfile.toolPolicy.deny,
+          policyMaxTurns,
+          env: runtimeEnv,
+          projectMcp: project ? Object.keys(resolveProjectMcpServers(project)) : [],
+        });
+        const { runtime, created: runtimeCreated } = acquireSessionRuntime({
+          key: resumeTarget ?? runId,
+          fingerprint: runtimeFingerprint,
+          create: ({ slots, input, abort: runtimeAbort, self }) => {
+            const telarMcpServers = makeTelarMcpServers({ slots, self });
+            return query({
+          prompt: input,
           options: {
             ...claudeExecutableOptions(),
             // AC2 — `cwd` arrives BY CONSTRUCTION. The fold sets it from
@@ -1893,10 +1965,7 @@ export async function POST(req: Request) {
             // decoupled from accountEnv above, so account-switching can't
             // rotate MCP auth.
             mcpServers: {
-              browser: browserMcpServer,
-              loom: loomMcpServer,
-              ultra: ultraMcpServer,
-              workspace: wsMcpServer,
+              ...telarMcpServers,
               // THE SPREAD IS LAST, AND THAT IS NOT A PROTECTION — object-literal
               // LATER KEYS WIN, so a project telar.yaml server named `workspace`
               // SHADOWS ours. Spread-FIRST would be the protection, and moving it
@@ -1910,11 +1979,42 @@ export async function POST(req: Request) {
             },
             // Explicit Telar servers are added beside MCP servers from the
             // selected Claude configuration, matching a native Claude launch.
-            canUseTool,
+            //
+            // TRAMPOLINES, NOT THE TURN'S OWN CLOSURES. The query outlives the
+            // POST that created it, but `canUseTool` and the compaction
+            // notifiers are wired to a live SSE response — so the query gets a
+            // trampoline that reads the runtime's slots at call time. The
+            // active POST installs its closures right after acquisition and
+            // clears them in its finally. Between turns a gated call gets an
+            // honest deny that blames nobody (DETACHED_DENY_TEXT) — reachable
+            // only by a background agent that outlived its turn's quiet-grace
+            // and then asked for a non-pre-approved tool.
+            canUseTool: (toolName, toolInput, opts) =>
+              slots.canUseTool
+                ? slots.canUseTool(toolName, toolInput, opts)
+                : Promise.resolve({
+                    behavior: "deny",
+                    message: DETACHED_DENY_TEXT,
+                  } satisfies PermissionResult),
             hooks: {
+              // Profile-scoped, not response-scoped — safe to bind at creation.
               PreToolUse: [{ hooks: [preToolUseGuardrail] }],
-              PreCompact: [{ hooks: [preCompactNotify] }],
-              PostCompact: [{ hooks: [postCompactNotify] }],
+              PreCompact: [
+                {
+                  hooks: [
+                    async (i: HookInput) =>
+                      slots.preCompactNotify ? slots.preCompactNotify(i) : { continue: true },
+                  ],
+                },
+              ],
+              PostCompact: [
+                {
+                  hooks: [
+                    async (i: HookInput) =>
+                      slots.postCompactNotify ? slots.postCompactNotify(i) : { continue: true },
+                  ],
+                },
+              ],
             },
             // NO TURN CEILING BY DEFAULT — omitted, not set to a big number.
             //
@@ -1950,8 +2050,63 @@ export async function POST(req: Request) {
             // tabs (contract: see route.ts's per-message `parent`/`parentId`
             // attribution below).
             forwardSubagentText: true,
-            abortController: abort,
+            // The RUNTIME's controller, not the POST's: aborting it kills the
+            // session process. The POST's `abort` maps a Stop onto it via the
+            // listener below.
+            abortController: runtimeAbort,
           },
+            });
+          },
+        });
+        // Stop keeps today's semantics exactly: the Stop button killed the
+        // turn's process before, and background tasks died with it — so a Stop
+        // kills the runtime, background tasks included. The gentler
+        // interrupt()-only refinement is deliberately not taken in this change.
+        abort.signal.addEventListener("abort", () => runtime.closeNow("stopped"), {
+          once: true,
+        });
+        runtimeRef = runtime;
+        // Install THIS turn's live wiring; the finally below clears it.
+        runtime.slots.canUseTool = canUseTool;
+        runtime.slots.send = send;
+        runtime.slots.preCompactNotify = preCompactNotify;
+        runtime.slots.postCompactNotify = postCompactNotify;
+        const q = runtime.query;
+        // A REUSED runtime emits no system:init — that fires once per query,
+        // and this query started on an earlier turn. The session id is the
+        // runtime's own key, so the init-branch bookkeeping runs here instead:
+        // run registration, live-log open, stub upsert, usage capture. The
+        // "session" SSE event is deliberately NOT re-sent — the client already
+        // holds this session's slash-commands/skills/agents, and re-sending
+        // them empty would clear that state.
+        if (!runtimeCreated && resumeTarget) {
+          const reusedSession: string = resumeTarget;
+          capturedSession = reusedSession;
+          setChatRunSession(runId, reusedSession);
+          startSessionLog(reusedSession, displayText, hiddenTurn);
+          upsertChatStub({
+            id: reusedSession,
+            model,
+            effort,
+            account: profile.name,
+            project,
+            runtimeMode,
+            fastMode,
+            serviceTier,
+            loomId: loomLink.loomId,
+            role: loomLink.role,
+            userText: displayText,
+          });
+          send("saved", { chatId: reusedSession });
+          const usageFn = (q as unknown as Record<string, () => Promise<unknown>>)
+            .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+          usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
+        }
+        const turnFeed = runtime.beginTurn(runId);
+        runtime.push({
+          type: "user",
+          parent_tool_use_id: null,
+          message: { role: "user", content: claudePrompt },
         });
         // TELAR'S OWN TOOLS ARE NOT THE CLASSIFIER'S BUSINESS.
         //
@@ -1982,21 +2137,27 @@ export async function POST(req: Request) {
         // deferred-work.md; what must not be pre-existing is this override
         // trusting it.
         //
-        // Best-effort by design. It is only available in streaming input mode
-        // and is a refinement, not a guarantee — a failure here must never take
-        // down a turn that would otherwise run, so it is caught and dropped.
-        const projectServerNames = new Set(
-          project ? Object.keys(resolveProjectMcpServers(project)) : [],
-        );
-        for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
-          try {
-            await q.setMcpPermissionModeOverride(server, "default");
-          } catch {
-            // An SDK that does not offer the override, or a name that no server
-            // registered under, leaves the classifier in place — the status quo.
+        // Best-effort by design. It is a refinement, not a guarantee — a
+        // failure here must never take down a turn that would otherwise run,
+        // so it is caught and dropped. Only available in streaming input mode,
+        // WHICH THIS ROUTE NOW IS (#28's persistent runtime): before that
+        // migration this loop ran on every turn and silently no-opped on every
+        // one of them. Once per runtime — the override sticks for the
+        // process's lifetime.
+        if (runtimeCreated) {
+          const projectServerNames = new Set(
+            project ? Object.keys(resolveProjectMcpServers(project)) : [],
+          );
+          for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
+            try {
+              await q.setMcpPermissionModeOverride(server, "default");
+            } catch {
+              // An SDK that does not offer the override, or a name that no server
+              // registered under, leaves the classifier in place — the status quo.
+            }
           }
         }
-        for await (const msg of q) {
+        for await (const msg of turnFeed) {
           if (msg.type === "system" && msg.subtype === "init") {
             const init = msg as {
               session_id: string;
@@ -2007,6 +2168,10 @@ export async function POST(req: Request) {
             };
             capturedSession = init.session_id;
             setChatRunSession(runId, capturedSession);
+            // Re-key the runtime from the creating turn's runId to the
+            // SDK-confirmed session id, so the NEXT turn on this session finds
+            // and reuses the live process (#28 persistent runtime).
+            runtime.adoptSession(capturedSession);
             // Open the live log (truncate + write the `user` header) BEFORE the
             // first send() so the session event is the log's second line and a
             // reconnecting client can tail this turn (Phase 1b). displayText
@@ -2417,10 +2582,18 @@ export async function POST(req: Request) {
       } catch (e) {
         if (!abort.signal.aborted) send("error", { message: String(e) });
       } finally {
+        // Detach this turn's live wiring FIRST: a background agent's late
+        // canUseTool call must hit the runtime's detached deny, never a dead
+        // SSE controller (#28 persistent runtime).
+        runtimeRef?.detachTurn();
         // Fail-closed teardown: deny any permission requests still open on this
         // stream so their canUseTool promises unblock and no pending is leaked.
         for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
         myPending.clear();
+        // A runtime whose query never reached system:init is a broken spawn —
+        // close it rather than leaving a keyed-by-runId zombie no later turn
+        // will ever find.
+        if (!capturedSession) runtimeRef?.closeNow("init never arrived");
         // Persist in teardown, not in the happy path: a client disconnect
         // (navigation, closed tab) aborts the SDK loop with a throw, and the
         // turn must survive it — the SDK session already exists server-side.
@@ -2715,22 +2888,16 @@ export async function POST(req: Request) {
         } catch {
           // persistence failure must never mask the stream teardown
         }
-        // Never let title generation outlive this response. `abort` is only
-        // ever triggered above by req.signal's 'abort' listener (client
-        // disconnect) — a turn that completes/errors/aborts normally never
-        // signals it otherwise, so titlePromise's underlying subprocess would
-        // otherwise keep running unobserved: (1) it lost the TITLE_RACE_MS
-        // race above (still running past the bounded wait), or (2) the main
-        // query() never reached system:init at all (capturedSession stayed
-        // null, so the whole persistence block — the only place that awaits
-        // titlePromise — never ran). Aborting here is a no-op if
-        // generateTitle already finished on its own (its own `finally`
-        // already called abort.abort(); idempotent) and a no-op for a
-        // resumed session (titlePromise is null there, nothing was ever
-        // fired) — otherwise it force-ends the orphaned subprocess right now
-        // instead of leaving it to whatever natural conclusion it reaches on
-        // its own after the HTTP response has already closed.
-        if (titlePromise) abort.abort();
+        // Never let title generation outlive this response. `titleAbort` is
+        // the title's OWN controller (#28 persistent runtime: the turn's
+        // `abort` now kills the whole session runtime, so it must never fire
+        // as routine teardown). This is a no-op if generateTitle already
+        // finished (its own finally aborted its internal controller) and a
+        // no-op for a resumed session (titlePromise is null) — otherwise it
+        // force-ends the orphaned subprocess right now: it lost the
+        // TITLE_RACE_MS race above, or the main query never reached
+        // system:init so the persistence block — the only awaiter — never ran.
+        if (titlePromise) titleAbort.abort();
         // Terminal marker the live-tail subscriber closes on. Written BEFORE
         // endChatRun so a still-connected subscriber reads "closed" while the
         // run is technically still registered as live (Phase 1b).

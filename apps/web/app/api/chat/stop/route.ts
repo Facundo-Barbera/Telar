@@ -1,4 +1,5 @@
 import { stopChatRun } from "@/lib/chat-runs";
+import { closeSessionRuntime } from "@/lib/server/session-runtime";
 import { pauseSessionQueue } from "@telar/core";
 
 export const dynamic = "force-dynamic";
@@ -21,5 +22,13 @@ export async function POST(req: Request) {
   // endpoint. A logged Stop with any other `via` — or none — did not come
   // through the user-facing Stop path, which is the thing worth catching.
   const stopped = stopChatRun(key, "api/chat/stop");
-  return Response.json({ ok: stopped });
+  // The persistent session runtime can be live with NO turn attached — a
+  // background task holding the process between turns. stopChatRun finds no
+  // run then; killing the runtime directly is what makes Stop still mean stop.
+  // Both keys tried, same reason stopChatRun accepts both.
+  let runtimeClosed = closeSessionRuntime(key);
+  if (!runtimeClosed && typeof sessionId === "string" && sessionId) {
+    runtimeClosed = closeSessionRuntime(sessionId);
+  }
+  return Response.json({ ok: stopped || runtimeClosed });
 }
