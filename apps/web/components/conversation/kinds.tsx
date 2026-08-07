@@ -27,7 +27,13 @@
 // tempted to improve one of these while you are in here: don't. That is what a
 // later story is for.
 
-import { BotIcon, ChevronRightIcon, PaperclipIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  BotIcon,
+  ChevronRightIcon,
+  PaperclipIcon,
+  PencilIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
@@ -470,30 +476,52 @@ const turnKind: ItemKind<TurnPayload> = {
         ? [...fold.hidden.map(withOpenWork), ...fold.tail]
         : fold.tail;
     return (
-      <Message from={payload.from}>
-        <MessageContent>
-          {payload.items.length === 0 ? (
-            payload.pending
-          ) : (
-            <>
-              {fold && (
-                <TurnFoldRow
-                  fold={fold}
-                  expanded={expanded}
-                  onToggle={() => view.setOpen("fold", !expanded)}
-                />
-              )}
-              {/* `isTrailingItem` runs over what is ACTUALLY rendered, not over
-                  `payload.items` — with a fold collapsed the two differ, and
-                  liveness computed against the wrong array would name an index
-                  that is not on screen. */}
-              {shown.map((child, i) =>
-                view.render(child, { live: view.live && isTrailingItem(shown, i) }),
-              )}
-            </>
-          )}
-        </MessageContent>
-      </Message>
+      // STEP 5 (message-lifecycle): `dimmed` renders the staged replace range
+      // — the transcript itself is the preview, reversible until Enter. The
+      // pencil is the same affordance language as the strip's: it appears on
+      // hover/focus of the bubble it acts on, and ONLY when the owner passed
+      // onEdit — no promise on bubbles the record cannot keep.
+      <div
+        className={cn(
+          "group/turn relative",
+          payload.dimmed && "opacity-40 transition-opacity",
+        )}
+      >
+        {payload.onEdit && payload.from === "user" && (
+          <button
+            type="button"
+            aria-label="Edit this message and send from here"
+            onClick={payload.onEdit}
+            className="absolute -left-7 top-1.5 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/turn:opacity-100"
+          >
+            <PencilIcon className="size-3.5" />
+          </button>
+        )}
+        <Message from={payload.from}>
+          <MessageContent>
+            {payload.items.length === 0 ? (
+              payload.pending
+            ) : (
+              <>
+                {fold && (
+                  <TurnFoldRow
+                    fold={fold}
+                    expanded={expanded}
+                    onToggle={() => view.setOpen("fold", !expanded)}
+                  />
+                )}
+                {/* `isTrailingItem` runs over what is ACTUALLY rendered, not over
+                    `payload.items` — with a fold collapsed the two differ, and
+                    liveness computed against the wrong array would name an index
+                    that is not on screen. */}
+                {shown.map((child, i) =>
+                  view.render(child, { live: view.live && isTrailingItem(shown, i) }),
+                )}
+              </>
+            )}
+          </MessageContent>
+        </Message>
+      </div>
     );
   },
 };

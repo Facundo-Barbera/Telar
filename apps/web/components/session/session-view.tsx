@@ -2441,7 +2441,13 @@ function SessionWorkspace({
     // the human never appears to have typed the sentinel.
     async (
       text: string,
-      opts?: { hidden?: boolean; files?: PromptInputMessage["files"] },
+      opts?: {
+        hidden?: boolean;
+        files?: PromptInputMessage["files"];
+        /** STEP 5: truncate-then-send — rides the same POST so the runtime
+         *  is recreated exactly once (see the route's pre-stream apply). */
+        rollback?: { toTurn: number; expectedTurns: number };
+      },
     ) => {
       // A new turn clears the interrupted latch AND the hold: sending a
       // message is the user act that releases whatever a Stop held (rule 15).
@@ -2518,7 +2524,15 @@ function SessionWorkspace({
           }));
         }
 
-        const turnPayload = buildTurnPayload(text, attachments, runId);
+        const turnPayload = {
+          ...buildTurnPayload(text, attachments, runId),
+          ...(opts?.rollback
+            ? {
+                rollbackToTurn: opts.rollback.toTurn,
+                rollbackExpectedTurns: opts.rollback.expectedTurns,
+              }
+            : {}),
+        };
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3384,6 +3398,74 @@ function SessionWorkspace({
     }
   }, [sessionId]);
 
+  /** STEP 5: the staged replace range — everything from the chosen message
+   *  down renders dimmed under ONE label; NOTHING is destroyed until Enter.
+   *  expectedTurns is captured at stage time; the server's optimistic check
+   *  turns any drift into the one refusal sentence. */
+  const [stagedRollback, setStagedRollback] = useState<{
+    toTurn: number;
+    startMessage: number;
+    expectedTurns: number;
+  } | null>(null);
+  /** The pencil's map: persisted, non-hidden, non-first turns by their
+   *  message index (mount-time truth — a turn run since mount gains its
+   *  pencil on reload, the same no-false-promise rule legacy chats get). */
+  const rollbackAnchorByStart = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const a of initialChat?.turnAnchors ?? []) {
+      if (!a.hidden && a.turn >= 1) map.set(a.startMessage, a.turn);
+    }
+    return map;
+  }, [initialChat]);
+
+  const stageRollback = useCallback(
+    async (startMessage: number) => {
+      const toTurn = rollbackAnchorByStart.get(startMessage);
+      if (toTurn === undefined || !sessionId) return;
+      // The chosen message loads whole — text AND attachments (bytes fetched
+      // back through the attachment route; gone bytes degrade to text-only,
+      // the same rule every recall follows).
+      const m = messages[startMessage];
+      const textPart = m?.parts.find((p) => p.type === "text") as
+        | { type: "text"; text: string }
+        | undefined;
+      promptText.setInput(textPart?.text ?? "");
+      attachmentsCtx.clear();
+      const att = m?.parts.find((p) => p.type === "attachments") as
+        | { type: "attachments"; files: AttachmentRef[] }
+        | undefined;
+      if (att?.files.length) {
+        void filesFromItems(
+          att.files.map((f) => ({
+            filename: f.name,
+            mediaType: f.mediaType,
+            url: `/api/chat/attachments/${encodeURIComponent(f.id)}`,
+          })),
+        ).then((fs) => {
+          if (fs.length) attachmentsCtx.add(fs);
+        });
+      }
+      try {
+        const res = await fetch(`/api/chats/${encodeURIComponent(sessionId)}`);
+        const detail = res.ok ? ((await res.json()) as { turns?: number }) : null;
+        if (!detail?.turns) return; // no turn count to declare — no staging
+        setStagedRollback({ toTurn, startMessage, expectedTurns: detail.turns });
+        // Queued messages were written for a conversation about to change —
+        // the strip's existing hold keeps them from auto-firing (released by
+        // the send, or by Keep it).
+        setHeldAfterStop(true);
+      } catch {
+        /* unreachable server — nothing staged, composer keeps the text */
+      }
+    },
+    [rollbackAnchorByStart, sessionId, messages, promptText, attachmentsCtx, filesFromItems],
+  );
+
+  const cancelStaging = useCallback(() => {
+    setStagedRollback(null);
+    setHeldAfterStop(false);
+  }, []);
+
   const setComposerValue = useCallback((el: HTMLTextAreaElement, text: string) => {
     // Native setter + input event so React and the prompt controller both
     // observe the change (the same idiom the old recall used).
@@ -3495,6 +3577,20 @@ function SessionWorkspace({
     if (recallPreviewIdRef.current) commitRecall();
     setRecallRace(null);
     setStoppedExchange(false);
+    // STEP 5: Enter is the commit. The dimmed range leaves the local list
+    // now (the server truncates in the same request), the hold releases, and
+    // the turn runs under the fork the apply arms.
+    const staged = stagedRollback;
+    if (staged && !busy) {
+      setStagedRollback(null);
+      setHeldAfterStop(false);
+      setMessages((ms) => ms.slice(0, staged.startMessage));
+      void send(text, {
+        files: message.files,
+        rollback: { toTurn: staged.toTurn, expectedTurns: staged.expectedTurns },
+      });
+      return;
+    }
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
@@ -3772,7 +3868,7 @@ function SessionWorkspace({
       // A compaction recorded before this transcript had any messages at all —
       // possible only for a session compacted before its first turn persisted.
       ...markersAfter(null),
-      ...messages.flatMap((m) => {
+      ...messages.flatMap((m, mi) => {
         // Main renders only this message's OWN parts — anything a subagent
         // produced lives in its own tab (see agentBuckets), not interleaved
         // here even though it rode in on the same SSE stream and the same
@@ -3844,6 +3940,14 @@ function SessionWorkspace({
                   {thinking ? "Thinking…" : "Weaving…"}
                 </Shimmer>
               ) : undefined,
+            // STEP 5: the staged replace range dims from the chosen message
+            // down; the pencil appears only on user bubbles the anchor map
+            // addresses (mount-time turns — a fresh turn gains its pencil on
+            // reload) and never while a turn runs.
+            ...(stagedRollback && mi >= stagedRollback.startMessage ? { dimmed: true } : {}),
+            ...(m.role === "user" && !busy && rollbackAnchorByStart.has(mi)
+              ? { onEdit: () => void stageRollback(mi) }
+              : {}),
           } satisfies TurnPayload,
         };
         return [turn, ...markersAfter(m.id)];
@@ -3860,6 +3964,9 @@ function SessionWorkspace({
       messages,
       pendingUltraAnchor,
       respondPermission,
+      rollbackAnchorByStart,
+      stagedRollback,
+      stageRollback,
       thinking,
       ultraAnchorPayloads,
     ],
@@ -4173,6 +4280,20 @@ function SessionWorkspace({
                 </span>
               </div>
             )}
+            {/* STEP 5: the staged range's ONE label. The transcript itself is
+                the preview (dimmed, above); this line is the label and the
+                exit. No overlay, no dialog, no confirm — reversible until
+                Enter. */}
+            {stagedRollback && (
+              <div className="mb-2 flex items-center justify-between rounded-xl border border-amber-600/30 bg-amber-500/[0.06] px-3 py-1.5">
+                <span className="text-xs text-muted-foreground">
+                  Replaced when you send · Your files stay as they are.
+                </span>
+                <Button type="button" size="xs" variant="ghost" onClick={cancelStaging}>
+                  Keep it
+                </Button>
+              </div>
+            )}
             {/* F3-of-one: under a turn you just stopped, one inline text
                 button. The exchange stays in the model's memory until this —
                 Stop kept it deliberately; forgetting is the explicit act. */}
@@ -4355,6 +4476,13 @@ function SessionWorkspace({
                     if (e.key === "Escape" && walking) {
                       e.preventDefault();
                       cancelRecall(e.currentTarget);
+                      return;
+                    }
+                    if (e.key === "Escape" && stagedRollback) {
+                      // Cancel the staging, restore the transcript, leave
+                      // the composer text alone (the design's own grammar).
+                      e.preventDefault();
+                      cancelStaging();
                       return;
                     }
                     if (walking && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
