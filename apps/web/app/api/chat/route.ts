@@ -138,6 +138,7 @@ import {
   logUsage,
   recordCompactions,
   sessionSpendUsd,
+  settleSpawnStatuses,
   upsertChatStub,
   type Part,
 } from "@/lib/store";
@@ -152,7 +153,12 @@ import {
   type CompactionEventName,
   type CompactionFacts,
 } from "@/lib/compaction";
-import { AGENT_SPAWN_TOOL_CANDIDATES, capToolInput, capToolOutput } from "@/lib/transcript";
+import {
+  AGENT_SPAWN_TOOL_CANDIDATES,
+  capToolInput,
+  capToolOutput,
+  isAsyncLaunchAck,
+} from "@/lib/transcript";
 // The SDKMessage→event projection and its teardown finalizers — the loop body
 // that lived inline here from this route's birth until it moved to the server
 // layer, where it is tested (see that module's header for the extraction's
@@ -860,6 +866,22 @@ export async function POST(req: Request) {
       // them directly, and the shared finally persists them.
       const turnState = newClaudeTurnState();
       const { parts, streamingText, parentFlatten } = turnState;
+      // A window that ends leaves no one "running": any spawn part still
+      // carrying only its launch ack (its task_notification was lost, or the
+      // agent was stopped with the window) is marked stopped, live and
+      // persisted, so no tab shimmers forever over a dead window. Called from
+      // the shared teardown (empty roster) and the sink's settle.
+      const settleSpawnParts = (emit: (event: string, data: unknown) => void): string[] => {
+        const ids: string[] = [];
+        for (const part of turnState.parts) {
+          if (part.type !== "tool" || !part.agent || part.taskStatus || !part.id) continue;
+          if (part.output !== undefined && !isAsyncLaunchAck(part.output)) continue;
+          part.taskStatus = "stopped";
+          ids.push(part.id);
+          emit("task_status", { id: part.id, status: "stopped" });
+        }
+        return ids;
+      };
       // NOTE ON WHAT MOVED. `resumeTarget`, `existingChat`, `wireLoomId` and
       // `loomLink` used to be declared right here; story 2.2 hoisted all four
       // into the pre-stream preamble, because the session KIND is a function of
@@ -2105,6 +2127,14 @@ export async function POST(req: Request) {
                 resolvePending(id, { behavior: "deny", reason: "aborted" });
               }
               myPending.clear();
+              // No one is running once the window ends: mark still-acked
+              // spawns stopped — on the live surfaces, and through the store
+              // for the copies the turn's appendTurn already persisted.
+              const settledIds = settleSpawnParts((event, data) => {
+                appendSessionEvent(sessionId, event, data);
+                appendFeedEvent(sessionId, event, data);
+              });
+              if (settledIds.length) settleSpawnStatuses(sessionId, settledIds);
               const extra = persisted.done ? turnState.parts.slice(persisted.n) : [];
               if (extra.length) {
                 appendTurn({
@@ -2384,6 +2414,10 @@ export async function POST(req: Request) {
           // output" rule locally (see markToolsInterrupted).
           if (anyInterrupted) send("interrupted", {});
           rationToolDetail(turnState);
+          // The window is NOT outliving this POST (empty roster): whatever
+          // spawn is still ack-only will never complete — settle it now, on
+          // the live stream, before appendTurn persists the marked parts.
+          if (!windowContinues) settleSpawnParts(send);
           // Fetch the live session-cost control call unconditionally (not
           // gated on `lastResult`): a client disconnect/navigation aborts the
           // SDK loop with a throw rather than a final graceful "result"

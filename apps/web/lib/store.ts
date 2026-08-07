@@ -8,6 +8,7 @@ import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@tel
 import type { ClientPermissionMode } from "./permission-modes";
 import type { CompactionFacts, CompactionRecord } from "./compaction";
 import { previewPlainText } from "./preview-text";
+import { isAsyncLaunchAck } from "./transcript";
 import type { ContextUsageSnapshot } from "./context-usage";
 import type { RuntimeMode } from "@telar/core/runtime-mode";
 
@@ -477,6 +478,33 @@ export function setChatRead(id: string, read: boolean): boolean {
   chat.readAt = read ? Date.now() : 0;
   writeChats(chats);
   return true;
+}
+
+// A window that has ENDED leaves no one running (#28 turn-as-event): any
+// persisted spawn part still carrying only its background launch ack — no
+// task_notification ever landed for it — is finished-unrecorded, and after a
+// reload its tab would shimmer "running" forever over a dead window. Called
+// by the chat route at window settle with the ids it just marked live (the
+// turn's own copies were persisted before the window outlived it), or with
+// no ids to sweep every unfinished spawn (the repair path for sessions
+// written before the settle linger existed). Returns whether anything changed.
+export function settleSpawnStatuses(id: string, toolUseIds?: string[]): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const wanted = toolUseIds ? new Set(toolUseIds) : null;
+  let changed = false;
+  for (const message of chat.messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.agent || part.taskStatus || !part.id) continue;
+      if (wanted && !wanted.has(part.id)) continue;
+      if (!wanted && part.output !== undefined && !isAsyncLaunchAck(part.output)) continue;
+      part.taskStatus = "stopped";
+      changed = true;
+    }
+  }
+  if (changed) writeChats(chats);
+  return changed;
 }
 
 // Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so

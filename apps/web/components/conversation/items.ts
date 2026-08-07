@@ -23,6 +23,7 @@
 // NOTHING HERE IMPORTS @telar/core AT RUNTIME (AD-3, and INV-4c enforces it).
 
 import type { ReactNode } from "react";
+import { isAsyncLaunchAck } from "@/lib/transcript";
 import type { AgentTab } from "@/components/session/agent-tabs";
 import type { AgentInfo, ToolPart } from "@/components/session/tool-step";
 import type { WorkState } from "@/components/session/working-indicator";
@@ -288,10 +289,11 @@ export function agentStatus(spawn: ToolPart): AgentTab["status"] {
 // literal launch phrase, or (in case wording drifts) the "internal
 // metadata" + "agentId" combination that's specific to this ack and not
 // something a genuine subagent result would ever contain together.
-export function isAsyncLaunchAck(text: string): boolean {
-  if (text.includes("Async agent launched successfully")) return true;
-  return text.includes("internal metadata") && text.includes("agentId");
-}
+// Moved to lib/transcript.ts — the SERVER also needs it now: a window that
+// ends must mark still-acked spawns as stopped (store.settleSpawnStatuses),
+// and server code cannot import from components/. Re-exported (and imported
+// above for agentStatus) so this module's surface is unchanged.
+export { isAsyncLaunchAck };
 
 // ── the projection, moved verbatim ─────────────────────────────────────────
 
