@@ -5,7 +5,7 @@ import {
   resolveEnabledAccount,
 } from "@telar/core/accounts";
 import { getProject } from "@telar/core/manifest";
-import { getChat } from "@/lib/store";
+import { getChat, publicTurnAnchors } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -116,6 +116,11 @@ export default async function SessionPage({
         compactions: chat.compactions,
         loomId: chat.loomId,
         role: chat.role,
+        turns: chat.turns,
+        // The pencil's map (STEP 5): which bubbles are rollback-addressable.
+        // Projected — {turn, startMessage, hidden, at}, never a uuid (wire
+        // policy). Absent on legacy chats, which therefore show no pencil.
+        turnAnchors: publicTurnAnchors(chat.turnAnchors),
       }
     : undefined;
 

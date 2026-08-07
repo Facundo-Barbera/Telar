@@ -494,6 +494,15 @@ export type TurnPayload = {
    *  "Thinking…"/"Weaving…" affordance. Built by the adapter, which is the only
    *  party that knows about `busy`. */
   pending?: ReactNode;
+  /** STEP 5 (message-lifecycle): this turn sits in a STAGED replace range —
+   *  rendered dimmed under the adapter's one label. A projection the adapter
+   *  computes; the shell knows only "dim this". */
+  dimmed?: boolean;
+  /** Same optionality mechanism as PermissionPayload.onRespond: present only
+   *  on user bubbles the owner deems rollback-addressable — the gutter
+   *  pencil renders IFF this exists, so a legacy transcript shows no promise
+   *  it cannot keep. */
+  onEdit?: () => void;
 };
 export type TextPayload = { text: string };
 export type AttachmentsPayload = { files: AttachmentRef[] };

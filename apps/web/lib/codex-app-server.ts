@@ -1207,3 +1207,39 @@ export async function* runCodexCompact(
     client.kill();
   }
 }
+
+// LEDGER TRUNCATION FOR REAL (message-lifecycle STEP 6) — the app-server's
+// native `thread/rollback { threadId, numTurns }`, modelled line-for-line on
+// runCodexCompact's own-client + thread/resume + one top-level request shape
+// (t3code drives the same RPC; it truncates the provider's persisted
+// transcript, which is what makes Telar's rollback non-cosmetic on Codex —
+// the exact trap t3code fell into before it). Unlike compact there is no
+// notification to await: the response IS the ack. A method-not-found from an
+// older app-server rejects; the caller maps that to the honest marker.
+export type CodexRollbackOptions = {
+  threadId: string;
+  numTurns: number;
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
+export async function runCodexRollback(opts: CodexRollbackOptions): Promise<void> {
+  const client = new AppServerClient(resolveCodexBin(), dropUndefined(opts.env));
+  const onAbort = () => client.kill();
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    await client.request("initialize", {
+      clientInfo: { name: "telar", title: "Telar", version: "0.1.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    client.notify("initialized");
+    await client.request("thread/resume", { threadId: opts.threadId });
+    await client.request("thread/rollback", {
+      threadId: opts.threadId,
+      numTurns: opts.numTurns,
+    });
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+    client.kill();
+  }
+}
