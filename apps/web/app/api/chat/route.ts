@@ -2185,14 +2185,20 @@ export async function POST(req: Request) {
             },
           } as SessionRuntime["windowSink"] & { turnState: ClaudeTurnState };
         };
-        // A REUSED runtime emits no system:init — that fires once per query,
-        // and this query started on an earlier turn. The session id is the
-        // runtime's own key, so the init-branch bookkeeping runs here instead:
-        // run registration, live-log open, stub upsert, usage capture. The
-        // "session" SSE event is deliberately NOT re-sent — the client already
-        // holds this session's slash-commands/skills/agents, and re-sending
-        // them empty would clear that state.
+        // A REUSED runtime's session id is known up front (it is the
+        // runtime's own key), so the turn bookkeeping — run registration,
+        // live-log/window open, stub upsert, usage capture — runs here,
+        // before the first message. MEASURED CORRECTION (mid-window round 4):
+        // the CLI re-announces system:init at the start of EVERY turn under
+        // streaming input, not once per process — the flag below is what
+        // keeps the init branch from running this same bookkeeping a second
+        // time (double log truncation, double window bump). The init branch
+        // still forwards the "session" event itself each turn: it carries
+        // freshly-announced slash-commands/skills/agents, and the client's
+        // handler treats it as a refresh.
+        let turnBookkeepingDone = false;
         if (!runtimeCreated && resumeTarget) {
+          turnBookkeepingDone = true;
           const reusedSession: string = resumeTarget;
           capturedSession = reusedSession;
           setChatRunSession(runId, reusedSession);
@@ -2292,57 +2298,67 @@ export async function POST(req: Request) {
               tools?: string[];
             };
             capturedSession = init.session_id;
-            setChatRunSession(runId, capturedSession);
-            // Re-key the runtime from the creating turn's runId to the
-            // SDK-confirmed session id, so the NEXT turn on this session finds
-            // and reuses the live process (#28 persistent runtime).
-            runtime.adoptSession(capturedSession);
-            // Open the live log (truncate + write the `user` header) BEFORE the
-            // first send() so the session event is the log's second line and a
-            // reconnecting client can tail this turn (Phase 1b). displayText
-            // (not the resolved kickoff instruction) so a mid-turn reconnect's
-            // synthetic "user" event can never leak the machinery prompt.
-            // `hiddenTurn` also suppresses the line entirely — neither the
-            // kickoff nor story 4.1's Ultra wake trigger renders a user bubble
-            // on its local POST path, so a mid-turn reconnect must not
-            // manufacture one for either (M11.3 finding).
-            startSessionLog(capturedSession, displayText, hiddenTurn);
-            startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
-            installWindowSink(capturedSession);
+            // The CLI re-announces init at the start of EVERY turn under
+            // streaming input (measured, mid-window round 4). The "session"
+            // event forwards every time — it carries freshly-announced
+            // slash-commands/skills/agents the client treats as a refresh —
+            // but the ONE-TIME turn bookkeeping below must not run twice on
+            // a reused runtime whose pre-loop block already did it (double
+            // log truncation, double window bump, duplicate stub write).
+            if (!turnBookkeepingDone) {
+              turnBookkeepingDone = true;
+              setChatRunSession(runId, capturedSession);
+              // Re-key the runtime from the creating turn's runId to the
+              // SDK-confirmed session id, so the NEXT turn on this session
+              // finds and reuses the live process (#28 persistent runtime).
+              runtime.adoptSession(capturedSession);
+              // Open the live log (truncate + write the `user` header) BEFORE
+              // the first send() so the session event is the log's second
+              // line and a reconnecting client can tail this turn (Phase 1b).
+              // displayText (not the resolved kickoff instruction) so a
+              // mid-turn reconnect's synthetic "user" event can never leak
+              // the machinery prompt. `hiddenTurn` also suppresses the line
+              // entirely — neither the kickoff nor story 4.1's Ultra wake
+              // trigger renders a user bubble on its local POST path, so a
+              // mid-turn reconnect must not manufacture one either (M11.3).
+              startSessionLog(capturedSession, displayText, hiddenTurn);
+              startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
+              installWindowSink(capturedSession);
+              // Register-at-create (contract §1): persist a stub chat row NOW
+              // — the instant the session id is confirmed, before the first
+              // turn finishes — then emit the SAME "saved" event the client
+              // already handles (session-view.tsx's "saved" case just flips
+              // chatPersisted + refreshes). So rename / minimize-to-dock
+              // unlock at the START of the turn with zero new client event
+              // types. Idempotent by id: a resumed session's row already
+              // exists (no-op), and the end-of-turn appendTurn updates THIS
+              // row in place — never a duplicate. best-available title now is
+              // the message-prefix fallback (upsertChatStub derives it from
+              // userText); the generated title upgrades it via appendTurn.
+              upsertChatStub({
+                id: capturedSession,
+                model,
+                effort,
+                account: profile.name,
+                project,
+                runtimeMode,
+                fastMode,
+                serviceTier,
+                // Best-available loom link at init (existing chat's, else the
+                // turn-1 wire seed); appendTurn narrows in any link a loom
+                // tool establishes during the turn.
+                loomId: loomLink.loomId,
+                role: loomLink.role,
+                userText: displayText,
+              });
+              send("saved", { chatId: capturedSession });
+            }
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
               skills: init.skills ?? [],
               agents: init.agents ?? [],
             });
-            // Register-at-create (contract §1): persist a stub chat row NOW —
-            // the instant the session id is confirmed, before the first turn
-            // finishes — then emit the SAME "saved" event the client already
-            // handles (session-view.tsx's "saved" case just flips chatPersisted
-            // + refreshes). So rename / minimize-to-dock unlock at the START of
-            // the turn with zero new client event types. Idempotent by id: a
-            // resumed session's row already exists (no-op), and the end-of-turn
-            // appendTurn updates THIS row in place — never a duplicate.
-            // best-available title now is the message-prefix fallback
-            // (upsertChatStub derives it from userText); the generated title
-            // upgrades it at end-of-turn via appendTurn.
-            upsertChatStub({
-              id: capturedSession,
-              model,
-              effort,
-              account: profile.name,
-              project,
-              runtimeMode,
-              fastMode,
-              serviceTier,
-              // Best-available loom link at init (existing chat's, else the
-              // turn-1 wire seed); appendTurn narrows in any link a loom tool
-              // establishes during the turn.
-              loomId: loomLink.loomId,
-              role: loomLink.role,
-              userText: displayText,
-            });
-            send("saved", { chatId: capturedSession });
             // Capture the live session totals while the subprocess is still
             // alive; this is the fallback when navigation interrupts a final
             // result event.
