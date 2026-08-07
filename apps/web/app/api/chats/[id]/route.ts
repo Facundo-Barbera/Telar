@@ -1,5 +1,6 @@
 import { deleteAttachmentsForChat } from "@/lib/attachments";
 import { stopChatRun } from "@/lib/chat-runs";
+import { repairInterruptedSession } from "@/lib/server/session-repair";
 import { closeSessionRuntime } from "@/lib/server/session-runtime";
 import {
   deleteChat,
@@ -18,6 +19,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  // Before the read: a turn the server died under must say so in the
+  // transcript this response carries (see session-repair.ts). No-op for
+  // live, gracefully-closed, or already-repaired sessions.
+  repairInterruptedSession(id);
   const chat = getChat(id);
   if (!chat) return new Response("not found", { status: 404 });
   return Response.json(chat);
