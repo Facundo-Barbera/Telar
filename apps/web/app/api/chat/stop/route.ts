@@ -1,5 +1,5 @@
 import { stopChatRun } from "@/lib/chat-runs";
-import { closeSessionRuntime } from "@/lib/server/session-runtime";
+import { closeSessionRuntime, interruptSessionRuntime } from "@/lib/server/session-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -23,14 +23,34 @@ export async function POST(req: Request) {
   // #28: tagged so a Stop that reaches the registry is attributable to THIS
   // endpoint. A logged Stop with any other `via` — or none — did not come
   // through the user-facing Stop path, which is the thing worth catching.
+  // INTERRUPT FIRST (message-lifecycle F2): a mid-turn Stop asks the CLI to
+  // abort the TURN — the warm process, its context, and its background
+  // agents survive, and the turn closes at its own aborted result. Only an
+  // active turn is interruptible (interruptSessionRuntime's own guard), so
+  // the presence line's between-turns Stop falls straight through to the
+  // kill below, which is what "stop the background work" means.
+  let outcome: Awaited<ReturnType<typeof interruptSessionRuntime>> = "no-runtime";
+  for (const k of new Set(
+    [key, typeof sessionId === "string" ? sessionId : null].filter((x): x is string => !!x),
+  )) {
+    outcome = await interruptSessionRuntime(k);
+    if (outcome !== "no-runtime") break;
+  }
+  if (outcome === "interrupted") {
+    // The turn is ending at its own result; the run and runtime stay alive.
+    return Response.json({ ok: true, interrupted: true });
+  }
+
   const stopped = stopChatRun(key, "api/chat/stop");
   // The persistent session runtime can be live with NO turn attached — a
   // background task holding the process between turns. stopChatRun finds no
   // run then; killing the runtime directly is what makes Stop still mean stop.
-  // Both keys tried, same reason stopChatRun accepts both.
+  // Both keys tried, same reason stopChatRun accepts both. An "escalated"
+  // interrupt already closed the runtime; these are then no-ops that keep
+  // the response honest.
   let runtimeClosed = closeSessionRuntime(key);
   if (!runtimeClosed && typeof sessionId === "string" && sessionId) {
     runtimeClosed = closeSessionRuntime(sessionId);
   }
-  return Response.json({ ok: stopped || runtimeClosed });
+  return Response.json({ ok: stopped || runtimeClosed || outcome === "escalated" });
 }

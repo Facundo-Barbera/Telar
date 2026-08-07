@@ -12,7 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { acquireSessionRuntime, closeSessionRuntime } from "./session-runtime";
+import { acquireSessionRuntime, closeSessionRuntime, interruptSessionRuntime } from "./session-runtime";
 
 // A controllable fake query: the pump for-awaits it; tests push SDK messages
 // in and observe the runtime's routing. Also records what came through the
@@ -34,6 +34,9 @@ function fakeQuery() {
     wake = null;
   };
 
+  // F2: interruptSessionRuntime calls query.interrupt() — tests swap this
+  // out per scenario (receipt, still_queued, rejection).
+  let interruptImpl: () => Promise<unknown> = async () => ({ still_queued: [] });
   const query = {
     async *[Symbol.asyncIterator]() {
       while (true) {
@@ -42,9 +45,18 @@ function fakeQuery() {
         await new Promise<void>((r) => (wake = r));
       }
     },
+    interrupt: () => interruptImpl(),
   } as unknown as Query;
 
-  return { query, emit, finish, emitted };
+  return {
+    query,
+    emit,
+    finish,
+    emitted,
+    setInterrupt: (impl: () => Promise<unknown>) => {
+      interruptImpl = impl;
+    },
+  };
 }
 
 let keyCounter = 0;
@@ -255,6 +267,54 @@ describe("session runtime", () => {
     expect(closeSessionRuntime("sess-stop")).toBe(true);
     expect(rt.runtime.closed).toBe(true);
     expect(closeSessionRuntime("sess-stop")).toBe(false);
+  });
+
+  test("interrupt stops the TURN and keeps the runtime (F2) — flag set, next turn clears it", async () => {
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-int");
+    const feed = rt.runtime.beginTurn("run-1");
+    const consumed = collect(feed);
+    const outcome = await interruptSessionRuntime("sess-int");
+    expect(outcome).toBe("interrupted");
+    expect(rt.runtime.closed).toBe(false);
+    expect(rt.runtime.interruptedTurn).toBe(true);
+    // The CLI then ends the turn at its own aborted result, as measured
+    // (rewind probe (e)) — and the runtime accepts the next turn.
+    rt.emit(result);
+    await consumed;
+    const feed2 = rt.runtime.beginTurn("run-2");
+    expect(rt.runtime.interruptedTurn).toBe(false);
+    rt.emit(result);
+    await collect(feed2);
+    rt.runtime.closeNow("test done");
+  });
+
+  test("a receipt with still_queued input ESCALATES to the kill — phantom turns are not 'stopped'", async () => {
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-esc");
+    rt.setInterrupt(async () => ({ still_queued: ["u-1"] }));
+    void collect(rt.runtime.beginTurn("run-1")).catch(() => {});
+    expect(await interruptSessionRuntime("sess-esc")).toBe("escalated");
+    expect(rt.runtime.closed).toBe(true);
+  });
+
+  test("an interrupt that throws escalates the same way", async () => {
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-throw");
+    rt.setInterrupt(async () => {
+      throw new Error("no such control request");
+    });
+    void collect(rt.runtime.beginTurn("run-1")).catch(() => {});
+    expect(await interruptSessionRuntime("sess-throw")).toBe("escalated");
+    expect(rt.runtime.closed).toBe(true);
+  });
+
+  test("no active turn → no-runtime: the presence line's Stop must reach the kill, not a no-op interrupt", async () => {
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-idle");
+    expect(await interruptSessionRuntime("sess-idle")).toBe("no-runtime");
+    expect(rt.runtime.closed).toBe(false);
+    rt.runtime.closeNow("test done");
   });
 
   test("deleting a chat closes its runtime — teardown precedes deletion", () => {

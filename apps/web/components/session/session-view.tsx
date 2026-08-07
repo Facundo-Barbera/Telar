@@ -54,6 +54,7 @@ import {
   parentOf,
   showsLiveStatus,
   toTranscriptItems,
+  usePromptInputController,
   useProviderAttachments,
   type AgentBucket,
   type AttachmentRef,
@@ -1341,6 +1342,36 @@ function SessionWorkspace({
   // valid after the composer has cleared and revoked the originals — the queue
   // can outlive several turns.
   const [messageQueue, setMessageQueue] = useState<SessionQueuedMessage[]>([]);
+  // Declared HERE, well above stopTurn, because both F1 (the walk) and F2
+  // (stop-and-reclaim) need them and stopTurn is declared first — the same
+  // TDZ constraint the inline queue-DELETE in stopTurn documents.
+  const attachmentsCtx = useProviderAttachments();
+  const promptText = usePromptInputController().textInput;
+  /** What send() last put in flight — F2's reclaim source. Cleared on
+   *  reclaim; harmlessly stale after a normal turn end (reclaim only runs
+   *  from a Stop while a send from THIS mount is live). */
+  const lastSentRef = useRef<{
+    userId: string | null;
+    text: string;
+    files: readonly unknown[];
+  } | null>(null);
+  /** Rebuild File objects from staged/queued attachment items (data: or
+   *  still-live blob: URLs). A URL whose bytes are gone is skipped — the text
+   *  still comes back, which beats refusing the whole recall. */
+  const filesFromItems = useCallback(async (items: readonly unknown[]): Promise<File[]> => {
+    const out: File[] = [];
+    for (const raw of items) {
+      const it = raw as { filename?: string; mediaType?: string; url?: string };
+      if (!it?.url) continue;
+      try {
+        const blob = await (await fetch(it.url)).blob();
+        out.push(new File([blob], it.filename ?? "attachment", { type: it.mediaType ?? blob.type }));
+      } catch {
+        /* bytes gone — skip */
+      }
+    }
+    return out;
+  }, []);
   /** TRUE between a Stop and the user's next send: everything pending is
    *  held as LOCAL drafts (nothing server-side to drain — no mode, no Resume
    *  button; feel contract rules 12/15) and the strip says so in one line. */
@@ -2410,6 +2441,12 @@ function SessionWorkspace({
       // and it caught this exact attempt. A set of ids owned here says the same
       // thing without widening anything the shell has to know.
       const userId = `m${nextId.current++}`;
+      // F2's reclaim source: what THIS mount just put in flight, so a Stop
+      // can hand the words back (stopTurn). Hidden turns reclaim nothing —
+      // the user never typed their sentinel.
+      lastSentRef.current = opts?.hidden
+        ? null
+        : { userId, text, files: opts?.files ?? [] };
       // Fresh session (no id yet): the first user message names the thread,
       // mirroring the title the store derives on save. A hidden kickoff has no
       // user text to title from, so it seeds a fixed escalation label instead.
@@ -2628,7 +2665,52 @@ function SessionWorkspace({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
-      }).catch(() => {});
+      })
+        .then(async (res) => {
+          const body = await res.json().catch(() => null);
+          // F2: an interrupted turn ends at its own aborted result, so THIS
+          // mount's stream closes with a real `done` handoff — the reader
+          // must stay open for it. Aborting the fetch here is what used to
+          // orphan the stream and force the tail-from-now special case.
+          // The kill-fallback (no interrupt) keeps the old teardown.
+          if (!body?.interrupted) abortRef.current?.abort();
+        })
+        .catch(() => abortRef.current?.abort());
+    } else {
+      abortRef.current?.abort();
+    }
+    // Your words come back (F2): the in-flight message returns editable —
+    // into the composer when it is empty, else to the HEAD of the strip
+    // (never destroy typing). Only for a turn THIS mount sent: a reconnect
+    // tail's turn belongs to whichever surface sent it.
+    const last = lastSentRef.current;
+    if (last && abortRef.current) {
+      lastSentRef.current = null;
+      if (promptText.value === "") {
+        promptText.setInput(last.text);
+        if (last.files.length) {
+          void filesFromItems(last.files).then((fs) => {
+            if (fs.length) attachmentsCtx.add(fs);
+          });
+        }
+      } else {
+        setMessageQueue((q) => [
+          {
+            id: `q-reclaim-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+            text: last.text,
+            ...(last.files.length ? { files: last.files as SessionQueuedMessage["files"] } : {}),
+          },
+          ...q,
+        ]);
+      }
+      // The subdued note that makes the duplicate text legible rather than
+      // spooky — on the user bubble the words came from.
+      if (last.userId) {
+        patch(last.userId, (m) => ({
+          ...m,
+          parts: [...m.parts, { type: "marker" as const, text: "returned to composer" }],
+        }));
+      }
     }
     // Stop means stop — and HOLD, without a mode (feel contract rules 14/15).
     // Everything pending pulls back to LOCAL drafts: engine-queued items are
@@ -2660,8 +2742,13 @@ function SessionWorkspace({
           : item,
       ),
     );
-    abortRef.current?.abort();
-  }, [sessionId, messageQueue]);
+    // NO unconditional abort here — that is the decision the stop response
+    // makes above (interrupted → the stream closes itself at the aborted
+    // result; anything else → abort as before).
+    // `patch` is a plain function (not useCallback-wrapped) and is omitted
+    // from these deps by the file's own convention — listing it makes the
+    // callback churn every render and trips exhaustive-deps the other way.
+  }, [sessionId, messageQueue, promptText, attachmentsCtx, filesFromItems]);
 
   // ESCAPE, TWICE, TO STOP — and the first press must be VISIBLE.
   //
@@ -3228,7 +3315,6 @@ function SessionWorkspace({
   /** The lost race, as a strip line: "That one already went." + Stop (the
    *  F1→F2 handoff). Never an error banner — see commitRecall. */
   const [recallRace, setRecallRace] = useState<string | null>(null);
-  const attachmentsCtx = useProviderAttachments();
 
   const setComposerValue = useCallback((el: HTMLTextAreaElement, text: string) => {
     // Native setter + input event so React and the prompt controller both
@@ -3240,24 +3326,6 @@ function SessionWorkspace({
     setter?.call(el, text);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.setSelectionRange(text.length, text.length);
-  }, []);
-
-  /** Rebuild File objects from staged/queued attachment items (data: or
-   *  still-live blob: URLs). A URL whose bytes are gone is skipped — the text
-   *  still comes back, which beats refusing the whole recall. */
-  const filesFromItems = useCallback(async (items: readonly unknown[]): Promise<File[]> => {
-    const out: File[] = [];
-    for (const raw of items) {
-      const it = raw as { filename?: string; mediaType?: string; url?: string };
-      if (!it?.url) continue;
-      try {
-        const blob = await (await fetch(it.url)).blob();
-        out.push(new File([blob], it.filename ?? "attachment", { type: it.mediaType ?? blob.type }));
-      } catch {
-        /* bytes gone — skip */
-      }
-    }
-    return out;
   }, []);
 
   const previewInComposer = useCallback(
