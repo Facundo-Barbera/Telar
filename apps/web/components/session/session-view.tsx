@@ -2044,6 +2044,22 @@ function SessionWorkspace({
                     },
                   ],
                 }));
+                // A stop just marked this exchange (F2) — offer its removal
+                // (F3-of-one) right where the user is looking, until they
+                // move on. The wording is the marker's own, so the trigger
+                // cannot drift from the render.
+                if (payload.text === "Stopped — kept what arrived.") {
+                  setStoppedExchange(true);
+                }
+                break;
+              case "rolled_back":
+                // Another surface removed an exchange (or this one did — the
+                // re-seed is idempotent): the transcript below
+                // payload.messages no longer exists. Truncate the local list
+                // to the persisted count and end any leftover liveness.
+                setMessages((ms) => ms.slice(0, Number(payload.messages ?? ms.length)));
+                setStoppedExchange(false);
+                setBgTasksLive(0);
                 break;
               case "permission":
                 // The turn stays in flight while the card is pending — status
@@ -3315,6 +3331,51 @@ function SessionWorkspace({
   /** The lost race, as a strip line: "That one already went." + Stop (the
    *  F1→F2 handoff). Never an error banner — see commitRecall. */
   const [recallRace, setRecallRace] = useState<string | null>(null);
+  /** F3-of-one (STEP 4): a stop just marked the last exchange — offer its
+   *  removal inline until the user moves on (next send clears it). */
+  const [stoppedExchange, setStoppedExchange] = useState(false);
+
+  /** Remove the last exchange: addressed by turn index + expectedTurns (the
+   *  wire carries no SDK identity), applied by re-seeding from the persisted
+   *  record — one source of truth, and the same path a second tab takes via
+   *  the feed's rolled_back line. */
+  const removeLastExchange = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const dRes = await fetch(`/api/chats/${encodeURIComponent(sessionId)}`);
+      if (!dRes.ok) return;
+      const detail = (await dRes.json()) as { turns?: number };
+      const turns = detail.turns ?? 0;
+      if (turns < 2) {
+        // The planner would refuse turn 0 anyway; don't offer a dead act.
+        setStoppedExchange(false);
+        return;
+      }
+      const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toTurn: turns - 1, expectedTurns: turns }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        messages?: number;
+      } | null;
+      if (res.ok) {
+        setStoppedExchange(false);
+        const fresh = await fetch(`/api/chats/${encodeURIComponent(sessionId)}`);
+        if (fresh.ok) {
+          setMessages(seedMessages((await fresh.json()) as InitialChat));
+        }
+      } else {
+        // The refusals are one plain sentence by design — show it on the
+        // same line the offer lived on.
+        setRecallRace(body?.error ?? "Couldn't remove that exchange.");
+        setStoppedExchange(false);
+      }
+    } catch {
+      /* network — the offer stays up; clicking again retries */
+    }
+  }, [sessionId]);
 
   const setComposerValue = useCallback((el: HTMLTextAreaElement, text: string) => {
     // Native setter + input event so React and the prompt controller both
@@ -3426,6 +3487,7 @@ function SessionWorkspace({
     // send is the user acting, so the lost-race line has served its purpose.
     if (recallPreviewIdRef.current) commitRecall();
     setRecallRace(null);
+    setStoppedExchange(false);
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
@@ -4102,6 +4164,21 @@ function SessionWorkspace({
                     Dismiss
                   </Button>
                 </span>
+              </div>
+            )}
+            {/* F3-of-one: under a turn you just stopped, one inline text
+                button. The exchange stays in the model's memory until this —
+                Stop kept it deliberately; forgetting is the explicit act. */}
+            {stoppedExchange && !busy && (
+              <div className="mb-2 flex items-center justify-end rounded-xl border border-border bg-muted/40 px-3 py-1">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => void removeLastExchange()}
+                >
+                  Remove this exchange
+                </Button>
               </div>
             )}
             {pendingLines.length > 0 && (
