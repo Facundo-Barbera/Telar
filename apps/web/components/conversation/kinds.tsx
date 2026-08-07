@@ -638,7 +638,33 @@ const permissionKind: ItemKind<PermissionPayload> = {
 // session-view.tsx's compaction divider, interleaved between turns.
 const markerKind: ItemKind<MarkerPayload> = {
   id: CONVERSATION_KINDS.marker,
-  render: (payload) => <Marker attention={payload.attention}>{payload.text}</Marker>,
+  render: (payload) => {
+    const { display, onSelectAgent } = payload;
+    // Plain text unless every merged completion carries provenance AND the
+    // surface is interactive — the same degradation mechanism as a
+    // permission card without onRespond.
+    if (!display || !onSelectAgent) {
+      return <Marker attention={payload.attention}>{payload.text}</Marker>;
+    }
+    return (
+      <Marker attention={payload.attention}>
+        {display.lead}
+        {display.agents.map((a) => (
+          <span key={a.id} className="flex items-center gap-1.5">
+            <span aria-hidden>·</span>
+            <button
+              type="button"
+              onClick={() => onSelectAgent(a.id)}
+              className="cursor-pointer underline decoration-dotted underline-offset-2 hover:text-foreground"
+            >
+              {a.label}
+            </button>
+          </span>
+        ))}
+        {display.extra > 0 ? <span>· +{display.extra} more</span> : null}
+      </Marker>
+    );
+  },
 };
 
 // The persistent in-flight row. The turn's other liveness signals each cover a

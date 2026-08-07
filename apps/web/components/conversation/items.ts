@@ -43,8 +43,9 @@ export type StorePart =
   // A system-event line in the transcript flow ("agent finished · explore
   // lib") — the Marker primitive's voice, persisted at the chronological
   // position the event arrived. Server-authored text; the shell renders it
-  // without knowing any domain.
-  | { type: "marker"; text: string; attention?: boolean }
+  // without knowing any domain. `agentId` (the spawn's tool_use id, same key
+  // the tabs use) makes a completion line a LINK back to its agent.
+  | { type: "marker"; text: string; attention?: boolean; agentId?: string }
   | {
       type: "tool";
       name: string;
@@ -98,7 +99,7 @@ export type Part =
   | { type: "thinking"; text: string; done: boolean; parentId?: string }
   // Identical to its StorePart twin — a marker is complete the moment it
   // exists (nothing about it streams).
-  | { type: "marker"; text: string; attention?: boolean }
+  | { type: "marker"; text: string; attention?: boolean; agentId?: string }
   | ToolPart
   // Identical to its StorePart twin: an attachment part is complete the moment
   // it exists (nothing about it streams), so unlike text it needs no `done`.
@@ -363,6 +364,33 @@ export function mergedMarkerText(parts: readonly MarkerPart[]): string {
   return tail ? `${lead} · ${tail}` : lead;
 }
 
+// The clickable form of the same line: lead + per-agent labels, each paired
+// with the spawn id the tabs are keyed by, so "agent finished · explore lib"
+// is a LINK back to the work, not just a report of it. Null whenever any part
+// lacks an id or a parsed label — the renderer then falls back to the plain
+// text above, so a marker without provenance (ultra wakes, compaction
+// dividers, pre-agentId history) renders exactly as before.
+export type MarkerAgentRef = { id: string; label: string };
+export function markerDisplay(
+  parts: readonly MarkerPart[],
+): { lead: string; agents: MarkerAgentRef[]; extra: number } | null {
+  const refs: MarkerAgentRef[] = [];
+  let verbPhrase: string | null = null;
+  for (const p of parts) {
+    const m = MERGEABLE_MARKER.exec(p.text);
+    if (!p.agentId || !m?.[3]) return null;
+    refs.push({ id: p.agentId, label: m[3] });
+    verbPhrase = `${m[1]}${parts.length > 1 ? "s" : ""} ${m[2]}`;
+  }
+  if (!verbPhrase || refs.length === 0) return null;
+  const shown = refs.slice(0, 3);
+  return {
+    lead: parts.length > 1 ? `${parts.length} ${verbPhrase}` : verbPhrase,
+    agents: shown,
+    extra: refs.length - shown.length,
+  };
+}
+
 export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
   const items: RenderItem[] = [];
   parts.forEach((part, idx) => {
@@ -489,7 +517,16 @@ export type PermissionPayload = {
    *  surface — see AD-12's purity rule and story 6.6's TranscriptView. */
   onRespond?: PermissionRespond;
 };
-export type MarkerPayload = { text: string; attention?: boolean };
+export type MarkerPayload = {
+  text: string;
+  attention?: boolean;
+  /** The clickable decomposition (lead + per-agent labels) when every merged
+   *  part carries provenance — see markerDisplay. Absent → render `text`. */
+  display?: { lead: string; agents: MarkerAgentRef[]; extra: number };
+  /** Same optionality mechanism as PermissionPayload.onRespond: absent on a
+   *  read-only surface and the labels degrade to plain text. */
+  onSelectAgent?: (id: string) => void;
+};
 // Live-only, like thinking parts: the adapter appends one status item to the
 // turn currently streaming and never persists it. `state` is the SAME WorkState
 // the header heartbeat renders — one derivation, two surfaces.
@@ -600,7 +637,8 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
         key: item.key,
         payload: { part: item.part, onRespond: hooks.onRespond } satisfies PermissionPayload,
       };
-    case "marker":
+    case "marker": {
+      const display = markerDisplay(item.parts);
       return {
         kind: CONVERSATION_KINDS.marker,
         key: item.key,
@@ -609,8 +647,11 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
           // attention never coalesces (markersCoalesce), so a group is
           // either one attention line or all-quiet — never a mix.
           attention: item.parts[0]?.attention,
+          ...(display ? { display } : {}),
+          onSelectAgent: hooks.onSelectAgent,
         } satisfies MarkerPayload,
       };
+    }
     case "tools":
       return {
         kind: CONVERSATION_KINDS.tools,

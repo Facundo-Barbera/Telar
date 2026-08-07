@@ -192,8 +192,13 @@ describe("projectClaudeMessage", () => {
       data: { id: "prev-turn-spawn", status: "completed" },
     });
     // Cross-turn completions surface a (label-less) marker too — better
-    // announced than silent, since this state cannot resolve the label.
-    expect(p.events[1]).toEqual({ event: "marker", data: { text: "agent finished" } });
+    // announced than silent, since this state cannot resolve the label. The
+    // spawn id rides along even here: the client MAY still hold that tab,
+    // and a label-less line that can't parse simply renders unlinked.
+    expect(p.events[1]).toEqual({
+      event: "marker",
+      data: { text: "agent finished", agentId: "prev-turn-spawn" },
+    });
     expect(state.taskStatuses.get("prev-turn-spawn")).toBe("completed");
     // The marker is the ONLY part this notification added.
     expect(state.parts.map((x) => x.type)).toEqual(["marker"]);
