@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -54,7 +54,6 @@ import {
   parentOf,
   showsLiveStatus,
   toTranscriptItems,
-  usePromptInputController,
   type AgentBucket,
   type AttachmentRef,
   type ChatMessage,
@@ -121,6 +120,10 @@ type SessionQueuedMessage = QueuedMessage<PromptInputMessage["files"][number]> &
   state?: QueueItemState;
   error?: string;
 };
+import {
+  ComposerAutocompleteMenus,
+  useComposerAutocomplete,
+} from "@/components/session/composer-autocomplete";
 import { ComposerControls } from "@/components/session/composer-settings";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
@@ -298,26 +301,6 @@ type Status = "ready" | "submitted" | "streaming" | "error";
 // 3.1's write set — so the name has to keep resolving here. It is the same
 // symbol either way: one declaration, in items.ts.
 export type { PermissionPart };
-
-type ProjectCommand = {
-  name: string;
-  description: string;
-  kind: "command" | "skill";
-};
-
-// Mirrored rather than imported, exactly like ProjectCommand above it: the
-// module that produces these (lib/project-files.ts) reaches node:child_process
-// and node:fs to read the repo. `import type` would erase cleanly today, but
-// the day someone drops the `type` keyword the whole file index follows it into
-// the client bundle — and a local shape cannot be de-erased by accident.
-type ProjectFile = { path: string; name: string };
-
-// The `@token` the cursor is sitting at the end of. Anchored on
-// start-of-string-or-whitespace so `foo@bar` and an email never open the menu,
-// and stopping at the next whitespace so a COMPLETED mention closes it again.
-// Module scope, and no /g flag — so it carries no lastIndex between calls and
-// is safe to share across every render and both readers below.
-const MENTION_AT_CARET = /(?:^|\s)@([^\s@]*)$/;
 
 /** How long an Escape stays armed before it forgets. Long enough that a
  *  deliberate double-tap never misses, short enough that an Escape pressed a
@@ -895,7 +878,6 @@ function SessionWorkspace({
   embedded?: boolean;
   loomId?: string;
 }) {
-  const textInput = usePromptInputController().textInput;
   const pathname = usePathname();
 
   // Seed once from the server-resolved transcript. Later prop changes are
@@ -1311,15 +1293,15 @@ function SessionWorkspace({
   // stored separately, so there's nothing else to keep in sync here.
   const [activeTab, setActiveTab] = useState<string>("main");
 
-  // Slash-command autocomplete. `projectCommands` comes from the project's
-  // .claude/commands scan (has descriptions); `sdkSlashCommands` narrows it to
-  // what the live SDK session actually reports once a turn's "session" event
-  // arrives (that list also contains built-ins we deliberately don't show).
-  const [projectCommands, setProjectCommands] = useState<ProjectCommand[]>([]);
-  const [sdkSlashCommands, setSdkSlashCommands] = useState<string[] | null>(
-    null,
-  );
-  const [menuDismissed, setMenuDismissed] = useState(false);
+  // The composer's `/` command and `@` mention menus, both of which are
+  // composer-local and share one textarea — see use-composer-autocomplete.ts.
+  // The only wire back into the session is `setSdkSlashCommands`, called by
+  // applyServerEvent when a turn reports what the live harness offers.
+  const autocomplete = useComposerAutocomplete({ project, provider });
+  // Destructured because applyServerEvent closes over this setter and must
+  // stay a stable callback: `autocomplete` is a fresh object every render, the
+  // setter it carries is not.
+  const { composerRef, setSdkSlashCommands } = autocomplete;
 
   // Composer attachments. The staged FILES live in PromptInputProvider's own
   // context (this surface is wrapped in one) — all that is held here is the
@@ -1332,23 +1314,6 @@ function SessionWorkspace({
   // normal turn's send() does.
   const [compactError, setCompactError] = useState<string | null>(null);
 
-  // `@` file mentions. `caret` is tracked because — unlike the slash menu, which
-  // only ever fires when the WHOLE value starts with "/" — a mention is typed
-  // mid-sentence, so the query is whatever `@token` the cursor currently sits
-  // at the end of. Null means "not measured yet", which reads as end-of-text.
-  const [caret, setCaret] = useState<number | null>(null);
-  const [mentionFiles, setMentionFiles] = useState<ProjectFile[]>([]);
-  const [mentionDismissed, setMentionDismissed] = useState(false);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  // The composer textarea, and the caret position to restore into it once React
-  // has committed a programmatic edit. Accepting a mention rewrites the value
-  // through the controlled `setInput`, which puts the cursor at the END of the
-  // new text — so completing `@rou` mid-sentence would drop the human's cursor
-  // after the rest of their sentence rather than after the path they just
-  // inserted. The DOM write has to happen after the commit, hence the ref pair
-  // plus the effect below rather than a straight-line assignment.
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const pendingCaretRef = useRef<number | null>(null);
   // The conversation column, which is the composer's drop zone — see the
   // `dropTarget` prop and the element this is attached to.
   const sessionSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1384,19 +1349,6 @@ function SessionWorkspace({
     );
   }, [resolvedRightPanelScopeKey, provisionalRightPanelScopeKey]);
 
-  useEffect(() => {
-    const pos = pendingCaretRef.current;
-    if (pos === null) return;
-    pendingCaretRef.current = null;
-    const el = composerRef.current;
-    if (!el) return;
-    // focus() because accepting by MOUSE leaves the textarea unfocused; the
-    // mousedown handler on the menu item prevents the blur, but a click that
-    // landed before the composer ever had focus still needs it back.
-    el.focus();
-    el.setSelectionRange(pos, pos);
-  }, [textInput.value]);
-  const [selectedIndex, setSelectedIndex] = useState(0);
 
   // The three per-item disclosure maps that used to live here — groupOverrides,
   // rowOverrides and thinkingOpen — moved INTO the shell (story 3.1's carve-out).
@@ -1647,27 +1599,7 @@ function SessionWorkspace({
     };
   }, []);
 
-  // Non-200 (including a project scan with no .claude/commands dir, which the
-  // endpoint itself answers with an empty list) is treated as "no commands" —
-  // autocomplete is a nicety, never worth an error UI.
-  useEffect(() => {
-    let cancelled = false;
-    cachedJson<{ commands?: ProjectCommand[] }>(
-      `/api/projects/${encodeURIComponent(project)}/commands`,
-      { maxAgeMs: 60_000 },
-    )
-      .then((data: { commands?: ProjectCommand[] }) => {
-        if (!cancelled) setProjectCommands(data.commands ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setProjectCommands([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project]);
-
-  const patch = (id: string, fn: (m: ChatMessage) => ChatMessage) =>
+  const patch =(id: string, fn: (m: ChatMessage) => ChatMessage) =>
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
 
   // A thinking block's end is never sent explicitly by the server (see the
@@ -3454,184 +3386,6 @@ function SessionWorkspace({
     [busy, compacting, compactStartedAt, lastActivityAt, runningTool, status, thinking, turnStartedAt],
   );
 
-  // Merge project's scanned commands+skills with what the live SDK session
-  // actually reports (once known) — the SDK's slash_commands list includes
-  // repo skills alongside .claude/commands entries, so a name match here
-  // keeps skills exactly like commands. The SDK list also carries built-ins
-  // and plugin commands we don't advertise, so this only ever narrows, never
-  // adds names the project scan didn't already find.
-  const availableCommands = useMemo(() => {
-    // Codex sessions don't run slash commands (a Claude-session feature today),
-    // so a Codex session offers none — regardless of what .claude/commands the
-    // repo has. The menu still opens (below) to say so honestly, rather than
-    // listing commands that would only be sent as literal text.
-    if (provider === "codex") return [];
-    if (sdkSlashCommands === null) return projectCommands;
-    const known = new Set(sdkSlashCommands);
-    return projectCommands.filter((c) => known.has(c.name));
-  }, [projectCommands, sdkSlashCommands, provider]);
-
-  const slashQuery =
-    textInput.value.startsWith("/") && !textInput.value.includes(" ")
-      ? textInput.value.slice(1)
-      : null;
-
-  const filteredCommands = useMemo(() => {
-    if (slashQuery === null) return [];
-    const q = slashQuery.toLowerCase();
-    return availableCommands.filter((c) => c.name.toLowerCase().startsWith(q));
-  }, [availableCommands, slashQuery]);
-
-  // The menu also opens on a genuinely empty project (zero commands AND zero
-  // skills) so it can show the "how to add some" hint below instead of just
-  // silently doing nothing — that read as a broken feature to users. A query
-  // that merely doesn't match anything (project has commands, none start
-  // with what's typed) still closes the menu as before.
-  const slashMenuOpen =
-    slashQuery !== null &&
-    !menuDismissed &&
-    (filteredCommands.length > 0 ||
-      projectCommands.length === 0 ||
-      // Codex: open even with a non-empty project scan, to show the honest
-      // "commands are a Claude-session feature" copy instead of nothing.
-      provider === "codex");
-
-  // Reset the selection whenever the query text changes so it never points
-  // past a shrunk list or feels stale after typing.
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [slashQuery]);
-
-  const acceptCommand = useCallback(
-    (c: ProjectCommand) => {
-      textInput.setInput(`/${c.name} `);
-    },
-    [textInput],
-  );
-
-  // ── `@` file mentions ─────────────────────────────────────────────────────
-  //
-  // The token under the cursor, if the cursor is at the end of one.
-  const mentionQuery = useMemo(() => {
-    const value = textInput.value;
-    return MENTION_AT_CARET.exec(value.slice(0, caret ?? value.length))?.[1] ?? null;
-  }, [textInput.value, caret]);
-
-  const mentionMenuOpen = mentionQuery !== null && !mentionDismissed && mentionFiles.length > 0;
-
-  // Re-query on every keystroke of the mention, debounced. The index resets
-  // with the query so the highlight never points past a shrunk list.
-  useEffect(() => {
-    if (mentionQuery === null) {
-      setMentionFiles([]);
-      return;
-    }
-    setMentionIndex(0);
-    const abort = new AbortController();
-    const timer = setTimeout(() => {
-      void fetch(
-        `/api/projects/${encodeURIComponent(project)}/files?q=${encodeURIComponent(mentionQuery)}`,
-        { signal: abort.signal },
-      )
-        .then((r) => (r.ok ? r.json() : { files: [] }))
-        .then((body: { files?: ProjectFile[] }) => setMentionFiles(body.files ?? []))
-        .catch(() => {
-          /* aborted or offline — leave the previous list rather than flashing empty */
-        });
-    }, 120);
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [mentionQuery, project]);
-
-  const acceptMention = useCallback(
-    (file: ProjectFile) => {
-      const value = textInput.value;
-      const pos = caret ?? value.length;
-      const match = MENTION_AT_CARET.exec(value.slice(0, pos));
-      if (!match) return;
-      // Replace from the "@" itself — match[1] is the query, so the "@" sits one
-      // character before it — and leave a trailing space so the next word does
-      // not extend the path that was just completed.
-      const start = pos - match[1].length - 1;
-      const next = `${value.slice(0, start)}@${file.path} ${value.slice(pos)}`;
-      // "@" + path + the trailing space — where the human should carry on typing.
-      const after = start + file.path.length + 2;
-      textInput.setInput(next);
-      pendingCaretRef.current = after;
-      setCaret(after);
-      setMentionDismissed(true);
-    },
-    [textInput, caret],
-  );
-
-  // No focus() anywhere here — navigation and acceptance are driven entirely
-  // by the textarea's own keydown, so the textarea never loses focus.
-  const handleComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    // The caret moves on arrows/home/end without the value changing, so onChange
-    // alone would leave `caret` stale and the mention query measured against the
-    // wrong slice. Read it AFTER the browser has applied the key, hence the
-    // deferral — currentTarget is captured first because React pools nothing
-    // here but the event object is still not safe to close over.
-    const el = e.currentTarget;
-    queueMicrotask(() => setCaret(el.selectionStart));
-
-    // The mention menu takes the keys FIRST when it is open: both menus are
-    // driven by the same textarea, and a "/" command can only ever be at the
-    // very start of the value, so the two can never both be open on the same
-    // token — but if that ever changes, the one the cursor is actually inside
-    // should win, and that is this one.
-    if (mentionMenuOpen) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMentionDismissed(true);
-        return;
-      }
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          setMentionIndex((i) => (i + 1) % mentionFiles.length);
-          return;
-        case "ArrowUp":
-          e.preventDefault();
-          setMentionIndex((i) => (i - 1 + mentionFiles.length) % mentionFiles.length);
-          return;
-        case "Enter":
-        case "Tab":
-          e.preventDefault();
-          acceptMention(mentionFiles[mentionIndex] ?? mentionFiles[0]);
-          return;
-      }
-    }
-
-    if (!slashMenuOpen) return;
-    // Escape always dismisses, including the empty-project hint panel. The
-    // rest only make sense once there's something to navigate/accept — the
-    // hint panel has no items, so leave those keys to behave normally
-    // (e.g. Enter still submits the composer).
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setMenuDismissed(true);
-      return;
-    }
-    if (filteredCommands.length === 0) return;
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        setSelectedIndex((i) => (i + 1) % filteredCommands.length);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        setSelectedIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
-        break;
-      case "Enter":
-      case "Tab":
-        e.preventDefault();
-        acceptCommand(filteredCommands[selectedIndex] ?? filteredCommands[0]);
-        break;
-    }
-  };
 
   // Everything attached to this session, for the pinned summary's Context
   // section. DERIVED FROM THE TRANSCRIPT, never stored on its own (contract #5,
@@ -4171,75 +3925,7 @@ function SessionWorkspace({
               freshWorkspace && "-translate-y-[calc(45dvh-7.5rem)]",
             )}
           >
-            {slashMenuOpen && (
-              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-                {filteredCommands.length === 0 ? (
-                  <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                    {provider === "codex"
-                      ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
-                      : "No commands — add .claude/commands/*.md or skills to this repo."}
-                  </p>
-                ) : (
-                  filteredCommands.map((c, i) => (
-                    <button
-                      type="button"
-                      key={c.name}
-                      // preventDefault on mousedown keeps focus on the textarea — no
-                      // .focus() call, just skipping the browser's default click-to-
-                      // focus so the composer stays the active element.
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => acceptCommand(c)}
-                      className={cn(
-                        "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
-                        i === selectedIndex
-                          ? "bg-accent text-accent-foreground"
-                          : "hover:bg-accent hover:text-accent-foreground",
-                      )}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs">/{c.name}</span>
-                        {c.kind === "skill" && (
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            skill
-                          </Badge>
-                        )}
-                      </span>
-                      {c.description && (
-                        <span className="text-[11px] text-muted-foreground">
-                          {c.description}
-                        </span>
-                      )}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-            {mentionMenuOpen && (
-              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-                {mentionFiles.map((f, i) => (
-                  <button
-                    type="button"
-                    key={f.path}
-                    // Same trick the slash menu uses: preventDefault on
-                    // mousedown keeps focus on the textarea, so accepting an
-                    // item never costs the composer its cursor.
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => acceptMention(f)}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left",
-                      i === mentionIndex
-                        ? "bg-accent text-accent-foreground"
-                        : "hover:bg-accent hover:text-accent-foreground",
-                    )}
-                  >
-                    <span className="shrink-0 font-mono text-xs">{f.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground">
-                      {f.path}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
             {/* PAUSED IS A PROPERTY OF THE QUEUE, NOT OF THE WAITING LIST, so
                 it is stated at the queue's level and not inside one of its
                 groups. It used to live in the waiting block's heading with
@@ -4474,16 +4160,12 @@ function SessionWorkspace({
                         ? "Enter queues a message…"
                         : "Ask for changes, explore the code, or attach context…"
                   }
-                  onKeyDown={handleComposerKeyDown}
-                  onChange={(e) => {
-                    setMenuDismissed(false);
-                    // Typing past a completed mention must be able to re-open
-                    // the menu, so this clears the dismissal the same way the
-                    // slash menu's does.
-                    setMentionDismissed(false);
-                    setCaret(e.currentTarget.selectionStart);
-                  }}
-                  onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+                  onKeyDown={autocomplete.onComposerKeyDown}
+                  // Every edit un-dismisses BOTH menus and re-measures the
+                  // caret — typing past a completed mention has to be able to
+                  // re-open the menu. One handler for both, in the hook.
+                  onChange={autocomplete.onComposerInput}
+                  onClick={(e) => autocomplete.setCaret(e.currentTarget.selectionStart)}
                 />
               </PromptInputBody>
               <PromptInputFooter className="min-h-11 flex-wrap border-t border-border/40 px-2.5 pb-2 pt-1.5">

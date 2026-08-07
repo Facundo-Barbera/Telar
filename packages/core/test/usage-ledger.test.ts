@@ -415,9 +415,17 @@ describe("usage ledger (CAP-2)", () => {
     logUsage(entry(attempt));
     expect(ledgerSpendUsd({ ownerKind: "loom", ownerId: "R" })).toBe(10); // folds the key, caches this inode
     // Rotate: same path, NEW inode, none of the old file's keys.
+    //
+    // WRITE-THEN-RENAME, not unlink-then-write. Deleting first frees the inode,
+    // and ext4 hands that very number straight back to the next create — so on
+    // Linux the "new" file was the old inode and the premise below failed while
+    // passing on macOS. Allocating the replacement WHILE the original still
+    // holds its inode is what makes a different one guaranteed rather than
+    // likely.
     const rotated = fs.statSync(ledgerPath(root)).ino;
-    fs.rmSync(ledgerPath(root));
-    fs.writeFileSync(ledgerPath(root), "");
+    const replacement = `${ledgerPath(root)}.rotated`;
+    fs.writeFileSync(replacement, "");
+    fs.renameSync(replacement, ledgerPath(root));
     expect(fs.statSync(ledgerPath(root)).ino).not.toBe(rotated); // the premise, asserted
     // A transient READ failure that leaves the WRITE path working: readFold
     // opens with "r", appendFileSync does not.
