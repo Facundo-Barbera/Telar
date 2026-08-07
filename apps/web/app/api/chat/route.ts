@@ -49,8 +49,6 @@ import {
 } from "@/lib/models";
 import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
-import { autoDenialMessage } from "@/lib/permission-denial";
-import { isCancelledToolResult } from "@/lib/tool-cancellation";
 import { logPermissionCheck, logPermissionOutcome } from "@/lib/permission-diagnostics";
 
 /** The in-process MCP servers telar itself constructs and whose whole tool
@@ -151,14 +149,18 @@ import {
   type CompactionEventName,
   type CompactionFacts,
 } from "@/lib/compaction";
+import { AGENT_SPAWN_TOOL_CANDIDATES, capToolInput, capToolOutput } from "@/lib/transcript";
+// The SDKMessage→event projection and its teardown finalizers — the loop body
+// that lived inline here from this route's birth until it moved to the server
+// layer, where it is tested (see that module's header for the extraction's
+// two reasons: projection without a POST in scope, and testability).
 import {
-  agentMetaFromInput,
-  AGENT_SPAWN_TOOL_CANDIDATES,
-  capToolInput,
-  capToolOutput,
-  extractToolResultText,
-  ParentFlattener,
-} from "@/lib/transcript";
+  flushStreamingText,
+  markInterruptedTools,
+  newClaudeTurnState,
+  projectClaudeMessage,
+  rationToolDetail,
+} from "@/server/providers/claude/project-message";
 // SIDE-EFFECT IMPORT, and it is load-bearing. @/lib/session-profiles registers
 // the four SessionProfileSpec builders at MODULE SCOPE, and module scope only
 // runs if something imports the module. Without this line the profile registry
@@ -168,15 +170,8 @@ import {
 // all stay green while the app is broken. Do not "tidy" it away as unused.
 import "@/lib/session-profiles";
 
-// Hard ceiling on how many tool calls a single turn persists with full
-// input/output detail. capToolInput/capToolOutput bound each part's own
-// size, but nothing bounds the COUNT — a pathological (e.g. repo-wide
-// refactor) turn can carry hundreds of tool calls across maxTurns rounds,
-// and store.ts rewrites the entire chats.json synchronously on every
-// appendTurn. Beyond this ceiling, later tool parts degrade to name-only
-// (the shape this diff's tool parts had before) so one outlier turn can't
-// blow up chats.json or the blocking write it forces on every other chat.
-const MAX_DETAILED_TOOL_PARTS = 200;
+// MAX_DETAILED_TOOL_PARTS (the per-parent tool-detail ceiling) moved to
+// server/providers/claude/project-message.ts with the rationing it bounds.
 
 // The SDK's full EffortLevel set, single-sourced from lib/models.ts (also
 // what the composer's Select renders) so the API's validation and the UI's
@@ -847,22 +842,16 @@ export async function POST(req: Request) {
         }
       };
 
-      const parts: Part[] = [];
-      // parts[i]'s originating SDKMessage uuid, index-aligned with `parts` —
-      // scratch bookkeeping so a later refusal-fallback `supersedes` list can
-      // evict the exact entries it retracts (see the "assistant" handler).
-      const partOrigin: (string | undefined)[] = [];
-      // Text accumulated from deltas for the current content block, keyed by
-      // resolved parent id (null = main conversation). A Map, not a single
-      // string, because with forwardSubagentText the main turn and any
-      // number of concurrently-streaming subagents interleave their
-      // stream_event deltas on this one loop — a shared scalar would let
-      // them clobber each other's in-progress text.
-      const streamingText = new Map<string | null, string>();
-      // Flattens subagent-of-a-subagent nesting to the top-level spawn's
-      // tool_use id — see lib/transcript.ts's ParentFlattener for why a
-      // raw parent_tool_use_id isn't already enough.
-      const parentFlatten = new ParentFlattener();
+      // The turn's projection state — parts, streaming-text accumulation,
+      // parent flattening, usage/result capture. The SHAPE and its rules
+      // (first-write-wins tool results, supersedes eviction, per-parent
+      // detail rationing) live in server/providers/claude/project-message.ts,
+      // where they are tested; this route owns one instance per turn. The
+      // aliases are in-place references: the Claude path mutates them through
+      // projectClaudeMessage, the Codex normalizer's switch below mutates
+      // them directly, and the shared finally persists them.
+      const turnState = newClaudeTurnState();
+      const { parts, streamingText, parentFlatten } = turnState;
       // NOTE ON WHAT MOVED. `resumeTarget`, `existingChat`, `wireLoomId` and
       // `loomLink` used to be declared right here; story 2.2 hoisted all four
       // into the pre-stream preamble, because the session KIND is a function of
@@ -878,7 +867,6 @@ export async function POST(req: Request) {
       // stream scope so the shared finally can detach the turn's wiring and
       // close a spawn that never reached init (#28 persistent runtime).
       let runtimeRef: SessionRuntime | null = null;
-      let costUsd = 0;
       let usagePromise: Promise<any> | null = null;
       // Claude's stable control API returns the same structured attribution as
       // `/context`. It must be requested while the query is still
@@ -914,28 +902,10 @@ export async function POST(req: Request) {
         compactionFold = foldCompactionEvent(compactionFold, event, facts);
         contextRemeasured = false;
       };
-      // The last "result" message seen this POST — captured, not acted on
-      // immediately. A backgrounded subagent (forwardSubagentText) can wake
-      // an SDK auto-continuation that runs a second full turn (and hence a
-      // second "result") inside this same stream; those messages report
-      // running totals for the whole query() invocation, not per-turn
-      // deltas, so logging/broadcasting each one as it arrives would
-      // double-count cost/usage. Only the LAST one — read once in the
-      // `finally` block below — is ever acted on.
-      let lastResult: {
-        subtype: string;
-        totalCostUsd: number;
-        turns?: number;
-        usage?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
-      } | null = null;
-      // The final main-thread assistant call's usage — the basis for CTX (see
-      // the assistant branch). Distinct from lastResult.usage (a step sum).
-      let lastMainUsage: Record<string, number> | null = null;
+      // lastResult / lastMainUsage / costUsd live on turnState (see
+      // ClaudeTurnState's field comments for the capture-don't-act rule the
+      // old inline declarations documented here). Both provider paths write
+      // them; only the finally below acts on them, exactly once per POST.
       const contextOf = (u: Record<string, number> | null) =>
         u
           ? (u.input_tokens ?? 0) +
@@ -1662,7 +1632,7 @@ export async function POST(req: Request) {
                   outputTokens: nev.usage.output_tokens,
                   reasoningOutputTokens: nev.usage.reasoning_output_tokens,
                 });
-                lastMainUsage = {
+                turnState.lastMainUsage = {
                   // Codex's last.totalTokens is the exact figure its own UI
                   // uses for context occupancy. Cached input is already a
                   // subset of input, so do not add it again here.
@@ -1671,7 +1641,7 @@ export async function POST(req: Request) {
                 // Codex has no per-token billing (ChatGPT subscription — see
                 // lib/models.ts's zeroed Codex pricing), so totalCostUsd is
                 // always 0 here rather than derived from usage.
-                lastResult = {
+                turnState.lastResult = {
                   subtype: "success",
                   totalCostUsd: 0,
                   usage: nev.usage,
@@ -2222,133 +2192,21 @@ export async function POST(req: Request) {
             const usageFn = (q as unknown as Record<string, () => Promise<any>>)
               .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
             usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
-          } else if (msg.type === "stream_event") {
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const ev = (msg as { event: Record<string, any> }).event;
-            if (ev?.type === "content_block_start") {
-              if (ev.content_block?.type === "thinking") {
-                send("thinking", parent ? { parent } : {});
-              }
-              streamingText.set(parent, "");
-            } else if (
-              ev?.type === "content_block_delta" &&
-              ev.delta?.type === "text_delta"
-            ) {
-              streamingText.set(parent, (streamingText.get(parent) ?? "") + ev.delta.text);
-              send("delta", { text: ev.delta.text, ...(parent ? { parent } : {}) });
-            } else if (
-              ev?.type === "content_block_delta" &&
-              ev.delta?.type === "thinking_delta"
-            ) {
-              // Interleaved narration text, not persisted (see StorePart —
-              // there's no "thinking" variant there): live-only, same
-              // treatment as permission cards. `thinking` above already told
-              // the client a block started; this streams its growing text.
-              send("thinking_delta", {
-                text: ev.delta.thinking ?? "",
-                ...(parent ? { parent } : {}),
-              });
+          } else {
+            // The whole SDKMessage→event translation — parts bookkeeping,
+            // parent flattening, first-write-wins tool results, supersedes
+            // eviction, the capture-don't-act result rule — lives in the
+            // TESTED projector (server/providers/claude/project-message.ts,
+            // extracted verbatim from the branches that sat here). This loop
+            // keeps only what needs the live query or the response in scope.
+            const projection = projectClaudeMessage(msg, turnState);
+            for (const ev of projection.events) send(ev.event, ev.data);
+            if (projection.compaction) {
+              // The counts, merged into the same record the PostCompact hook
+              // above records (issue #25) — in whichever order the two arrive.
+              noteCompaction("compact_boundary", projection.compaction);
             }
-          } else if (msg.type === "assistant") {
-            // A non-null parent_tool_use_id means this message came from a
-            // subagent's own internal conversation (spawned via the detected
-            // agent-spawn tool), relayed on this same top-level stream
-            // because forwardSubagentText is on. It's still appended to the
-            // same flat `parts` array — attributed via parentId, flattening
-            // arbitrarily deep subagent-of-a-subagent nesting to the
-            // top-level spawn's tool_use id — rather than skipped, so the
-            // client can render it as its own tab.
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const msgUuid = (msg as { uuid?: string }).uuid;
-            // Context-window occupancy = the FINAL main-thread model call's
-            // prompt (input + cache-read + cache-create). Each assistant
-            // message in a multi-step turn carries its own single-call usage;
-            // the result message's usage is the SUM across every step, which
-            // is far larger than the actual window (13 tool steps → ~13× the
-            // real context). Capture the last main-thread (non-subagent) call
-            // so the "CTX" the UI shows is the real thing, not a step total.
-            if (!parent) {
-              const mu = (msg as unknown as { message?: { usage?: Record<string, number> } })
-                .message?.usage;
-              if (mu) lastMainUsage = mu;
-            }
-            const content =
-              (msg as { message?: { content?: Array<Record<string, any>> } })
-                .message?.content ?? [];
-            for (const block of content) {
-              if (block.type === "text") {
-                parts.push({
-                  type: "text",
-                  text: block.text as string,
-                  ...(parent ? { parentId: parent } : {}),
-                });
-                partOrigin.push(msgUuid);
-                send("text", { text: block.text, ...(parent ? { parent } : {}) }); // finalize the streamed block
-                streamingText.set(parent, "");
-              }
-              if (block.type === "tool_use") {
-                const id = block.id as string;
-                const name = block.name as string;
-                const rawInput = (block.input ?? {}) as Record<string, unknown>;
-                const input = capToolInput(rawInput);
-                const part: Extract<Part, { type: "tool" }> = {
-                  type: "tool",
-                  id,
-                  name,
-                  input,
-                  ...(parent ? { parentId: parent } : {}),
-                };
-                // This tool_use IS a spawn step: enrich its part with agent
-                // meta (contract 3) and record it in parentFlatten so any
-                // messages the spawned subagent forwards under this exact
-                // id resolve straight to it — including a subagent that
-                // itself spawns a sub-subagent, which noteSpawn flattens to
-                // this same top-level id via `parent` above.
-                //
-                // Matched directly against the candidate list, NOT against a
-                // single name detected once from the init message's `tools`
-                // array: live testing showed init.tools advertises the spawn
-                // tool under its legacy registered name ("Task") while the
-                // actual tool_use blocks on the wire carry the SDK's current
-                // canonical name ("Agent") — the two disagree within the same
-                // session, so a single detected name silently never matches.
-                if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(name)) {
-                  part.agent = agentMetaFromInput(rawInput);
-                  parentFlatten.noteSpawn(id, parent);
-                }
-                parts.push(part);
-                partOrigin.push(msgUuid);
-                send("tool", {
-                  id,
-                  name,
-                  input,
-                  ...(part.agent ? { agent: part.agent } : {}),
-                  ...(parent ? { parent } : {}),
-                });
-              }
-            }
-            // Refusal-fallback retry: the SDK retried on a fallback model and
-            // this message's `supersedes` names the wire uuids of previously
-            // -delivered message frames it replaces (including tombstoned
-            // tool_result frames from the refused leg). Evict whatever this
-            // turn already queued from those frames so a retracted tool call
-            // never gets persisted as if the model's final output included it.
-            const supersedes = (msg as { supersedes?: string[] }).supersedes;
-            if (supersedes?.length) {
-              const dead = new Set(supersedes);
-              for (let i = parts.length - 1; i >= 0; i--) {
-                const origin = partOrigin[i];
-                if (origin && dead.has(origin)) {
-                  parts.splice(i, 1);
-                  partOrigin.splice(i, 1);
-                }
-              }
-            }
-            if (!parent) {
+            if (projection.mainAssistantStep) {
               try {
                 // Await before advancing to the final result frame. The SDK's
                 // background reader can receive this control response while
@@ -2372,209 +2230,6 @@ export async function POST(req: Request) {
                 }
               }
             }
-          } else if (msg.type === "user") {
-            // Tool results: the SDK relays the model's `user` turn carrying
-            // tool_result blocks — both this turn's own and, with
-            // forwardSubagentText on, any forwarded subagent's. Attach
-            // output/isError onto the matching "tool" part (by tool_use_id,
-            // globally unique regardless of nesting depth) so persistence
-            // includes results, and mirror the same data over SSE. A
-            // tool_result whose id matches no part pushed above is stray
-            // side-channel noise — skip it rather than crash or emit a
-            // dangling event.
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const content =
-              (msg as { message?: { content?: Array<Record<string, any>> } })
-                .message?.content ?? [];
-            for (const block of content) {
-              if (block.type !== "tool_result") continue;
-              const id = block.tool_use_id as string;
-              const part = parts.find(
-                (p): p is Extract<Part, { type: "tool" }> =>
-                  p.type === "tool" && p.id === id,
-              );
-              if (!part) continue;
-              // A duplicate/retried delivery for the same tool_use_id: first
-              // write wins rather than silently overwriting an already
-              // -resolved result with a second (possibly stale) one.
-              if (part.output !== undefined) continue;
-              const output = capToolOutput(extractToolResultText(block.content));
-              const isError = !!block.is_error;
-              // #28: a call the CLI filled in after an interrupt is NOT a
-              // refusal, and telar rendered the two identically. Flagged here,
-              // where the result is first seen, so the surface and the persisted
-              // transcript agree — a reader coming back tomorrow should not have
-              // to re-derive this from the message text.
-              const cancelled = isCancelledToolResult(output);
-              part.output = output;
-              part.isError = isError;
-              if (cancelled) part.cancelled = true;
-              send("tool_result", {
-                id,
-                output,
-                isError,
-                ...(cancelled ? { cancelled: true } : {}),
-                ...(parent ? { parent } : {}),
-              });
-            }
-          } else if (msg.type === "system" && msg.subtype === "task_notification") {
-            // Authoritative completion signal for a backgrounded subagent.
-            // Subagents spawned via Agent/Task run in the background by
-            // default: the spawn tool_use's own tool_result ("Async agent
-            // launched successfully…") lands almost immediately and is NOT
-            // the subagent's real completion — this system message, keyed by
-            // the spawn's own tool_use id (not parent_tool_use_id — it's a
-            // control-plane notification ABOUT a tool_use, not a forwarded
-            // message FROM one), is. Recorded on the matching tool part so
-            // the client's agentStatus() can tell "still actually running"
-            // from "the launch ack merely already arrived" (see
-            // session-view.tsx).
-            const tn = msg as {
-              tool_use_id?: string;
-              status?: "completed" | "failed" | "stopped";
-            };
-            if (tn.tool_use_id && tn.status) {
-              const part = parts.find(
-                (p): p is Extract<Part, { type: "tool" }> =>
-                  p.type === "tool" && p.id === tn.tool_use_id,
-              );
-              if (part) {
-                part.taskStatus = tn.status;
-                send("task_status", { id: tn.tool_use_id, status: tn.status });
-              }
-            }
-          } else if (msg.type === "system" && msg.subtype === "permission_denied") {
-            // Auto-denied without an interactive prompt — the model's normal
-            // tool_use/tool_result exchange still happens (already handled
-            // by the "assistant"/"user" cases above), so in the common case
-            // this just adds WHY onto the tool part they already created.
-            // The fallback branch below covers the rare ordering where this
-            // message is seen before that tool_use block ever is.
-            const pd = msg as unknown as {
-              tool_name: string;
-              tool_use_id: string;
-              message: string;
-              decision_reason_type?: string;
-              // WHY THESE TWO ARE READ NOW. Both are on the SDK's message and
-              // both used to be dropped here, which is precisely why a day of
-              // stalled sub-agents could not be diagnosed from telar's own
-              // output: the harness was reporting WHY on every single denial
-              // and this handler discarded it. `agent_id` is documented as
-              // "Subagent ID when the denied tool call originated inside a
-              // subagent. Mirrors can_use_tool for host-side routing" — without
-              // it a surface cannot say WHICH agent was blocked, and with many
-              // agents live that is the difference between a diagnosis and a
-              // guess.
-              decision_reason?: string;
-              agent_id?: string;
-            };
-            // The message the MODEL is given, which is not the message the SDK
-            // supplied — see lib/permission-denial.ts. The SDK's default text
-            // asserts the user refused; for a classifier or working-directory
-            // block nobody was asked, and a sub-agent told to "wait for the
-            // user" waits until its turn budget is gone.
-            const denialMessage = autoDenialMessage(
-              pd.decision_reason_type,
-              pd.decision_reason,
-              pd.message,
-            );
-            send("permission_denied", {
-              toolName: pd.tool_name,
-              toolUseId: pd.tool_use_id,
-              message: denialMessage,
-              reason: pd.decision_reason_type,
-              // Forwarded for the surface, NOT for the model: the operator
-              // needs the raw discriminator and the originating agent to tell
-              // an auto-block apart from their own refusal at a glance.
-              reasonDetail: pd.decision_reason,
-              agentId: pd.agent_id,
-              sdkMessage: pd.message,
-            });
-            const existing = parts.find(
-              (p): p is Extract<Part, { type: "tool" }> =>
-                p.type === "tool" && p.id === pd.tool_use_id,
-            );
-            if (existing) {
-              existing.autoDenied = true;
-              existing.isError = true;
-              if (existing.output === undefined) existing.output = denialMessage;
-            } else {
-              parts.push({
-                type: "tool",
-                id: pd.tool_use_id,
-                name: pd.tool_name,
-                isError: true,
-                autoDenied: true,
-                output: denialMessage,
-              });
-              partOrigin.push(undefined);
-            }
-          } else if (msg.type === "system" && msg.subtype === "compact_boundary") {
-            // The SDK's own record that it just rewrote this session's history
-            // down to a summary — fired for BOTH triggers: `manual` is this
-            // route's own "/compact" substitution above, `auto` is the SDK
-            // protecting itself from running out of context window on an
-            // ordinary turn nobody asked to compact. The PreCompact/PostCompact
-            // hooks below (query() options) already sent "compacting"/
-            // "compacted" for the client's live "compacting…" indicator; this
-            // message arrives on the SAME stream slightly later; carrying the
-            // token-count metadata neither hook receives (PreCompact only
-            // knows the trigger, PostCompact only knows the summary text) — so
-            // it is broadcast as its own event rather than folded into either
-            // hook's send(), which would mean inventing numbers the hook was
-            // never given.
-            const cb = msg as unknown as {
-              compact_metadata?: {
-                trigger?: "manual" | "auto";
-                pre_tokens?: number;
-                post_tokens?: number;
-                duration_ms?: number;
-              };
-            };
-            const boundary: CompactionFacts = {
-              at: Date.now(),
-              trigger: cb.compact_metadata?.trigger === "auto" ? "auto" : "manual",
-              preTokens: cb.compact_metadata?.pre_tokens,
-              postTokens: cb.compact_metadata?.post_tokens,
-              durationMs: cb.compact_metadata?.duration_ms,
-            };
-            // The counts, merged into the same record the PostCompact hook
-            // above records (issue #25) — in whichever order the two arrive.
-            // `postTokens` is the post-compaction context size the client's
-            // wheel adopts instead of waiting for an unrelated turn to
-            // re-measure.
-            noteCompaction("compact_boundary", boundary);
-            send("compact_boundary", boundary);
-          } else if (msg.type === "result") {
-            // Capture only — do NOT log usage / send
-            // "done" here. A backgrounded subagent can wake an SDK
-            // auto-continuation that produces a second "result" later in
-            // this same stream, and these fields are running totals for the
-            // whole query() invocation, not per-message deltas; acting on
-            // every "result" would double-count cost/usage for one turn.
-            // `lastResult` is read exactly once, after the loop ends (see
-            // the `finally` block), so only the final (most complete) totals
-            // are ever persisted or broadcast.
-            const r = msg as unknown as {
-              subtype: string;
-              total_cost_usd?: number;
-              num_turns?: number;
-              usage?: {
-                input_tokens?: number;
-                output_tokens?: number;
-                cache_read_input_tokens?: number;
-                cache_creation_input_tokens?: number;
-              };
-            };
-            costUsd = r.total_cost_usd ?? 0;
-            lastResult = {
-              subtype: r.subtype,
-              totalCostUsd: costUsd,
-              turns: r.num_turns,
-              usage: r.usage,
-            };
           }
         }
         }
@@ -2598,54 +2253,21 @@ export async function POST(req: Request) {
         // (navigation, closed tab) aborts the SDK loop with a throw, and the
         // turn must survive it — the SDK session already exists server-side.
         try {
-          // Flush every parent's in-progress (never text-block-finalized)
-          // streamed text — the main turn's (key null) and any forwarded
-          // subagent's alike — so an abort/crash mid-stream doesn't drop
-          // whatever was already visible to the user.
-          for (const [parent, text] of streamingText) {
-            if (text) parts.push({ type: "text", text, ...(parent ? { parentId: parent } : {}) });
-          }
-          // A tool part still missing output at this point never got a
-          // matching tool_result — the turn was aborted or crashed mid-flight
-          // (a graceful "result" message only arrives once every tool call
-          // belonging to it has resolved, denials included). Flag it so the
-          // client can render "interrupted" instead of rendering identically
-          // to a genuinely empty successful result.
-          let anyInterrupted = false;
-          for (const part of parts) {
-            if (part.type === "tool" && part.output === undefined) {
-              part.interrupted = true;
-              anyInterrupted = true;
-            }
-          }
-          // The mutation above is local-only (about to be persisted below) —
-          // without this, a live client watching this same stream never
-          // learns a tool call got flagged interrupted (no SSE event carried
-          // that fact before now), so its copy keeps reading `output:
-          // undefined, interrupted: undefined` and a subagent tab's status
-          // dot shimmers as "running" forever even after the turn is over.
-          // Payload-free: the client already knows which message is its own
-          // in-flight one and applies the exact same "tool part still
-          // missing output" rule locally (see markToolsInterrupted).
+          // The three teardown finalizers, in order (their reasoning lives
+          // with them in server/providers/claude/project-message.ts): flush
+          // in-progress streamed text so an abort doesn't drop what was
+          // visible, flag outputless tool parts as interrupted, then ration
+          // per-parent tool detail before the blocking chats.json write.
+          flushStreamingText(turnState);
+          const anyInterrupted = markInterruptedTools(turnState);
+          // The interrupted flags are local-only (about to be persisted) —
+          // without this broadcast, a live client watching this stream never
+          // learns a tool call got flagged, so a subagent tab's status dot
+          // shimmers as "running" forever after the turn is over. Payload-
+          // free: the client applies the exact same "tool part still missing
+          // output" rule locally (see markToolsInterrupted).
           if (anyInterrupted) send("interrupted", {});
-          // Bound how many tool parts keep full input/output detail — but
-          // ration that budget PER PARENT (main thread = undefined, each
-          // subagent spawn = its own tool_use id), not with one shared
-          // counter. forwardSubagentText means a single chatty subagent's
-          // tool calls now share this same flat array with the main thread's
-          // own; a single shared counter would let that subagent's noise
-          // consume the whole budget and strip detail from the main thread's
-          // own tool calls, which is what a user actually asked for most.
-          const detailedByParent = new Map<string | undefined, number>();
-          for (const part of parts) {
-            if (part.type !== "tool") continue;
-            const count = (detailedByParent.get(part.parentId) ?? 0) + 1;
-            detailedByParent.set(part.parentId, count);
-            if (count > MAX_DETAILED_TOOL_PARTS) {
-              delete part.input;
-              delete part.output;
-            }
-          }
+          rationToolDetail(turnState);
           // Fetch the live session-cost control call unconditionally (not
           // gated on `lastResult`): a client disconnect/navigation aborts the
           // SDK loop with a throw rather than a final graceful "result"
@@ -2676,14 +2298,14 @@ export async function POST(req: Request) {
           // than replacing it), so folding it in here as a substitute
           // `lastResult` is consistent with how a graceful completion would
           // have been accounted for, just recovered via a different SDK call.
-          if (!lastResult && u?.session) {
+          if (!turnState.lastResult && u?.session) {
             const modelUsages = Object.values(u.session.model_usage ?? {}) as Array<{
               inputTokens?: number;
               outputTokens?: number;
               cacheReadInputTokens?: number;
               cacheCreationInputTokens?: number;
             }>;
-            costUsd = u.session.total_cost_usd ?? 0;
+            turnState.costUsd = u.session.total_cost_usd ?? 0;
             const usage = modelUsages.reduce(
               (acc, m) => ({
                 input_tokens: acc.input_tokens + (m.inputTokens ?? 0),
@@ -2699,29 +2321,29 @@ export async function POST(req: Request) {
                 cache_creation_input_tokens: 0,
               },
             );
-            lastResult = { subtype: "aborted", totalCostUsd: costUsd, usage };
+            turnState.lastResult = { subtype: "aborted", totalCostUsd: turnState.costUsd, usage };
           }
           // Act on the LAST "result" message — real or, absent one, the
           // synthesized fallback above (see the "result" case for why only
           // the last one is ever used) — the usage.ndjson entry and the
           // "done" broadcast both fire at most
           // once per POST.
-          if (lastResult) {
+          if (turnState.lastResult) {
             if (capturedSession) {
               logUsage({
                 ts: Date.now(),
                 account: profile.name,
                 model,
                 sessionId: capturedSession,
-                inputTokens: lastResult.usage?.input_tokens ?? 0,
-                outputTokens: lastResult.usage?.output_tokens ?? 0,
-                cacheReadTokens: lastResult.usage?.cache_read_input_tokens ?? 0,
-                cacheCreateTokens: lastResult.usage?.cache_creation_input_tokens ?? 0,
-                costUsd: lastResult.totalCostUsd,
+                inputTokens: turnState.lastResult.usage?.input_tokens ?? 0,
+                outputTokens: turnState.lastResult.usage?.output_tokens ?? 0,
+                cacheReadTokens: turnState.lastResult.usage?.cache_read_input_tokens ?? 0,
+                cacheCreateTokens: turnState.lastResult.usage?.cache_creation_input_tokens ?? 0,
+                costUsd: turnState.lastResult.totalCostUsd,
               });
             }
             send("done", {
-              subtype: lastResult.subtype,
+              subtype: turnState.lastResult.subtype,
               // The SESSION'S TOTAL so far, projected over usage.ndjson — not
               // this turn's delta (AD-18: every spend readout is a projection
               // over the one ledger, never an independent counter). The line
@@ -2734,11 +2356,11 @@ export async function POST(req: Request) {
               // nothing was logged or persisted either.
               costUsd: capturedSession
                 ? sessionSpendUsd(capturedSession)
-                : lastResult.totalCostUsd,
-              turns: lastResult.turns,
-              usage: lastResult.usage,
+                : turnState.lastResult.totalCostUsd,
+              turns: turnState.lastResult.turns,
+              usage: turnState.lastResult.usage,
               // Real context-window occupancy (final call), not the step sum.
-              context: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              context: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
             });
           }
@@ -2832,19 +2454,19 @@ export async function POST(req: Request) {
               // reload as something the human appeared to type.
               hideUserMessage: hiddenTurn,
               assistantMessage: { role: "assistant", parts },
-              costUsd,
+              costUsd: turnState.costUsd,
               title,
-              usage: lastResult?.usage
+              usage: turnState.lastResult?.usage
                 ? {
-                    inputTokens: lastResult.usage.input_tokens ?? 0,
-                    outputTokens: lastResult.usage.output_tokens ?? 0,
-                    cacheReadTokens: lastResult.usage.cache_read_input_tokens ?? 0,
-                    cacheCreateTokens: lastResult.usage.cache_creation_input_tokens ?? 0,
+                    inputTokens: turnState.lastResult.usage.input_tokens ?? 0,
+                    outputTokens: turnState.lastResult.usage.output_tokens ?? 0,
+                    cacheReadTokens: turnState.lastResult.usage.cache_read_input_tokens ?? 0,
+                    cacheCreateTokens: turnState.lastResult.usage.cache_creation_input_tokens ?? 0,
                   }
                 : undefined,
               // Final-call context (not the step sum) — persisted so CTX is
               // right on resume, independent of the cumulative usage above.
-              contextTokens: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              contextTokens: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
             });
             turnPersisted = true;

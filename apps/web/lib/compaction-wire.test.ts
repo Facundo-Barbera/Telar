@@ -41,7 +41,15 @@ const route = readFileSync(new URL("../app/api/chat/route.ts", import.meta.url),
 // reads the turn's two source files as one — splitting them would let a fold
 // lose its send simply by the two landing on opposite sides of the boundary.
 const turnHooks = readFileSync(new URL("./server/turn-hooks.ts", import.meta.url), "utf8");
-const turnSource = `${route}\n${turnHooks}`;
+// The SDKMessage→event projection moved to the server layer (the
+// compact_boundary send now lives there; its fold stays in the route's loop,
+// paired through the projection result's `compaction` field) — same rule as
+// turn-hooks above: the turn is ONE scan unit however many files it spans.
+const projector = readFileSync(
+  new URL("../server/providers/claude/project-message.ts", import.meta.url),
+  "utf8",
+);
+const turnSource = `${route}\n${turnHooks}\n${projector}`;
 const storeSource = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
 const sessionPage = readFileSync(
   new URL("../app/projects/[name]/sessions/[id]/page.tsx", import.meta.url),
