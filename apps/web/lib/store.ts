@@ -222,13 +222,77 @@ export type Chat = {
   // before compactions were recorded, which reads as "none known", not "none
   // happened".
   compactions?: CompactionRecord[];
+  // Where each turn SITS (message-lifecycle STEP 3) — parallel to turns, the
+  // array index IS the turn number. Anchored by message COUNT, the same idiom
+  // CompactionRecord.afterMessages uses, because ChatMessage has no id. The
+  // uuids are what a rollback hands the SDK: `prompt` guards the drop
+  // (resumeDropsTurn), `tail` names the fork point (resumeSessionAt); Codex
+  // anchors need neither — thread/rollback takes numTurns, so the index
+  // alone addresses them, and `provider` routes the plan. Optional: absent
+  // on every existing chat, which reads as "not rollback-addressable" — a
+  // legacy transcript shows no pencil rather than a promise it cannot keep.
+  turnAnchors?: TurnAnchor[];
+  // One-shot rewind order for the NEXT runtime creation (STEP 4 arms it,
+  // create() spreads it into query options, the turn's result clears it).
+  // The probe measured truncation as adopted-in-place by later plain
+  // resumes, so one-shot is sufficient — no sticky re-send policy.
+  pendingFork?: {
+    resumeSessionAt?: string;
+    resumeDropsTurn?: string;
+    armedAt: number;
+    degraded?: "unguarded" | "plain";
+  };
   messages: ChatMessage[];
+};
+
+export type TurnAnchor = {
+  /** chat.messages.length BEFORE this turn appended… */
+  startMessage: number;
+  /** …and after — so a hidden turn (one message) is never assumed a pair. */
+  endMessage: number;
+  provider: "claude" | "codex";
+  at: number;
+  /** Mirrors hideUserMessage: kickoffs and window-settle follow-ups. */
+  hidden?: boolean;
+  /** uuid stamped on the pushed SDKUserMessage — the resumeDropsTurn value. */
+  prompt?: string;
+  /** Last main-thread chain-entry uuid this turn observed — the
+   *  resumeSessionAt value. */
+  tail?: string;
+  /** So a rollback restores an honest CTX instead of the newest turn's. */
+  contextTokens?: number;
+  contextUsage?: ContextUsageSnapshot;
+  /** Optional truth about the worktree at turn end (F4-in-scope: telling,
+   *  not restoring). Degrades to absent. */
+  git?: { head: string; dirty: boolean };
 };
 
 // A chat without its transcript, plus a one-line preview of the latest
 // assistant reply — the shape every list surface (project detail, sidebar,
-// dashboard) consumes.
-export type ChatSummary = Omit<Chat, "messages"> & { preview: string };
+// dashboard) consumes. Anchors are per-turn objects with SDK identity in
+// them; they have no business in every sidebar/dashboard payload (and the
+// wire policy is that a client never sees a uuid).
+export type ChatSummary = Omit<Chat, "messages" | "turnAnchors"> & { preview: string };
+
+// The anchor as the WIRE sees it (wire policy: the client NEVER sees a uuid —
+// rollback is addressed by turn index + expectedTurns, SDK identity stays
+// server-side). One helper so the detail route and the session page cannot
+// project differently.
+export type PublicTurnAnchor = {
+  turn: number;
+  startMessage: number;
+  hidden?: boolean;
+  at: number;
+};
+export const publicTurnAnchors = (
+  anchors: TurnAnchor[] | undefined,
+): PublicTurnAnchor[] | undefined =>
+  anchors?.map((a, turn) => ({
+    turn,
+    startMessage: a.startMessage,
+    ...(a.hidden ? { hidden: true } : {}),
+    at: a.at,
+  }));
 
 function ensureDir() {
   fs.mkdirSync(stateRoot(), { recursive: true });
@@ -288,11 +352,17 @@ export function listChats(
     // costUsd is projected over the ledger (AD-18), exactly as getChat does —
     // the two read surfaces must not be able to disagree, including about what
     // an unreadable ledger means (see displayedSpendUsd).
-    .map(({ messages, ...meta }) => ({
-      ...meta,
-      costUsd: displayedSpendUsd(meta.id, meta.costUsd),
-      preview: previewOf(messages),
-    }))
+    .map(({ messages, turnAnchors, ...meta }) => {
+      // Anchors carry SDK identity and are per-turn objects — dropped from
+      // every list payload alongside the transcript (wire policy: a client
+      // never sees a uuid).
+      void turnAnchors;
+      return {
+        ...meta,
+        costUsd: displayedSpendUsd(meta.id, meta.costUsd),
+        preview: previewOf(messages),
+      };
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -681,6 +751,16 @@ export function appendTurn(opts: {
   contextTokens?: number;
   // Exact latest-window snapshot, also replaced per turn rather than folded.
   contextUsage?: ContextUsageSnapshot;
+  // STEP 3 (message-lifecycle): which harness ran this turn — the anchor's
+  // router. Absent (legacy callers, tests) writes no anchor at all, which is
+  // the same "no promise" degradation legacy CHATS get.
+  provider?: "claude" | "codex";
+  // The turn's SDK identity, when the caller has it: prompt = the uuid it
+  // stamped on the pushed user message, tail = the projector's last observed
+  // main-thread chain uuid, git = the worktree stamp. The anchor's message
+  // arithmetic is computed HERE, not by the caller — the hidden-turn
+  // (one-message) case must be handled in exactly one place.
+  anchor?: { prompt?: string; tail?: string; git?: { head: string; dirty: boolean } };
 }) {
   const chats = readChats();
   let chat = chats.find((c) => c.id === opts.id);
@@ -720,10 +800,28 @@ export function appendTurn(opts: {
     // titlePromise is null once a sessionId exists).
     chat.title = opts.title.trim();
   }
+  const startMessage = chat.messages.length;
   if (opts.hideUserMessage) {
     chat.messages.push(opts.assistantMessage);
   } else {
     chat.messages.push(opts.userMessage, opts.assistantMessage);
+  }
+  // The turn's anchor (STEP 3), index-parallel to `turns`. Written only when
+  // the caller names a provider — and inert until STEP 4 reads it, which is
+  // the point: real transcripts accumulate real anchors first.
+  if (opts.provider) {
+    (chat.turnAnchors ??= []).push({
+      startMessage,
+      endMessage: chat.messages.length,
+      provider: opts.provider,
+      at: now,
+      ...(opts.hideUserMessage ? { hidden: true } : {}),
+      ...(opts.anchor?.prompt ? { prompt: opts.anchor.prompt } : {}),
+      ...(opts.anchor?.tail ? { tail: opts.anchor.tail } : {}),
+      ...(opts.anchor?.git ? { git: opts.anchor.git } : {}),
+      ...(opts.contextTokens !== undefined ? { contextTokens: opts.contextTokens } : {}),
+      ...(opts.contextUsage !== undefined ? { contextUsage: opts.contextUsage } : {}),
+    });
   }
   // Denormalized cache only — every read surface (getChat, listChats) now
   // projects costUsd over usage.ndjson instead (AD-18). Kept because removing

@@ -97,6 +97,11 @@ export type ClaudeTurnState = {
    *  teardown and settle; without it, a cross-turn completion mutated
    *  nothing, persisted nowhere, and the agent shimmered "running" forever. */
   taskStatuses: Map<string, "completed" | "failed" | "stopped">;
+  /** STEP 3 (message-lifecycle): the last MAIN-THREAD chain-entry uuid this
+   *  turn observed — assistant messages and tool_result carriers, never
+   *  subagent relays, never `result`. This is the TurnAnchor's `tail`: the
+   *  resumeSessionAt value a rollback forks at. */
+  lastChainUuid: string | null;
 };
 
 export function newClaudeTurnState(): ClaudeTurnState {
@@ -109,6 +114,7 @@ export function newClaudeTurnState(): ClaudeTurnState {
     lastResult: null,
     costUsd: 0,
     taskStatuses: new Map(),
+    lastChainUuid: null,
   };
 }
 
@@ -196,6 +202,13 @@ export function projectClaudeMessage(
       const mu = (msg as unknown as { message?: { usage?: Record<string, number> } })
         .message?.usage;
       if (mu) state.lastMainUsage = mu;
+      // STEP 3: the anchor's `tail` — the last MAIN-THREAD chain entry, which
+      // is the resumeSessionAt a rollback forks at ("fork at the kept turn's
+      // last entry"). Deliberately never advanced by subagent relays (t3code's
+      // lastAssistantUuid is, which is exactly why its recomputed cursor
+      // points wrong after a rollback) and never by `result` (its status as a
+      // chain entry is unverified).
+      if (msgUuid) state.lastChainUuid = msgUuid;
     }
     const content =
       (msg as unknown as { message?: { content?: ContentBlockShape[] } }).message?.content ?? [];
@@ -276,6 +289,14 @@ export function projectClaudeMessage(
     const parent = parentFlatten.resolve(
       (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
     );
+    // STEP 3: a main-thread tool_result carrier is a chain entry too — an
+    // interrupted turn that completed tools before the Esc ends on one, and
+    // forking at the assistant uuid instead would put kept-turn payload in
+    // the discarded range (the probe's refusal case, deliberately).
+    if (!parent) {
+      const carrierUuid = (msg as { uuid?: string }).uuid;
+      if (carrierUuid) state.lastChainUuid = carrierUuid;
+    }
     const content =
       (msg as unknown as { message?: { content?: ContentBlockShape[] } }).message?.content ?? [];
     for (const block of content) {

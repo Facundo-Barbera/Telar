@@ -353,3 +353,54 @@ describe("teardown finalizers", () => {
     expect(byId.get("spawn-1")?.input).toBeDefined();
   });
 });
+
+// ── lastChainUuid (message-lifecycle STEP 3) ────────────────────────────────
+// The anchor's `tail`: the resumeSessionAt a rollback forks at. The rule —
+// main-thread assistant messages and main-thread tool_result carriers, NEVER
+// subagent relays (t3code's lastAssistantUuid advances on those, which is why
+// its cursor points wrong after a rollback) and NEVER `result`.
+
+describe("lastChainUuid — the kept turn's last chain entry", () => {
+  test("advances on main assistant and main tool_result carrier; ignores subagents and result", () => {
+    const state = newClaudeTurnState();
+    expect(state.lastChainUuid).toBeNull();
+    projectClaudeMessage(
+      asMsg({
+        type: "assistant",
+        uuid: "a-main-1",
+        message: { content: [{ type: "text", text: "hi" }] },
+      }),
+      state,
+    );
+    expect(state.lastChainUuid).toBe("a-main-1");
+    // A subagent relay must not move it.
+    projectClaudeMessage(
+      asMsg({
+        type: "assistant",
+        uuid: "a-sub-1",
+        parent_tool_use_id: "spawn-1",
+        message: { content: [{ type: "text", text: "sub" }] },
+      }),
+      state,
+    );
+    expect(state.lastChainUuid).toBe("a-main-1");
+    // A main-thread tool_result carrier does — an interrupted turn that
+    // completed tools before Esc ends on one (the probe's refusal case is
+    // exactly what forking at the assistant uuid instead would trip).
+    projectClaudeMessage(
+      asMsg({
+        type: "user",
+        uuid: "u-carrier-1",
+        message: { content: [{ type: "tool_result", tool_use_id: "t-1", content: "ok" }] },
+      }),
+      state,
+    );
+    expect(state.lastChainUuid).toBe("u-carrier-1");
+    // `result` never advances it: its status as a chain entry is unverified.
+    projectClaudeMessage(
+      asMsg({ type: "result", subtype: "success", uuid: "r-1", total_cost_usd: 0 }),
+      state,
+    );
+    expect(state.lastChainUuid).toBe("u-carrier-1");
+  });
+});

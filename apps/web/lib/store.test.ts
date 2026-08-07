@@ -665,3 +665,100 @@ describe("session spend is a projection over usage.ndjson (CAP-2, AC6a)", () => 
     }
   });
 });
+
+// ── turn anchors (message-lifecycle STEP 3) ─────────────────────────────────
+// Inert by design — nothing reads them yet — so what is pinned is the WRITE:
+// the arithmetic appendTurn owns (visible pair vs hidden single), the
+// provider gate (no provider → no anchor, which is also every legacy
+// caller), survival across read-modify-write, and the list projection that
+// keeps SDK identity off the wire.
+
+describe("turn anchors are written by appendTurn and stay off the wire", () => {
+  const anchorTurn = (id: string, opts?: Partial<Parameters<typeof store.appendTurn>[0]>) =>
+    store.appendTurn({
+      id,
+      model: "sonnet",
+      account: "personal",
+      userMessage: { role: "user", parts: [{ type: "text", text: "q" }] },
+      assistantMessage: { role: "assistant", parts: [{ type: "text", text: "a" }] },
+      costUsd: 0,
+      ...opts,
+    } as Parameters<typeof store.appendTurn>[0]);
+
+  test("a visible turn anchors its pair; a hidden turn anchors one message", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-anchor-"));
+    process.env.TELAR_HOME = root;
+    try {
+      anchorTurn("anch-1", {
+        provider: "claude",
+        anchor: { prompt: "u-1", tail: "a-1", git: { head: "abc", dirty: false } },
+        contextTokens: 1234,
+      });
+      anchorTurn("anch-1", { provider: "claude", hideUserMessage: true, anchor: { tail: "a-2" } });
+      const chat = store.getChat("anch-1");
+      expect(chat?.turnAnchors).toEqual([
+        {
+          startMessage: 0,
+          endMessage: 2,
+          provider: "claude",
+          at: expect.any(Number),
+          prompt: "u-1",
+          tail: "a-1",
+          git: { head: "abc", dirty: false },
+          contextTokens: 1234,
+        },
+        {
+          startMessage: 2,
+          endMessage: 3,
+          provider: "claude",
+          at: expect.any(Number),
+          hidden: true,
+          tail: "a-2",
+        },
+      ]);
+      // Index IS the turn number, parallel to `turns`.
+      expect(chat?.turns).toBe(2);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("no provider → no anchor (every legacy caller), and legacy chats keep loading", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-anchor2-"));
+    process.env.TELAR_HOME = root;
+    try {
+      anchorTurn("anch-legacy");
+      const chat = store.getChat("anch-legacy");
+      expect(chat?.turnAnchors).toBeUndefined();
+      // A later anchored turn starts the array without disturbing history.
+      anchorTurn("anch-legacy", { provider: "codex" });
+      const after = store.getChat("anch-legacy");
+      expect(after?.turnAnchors).toHaveLength(1);
+      expect(after?.turnAnchors?.[0]).toMatchObject({
+        startMessage: 2,
+        endMessage: 4,
+        provider: "codex",
+      });
+      expect(after?.messages).toHaveLength(4);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("listChats drops anchors; publicTurnAnchors strips every uuid", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-anchor3-"));
+    process.env.TELAR_HOME = root;
+    try {
+      anchorTurn("anch-wire", { provider: "claude", anchor: { prompt: "u-9", tail: "a-9" } });
+      const summary = store.listChats().find((c) => c.id === "anch-wire");
+      expect(summary).toBeDefined();
+      expect((summary as { turnAnchors?: unknown }).turnAnchors).toBeUndefined();
+      const pub = store.publicTurnAnchors(store.getChat("anch-wire")?.turnAnchors);
+      expect(pub).toEqual([{ turn: 0, startMessage: 0, at: expect.any(Number) }]);
+      expect(JSON.stringify(pub)).not.toContain("u-9");
+      expect(JSON.stringify(pub)).not.toContain("a-9");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
