@@ -296,3 +296,43 @@ Two commit-message baseline-number discrepancies surfaced by the first review we
 ### Nothing was left behind in any state root by this story's dev proof
 
 - **5.1 started no dev server and wrote nothing to `~/.telar-dev`.** The story ships no UI, so a running `next dev` would prove nothing it does not already prove. The dev proof ran a throwaway driver under the session scratchpad against a `mktemp -d` `TELAR_HOME`, and the driver **refuses to run** unless `TELAR_HOME` is set and lives under a temp root — because the store resolves every path off `telarDir()`, and a blank `TELAR_HOME` resolves to the operator's real `~/.telar`. **Nothing under `~/.telar` or `~/.telar-dev` was read or written at any point.** `~/.telar-dev/ultra`'s seven run directories from 4.1 and 4.2 are untouched and remain 4.2's record.
+
+## The rewind probe's findings — message-lifecycle STEP 0 (2026-08-07)
+
+Measured, not assumed, against the pinned SDK + its matched CLI (probe script:
+`apps/web/lib/server/claude-rewind.probe.ts`; two runs, second run isolating
+phase 3 into a dedicated session after the first run's phase-2 resumes had
+mutated the shared chain and — correctly — poisoned the "valid drop" case).
+Every lifecycle step branches on these five answers:
+
+- **(a) Client-supplied uuids ARE adopted.** A streaming-input
+  `SDKUserMessage` with a caller `uuid` lands in the session JSONL as the
+  user entry's own uuid (verified by reading the transcript back). STEP 3's
+  anchors can be stamped at send time — no round-trip capture needed for the
+  prompt side.
+- **(b) `resume` + `resumeSessionAt` truncates on the headless lane, IN
+  PLACE, same session id — and a subsequent PLAIN resume follows the
+  truncated branch** (the pre-truncation turn's planted fact was invisible to
+  it). Consequence: the one-shot `pendingFork` design stands; NO sticky
+  per-chat anchor, no send-on-every-resume policy. This was the single
+  biggest fork in STEP 4's design and it resolved to the simple side.
+- **(c) A valid `resumeDropsTurn` (prompt uuid of the dropped turn, fork at
+  the kept turn's last entry) succeeds. The refusal for a bad one is
+  `subtype: "error_during_execution"` with `is_error: true` and the message
+  in the result frame's `errors` ARRAY — NOT in `result`.** Exact shape:
+  `errors: ["Resume rejected by --resume-drops-turn: resuming at <uuid>
+  would discard entries not attributable to turn <uuid>: range does not
+  start with the declared turn prompt; first discarded entry 0 [type=user,
+  uuid=<uuid>]"]`. STEP 4's refusal ladder must string-match the prefix
+  against `errors[]` entries, and `num_turns: 0` / `total_cost_usd: 0`
+  confirm the refusal is pre-flight (no tokens burned).
+- **(d) `initializationResult()` reports NO capabilities field on this CLI
+  build; `interrupt()` resolves `{"still_queued":[]}`.** F2's capability
+  check cannot gate on an advertised capability — detect by attempting
+  `interrupt()` and treating a resolved receipt as support, with the
+  watchdog as the real guard.
+- **(e) A query stream survives its own interrupt.** The interrupted turn
+  ends in an `error_during_execution` result, and the SAME streaming query
+  then accepted a new turn and answered it. Stop-and-reclaim can interrupt
+  without recreating the runtime — the warm session, its context, and its
+  background agents all survive.
