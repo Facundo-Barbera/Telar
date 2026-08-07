@@ -993,6 +993,43 @@ export async function POST(req: Request) {
           const { mode: _mode, isolation: _isolation, ...safeInput } = input;
           return { behavior: "allow", updatedInput: safeInput };
         }
+        // FULL ACCESS MEANS FULL ACCESS — INCLUDING FOR A SUB-AGENT (#28).
+        //
+        // Without this, "Full access" was a promise this function did not keep,
+        // and it broke in one specific place: sub-agents. `full-access` maps to
+        // the SDK's `bypassPermissions`, under which the SDK approves the MAIN
+        // turn's calls itself and never invokes canUseTool — so the session
+        // looked prompt-free and was. But every tool a sub-agent calls is
+        // DELIBERATELY routed here (see the agent-spawn comment above), and
+        // this function had no mode check at all. So it did what it does in
+        // every other mode: opened a pending approval and awaited a human.
+        //
+        // Nobody could answer it. The card is addressed to a human who is
+        // watching a session they were told needs no approvals, and the tool
+        // call sat blocked until something upstream gave up on it — which the
+        // model was then told, in the CLI's own words, was the user refusing.
+        // Hence "phantom declines" that only ever appeared under parallel agent
+        // work, never on a main turn, and never in an Ultra (whose agents are
+        // spawned in-process by the executor and never reach this channel).
+        //
+        // The guardrail above still runs FIRST and its deny still wins, so
+        // protectedPaths / disallowedTools are unaffected: this widens what a
+        // mode may auto-approve, never what a guardrail permits.
+        //
+        // THE TWO MOAT TOOLS ARE EXCLUDED, and that exclusion is the whole
+        // reason this is not a straight copy of the reference implementation.
+        // t3code's ClaudeAdapter returns allow for full-access with no
+        // exceptions, because it has no accept moat to keep. Telar does: §M.6
+        // requires a human's click on start_loom and answer_blocked in EVERY
+        // permission mode, and the PreToolUse hook force-routes both back here
+        // precisely so that click cannot be skipped. They must keep asking.
+        if (
+          runtimeMode === "full-access" &&
+          toolName !== LOOM_START_TOOL &&
+          toolName !== LOOM_ANSWER_BLOCKED_TOOL
+        ) {
+          return { behavior: "allow", updatedInput: input };
+        }
         const rule = ruleFor(toolName, input);
         // mcp__loom__start_loom is the loom moat's commit action (docs/
         // loom-model.md §M.6) — it must NEVER be satisfiable by a
