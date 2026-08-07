@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -54,7 +54,6 @@ import {
   parentOf,
   showsLiveStatus,
   toTranscriptItems,
-  usePromptInputController,
   type AgentBucket,
   type AttachmentRef,
   type ChatMessage,
@@ -91,9 +90,6 @@ import {
 import {
   LoomsPill,
   InlineLoomRow,
-  type PillLoom,
-  type LoomTone,
-  type LoomEventRow,
 } from "@/components/session/session-loom";
 import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
@@ -121,7 +117,13 @@ type SessionQueuedMessage = QueuedMessage<PromptInputMessage["files"][number]> &
   state?: QueueItemState;
   error?: string;
 };
+import {
+  ComposerAutocompleteMenus,
+  useComposerAutocomplete,
+} from "@/components/session/composer-autocomplete";
 import { ComposerControls } from "@/components/session/composer-settings";
+import { useLoomHandoff } from "@/components/session/use-loom-handoff";
+import { useSessionInjections } from "@/components/session/use-session-injections";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
@@ -138,11 +140,9 @@ import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { shortId } from "@/lib/format";
 import { consumeSSE } from "@/lib/sse";
 import type { ContextUsageSnapshot } from "@/lib/context-usage";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
-import type { Watch, WorkUnitState } from "@telar/core";
 import {
   DEFAULT_RUNTIME_MODE,
   RUNTIME_MODE_OPTIONS,
@@ -173,11 +173,6 @@ import {
   ESCALATION_KICKOFF_SENTINEL,
   shouldFireEscalationKickoff,
 } from "@/lib/escalation-kickoff";
-import {
-  freshUltraWakes,
-  shouldEnqueueUltraWake,
-  ULTRA_WAKE_SENTINEL,
-} from "@/lib/ultra-wake";
 import { useAccounts } from "@/lib/use-accounts";
 import { sessionProviders } from "@/lib/account-visibility";
 import { useUltraWake } from "@/lib/use-ultra-wake";
@@ -219,14 +214,6 @@ function modelProvider(modelId: string): Provider | undefined {
 // @telar/core code that has no business in the client bundle.
 const LOOM_START_TOOL = "mcp__loom__start_loom";
 
-// Map a real WorkUnitState to the loom pill/row urgency tone (accent only) and a
-// human verb. blocked/failed/halted demand the human (amber + pulse); ready /
-// needs-review / done are the green human-touchpoints; everything else weaves.
-function loomTone(s: WorkUnitState | null | undefined): LoomTone {
-  if (s === "blocked" || s === "failed" || s === "halted") return "blocked";
-  if (s === "ready" || s === "needs-review" || s === "done") return "ready";
-  return "weaving";
-}
 // Parse a model's context-window label ("1M", "200K", "200000") to a token
 // count, so the CTX hover can show a real used/window fill. Undefined when the
 // label isn't parseable — the hover then omits the bar (data-light).
@@ -238,25 +225,6 @@ function parseWindow(label: string | undefined): number | undefined {
   if (!Number.isFinite(n)) return undefined;
   const unit = m[2].toLowerCase();
   return Math.round(n * (unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1));
-}
-
-function loomVerb(s: WorkUnitState | null | undefined): string {
-  switch (s) {
-    case "blocked":
-      return "Loom parked";
-    case "ready":
-      return "Loom ready";
-    case "needs-review":
-      return "Loom needs review";
-    case "done":
-      return "Loom done";
-    case "failed":
-      return "Loom failed";
-    case "halted":
-      return "Loom halted";
-    default:
-      return "Loom weaving";
-  }
 }
 
 // The Loom Session's agent-first greeting (docs/loom-model.md §5, feature
@@ -298,26 +266,6 @@ type Status = "ready" | "submitted" | "streaming" | "error";
 // 3.1's write set — so the name has to keep resolving here. It is the same
 // symbol either way: one declaration, in items.ts.
 export type { PermissionPart };
-
-type ProjectCommand = {
-  name: string;
-  description: string;
-  kind: "command" | "skill";
-};
-
-// Mirrored rather than imported, exactly like ProjectCommand above it: the
-// module that produces these (lib/project-files.ts) reaches node:child_process
-// and node:fs to read the repo. `import type` would erase cleanly today, but
-// the day someone drops the `type` keyword the whole file index follows it into
-// the client bundle — and a local shape cannot be de-erased by accident.
-type ProjectFile = { path: string; name: string };
-
-// The `@token` the cursor is sitting at the end of. Anchored on
-// start-of-string-or-whitespace so `foo@bar` and an email never open the menu,
-// and stopping at the next whitespace so a COMPLETED mention closes it again.
-// Module scope, and no /g flag — so it carries no lastIndex between calls and
-// is safe to share across every render and both readers below.
-const MENTION_AT_CARET = /(?:^|\s)@([^\s@]*)$/;
 
 /** How long an Escape stays armed before it forgets. Long enough that a
  *  deliberate double-tap never misses, short enough that an Escape pressed a
@@ -895,7 +843,6 @@ function SessionWorkspace({
   embedded?: boolean;
   loomId?: string;
 }) {
-  const textInput = usePromptInputController().textInput;
   const pathname = usePathname();
 
   // Seed once from the server-resolved transcript. Later prop changes are
@@ -1238,69 +1185,21 @@ function SessionWorkspace({
   // Guard so the reconnect effect attaches at most once per session id.
   const reconnectedRef = useRef<string | null>(null);
 
-  // The god-view handoff (docs/loom-model.md §5's "make this real" moment):
-  // set the instant mcp__loom__start_loom's tool_result reports {loomId,
-  // url} (see the "tool_result" case below), and seeded from the persisted
-  // chat on reload so the header chip survives a refresh. `dismissed` only
-  // hides the banner — the chip stays up for the life of the session either
-  // way, since the loom itself doesn't go away when the banner is closed.
-  const [loomHandoff, setLoomHandoff] = useState<{ loomId: string; url: string } | null>(
-    initialChat?.loomId ? { loomId: initialChat.loomId, url: `/looms/${initialChat.loomId}` } : null,
-  );
-  const [handoffDismissed, setHandoffDismissed] = useState(false);
-  // Live loom lifecycle for the aggregate pill + inline transcript rows (replaces
-  // the persistent "Loom started" banner). `loomLive` is the latest state/title
-  // from the loom's own event stream; `loomEvents` is the durable in-stream
-  // record appended on each transition. Both are seeded/driven by loomHandoff.
-  const [loomLive, setLoomLive] = useState<{ title: string; state: WorkUnitState } | null>(null);
-  const [loomEvents, setLoomEvents] = useState<LoomEventRow[]>([]);
+  // The god-view handoff and the loom lifecycle it starts — see
+  // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
+  // mcp__loom__start_loom's tool_result lands on this session's own wire.
+  const {
+    setHandoff: setLoomHandoff,
+    events: loomEvents,
+    dismissEvent: dismissLoomEvent,
+    pillLooms,
+  } = useLoomHandoff({ initialLoomId: initialChat?.loomId, sessionTitle: title });
+
   // tool_use id -> tool name, populated as "tool" events arrive so the
   // "tool_result" case (which only carries id/output/isError) can tell
   // whether a given result belongs to start_loom. A ref, not state: purely
   // internal bookkeeping that never drives a render itself.
   const toolNamesRef = useRef<Map<string, string>>(new Map());
-
-  // ── Loom watchers (docs/watchers-design.md §6) ──────────────────────────
-  // Active watches for THIS session, seeded from the server on mount and after
-  // each turn (loadWatches). watchesRef mirrors it (like statusRef above) so the
-  // background subscriber's handlers read the LATEST triggerStates without
-  // `watches` being in the effect's dep set — which would re-subscribe on every
-  // edit rather than only when the watched-loom set changes.
-  const [watches, setWatches] = useState<Watch[]>([]);
-  const watchesRef = useRef<Watch[]>(watches);
-  watchesRef.current = watches;
-  // Fired alerts surfaced as cards near the loom-handoff banner.
-  const [watcherAlerts, setWatcherAlerts] = useState<
-    { id: string; loomId: string; title: string; state: WorkUnitState }[]
-  >([]);
-  // Synthetic turns waiting for the composer to go idle before they dispatch
-  // through send() (never mid-turn — the busy guard forbids it): the loom
-  // watcher's "[watcher] …" messages, and story 4.1's Ultra completion-wake
-  // trigger.
-  //
-  // `hidden` IS NEW IN 4.1 AND IS NOT OPTIONAL MACHINERY. Before it, the item
-  // type was `{ id; text }` and the §6.D drain dispatched `send(next.text)` with
-  // no options object at all — so `send`'s `opts?.hidden` read falsy and its
-  // `...(opts?.hidden ? [] : [{ role: "user", … }])` spread pushed a real user
-  // bubble. Enqueuing a sentinel and "letting the existing effect drain it"
-  // would therefore have rendered the raw sentinel as something the human
-  // appeared to type — the exact opposite of AC1. The watcher sets no flag, so
-  // its own "[watcher] …" turns stay VISIBLE, which is what they are meant to be.
-  const [injectionQueue, setInjectionQueue] = useState<
-    { id: string; text: string; hidden?: boolean }[]
-  >([]);
-  // De-dupe: watchId -> last trigger state we fired on. A ref, so it survives
-  // re-subscribes and a connect-time `run` snapshot of an already-fired state
-  // can't re-fire; re-arms only when the loom reaches a DIFFERENT trigger state.
-  const lastFiredRef = useRef<Map<string, WorkUnitState>>(new Map());
-  // Monotonic id source for alert / injection items.
-  const watcherSeqRef = useRef(0);
-  // Stable, sorted, comma-joined set of watched loomIds. The background
-  // subscriber keys on THIS primitive so it re-subscribes only when the SET
-  // changes — never on every render or an unrelated `watches` field edit.
-  const watchedLoomIds = Array.from(new Set(watches.map((w) => w.loomId)))
-    .sort()
-    .join(",");
 
   // Agent types the live SDK session reports as available (init message's
   // `agents` list) — surfaced as a subtle one-liner on the tab strip, not its
@@ -1311,15 +1210,15 @@ function SessionWorkspace({
   // stored separately, so there's nothing else to keep in sync here.
   const [activeTab, setActiveTab] = useState<string>("main");
 
-  // Slash-command autocomplete. `projectCommands` comes from the project's
-  // .claude/commands scan (has descriptions); `sdkSlashCommands` narrows it to
-  // what the live SDK session actually reports once a turn's "session" event
-  // arrives (that list also contains built-ins we deliberately don't show).
-  const [projectCommands, setProjectCommands] = useState<ProjectCommand[]>([]);
-  const [sdkSlashCommands, setSdkSlashCommands] = useState<string[] | null>(
-    null,
-  );
-  const [menuDismissed, setMenuDismissed] = useState(false);
+  // The composer's `/` command and `@` mention menus, both of which are
+  // composer-local and share one textarea — see use-composer-autocomplete.ts.
+  // The only wire back into the session is `setSdkSlashCommands`, called by
+  // applyServerEvent when a turn reports what the live harness offers.
+  const autocomplete = useComposerAutocomplete({ project, provider });
+  // Destructured because applyServerEvent closes over this setter and must
+  // stay a stable callback: `autocomplete` is a fresh object every render, the
+  // setter it carries is not.
+  const { composerRef, setSdkSlashCommands } = autocomplete;
 
   // Composer attachments. The staged FILES live in PromptInputProvider's own
   // context (this surface is wrapped in one) — all that is held here is the
@@ -1332,23 +1231,6 @@ function SessionWorkspace({
   // normal turn's send() does.
   const [compactError, setCompactError] = useState<string | null>(null);
 
-  // `@` file mentions. `caret` is tracked because — unlike the slash menu, which
-  // only ever fires when the WHOLE value starts with "/" — a mention is typed
-  // mid-sentence, so the query is whatever `@token` the cursor currently sits
-  // at the end of. Null means "not measured yet", which reads as end-of-text.
-  const [caret, setCaret] = useState<number | null>(null);
-  const [mentionFiles, setMentionFiles] = useState<ProjectFile[]>([]);
-  const [mentionDismissed, setMentionDismissed] = useState(false);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  // The composer textarea, and the caret position to restore into it once React
-  // has committed a programmatic edit. Accepting a mention rewrites the value
-  // through the controlled `setInput`, which puts the cursor at the END of the
-  // new text — so completing `@rou` mid-sentence would drop the human's cursor
-  // after the rest of their sentence rather than after the path they just
-  // inserted. The DOM write has to happen after the commit, hence the ref pair
-  // plus the effect below rather than a straight-line assignment.
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const pendingCaretRef = useRef<number | null>(null);
   // The conversation column, which is the composer's drop zone — see the
   // `dropTarget` prop and the element this is attached to.
   const sessionSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1384,19 +1266,6 @@ function SessionWorkspace({
     );
   }, [resolvedRightPanelScopeKey, provisionalRightPanelScopeKey]);
 
-  useEffect(() => {
-    const pos = pendingCaretRef.current;
-    if (pos === null) return;
-    pendingCaretRef.current = null;
-    const el = composerRef.current;
-    if (!el) return;
-    // focus() because accepting by MOUSE leaves the textarea unfocused; the
-    // mousedown handler on the menu item prevents the blur, but a click that
-    // landed before the composer ever had focus still needs it back.
-    el.focus();
-    el.setSelectionRange(pos, pos);
-  }, [textInput.value]);
-  const [selectedIndex, setSelectedIndex] = useState(0);
 
   // The three per-item disclosure maps that used to live here — groupOverrides,
   // rowOverrides and thinkingOpen — moved INTO the shell (story 3.1's carve-out).
@@ -1647,27 +1516,7 @@ function SessionWorkspace({
     };
   }, []);
 
-  // Non-200 (including a project scan with no .claude/commands dir, which the
-  // endpoint itself answers with an empty list) is treated as "no commands" —
-  // autocomplete is a nicety, never worth an error UI.
-  useEffect(() => {
-    let cancelled = false;
-    cachedJson<{ commands?: ProjectCommand[] }>(
-      `/api/projects/${encodeURIComponent(project)}/commands`,
-      { maxAgeMs: 60_000 },
-    )
-      .then((data: { commands?: ProjectCommand[] }) => {
-        if (!cancelled) setProjectCommands(data.commands ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setProjectCommands([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project]);
-
-  const patch = (id: string, fn: (m: ChatMessage) => ChatMessage) =>
+  const patch =(id: string, fn: (m: ChatMessage) => ChatMessage) =>
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
 
   // A thinking block's end is never sent explicitly by the server (see the
@@ -2036,7 +1885,6 @@ function SessionWorkspace({
                     const parsed = JSON.parse(payload.output) as { loomId?: unknown; url?: unknown };
                     if (typeof parsed.loomId === "string" && typeof parsed.url === "string") {
                       setLoomHandoff({ loomId: parsed.loomId, url: parsed.url });
-                      setHandoffDismissed(false);
                       // Loom Session (docs/loom-model.md §5): never
                       // auto-navigate away from the planning session — the
                       // "Loom started" banner below (with its new-tab "View
@@ -2687,160 +2535,6 @@ function SessionWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [escalation, sessionId, send]);
 
-  // ── Loom watchers (docs/watchers-design.md §6) ──────────────────────────
-  // Defined after send() so the injection effect below can reference it.
-  const loadWatches = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      const data = await cachedJson<Watch[] | { watches?: Watch[] }>(
-        `/api/chat/${encodeURIComponent(sessionId)}/watches`,
-        { force: true },
-      );
-      const list: Watch[] = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.watches)
-          ? data.watches
-          : [];
-      setWatches(list);
-    } catch {
-      // Route not ready / offline — keep whatever we already have.
-    }
-  }, [sessionId]);
-
-  // §6.B — load this session's active watches on mount (sessionId set) AND after
-  // each turn completes (status → "ready"), so a watch the agent just registered
-  // via watch_loom is picked up without a reload. Gated on "ready" so it never
-  // refetches mid-turn; the fresh-session case (sessionId null until the first
-  // turn's "session" event) is covered when that turn lands back on "ready".
-  useEffect(() => {
-    if (!sessionId || status !== "ready") return;
-    void loadWatches();
-  }, [sessionId, status, loadWatches]);
-
-  // §6.C — background subscriber, sibling to the §1b reconnect one (~1543) but
-  // UNGATED on status/idle: it must react while the user keeps chatting and
-  // while a turn is in flight. Keyed on the stable watchedLoomIds string, one
-  // EventSource per watched loom; the connect-time `run` snapshot (route.ts:63)
-  // also catches a state change missed while the tab was closed.
-  useEffect(() => {
-    const loomIds = watchedLoomIds ? watchedLoomIds.split(",") : [];
-    if (loomIds.length === 0) return;
-    const sources = loomIds.map((loomId) => {
-      const es = new EventSource(
-        `/api/looms/${encodeURIComponent(loomId)}/events`,
-      );
-      es.addEventListener("run", (e) => {
-        let loom: any;
-        try {
-          loom = JSON.parse((e as MessageEvent).data);
-        } catch {
-          return;
-        }
-        const state = loom?.state as WorkUnitState | undefined;
-        if (!state) return;
-        // Read the live watch from the ref, not a stale closure — triggerStates
-        // can change without the watched-loom SET (this effect's dep) changing.
-        const watch = watchesRef.current.find(
-          (w) => w.loomId === loomId && w.status === "active",
-        );
-        if (!watch || !watch.triggerStates.includes(state)) return;
-        // Fire once per (watch, state); re-arm only on a DIFFERENT trigger state.
-        if (lastFiredRef.current.get(watch.id) === state) return;
-        lastFiredRef.current.set(watch.id, state);
-        const title =
-          typeof loom.title === "string" && loom.title ? loom.title : loomId;
-        const seq = watcherSeqRef.current++;
-        setWatcherAlerts((prev) => [
-          ...prev,
-          { id: `wa${seq}`, loomId, title, state },
-        ]);
-        setInjectionQueue((q) => [
-          ...q,
-          {
-            id: `wi${seq}`,
-            text: `[watcher] loom ${loomId} (${title}) reached ${state}. How do you want to proceed?`,
-          },
-        ]);
-      });
-      // A terminal loom sends `end` then closes; stop EventSource's auto-reconnect
-      // so a done/failed/needs-review loom doesn't churn re-opening the stream.
-      es.addEventListener("end", () => es.close());
-      return es;
-    });
-    // CRITICAL: close EVERY source on unmount or when the watched-loom SET
-    // changes — no leaks, no double-subscribe.
-    return () => {
-      for (const es of sources) es.close();
-    };
-  }, [watchedLoomIds]);
-
-  // Loom-notify (replaces the banner): tail THIS session's loom event stream so
-  // the aggregate pill reflects the loom's real state and each transition lands
-  // as a durable inline transcript row. Durable-minimum only — state word +
-  // title + short id + god-view — no thread/gate detail (the loom UI is still
-  // being shaped). Seeded/keyed on loomHandoff.loomId.
-  const loomHandoffId = loomHandoff?.loomId;
-  const loomHandoffUrl = loomHandoff?.url;
-  const loomLastStateRef = useRef<WorkUnitState | null>(null);
-  const loomEventSeqRef = useRef(0);
-  useEffect(() => {
-    if (!loomHandoffId) return;
-    loomLastStateRef.current = null;
-    const url = loomHandoffUrl ?? `/looms/${loomHandoffId}`;
-    const es = new EventSource(`/api/looms/${encodeURIComponent(loomHandoffId)}/events`);
-    const onRun = (e: MessageEvent) => {
-      let loom: any;
-      try {
-        loom = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      const state = loom?.state as WorkUnitState | undefined;
-      if (!state) return;
-      const title =
-        typeof loom.title === "string" && loom.title ? loom.title : shortId(loomHandoffId);
-      setLoomLive({ title, state });
-      // Append an inline row only on a genuine state change (the connect-time
-      // snapshot seeds the first row; later transitions each add one).
-      if (loomLastStateRef.current !== state) {
-        loomLastStateRef.current = state;
-        const seq = loomEventSeqRef.current++;
-        setLoomEvents((prev) => [
-          ...prev,
-          {
-            id: `le${seq}`,
-            loomId: shortId(loomHandoffId),
-            title,
-            verb: loomVerb(state),
-            tone: loomTone(state),
-            url,
-          },
-        ]);
-      }
-    };
-    es.addEventListener("run", onRun as EventListener);
-    es.addEventListener("end", () => es.close());
-    return () => es.close();
-  }, [loomHandoffId, loomHandoffUrl]);
-
-  // The aggregate looms pill's data — one loom per session in practice (the
-  // persisted Chat.loomId is single), modelled as an array so N looms roll up
-  // cleanly if that ever changes. Tone follows the live state; title/state fall
-  // back to sensible defaults before the first event lands.
-  const pillLooms: PillLoom[] = useMemo(() => {
-    if (!loomHandoff) return [];
-    return [
-      {
-        key: loomHandoff.loomId,
-        id: shortId(loomHandoff.loomId),
-        title: loomLive?.title ?? title,
-        tone: loomTone(loomLive?.state),
-        stateWord: loomLive?.state ?? "weaving",
-        url: loomHandoff.url,
-      },
-    ];
-  }, [loomHandoff, loomLive, title]);
-
   // §6.C-bis — story 4.1 / AC1: the Ultra completion wake. Sibling to the
   // watcher subscriber above and, like it, this only ENQUEUES — the §6.D drain
   // below owns when the turn actually fires, and reusing that gate untouched is
@@ -3081,119 +2775,18 @@ function SessionWorkspace({
     void reloadUltraWake();
   }, [settledRunKey, reloadUltraWake]);
 
-  // ONE TRIGGER PER PASS, however many runs finished (T10). The appendix carries
-  // all of them — its formatter takes a list — so three finished runs must not
-  // fire three turns. The wakes stay pending until the ROUTE acks them (which it
-  // does on the turn that consumes them), so without a latch every poll in that
-  // window would enqueue again.
-  //
-  // THE LATCH IS THE SET OF RUNS ALREADY ANNOUNCED, NOT A BOOLEAN (review SF-1).
-  // It was a boolean cleared only by `pendingWakes.length === 0`, and that has a
-  // reachable hole: several runs can be live for one session (§5.6-T10's own
-  // premise, and `packages/core/src/ultra/executor.ts`'s `RUN_CONCURRENCY = 3`
-  // is what bounds it), so run A settles and its wake turn streams for 30s, run B
-  // settles a second later, and every subsequent poll returns a NON-empty
-  // mailbox — so the latch never cleared, B was never enqueued, and when the
-  // session went idle no unprompted turn ever appeared for it. AC1's
-  // Given/When/Then was simply unmet for the second run.
-  //
-  // Keying on the run-ids themselves fixes it without re-opening T10: a poll
-  // enqueues exactly one trigger if it carries any run this component has not
-  // announced yet, however many that is. Pruning to the currently-pending set is
-  // what re-arms a RESUMED run — `deliveredTerminalAt` makes it pending again
-  // under the same id, and it must be announceable again — while a run that is
-  // merely still-unacked stays in the set and cannot re-fire.
-  //
-  // NOTE the deliberate non-re-arm: if the wake turn DIES before the route acks
-  // (the SDK binary missing, a mid-stream abort), the run stays pending and
-  // stays announced, so no second trigger fires for it. That is the old
-  // behaviour preserved on purpose — a permanently failing turn must not become
-  // a turn loop — and the outcome still reaches the model on the next turn the
-  // human starts, which is AC2's path and needs no trigger at all.
-  //
-  // The decision itself is `freshUltraWakes` in lib/ultra-wake.ts — pure, and
-  // out of this file precisely so a test can drive it. All this ref holds is the
-  // carry-over between polls.
-  const announcedWakesRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const { fresh, announced } = freshUltraWakes(
-      announcedWakesRef.current,
-      pendingWakes.map((w) => w.runId),
-    );
-    announcedWakesRef.current = announced;
-    if (fresh.length === 0) return;
-    const seq = watcherSeqRef.current++;
-    // BOTH HALVES OF T10 ARE IN THE SEAM, not here — `freshUltraWakes` decides
-    // WHICH runs are new, `shouldEnqueueUltraWake` decides whether a trigger may
-    // be added given what is already queued. Read that second one's header
-    // before touching this: dropping it re-opens exactly what T10 forbids, and
-    // it is asked inside the updater so it sees the real queue rather than a
-    // render-time closure over it. (`seq` is simply not consumed on the skip
-    // path; it is an id source, and a gap in it means nothing.)
-    setInjectionQueue((q) =>
-      shouldEnqueueUltraWake(fresh, q)
-        ? [
-            ...q,
-            // The SENTINEL, never the outcome text. route.ts swaps it for the
-            // server-authored instruction and the system-prompt appendix carries
-            // the facts, so this client authors the trigger and nothing else.
-            // `hidden` suppresses the local bubble; the route's `hideUserMessage`
-            // is what keeps it out of the persisted transcript (they are two
-            // different suppressions, and a wake needs both).
-            { id: `uw${seq}`, text: ULTRA_WAKE_SENTINEL, hidden: true },
-          ]
-        : q,
-    );
-  }, [pendingWakes]);
-
-  // §6.D — injection: when the composer is idle ("ready" — mid-turn is forbidden
-  // by the busy guard) and a watcher turn is queued, dequeue exactly ONE and
-  // dispatch it via the normal send() path. Removing the item BEFORE send()
-  // (which synchronously flips status to "submitted") plus this status gate
-  // guarantees no double-injection / infinite loop: the queue shrinks each pass
-  // and the next item can only fire once the turn settles back to "ready".
-  // Also require no active reader: during the §1b reconnect tail status is
-  // transiently "ready" while a detached turn still runs server-side (the
-  // reconnect effect only flips to "streaming" on its first live event), so
-  // injecting then would POST a second concurrent turn — the mid-turn injection
-  // the busy guard forbids. abortRef/reconnectAbortRef being null means truly idle.
-  useEffect(() => {
-    if (
-      status !== "ready" ||
-      abortRef.current ||
-      reconnectAbortRef.current ||
-      injectionQueue.length === 0
-    )
-      return;
-    const [next, ...rest] = injectionQueue;
-    setInjectionQueue(rest);
-    // A WAKE TRIGGER IS ONLY VALID WHILE THE MAILBOX IT SPEAKS FOR IS STILL FULL
-    // (review SF-2). Nothing else re-validates it: the server's
-    // `isUltraWakeTrigger` is `!!sessionId && message === ULTRA_WAKE_SENTINEL`
-    // and consults no state. So a trigger enqueued while the drain was blocked
-    // and dispatched after the wakes were already acked would run
-    // ULTRA_WAKE_PROMPT — "the COMPLETED ULTRA RUNS block in your context above
-    // carries each run's outcome" — against a prompt with no such block, on a
-    // turn that renders no user bubble. The reachable path is the §1b reconnect
-    // tail: `status` is transiently "ready" while `reconnectAbortRef.current` is
-    // non-null, so the composer is enabled and the drain is not; the human types;
-    // that POST acks and renders the wakes; the tail clears and this drains the
-    // stale trigger. Dropping it here (already removed from the queue above) is
-    // the whole fix. The sentinel IS the discriminator — the same seam the route
-    // recognizes on — so no second flag has to be kept in sync with it.
-    if (next.text === ULTRA_WAKE_SENTINEL && pendingWakes.length === 0) return;
-    // THE DISPATCH CHANGED IN STORY 4.1; THE GATE DID NOT. The three conditions
-    // above are untouched and must stay that way — writing a second idleness
-    // predicate is how "an assistant turn appears on its own" becomes "two turns
-    // fire at once". What changed is one line: the flag is threaded through, so
-    // a hidden item (the Ultra wake trigger) reaches send()'s `hidden` branch
-    // and renders no user bubble, while an unflagged item (the loom watcher)
-    // dispatches EXACTLY as before — `undefined` is what send() already received.
-    void send(next.text, next.hidden ? { hidden: true } : undefined);
-    // Same dependency, same reason as the message-queue drain below: this gate
-    // also reads `reconnectAbortRef`, so it also needs waking when that ref
-    // clears without a status change.
-  }, [status, injectionQueue, send, pendingWakes, reconnectLive]);
+  // Turns this session dispatches on its own — loom watchers and Ultra
+  // completion wakes — plus the one idleness gate that decides when they may
+  // fire. See use-session-injections.ts; that gate must not be duplicated here.
+  const { watcherAlerts, dismissAlert } = useSessionInjections({
+    sessionId,
+    status,
+    reconnectLive,
+    pendingWakes,
+    abortRef,
+    reconnectAbortRef,
+    send,
+  });
 
   const queueUploadsRef = useRef<Set<string>>(new Set());
 
@@ -3454,184 +3047,6 @@ function SessionWorkspace({
     [busy, compacting, compactStartedAt, lastActivityAt, runningTool, status, thinking, turnStartedAt],
   );
 
-  // Merge project's scanned commands+skills with what the live SDK session
-  // actually reports (once known) — the SDK's slash_commands list includes
-  // repo skills alongside .claude/commands entries, so a name match here
-  // keeps skills exactly like commands. The SDK list also carries built-ins
-  // and plugin commands we don't advertise, so this only ever narrows, never
-  // adds names the project scan didn't already find.
-  const availableCommands = useMemo(() => {
-    // Codex sessions don't run slash commands (a Claude-session feature today),
-    // so a Codex session offers none — regardless of what .claude/commands the
-    // repo has. The menu still opens (below) to say so honestly, rather than
-    // listing commands that would only be sent as literal text.
-    if (provider === "codex") return [];
-    if (sdkSlashCommands === null) return projectCommands;
-    const known = new Set(sdkSlashCommands);
-    return projectCommands.filter((c) => known.has(c.name));
-  }, [projectCommands, sdkSlashCommands, provider]);
-
-  const slashQuery =
-    textInput.value.startsWith("/") && !textInput.value.includes(" ")
-      ? textInput.value.slice(1)
-      : null;
-
-  const filteredCommands = useMemo(() => {
-    if (slashQuery === null) return [];
-    const q = slashQuery.toLowerCase();
-    return availableCommands.filter((c) => c.name.toLowerCase().startsWith(q));
-  }, [availableCommands, slashQuery]);
-
-  // The menu also opens on a genuinely empty project (zero commands AND zero
-  // skills) so it can show the "how to add some" hint below instead of just
-  // silently doing nothing — that read as a broken feature to users. A query
-  // that merely doesn't match anything (project has commands, none start
-  // with what's typed) still closes the menu as before.
-  const slashMenuOpen =
-    slashQuery !== null &&
-    !menuDismissed &&
-    (filteredCommands.length > 0 ||
-      projectCommands.length === 0 ||
-      // Codex: open even with a non-empty project scan, to show the honest
-      // "commands are a Claude-session feature" copy instead of nothing.
-      provider === "codex");
-
-  // Reset the selection whenever the query text changes so it never points
-  // past a shrunk list or feels stale after typing.
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [slashQuery]);
-
-  const acceptCommand = useCallback(
-    (c: ProjectCommand) => {
-      textInput.setInput(`/${c.name} `);
-    },
-    [textInput],
-  );
-
-  // ── `@` file mentions ─────────────────────────────────────────────────────
-  //
-  // The token under the cursor, if the cursor is at the end of one.
-  const mentionQuery = useMemo(() => {
-    const value = textInput.value;
-    return MENTION_AT_CARET.exec(value.slice(0, caret ?? value.length))?.[1] ?? null;
-  }, [textInput.value, caret]);
-
-  const mentionMenuOpen = mentionQuery !== null && !mentionDismissed && mentionFiles.length > 0;
-
-  // Re-query on every keystroke of the mention, debounced. The index resets
-  // with the query so the highlight never points past a shrunk list.
-  useEffect(() => {
-    if (mentionQuery === null) {
-      setMentionFiles([]);
-      return;
-    }
-    setMentionIndex(0);
-    const abort = new AbortController();
-    const timer = setTimeout(() => {
-      void fetch(
-        `/api/projects/${encodeURIComponent(project)}/files?q=${encodeURIComponent(mentionQuery)}`,
-        { signal: abort.signal },
-      )
-        .then((r) => (r.ok ? r.json() : { files: [] }))
-        .then((body: { files?: ProjectFile[] }) => setMentionFiles(body.files ?? []))
-        .catch(() => {
-          /* aborted or offline — leave the previous list rather than flashing empty */
-        });
-    }, 120);
-    return () => {
-      abort.abort();
-      clearTimeout(timer);
-    };
-  }, [mentionQuery, project]);
-
-  const acceptMention = useCallback(
-    (file: ProjectFile) => {
-      const value = textInput.value;
-      const pos = caret ?? value.length;
-      const match = MENTION_AT_CARET.exec(value.slice(0, pos));
-      if (!match) return;
-      // Replace from the "@" itself — match[1] is the query, so the "@" sits one
-      // character before it — and leave a trailing space so the next word does
-      // not extend the path that was just completed.
-      const start = pos - match[1].length - 1;
-      const next = `${value.slice(0, start)}@${file.path} ${value.slice(pos)}`;
-      // "@" + path + the trailing space — where the human should carry on typing.
-      const after = start + file.path.length + 2;
-      textInput.setInput(next);
-      pendingCaretRef.current = after;
-      setCaret(after);
-      setMentionDismissed(true);
-    },
-    [textInput, caret],
-  );
-
-  // No focus() anywhere here — navigation and acceptance are driven entirely
-  // by the textarea's own keydown, so the textarea never loses focus.
-  const handleComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    // The caret moves on arrows/home/end without the value changing, so onChange
-    // alone would leave `caret` stale and the mention query measured against the
-    // wrong slice. Read it AFTER the browser has applied the key, hence the
-    // deferral — currentTarget is captured first because React pools nothing
-    // here but the event object is still not safe to close over.
-    const el = e.currentTarget;
-    queueMicrotask(() => setCaret(el.selectionStart));
-
-    // The mention menu takes the keys FIRST when it is open: both menus are
-    // driven by the same textarea, and a "/" command can only ever be at the
-    // very start of the value, so the two can never both be open on the same
-    // token — but if that ever changes, the one the cursor is actually inside
-    // should win, and that is this one.
-    if (mentionMenuOpen) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMentionDismissed(true);
-        return;
-      }
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          setMentionIndex((i) => (i + 1) % mentionFiles.length);
-          return;
-        case "ArrowUp":
-          e.preventDefault();
-          setMentionIndex((i) => (i - 1 + mentionFiles.length) % mentionFiles.length);
-          return;
-        case "Enter":
-        case "Tab":
-          e.preventDefault();
-          acceptMention(mentionFiles[mentionIndex] ?? mentionFiles[0]);
-          return;
-      }
-    }
-
-    if (!slashMenuOpen) return;
-    // Escape always dismisses, including the empty-project hint panel. The
-    // rest only make sense once there's something to navigate/accept — the
-    // hint panel has no items, so leave those keys to behave normally
-    // (e.g. Enter still submits the composer).
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setMenuDismissed(true);
-      return;
-    }
-    if (filteredCommands.length === 0) return;
-    switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        setSelectedIndex((i) => (i + 1) % filteredCommands.length);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        setSelectedIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length);
-        break;
-      case "Enter":
-      case "Tab":
-        e.preventDefault();
-        acceptCommand(filteredCommands[selectedIndex] ?? filteredCommands[0]);
-        break;
-    }
-  };
 
   // Everything attached to this session, for the pinned summary's Context
   // section. DERIVED FROM THE TRANSCRIPT, never stored on its own (contract #5,
@@ -3972,14 +3387,12 @@ function SessionWorkspace({
             <InlineLoomRow
               key={row.id}
               row={row}
-              onDismiss={() =>
-                setLoomEvents((previous) => previous.filter((item) => item.id !== row.id))
-              }
+              onDismiss={() => dismissLoomEvent(row.id)}
             />
           ))}
         </div>
       ) : undefined,
-    [activeBucket, loomEvents],
+    [activeBucket, loomEvents, dismissLoomEvent],
   );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;
@@ -4103,9 +3516,7 @@ function SessionWorkspace({
               size="icon-xs"
               aria-label="Dismiss"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() =>
-                setWatcherAlerts((prev) => prev.filter((x) => x.id !== a.id))
-              }
+              onClick={() => dismissAlert(a.id)}
             >
               <XIcon />
             </Button>
@@ -4171,75 +3582,7 @@ function SessionWorkspace({
               freshWorkspace && "-translate-y-[calc(45dvh-7.5rem)]",
             )}
           >
-            {slashMenuOpen && (
-              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-                {filteredCommands.length === 0 ? (
-                  <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                    {provider === "codex"
-                      ? "Slash commands are a Claude-session feature — Codex sessions don't run them today."
-                      : "No commands — add .claude/commands/*.md or skills to this repo."}
-                  </p>
-                ) : (
-                  filteredCommands.map((c, i) => (
-                    <button
-                      type="button"
-                      key={c.name}
-                      // preventDefault on mousedown keeps focus on the textarea — no
-                      // .focus() call, just skipping the browser's default click-to-
-                      // focus so the composer stays the active element.
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => acceptCommand(c)}
-                      className={cn(
-                        "flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left",
-                        i === selectedIndex
-                          ? "bg-accent text-accent-foreground"
-                          : "hover:bg-accent hover:text-accent-foreground",
-                      )}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-xs">/{c.name}</span>
-                        {c.kind === "skill" && (
-                          <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                            skill
-                          </Badge>
-                        )}
-                      </span>
-                      {c.description && (
-                        <span className="text-[11px] text-muted-foreground">
-                          {c.description}
-                        </span>
-                      )}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-            {mentionMenuOpen && (
-              <div className="absolute inset-x-4 bottom-full z-10 mb-2 max-h-64 overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10">
-                {mentionFiles.map((f, i) => (
-                  <button
-                    type="button"
-                    key={f.path}
-                    // Same trick the slash menu uses: preventDefault on
-                    // mousedown keeps focus on the textarea, so accepting an
-                    // item never costs the composer its cursor.
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => acceptMention(f)}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left",
-                      i === mentionIndex
-                        ? "bg-accent text-accent-foreground"
-                        : "hover:bg-accent hover:text-accent-foreground",
-                    )}
-                  >
-                    <span className="shrink-0 font-mono text-xs">{f.name}</span>
-                    <span className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground">
-                      {f.path}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
             {/* PAUSED IS A PROPERTY OF THE QUEUE, NOT OF THE WAITING LIST, so
                 it is stated at the queue's level and not inside one of its
                 groups. It used to live in the waiting block's heading with
@@ -4474,16 +3817,12 @@ function SessionWorkspace({
                         ? "Enter queues a message…"
                         : "Ask for changes, explore the code, or attach context…"
                   }
-                  onKeyDown={handleComposerKeyDown}
-                  onChange={(e) => {
-                    setMenuDismissed(false);
-                    // Typing past a completed mention must be able to re-open
-                    // the menu, so this clears the dismissal the same way the
-                    // slash menu's does.
-                    setMentionDismissed(false);
-                    setCaret(e.currentTarget.selectionStart);
-                  }}
-                  onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+                  onKeyDown={autocomplete.onComposerKeyDown}
+                  // Every edit un-dismisses BOTH menus and re-measures the
+                  // caret — typing past a completed mention has to be able to
+                  // re-open the menu. One handler for both, in the hook.
+                  onChange={autocomplete.onComposerInput}
+                  onClick={(e) => autocomplete.setCaret(e.currentTarget.selectionStart)}
                 />
               </PromptInputBody>
               <PromptInputFooter className="min-h-11 flex-wrap border-t border-border/40 px-2.5 pb-2 pt-1.5">

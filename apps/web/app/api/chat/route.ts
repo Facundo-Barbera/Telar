@@ -1,12 +1,11 @@
 import {
   query,
   type EffortLevel,
-  type HookInput,
-  type HookJSONOutput,
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCliUsable, claudeExecutableOptions, resolveClaudeCli } from "@/lib/claude-executable";
+import { makeCompactionNotifiers, makePreToolUseGuardrail } from "@/lib/server/turn-hooks";
 import {
   fromClaudeContextUsage,
   fromCodexContextUsage,
@@ -994,6 +993,43 @@ export async function POST(req: Request) {
           const { mode: _mode, isolation: _isolation, ...safeInput } = input;
           return { behavior: "allow", updatedInput: safeInput };
         }
+        // FULL ACCESS MEANS FULL ACCESS — INCLUDING FOR A SUB-AGENT (#28).
+        //
+        // Without this, "Full access" was a promise this function did not keep,
+        // and it broke in one specific place: sub-agents. `full-access` maps to
+        // the SDK's `bypassPermissions`, under which the SDK approves the MAIN
+        // turn's calls itself and never invokes canUseTool — so the session
+        // looked prompt-free and was. But every tool a sub-agent calls is
+        // DELIBERATELY routed here (see the agent-spawn comment above), and
+        // this function had no mode check at all. So it did what it does in
+        // every other mode: opened a pending approval and awaited a human.
+        //
+        // Nobody could answer it. The card is addressed to a human who is
+        // watching a session they were told needs no approvals, and the tool
+        // call sat blocked until something upstream gave up on it — which the
+        // model was then told, in the CLI's own words, was the user refusing.
+        // Hence "phantom declines" that only ever appeared under parallel agent
+        // work, never on a main turn, and never in an Ultra (whose agents are
+        // spawned in-process by the executor and never reach this channel).
+        //
+        // The guardrail above still runs FIRST and its deny still wins, so
+        // protectedPaths / disallowedTools are unaffected: this widens what a
+        // mode may auto-approve, never what a guardrail permits.
+        //
+        // THE TWO MOAT TOOLS ARE EXCLUDED, and that exclusion is the whole
+        // reason this is not a straight copy of the reference implementation.
+        // t3code's ClaudeAdapter returns allow for full-access with no
+        // exceptions, because it has no accept moat to keep. Telar does: §M.6
+        // requires a human's click on start_loom and answer_blocked in EVERY
+        // permission mode, and the PreToolUse hook force-routes both back here
+        // precisely so that click cannot be skipped. They must keep asking.
+        if (
+          runtimeMode === "full-access" &&
+          toolName !== LOOM_START_TOOL &&
+          toolName !== LOOM_ANSWER_BLOCKED_TOOL
+        ) {
+          return { behavior: "allow", updatedInput: input };
+        }
         const rule = ruleFor(toolName, input);
         // mcp__loom__start_loom is the loom moat's commit action (docs/
         // loom-model.md §M.6) — it must NEVER be satisfiable by a
@@ -1088,121 +1124,14 @@ export async function POST(req: Request) {
       // permission was decided, in every mode — this re-runs the exact same
       // check (makeGuardrailDecision) as canUseTool's own guardrail branch,
       // so both paths are covered (belt and suspenders).
-      const preToolUseGuardrail = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PreToolUse") return { continue: true };
-        const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
-        // Same profile-driven source as canUseTool's own branch above — one
-        // resolved guardrail set, two enforcement points (AD-1's "enforced
-        // twice"). If these two ever read different values, the belt-and-
-        // suspenders becomes a belt and a decoration.
-        const decision = makeGuardrailDecision(
-          sessionProfile,
-          sessionProfile.cwd,
-          input.tool_name,
-          toolInput,
-        );
-        if (decision.behavior === "deny") {
-          return {
-            continue: true,
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "deny",
-              permissionDecisionReason: decision.message,
-            },
-          };
-        }
-        // §M.6 / §6 moat guard: mcp__loom__start_loom dispatches a real loom
-        // — the one action in this whole toolset that spends money
-        // autonomously — and "no human starts a Loom alone" must hold in
-        // EVERY permission mode, not just "default". It's deliberately never
-        // in `allowedTools` (see the query() options below), but that alone
-        // only stops the SDK's pre-approval fast path; permissionMode
-        // "auto"/"acceptEdits" can still have the SDK's own classifier or
-        // accept-edits shortcut approve it WITHOUT ever invoking canUseTool
-        // (the same gap the guardrail re-check above exists to close).
-        // Hooks fire before that decision is finalized, so returning `ask`
-        // here — regardless of mode — force-routes it back through the
-        // interactive canUseTool permission card every single time; the
-        // human clicking Approve on that card IS the §M.6 human-approved
-        // provenance stamp startLoomFromBundle's `by` records.
-        // The SAME §M.6 hard-route covers answer_blocked (M11.3): the
-        // conversational-escalation write commits a viability-making
-        // verification recipe that resumes a parked loop, so — like start_loom
-        // — it must force the interactive canUseTool card in EVERY permission
-        // mode; the human's Approve click IS the provenance stamp answerBlocked's
-        // `by` records. It is never in the escalation session's allowedTools, but
-        // that alone only stops the SDK's pre-approval fast path.
-        if (input.tool_name === LOOM_START_TOOL || input.tool_name === LOOM_ANSWER_BLOCKED_TOOL) {
-          return {
-            continue: true,
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "ask",
-              permissionDecisionReason:
-                input.tool_name === LOOM_START_TOOL
-                  ? "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6)."
-                  : "Answering a blocked loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
-            },
-          };
-        }
-        // Mirror canUseTool's own AGENT_SPAWN_TOOL_CANDIDATES stripping (see
-        // its comment above): this hook fires even for a Task/Agent spawn
-        // that auto/acceptEdits mode approved WITHOUT ever calling canUseTool
-        // — the only place left that can strip a model-supplied `mode`
-        // ("bypassPermissions" skips the subagent's own permission checks
-        // entirely) or `isolation` ("remote" moves it off-box) before either
-        // reaches the SDK. `updatedInput` on a PreToolUse hook's output
-        // replaces the tool's input the same way canUseTool's own does.
-        if (
-          (AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(input.tool_name) &&
-          ("mode" in toolInput || "isolation" in toolInput)
-        ) {
-          const { mode: _mode, isolation: _isolation, ...safeInput } = toolInput;
-          return {
-            continue: true,
-            hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: safeInput },
-          };
-        }
-        return { continue: true };
-      };
-
-      // The client's "compacting…" indicator, sourced from the SDK's own
-      // PreCompact/PostCompact hooks rather than from `compact` (this route's
-      // own on-demand flag) alone — the SDK fires PreCompact/PostCompact for
-      // its OWN auto-compaction too, whenever a normal turn is about to
-      // overrun its context window, and that case has no `compact: true` on
-      // the wire at all. One pair of hooks covers both origins; `input.trigger`
-      // ("manual" | "auto") is how the client tells them apart, same
-      // enumeration as HarnessEvent's compact_start/compact_end in
-      // packages/core. Always registered (not conditional on `compact`) for
-      // exactly that reason — see PARITY RULE / AD-11's neighbor concern: an
-      // auto-compaction the client never learns about is a silent-degradation
-      // shape by a different name.
-      const preCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PreCompact") return { continue: true };
-        // Opens a compaction (records nothing yet — nothing has been compacted).
-        noteCompaction("compacting", {
-          at: Date.now(),
-          trigger: input.trigger === "auto" ? "auto" : "manual",
-        });
-        send("compacting", { trigger: input.trigger });
-        return { continue: true };
-      };
-      const postCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PostCompact") return { continue: true };
-        // Records what this hook knows — the trigger, and that it FINISHED.
-        // `compact_boundary` carries the counts and merges into the same record
-        // whichever of the two arrives first (foldCompactionEvent takes no
-        // position on an ordering this codebase has never traced). The summary
-        // text is not recorded on purpose: a marker states, it does not narrate
-        // (see compactionMarkerText).
-        noteCompaction("compacted", {
-          at: Date.now(),
-          trigger: input.trigger === "auto" ? "auto" : "manual",
-        });
-        send("compacted", { trigger: input.trigger, summary: input.compact_summary });
-        return { continue: true };
-      };
+      // AD-1's SECOND enforcement point, plus the compaction notifiers — both
+      // in lib/server/turn-hooks.ts, where each one's closure surface is stated
+      // in its signature rather than being the whole of this handler's scope.
+      const preToolUseGuardrail = makePreToolUseGuardrail(sessionProfile);
+      const { preCompactNotify, postCompactNotify } = makeCompactionNotifiers({
+        noteCompaction,
+        send,
+      });
 
       try {
         if (provider === "codex") {
@@ -1367,14 +1296,43 @@ export async function POST(req: Request) {
             tool: string;
             arguments: Record<string, unknown>;
           }): Promise<"accept" | "decline"> => {
+            // THE MOAT IS CHECKED FIRST, AND IT IS NOT BROWSER-SCOPED (#28,
+            // AD-1 §M.6). Everything below this block is about browser calls;
+            // this block is not, and putting it after the namespace filter is
+            // what left the hole it closes.
+            //
+            // On the Claude side, start_loom and answer_blocked are force-routed
+            // to an interactive card by the PreToolUse guardrail in EVERY
+            // permission mode. A CODEX session has no PreToolUse hook — that is
+            // an SDK concept — so this callback is the only gate its tool calls
+            // ever pass. And its first line used to return "accept" for every
+            // non-browser namespace, while `codexToolNamespaces` below hands
+            // Codex the full loom toolset. So an agent in a Codex session could
+            // call start_loom — the one action in this toolset that spends money
+            // autonomously — and have it auto-accepted, in every mode, with no
+            // human in it. The tool handlers cannot catch this: `by` is
+            // server-resolved, but nothing in loom-mcp.ts requires a click.
+            //
+            // Both names are checked against the CANONICAL mcp__<ns>__<tool>
+            // spelling, the same one the rules store, the permission card and
+            // LOOM_START_TOOL itself use, so the two sides cannot drift.
+            const canonicalToolName = req.namespace
+              ? `mcp__${req.namespace}__${req.tool}`
+              : req.tool;
+            const isMoatTool =
+              canonicalToolName === LOOM_START_TOOL ||
+              canonicalToolName === LOOM_ANSWER_BLOCKED_TOOL;
+
             // Other Telar dynamic tools retain their existing lifecycle gates.
             // Browser reads are safe to perform immediately; browser mutations
             // need the same user-facing permission card Claude receives unless
             // the selected runtime mode explicitly delegates approval.
-            if (req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE) return "accept";
-            if (isReadOnlyBrowserCall(req.tool, req.arguments)) return "accept";
+            if (!isMoatTool) {
+              if (req.namespace !== CODEX_BROWSER_TOOL_NAMESPACE) return "accept";
+              if (isReadOnlyBrowserCall(req.tool, req.arguments)) return "accept";
+            }
 
-            const toolName = `mcp__browser__${req.tool}`;
+            const toolName = isMoatTool ? canonicalToolName : `mcp__browser__${req.tool}`;
             const guardrail = makeGuardrailDecision(
               sessionProfile,
               sessionProfile.cwd,
@@ -1385,10 +1343,22 @@ export async function POST(req: Request) {
               send("error", { message: guardrail.message });
               return "decline";
             }
-            if (runtimeMode === "full-access" || runtimeMode === "auto") return "accept";
+            // `!isMoatTool` on BOTH escapes below, for the two different ways a
+            // §M.6 tool could otherwise slip past: a runtime mode that delegates
+            // approval wholesale, and a persisted "always allow" rule. The
+            // second is the subtler one — it is why the Claude path skips its
+            // own readRules fast path for these two names as well. A single
+            // Approve click on one start_loom must never become standing
+            // authorization for every later one.
+            if (!isMoatTool && (runtimeMode === "full-access" || runtimeMode === "auto")) {
+              return "accept";
+            }
 
             const rule = ruleFor(toolName, req.arguments);
-            if (readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))) {
+            if (
+              !isMoatTool &&
+              readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))
+            ) {
               return "accept";
             }
             if (abort.signal.aborted) return "decline";
@@ -1421,7 +1391,13 @@ export async function POST(req: Request) {
               myPending.delete(id);
             }
             send("permission_result", { id, behavior: decision.behavior });
-            if (decision.behavior === "allow" && decision.always) {
+            // Never persist a rule for a §M.6 tool, matching the Claude path's
+            // own `always` guard. The readRules skip above already refuses to
+            // honour such a rule, so this is the second of two halves that must
+            // BOTH be present: one refuses to read it, this refuses to write it.
+            // Keeping only one leaves a rule on disk asserting a standing
+            // approval the human never gave.
+            if (decision.behavior === "allow" && decision.always && !isMoatTool) {
               addRule(project, decision.rule ?? rule);
             }
             return decision.behavior === "allow" ? "accept" : "decline";

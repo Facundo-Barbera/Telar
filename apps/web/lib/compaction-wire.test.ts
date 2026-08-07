@@ -36,6 +36,12 @@ const meters = readFileSync(
   "utf8",
 );
 const route = readFileSync(new URL("../app/api/chat/route.ts", import.meta.url), "utf8");
+// The PreCompact/PostCompact notifiers moved into lib/server/turn-hooks.ts. The
+// send/fold PAIRING is a property of the turn, not of a file, so the scan below
+// reads the turn's two source files as one — splitting them would let a fold
+// lose its send simply by the two landing on opposite sides of the boundary.
+const turnHooks = readFileSync(new URL("./server/turn-hooks.ts", import.meta.url), "utf8");
+const turnSource = `${route}\n${turnHooks}`;
 const storeSource = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
 const sessionPage = readFileSync(
   new URL("../app/projects/[name]/sessions/[id]/page.tsx", import.meta.url),
@@ -143,12 +149,12 @@ describe("the route records what it streams", () => {
       ["compacted", 3],
       ["compact_boundary", 1],
     ] as const) {
-      const folded = route.match(new RegExp(`noteCompaction\\("${event}"`, "g")) ?? [];
-      const sent = route.match(new RegExp(`send\\("${event}"`, "g")) ?? [];
+      const folded = turnSource.match(new RegExp(`noteCompaction\\("${event}"`, "g")) ?? [];
+      const sent = turnSource.match(new RegExp(`send\\("${event}"`, "g")) ?? [];
       expect(folded.length).toBe(sends);
       expect(sent.length).toBe(sends);
     }
-    expect(route).not.toContain("upsertCompaction(");
+    expect(turnSource).not.toContain("upsertCompaction(");
   });
 
   test("forwards Codex's mid-turn auto-compaction, which used to be dropped", () => {
