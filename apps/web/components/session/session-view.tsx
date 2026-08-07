@@ -90,9 +90,6 @@ import {
 import {
   LoomsPill,
   InlineLoomRow,
-  type PillLoom,
-  type LoomTone,
-  type LoomEventRow,
 } from "@/components/session/session-loom";
 import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
@@ -125,6 +122,7 @@ import {
   useComposerAutocomplete,
 } from "@/components/session/composer-autocomplete";
 import { ComposerControls } from "@/components/session/composer-settings";
+import { useLoomHandoff } from "@/components/session/use-loom-handoff";
 import { useSessionInjections } from "@/components/session/use-session-injections";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
@@ -142,11 +140,9 @@ import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { shortId } from "@/lib/format";
 import { consumeSSE } from "@/lib/sse";
 import type { ContextUsageSnapshot } from "@/lib/context-usage";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
-import type { WorkUnitState } from "@telar/core";
 import {
   DEFAULT_RUNTIME_MODE,
   RUNTIME_MODE_OPTIONS,
@@ -218,14 +214,6 @@ function modelProvider(modelId: string): Provider | undefined {
 // @telar/core code that has no business in the client bundle.
 const LOOM_START_TOOL = "mcp__loom__start_loom";
 
-// Map a real WorkUnitState to the loom pill/row urgency tone (accent only) and a
-// human verb. blocked/failed/halted demand the human (amber + pulse); ready /
-// needs-review / done are the green human-touchpoints; everything else weaves.
-function loomTone(s: WorkUnitState | null | undefined): LoomTone {
-  if (s === "blocked" || s === "failed" || s === "halted") return "blocked";
-  if (s === "ready" || s === "needs-review" || s === "done") return "ready";
-  return "weaving";
-}
 // Parse a model's context-window label ("1M", "200K", "200000") to a token
 // count, so the CTX hover can show a real used/window fill. Undefined when the
 // label isn't parseable — the hover then omits the bar (data-light).
@@ -237,25 +225,6 @@ function parseWindow(label: string | undefined): number | undefined {
   if (!Number.isFinite(n)) return undefined;
   const unit = m[2].toLowerCase();
   return Math.round(n * (unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1));
-}
-
-function loomVerb(s: WorkUnitState | null | undefined): string {
-  switch (s) {
-    case "blocked":
-      return "Loom parked";
-    case "ready":
-      return "Loom ready";
-    case "needs-review":
-      return "Loom needs review";
-    case "done":
-      return "Loom done";
-    case "failed":
-      return "Loom failed";
-    case "halted":
-      return "Loom halted";
-    default:
-      return "Loom weaving";
-  }
 }
 
 // The Loom Session's agent-first greeting (docs/loom-model.md §5, feature
@@ -1216,22 +1185,16 @@ function SessionWorkspace({
   // Guard so the reconnect effect attaches at most once per session id.
   const reconnectedRef = useRef<string | null>(null);
 
-  // The god-view handoff (docs/loom-model.md §5's "make this real" moment):
-  // set the instant mcp__loom__start_loom's tool_result reports {loomId,
-  // url} (see the "tool_result" case below), and seeded from the persisted
-  // chat on reload so the header chip survives a refresh. `dismissed` only
-  // hides the banner — the chip stays up for the life of the session either
-  // way, since the loom itself doesn't go away when the banner is closed.
-  const [loomHandoff, setLoomHandoff] = useState<{ loomId: string; url: string } | null>(
-    initialChat?.loomId ? { loomId: initialChat.loomId, url: `/looms/${initialChat.loomId}` } : null,
-  );
-  const [handoffDismissed, setHandoffDismissed] = useState(false);
-  // Live loom lifecycle for the aggregate pill + inline transcript rows (replaces
-  // the persistent "Loom started" banner). `loomLive` is the latest state/title
-  // from the loom's own event stream; `loomEvents` is the durable in-stream
-  // record appended on each transition. Both are seeded/driven by loomHandoff.
-  const [loomLive, setLoomLive] = useState<{ title: string; state: WorkUnitState } | null>(null);
-  const [loomEvents, setLoomEvents] = useState<LoomEventRow[]>([]);
+  // The god-view handoff and the loom lifecycle it starts — see
+  // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
+  // mcp__loom__start_loom's tool_result lands on this session's own wire.
+  const {
+    setHandoff: setLoomHandoff,
+    events: loomEvents,
+    dismissEvent: dismissLoomEvent,
+    pillLooms,
+  } = useLoomHandoff({ initialLoomId: initialChat?.loomId, sessionTitle: title });
+
   // tool_use id -> tool name, populated as "tool" events arrive so the
   // "tool_result" case (which only carries id/output/isError) can tell
   // whether a given result belongs to start_loom. A ref, not state: purely
@@ -1922,7 +1885,6 @@ function SessionWorkspace({
                     const parsed = JSON.parse(payload.output) as { loomId?: unknown; url?: unknown };
                     if (typeof parsed.loomId === "string" && typeof parsed.url === "string") {
                       setLoomHandoff({ loomId: parsed.loomId, url: parsed.url });
-                      setHandoffDismissed(false);
                       // Loom Session (docs/loom-model.md §5): never
                       // auto-navigate away from the planning session — the
                       // "Loom started" banner below (with its new-tab "View
@@ -2572,73 +2534,6 @@ function SessionWorkspace({
     // fills would only hit the (now-false) guard.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [escalation, sessionId, send]);
-
-  // Loom-notify (replaces the banner): tail THIS session's loom event stream so
-  // the aggregate pill reflects the loom's real state and each transition lands
-  // as a durable inline transcript row. Durable-minimum only — state word +
-  // title + short id + god-view — no thread/gate detail (the loom UI is still
-  // being shaped). Seeded/keyed on loomHandoff.loomId.
-  const loomHandoffId = loomHandoff?.loomId;
-  const loomHandoffUrl = loomHandoff?.url;
-  const loomLastStateRef = useRef<WorkUnitState | null>(null);
-  const loomEventSeqRef = useRef(0);
-  useEffect(() => {
-    if (!loomHandoffId) return;
-    loomLastStateRef.current = null;
-    const url = loomHandoffUrl ?? `/looms/${loomHandoffId}`;
-    const es = new EventSource(`/api/looms/${encodeURIComponent(loomHandoffId)}/events`);
-    const onRun = (e: MessageEvent) => {
-      let loom: any;
-      try {
-        loom = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      const state = loom?.state as WorkUnitState | undefined;
-      if (!state) return;
-      const title =
-        typeof loom.title === "string" && loom.title ? loom.title : shortId(loomHandoffId);
-      setLoomLive({ title, state });
-      // Append an inline row only on a genuine state change (the connect-time
-      // snapshot seeds the first row; later transitions each add one).
-      if (loomLastStateRef.current !== state) {
-        loomLastStateRef.current = state;
-        const seq = loomEventSeqRef.current++;
-        setLoomEvents((prev) => [
-          ...prev,
-          {
-            id: `le${seq}`,
-            loomId: shortId(loomHandoffId),
-            title,
-            verb: loomVerb(state),
-            tone: loomTone(state),
-            url,
-          },
-        ]);
-      }
-    };
-    es.addEventListener("run", onRun as EventListener);
-    es.addEventListener("end", () => es.close());
-    return () => es.close();
-  }, [loomHandoffId, loomHandoffUrl]);
-
-  // The aggregate looms pill's data — one loom per session in practice (the
-  // persisted Chat.loomId is single), modelled as an array so N looms roll up
-  // cleanly if that ever changes. Tone follows the live state; title/state fall
-  // back to sensible defaults before the first event lands.
-  const pillLooms: PillLoom[] = useMemo(() => {
-    if (!loomHandoff) return [];
-    return [
-      {
-        key: loomHandoff.loomId,
-        id: shortId(loomHandoff.loomId),
-        title: loomLive?.title ?? title,
-        tone: loomTone(loomLive?.state),
-        stateWord: loomLive?.state ?? "weaving",
-        url: loomHandoff.url,
-      },
-    ];
-  }, [loomHandoff, loomLive, title]);
 
   // §6.C-bis — story 4.1 / AC1: the Ultra completion wake. Sibling to the
   // watcher subscriber above and, like it, this only ENQUEUES — the §6.D drain
@@ -3492,14 +3387,12 @@ function SessionWorkspace({
             <InlineLoomRow
               key={row.id}
               row={row}
-              onDismiss={() =>
-                setLoomEvents((previous) => previous.filter((item) => item.id !== row.id))
-              }
+              onDismiss={() => dismissLoomEvent(row.id)}
             />
           ))}
         </div>
       ) : undefined,
-    [activeBucket, loomEvents],
+    [activeBucket, loomEvents, dismissLoomEvent],
   );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;

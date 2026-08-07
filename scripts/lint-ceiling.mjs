@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 // Lower these when the backlog shrinks. They may never be raised: raising them
 // is what this file exists to prevent, and a PR that does it is visible in
 // review precisely because it has to touch this line.
-const CEILING = { errors: 129, warnings: 28 };
+const CEILING = { errors: 128, warnings: 27 };
 
 // A CEILING ALONE FAILS OPEN, so this is the other half of the gate.
 //
