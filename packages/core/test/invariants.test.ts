@@ -972,6 +972,10 @@ const ENGINE = "packages/core/src/engine.ts";
 const LOOMS = "packages/core/src/looms.ts";
 const TICK = "packages/core/src/tick.ts";
 const CHAT_ROUTE = "apps/web/app/api/chat/route.ts";
+// The PreToolUse guardrail's own module — AD-1's tool-layer half. Lifted out of
+// the route so its closure surface is a signature rather than a 2,500-line
+// scope; INV-1g checks the guard HERE and the wiring in the route.
+const CHAT_TURN_HOOKS = "apps/web/lib/server/turn-hooks.ts";
 const ACCEPT_ROUTE = "apps/web/app/api/looms/[id]/accept/route.ts";
 
 // THE PINNED INVENTORY. A new tool fails this test until someone adds it here
@@ -1282,7 +1286,20 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     const start = exportedStringConst(loomMcp.code, "LOOM_START_TOOL");
     const answerBlocked = exportedStringConst(loomMcp.code, "LOOM_ANSWER_BLOCKED_TOOL");
     const auto = exportedStringArray(loomMcp.code, "LOOM_AUTO_TOOLS");
-    const routeImports = importStatements(route.code)
+    // THE GUARD MOVED OUT OF THE ROUTE; THE MOAT DID NOT. `preToolUseGuardrail`
+    // now lives in lib/server/turn-hooks.ts, so the comparisons are asserted
+    // against THAT file and the route is asserted to WIRE it. Both halves are
+    // checked because either one alone is satisfiable with the moat gone: a
+    // guard nothing calls, or a call to something that guards nothing.
+    const hooksModule = byRel.get(CHAT_TURN_HOOKS);
+    if (!hooksModule) {
+      throw new Error(
+        `INV-1g: ${CHAT_TURN_HOOKS} is not in the index. It carries the PreToolUse guardrail — ` +
+          `the tool-layer half of AD-1's moat. CONSEQUENCE: the half cannot be checked at all. ` +
+          `NEXT STEP: if the module moved, update CHAT_TURN_HOOKS rather than deleting this test.`,
+      );
+    }
+    const guardImports = importStatements(hooksModule.code)
       .filter((s) => importSource(s) === "@/lib/loom-mcp")
       .join("\n");
 
@@ -1342,17 +1359,26 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
             `NEXT STEP: remove it from LOOM_AUTO_TOOLS.`,
         );
       }
-      if (!routeImports.includes(name)) {
+      if (!guardImports.includes(name)) {
         broken.push(
-          `${CHAT_ROUTE} no longer imports ${name} from @/lib/loom-mcp. ` +
+          `${CHAT_TURN_HOOKS} no longer imports ${name} from @/lib/loom-mcp. ` +
             HOOK +
             `CONSEQUENCE: the guardrail can only be comparing against a literal or against ` +
             `nothing; a literal drifts from the constant silently. NEXT STEP: import the symbol.`,
         );
       }
-      if (!route.code.includes(`input.tool_name === ${name}`)) {
+      // ANCHORED ON THE CONDITION, not on the substring. The bare
+      // `includes("input.tool_name === LOOM_START_TOOL")` this replaces was also
+      // satisfied by the ternary that PICKS THE REASON STRING a few lines below
+      // the branch — so deleting the actual comparison left the assertion green.
+      // Measured: replacing the comparison with a string literal passed. The
+      // guard has to be the head of an `if` or an arm of its `||`.
+      const guarded = new RegExp(
+        String.raw`(if\s*\(\s*|\|\|\s*)input\.tool_name === ${name}\b`,
+      );
+      if (!guarded.test(hooksModule.code)) {
         broken.push(
-          `${CHAT_ROUTE}'s guardrail no longer compares input.tool_name against ${name}. ` +
+          `${CHAT_TURN_HOOKS}'s guardrail no longer compares input.tool_name against ${name}. ` +
             HOOK +
             `CONSEQUENCE: that tool reaches the model ungated at the tool layer, leaving the moat ` +
             `resting entirely on the by-construction half. NEXT STEP: restore the comparison in ` +
@@ -1374,6 +1400,25 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
           HOOK +
           `CONSEQUENCE: the hook may be wired to something that does not carry the moat's checks. ` +
           `NEXT STEP: restore the guardrail, or rename it here and in the route together.`,
+      );
+    }
+    // …and the name it wires is the one the guarded module actually builds.
+    // Without this the route could wire a local stand-in of the same name while
+    // the real guard sat unused in a file that still passes every check above.
+    if (!route.code.includes("makePreToolUseGuardrail(")) {
+      broken.push(
+        `${CHAT_ROUTE} no longer calls makePreToolUseGuardrail() from ${CHAT_TURN_HOOKS}. ` +
+          HOOK +
+          `CONSEQUENCE: the guardrail the checks above verified is not the one this turn runs. ` +
+          `NEXT STEP: wire the factory, or move the guard back into the route and re-pin it here.`,
+      );
+    }
+    if (!hooksModule.code.includes("export function makePreToolUseGuardrail")) {
+      broken.push(
+        `${CHAT_TURN_HOOKS} no longer exports makePreToolUseGuardrail. ` +
+          HOOK +
+          `CONSEQUENCE: the route's call resolves elsewhere or not at all. ` +
+          `NEXT STEP: restore the export.`,
       );
     }
     expect(broken).toEqual([]);

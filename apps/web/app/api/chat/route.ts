@@ -1,12 +1,11 @@
 import {
   query,
   type EffortLevel,
-  type HookInput,
-  type HookJSONOutput,
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCliUsable, claudeExecutableOptions, resolveClaudeCli } from "@/lib/claude-executable";
+import { makeCompactionNotifiers, makePreToolUseGuardrail } from "@/lib/server/turn-hooks";
 import {
   fromClaudeContextUsage,
   fromCodexContextUsage,
@@ -1088,121 +1087,14 @@ export async function POST(req: Request) {
       // permission was decided, in every mode — this re-runs the exact same
       // check (makeGuardrailDecision) as canUseTool's own guardrail branch,
       // so both paths are covered (belt and suspenders).
-      const preToolUseGuardrail = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PreToolUse") return { continue: true };
-        const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
-        // Same profile-driven source as canUseTool's own branch above — one
-        // resolved guardrail set, two enforcement points (AD-1's "enforced
-        // twice"). If these two ever read different values, the belt-and-
-        // suspenders becomes a belt and a decoration.
-        const decision = makeGuardrailDecision(
-          sessionProfile,
-          sessionProfile.cwd,
-          input.tool_name,
-          toolInput,
-        );
-        if (decision.behavior === "deny") {
-          return {
-            continue: true,
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "deny",
-              permissionDecisionReason: decision.message,
-            },
-          };
-        }
-        // §M.6 / §6 moat guard: mcp__loom__start_loom dispatches a real loom
-        // — the one action in this whole toolset that spends money
-        // autonomously — and "no human starts a Loom alone" must hold in
-        // EVERY permission mode, not just "default". It's deliberately never
-        // in `allowedTools` (see the query() options below), but that alone
-        // only stops the SDK's pre-approval fast path; permissionMode
-        // "auto"/"acceptEdits" can still have the SDK's own classifier or
-        // accept-edits shortcut approve it WITHOUT ever invoking canUseTool
-        // (the same gap the guardrail re-check above exists to close).
-        // Hooks fire before that decision is finalized, so returning `ask`
-        // here — regardless of mode — force-routes it back through the
-        // interactive canUseTool permission card every single time; the
-        // human clicking Approve on that card IS the §M.6 human-approved
-        // provenance stamp startLoomFromBundle's `by` records.
-        // The SAME §M.6 hard-route covers answer_blocked (M11.3): the
-        // conversational-escalation write commits a viability-making
-        // verification recipe that resumes a parked loop, so — like start_loom
-        // — it must force the interactive canUseTool card in EVERY permission
-        // mode; the human's Approve click IS the provenance stamp answerBlocked's
-        // `by` records. It is never in the escalation session's allowedTools, but
-        // that alone only stops the SDK's pre-approval fast path.
-        if (input.tool_name === LOOM_START_TOOL || input.tool_name === LOOM_ANSWER_BLOCKED_TOOL) {
-          return {
-            continue: true,
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              permissionDecision: "ask",
-              permissionDecisionReason:
-                input.tool_name === LOOM_START_TOOL
-                  ? "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6)."
-                  : "Answering a blocked loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
-            },
-          };
-        }
-        // Mirror canUseTool's own AGENT_SPAWN_TOOL_CANDIDATES stripping (see
-        // its comment above): this hook fires even for a Task/Agent spawn
-        // that auto/acceptEdits mode approved WITHOUT ever calling canUseTool
-        // — the only place left that can strip a model-supplied `mode`
-        // ("bypassPermissions" skips the subagent's own permission checks
-        // entirely) or `isolation` ("remote" moves it off-box) before either
-        // reaches the SDK. `updatedInput` on a PreToolUse hook's output
-        // replaces the tool's input the same way canUseTool's own does.
-        if (
-          (AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(input.tool_name) &&
-          ("mode" in toolInput || "isolation" in toolInput)
-        ) {
-          const { mode: _mode, isolation: _isolation, ...safeInput } = toolInput;
-          return {
-            continue: true,
-            hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: safeInput },
-          };
-        }
-        return { continue: true };
-      };
-
-      // The client's "compacting…" indicator, sourced from the SDK's own
-      // PreCompact/PostCompact hooks rather than from `compact` (this route's
-      // own on-demand flag) alone — the SDK fires PreCompact/PostCompact for
-      // its OWN auto-compaction too, whenever a normal turn is about to
-      // overrun its context window, and that case has no `compact: true` on
-      // the wire at all. One pair of hooks covers both origins; `input.trigger`
-      // ("manual" | "auto") is how the client tells them apart, same
-      // enumeration as HarnessEvent's compact_start/compact_end in
-      // packages/core. Always registered (not conditional on `compact`) for
-      // exactly that reason — see PARITY RULE / AD-11's neighbor concern: an
-      // auto-compaction the client never learns about is a silent-degradation
-      // shape by a different name.
-      const preCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PreCompact") return { continue: true };
-        // Opens a compaction (records nothing yet — nothing has been compacted).
-        noteCompaction("compacting", {
-          at: Date.now(),
-          trigger: input.trigger === "auto" ? "auto" : "manual",
-        });
-        send("compacting", { trigger: input.trigger });
-        return { continue: true };
-      };
-      const postCompactNotify = async (input: HookInput): Promise<HookJSONOutput> => {
-        if (input.hook_event_name !== "PostCompact") return { continue: true };
-        // Records what this hook knows — the trigger, and that it FINISHED.
-        // `compact_boundary` carries the counts and merges into the same record
-        // whichever of the two arrives first (foldCompactionEvent takes no
-        // position on an ordering this codebase has never traced). The summary
-        // text is not recorded on purpose: a marker states, it does not narrate
-        // (see compactionMarkerText).
-        noteCompaction("compacted", {
-          at: Date.now(),
-          trigger: input.trigger === "auto" ? "auto" : "manual",
-        });
-        send("compacted", { trigger: input.trigger, summary: input.compact_summary });
-        return { continue: true };
-      };
+      // AD-1's SECOND enforcement point, plus the compaction notifiers — both
+      // in lib/server/turn-hooks.ts, where each one's closure surface is stated
+      // in its signature rather than being the whole of this handler's scope.
+      const preToolUseGuardrail = makePreToolUseGuardrail(sessionProfile);
+      const { preCompactNotify, postCompactNotify } = makeCompactionNotifiers({
+        noteCompaction,
+        send,
+      });
 
       try {
         if (provider === "codex") {
