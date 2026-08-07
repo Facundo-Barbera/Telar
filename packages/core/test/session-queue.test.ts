@@ -319,13 +319,16 @@ describe("engine-owned durable session queue", () => {
     expect(recoveredRun.ambiguous).toEqual(["unstarted"]);
     const item = recoveredRun.envelope.items[0]!;
     expect(item.state).toBe("ambiguous");
-    expect(item.error).toMatch(/not replayed automatically/);
+    expect(item.error).toMatch(/may have already made changes/);
 
-    // Uncertain work pauses the whole session; later intent cannot silently
-    // step over a decision that may already have produced tool side effects.
-    expect(recoveredRun.envelope.paused).toBe(true);
+    // Uncertain work bars later intent — but as the MESSAGE's own unanswered
+    // question, never as a session-level paused mode (feel contract rule 13).
+    // The queue is NOT paused; claiming simply holds while the ambiguous item
+    // awaits its human answer, and answering it (here: Discard) releases the
+    // barrier with no Resume act anywhere.
+    expect(recoveredRun.envelope.paused).toBe(false);
     expect(queue.claimNextSessionTurn("s-recover", "new-engine")).toBeNull();
-    queue.resumeSessionQueue("s-recover");
+    queue.dismissFailedSessionTurn("s-recover", "unstarted", item.revision);
     expect(queue.claimNextSessionTurn("s-recover", "new-engine")?.item.idempotencyKey).toBe("started");
     expect(unstarted.item.state).toBe("claimed");
   });

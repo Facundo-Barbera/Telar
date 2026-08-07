@@ -405,9 +405,9 @@ export function cancelQueuedSessionTurn<T extends JsonValue = JsonValue>(
  * a claim that nothing happened; acknowledging a failed one is not, and
  * `ambiguous` means specifically "this may already have reached the provider".
  * Two names force the caller to say which it means, and leave "only queued
- * items may be cancelled" true. Neither dismissal resumes the queue: the pause
- * is the engine asking a human to look, and clearing the evidence is not the
- * same act as saying "continue".
+ * items may be cancelled" true. Dismissing an AMBIGUOUS item is also what
+ * releases the claim barrier it holds (see claimNextSessionTurn) — the human
+ * answered the message's question, which is the only "resume" that exists.
  */
 export function dismissFailedSessionTurn<T extends JsonValue = JsonValue>(
   sessionId: string,
@@ -460,6 +460,15 @@ export function claimNextSessionTurn<T extends JsonValue = JsonValue>(
   return mutate<T, ClaimedSessionTurn<T> | null>(sessionId, (envelope) => {
     if (envelope.paused) return { changed: false, result: null };
     if (envelope.items.some((item) => item.state === "claimed" || item.state === "running")) {
+      return { changed: false, result: null };
+    }
+    // An unanswered AMBIGUOUS item (the engine died while it ran — it may
+    // have already changed the workspace) holds claiming until the human
+    // answers Retry or Discard ON THAT MESSAGE. This is the barrier that
+    // used to be `envelope.paused = true` at recovery: same safety, scoped
+    // to the one message that earned it, with no session mode and no Resume
+    // button (feel contract rule 13).
+    if (envelope.items.some((item) => item.state === "ambiguous")) {
       return { changed: false, result: null };
     }
     const item = envelope.items.find((candidate) => candidate.state === "queued");
@@ -544,15 +553,16 @@ export function recoverSessionQueue(
         requeued.push(item.idempotencyKey);
       } else if (item.state === "running") {
         item.state = "ambiguous";
-        item.error = "Engine restarted after execution began; this turn was not replayed automatically.";
+        item.error =
+          "Wasn't sent — the server restarted while this was running. It may have already made changes.";
         item.settledAt = at;
         touch(item, at);
         ambiguous.push(item.idempotencyKey);
       }
     }
-    // Uncertain provider/tool effects are a session-level barrier. Later safe
-    // items stay durable but cannot silently step over the human decision.
-    if (ambiguous.length > 0) envelope.paused = true;
+    // Uncertain provider/tool effects still bar later items — but the barrier
+    // lives in claimNextSessionTurn's ambiguous guard, scoped to the message,
+    // never as a session-level paused mode demanding a Resume click.
     return { changed: requeued.length > 0 || ambiguous.length > 0, result: undefined };
   });
   return { requeued, ambiguous, envelope: readSessionQueue(sessionId) };

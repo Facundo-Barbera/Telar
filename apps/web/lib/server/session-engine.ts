@@ -8,7 +8,6 @@ import {
   commitSessionTurn,
   failSessionTurn,
   markSessionTurnRunning,
-  pauseSessionQueue,
   recoverSessionQueue,
   type JsonValue,
 } from "@telar/core";
@@ -106,9 +105,13 @@ async function drain(sessionId: string): Promise<void> {
         claimed.claimToken,
         error instanceof Error ? error.message : String(error),
       );
-      // A bad envelope/profile should not cascade through every later message.
-      pauseSessionQueue(sessionId);
-      return;
+      // One message failing is that MESSAGE's error, never a session mode
+      // (feel contract rules 11/12): the failed item keeps its text and its
+      // own Retry/Discard, and the loop continues — claimNextSessionTurn
+      // only ever picks "queued" items, so the failed one is skipped, not
+      // stepped over. This used to pauseSessionQueue and return, which
+      // silently disabled sending until a human found the Resume button.
+      continue;
     }
   }
 }
