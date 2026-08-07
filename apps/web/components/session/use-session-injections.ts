@@ -35,16 +35,18 @@ export function useSessionInjections({
   reconnectLive,
   pendingWakes,
   abortRef,
-  reconnectAbortRef,
+  feedTurnLiveRef,
   send,
 }: {
   sessionId: string | null;
   status: string;
-  /** Wakes the drain when the reconnect tail clears without a status change. */
+  /** Wakes the drain when a subscriber-rendered turn ends without a status change. */
   reconnectLive: boolean;
   pendingWakes: PendingUltraWake[];
   abortRef: React.RefObject<AbortController | null>;
-  reconnectAbortRef: React.RefObject<AbortController | null>;
+  /** TRUE while the session-feed subscriber is rendering a turn — the
+   *  synchronous gate truth (see session-view's declaration). */
+  feedTurnLiveRef: React.RefObject<boolean>;
   send: (text: string, opts?: { hidden?: boolean }) => void | Promise<void>;
 }) {
   // Active watches for THIS session, seeded from the server on mount and after
@@ -241,16 +243,18 @@ export function useSessionInjections({
   // no double-injection / infinite loop: the queue shrinks each pass and the
   // next item can only fire once the turn settles back to "ready".
   //
-  // Also require no active reader: during the §1b reconnect tail status is
-  // transiently "ready" while a detached turn still runs server-side (the
-  // reconnect effect only flips to "streaming" on its first live event), so
-  // injecting then would POST a second concurrent turn — the mid-turn injection
-  // the busy guard forbids. abortRef/reconnectAbortRef being null means truly idle.
+  // Also require no turn being RENDERED by the feed subscriber: status is
+  // transiently "ready" in the instants around a server-side turn's window
+  // opening, so injecting then would POST a second concurrent turn — the
+  // mid-turn injection the busy guard forbids. The subscriber being merely
+  // ARMED must NOT block (it is armed whenever the session is idle, by
+  // design — a gate on armedness would block every injection forever);
+  // feedTurnLiveRef is the synchronous "a turn is rendering" truth.
   useEffect(() => {
     if (
       status !== "ready" ||
       abortRef.current ||
-      reconnectAbortRef.current ||
+      feedTurnLiveRef.current ||
       injectionQueue.length === 0
     )
       return;
@@ -263,22 +267,22 @@ export function useSessionInjections({
     // and dispatched after the wakes were already acked would run
     // ULTRA_WAKE_PROMPT — "the COMPLETED ULTRA RUNS block in your context above
     // carries each run's outcome" — against a prompt with no such block, on a
-    // turn that renders no user bubble. The reachable path is the §1b reconnect
-    // tail: `status` is transiently "ready" while `reconnectAbortRef.current` is
-    // non-null, so the composer is enabled and the drain is not; the human types;
-    // that POST acks and renders the wakes; the tail clears and this drains the
-    // stale trigger. Dropping it here (already removed from the queue above) is
-    // the whole fix. The sentinel IS the discriminator — the same seam the route
-    // recognizes on — so no second flag has to be kept in sync with it.
+    // turn that renders no user bubble. The reachable path: `status` is
+    // transiently "ready" while the feed subscriber renders a turn
+    // (feedTurnLiveRef set), so the composer is enabled and the drain is not;
+    // the human types; that POST acks and renders the wakes; the turn ends and
+    // this drains the stale trigger. Dropping it here (already removed from
+    // the queue above) is the whole fix. The sentinel IS the discriminator —
+    // the same seam the route recognizes on — so no second flag stays in sync.
     if (next.text === ULTRA_WAKE_SENTINEL && pendingWakes.length === 0) return;
     // The three conditions above are untouched and must stay that way. The flag
     // is threaded through so a hidden item (the Ultra wake trigger) reaches
     // send()'s `hidden` branch and renders no user bubble, while an unflagged
     // item (the loom watcher) dispatches exactly as before.
     void send(next.text, next.hidden ? { hidden: true } : undefined);
-    // `reconnectLive` is a dependency because this gate reads `reconnectAbortRef`,
+    // `reconnectLive` is a dependency because this gate reads `feedTurnLiveRef`,
     // so it also needs waking when that ref clears without a status change.
-  }, [status, injectionQueue, send, pendingWakes, reconnectLive, abortRef, reconnectAbortRef]);
+  }, [status, injectionQueue, send, pendingWakes, reconnectLive, abortRef, feedTurnLiveRef]);
 
   const dismissAlert = useCallback(
     (id: string) => setWatcherAlerts((prev) => prev.filter((x) => x.id !== id)),

@@ -153,13 +153,21 @@ describe("the production sidebar mount", () => {
     expect(saved).not.toContain('new Event("telar:refresh")');
   });
 
-  test("does not reopen a completed session reconnect after effect cleanup", () => {
+  test("a completed session never double-renders through the feed subscriber", () => {
+    // The once-per-session reconnectedRef guard is GONE by design: the feed
+    // subscriber deliberately re-arms so a server-drained queued turn streams
+    // into the open mount (feel contract rule 7). The double-render defense
+    // moved: a fresh mount replays with NO cursor, and the events route's
+    // first-tick gate finishes an idle session silently — while a local POST
+    // owns rendering, arming refuses outright. Pin all three.
     const view = read("components/session/session-view.tsx");
-    const reconnect = view.slice(
-      view.indexOf("// §1b reconnect"),
+    expect(view).not.toContain("reconnectedRef");
+    const subscriber = view.slice(
+      view.indexOf("// THE SESSION-FEED SUBSCRIBER"),
       view.indexOf("const send = useCallback"),
     );
-    expect(reconnect).toContain("reconnectedRef.current = sessionId");
-    expect(reconnect).not.toContain("reconnectedRef.current = null");
+    expect(subscriber).toContain("if (abortRef.current) return;");
+    expect(subscriber).toContain("if (reconnectAbortRef.current) return;");
+    expect(subscriber).toContain("feedCursorRef.current = null; // fresh mount");
   });
 });

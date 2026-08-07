@@ -1191,12 +1191,19 @@ function SessionWorkspace({
   // session — its own AbortController, aborted on unmount / sessionId change.
   // Aborting only closes THIS reader, never the detached server run.
   const reconnectAbortRef = useRef<AbortController | null>(null);
-  /** State twin of `reconnectAbortRef`, existing ONLY so the queue drains can
-   *  depend on it. The ref stays the synchronous truth every gate reads; this
-   *  is what re-runs those effects when the tail opens or closes. */
+  /** TRUE while the feed subscriber is rendering a TURN (window→done in
+   *  cursor mode, events-flowing in replay mode) — the synchronous truth the
+   *  injection/drain gates read. NOT "the subscriber is armed": the
+   *  subscriber is armed whenever no local POST runs (feel contract rule 7 —
+   *  a server-drained queued turn must stream into this very mount), and
+   *  gating sends on mere armedness would block them forever. */
+  const feedTurnLiveRef = useRef(false);
+  /** State twin of `feedTurnLiveRef`, existing ONLY so the gate effects can
+   *  depend on it — the ref stays the synchronous truth. */
   const [reconnectLive, setReconnectLive] = useState(false);
-  // Guard so the reconnect effect attaches at most once per session id.
-  const reconnectedRef = useRef<string | null>(null);
+  /** Last server-advanced feed cursor — where this mount's rendering stopped.
+   *  Null means "replay the open window from its start" (fresh mount). */
+  const feedCursorRef = useRef<{ win: number; seq: number } | null>(null);
   // #28 turn-as-event: the turn's POST ends at `result`, and background agents
   // keep working. The "done" event records the handoff (how many tasks live,
   // and the feed cursor rendering stopped at); send() then opens the
@@ -1205,7 +1212,6 @@ function SessionWorkspace({
   // applyServerEvent but immediately re-settles status: background work must
   // never re-busy the composer.
   const windowHandoffRef = useRef<WindowHandoff | null>(null);
-  const backgroundTailRef = useRef<AbortController | null>(null);
 
   // The god-view handoff and the loom lifecycle it starts — see
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
@@ -2140,58 +2146,97 @@ function SessionWorkspace({
     }
   }, [sessionId, project, rightPanelScopeKey, provisionalRightPanelScopeKey]);
 
-  // §1b reconnect: returning to a session whose turn is STILL running. The
-  // page seeded prior turns from chats.json; here we tail the live event log so
-  // the in-flight turn (its "user" header + assistant events, none of them in
-  // chats.json yet) rebuilds and plays to completion. Runs at most once per
-  // session id, never while a local POST turn drives this mount (abortRef), and
-  // only for a real, confirmed session id that's currently idle.
-  useEffect(() => {
-    if (!sessionId) return;
-    if (statusRef.current !== "ready") return;
-    if (abortRef.current) return; // a local turn already owns this mount
-    if (reconnectedRef.current === sessionId) return;
-    reconnectedRef.current = sessionId;
-    // Fresh assistant container for the (not-yet-persisted) in-flight turn.
-    asstIdRef.current = null;
-
+  // THE SESSION-FEED SUBSCRIBER (feel contract rules 6-7, 21-22) — the one
+  // reader behind every non-local render: reconnect to a live window, the
+  // post-turn background tail, and — the rule-7 case this generalization
+  // exists for — a server-drained QUEUED turn, which now streams into the
+  // mount the user is looking at exactly like a turn they sent (user bubble,
+  // busy line, streaming reply; nothing to click, nothing to reload).
+  //
+  // Armed whenever no local POST owns rendering; re-arms after every stream
+  // end so the next server-side turn is picked up. Two modes per connection:
+  // - CURSOR (feedCursorRef set): strictly-after tail of the feed. A "window"
+  //   event means a NEW turn started server-side → fresh bubble, busy status,
+  //   feedTurnLiveRef true until its "done". Traffic with no window seen this
+  //   connection is background chatter and never re-busies the composer.
+  // - REPLAY (no cursor): rebuild the open window from its start — the
+  //   reconnect case. Busy while events flow, settle at stream end (the old
+  //   §1b semantics, preserved verbatim).
+  const armFeedSubscriber = useCallback((sid: string) => {
+    if (abortRef.current) return; // a local turn owns rendering; send() re-arms
+    if (reconnectAbortRef.current) return; // already armed
     const abort = new AbortController();
     reconnectAbortRef.current = abort;
-    // A REF CANNOT WAKE AN EFFECT. The queue drain gates on
-    // `reconnectAbortRef.current`, and that ref goes null in the `finally`
-    // below — on the `!sawEvent` path (the turn had already finished before
-    // this mount), NOTHING ELSE CHANGES: `setStatus` is skipped, so the drain
-    // effect never re-runs and a queue that was blocked at mount stays blocked
-    // forever. This state mirrors the ref for the sole purpose of being a
-    // dependency; the gates keep reading the ref, which is the synchronous
-    // truth. See the drain effect's deps.
-    setReconnectLive(true);
-    let sawAnyEvent = false;
 
-    (async () => {
+    const enterTurn = () => {
+      if (!feedTurnLiveRef.current) {
+        feedTurnLiveRef.current = true;
+        setReconnectLive(true);
+      }
+      setStatus((s) => (s === "ready" || s === "error" ? "streaming" : s));
+    };
+    const exitTurn = () => {
+      if (feedTurnLiveRef.current) {
+        feedTurnLiveRef.current = false;
+        setReconnectLive(false);
+        setStatus((s) => (s === "streaming" ? "ready" : s));
+      }
+    };
+
+    void (async () => {
       try {
         let retryMs = 250;
         while (!abort.signal.aborted) {
+          const cursor = feedCursorRef.current;
+          const cursorMode = cursor !== null;
+          const url = cursor
+            ? `/api/chat/${encodeURIComponent(sid)}/events?win=${cursor.win}&seq=${cursor.seq}`
+            : `/api/chat/${encodeURIComponent(sid)}/events`;
           let sawEvent = false;
-          let sawClosed = false;
-          const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/events`, {
-            signal: abort.signal,
-          });
-          if (!res.ok || !res.body) throw new Error(`tail HTTP ${res.status}`);
+          const res = await fetch(url, { signal: abort.signal });
+          if (!res.ok || !res.body) throw new Error(`feed HTTP ${res.status}`);
           await consumeSSE(res.body.getReader(), (event, payload) => {
             sawEvent = true;
-            sawAnyEvent = true;
-            if (event === "closed") sawClosed = true;
-            // First byte of a live turn — flip to streaming so the busy UI shows
-            // while applyServerEvent rebuilds it. A not-live session emits nothing.
-            setStatus((current) => (current === "ready" ? "streaming" : current));
+            if (event === "closed") {
+              exitTurn();
+              return;
+            }
+            if (event === "cursor") {
+              if (typeof payload?.win === "number" && typeof payload?.seq === "number") {
+                feedCursorRef.current = { win: payload.win, seq: payload.seq };
+              }
+              return;
+            }
+            if (event === "window") {
+              // A turn is STARTING server-side (the engine draining a queued
+              // message, or another surface's send) — render it as our own.
+              asstIdRef.current = null;
+              enterTurn();
+              return;
+            }
+            if (!cursorMode) {
+              // Replay mode: busy while the rebuild flows (old §1b behavior).
+              enterTurn();
+              applyServerEvent(event, payload);
+              return;
+            }
             applyServerEvent(event, payload);
+            if (event === "done") {
+              exitTurn();
+              return;
+            }
+            // Background chatter (no window open this connection) must never
+            // re-busy the composer; both updates land in one React batch.
+            if (!feedTurnLiveRef.current) {
+              setStatus((s) => (s === "streaming" ? "ready" : s));
+            }
           });
-          if (sawClosed || abort.signal.aborted) break;
-          // No first event means the session was idle at connect time. Once a
-          // live stream has begun, however, a close without its durable terminal
-          // marker is a transport drop and must retry in this same mount.
-          if (!sawEvent && !sawAnyEvent) break;
+          if (abort.signal.aborted) break;
+          exitTurn();
+          // An idle session finishes the request instantly (the route's
+          // first-tick gate); stay armed on a lazy cadence so the next
+          // server-side turn is picked up. Any traffic resets the backoff.
+          retryMs = sawEvent ? 250 : Math.min(4_000, retryMs * 2);
           await new Promise<void>((resolve, reject) => {
             const onAbort = () => {
               clearTimeout(timer);
@@ -2203,33 +2248,36 @@ function SessionWorkspace({
             }, retryMs);
             abort.signal.addEventListener("abort", onAbort, { once: true });
           });
-          retryMs = Math.min(4_000, retryMs * 2);
-          // Rebuild from line zero on reconnect; applyServerEvent's id-based
-          // updates are authoritative and avoid a half-visible sub-agent.
-          asstIdRef.current = null;
+          // A replay-mode transport drop rebuilds from line zero next round;
+          // id-based updates are authoritative (old behavior, kept).
+          if (!cursorMode && sawEvent) asstIdRef.current = null;
         }
-        // The run's own "done" set cost/tokens but never touches status; once the
-        // log drains ("closed" → reader done), settle a still-streaming view back.
-        if (sawAnyEvent) setStatus((s) => (s === "streaming" ? "ready" : s));
       } catch {
-        // Aborted on unmount / sessionId change, or a dropped connection — the
-        // detached server run is untouched; a later mount can reconnect again.
+        // Aborted (local send / unmount / session change) or dropped — the
+        // server run is untouched; the next arm resumes from the cursor.
       } finally {
-        // Clear the ref once the tail drains so it means "a reconnect reader is
-        // live" — the injection guard reads it to keep from POSTing a second
-        // concurrent turn during the tail (§6.D). Guard on identity so we never
-        // clobber a newer reader. (Cleanup nulls it too, on unmount/dep change.)
-        if (reconnectAbortRef.current === abort) reconnectAbortRef.current = null;
-        setReconnectLive(false);
+        // Identity-guarded: a successor already replaced the ref, leave it.
+        if (reconnectAbortRef.current === abort) {
+          reconnectAbortRef.current = null;
+        }
+        exitTurn();
       }
     })();
+  }, [applyServerEvent]);
 
+  // Arm on mount / session change; disarm on unmount. send() disarms for the
+  // lifetime of its own POST and re-arms from the done handoff's cursor.
+  useEffect(() => {
+    if (!sessionId) return;
+    feedCursorRef.current = null; // fresh mount: replay the open window, if any
+    armFeedSubscriber(sessionId);
     return () => {
-      abort.abort();
+      reconnectAbortRef.current?.abort();
       reconnectAbortRef.current = null;
+      feedTurnLiveRef.current = false;
       setReconnectLive(false);
     };
-  }, [sessionId, applyServerEvent]);
+  }, [sessionId, armFeedSubscriber]);
 
   // The complete immutable envelope handed to either the immediate-turn
   // adapter or the durable queue. Keeping one builder prevents a queued turn
@@ -2278,79 +2326,6 @@ function SessionWorkspace({
     ],
   );
 
-  // #28 turn-as-event: render the BACKGROUND WINDOW after a turn's POST ended
-  // at `result`. A feed tail strictly after `cursor` — everything before it was
-  // already rendered by the POST itself, so nothing repeats. Events flow
-  // through the same applyServerEvent reducer, then status is immediately
-  // re-settled: text/tool events flip it to "streaming" for a live turn, and
-  // background work must never re-busy the composer (both updates land in one
-  // React batch, so nothing flickers). Ends at the window's "closed" marker;
-  // a transport drop reconnects from the last server-advanced cursor.
-  const startBackgroundTail = useCallback(
-    (sid: string, cursor: { win: number; seq: number }) => {
-      backgroundTailRef.current?.abort();
-      const abort = new AbortController();
-      backgroundTailRef.current = abort;
-      void (async () => {
-        try {
-          let retryMs = 250;
-          let after = cursor;
-          while (!abort.signal.aborted) {
-            let sawClosed = false;
-            const res = await fetch(
-              `/api/chat/${encodeURIComponent(sid)}/events?win=${after.win}&seq=${after.seq}`,
-              { signal: abort.signal },
-            );
-            if (!res.ok || !res.body) throw new Error(`background tail HTTP ${res.status}`);
-            let sawEvent = false;
-            await consumeSSE(res.body.getReader(), (event, payload) => {
-              sawEvent = true;
-              if (event === "closed") {
-                sawClosed = true;
-                return;
-              }
-              if (event === "cursor") {
-                if (
-                  typeof payload?.win === "number" &&
-                  typeof payload?.seq === "number"
-                ) {
-                  after = { win: payload.win, seq: payload.seq };
-                }
-                return;
-              }
-              // Feed bookkeeping a strictly-after tail should never see —
-              // skipped defensively (a stale-cursor replay carries them).
-              if (event === "window" || event === "user") return;
-              applyServerEvent(event, payload);
-              setStatus((s) => (s === "streaming" ? "ready" : s));
-            });
-            if (sawClosed || abort.signal.aborted) break;
-            // A silent first connect means the window was already dead (the
-            // route's first-tick gate finished it) — nothing more will come.
-            if (!sawEvent) break;
-            await new Promise<void>((resolve) => setTimeout(resolve, retryMs));
-            retryMs = Math.min(4_000, retryMs * 2);
-          }
-        } catch {
-          // aborted (new turn / unmount) or dropped — the window itself is
-          // untouched server-side; a fresh mount's reconnect replays it.
-        } finally {
-          if (backgroundTailRef.current === abort) backgroundTailRef.current = null;
-        }
-      })();
-    },
-    [applyServerEvent],
-  );
-
-  // The background tail must not outlive this mount or survive into another
-  // session's view — its reducer writes into THIS session's messages.
-  useEffect(() => {
-    return () => {
-      backgroundTailRef.current?.abort();
-      backgroundTailRef.current = null;
-    };
-  }, [sessionId]);
-
   const send = useCallback(
     // `hidden` (M11 finding-1) fires a turn with NO user bubble — the escalation
     // kickoff, where `text` is the sentinel route.ts swaps for the real prompt.
@@ -2363,10 +2338,13 @@ function SessionWorkspace({
       // A new turn clears the interrupted latch: whatever killed the LAST turn
       // is no longer a reason to hold the queue back.
       turnInterruptedRef.current = false;
-      // A new turn owns rendering — the previous window's background tail (if
-      // any) stands down; its agents' output now rides this turn's stream.
-      backgroundTailRef.current?.abort();
-      backgroundTailRef.current = null;
+      // This POST owns rendering now — the feed subscriber stands down for
+      // its lifetime (the finally re-arms it from the done handoff's cursor);
+      // background agents' output rides this turn's stream meanwhile.
+      reconnectAbortRef.current?.abort();
+      reconnectAbortRef.current = null;
+      feedTurnLiveRef.current = false;
+      setReconnectLive(false);
       windowHandoffRef.current = null;
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
@@ -2500,10 +2478,6 @@ function SessionWorkspace({
           // done — attach the background tail where this stream's rendering
           // stopped, so their work stays visible (and their tool parts keep
           // resolving) without holding the composer.
-          const handoff = windowHandoffRef.current as WindowHandoff | null;
-          if (handoff && handoff.tasksLive > 0 && handoff.sessionId && handoff.cursor) {
-            startBackgroundTail(handoff.sessionId, handoff.cursor);
-          }
         }
       } catch (err) {
         // The server's teardown fail-closed-denies any permission still open
@@ -2535,6 +2509,19 @@ function SessionWorkspace({
         setThinking(false);
         abortRef.current = null;
         runIdRef.current = null;
+        // Re-arm the feed subscriber now that this POST no longer owns
+        // rendering: from the done handoff's cursor when one landed (the
+        // background window streams strictly after what this POST already
+        // rendered), else with no cursor — an idle session's connect finishes
+        // silently at the route's gate, and a server-drained queued turn is
+        // picked up as a fresh window replay. This replaces the dedicated
+        // background tail; the subscriber IS the tail now.
+        {
+          const handoff = windowHandoffRef.current as WindowHandoff | null;
+          feedCursorRef.current = handoff?.cursor ?? null;
+          const sid = handoff?.sessionId ?? sessionId;
+          if (sid) armFeedSubscriber(sid);
+        }
         // Backstop, same reasoning as compactNow's own: PreCompact can fire
         // on an ORDINARY turn (Claude auto-compacting to stay under its
         // context window, mid-send()) with no `compact: true` anywhere on
@@ -2548,7 +2535,7 @@ function SessionWorkspace({
         setCompacting(false);
       }
     },
-    [sessionId, buildTurnPayload, applyServerEvent],
+    [sessionId, buildTurnPayload, applyServerEvent, armFeedSubscriber],
   );
 
   // The composer's Compact affordance. Deliberately NOT a `send(..., {hidden:
@@ -2964,7 +2951,7 @@ function SessionWorkspace({
     reconnectLive,
     pendingWakes,
     abortRef,
-    reconnectAbortRef,
+    feedTurnLiveRef,
     send,
   });
 
