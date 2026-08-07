@@ -89,6 +89,14 @@ export type ClaudeTurnState = {
    *  whole query() invocation — acting on every one would double-count. */
   lastResult: TurnResult | null;
   costUsd: number;
+  /** EVERY task completion this state observed, keyed by the spawn's
+   *  tool_use id — including completions for spawns from an EARLIER turn,
+   *  whose parts are not in `parts` at all (a mid-window second turn starts a
+   *  fresh state while the previous turn's agents are still finishing). The
+   *  caller pushes this whole map through the store's write-through at
+   *  teardown and settle; without it, a cross-turn completion mutated
+   *  nothing, persisted nowhere, and the agent shimmered "running" forever. */
+  taskStatuses: Map<string, "completed" | "failed" | "stopped">;
 };
 
 export function newClaudeTurnState(): ClaudeTurnState {
@@ -100,6 +108,7 @@ export function newClaudeTurnState(): ClaudeTurnState {
     lastMainUsage: null,
     lastResult: null,
     costUsd: 0,
+    taskStatuses: new Map(),
   };
 }
 
@@ -307,13 +316,16 @@ export function projectClaudeMessage(
     // notification ABOUT a tool_use, not a forwarded message FROM one), is.
     const tn = msg as { tool_use_id?: string; status?: "completed" | "failed" | "stopped" };
     if (tn.tool_use_id && tn.status) {
+      state.taskStatuses.set(tn.tool_use_id, tn.status);
       const part = parts.find(
         (p): p is Extract<Part, { type: "tool" }> => p.type === "tool" && p.id === tn.tool_use_id,
       );
-      if (part) {
-        part.taskStatus = tn.status;
-        send("task_status", { id: tn.tool_use_id, status: tn.status });
-      }
+      if (part) part.taskStatus = tn.status;
+      // Emitted whether or not a part matched: a mid-window second turn's
+      // state has no parts for the PREVIOUS turn's spawns, but the client
+      // still holds those spawns and updates them by id — swallowing the
+      // event here left their tabs "running" forever.
+      send("task_status", { id: tn.tool_use_id, status: tn.status });
     }
     return { events };
   }

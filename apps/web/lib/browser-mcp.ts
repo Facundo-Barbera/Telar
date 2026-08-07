@@ -2,7 +2,17 @@ import { createSdkMcpServer, tool, type McpServerConfig } from "@anthropic-ai/cl
 import { z } from "zod";
 import { controlledBrowserRuntime } from "@/lib/server/browser-runtime";
 
-type BrowserToolOptions = { scopeKey?: string };
+// scopeKey accepts a GETTER because the persistent session runtime (#28)
+// builds these tools ONCE per session process: a fresh session's scope is
+// `project:draft:<runId>` until system:init and the canonical
+// `project:<sessionId>` after (the client adopts draft state into the
+// canonical scope on the `session` event — session-view.tsx). A static
+// string captured at creation would pin every later turn's browser calls to
+// the draft scope; a getter resolves the CURRENT scope at call time.
+type BrowserToolOptions = { scopeKey?: string | (() => string) };
+
+const resolveScopeKey = (options: BrowserToolOptions): string | undefined =>
+  typeof options.scopeKey === "function" ? options.scopeKey() : options.scopeKey;
 
 // `browser` is the natural MCP server name and remains the Claude namespace,
 // but the Responses API reserves that namespace for its own browser surface.
@@ -13,7 +23,7 @@ export const CODEX_BROWSER_TOOL_NAMESPACE = "telar_browser";
 
 const call = (name: string, options: BrowserToolOptions) =>
   async (args: Record<string, unknown>) =>
-    controlledBrowserRuntime().call(name, args, { scopeKey: options.scopeKey });
+    controlledBrowserRuntime().call(name, args, { scopeKey: resolveScopeKey(options) });
 
 export const BROWSER_READ_TOOLS = [
   "mcp__browser__browser_list_tabs",

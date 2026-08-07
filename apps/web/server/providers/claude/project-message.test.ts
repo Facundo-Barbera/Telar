@@ -152,6 +152,23 @@ describe("projectClaudeMessage", () => {
     expect(part.taskStatus).toBe("completed");
   });
 
+  test("a task_notification for an EARLIER turn's spawn still emits and is recorded", () => {
+    // A mid-window second turn starts a fresh state; the previous turn's
+    // spawns have no parts here. Their completions must still reach the
+    // client (which holds those spawns and patches by id) and the status map
+    // (which the caller writes through to the persisted transcript).
+    const state = newClaudeTurnState();
+    const p = projectClaudeMessage(
+      asMsg({ type: "system", subtype: "task_notification", tool_use_id: "prev-turn-spawn", status: "completed" }),
+      state,
+    );
+    expect(p.events).toEqual([
+      { event: "task_status", data: { id: "prev-turn-spawn", status: "completed" } },
+    ]);
+    expect(state.taskStatuses.get("prev-turn-spawn")).toBe("completed");
+    expect(state.parts).toEqual([]);
+  });
+
   test("permission_denied rewrites the SDK text and synthesizes a part when none exists", () => {
     const state = newClaudeTurnState();
     const p = projectClaudeMessage(

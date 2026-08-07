@@ -1794,7 +1794,16 @@ export async function POST(req: Request) {
         // One lazy, server-owned browser runtime backs both the human surface
         // and agent tools. Constructing this descriptor does not start a
         // browser; the Playwright MCP process launches only on first use.
-          browser: createBrowserMcpServer({ scopeKey: browserScopeKey }),
+        // The scope is a GETTER (#28 persistent runtime): draft until the
+        // session id exists, canonical after — matching the client's
+        // adoptScope migration on the `session` event, across every turn this
+        // one process serves.
+          browser: createBrowserMcpServer({
+            scopeKey: () => {
+              const sid = ctx.self().sessionId ?? capturedSession;
+              return sid ? `${project}:${sid}` : browserScopeKey;
+            },
+          }),
         });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
@@ -1827,7 +1836,13 @@ export async function POST(req: Request) {
           fastMode: !!fastMode,
           account: profile.name,
           project: project ?? null,
-          browserScopeKey: browserScopeKey ?? null,
+          // browserScopeKey is DELIBERATELY absent. Turn 1 computes the draft
+          // scope (`project:draft:<runId>`) and every later turn the canonical
+          // (`project:<sessionId>`) — with the scope in the fingerprint, every
+          // second turn "changed options", restarted the runtime, and killed
+          // the first turn's live background agents (measured: a mid-window
+          // status turn re-emitted `session` and orphaned three agents). The
+          // browser tools resolve the CURRENT scope per call instead.
           loomLink,
           appendix: sessionProfile.systemPromptAppendix,
           settingSources: sessionProfile.settingSources,
@@ -2132,17 +2147,13 @@ export async function POST(req: Request) {
               // turn's appendTurn persisted these spawns while still only
               // "launched", and their task_notifications landed after it
               // (measured: a five-agent window reloaded as five agents that
-              // never reported, beside their own reports).
-              const statusUpdates: Array<{
-                toolUseId: string;
-                status: "completed" | "failed" | "stopped";
-              }> = [];
-              for (const part of turnState.parts) {
-                if (part.type === "tool" && part.agent && part.taskStatus && part.id) {
-                  statusUpdates.push({ toolUseId: part.id, status: part.taskStatus });
-                }
-              }
-              recordTaskStatuses(sessionId, statusUpdates);
+              // never reported, beside their own reports). From the MAP, not
+              // the parts: it also carries completions for an EARLIER turn's
+              // spawns, which have no part in this state at all.
+              recordTaskStatuses(
+                sessionId,
+                [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
+              );
               // And no one is RUNNING once the window ends: mark still-acked
               // spawns stopped — on the live surfaces, and through the store
               // for the copies the turn's appendTurn already persisted.
@@ -2434,6 +2445,16 @@ export async function POST(req: Request) {
           // spawn is still ack-only will never complete — settle it now, on
           // the live stream, before appendTurn persists the marked parts.
           if (!windowContinues) settleSpawnParts(send);
+          // Completions observed for an EARLIER turn's spawns (their parts
+          // live in already-persisted messages, not in this state) write
+          // through to the store now — the appendTurn below only carries THIS
+          // turn's parts. Idempotent for this turn's own statuses.
+          if (capturedSession && turnState.taskStatuses.size) {
+            recordTaskStatuses(
+              capturedSession,
+              [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
+            );
+          }
           // Fetch the live session-cost control call unconditionally (not
           // gated on `lastResult`): a client disconnect/navigation aborts the
           // SDK loop with a throw rather than a final graceful "result"
