@@ -137,6 +137,7 @@ import {
   getChat,
   logUsage,
   recordCompactions,
+  recordTaskStatuses,
   sessionSpendUsd,
   settleSpawnStatuses,
   upsertChatStub,
@@ -2127,7 +2128,22 @@ export async function POST(req: Request) {
                 resolvePending(id, { behavior: "deny", reason: "aborted" });
               }
               myPending.clear();
-              // No one is running once the window ends: mark still-acked
+              // Write the window's completions through to the store: the
+              // turn's appendTurn persisted these spawns while still only
+              // "launched", and their task_notifications landed after it
+              // (measured: a five-agent window reloaded as five agents that
+              // never reported, beside their own reports).
+              const statusUpdates: Array<{
+                toolUseId: string;
+                status: "completed" | "failed" | "stopped";
+              }> = [];
+              for (const part of turnState.parts) {
+                if (part.type === "tool" && part.agent && part.taskStatus && part.id) {
+                  statusUpdates.push({ toolUseId: part.id, status: part.taskStatus });
+                }
+              }
+              recordTaskStatuses(sessionId, statusUpdates);
+              // And no one is RUNNING once the window ends: mark still-acked
               // spawns stopped — on the live surfaces, and through the store
               // for the copies the turn's appendTurn already persisted.
               const settledIds = settleSpawnParts((event, data) => {

@@ -89,3 +89,31 @@ describe("settleSpawnStatuses", () => {
     expect(store.settleSpawnStatuses("no-such-chat")).toBe(false);
   });
 });
+
+describe("recordTaskStatuses", () => {
+  test("writes post-turn completions through to persisted spawn parts", () => {
+    const id = seedChatWithSpawns();
+    expect(
+      store.recordTaskStatuses(id, [
+        { toolUseId: "sp-acked", status: "completed" },
+        { toolUseId: "no-such-part", status: "failed" },
+      ]),
+    ).toBe(true);
+    expect(statusesOf(id)["sp-acked"]).toBe("completed");
+    // Idempotent: same statuses again → nothing changes, no write.
+    expect(store.recordTaskStatuses(id, [{ toolUseId: "sp-acked", status: "completed" }])).toBe(
+      false,
+    );
+    // A recorded completion keeps the sweep off it forever after.
+    store.settleSpawnStatuses(id);
+    expect(statusesOf(id)["sp-acked"]).toBe("completed");
+  });
+
+  test("an empty update list or unknown chat changes nothing", () => {
+    expect(store.recordTaskStatuses("no-such-chat", [{ toolUseId: "x", status: "stopped" }])).toBe(
+      false,
+    );
+    const id = seedChatWithSpawns();
+    expect(store.recordTaskStatuses(id, [])).toBe(false);
+  });
+});

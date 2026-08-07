@@ -480,6 +480,38 @@ export function setChatRead(id: string, read: boolean): boolean {
   return true;
 }
 
+// Write POST-TURN completions through to the persisted transcript (#28
+// turn-as-event). appendTurn persists a background spawn while it is still
+// only "launched"; its task_notification lands AFTER the turn, mutating the
+// in-memory parts and the live stream but — without this — never chats.json,
+// so a reload showed agents as never-having-reported right beside their own
+// reports. Called by the chat route at window settle with every status the
+// window observed. A real status never downgrades: identical values are
+// skipped, and an existing "completed"/"failed" is never overwritten by a
+// later sweep's "stopped" (settleSpawnStatuses already skips set statuses).
+export function recordTaskStatuses(
+  id: string,
+  updates: Array<{ toolUseId: string; status: "completed" | "failed" | "stopped" }>,
+): boolean {
+  if (!updates.length) return false;
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const wanted = new Map(updates.map((u) => [u.toolUseId, u.status]));
+  let changed = false;
+  for (const message of chat.messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.id) continue;
+      const status = wanted.get(part.id);
+      if (!status || part.taskStatus === status) continue;
+      part.taskStatus = status;
+      changed = true;
+    }
+  }
+  if (changed) writeChats(chats);
+  return changed;
+}
+
 // A window that has ENDED leaves no one running (#28 turn-as-event): any
 // persisted spawn part still carrying only its background launch ack — no
 // task_notification ever landed for it — is finished-unrecorded, and after a
