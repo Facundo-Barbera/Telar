@@ -41,6 +41,11 @@ type PendingRequest = {
   // client-injected string. Defaults to [] for callers (tests) that don't
   // pass any.
   ruleOptions: Array<{ rule: string; label: string }>;
+  // Which session is waiting on this answer, when the caller knows (the
+  // route's capturedSession is null before turn 1's init lands). Read by
+  // sessionsAwaitingApproval() so the sidebar can say "needs you" — never
+  // part of the resolution logic itself.
+  sessionId?: string;
   resolve: (d: PermissionDecision) => void;
 };
 
@@ -349,13 +354,33 @@ export function createPending(
   input: Record<string, unknown>,
   rule: string,
   ruleOptions: Array<{ rule: string; label: string }> = [],
+  sessionId?: string,
 ): { id: string; promise: Promise<PermissionDecision> } {
   let id = "perm_" + randomUUID();
   while (pending.has(id)) id = "perm_" + randomUUID(); // paranoia: randomUUID collisions are not realistic
   const promise = new Promise<PermissionDecision>((resolve) => {
-    pending.set(id, { project, rule, toolName, input, ruleOptions, resolve });
+    pending.set(id, {
+      project,
+      rule,
+      toolName,
+      input,
+      ruleOptions,
+      ...(sessionId ? { sessionId } : {}),
+      resolve,
+    });
   });
   return { id, promise };
+}
+
+// The sessions with at least one unanswered card, in one pass over the
+// registry — /api/chats calls this once per request and tests membership per
+// row, the same shape liveRunCountsBySession already takes for Ultra runs.
+// A pending created before turn 1's init has no sessionId and is simply not
+// attributable; it vanishes from this view, never misassigned.
+export function sessionsAwaitingApproval(): Set<string> {
+  const out = new Set<string>();
+  for (const p of pending.values()) if (p.sessionId) out.add(p.sessionId);
+  return out;
 }
 
 // Looked up by POST /api/chat/permission to validate a client-supplied

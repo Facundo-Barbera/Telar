@@ -2036,6 +2036,12 @@ function SessionWorkspace({
                     },
                   ],
                 }));
+                // The sidebar reloads only on events (chats are never
+                // polled), and "needs your approval" is derived server-side
+                // from the pending registry — nudge it now so the row turns
+                // amber while the card waits, not on the next unrelated
+                // mutation.
+                dispatchTelarRefresh({ domains: ["chats"] });
                 break;
               case "permission_result":
                 // By part id across every message — see "tool_result": a card
@@ -2051,6 +2057,9 @@ function SessionWorkspace({
                     ),
                   })),
                 );
+                // Mirror of the "permission" nudge above: the card resolved,
+                // the amber row state must clear on the same beat.
+                dispatchTelarRefresh({ domains: ["chats"] });
                 break;
               case "permission_denied": {
                 // Auto/acceptEdits mode's classifier (or the guardrail hook)

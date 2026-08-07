@@ -27,6 +27,7 @@ const {
   removeRule,
   createPending,
   resolvePending,
+  sessionsAwaitingApproval,
   pendingRuleOptions,
   isValidPermissionMode,
   PERMISSION_MODES,
@@ -458,6 +459,28 @@ describe("pending registry", () => {
       Array.from({ length: 50 }, () => createPending("proj", "Write", { file_path: "/x" }, "Write").id),
     );
     expect(ids.size).toBe(50);
+  });
+
+  test("sessionsAwaitingApproval names sessions with open cards — and forgets them on resolve", async () => {
+    const a = createPending("proj", "Write", { file_path: "/x" }, "Write", [], "sess-A");
+    const b = createPending("proj", "Write", { file_path: "/y" }, "Write", [], "sess-B");
+    // A pending created before init confirmed the session has no id — it is
+    // unattributable and must appear as NO session, never a wrong one.
+    const c = createPending("proj", "Write", { file_path: "/z" }, "Write");
+    let awaiting = sessionsAwaitingApproval();
+    expect(awaiting.has("sess-A")).toBe(true);
+    expect(awaiting.has("sess-B")).toBe(true);
+    expect(awaiting.size).toBe(2);
+
+    expect(resolvePending(a.id, { behavior: "deny" })).toBe(true);
+    awaiting = sessionsAwaitingApproval();
+    expect(awaiting.has("sess-A")).toBe(false);
+    expect(awaiting.has("sess-B")).toBe(true);
+
+    // Leave no parked promises behind for later tests in this module scope.
+    resolvePending(b.id, { behavior: "deny" });
+    resolvePending(c.id, { behavior: "deny" });
+    await Promise.all([a.promise, b.promise, c.promise]);
   });
 
   test("'always allow' coalesces other pendings whose OWN call the resolved rule actually covers", async () => {
