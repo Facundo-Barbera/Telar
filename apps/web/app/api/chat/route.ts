@@ -143,6 +143,7 @@ import {
   upsertChatStub,
   type Part,
 } from "@/lib/store";
+import { gitStamp } from "@/lib/server/git-stamp";
 // The compaction record (issue #25) — the same shapes and the same
 // one-key-per-compaction reducer the client folds its transcript divider from,
 // so the marker a reader sees live and the marker they see after a reload come
@@ -923,6 +924,11 @@ export async function POST(req: Request) {
       // is why `capturedSession` (not `resumeTarget`) is what the finally block
       // persists against.
       let capturedSession: string | null = null;
+      // STEP 3: the uuid stamped on this turn's pushed user message (Claude
+      // streaming lane only) — the anchor's `prompt`. Null on lanes that
+      // never stamp one; the anchor simply omits it and a future rollback of
+      // this turn runs unguarded, which is a designed degradation.
+      let promptUuid: string | null = null;
       // The session runtime this turn attached to (Claude path only) — held at
       // stream scope so the shared finally can detach the turn's wiring and
       // close a spawn that never reached init (#28 persistent runtime).
@@ -2220,6 +2226,15 @@ export async function POST(req: Request) {
                   runtimeMode,
                   fastMode,
                   serviceTier,
+                  // STEP 3: the settle-append carries its OWN anchor — the
+                  // detached projection advanced lastChainUuid past the
+                  // background agents' work, so a later rollback does not
+                  // silently discard it from the model's context. Hidden, no
+                  // prompt of its own.
+                  provider: "claude",
+                  anchor: {
+                    ...(turnState.lastChainUuid ? { tail: turnState.lastChainUuid } : {}),
+                  },
                   userMessage: { role: "user", parts: [{ type: "text", text: "" }] },
                   hideUserMessage: true,
                   assistantMessage: { role: "assistant", parts: extra },
@@ -2279,8 +2294,14 @@ export async function POST(req: Request) {
           if (prior?.turnState) turnState.parentFlatten = prior.turnState.parentFlatten;
         }
         const turnFeed = runtime.beginTurn(runId);
+        // STEP 3 (message-lifecycle): the prompt's own chain identity. The
+        // CLI adopts a client-supplied uuid as the chain-entry uuid (rewind
+        // probe (a), measured) — this is the TurnAnchor's `prompt`, the
+        // resumeDropsTurn value a guarded rollback declares.
+        promptUuid = crypto.randomUUID();
         runtime.push({
           type: "user",
+          uuid: promptUuid as never,
           parent_tool_use_id: null,
           message: { role: "user", content: claudePrompt },
         });
@@ -2679,6 +2700,12 @@ export async function POST(req: Request) {
               title = raced ?? undefined;
             }
             if (title) send("title", { title });
+            // STEP 3: the turn's anchor rides into the store — provider
+            // routes a future rollback plan, prompt/tail are the SDK
+            // identity a Claude rewind needs (Codex needs only the index),
+            // and the git stamp tells the file-state truth. All degrade to
+            // absent; the anchor write itself is inert until STEP 4.
+            const turnGit = await gitStamp(sessionProfile?.cwd);
             appendTurn({
               id: capturedSession,
               model,
@@ -2688,6 +2715,12 @@ export async function POST(req: Request) {
               runtimeMode,
               fastMode,
               serviceTier,
+              provider,
+              anchor: {
+                ...(promptUuid ? { prompt: promptUuid } : {}),
+                ...(turnState.lastChainUuid ? { tail: turnState.lastChainUuid } : {}),
+                ...(turnGit ? { git: turnGit } : {}),
+              },
               // Session<->Loom link (docs/loom-model.md §5): undefined
               // means "no change" (appendTurn only ever narrows a link in,
               // see its own comment) — loomLink stays untouched for a plain

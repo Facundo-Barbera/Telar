@@ -5,6 +5,7 @@ import { closeSessionRuntime } from "@/lib/server/session-runtime";
 import {
   deleteChat,
   getChat,
+  publicTurnAnchors,
   setChatArchived,
   setChatRead,
   setChatSettled,
@@ -25,7 +26,15 @@ export async function GET(
   repairInterruptedSession(id);
   const chat = getChat(id);
   if (!chat) return new Response("not found", { status: 404 });
-  return Response.json(chat);
+  // Wire policy (message-lifecycle STEP 3): anchors leave the server WITHOUT
+  // their uuids, pendingFork not at all.
+  const { turnAnchors, pendingFork, ...rest } = chat;
+  void pendingFork;
+  const publicAnchors = publicTurnAnchors(turnAnchors);
+  return Response.json({
+    ...rest,
+    ...(publicAnchors ? { turnAnchors: publicAnchors } : {}),
+  });
 }
 
 export async function PATCH(
