@@ -10,6 +10,7 @@
 // just the import — the runtime is `bun test`, not tsc.
 // @ts-expect-error no @types/bun in this workspace
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { acquireSessionRuntime, closeSessionRuntime } from "./session-runtime";
 
@@ -254,6 +255,26 @@ describe("session runtime", () => {
     expect(closeSessionRuntime("sess-stop")).toBe(true);
     expect(rt.runtime.closed).toBe(true);
     expect(closeSessionRuntime("sess-stop")).toBe(false);
+  });
+
+  test("deleting a chat closes its runtime — teardown precedes deletion", () => {
+    // The leak this pins against (creative-run find, verified): DELETE
+    // /api/chats/[id] removed the chat's files and nothing else, so a session
+    // deleted while its persistent runtime was live — mid-turn or hosting
+    // background agents between turns — kept a warm process running and
+    // writing into logs for a chat that no longer existed. The route must
+    // stop the run and close the runtime BEFORE deleteChat, the same pair
+    // /api/chat/stop uses.
+    const src = readFileSync(
+      new URL("../../app/api/chats/[id]/route.ts", import.meta.url),
+      "utf8",
+    );
+    const stopAt = src.indexOf('stopChatRun(id, "api/chats/delete")');
+    const closeAt = src.indexOf("closeSessionRuntime(id)");
+    const deleteAt = src.indexOf("deleteChat(id)");
+    expect(stopAt).toBeGreaterThan(-1);
+    expect(closeAt).toBeGreaterThan(stopAt);
+    expect(deleteAt).toBeGreaterThan(closeAt);
   });
 
   test("a pump error surfaces on the attached turn's consumer, like the old direct for-await", async () => {
