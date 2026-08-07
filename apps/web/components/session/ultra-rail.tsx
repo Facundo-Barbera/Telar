@@ -17,6 +17,13 @@
 // and opening the pane required aiming. There is now ONE gesture on a run: open
 // it.
 //
+// FINISHED RUNS COLLAPSE; LIVE AND BROKEN ONES DO NOT (issue #45). A day's work
+// used to be a wall of full `done` cards with the live run lost inside it. WHICH
+// run is in which group is `splitRunsForRail`'s decision and not this file's —
+// its comment says why `failed` and `stopped` keep their card. What is here is
+// the two treatments, the cap on the settled group, and the rule that both of
+// them open the same pane: collapsing is not hiding.
+//
 // EVERY DECISION IS IN `lib/ultra-runs.ts`, NOT HERE. Which agent rows exist,
 // which phase an agent belongs to, whether an agent is live — all projected and
 // all tested. What is left here is layout, because there is no DOM harness in
@@ -34,13 +41,14 @@
 // is in the pane and in the session's own total, and the same number printed in
 // three places is three places for it to disagree.
 
+import { useState } from "react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   STATE_LABEL,
   ULTRA_STATE_TONE,
   ULTRA_TONE_CLASS,
 } from "@/components/session/ultra-anchor";
-import { type AgentRow, type RunSnapshot } from "@/lib/ultra-runs";
+import { splitRunsForRail, type AgentRow, type RunSnapshot } from "@/lib/ultra-runs";
 import { cn } from "@/lib/utils";
 
 /** AC-U1 — THE `block` TOKEN IS THE WHOLE FIX, and it is not cosmetic.
@@ -82,6 +90,7 @@ type Props = {
 
 export function UltraRail({ runs, activeRunId, onOpen }: Props) {
   if (runs.length === 0) return null;
+  const { pinned, done } = splitRunsForRail(runs);
   const liveCount = runs.filter((r) => r.state === "running").length;
   return (
     <div className="flex flex-col border-b border-border">
@@ -97,10 +106,17 @@ export function UltraRail({ runs, activeRunId, onOpen }: Props) {
             {liveCount}
           </span>
         )}
+        {/* STILL THE TOTAL, and it has to be: `subagent-rail.tsx` publishes the
+            same figure on its collapsed edge from a `workflowCount` prop it is
+            handed, and its own empty-state copy reads off that prop too. Three
+            readers of one number, none of them able to derive it from the
+            others — so a header that quietly started meaning "live only" would
+            disagree with the edge on every session with a finished run.
+            `subagent-rail.test.ts` is the structure holding them together. */}
         <span className="ml-auto font-mono text-[10px] text-muted-foreground/60">{runs.length}</span>
       </div>
       <div className="flex max-h-80 flex-col gap-1 overflow-y-auto px-2 pb-2">
-        {runs.map((run) => (
+        {pinned.map((run) => (
           <RunCard
             key={run.runId}
             run={run}
@@ -108,8 +124,138 @@ export function UltraRail({ runs, activeRunId, onOpen }: Props) {
             onOpen={() => onOpen(run.runId)}
           />
         ))}
+        {/* NO "nothing running" PLACEHOLDER when every run has settled. The
+            group's own heading lands directly under the section header, whose
+            total already equals the group's count — which reads as "all of them
+            finished" rather than as an empty section with a mysterious `Done ·
+            6` beneath it. The separator exists only when there is something
+            above to separate from. */}
+        {done.length > 0 && (
+          <DoneGroup
+            settled={done}
+            activeRunId={activeRunId}
+            onOpen={onOpen}
+            separated={pinned.length > 0}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+// ── the settled group: compact rows, capped ─────────────────────────────────
+
+/** How many settled runs show before the rest go behind one toggle. FIVE, the
+ *  figure `workspace-inspector.tsx`'s `CappedRows` already chose for the same
+ *  job on the same data. That helper is re-implemented rather than imported —
+ *  it is private to a 600-line popover that fetches git state — but its rule is
+ *  kept verbatim: the caller orders, this only cuts, and it cuts from the END. */
+const DONE_ROW_CAP = 5;
+
+/** `settled` AND NOT `runs`, which is what this prop wants to be called. The
+ *  section header one component up prints the TOTAL as a `runs.length`
+ *  interpolation, and the scans in `subagent-rail.test.ts` and
+ *  `ultra-rail.test.ts` find that print by its literal text — so a second
+ *  identifier named `runs` in this file made the literal ambiguous and let the
+ *  header drift to the pinned subset with both guards still green. Do not
+ *  spell that interpolation out in prose here either: these scans read source,
+ *  and a comment quoting the thing they look for satisfies them by itself. */
+function DoneGroup({
+  settled,
+  activeRunId,
+  onOpen,
+  separated,
+}: {
+  settled: readonly RunSnapshot[];
+  activeRunId: string | null;
+  onOpen: (runId: string) => void;
+  /** false when this group IS the section — see the placeholder note above. */
+  separated: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hidden = Math.max(0, settled.length - DONE_ROW_CAP);
+  const shown = expanded ? settled : settled.slice(0, DONE_ROW_CAP);
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 flex-col gap-0.5",
+        separated && "mt-1 border-t border-border pt-2",
+      )}
+    >
+      <div className="px-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+        Done · {settled.length}
+      </div>
+      {shown.map((run) => (
+        <DoneRow
+          key={run.runId}
+          run={run}
+          active={activeRunId === run.runId}
+          onOpen={() => onOpen(run.runId)}
+        />
+      ))}
+      {hidden > 0 && (
+        // NO NOUN IN THE LABEL. `CappedRows` says "7 more runs", which needs a
+        // plural it does not have at 1; the heading two rows up already said
+        // what these are, and 240px is not the place to spend on repeating it.
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="w-full rounded-md px-1.5 py-1 text-left font-mono text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          {expanded ? "Show fewer" : `${hidden} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** One settled run: `subagent-rail.tsx`'s `HistoryRow` geometry — one line, the
+ *  same padding, the same hover — so the two sections of one panel do not read
+ *  as two products. The TYPOGRAPHY is this rail's, not that one's: a run's name
+ *  is mono `text-[11px]` in the card above it and must not change font when the
+ *  same run settles.
+ *
+ *  THE DOT IS THE CARD'S DOT, not `HistoryRow`'s check: a run keeps the same
+ *  glyph whether it is drawn as a card or as a row. The tone is a constant here
+ *  — `splitRunsForRail` only ever hands this `done` runs — so the table lookup
+ *  buys continuity of SHAPE, not a colour that varies.
+ *
+ *  `agentsDone` IS ABSENT, NEVER ZERO, for a run whose journal this page has not
+ *  read (B1) — so the figure disappears rather than claiming the run settled
+ *  nothing. */
+function DoneRow({
+  run,
+  active,
+  onOpen,
+}: {
+  run: RunSnapshot;
+  active: boolean;
+  onOpen: () => void;
+}) {
+  const tone = ULTRA_STATE_TONE[run.state];
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-current={active ? "true" : undefined}
+      title={`Open ${run.name}`}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60",
+        active && "bg-muted",
+      )}
+    >
+      <span className={cn("shrink-0 text-[10px] leading-none", ULTRA_TONE_CLASS[tone])} aria-hidden>
+        ●
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+        {run.name}
+      </span>
+      {run.agentsDone !== undefined && (
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
+          {run.agentsDone} settled
+        </span>
+      )}
+    </button>
   );
 }
 
