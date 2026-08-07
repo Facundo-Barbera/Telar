@@ -98,7 +98,8 @@ import type { WorkState } from "@/components/session/working-indicator";
 import {
   browserQueueStorage,
   isTerminalQueueState,
-  partitionQueue,
+  pendingView,
+  plainQueueError,
   queueStorageKey,
   readQueue,
   stripQueuedAttachments,
@@ -417,36 +418,32 @@ function QueueChip({
   onEdit,
   onCommit,
   onRemove,
-  state,
   error,
+  onRetry,
 }: {
-  /** Absent for chips outside the send order — see the "Not sent" block. */
+  /** Rendered only when the strip holds more than one message (rule 8). */
   index?: number;
   text: string;
   editing: boolean;
   /**
-   * AN AFFORDANCE ONLY WHERE THE ENGINE ALLOWS THE ACT. Omitting these hides
-   * the control rather than disabling it, because the engine's answer is not
-   * "not now" but "never": core admits an edit only for a `queued` item and a
-   * cancel only for `queued`/`failed`/`ambiguous`, so a pencil on a `running`
-   * chip is a button whose entire behaviour is a 409 and a red banner. This
-   * was the state of both buttons on every chip in the "Not sent" block.
+   * AN AFFORDANCE ONLY WHERE THE ACT IS REAL. Omitting these hides the
+   * control rather than disabling it — a pencil that answers with an error
+   * banner is a false promise (feel contract rule 10).
    */
   onEdit?: () => void;
   onCommit?: (v: string) => void;
   onRemove?: () => void;
-  state?: SessionQueuedMessage["state"];
+  /** One plain sentence; the line renders Retry/Discard beside it (rule 11).
+   *  No lifecycle label exists on this component, by construction (rule 8). */
   error?: string;
+  onRetry?: () => void;
 }) {
   const [draft, setDraft] = useState(text);
   useEffect(() => setDraft(text), [text, editing]);
-  // The engine's own word for where this message is. A LOCAL item has no state
-  // at all, so an engine refusal (`error`, never accepted) would otherwise wear
-  // no badge and read as an ordinary pending message — see partitionQueue.
-  const badge = state && state !== "queued" ? state : error ? "not sent" : null;
 
   return (
-    <div className="group flex items-center gap-2 rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
+    <div className="group rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
+      <div className="flex items-center gap-2">
       {index !== undefined && (
         <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
           {index}
@@ -485,17 +482,6 @@ function QueueChip({
           {text}
         </span>
       )}
-      {badge && (
-        <span
-          className={cn(
-            "shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground",
-            badge !== "claimed" && badge !== "running" && "text-destructive",
-          )}
-          title={error}
-        >
-          {badge}
-        </span>
-      )}
       {onEdit && (
         <Button
           type="button"
@@ -519,6 +505,28 @@ function QueueChip({
         >
           <XIcon />
         </Button>
+      )}
+      </div>
+      {error && (
+        <div className="mt-1 flex items-center gap-2 pl-6 text-[11px] text-destructive">
+          <span className="min-w-0 flex-1">{error}</span>
+          {onRetry && (
+            <Button type="button" size="xs" variant="outline" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+          {onRemove && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={onRemove}
+            >
+              Discard
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1318,7 +1326,10 @@ function SessionWorkspace({
   // valid after the composer has cleared and revoked the originals — the queue
   // can outlive several turns.
   const [messageQueue, setMessageQueue] = useState<SessionQueuedMessage[]>([]);
-  const [engineQueuePaused, setEngineQueuePaused] = useState(false);
+  /** TRUE between a Stop and the user's next send: everything pending is
+   *  held as LOCAL drafts (nothing server-side to drain — no mode, no Resume
+   *  button; feel contract rules 12/15) and the strip says so in one line. */
+  const [heldAfterStop, setHeldAfterStop] = useState(false);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1372,7 +1383,7 @@ function SessionWorkspace({
   // with; it is NOT the list to render. Once the engine claims a message the
   // transcript owns it, and leaving it under "Queued · sends in order" showed
   // one message as both already answered and still waiting to send.
-  const queueView = useMemo(() => partitionQueue(messageQueue), [messageQueue]);
+  const pendingLines = useMemo(() => pendingView(messageQueue), [messageQueue]);
 
   // AN EDIT CANNOT SURVIVE THE ENGINE TAKING THE MESSAGE — say so instead of
   // dropping it. A chip whose item leaves the editable set unmounts, React
@@ -2335,9 +2346,10 @@ function SessionWorkspace({
       text: string,
       opts?: { hidden?: boolean; files?: PromptInputMessage["files"] },
     ) => {
-      // A new turn clears the interrupted latch: whatever killed the LAST turn
-      // is no longer a reason to hold the queue back.
+      // A new turn clears the interrupted latch AND the hold: sending a
+      // message is the user act that releases whatever a Stop held (rule 15).
       turnInterruptedRef.current = false;
+      setHeldAfterStop(false);
       // This POST owns rendering now — the feed subscriber stands down for
       // its lifetime (the finally re-arms it from the done handoff's cursor);
       // background agents' output rides this turn's stream meanwhile.
@@ -2572,12 +2584,38 @@ function SessionWorkspace({
         body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
       }).catch(() => {});
     }
-    // Stop means stop. Without this latch the queue drains the moment `status`
-    // returns to "ready", so the agent the user just halted restarts itself
-    // with their queued message.
+    // Stop means stop — and HOLD, without a mode (feel contract rules 14/15).
+    // Everything pending pulls back to LOCAL drafts: engine-queued items are
+    // cancelled server-side (nothing left for the engine to drain at turn
+    // end) and kept in the strip as ordinary editable messages under one
+    // "Held" line. The next send — or the strip's Send now — releases them.
     turnInterruptedRef.current = true;
+    setHeldAfterStop(true);
+    const pullBack = messageQueue.filter(
+      (item) => item.accepted && item.state === "queued" && item.revision !== undefined,
+    );
+    for (const item of pullBack) {
+      // Inline (removeEngineQueueItem is declared later in the component and
+      // cannot be a dependency here) and best-effort: a failed cancel leaves
+      // the item to drain normally, which is the pre-hold behavior, not a mode.
+      void fetch(
+        `/api/chat/${encodeURIComponent(sessionId ?? "")}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision }),
+        },
+      ).catch(() => {});
+    }
+    setMessageQueue((q) =>
+      q.map((item) =>
+        item.accepted && item.state === "queued"
+          ? { ...item, accepted: false, state: undefined, revision: undefined }
+          : item,
+      ),
+    );
     abortRef.current?.abort();
-  }, [sessionId]);
+  }, [sessionId, messageQueue]);
 
   // ESCAPE, TWICE, TO STOP — and the first press must be VISIBLE.
   //
@@ -3010,12 +3048,25 @@ function SessionWorkspace({
 
   // Local entries exist only until the engine owns them. This also migrates an
   // issue-#5 localStorage queue when a session remounts after this upgrade.
+  // HELD after a Stop (rules 14/15): nothing re-enqueues until the user acts —
+  // releaseHeldMessages (Send now / the next send) clears the hold and this
+  // effect, depending on it, hands the drafts back to the engine.
   useEffect(() => {
     if (!sessionId) return;
+    if (heldAfterStop || turnInterruptedRef.current) return;
     for (const item of messageQueue) {
       if (!item.accepted && !item.error) void enqueueWithEngine(item);
     }
-  }, [sessionId, messageQueue, enqueueWithEngine]);
+  }, [sessionId, messageQueue, enqueueWithEngine, heldAfterStop]);
+
+  /** The hold's one exit, and it is a user act: clear the latch; the enqueue
+   *  effect above re-hands the drafts to the engine, which drains them in
+   *  order. send() calls this too — a new message releases what was held. */
+  const releaseHeldMessages = useCallback(() => {
+    turnInterruptedRef.current = false;
+    setHeldAfterStop(false);
+  }, []);
+
 
   const refreshEngineQueue = useCallback(async () => {
     if (!sessionId) return;
@@ -3031,7 +3082,9 @@ function SessionWorkspace({
         error?: string;
       }>;
     };
-    setEngineQueuePaused(Boolean(envelope.paused));
+    // envelope.paused is no longer read: no automatic producer exists (feel
+    // contract rules 12/15 — the explicit PATCH primitive remains for a
+    // future user-facing hold, and a Stop holds CLIENT-side instead).
     // Terminal items are dropped HERE and nowhere else: `messageQueue` is the
     // set the 2s poll's stop condition measures, so a committed item left in it
     // would keep this session polling forever. Which of the survivors the user
@@ -3052,22 +3105,6 @@ function SessionWorkspace({
       ...active,
     ]);
   }, [sessionId]);
-
-  const resumeEngineQueue = useCallback(async () => {
-    if (!sessionId) return;
-    const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/queue`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused: false }),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => null);
-      setAttachmentError(body?.error ?? `Queue resume failed (HTTP ${response.status})`);
-      return;
-    }
-    setEngineQueuePaused(false);
-    await refreshEngineQueue();
-  }, [sessionId, refreshEngineQueue]);
 
   const editEngineQueueItem = useCallback(
     async (item: SessionQueuedMessage, text: string) => {
@@ -3107,6 +3144,44 @@ function SessionWorkspace({
       await refreshEngineQueue();
     },
     [sessionId, refreshEngineQueue],
+  );
+
+  /** Retry a line that did not send: the settled engine copy is dismissed and
+   *  the text re-enters as a fresh local draft, which the enqueue effect
+   *  hands back to the engine — no mode, no Resume, one click (rule 11). */
+  const retryPendingLine = useCallback(
+    (item: SessionQueuedMessage) => {
+      if (item.accepted) void removeEngineQueueItem(item);
+      setMessageQueue((q) => [
+        ...q.filter((x) => x.id !== item.id),
+        {
+          id: globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2),
+          text: item.text,
+        },
+      ]);
+    },
+    [removeEngineQueueItem],
+  );
+
+  /** ArrowUp on an empty composer pulls the NEWEST pending message back into
+   *  the input as an ordinary draft (feel contract rule 10): the line leaves
+   *  the strip, its text enters the box, nothing is left behind. The value is
+   *  set through the native setter + input event so React and the prompt
+   *  controller both observe it. */
+  const recallPendingIntoComposer = useCallback(
+    (el: HTMLTextAreaElement) => {
+      const line = pendingLines.at(-1);
+      if (!line) return;
+      if (line.item.accepted) void removeEngineQueueItem(line.item);
+      setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(el, line.item.text);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    [pendingLines, removeEngineQueueItem],
   );
 
   useEffect(() => {
@@ -3750,149 +3825,66 @@ function SessionWorkspace({
             )}
           >
             <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
-            {/* PAUSED IS A PROPERTY OF THE QUEUE, NOT OF THE WAITING LIST, so
-                it is stated at the queue's level and not inside one of its
-                groups. It used to live in the waiting block's heading with
-                Resume beside it, which put the only control in the one place
-                it could not be reached: the engine pauses PRECISELY when it
-                mints an attention item (session-engine.ts fails a turn and
-                then pauses; recoverSessionQueue pauses behind an `ambiguous`
-                one), so the canonical paused state is one failed message and
-                nothing waiting. `claimNextSessionTurn` returns null while
-                `paused`, so that was a stopped queue with no visible way to
-                start it — a hang whose only escape was to queue an unrelated
-                message so the block reappeared. */}
-            {engineQueuePaused && (
-              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.04] px-2.5 py-1.5">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Queue paused · review before resuming
-                </span>
-                <Button type="button" size="xs" variant="outline" onClick={() => void resumeEngineQueue()}>
-                  Resume
-                </Button>
-              </div>
-            )}
-            {/* WAITING ONLY. The badge counts this set and nothing else: a `1`
-                beside a message the agent is already answering is precisely
-                what read as a pending duplicate send (issue #31). In-flight
-                items get no chip here — while this mount is streaming, the
-                transcript and the working indicator already say where they
-                are; see the "Sending" block for the window where they do not. */}
-            {queueView.waiting.length > 0 && (
+            {/* THE PENDING STRIP (feel contract rules 5-10) — the holding
+                place: your messages, in order, waiting to send, directly
+                above the composer. One block, message-styled lines, editable
+                in place until the moment they fire; a line that failed keeps
+                its text with one plain sentence and Retry/Discard on the
+                line. NO lifecycle vocabulary can render here, by
+                construction (pendingView). Claimed/running items have no
+                line at all: the feed subscriber streams the drained turn
+                into the transcript, which is their one representation.
+                After a Stop, the strip holds everything un-sent and says so
+                in one line; Send now (or your next message) releases it. */}
+            {pendingLines.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    {/* "in order" is a promise about a send that is going to
-                        happen; while the queue is paused it is not. */}
-                    {engineQueuePaused ? "Queued · held until you resume" : "Queued · sends in order"}
-                  </span>
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                    {queueView.waiting.length}
-                  </span>
-                </div>
-                {queueView.waiting.map((m, i) => (
+                {(heldAfterStop || pendingLines.length > 1) && (
+                  <div className="flex items-center justify-between px-1.5 pt-0.5">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {heldAfterStop
+                        ? "Held — sends with your next message"
+                        : `${pendingLines.length} waiting`}
+                    </span>
+                    {heldAfterStop && (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        onClick={() => releaseHeldMessages()}
+                      >
+                        Send now
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {pendingLines.map((line, i) => (
                   <QueueChip
-                    key={m.id}
-                    index={i + 1}
-                    text={m.text}
-                    editing={editingQueueId === m.id}
-                    onEdit={() => {
-                      if (!m.accepted || m.state === "queued") setEditingQueueId(m.id);
-                    }}
-                    onCommit={(v) => {
-                      setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
-                      setEditingQueueId(null);
-                      if (m.accepted) void editEngineQueueItem(m, v);
-                    }}
-                    onRemove={() => {
-                      if (m.accepted) void removeEngineQueueItem(m);
-                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
-                    }}
-                    state={m.state}
-                    error={m.error}
-                  />
-                ))}
-              </div>
-            )}
-            {/* THE ONE WINDOW WHERE NOTHING ELSE SPEAKS FOR AN IN-FLIGHT ITEM.
-                A queued turn is drained SERVER-SIDE (queue route →
-                kickSessionQueue → its own POST /api/chat), and this mount has
-                no feed for it: the §1b reconnect tail arms at most once per
-                session id and is long finished by then. So when the engine
-                takes a message while this window is idle, the transcript does
-                not gain the bubble, no working indicator runs — and hiding the
-                chip too would leave the message the user committed to with no
-                representation anywhere on screen until they navigate away and
-                come back.
-                GATED ON `!busy`, which is exactly the condition "this mount is
-                not itself streaming the answer": while it is, the transcript
-                owns the message and a chip here would be the duplicate #31 is
-                about. The missing feed is a separate defect in the same seam as
-                #24 and is NOT fixed here; this only keeps the message visible
-                while it stands. */}
-            {!busy && queueView.inFlight.length > 0 && (
-              <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Sending · the agent is answering this
-                  </span>
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                    {queueView.inFlight.length}
-                  </span>
-                </div>
-                {/* No edit, no remove, and no ordinal: core admits neither
-                    transition once an item is claimed, and this is no longer a
-                    send order — it is one message, already taken. */}
-                {queueView.inFlight.map((m) => (
-                  <QueueChip key={m.id} text={m.text} editing={false} state={m.state} error={m.error} />
-                ))}
-              </div>
-            )}
-            {/* NOT A QUEUE. These did not send, and the one thing they must never
-                do is disappear quietly — a lost message the user committed to is
-                the failure #5 and #7 exist to prevent. Deliberately NOT
-                numbered: an ordinal implies a send order these are no longer
-                part of. WHICH BUTTONS APPEAR IS THE ENGINE'S ANSWER, not a
-                style choice — an item the engine accepted and then failed can
-                be dismissed (dismissFailedSessionTurn) but never edited, while
-                one the engine REFUSED is still purely local, so editing it
-                clears the error and lets the retry effect try again. */}
-            {queueView.attention.length > 0 && (
-              <div className="mb-2 space-y-1.5 rounded-xl border border-destructive/30 bg-destructive/[0.06] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-destructive">
-                    Not sent · needs your attention
-                  </span>
-                  <span className="rounded-full bg-destructive/15 px-1.5 text-[10px] font-medium text-destructive">
-                    {queueView.attention.length}
-                  </span>
-                </div>
-                {queueView.attention.map((m) => (
-                  <QueueChip
-                    key={m.id}
-                    text={m.text}
-                    editing={editingQueueId === m.id}
-                    onEdit={m.accepted ? undefined : () => setEditingQueueId(m.id)}
+                    key={line.item.id}
+                    index={pendingLines.length > 1 ? i + 1 : undefined}
+                    text={line.item.text}
+                    editing={editingQueueId === line.item.id}
+                    onEdit={line.editable ? () => setEditingQueueId(line.item.id) : undefined}
                     onCommit={
-                      m.accepted
-                        ? undefined
-                        : (v) => {
-                            // Clearing `error` is the RETRY: the effect that
-                            // sends local items skips anything carrying one, so
-                            // without this an edited message would sit here
-                            // corrected and still never leave.
+                      line.editable
+                        ? (v) => {
                             setMessageQueue((q) =>
-                              q.map((x) => (x.id === m.id ? { ...x, text: v, error: undefined } : x)),
+                              q.map((x) =>
+                                x.id === line.item.id
+                                  ? { ...x, text: v, error: undefined }
+                                  : x,
+                              ),
                             );
                             setEditingQueueId(null);
+                            if (line.item.accepted) void editEngineQueueItem(line.item, v);
                           }
+                        : undefined
                     }
                     onRemove={() => {
-                      if (m.accepted) void removeEngineQueueItem(m);
-                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
+                      if (line.item.accepted) void removeEngineQueueItem(line.item);
+                      else setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
                     }}
-                    state={m.state}
-                    error={m.error}
+                    error={line.error ? plainQueueError(line.error) : undefined}
+                    onRetry={line.error ? () => retryPendingLine(line.item) : undefined}
                   />
                 ))}
               </div>
@@ -3984,7 +3976,22 @@ function SessionWorkspace({
                         ? "Enter queues a message…"
                         : "Ask for changes, explore the code, or attach context…"
                   }
-                  onKeyDown={autocomplete.onComposerKeyDown}
+                  onKeyDown={(e) => {
+                    // Up-recall (rule 10): an empty composer + ArrowUp pulls
+                    // the newest pending message back as an editable draft.
+                    // Everywhere else, native caret behavior and the
+                    // autocomplete's own handling are untouched.
+                    if (
+                      e.key === "ArrowUp" &&
+                      e.currentTarget.value === "" &&
+                      pendingLines.length > 0
+                    ) {
+                      e.preventDefault();
+                      recallPendingIntoComposer(e.currentTarget);
+                      return;
+                    }
+                    autocomplete.onComposerKeyDown(e);
+                  }}
                   // Every edit un-dismisses BOTH menus and re-measures the
                   // caret — typing past a completed mention has to be able to
                   // re-open the menu. One handler for both, in the hook.
