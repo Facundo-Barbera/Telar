@@ -19,6 +19,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   CircleCheckIcon,
+  DownloadIcon,
   MailIcon,
   MailOpenIcon,
   MoreHorizontalIcon,
@@ -171,6 +172,17 @@ export function SessionInboxMenu({
             Rename
           </DropdownMenuItem>
         ) : null}
+
+        {/* An <a download>, not a fetch: the route serves the file with its own
+            Content-Disposition, so the browser names and saves it without this
+            component ever holding a transcript in memory. Nothing to `run` —
+            no state changes, so no busy spinner and no onDone refresh. */}
+        <DropdownMenuItem
+          render={<a href={`/api/chats/${encodeURIComponent(session.id)}/export`} download />}
+        >
+          <DownloadIcon />
+          Download transcript
+        </DropdownMenuItem>
 
         <DropdownMenuItem
           onClick={() => void run(() => patchChat(session.id, { read: unread }))}
