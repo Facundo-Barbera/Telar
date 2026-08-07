@@ -2506,6 +2506,17 @@ export async function POST(req: Request) {
           // output" rule locally (see markToolsInterrupted).
           if (anyInterrupted) send("interrupted", {});
           rationToolDetail(turnState);
+          // F2 (message-lifecycle STEP 2): a turn stopped by the user's
+          // interrupt keeps what arrived and SAYS so — one non-attention
+          // marker under the exchange. The runtime flag is what tells a
+          // Stop apart from a genuine mid-turn error; reading it here also
+          // clears nothing (beginTurn resets it), so a crashed POST that
+          // never reaches this line loses only the marker, not the truth.
+          if (runtimeRef?.interruptedTurn) {
+            turnState.parts.push({ type: "marker", text: "Stopped — kept what arrived." });
+            turnState.partOrigin.push(undefined);
+            send("marker", { text: "Stopped — kept what arrived." });
+          }
           // The window is NOT outliving this POST (empty roster): whatever
           // spawn is still ack-only will never complete — settle it now, on
           // the live stream, before appendTurn persists the marked parts.

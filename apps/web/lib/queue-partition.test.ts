@@ -126,11 +126,19 @@ describe("the pending strip renders the view, not the engine", () => {
     expect(stop).toContain('item.accepted && item.state === "queued"');
   });
 
-  test("ArrowUp on an empty composer recalls the newest pending message", () => {
+  test("ArrowUp walks the strip via recallTarget — a pure index, not component arithmetic", () => {
+    // F1 (message-lifecycle): the walk previews without destroying (lines
+    // leave the strip only at COMMIT — typing or sending), ArrowDown walks
+    // back with the displaced draft restored, and the lost race is a strip
+    // line with Stop — the F1→F2 handoff — never an error banner.
     const src = sessionView();
-    expect(src).toContain("recallPendingIntoComposer");
+    expect(src).toContain("recallTarget(pendingLines, recallCursorRef.current, dir)");
     expect(src).toContain('e.key === "ArrowUp"');
-    expect(src).toContain('e.currentTarget.value === ""');
+    expect(src).toContain('(walking || e.currentTarget.value === "")');
+    expect(src).toContain('e.key === "ArrowDown" && walking');
+    expect(src).toContain("That one already went.");
+    // Attachments travel with the recall — the whole message comes back.
+    expect(src).toContain("filesFromItems");
   });
 
   test("the dock speaks the same words: no state badges, no paused banner", () => {

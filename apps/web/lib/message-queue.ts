@@ -207,6 +207,46 @@ export function pendingView<
 }
 
 /**
+ * The composer's ArrowUp/ArrowDown walk over the strip (message-lifecycle F1):
+ * ArrowUp on an empty composer previews the NEWEST editable line; each further
+ * press walks one line older; ArrowDown walks back toward newest, and walking
+ * past the newest ends the walk (the caller restores whatever draft was
+ * displaced). A pure index over the EDITABLE lines, re-resolved per press —
+ * the strip can change under a walk (a line fires, an error lands) and the
+ * next press simply lands somewhere true. Non-editable lines (engine-settled
+ * failures, which retry by re-enqueue) are never walk targets.
+ *
+ * Here rather than in the component, per the design doc: "this is a pure
+ * index over pendingLines, so it belongs in message-queue.ts … not as
+ * component state arithmetic."
+ */
+export type RecallStep<T> = {
+  /** The new walk position (an index into the editable sub-list), or null —
+   *  either nothing to recall, or the walk ended (ArrowDown past newest). */
+  cursor: number | null;
+  line: PendingLine<T> | null;
+};
+
+export function recallTarget<T>(
+  lines: readonly PendingLine<T>[],
+  cursor: number | null,
+  dir: "up" | "down",
+): RecallStep<T> {
+  const editable = lines.filter((l) => l.editable);
+  if (editable.length === 0) return { cursor: null, line: null };
+  if (dir === "up") {
+    // First press lands on the newest; further presses walk older, clamped —
+    // holding ArrowUp at the oldest line stays there rather than wrapping.
+    const next = cursor === null ? editable.length - 1 : Math.max(0, cursor - 1);
+    return { cursor: next, line: editable[next] ?? null };
+  }
+  if (cursor === null) return { cursor: null, line: null };
+  const next = cursor + 1;
+  if (next >= editable.length) return { cursor: null, line: null };
+  return { cursor: next, line: editable[next] ?? null };
+}
+
+/**
  * One plain sentence for a queue error (feel contract rules 11/23): raw
  * exception text, HTTP codes, and revision-conflict strings never reach the
  * screen. Pure so the mapping is provable without a DOM.

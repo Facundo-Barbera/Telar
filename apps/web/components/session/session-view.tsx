@@ -54,11 +54,14 @@ import {
   parentOf,
   showsLiveStatus,
   toTranscriptItems,
+  usePromptInputController,
+  useProviderAttachments,
   type AgentBucket,
   type AttachmentRef,
   type ChatMessage,
   type ItemKind,
   type PermissionPart,
+  type PromptInputAttachmentItem,
   type PromptInputMessage,
   type StatusPayload,
   type MarkerPayload,
@@ -102,6 +105,7 @@ import {
   plainQueueError,
   queueStorageKey,
   readQueue,
+  recallTarget,
   stripQueuedAttachments,
   writeQueue,
   type QueuedMessage,
@@ -1338,6 +1342,36 @@ function SessionWorkspace({
   // valid after the composer has cleared and revoked the originals — the queue
   // can outlive several turns.
   const [messageQueue, setMessageQueue] = useState<SessionQueuedMessage[]>([]);
+  // Declared HERE, well above stopTurn, because both F1 (the walk) and F2
+  // (stop-and-reclaim) need them and stopTurn is declared first — the same
+  // TDZ constraint the inline queue-DELETE in stopTurn documents.
+  const attachmentsCtx = useProviderAttachments();
+  const promptText = usePromptInputController().textInput;
+  /** What send() last put in flight — F2's reclaim source. Cleared on
+   *  reclaim; harmlessly stale after a normal turn end (reclaim only runs
+   *  from a Stop while a send from THIS mount is live). */
+  const lastSentRef = useRef<{
+    userId: string | null;
+    text: string;
+    files: readonly unknown[];
+  } | null>(null);
+  /** Rebuild File objects from staged/queued attachment items (data: or
+   *  still-live blob: URLs). A URL whose bytes are gone is skipped — the text
+   *  still comes back, which beats refusing the whole recall. */
+  const filesFromItems = useCallback(async (items: readonly unknown[]): Promise<File[]> => {
+    const out: File[] = [];
+    for (const raw of items) {
+      const it = raw as { filename?: string; mediaType?: string; url?: string };
+      if (!it?.url) continue;
+      try {
+        const blob = await (await fetch(it.url)).blob();
+        out.push(new File([blob], it.filename ?? "attachment", { type: it.mediaType ?? blob.type }));
+      } catch {
+        /* bytes gone — skip */
+      }
+    }
+    return out;
+  }, []);
   /** TRUE between a Stop and the user's next send: everything pending is
    *  held as LOCAL drafts (nothing server-side to drain — no mode, no Resume
    *  button; feel contract rules 12/15) and the strip says so in one line. */
@@ -2407,6 +2441,12 @@ function SessionWorkspace({
       // and it caught this exact attempt. A set of ids owned here says the same
       // thing without widening anything the shell has to know.
       const userId = `m${nextId.current++}`;
+      // F2's reclaim source: what THIS mount just put in flight, so a Stop
+      // can hand the words back (stopTurn). Hidden turns reclaim nothing —
+      // the user never typed their sentinel.
+      lastSentRef.current = opts?.hidden
+        ? null
+        : { userId, text, files: opts?.files ?? [] };
       // Fresh session (no id yet): the first user message names the thread,
       // mirroring the title the store derives on save. A hidden kickoff has no
       // user text to title from, so it seeds a fixed escalation label instead.
@@ -2625,7 +2665,52 @@ function SessionWorkspace({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
-      }).catch(() => {});
+      })
+        .then(async (res) => {
+          const body = await res.json().catch(() => null);
+          // F2: an interrupted turn ends at its own aborted result, so THIS
+          // mount's stream closes with a real `done` handoff — the reader
+          // must stay open for it. Aborting the fetch here is what used to
+          // orphan the stream and force the tail-from-now special case.
+          // The kill-fallback (no interrupt) keeps the old teardown.
+          if (!body?.interrupted) abortRef.current?.abort();
+        })
+        .catch(() => abortRef.current?.abort());
+    } else {
+      abortRef.current?.abort();
+    }
+    // Your words come back (F2): the in-flight message returns editable —
+    // into the composer when it is empty, else to the HEAD of the strip
+    // (never destroy typing). Only for a turn THIS mount sent: a reconnect
+    // tail's turn belongs to whichever surface sent it.
+    const last = lastSentRef.current;
+    if (last && abortRef.current) {
+      lastSentRef.current = null;
+      if (promptText.value === "") {
+        promptText.setInput(last.text);
+        if (last.files.length) {
+          void filesFromItems(last.files).then((fs) => {
+            if (fs.length) attachmentsCtx.add(fs);
+          });
+        }
+      } else {
+        setMessageQueue((q) => [
+          {
+            id: `q-reclaim-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`,
+            text: last.text,
+            ...(last.files.length ? { files: last.files as SessionQueuedMessage["files"] } : {}),
+          },
+          ...q,
+        ]);
+      }
+      // The subdued note that makes the duplicate text legible rather than
+      // spooky — on the user bubble the words came from.
+      if (last.userId) {
+        patch(last.userId, (m) => ({
+          ...m,
+          parts: [...m.parts, { type: "marker" as const, text: "returned to composer" }],
+        }));
+      }
     }
     // Stop means stop — and HOLD, without a mode (feel contract rules 14/15).
     // Everything pending pulls back to LOCAL drafts: engine-queued items are
@@ -2657,8 +2742,13 @@ function SessionWorkspace({
           : item,
       ),
     );
-    abortRef.current?.abort();
-  }, [sessionId, messageQueue]);
+    // NO unconditional abort here — that is the decision the stop response
+    // makes above (interrupted → the stream closes itself at the aborted
+    // result; anything else → abort as before).
+    // `patch` is a plain function (not useCallback-wrapped) and is omitted
+    // from these deps by the file's own convention — listing it makes the
+    // callback churn every render and trips exhaustive-deps the other way.
+  }, [sessionId, messageQueue, promptText, attachmentsCtx, filesFromItems]);
 
   // ESCAPE, TWICE, TO STOP — and the first press must be VISIBLE.
   //
@@ -3206,26 +3296,113 @@ function SessionWorkspace({
     [removeEngineQueueItem],
   );
 
-  /** ArrowUp on an empty composer pulls the NEWEST pending message back into
-   *  the input as an ordinary draft (feel contract rule 10): the line leaves
-   *  the strip, its text enters the box, nothing is left behind. The value is
-   *  set through the native setter + input event so React and the prompt
-   *  controller both observe it. */
-  const recallPendingIntoComposer = useCallback(
-    (el: HTMLTextAreaElement) => {
-      const line = pendingLines.at(-1);
-      if (!line) return;
-      if (line.item.accepted) void removeEngineQueueItem(line.item);
-      setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(el, line.item.text);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    },
-    [pendingLines, removeEngineQueueItem],
+  /** THE WALK (message-lifecycle F1). ArrowUp/ArrowDown move a cursor over
+   *  the strip's editable lines (recallTarget — a pure index, tested in
+   *  message-queue.test.ts); the composer PREVIEWS the line under the cursor,
+   *  text and attachments both, while the strip keeps the line. Nothing is
+   *  removed until the user COMMITS — by typing (the keydown handler) or by
+   *  sending (handleSubmit) — so browsing costs nothing and Escape or
+   *  walking back out restores the displaced draft exactly.
+   *
+   *  The old single-shot recall copied only `line.item.text`: a queued
+   *  message with attachments came back silently lighter, the exact "never
+   *  hand back less than you were given" violation the design doc names. */
+  const recallCursorRef = useRef<number | null>(null);
+  const recallPreviewIdRef = useRef<string | null>(null);
+  const recallDisplacedRef = useRef<{ text: string; files: PromptInputAttachmentItem[] } | null>(
+    null,
   );
+  /** The lost race, as a strip line: "That one already went." + Stop (the
+   *  F1→F2 handoff). Never an error banner — see commitRecall. */
+  const [recallRace, setRecallRace] = useState<string | null>(null);
+
+  const setComposerValue = useCallback((el: HTMLTextAreaElement, text: string) => {
+    // Native setter + input event so React and the prompt controller both
+    // observe the change (the same idiom the old recall used).
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.setSelectionRange(text.length, text.length);
+  }, []);
+
+  const previewInComposer = useCallback(
+    (el: HTMLTextAreaElement, text: string, files: readonly unknown[]) => {
+      setComposerValue(el, text);
+      attachmentsCtx.clear();
+      if (files.length) {
+        void filesFromItems(files).then((fs) => {
+          if (fs.length) attachmentsCtx.add(fs);
+        });
+      }
+    },
+    [setComposerValue, attachmentsCtx, filesFromItems],
+  );
+
+  const stepRecall = useCallback(
+    (el: HTMLTextAreaElement, dir: "up" | "down") => {
+      const step = recallTarget(pendingLines, recallCursorRef.current, dir);
+      if (recallCursorRef.current === null) {
+        if (!step.line) return; // nothing editable to recall
+        // Walk begins: remember what the composer held (text AND staged
+        // attachments) so the last ArrowDown can put it back.
+        recallDisplacedRef.current = { text: el.value, files: [...attachmentsCtx.files] };
+      }
+      recallCursorRef.current = step.cursor;
+      if (step.line) {
+        recallPreviewIdRef.current = step.line.item.id;
+        previewInComposer(el, step.line.item.text, (step.line.item.files as unknown[]) ?? []);
+      } else {
+        // Walked out the bottom — restore the displaced draft, whole.
+        recallPreviewIdRef.current = null;
+        const d = recallDisplacedRef.current;
+        recallDisplacedRef.current = null;
+        previewInComposer(el, d?.text ?? "", d?.files ?? []);
+      }
+    },
+    [pendingLines, attachmentsCtx, previewInComposer],
+  );
+
+  const cancelRecall = useCallback(
+    (el: HTMLTextAreaElement) => {
+      recallCursorRef.current = null;
+      recallPreviewIdRef.current = null;
+      const d = recallDisplacedRef.current;
+      recallDisplacedRef.current = null;
+      previewInComposer(el, d?.text ?? "", d?.files ?? []);
+    },
+    [previewInComposer],
+  );
+
+  /** The commit: the previewed line is the user's now — it leaves the strip
+   *  and the engine. A lost race (core admits no removal once claimed, and
+   *  the engine claims the instant the session goes idle) is NOT an error
+   *  banner: the message went, so the strip shows one line — "That one
+   *  already went." — with Stop right there (the F1→F2 handoff). */
+  const commitRecall = useCallback(() => {
+    const id = recallPreviewIdRef.current;
+    recallCursorRef.current = null;
+    recallPreviewIdRef.current = null;
+    recallDisplacedRef.current = null;
+    if (!id) return;
+    const item = messageQueue.find((x) => x.id === id);
+    setMessageQueue((q) => q.filter((x) => x.id !== id));
+    if (!item?.accepted || item.revision === undefined || !sessionId) return;
+    void (async () => {
+      const res = await fetch(
+        `/api/chat/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision }),
+        },
+      ).catch(() => null);
+      if (res && !res.ok) setRecallRace("That one already went.");
+      await refreshEngineQueue();
+    })();
+  }, [messageQueue, sessionId, refreshEngineQueue]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -3244,6 +3421,11 @@ function SessionWorkspace({
     // normal thing to want ("look at this"), so the empty-text guard now only
     // rejects a genuinely empty composer.
     if (!text && message.files.length === 0) return;
+    // Sending while a walk previews a line commits it (the line leaves the
+    // strip — otherwise the same message would send AND stay queued), and a
+    // send is the user acting, so the lost-race line has served its purpose.
+    if (recallPreviewIdRef.current) commitRecall();
+    setRecallRace(null);
     // Agent busy → queue instead of dropping. Returning void (sync) lets
     // PromptInput clear the textarea, exactly as a real send would.
     if (busy) {
@@ -3905,6 +4087,23 @@ function SessionWorkspace({
                 into the transcript, which is their one representation.
                 After a Stop, the strip holds everything un-sent and says so
                 in one line; Send now (or your next message) releases it. */}
+            {/* The F1→F2 handoff: a pull-back that lost the race to the
+                engine is not an error — the message went. One line says so,
+                with Stop right there for the user whose whole intent was
+                "actually, wait". Cleared by the next send. */}
+            {recallRace && (
+              <div className="mb-2 flex items-center justify-between rounded-xl border border-border bg-muted/40 px-3 py-1.5">
+                <span className="text-xs text-muted-foreground">{recallRace}</span>
+                <span className="flex items-center gap-1.5">
+                  <Button type="button" size="xs" variant="outline" onClick={() => stopTurn()}>
+                    Stop
+                  </Button>
+                  <Button type="button" size="xs" variant="ghost" onClick={() => setRecallRace(null)}>
+                    Dismiss
+                  </Button>
+                </span>
+              </div>
+            )}
             {pendingLines.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
                 {(heldAfterStop || pendingLines.length > 1) && (
@@ -4046,18 +4245,38 @@ function SessionWorkspace({
                         : "Ask for changes, explore the code, or attach context…"
                   }
                   onKeyDown={(e) => {
-                    // Up-recall (rule 10): an empty composer + ArrowUp pulls
-                    // the newest pending message back as an editable draft.
-                    // Everywhere else, native caret behavior and the
-                    // autocomplete's own handling are untouched.
+                    // The walk (F1, rule 10): ArrowUp on an empty composer
+                    // previews the newest pending message; each further press
+                    // walks one line older; ArrowDown walks back, and the
+                    // last one restores whatever draft was displaced. Escape
+                    // abandons the walk; typing anything COMMITS it (the line
+                    // leaves the strip for good). Everywhere else, native
+                    // caret behavior and the autocomplete's own handling are
+                    // untouched.
+                    const walking = recallCursorRef.current !== null;
                     if (
                       e.key === "ArrowUp" &&
-                      e.currentTarget.value === "" &&
+                      (walking || e.currentTarget.value === "") &&
                       pendingLines.length > 0
                     ) {
                       e.preventDefault();
-                      recallPendingIntoComposer(e.currentTarget);
+                      stepRecall(e.currentTarget, "up");
                       return;
+                    }
+                    if (e.key === "ArrowDown" && walking) {
+                      e.preventDefault();
+                      stepRecall(e.currentTarget, "down");
+                      return;
+                    }
+                    if (e.key === "Escape" && walking) {
+                      e.preventDefault();
+                      cancelRecall(e.currentTarget);
+                      return;
+                    }
+                    if (walking && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+                      // First real keystroke = the user is editing this one —
+                      // it is theirs now. (Enter commits via handleSubmit.)
+                      commitRecall();
                     }
                     autocomplete.onComposerKeyDown(e);
                   }}

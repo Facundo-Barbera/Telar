@@ -168,6 +168,11 @@ export type SessionRuntime = {
   turnActive: boolean;
   lastActivity: number;
   closed: boolean;
+  /** F2: set by interruptSessionRuntime, cleared at the next beginTurn —
+   *  how the POST's teardown tells a user's Stop apart from a genuine
+   *  mid-turn error when it decides to write "Stopped — kept what
+   *  arrived." under the exchange. */
+  interruptedTurn: boolean;
   /** Messages consumed while no turn was attached — kept as an observability
    *  counter; with a window sink installed they are rendered, not dropped. */
   detachedMessages: number;
@@ -333,6 +338,7 @@ export function acquireSessionRuntime(args: {
     query: undefined as unknown as Query,
     liveTaskCount: 0,
     turnActive: false,
+    interruptedTurn: false,
     lastActivity: Date.now(),
     closed: false,
     detachedMessages: 0,
@@ -353,6 +359,7 @@ export function acquireSessionRuntime(args: {
       const turnQueue = new AsyncQueue<SDKMessage>();
       rt._turn = turnQueue;
       rt.turnActive = true;
+      rt.interruptedTurn = false;
       // The new turn's POST renders live traffic now — the previous window's
       // sink is done (its still-live tasks' output rides THIS turn's feed),
       // and a pending settle linger with it.
@@ -438,6 +445,65 @@ export function closeSessionRuntime(key: string): boolean {
   if (!rt) return false;
   rt.closeNow("stopped");
   return true;
+}
+
+// F2's watchdog (message-lifecycle STEP 2): an interrupt that produces no
+// receipt within this window is treated as unsupported/wedged and escalates
+// to the kill the Stop button has always meant. 5s is generous for a control
+// round-trip and short enough that Stop still feels like Stop.
+const INTERRUPT_WATCHDOG_MS = 5_000;
+
+/** Stop the TURN and keep the runtime (message-lifecycle F2): the warm
+ *  process, its context, and its background agents all survive — measured,
+ *  not assumed (rewind probe (e): the same streaming query accepted and
+ *  answered a new turn after its interrupt).
+ *
+ *  Three outcomes, and the caller treats only the first as "the session
+ *  lives": "interrupted" (receipt arrived, nothing left queued),
+ *  "escalated" (no receipt in 5s, the receipt reported still-queued input,
+ *  or the call threw — the runtime is closed hard, exactly what Stop meant
+ *  before this function existed), "no-runtime" (nothing to stop here; the
+ *  caller falls through to stopChatRun's abort for run-only turns).
+ *
+ *  The capability CANNOT be gated on initializationResult(): probe finding
+ *  (d) — this CLI build advertises no capabilities field at all. Attempting
+ *  the interrupt IS the detection; the watchdog is the guard. */
+export async function interruptSessionRuntime(
+  key: string,
+): Promise<"interrupted" | "escalated" | "no-runtime"> {
+  const rt =
+    runtimes.get(key) ?? [...runtimes.values()].find((r) => !r.closed && r.sessionId === key);
+  if (!rt || rt.closed) return "no-runtime";
+  // Only an ACTIVE TURN is interruptible. The presence line's Stop targets
+  // the whole session between turns — background agents and all — and that
+  // is the caller's kill-fallback, not an interrupt; swallowing it here
+  // would make "Stop the background work" a no-op.
+  if (!rt.turnActive) return "no-runtime";
+  rt.interruptedTurn = true;
+  try {
+    const receipt = await Promise.race([
+      rt.query.interrupt(),
+      new Promise<never>((_, reject) => {
+        const t = setTimeout(
+          () => reject(new Error("interrupt watchdog")),
+          INTERRUPT_WATCHDOG_MS,
+        );
+        (t as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    const stillQueued = (receipt as { still_queued?: unknown[] } | undefined)?.still_queued;
+    if (Array.isArray(stillQueued) && stillQueued.length > 0) {
+      // Input the interrupt could not cancel would run as a phantom turn the
+      // moment we walk away — that is not "stopped" by any honest reading.
+      rt.closeNow("interrupt left queued input");
+      return "escalated";
+    }
+    rt.lastActivity = Date.now();
+    return "interrupted";
+  } catch {
+    rt.closeNow("interrupt failed");
+    return "escalated";
+  }
 }
 
 /** Whether this session's ACTIVITY WINDOW is still open — a turn attached, a
