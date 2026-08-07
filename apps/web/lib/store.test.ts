@@ -762,3 +762,73 @@ describe("turn anchors are written by appendTurn and stay off the wire", () => {
     }
   });
 });
+
+describe("rollbackChat — the truncation, under an optimistic check", () => {
+  const turn = (id: string, n: number) =>
+    store.appendTurn({
+      id,
+      model: "sonnet",
+      account: "personal",
+      provider: "claude",
+      anchor: { prompt: `u-${n}`, tail: `a-${n}` },
+      contextTokens: 100 * (n + 1),
+      userMessage: { role: "user", parts: [{ type: "text", text: `q${n}` }] },
+      assistantMessage: { role: "assistant", parts: [{ type: "text", text: `r${n}` }] },
+      costUsd: 1,
+    });
+
+  test("truncates messages, anchors, turns; restores the kept turn's CTX; spend stays", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-rb-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("rb-1", 0);
+      turn("rb-1", 1);
+      turn("rb-1", 2);
+      const spendBefore = store.getChat("rb-1")?.costUsd;
+      const res = store.rollbackChat("rb-1", { toTurn: 1, expectedTurns: 3 });
+      expect(res).toEqual({ ok: true, messages: 2 });
+      const chat = store.getChat("rb-1");
+      expect(chat?.messages).toHaveLength(2);
+      expect(chat?.turns).toBe(1);
+      expect(chat?.turnAnchors).toHaveLength(1);
+      expect(chat?.contextTokens).toBe(100); // the KEPT turn's, not the newest's
+      // Spend is untouched by rollback — money spent on discarded turns was
+      // really spent (getChat projects it over usage.ndjson either way).
+      expect(chat?.costUsd).toBe(spendBefore);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale expectedTurns refuses with the one sentence", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-rb2-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("rb-2", 0);
+      turn("rb-2", 1);
+      const res = store.rollbackChat("rb-2", { toTurn: 1, expectedTurns: 5 });
+      expect(res.ok).toBe(false);
+      expect((res as { reason: string }).reason).toMatch(/Something landed/);
+      expect(store.getChat("rb-2")?.turns).toBe(2); // untouched
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("pendingFork arms and clears as a one-shot", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-rb3-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("rb-3", 0);
+      expect(
+        store.armPendingFork("rb-3", { resumeSessionAt: "a-0", armedAt: 1 }),
+      ).toBe(true);
+      expect(store.getChat("rb-3")?.pendingFork?.resumeSessionAt).toBe("a-0");
+      expect(store.clearPendingFork("rb-3")).toBe(true);
+      expect(store.getChat("rb-3")?.pendingFork).toBeUndefined();
+      expect(store.clearPendingFork("rb-3")).toBe(false); // already clear
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -64,6 +64,7 @@ import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
   acquireSessionRuntime,
+  closeSessionRuntime,
   DETACHED_DENY_TEXT,
   type SessionRuntime,
 } from "@/lib/server/session-runtime";
@@ -137,6 +138,9 @@ import {
   getChat,
   logUsage,
   recordCompactions,
+  armPendingFork,
+  clearPendingFork,
+  markLastTurnInterrupted,
   recordTaskStatuses,
   sessionSpendUsd,
   settleSpawnStatuses,
@@ -929,6 +933,10 @@ export async function POST(req: Request) {
       // never stamp one; the anchor simply omits it and a future rollback of
       // this turn runs unguarded, which is a designed degradation.
       let promptUuid: string | null = null;
+      // STEP 4: the one-shot rewind order this turn ran under (read in the
+      // Claude lane before acquire; consumed by the teardown's refusal
+      // ladder). Stream-scope for the same reason capturedSession is.
+      let pendingFork: NonNullable<ReturnType<typeof getChat>>["pendingFork"] | undefined;
       // The session runtime this turn attached to (Claude path only) — held at
       // stream scope so the shared finally can detach the turn's wiring and
       // close a spawn that never reached init (#28 persistent runtime).
@@ -1873,6 +1881,15 @@ export async function POST(req: Request) {
         // spread below tests one thing.
         const policyMaxTurns = loadPolicy().maxTurns ?? 0;
 
+        // STEP 4 (message-lifecycle): the one-shot rewind order a rollback
+        // armed. Read once per turn; spread into create()'s options below,
+        // carried in the fingerprint (belt-and-braces: a warm runtime with
+        // the untruncated history loaded must NOT be reused past a
+        // rollback — the rollback route already closed it, the fingerprint
+        // mismatch is the second, independent guarantee), cleared when this
+        // turn's result lands.
+        pendingFork = resumeTarget ? getChat(resumeTarget)?.pendingFork : undefined;
+
         // THE QUERY IS PER-SESSION NOW, NOT PER-TURN (#28's complete fix — the
         // post-result kill-zone; the whole story is lib/server/session-runtime.ts).
         // Everything the query is created WITH is captured in this fingerprint;
@@ -1904,6 +1921,7 @@ export async function POST(req: Request) {
           policyMaxTurns,
           env: runtimeEnv,
           projectMcp: project ? Object.keys(resolveProjectMcpServers(project)) : [],
+          pendingFork: pendingFork ?? null,
         });
         const { runtime, created: runtimeCreated } = acquireSessionRuntime({
           key: resumeTarget ?? runId,
@@ -1920,6 +1938,17 @@ export async function POST(req: Request) {
             // second computation rather than a new one.
             cwd: sessionProfile.cwd,
             ...(resumeTarget ? { resume: resumeTarget } : {}),
+            // The rewind itself (STEP 4): fork at the kept turn's tail;
+            // the guard names the one dropped prompt when the plan had one.
+            // Headless-lane options — exactly the lane this query() boots.
+            ...(resumeTarget && pendingFork?.resumeSessionAt
+              ? {
+                  resumeSessionAt: pendingFork.resumeSessionAt,
+                  ...(pendingFork.resumeDropsTurn
+                    ? { resumeDropsTurn: pendingFork.resumeDropsTurn }
+                    : {}),
+                }
+              : {}),
             model,
             ...(claudeEffort ? { effort: claudeEffort as EffortLevel } : {}),
             // `profile`, NOT `sessionProfile` — this is the AccountProfile, and
@@ -2537,6 +2566,43 @@ export async function POST(req: Request) {
             turnState.parts.push({ type: "marker", text: "Stopped — kept what arrived." });
             turnState.partOrigin.push(undefined);
             send("marker", { text: "Stopped — kept what arrived." });
+          }
+          // THE REFUSAL LADDER (message-lifecycle STEP 4). A refused rewind
+          // is deterministic — never retry the same request (the SDK's own
+          // instruction). Rung (a): drop the guard and re-arm, so the very
+          // next send lands the documented unguarded truncation; the
+          // runtime is closed so nothing warm holds the untruncated
+          // history. Rung (b): the fork already ran unguarded and still
+          // failed the whole turn — clear it, keep the truncated
+          // transcript, and say the one honest sentence at the truncation
+          // point. Clean result with a fork armed = the rewind LANDED:
+          // clear the one-shot.
+          if (pendingFork && capturedSession) {
+            const refusal = turnState.lastResult?.errors?.some((e) =>
+              e.startsWith("Resume rejected by --resume-drops-turn:"),
+            );
+            if (refusal && pendingFork.resumeSessionAt && pendingFork.degraded !== "unguarded") {
+              armPendingFork(capturedSession, {
+                resumeSessionAt: pendingFork.resumeSessionAt,
+                armedAt: Date.now(),
+                degraded: "unguarded",
+              });
+              closeSessionRuntime(capturedSession);
+            } else if (
+              pendingFork.degraded === "unguarded" &&
+              turnState.lastResult &&
+              turnState.lastResult.subtype !== "success" &&
+              (turnState.lastResult.turns ?? 0) === 0
+            ) {
+              clearPendingFork(capturedSession);
+              closeSessionRuntime(capturedSession);
+              markLastTurnInterrupted(
+                capturedSession,
+                "The agent may still remember the messages you removed.",
+              );
+            } else if (turnState.lastResult) {
+              clearPendingFork(capturedSession);
+            }
           }
           // The window is NOT outliving this POST (empty roster): whatever
           // spawn is still ack-only will never complete — settle it now, on

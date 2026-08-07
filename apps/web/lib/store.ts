@@ -634,6 +634,74 @@ export function markLastTurnInterrupted(id: string, text: string): boolean {
   return true;
 }
 
+// THE TRUNCATION (message-lifecycle STEP 4). Everything a rollback changes in
+// the record, in one writer, under an optimistic check — the same
+// expectedTurns shape core's queue uses, because "something landed while you
+// were deciding" must refuse rather than truncate the wrong history. What it
+// deliberately does NOT touch: costUsd and usage.ndjson (money spent on
+// discarded turns was really spent — every spend readout is a projection over
+// the append-only ledger, AD-18).
+export function rollbackChat(
+  id: string,
+  opts: { toTurn: number; expectedTurns: number },
+): { ok: true; messages: number } | { ok: false; reason: string } {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return { ok: false, reason: "not found" };
+  if (chat.turns !== opts.expectedTurns) {
+    return { ok: false, reason: "Something landed while you were deciding — try again." };
+  }
+  const anchor = chat.turnAnchors?.[opts.toTurn];
+  const restored = chat.turnAnchors?.[opts.toTurn - 1];
+  if (!anchor || opts.toTurn < 1 || opts.toTurn >= chat.turns) {
+    return { ok: false, reason: "That isn't a place this conversation has." };
+  }
+  chat.messages.length = anchor.startMessage;
+  chat.turnAnchors!.length = opts.toTurn;
+  chat.turns = opts.toTurn;
+  // A compaction anchored past the new end would violate the invariant
+  // compaction.ts calls "impossible today" — keep only the ones the kept
+  // transcript can still place.
+  if (chat.compactions) {
+    chat.compactions = chat.compactions.filter((c) => c.afterMessages <= anchor.startMessage);
+    if (chat.compactions.length === 0) delete chat.compactions;
+  }
+  // CTX must be the KEPT turn's truth, or honestly unknown — never the
+  // newest turn's leftover.
+  if (restored?.contextTokens !== undefined) chat.contextTokens = restored.contextTokens;
+  else delete chat.contextTokens;
+  if (restored?.contextUsage !== undefined) chat.contextUsage = restored.contextUsage;
+  else delete chat.contextUsage;
+  // A rollback is a human acting IN the session — the same un-shelving rule
+  // appendTurn applies (and no external trigger is involved, so "settle
+  // stays user-driven" holds).
+  delete chat.settledAt;
+  delete chat.snoozedUntil;
+  chat.updatedAt = Date.now();
+  writeChats(chats);
+  return { ok: true, messages: anchor.startMessage };
+}
+
+/** One-shot rewind order for the next runtime creation (STEP 4 arms, the
+ *  chat route's create() consumes, the turn's result clears). */
+export function armPendingFork(id: string, fork: NonNullable<Chat["pendingFork"]>): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  chat.pendingFork = fork;
+  writeChats(chats);
+  return true;
+}
+
+export function clearPendingFork(id: string): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat?.pendingFork) return false;
+  delete chat.pendingFork;
+  writeChats(chats);
+  return true;
+}
+
 // Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so
 // appendTurn's fallback title-on-create logic never matters again for this
 // chat — a user rename always wins. Returns false when the id is unknown.

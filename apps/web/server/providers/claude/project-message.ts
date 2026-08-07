@@ -61,6 +61,9 @@ export type TurnResult = {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   };
+  /** The result frame's errors array — where a refused rewind's message
+   *  lives (probe (c)); absent on clean turns. */
+  errors?: string[];
 };
 
 /** Everything one turn's projection accumulates. Owned by the consuming loop;
@@ -469,6 +472,7 @@ export function projectClaudeMessage(
       total_cost_usd?: number;
       num_turns?: number;
       usage?: TurnResult["usage"];
+      errors?: string[];
     };
     state.costUsd = r.total_cost_usd ?? 0;
     state.lastResult = {
@@ -476,6 +480,10 @@ export function projectClaudeMessage(
       totalCostUsd: state.costUsd,
       turns: r.num_turns,
       usage: r.usage,
+      // STEP 4: a refused rewind announces itself HERE — the frame's errors
+      // array, not `result` (probe (c), measured) — and the route's refusal
+      // ladder keys on the prefix.
+      ...(r.errors?.length ? { errors: r.errors } : {}),
     };
     return NO_EVENTS;
   }
