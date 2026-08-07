@@ -1687,12 +1687,32 @@ function SessionWorkspace({
       }
       return;
     }
-    // Every other event targets this turn's assistant message. On the POST path
-    // send() pre-created it and set asstIdRef; on reconnect there is none yet,
-    // so the first assistant-side event lazily creates it here (same shape
-    // send() uses) and records its id for the rest of the turn.
-    let asstId = asstIdRef.current;
-    if (!asstId) {
+    // Every other event targets an assistant message. On the POST path send()
+    // pre-created it and set asstIdRef; on reconnect there is none yet, so the
+    // first CONTENT event lazily creates it (same shape send() uses).
+    //
+    // CONTENT EVENTS ONLY, and that restriction is the callback boundary: the
+    // "done" case nulls the ref, so the first content a background
+    // continuation produces — the completion marker, then the model's
+    // reaction to the returning agent — opens a FRESH bubble instead of
+    // smearing onto a turn that already ended. (This matches the settle-time
+    // persistence, which already saves post-turn output as its own follow-up
+    // assistant message — live and reloaded transcripts now agree.) Patch
+    // events (a result/status for a part in an EARLIER bubble) never conjure
+    // an empty bubble — they patch by part id across every message below.
+    // "" (never null) so patch-type cases that fire with no bubble in scope
+    // no-op by id-miss instead of needing per-case guards.
+    let asstId = asstIdRef.current ?? "";
+    const appendsContent =
+      event === "text" ||
+      event === "delta" ||
+      event === "thinking" ||
+      event === "thinking_delta" ||
+      event === "tool" ||
+      event === "marker" ||
+      event === "permission" ||
+      event === "permission_denied";
+    if (!asstId && appendsContent) {
       const id = `m${nextId.current++}`;
       asstIdRef.current = id;
       asstId = id;
@@ -1879,21 +1899,23 @@ function SessionWorkspace({
                 break;
               }
               case "tool_result":
-                // Can arrive after later parts already exist (more tool calls
-                // or text streamed in since) — find the part by id wherever
-                // it landed in this turn's own message rather than assuming
-                // it's the newest part. Scoped to asstId (like every other
-                // case here) rather than scanning every message in the
-                // conversation — this turn's tool ids only ever land on the
-                // message this same turn opened.
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "tool" && p.id === payload.id
-                      ? { ...p, output: payload.output, isError: payload.isError }
-                      : p,
-                  ),
-                }));
+                // BY PART ID, ACROSS EVERY MESSAGE. This used to scope to
+                // asstId ("this turn's tool ids only land on this turn's
+                // message") — true when a turn was one bubble, false now that
+                // a background continuation opens a fresh bubble after done
+                // and a mid-window second turn runs while an earlier turn's
+                // tools are still resolving: the result must find its part
+                // wherever it lives, tool_use ids being globally unique.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "tool" && p.id === payload.id
+                        ? { ...p, output: payload.output, isError: payload.isError }
+                        : p,
+                    ),
+                  })),
+                );
                 // The "make this real → god-view" moment (docs/loom-model.md
                 // §5): mcp__loom__start_loom's success result is
                 // `{loomId, url}` (lib/loom-mcp.ts's start_loom tool) —
@@ -1921,15 +1943,20 @@ function SessionWorkspace({
               case "task_status":
                 // Authoritative completion signal for a backgrounded
                 // subagent (route.ts's task_notification handler) — see
-                // agentStatus's comment. Scoped to asstId like "tool_result".
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "tool" && p.id === payload.id
-                      ? { ...p, taskStatus: payload.status }
-                      : p,
-                  ),
-                }));
+                // agentStatus's comment. By part id across every message,
+                // same reasoning as "tool_result": the spawn may live in an
+                // earlier bubble (or an earlier TURN) than the one receiving
+                // events when its completion lands.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "tool" && p.id === payload.id
+                        ? { ...p, taskStatus: payload.status }
+                        : p,
+                    ),
+                  })),
+                );
                 break;
               case "marker":
                 // A system-event line in the main flow ("agent finished ·
@@ -1980,15 +2007,19 @@ function SessionWorkspace({
                 }));
                 break;
               case "permission_result":
-                // Scoped to asstId — see the "tool_result" case above.
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "permission" && p.id === payload.id
-                      ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
-                      : p,
-                  ),
-                }));
+                // By part id across every message — see "tool_result": a card
+                // parked by a background agent can outlive the bubble (and
+                // the turn) that opened it.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "permission" && p.id === payload.id
+                        ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
+                        : p,
+                    ),
+                  })),
+                );
                 break;
               case "permission_denied": {
                 // Auto/acceptEdits mode's classifier (or the guardrail hook)
@@ -2088,6 +2119,12 @@ function SessionWorkspace({
                       ? { win: payload.feedCursor.win, seq: payload.feedCursor.seq }
                       : null,
                 };
+                // The callback boundary: this turn's bubble is finished. The
+                // next content — a completion marker and the model's reaction
+                // to a returning agent — opens a FRESH bubble via the lazy
+                // mint above, so a background continuation reads as its own
+                // response, not as growth on a turn that already ended.
+                asstIdRef.current = null;
                 break;
               case "saved":
                 setChatPersisted(true);
