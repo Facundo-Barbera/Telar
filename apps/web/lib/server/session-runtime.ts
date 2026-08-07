@@ -81,6 +81,14 @@ export const DETACHED_DENY_TEXT =
   "not shown to anyone — nobody refused it. Continue with your pre-approved " +
   "tools and include what you could not do in your report.";
 
+/** How long the window sink lingers after the task roster empties before
+ *  settling, re-armed by every further detached message. Catches the CLI's
+ *  trailing control-plane messages (a completing agent's task_notification
+ *  arrives AFTER the roster update) and the SDK auto-continuation the empty
+ *  roster wakes. Costs nothing user-facing: the turn already ended at its
+ *  result; only the window's terminal marker waits out the linger. */
+const SETTLE_LINGER_MS = 1_500;
+
 /** Idle runtimes (no turn attached, no message traffic) are reaped after this
  *  long. A reaped runtime's next POST recreates it with `resume` — the cost is
  *  a process spawn, the same cost every turn paid before this module. */
@@ -185,6 +193,8 @@ type RuntimeInternals = SessionRuntime & {
   _turn: AsyncQueue<SDKMessage> | null;
   _abort: AbortController;
   _pumpError: unknown;
+  _settle: ReturnType<typeof setTimeout> | null;
+  _settleLingerMs: number;
 };
 
 const g = globalThis as unknown as { __telarSessionRuntimes?: Map<string, RuntimeInternals> };
@@ -220,17 +230,35 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
   } catch {
     // the sink is best-effort rendering — it must never wedge the pump
   }
-  // The roster emptied while no turn was attached: the window is over. Settle
-  // AFTER handing the sink this message so a final task_notification is
-  // rendered before the terminal marker is written.
-  if (rt.liveTaskCount === 0) {
+  // The roster emptied while no turn was attached: the window is ENDING — but
+  // not instantly. The CLI sends trailing control-plane messages AFTER the
+  // roster update (measured: a completing agent's task_notification landed
+  // post-roster-empty and an immediate settle dropped it — its tab showed
+  // "Working" forever), and the roster emptying is also exactly what wakes
+  // the SDK's auto-continuation of the main thread. So settle after a short
+  // LINGER, re-armed by every further detached message: trailing signals and
+  // continuation output keep rendering, and the window closes on true
+  // silence. This holds nothing hostage — unlike the deleted quiet-grace,
+  // the turn (and the composer) ended at the result long ago; only the
+  // window's terminal marker waits.
+  if (rt.liveTaskCount === 0) armSettleLinger(rt);
+}
+
+function armSettleLinger(rt: RuntimeInternals): void {
+  if (rt._settle) clearTimeout(rt._settle);
+  const t = setTimeout(() => {
+    rt._settle = null;
+    const sink = rt.windowSink;
+    if (!sink || rt.turnActive || rt.liveTaskCount > 0) return;
     rt.windowSink = null;
     try {
       sink.onSettled();
     } catch {
       // best-effort, as above
     }
-  }
+  }, rt._settleLingerMs);
+  (t as { unref?: () => void }).unref?.();
+  rt._settle = t;
 }
 
 async function pump(rt: RuntimeInternals): Promise<void> {
@@ -269,6 +297,8 @@ export function acquireSessionRuntime(args: {
     abort: AbortController;
     self: () => SessionRuntime;
   }) => Query;
+  /** Tests only — production callers take the default. */
+  settleLingerMs?: number;
 }): { runtime: SessionRuntime; created: boolean } {
   reapIdle(Date.now());
 
@@ -311,6 +341,8 @@ export function acquireSessionRuntime(args: {
     _turn: null,
     _abort: abort,
     _pumpError: undefined,
+    _settle: null,
+    _settleLingerMs: args.settleLingerMs ?? SETTLE_LINGER_MS,
 
     push(message) {
       inputQueue.push(message);
@@ -322,8 +354,11 @@ export function acquireSessionRuntime(args: {
       rt._turn = turnQueue;
       rt.turnActive = true;
       // The new turn's POST renders live traffic now — the previous window's
-      // sink is done (its still-live tasks' output rides THIS turn's feed).
+      // sink is done (its still-live tasks' output rides THIS turn's feed),
+      // and a pending settle linger with it.
       rt.windowSink = null;
+      if (rt._settle) clearTimeout(rt._settle);
+      rt._settle = null;
       rt.slots.runId = runId;
       const self = rt;
       return {
@@ -374,6 +409,8 @@ export function acquireSessionRuntime(args: {
       if (!rt.closed) {
         rt.closed = true;
         rt.windowSink = null;
+        if (rt._settle) clearTimeout(rt._settle);
+        rt._settle = null;
         endTurnFeed(rt);
         inputQueue.close();
         abort.abort();

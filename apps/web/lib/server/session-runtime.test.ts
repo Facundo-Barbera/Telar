@@ -47,12 +47,13 @@ function fakeQuery() {
 }
 
 let keyCounter = 0;
-function makeRuntime(opts?: { fingerprint?: string; key?: string }) {
+function makeRuntime(opts?: { fingerprint?: string; key?: string; settleLingerMs?: number }) {
   const fq = fakeQuery();
   const key = opts?.key ?? `test-run-${++keyCounter}`;
   const { runtime, created } = acquireSessionRuntime({
     key,
     fingerprint: opts?.fingerprint ?? "fp-1",
+    settleLingerMs: opts?.settleLingerMs ?? 20,
     create: ({ input }) => {
       // Drain the input channel in the background, recording what arrived —
       // the real query does exactly this over stdin.
@@ -86,6 +87,7 @@ async function collect(feed: AsyncIterable<SDKMessage>): Promise<SDKMessage[]> {
 }
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 describe("session runtime", () => {
   test("pushed messages reach the query's input channel", async () => {
@@ -140,15 +142,46 @@ describe("session runtime", () => {
     expect(sank).toEqual(["assistant"]);
     expect(settled).toBe(0);
     expect(rt.runtime.detachedMessages).toBe(1);
-    rt.emit(tasksChanged(0)); // roster empties while detached → window closes
+    rt.emit(tasksChanged(0)); // roster empties while detached → linger arms
     await tick();
+    expect(settled).toBe(0); // not yet — the linger is what closes it
+    await sleep(60); // > the 20ms test linger
     expect(settled).toBe(1);
     expect(rt.runtime.windowSink).toBeNull();
     // Later strays are counted but the window does not settle twice.
     rt.emit(assistant);
-    await tick();
+    await sleep(40);
     expect(settled).toBe(1);
     expect(rt.runtime.closed).toBe(false);
+    rt.runtime.closeNow("test over");
+  });
+
+  test("the settle linger re-arms on trailing messages, so a late task_notification still renders", async () => {
+    // The live failure this pins: the CLI updates the roster to empty BEFORE
+    // forwarding a completing agent's task_notification. An immediate settle
+    // dropped that notification and the agent's tab showed Working forever.
+    const rt = makeRuntime({ settleLingerMs: 40 });
+    const feed = rt.runtime.beginTurn("run-1");
+    const sank: string[] = [];
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: (m) => sank.push((m as { type?: string; subtype?: string }).subtype ?? (m as { type: string }).type),
+      onSettled: () => settled++,
+    };
+    rt.emit(tasksChanged(1));
+    rt.emit(result);
+    await collect(feed);
+    rt.emit(tasksChanged(0)); // roster empties FIRST...
+    await sleep(15); // ...linger armed, not yet fired...
+    rt.emit({ type: "system", subtype: "task_notification", tool_use_id: "t1", status: "completed" });
+    await tick();
+    // ...the trailing notification was SUNK (rendered), not dropped...
+    expect(sank).toContain("task_notification");
+    expect(settled).toBe(0);
+    // ...and the re-armed linger settles only after true silence.
+    await sleep(80);
+    expect(settled).toBe(1);
     rt.runtime.closeNow("test over");
   });
 
