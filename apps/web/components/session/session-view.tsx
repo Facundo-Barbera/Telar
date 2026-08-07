@@ -1545,8 +1545,8 @@ function SessionWorkspace({
 
   const respondPermission = useCallback(
     (id: string, behavior: "allow" | "deny", always: boolean, rule?: string) => {
-      // Optimistic — the "permission_result" SSE event (or the server's 120s
-      // timeout deny) is authoritative and will overwrite this regardless.
+      // Optimistic — the "permission_result" SSE event is authoritative and
+      // will overwrite this regardless.
       setMessages((ms) =>
         ms.map((m) => ({
           ...m,

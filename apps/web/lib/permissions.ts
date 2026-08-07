@@ -16,12 +16,12 @@ import {
 // "Bash(bun test:*)" — a bare tool name allows the tool, a parenthesized
 // specifier allows matching inputs only (":*" = prefix at a token/segment
 // boundary, otherwise exact).
-// `reason` distinguishes an affirmative user deny from a timeout/abort so
-// callers don't misreport a non-answer as a refusal.
+// `reason` distinguishes an affirmative user deny from an abort so callers
+// don't misreport a non-answer as a refusal.
 export type PermissionDecision = {
   behavior: "allow" | "deny";
   always?: boolean;
-  reason?: "timeout" | "aborted" | "coalesced";
+  reason?: "aborted" | "coalesced";
   // The specific rule to persist when `always` is set — one of the options
   // ruleOptionsFor offered for this tool call, validated by the route
   // (isOfferedRule) before it ever reaches here. Absent means "use the
@@ -42,7 +42,6 @@ type PendingRequest = {
   // pass any.
   ruleOptions: Array<{ rule: string; label: string }>;
   resolve: (d: PermissionDecision) => void;
-  timer: ReturnType<typeof setTimeout>;
 };
 
 // globalThis so pendings survive Next dev HMR module reloads.
@@ -337,22 +336,24 @@ export function ruleMatches(rule: string, toolName: string, input: Record<string
 // points drift into one enforcement point and one decoration.
 export { inputPaths, isProtectedPath, bashTouchesProtectedPath, makeGuardrailDecision };
 
+// A PENDING REQUEST PARKS UNTIL SOMEONE DECIDES — there is no timer here, and
+// that is the point (#28). This used to auto-deny after 120s, which meant a
+// card the user hadn't scrolled to yet (or a queue of near-identical sub-agent
+// cards) resolved itself to "deny" on the user's behalf. A non-answer is not a
+// decision: the promise settles only via resolvePending — a user click, the
+// SDK's own per-call abort signal, or the turn's fail-closed teardown
+// (route.ts's finally), each of which is an event that actually happened.
 export function createPending(
   project: string,
   toolName: string,
   input: Record<string, unknown>,
   rule: string,
-  timeoutMs = 120_000,
   ruleOptions: Array<{ rule: string; label: string }> = [],
 ): { id: string; promise: Promise<PermissionDecision> } {
   let id = "perm_" + randomUUID();
   while (pending.has(id)) id = "perm_" + randomUUID(); // paranoia: randomUUID collisions are not realistic
   const promise = new Promise<PermissionDecision>((resolve) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      resolve({ behavior: "deny", reason: "timeout" });
-    }, timeoutMs);
-    pending.set(id, { project, rule, toolName, input, ruleOptions, resolve, timer });
+    pending.set(id, { project, rule, toolName, input, ruleOptions, resolve });
   });
   return { id, promise };
 }
@@ -368,13 +369,12 @@ export function pendingRuleOptions(id: string): Array<{ rule: string; label: str
 export function resolvePending(id: string, decision: PermissionDecision): boolean {
   const p = pending.get(id);
   if (!p) return false;
-  clearTimeout(p.timer);
   pending.delete(id);
   p.resolve(decision);
   // "Always allow" persists a rule that covers every other tool call already
   // waiting on the same project — resolve those too instead of making them
-  // sit out the prompt (or the 120s timeout) for a rule the user just
-  // approved. The rule itself is persisted by the caller of resolvePending
+  // sit out the prompt for a rule the user just approved. The rule itself is
+  // persisted by the caller of resolvePending
   // (route.ts, keyed off `decision.always`), not here.
   //
   // Critical: this must check the rule the user ACTUALLY picked
@@ -405,7 +405,6 @@ export function resolvePending(id: string, decision: PermissionDecision): boolea
       // same project too.
       if (other.toolName === LOOM_START_TOOL) continue;
       if (other.project === p.project && ruleMatches(persistedRule, other.toolName, other.input)) {
-        clearTimeout(other.timer);
         pending.delete(otherId);
         other.resolve({ behavior: "allow", reason: "coalesced" });
       }

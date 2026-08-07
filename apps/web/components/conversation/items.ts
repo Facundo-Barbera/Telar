@@ -74,7 +74,9 @@ export type AttachmentRef = {
 export type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 
 // Permission cards are live-stream-only artifacts (resolved by "permission_result"
-// or the server's 120s timeout deny) — they never round-trip through the store,
+// or the turn's fail-closed teardown; unanswered ones park — there is no
+// server-side timeout deny, see lib/permissions.ts createPending) — they never
+// round-trip through the store,
 // so StorePart above stays exactly as persisted. They also never carry a
 // parentId: canUseTool gets no parent attribution from the SDK, so every
 // permission card — regardless of which subagent's tool call triggered it —

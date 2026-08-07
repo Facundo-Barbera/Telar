@@ -1,26 +1,33 @@
-// WHAT AN AUTO-DENIAL ACTUALLY SAYS TO THE MODEL.
+// WHAT AN AUTO-DENIAL SAYS — ON TELAR'S OWN SURFACES.
+//
+// SCOPE, STATED FIRST BECAUSE IT WAS ONCE MISSTATED HERE (#28): this rewrite
+// is DISPLAY-ONLY. The SDK's `permission_denied` message documents the text
+// the CLI has ALREADY handed to the model in the tool_result by the time the
+// event reaches telar — rewriting it here changes what the operator reads in
+// the UI and the persisted transcript, never what the model read. An earlier
+// version of this header claimed otherwise, and that claim cost a later
+// investigation real time chasing a lever that isn't connected. What the model
+// reads is fixed CLI-side; the model-facing fix is keeping wrapper and CLI in
+// step (packages/core/src/claude-executable.ts) so denials carry the SDK's
+// structured reasons at all.
 //
 // WHAT WAS WRONG. The Agent SDK emits `permission_denied` for every tool call
 // refused WITHOUT an interactive prompt — the auto-mode classifier, a
-// working-directory boundary, a safety check, `dontAsk` mode, a deny rule. Its
-// `message` field is the text handed to the model in the tool_result, and in
-// the common case that text reads:
+// working-directory boundary, a safety check, `dontAsk` mode, a deny rule. In
+// the common case its `message` reads:
 //
 //     "The user doesn't want to take this action right now. STOP what you are
 //      doing and wait for the user to tell you how to proceed."
 //
-// telar forwarded that verbatim. When the denial came from a classifier or a
+// telar rendered that verbatim. When the denial came from a classifier or a
 // path boundary the sentence is FALSE — the user was never asked and did not
-// refuse — and the model believes it, apologises, stops, and (in a sub-agent)
-// spends the rest of its turn budget waiting for a human who was never
-// consulted. An afternoon of runs was lost to agents politely standing down
-// from a refusal nobody made.
+// refuse — and an operator reading it in the transcript hunts for a refusal
+// nobody made. An afternoon went into exactly that hunt.
 //
-// WHY REWRITE RATHER THAN SUPPRESS. The denial is real and the model must know
-// the call did not happen; what it must not be told is WHO decided. The SDK
-// already hands us the discriminator (`decision_reason_type`) on the same
-// message, so this is a matter of saying the true thing rather than of
-// inventing information.
+// WHY REWRITE RATHER THAN SUPPRESS. The denial happened and the transcript
+// must show it; what it must not assert is WHO decided. The SDK already hands
+// us the discriminator (`decision_reason_type`) on the same message, so this
+// is a matter of saying the true thing rather than of inventing information.
 //
 // THE ONE THAT IS STILL THE USER'S. `rule` means a rule the human previously
 // wrote and telar stored. That IS the user's decision — just not one made in

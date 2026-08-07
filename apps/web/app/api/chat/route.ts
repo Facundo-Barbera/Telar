@@ -1058,10 +1058,12 @@ export async function POST(req: Request) {
         // never a heuristic) — remembered on the pending entry so the
         // permission route can validate whichever one the client picks.
         const ruleOptions = ruleOptionsFor(toolName, input);
-        const { id, promise } = createPending(project, toolName, input, rule, undefined, ruleOptions);
+        const { id, promise } = createPending(project, toolName, input, rule, ruleOptions);
         myPending.add(id);
         // Respect the SDK's per-call signal: resolve the pending (deny) the
-        // moment this tool call is aborted, rather than hanging to timeout.
+        // moment this tool call is aborted. There is no timeout — an
+        // unanswered card parks until the user decides or the turn ends
+        // (#28; see createPending).
         const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
         signal.addEventListener("abort", onAbort, { once: true });
         // `agentId` is undefined for the main turn and set for a sub-agent's
@@ -1110,15 +1112,13 @@ export async function POST(req: Request) {
           // needs to reach the SDK's own permission state to get that.
           return { behavior: "allow", updatedInput: input };
         }
-        // Distinguish a real user refusal from a timeout/abort so the model
-        // doesn't treat silence as a deliberate "no" and abandon the tool.
+        // Distinguish a real user refusal from an abort so the model doesn't
+        // treat a cancelled turn as a deliberate "no" and abandon the tool.
         const message =
-          decision.reason === "timeout"
-            ? "No response from the user in time; treat as not yet decided."
-            : decision.reason === "aborted"
-              ? "The request was cancelled before the user responded."
-              : "Denied by the user in telar.";
-        // #28: records WHICH of telar's three denial texts the model got, so a
+          decision.reason === "aborted"
+            ? "The request was cancelled before the user responded."
+            : "Denied by the user in telar.";
+        // #28: records WHICH of telar's denial texts the model got, so a
         // genuine telar denial is never mistaken for the CLI's interrupt
         // sentence. They are different strings; this makes that checkable.
         logPermissionOutcome(toolName, "deny", decision.reason);
@@ -1281,7 +1281,7 @@ export async function POST(req: Request) {
             }
             const rule = ruleFor("Bash", input);
             const ruleOptions = ruleOptionsFor("Bash", input);
-            const { id, promise } = createPending(project, "Bash", input, rule, undefined, ruleOptions);
+            const { id, promise } = createPending(project, "Bash", input, rule, ruleOptions);
             myPending.add(id);
             const onAbort = () => resolvePending(id, { behavior: "deny", reason: "aborted" });
             abort.signal.addEventListener("abort", onAbort, { once: true });
@@ -1378,7 +1378,6 @@ export async function POST(req: Request) {
               toolName,
               req.arguments,
               rule,
-              undefined,
               ruleOptions,
             );
             myPending.add(id);
@@ -1834,12 +1833,15 @@ export async function POST(req: Request) {
             // own dedicated branch above, which allows it AND strips that
             // field). Read/Grep/Glob plus the web tools are auto-allowed:
             // all are individually-safe read-only tools that never touch the
-            // filesystem. Auto-allowing the web tools is also what makes them
-            // usable inside a SUBAGENT — a subagent's canUseTool requests can't
-            // reach the interactive approval channel (they fail closed with
-            // "Stream closed"), so anything a research subagent needs (web
-            // search/fetch, the MCP tool-search) must be pre-allowed, not
-            // gated. The PreToolUse guardrail hook still runs for these.
+            // filesystem. Auto-allowing the web tools also keeps them prompt-
+            // free inside a SUBAGENT. (An earlier version of this comment
+            // claimed subagent canUseTool requests "fail closed with 'Stream
+            // closed'" — false: that string exists nowhere, and subagent
+            // requests DO reach the interactive channel; see this function's
+            // own agentID handling and the full-access short-circuit above.
+            // Their cards just land on Main with no parent attribution, so
+            // pre-allowing read-only research tools spares a card queue, not
+            // a failure.) The PreToolUse guardrail hook still runs for these.
             //
             // ZERO ARITHMETIC HERE, and that is the point of story 2.2. This
             // used to be a two-arm ternary composing six literals plus
