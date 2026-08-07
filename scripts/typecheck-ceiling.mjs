@@ -39,6 +39,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readdirSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -125,6 +126,19 @@ const spawnTsc = (extra, what) => {
 const listRun = spawnTsc(["--listFilesOnly"], "file-listing");
 const run = spawnTsc(["--noEmit"], "typecheck");
 
+// WHICH COMPILER ACTUALLY RAN, printed always. This workspace declares TWO
+// TypeScript majors (packages/core wants ^6, apps/web wants ^5), so `bunx tsc`
+// has more than one thing it could legitimately resolve to, and which one it
+// picks depends on how the install laid out node_modules. A gate whose result
+// depends on that must say which one it got — on a green run as well as a red
+// one, because the version is exactly the fact you want from the LAST green run
+// when a later one disagrees.
+const versionRun = spawnSync("bunx", tscArgs("--version"), {
+  cwd: coreDir,
+  encoding: "utf8",
+});
+const tscVersion = (versionRun.stdout ?? "").trim() || "unknown";
+
 if (run.error) {
   console.error(`typecheck-ceiling: could not start tsc: ${run.error.message}`);
   process.exit(1);
@@ -176,11 +190,40 @@ if (loadedFiles.length === 0) {
 const testFiles = loadedFiles.filter((f) => f.startsWith(testDirPrefix));
 
 console.log(
-  `tsc -p packages/core/tsconfig.typecheck.json: ${loadedFiles.length} files loaded, ` +
-    `${testFiles.length} of them under packages/core/test (floor ${MIN_TEST_FILES})\n`,
+  `tsc ${tscVersion} -p packages/core/tsconfig.typecheck.json: ${loadedFiles.length} files ` +
+    `loaded, ${testFiles.length} of them under packages/core/test (floor ${MIN_TEST_FILES})\n`,
 );
 
+// IS THE TREE ACTUALLY THERE? Counting it on disk separates the two failures
+// the old single message conflated: a test tree that really did move or shrink,
+// versus a compiler that never opened one sitting right where it always was.
+// Measured: CI reports 545 files loaded and 0 under test/, while a clean clone
+// with a frozen install on macOS reports 667 and 118 from the same commit — so
+// the tree is present and the program is simply not including it. Saying
+// "the include globs have stopped matching" there is a false accusation, and it
+// cost two investigations.
+const onDisk = (() => {
+  try {
+    return readdirSync(resolve(coreDir, "test")).filter((f) => f.endsWith(".ts")).length;
+  } catch {
+    return 0;
+  }
+})();
+
 // Coverage before counts — see MIN_TEST_FILES.
+if (testFiles.length < MIN_TEST_FILES && onDisk >= MIN_TEST_FILES) {
+  const message =
+    `packages/core TEST TYPECHECK: the compiler loaded ${testFiles.length} test files, but ` +
+    `${onDisk} .ts files are present under packages/core/test RIGHT NOW. The tree did not ` +
+    `move — tsc did not include it. This is a TOOLCHAIN RESOLUTION problem, not a config or ` +
+    `coverage one. tsc reported itself as "${tscVersion}"; this workspace declares two ` +
+    `TypeScript majors (packages/core ^6, apps/web ^5), so compare that version against the ` +
+    `last green run. NEXT STEP: pin the compiler; do not edit tsconfig.typecheck.json and do ` +
+    `not lower MIN_TEST_FILES.`;
+  console.error(inActions ? `::error::${message}` : `\n${message}`);
+  process.exit(1);
+}
+
 if (testFiles.length < MIN_TEST_FILES) {
   const message =
     `packages/core TEST TYPECHECK COVERAGE COLLAPSED: ${testFiles.length} test files loaded, ` +
