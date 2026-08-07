@@ -167,8 +167,13 @@ describe("the production right-panel mount", () => {
     expect(events).not.toContain("send(runtime.version)");
     expect(events).toContain("JSON.stringify(event)");
     expect(chat).toContain("createBrowserMcpServer");
+    // Codex rebuilds its dynamic tools every turn, so a static scope stays
+    // correct there; the Claude path's persistent runtime (#28) builds its
+    // MCP servers once per session, so ITS scope is a call-time getter —
+    // draft until the session id exists, canonical after (adoptScope parity).
     expect(chat).toContain("browserTools({ scopeKey: browserScopeKey })");
-    expect(chat).toContain("createBrowserMcpServer({ scopeKey: browserScopeKey })");
+    expect(chat).toContain("scopeKey: () => {");
+    expect(chat).toContain("return sid ? `${project}:${sid}` : browserScopeKey;");
     expect(chat).toContain("CODEX_BROWSER_TOOL_NAMESPACE");
   });
 });

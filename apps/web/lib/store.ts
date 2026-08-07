@@ -8,6 +8,7 @@ import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@tel
 import type { ClientPermissionMode } from "./permission-modes";
 import type { CompactionFacts, CompactionRecord } from "./compaction";
 import { previewPlainText } from "./preview-text";
+import { isAsyncLaunchAck } from "./transcript";
 import type { ContextUsageSnapshot } from "./context-usage";
 import type { RuntimeMode } from "@telar/core/runtime-mode";
 
@@ -72,6 +73,13 @@ const chatsFile = () => path.join(stateRoot(), "chats.json");
 
 export type Part =
   | { type: "text"; text: string; parentId?: string }
+  // A system-event line in the transcript flow — the Marker primitive's
+  // voice ("agent finished · explore lib", "ultra failed · sweep"): state,
+  // never prose, at the chronological position the event arrived. Producers
+  // are server-side (the projector's task_notification handling, the chat
+  // route's ultra-wake announcement); the shell renders it without knowing
+  // any domain. `attention` maps to the Marker's amber variant.
+  | { type: "marker"; text: string; attention?: boolean }
   | {
       type: "tool";
       name: string;
@@ -477,6 +485,65 @@ export function setChatRead(id: string, read: boolean): boolean {
   chat.readAt = read ? Date.now() : 0;
   writeChats(chats);
   return true;
+}
+
+// Write POST-TURN completions through to the persisted transcript (#28
+// turn-as-event). appendTurn persists a background spawn while it is still
+// only "launched"; its task_notification lands AFTER the turn, mutating the
+// in-memory parts and the live stream but — without this — never chats.json,
+// so a reload showed agents as never-having-reported right beside their own
+// reports. Called by the chat route at window settle with every status the
+// window observed. A real status never downgrades: identical values are
+// skipped, and an existing "completed"/"failed" is never overwritten by a
+// later sweep's "stopped" (settleSpawnStatuses already skips set statuses).
+export function recordTaskStatuses(
+  id: string,
+  updates: Array<{ toolUseId: string; status: "completed" | "failed" | "stopped" }>,
+): boolean {
+  if (!updates.length) return false;
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const wanted = new Map(updates.map((u) => [u.toolUseId, u.status]));
+  let changed = false;
+  for (const message of chat.messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.id) continue;
+      const status = wanted.get(part.id);
+      if (!status || part.taskStatus === status) continue;
+      part.taskStatus = status;
+      changed = true;
+    }
+  }
+  if (changed) writeChats(chats);
+  return changed;
+}
+
+// A window that has ENDED leaves no one running (#28 turn-as-event): any
+// persisted spawn part still carrying only its background launch ack — no
+// task_notification ever landed for it — is finished-unrecorded, and after a
+// reload its tab would shimmer "running" forever over a dead window. Called
+// by the chat route at window settle with the ids it just marked live (the
+// turn's own copies were persisted before the window outlived it), or with
+// no ids to sweep every unfinished spawn (the repair path for sessions
+// written before the settle linger existed). Returns whether anything changed.
+export function settleSpawnStatuses(id: string, toolUseIds?: string[]): boolean {
+  const chats = readChats();
+  const chat = chats.find((c) => c.id === id);
+  if (!chat) return false;
+  const wanted = toolUseIds ? new Set(toolUseIds) : null;
+  let changed = false;
+  for (const message of chat.messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || !part.agent || part.taskStatus || !part.id) continue;
+      if (wanted && !wanted.has(part.id)) continue;
+      if (!wanted && part.output !== undefined && !isAsyncLaunchAck(part.output)) continue;
+      part.taskStatus = "stopped";
+      changed = true;
+    }
+  }
+  if (changed) writeChats(chats);
+  return changed;
 }
 
 // Rename a chat. `custom: true` (the PATCH /api/chats/[id] path) flags it so

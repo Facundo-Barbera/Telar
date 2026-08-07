@@ -53,8 +53,6 @@ export const baseRuntime = (cur: Runtime | undefined): Runtime =>
     loaded: false,
     queued: [],
     agentsRunning: 0,
-    queuePaused: false,
-    queuedEngineCount: 0,
   };
 /**
  * ISSUE #7 — REMOVING A HEAD DROPS THE VIEWPORT, NEVER THE PRE-ACK QUEUE.
@@ -70,8 +68,8 @@ export const baseRuntime = (cur: Runtime | undefined): Runtime =>
  * closed bubble parks the words and nothing else.
  *
  * `retainOnSurfaceLoss` IS INERT HERE AND THAT IS FINE. `DockQueuedMessage` is
- * `{id, text}` and nothing ever writes `state`/`accepted` onto it — the host
- * projects engine state to `queuedEngineCount`, never onto the items — so this
+ * `{id, text}` and nothing ever writes `state`/`accepted` onto it — engine
+ * state never lands on these items, in any form — so this
  * bridge is 100% pre-ack by construction and the filter keeps everything. It is
  * called anyway because it is the general ownership rule (message-queue.ts), and
  * the day the host does project item state, THIS is the line that must already
@@ -150,9 +148,6 @@ export interface Runtime {
   queued: DockQueuedMessage[];
   /** Authoritative live sub-agent count projected from spawn/task events. */
   agentsRunning: number;
-  /** Engine-owned queue state; local `queued` is only the pre-ack bridge. */
-  queuePaused: boolean;
-  queuedEngineCount: number;
   // The last turn's PRE-STREAM rejection, if any — a plain JSON 4xx from
   // POST /api/chat, before an SSE stream ever existed (see the runtime host's
   // sendTurn). It needs a field of its own because nothing else here can carry a
@@ -397,8 +392,6 @@ export function DockProvider({ children }: { children: React.ReactNode }) {
         loaded: false,
         queued: [],
         agentsRunning: 0,
-        queuePaused: false,
-        queuedEngineCount: 0,
       };
       return { ...prev, [id]: { ...base, ...patch } };
     });

@@ -156,3 +156,18 @@ export class ParentFlattener {
     if (resolvedParent) this.ancestor.set(id, resolvedParent);
   }
 }
+
+// Whether a spawn part's tool_result text is only the BACKGROUND LAUNCH ACK —
+// the near-instant "Async agent launched successfully…" (plus internal
+// plumbing addressed to the orchestrating agent), NOT the subagent's real
+// result. Lived in components/conversation/items.ts (whose agentStatus still
+// consumes it, re-exported); moved here because the server needs the same
+// predicate: a window that ends leaves no one running, so a spawn still
+// carrying only its ack must be marked stopped rather than shimmering
+// "running" forever after a reload. Matched on the literal launch phrase, or
+// (in case wording drifts) the "internal metadata" + "agentId" combination
+// specific to this ack.
+export function isAsyncLaunchAck(text: string): boolean {
+  if (text.includes("Async agent launched successfully")) return true;
+  return text.includes("internal metadata") && text.includes("agentId");
+}

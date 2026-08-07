@@ -1,6 +1,7 @@
 import {
   query,
   type EffortLevel,
+  type HookInput,
   type PermissionResult,
   type PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -48,8 +49,6 @@ import {
 } from "@/lib/models";
 import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
-import { autoDenialMessage } from "@/lib/permission-denial";
-import { isCancelledToolResult } from "@/lib/tool-cancellation";
 import { logPermissionCheck, logPermissionOutcome } from "@/lib/permission-diagnostics";
 
 /** The in-process MCP servers telar itself constructs and whose whole tool
@@ -64,13 +63,21 @@ import {
 import { generateTitle } from "@/lib/titles";
 import { endChatRun, registerChatRun, setChatRunSession } from "@/lib/chat-runs";
 import {
+  acquireSessionRuntime,
+  DETACHED_DENY_TEXT,
+  type SessionRuntime,
+} from "@/lib/server/session-runtime";
+import {
   kickSessionQueue,
 } from "@/lib/server/session-engine";
 import {
+  appendFeedEvent,
   appendSessionEvent,
   clearSessionDeltas,
   endSessionDeltas,
   pushSessionDelta,
+  sessionFeedCursor,
+  startSessionFeedWindow,
   startSessionLog,
 } from "@/lib/session-log";
 // LOOM_START_TOOL and LOOM_ANSWER_BLOCKED_TOOL are the MOAT CONSTANTS INV-1g
@@ -130,7 +137,9 @@ import {
   getChat,
   logUsage,
   recordCompactions,
+  recordTaskStatuses,
   sessionSpendUsd,
+  settleSpawnStatuses,
   upsertChatStub,
   type Part,
 } from "@/lib/store";
@@ -146,13 +155,23 @@ import {
   type CompactionFacts,
 } from "@/lib/compaction";
 import {
-  agentMetaFromInput,
   AGENT_SPAWN_TOOL_CANDIDATES,
   capToolInput,
   capToolOutput,
-  extractToolResultText,
-  ParentFlattener,
+  isAsyncLaunchAck,
 } from "@/lib/transcript";
+// The SDKMessage→event projection and its teardown finalizers — the loop body
+// that lived inline here from this route's birth until it moved to the server
+// layer, where it is tested (see that module's header for the extraction's
+// two reasons: projection without a POST in scope, and testability).
+import {
+  flushStreamingText,
+  markInterruptedTools,
+  newClaudeTurnState,
+  projectClaudeMessage,
+  rationToolDetail,
+  type ClaudeTurnState,
+} from "@/server/providers/claude/project-message";
 // SIDE-EFFECT IMPORT, and it is load-bearing. @/lib/session-profiles registers
 // the four SessionProfileSpec builders at MODULE SCOPE, and module scope only
 // runs if something imports the module. Without this line the profile registry
@@ -162,15 +181,8 @@ import {
 // all stay green while the app is broken. Do not "tidy" it away as unused.
 import "@/lib/session-profiles";
 
-// Hard ceiling on how many tool calls a single turn persists with full
-// input/output detail. capToolInput/capToolOutput bound each part's own
-// size, but nothing bounds the COUNT — a pathological (e.g. repo-wide
-// refactor) turn can carry hundreds of tool calls across maxTurns rounds,
-// and store.ts rewrites the entire chats.json synchronously on every
-// appendTurn. Beyond this ceiling, later tool parts degrade to name-only
-// (the shape this diff's tool parts had before) so one outlier turn can't
-// blow up chats.json or the blocking write it forces on every other chat.
-const MAX_DETAILED_TOOL_PARTS = 200;
+// MAX_DETAILED_TOOL_PARTS (the per-parent tool-detail ceiling) moved to
+// server/providers/claude/project-message.ts with the rationing it bounds.
 
 // The SDK's full EffortLevel set, single-sourced from lib/models.ts (also
 // what the composer's Select renders) so the API's validation and the UI's
@@ -769,13 +781,26 @@ export async function POST(req: Request) {
   // out; it stays pending for the next turn. Do not "fix" this into one read,
   // and do not restate it as "the newer wake simply stays pending" without the
   // gate — the gate is what makes that sentence true.
+  // Ultra completions this turn was woken by — announced in the visible flow
+  // as inline markers ("ultra finished · sweep") when the turn's bookkeeping
+  // opens, so the reader sees WHAT woke the session, not just the narration
+  // that follows. Captured here because the wake records are consumed (acked)
+  // in this same block.
+  let ultraWakeMarkers: Array<{ text: string; attention?: boolean }> = [];
   if (typeof sessionId === "string" && sessionId && provider !== "codex") {
     try {
-      const carried = pendingUltraWakes(sessionId)
+      const pendingWakes = pendingUltraWakes(sessionId);
+      const carried = pendingWakes
         .map((w) => w.runId)
         .filter((runId) =>
           appendixCarriesUltraWake(sessionProfile.systemPromptAppendix, runId),
         );
+      ultraWakeMarkers = pendingWakes
+        .filter((w) => carried.includes(w.runId))
+        .map((w) => ({
+          text: `ultra ${w.state === "done" ? "finished" : w.state} · ${w.name}`.slice(0, 80),
+          ...(w.state === "failed" ? { attention: true } : {}),
+        }));
       ackUltraWakes(sessionId, carried);
     } catch {
       // The mailbox could not be read. The wakes simply stay pending and are
@@ -788,15 +813,22 @@ export async function POST(req: Request) {
   // with the main turn below — only for a brand-new session (no resume
   // target: appendTurn only ever consults a supplied title when it's
   // CREATING the chat, so generating one for an existing session's turn
-  // would just be wasted inference). Forwarding `abort.signal` means a
-  // client disconnect/Stop click cancels this subprocess too, same as the
-  // main turn's. Also skipped for the escalation kickoff — `message` there is
-  // the server-authored instruction paragraph, not human intent to summarize,
-  // and upsertChatStub's own displayText fallback ("Discuss verification",
-  // below) is already the right title; wasting an LLM call to re-derive it
-  // from machinery text would be pure overhead.
+  // would just be wasted inference). Also skipped for the escalation kickoff —
+  // `message` there is the server-authored instruction paragraph, not human
+  // intent to summarize, and upsertChatStub's own displayText fallback
+  // ("Discuss verification", below) is already the right title; wasting an
+  // LLM call to re-derive it from machinery text would be pure overhead.
+  //
+  // ITS OWN CONTROLLER, no longer the turn's. The turn's `abort` now maps a
+  // Stop to killing the whole session RUNTIME (see the listener beside the
+  // runtime acquisition below) — a shared controller would mean "the title
+  // finished, kill the session", which is how the #28 persistent-runtime
+  // migration would have reintroduced the very sweep it exists to remove.
+  // A Stop still cancels the title via the forwarding listener on `abort`.
+  const titleAbort = new AbortController();
+  abort.signal.addEventListener("abort", () => titleAbort.abort(), { once: true });
   const titlePromise: Promise<string | null> | null =
-    sessionId || isKickoff ? null : generateTitle(message, profile, abort.signal);
+    sessionId || isKickoff ? null : generateTitle(message, profile, titleAbort.signal);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -830,26 +862,56 @@ export async function POST(req: Request) {
               clearSessionDeltas(capturedSession);
             }
             appendSessionEvent(capturedSession, event, data);
+            // Shadow write to the cursor-addressed feed (session-log.ts §B) —
+            // the surface the turn-end flip makes primary. Same non-delta set
+            // as the file above; the firehose stays on the ring.
+            appendFeedEvent(capturedSession, event, data);
           }
         }
       };
 
-      const parts: Part[] = [];
-      // parts[i]'s originating SDKMessage uuid, index-aligned with `parts` —
-      // scratch bookkeeping so a later refusal-fallback `supersedes` list can
-      // evict the exact entries it retracts (see the "assistant" handler).
-      const partOrigin: (string | undefined)[] = [];
-      // Text accumulated from deltas for the current content block, keyed by
-      // resolved parent id (null = main conversation). A Map, not a single
-      // string, because with forwardSubagentText the main turn and any
-      // number of concurrently-streaming subagents interleave their
-      // stream_event deltas on this one loop — a shared scalar would let
-      // them clobber each other's in-progress text.
-      const streamingText = new Map<string | null, string>();
-      // Flattens subagent-of-a-subagent nesting to the top-level spawn's
-      // tool_use id — see lib/transcript.ts's ParentFlattener for why a
-      // raw parent_tool_use_id isn't already enough.
-      const parentFlatten = new ParentFlattener();
+      // The turn's projection state — parts, streaming-text accumulation,
+      // parent flattening, usage/result capture. The SHAPE and its rules
+      // (first-write-wins tool results, supersedes eviction, per-parent
+      // detail rationing) live in server/providers/claude/project-message.ts,
+      // where they are tested; this route owns one instance per turn. The
+      // aliases are in-place references: the Claude path mutates them through
+      // projectClaudeMessage, the Codex normalizer's switch below mutates
+      // them directly, and the shared finally persists them.
+      const turnState = newClaudeTurnState();
+      const { parts, streamingText, parentFlatten } = turnState;
+      // Announce what woke this turn, first in the flow: one marker per acked
+      // ultra completion, pushed into the turn's parts (aligned with
+      // partOrigin — supersedes eviction walks both by index) and emitted
+      // live. Runs inside the one-time turn bookkeeping, whichever site does
+      // it, so a re-announced init can never double-post them.
+      const announceUltraMarkers = (emit: (event: string, data: unknown) => void): void => {
+        for (const m of ultraWakeMarkers) {
+          turnState.parts.push({
+            type: "marker",
+            text: m.text,
+            ...(m.attention ? { attention: true } : {}),
+          });
+          turnState.partOrigin.push(undefined);
+          emit("marker", m);
+        }
+      };
+      // A window that ends leaves no one "running": any spawn part still
+      // carrying only its launch ack (its task_notification was lost, or the
+      // agent was stopped with the window) is marked stopped, live and
+      // persisted, so no tab shimmers forever over a dead window. Called from
+      // the shared teardown (empty roster) and the sink's settle.
+      const settleSpawnParts = (emit: (event: string, data: unknown) => void): string[] => {
+        const ids: string[] = [];
+        for (const part of turnState.parts) {
+          if (part.type !== "tool" || !part.agent || part.taskStatus || !part.id) continue;
+          if (part.output !== undefined && !isAsyncLaunchAck(part.output)) continue;
+          part.taskStatus = "stopped";
+          ids.push(part.id);
+          emit("task_status", { id: part.id, status: "stopped" });
+        }
+        return ids;
+      };
       // NOTE ON WHAT MOVED. `resumeTarget`, `existingChat`, `wireLoomId` and
       // `loomLink` used to be declared right here; story 2.2 hoisted all four
       // into the pre-stream preamble, because the session KIND is a function of
@@ -861,7 +923,16 @@ export async function POST(req: Request) {
       // is why `capturedSession` (not `resumeTarget`) is what the finally block
       // persists against.
       let capturedSession: string | null = null;
-      let costUsd = 0;
+      // The session runtime this turn attached to (Claude path only) — held at
+      // stream scope so the shared finally can detach the turn's wiring and
+      // close a spawn that never reached init (#28 persistent runtime).
+      let runtimeRef: SessionRuntime | null = null;
+      // Set when this turn installs a window sink. The finally stamps how many
+      // parts its own appendTurn covered, so the sink's settle-persist appends
+      // only what the background window added AFTER the turn — and nothing at
+      // all before the finally has run (until then the turn's persistence
+      // still covers every part).
+      let windowPersistMark: { n: number; done: boolean } | null = null;
       let usagePromise: Promise<any> | null = null;
       // Claude's stable control API returns the same structured attribution as
       // `/context`. It must be requested while the query is still
@@ -897,28 +968,10 @@ export async function POST(req: Request) {
         compactionFold = foldCompactionEvent(compactionFold, event, facts);
         contextRemeasured = false;
       };
-      // The last "result" message seen this POST — captured, not acted on
-      // immediately. A backgrounded subagent (forwardSubagentText) can wake
-      // an SDK auto-continuation that runs a second full turn (and hence a
-      // second "result") inside this same stream; those messages report
-      // running totals for the whole query() invocation, not per-turn
-      // deltas, so logging/broadcasting each one as it arrives would
-      // double-count cost/usage. Only the LAST one — read once in the
-      // `finally` block below — is ever acted on.
-      let lastResult: {
-        subtype: string;
-        totalCostUsd: number;
-        turns?: number;
-        usage?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
-      } | null = null;
-      // The final main-thread assistant call's usage — the basis for CTX (see
-      // the assistant branch). Distinct from lastResult.usage (a step sum).
-      let lastMainUsage: Record<string, number> | null = null;
+      // lastResult / lastMainUsage / costUsd live on turnState (see
+      // ClaudeTurnState's field comments for the capture-don't-act rule the
+      // old inline declarations documented here). Both provider paths write
+      // them; only the finally below acts on them, exactly once per POST.
       const contextOf = (u: Record<string, number> | null) =>
         u
           ? (u.input_tokens ?? 0) +
@@ -996,6 +1049,16 @@ export async function POST(req: Request) {
         // correct for telar sessions.
         if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(toolName)) {
           const { mode: _mode, isolation: _isolation, ...safeInput } = input;
+          // `run_in_background` passes through UNTOUCHED, and that is a
+          // measured decision, twice over (#28). Under the old one-query-per-
+          // turn shape, a backgrounded agent's tool calls were cancelled
+          // wholesale the instant the main turn's result landed (2026-08-07,
+          // session 9ec50a2e: 1-9ms turnarounds, `toolDenialKind: "cancelled"`,
+          // even a pre-allowed Glob) — an interim fix forced sync spawns here.
+          // The persistent session runtime (lib/server/session-runtime.ts)
+          // removed the kill-zone itself: the same scenario replayed under
+          // streaming input runs to completion, post-result tool calls and
+          // all. Backgrounded agents are a feature again.
           return { behavior: "allow", updatedInput: safeInput };
         }
         // FULL ACCESS MEANS FULL ACCESS — INCLUDING FOR A SUB-AGENT (#28).
@@ -1493,6 +1556,7 @@ export async function POST(req: Request) {
                 // a user bubble on its local POST path, so a mid-turn reconnect
                 // must not manufacture one for either.
                 startSessionLog(capturedSession, displayText, hiddenTurn);
+                startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
                 send("session", {
                   sessionId: capturedSession,
                   slashCommands: [],
@@ -1635,7 +1699,7 @@ export async function POST(req: Request) {
                   outputTokens: nev.usage.output_tokens,
                   reasoningOutputTokens: nev.usage.reasoning_output_tokens,
                 });
-                lastMainUsage = {
+                turnState.lastMainUsage = {
                   // Codex's last.totalTokens is the exact figure its own UI
                   // uses for context occupancy. Cached input is already a
                   // subset of input, so do not add it again here.
@@ -1644,7 +1708,7 @@ export async function POST(req: Request) {
                 // Codex has no per-token billing (ChatGPT subscription — see
                 // lib/models.ts's zeroed Codex pricing), so totalCostUsd is
                 // always 0 here rather than derived from usage.
-                lastResult = {
+                turnState.lastResult = {
                   subtype: "success",
                   totalCostUsd: 0,
                   usage: nev.usage,
@@ -1692,13 +1756,26 @@ export async function POST(req: Request) {
         // stamps it as startLoomFromBundle's `by`/provenance. `getSessionId`
         // reads `capturedSession` lazily: tool calls only ever run after the
         // SDK's system:init message below has already set it.
-        const loomMcpServer = createLoomMcpServer({
-          project,
-          objectiveSeed: message,
-          account: profile.name,
-          link: loomLink,
-          getSessionId: () => capturedSession,
-        });
+        // NOTE (#28 persistent runtime): these four servers are constructed
+        // inside the runtime's `create` callback below, ONCE per session
+        // runtime rather than once per POST. The getters they close over read
+        // live runtime state (`self().sessionId`, `slots.runId`) so a reused
+        // runtime's tool calls attribute to the CURRENT turn, not the creating
+        // one. The creating POST's other captures (project, profile, loomLink,
+        // sessionProfile) are all part of the runtime fingerprint, so a POST
+        // that would disagree about them gets a fresh runtime instead of a
+        // stale closure.
+        const makeTelarMcpServers = (ctx: {
+          slots: { runId: string | null };
+          self: () => { sessionId: string | null };
+        }) => ({
+          loom: createLoomMcpServer({
+            project,
+            objectiveSeed: message,
+            account: profile.name,
+            link: loomLink,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+          }),
         // The "ultra" in-process MCP server (docs/plans/ultra-harness.md §4) —
         // ultra/ultra_status/ultra_stop, auto-run like the loom read/draft
         // tools (see ULTRA_AUTO_TOOLS's own comment for why this differs from
@@ -1722,12 +1799,12 @@ export async function POST(req: Request) {
         // `mcpServers` should carry. The escalation surface stays a narrow
         // read-only discuss wall; the TOOLSET enforces that, not the server
         // list.
-        const ultraMcpServer = createUltraMcpServer({
-          project,
-          account: profile,
-          getSessionId: () => capturedSession,
-          getMessageId: () => runId,
-        });
+          ultra: createUltraMcpServer({
+            project,
+            account: profile,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+            getMessageId: () => ctx.slots.runId ?? runId,
+          }),
         // The "workspace" in-process MCP server (story 5.1) — the ONLY path any
         // session has to the user's item store, which lives under TELAR_HOME and
         // is deliberately outside every session's cwd. `project` and `account`
@@ -1738,15 +1815,25 @@ export async function POST(req: Request) {
         // `wsMcpServer` rather than anything starting with `workspace` because
         // INV-6e greps this file for the substring `const workspace` — a guard
         // left behind by story 2.2's removal of `const workspace = manifest.root`.
-        const wsMcpServer = createWorkspaceMcpServer({
-          project,
-          account: profile,
-          getSessionId: () => capturedSession,
-        });
+          workspace: createWorkspaceMcpServer({
+            project,
+            account: profile,
+            getSessionId: () => ctx.self().sessionId ?? capturedSession,
+          }),
         // One lazy, server-owned browser runtime backs both the human surface
         // and agent tools. Constructing this descriptor does not start a
         // browser; the Playwright MCP process launches only on first use.
-        const browserMcpServer = createBrowserMcpServer({ scopeKey: browserScopeKey });
+        // The scope is a GETTER (#28 persistent runtime): draft until the
+        // session id exists, canonical after — matching the client's
+        // adoptScope migration on the `session` event, across every turn this
+        // one process serves.
+          browser: createBrowserMcpServer({
+            scopeKey: () => {
+              const sid = ctx.self().sessionId ?? capturedSession;
+              return sid ? `${project}:${sid}` : browserScopeKey;
+            },
+          }),
+        });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -1762,8 +1849,45 @@ export async function POST(req: Request) {
         // spread below tests one thing.
         const policyMaxTurns = loadPolicy().maxTurns ?? 0;
 
-        const q = query({
-          prompt: claudePrompt,
+        // THE QUERY IS PER-SESSION NOW, NOT PER-TURN (#28's complete fix — the
+        // post-result kill-zone; the whole story is lib/server/session-runtime.ts).
+        // Everything the query is created WITH is captured in this fingerprint;
+        // a turn that would disagree about any of it closes the old runtime
+        // (gracefully, with `resume` picking the session back up) rather than
+        // running under a stale closure. The appendix is the interesting entry:
+        // it carries occasional per-turn live context (an Ultra wake block), and
+        // restart-on-change is exactly the honest behaviour for it.
+        const runtimeFingerprint = JSON.stringify({
+          cwd: sessionProfile.cwd,
+          model,
+          effort: claudeEffort ?? null,
+          permissionMode: permissionMode ?? null,
+          fastMode: !!fastMode,
+          account: profile.name,
+          project: project ?? null,
+          // browserScopeKey is DELIBERATELY absent. Turn 1 computes the draft
+          // scope (`project:draft:<runId>`) and every later turn the canonical
+          // (`project:<sessionId>`) — with the scope in the fingerprint, every
+          // second turn "changed options", restarted the runtime, and killed
+          // the first turn's live background agents (measured: a mid-window
+          // status turn re-emitted `session` and orphaned three agents). The
+          // browser tools resolve the CURRENT scope per call instead.
+          loomLink,
+          appendix: sessionProfile.systemPromptAppendix,
+          settingSources: sessionProfile.settingSources,
+          allow: sessionProfile.toolPolicy.allow,
+          deny: sessionProfile.toolPolicy.deny,
+          policyMaxTurns,
+          env: runtimeEnv,
+          projectMcp: project ? Object.keys(resolveProjectMcpServers(project)) : [],
+        });
+        const { runtime, created: runtimeCreated } = acquireSessionRuntime({
+          key: resumeTarget ?? runId,
+          fingerprint: runtimeFingerprint,
+          create: ({ slots, input, abort: runtimeAbort, self }) => {
+            const telarMcpServers = makeTelarMcpServers({ slots, self });
+            return query({
+          prompt: input,
           options: {
             ...claudeExecutableOptions(),
             // AC2 — `cwd` arrives BY CONSTRUCTION. The fold sets it from
@@ -1893,10 +2017,7 @@ export async function POST(req: Request) {
             // decoupled from accountEnv above, so account-switching can't
             // rotate MCP auth.
             mcpServers: {
-              browser: browserMcpServer,
-              loom: loomMcpServer,
-              ultra: ultraMcpServer,
-              workspace: wsMcpServer,
+              ...telarMcpServers,
               // THE SPREAD IS LAST, AND THAT IS NOT A PROTECTION — object-literal
               // LATER KEYS WIN, so a project telar.yaml server named `workspace`
               // SHADOWS ours. Spread-FIRST would be the protection, and moving it
@@ -1910,11 +2031,46 @@ export async function POST(req: Request) {
             },
             // Explicit Telar servers are added beside MCP servers from the
             // selected Claude configuration, matching a native Claude launch.
-            canUseTool,
+            //
+            // TRAMPOLINES, NOT THE TURN'S OWN CLOSURES. The query outlives the
+            // POST that created it, but `canUseTool` and the compaction
+            // notifiers are wired to a live SSE response — so the query gets a
+            // trampoline that reads the runtime's slots at call time. The
+            // active POST installs its closures right after acquisition and
+            // clears them in its finally. Between turns the WINDOW SINK's
+            // canUseTool takes over — the same closure, its card riding the
+            // feed instead of the dead SSE — so a background agent's ask
+            // parks a real card (#28 turn-as-event). The detached deny
+            // remains only as the no-sink fallback, an honest deny that
+            // blames nobody.
+            canUseTool: (toolName, toolInput, opts) => {
+              const live = slots.canUseTool ?? self().windowSink?.canUseTool;
+              return live
+                ? live(toolName, toolInput, opts)
+                : Promise.resolve({
+                    behavior: "deny",
+                    message: DETACHED_DENY_TEXT,
+                  } satisfies PermissionResult);
+            },
             hooks: {
+              // Profile-scoped, not response-scoped — safe to bind at creation.
               PreToolUse: [{ hooks: [preToolUseGuardrail] }],
-              PreCompact: [{ hooks: [preCompactNotify] }],
-              PostCompact: [{ hooks: [postCompactNotify] }],
+              PreCompact: [
+                {
+                  hooks: [
+                    async (i: HookInput) =>
+                      slots.preCompactNotify ? slots.preCompactNotify(i) : { continue: true },
+                  ],
+                },
+              ],
+              PostCompact: [
+                {
+                  hooks: [
+                    async (i: HookInput) =>
+                      slots.postCompactNotify ? slots.postCompactNotify(i) : { continue: true },
+                  ],
+                },
+              ],
             },
             // NO TURN CEILING BY DEFAULT — omitted, not set to a big number.
             //
@@ -1950,9 +2106,169 @@ export async function POST(req: Request) {
             // tabs (contract: see route.ts's per-message `parent`/`parentId`
             // attribution below).
             forwardSubagentText: true,
-            abortController: abort,
+            // The RUNTIME's controller, not the POST's: aborting it kills the
+            // session process. The POST's `abort` maps a Stop onto it via the
+            // listener below.
+            abortController: runtimeAbort,
+          },
+            });
           },
         });
+        // Stop keeps today's semantics exactly: the Stop button killed the
+        // turn's process before, and background tasks died with it — so a Stop
+        // kills the runtime, background tasks included. The gentler
+        // interrupt()-only refinement is deliberately not taken in this change.
+        abort.signal.addEventListener("abort", () => runtime.closeNow("stopped"), {
+          once: true,
+        });
+        runtimeRef = runtime;
+        // Install THIS turn's live wiring; the finally below clears it.
+        runtime.slots.canUseTool = canUseTool;
+        runtime.slots.send = send;
+        runtime.slots.preCompactNotify = preCompactNotify;
+        runtime.slots.postCompactNotify = postCompactNotify;
+        const q = runtime.query;
+        // Between-turns rendering (#28 turn-as-event): once this turn ends at
+        // `result`, background agents keep producing SDK messages with no turn
+        // attached. The sink projects them into the SAME surfaces send()
+        // writes — live log, feed, delta ring — so the client's background
+        // tail renders them; when the task roster empties while detached, it
+        // closes the window and persists the post-turn parts as a hidden
+        // follow-up turn so a reload keeps the background agents' report.
+        const installWindowSink = (sessionId: string) => {
+          if (!runtimeRef) return;
+          const persisted = { n: 0, done: false };
+          windowPersistMark = persisted;
+          runtimeRef.windowSink = {
+            // Read by the NEXT turn to carry spawn-flattening across the
+            // window boundary (see the carryover block before beginTurn).
+            turnState,
+            // The turn's own gate, kept answerable between turns: send()'s SSE
+            // half dies with the POST but its log/feed mirror doesn't, and the
+            // pending registry + /api/chat/permission never needed a live
+            // response — so a background agent's ask parks a real card in the
+            // feed instead of dying on the detached deny (the silent-death
+            // failure a live smoke test caught mid-migration).
+            canUseTool,
+            onDetachedMessage: (msg) => {
+              const projection = projectClaudeMessage(msg, turnState);
+              for (const ev of projection.events) {
+                if (ev.event === "delta" || ev.event === "thinking_delta") {
+                  pushSessionDelta(sessionId, ev.event, ev.data);
+                } else {
+                  if (ev.event === "text" || ev.event === "thinking") {
+                    clearSessionDeltas(sessionId);
+                  }
+                  appendSessionEvent(sessionId, ev.event, ev.data);
+                  appendFeedEvent(sessionId, ev.event, ev.data);
+                }
+              }
+            },
+            onSettled: () => {
+              // Fail-closed at the WINDOW's end, exactly as the turn's finally
+              // fails closed at the turn's — any card still parked belongs to
+              // an agent that just settled and can no longer act on an answer.
+              for (const id of myPending) {
+                resolvePending(id, { behavior: "deny", reason: "aborted" });
+              }
+              myPending.clear();
+              // Write the window's completions through to the store: the
+              // turn's appendTurn persisted these spawns while still only
+              // "launched", and their task_notifications landed after it
+              // (measured: a five-agent window reloaded as five agents that
+              // never reported, beside their own reports). From the MAP, not
+              // the parts: it also carries completions for an EARLIER turn's
+              // spawns, which have no part in this state at all.
+              recordTaskStatuses(
+                sessionId,
+                [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
+              );
+              // And no one is RUNNING once the window ends: mark still-acked
+              // spawns stopped — on the live surfaces, and through the store
+              // for the copies the turn's appendTurn already persisted.
+              const settledIds = settleSpawnParts((event, data) => {
+                appendSessionEvent(sessionId, event, data);
+                appendFeedEvent(sessionId, event, data);
+              });
+              if (settledIds.length) settleSpawnStatuses(sessionId, settledIds);
+              const extra = persisted.done ? turnState.parts.slice(persisted.n) : [];
+              if (extra.length) {
+                appendTurn({
+                  id: sessionId,
+                  model,
+                  effort,
+                  account: profile.name,
+                  project,
+                  runtimeMode,
+                  fastMode,
+                  serviceTier,
+                  userMessage: { role: "user", parts: [{ type: "text", text: "" }] },
+                  hideUserMessage: true,
+                  assistantMessage: { role: "assistant", parts: extra },
+                  costUsd: 0,
+                });
+              }
+              appendSessionEvent(sessionId, "closed", {});
+              appendFeedEvent(sessionId, "closed", {});
+              endSessionDeltas(sessionId);
+            },
+          } as SessionRuntime["windowSink"] & { turnState: ClaudeTurnState };
+        };
+        // A REUSED runtime's session id is known up front (it is the
+        // runtime's own key), so the turn bookkeeping — run registration,
+        // live-log/window open, stub upsert, usage capture — runs here,
+        // before the first message. MEASURED CORRECTION (mid-window round 4):
+        // the CLI re-announces system:init at the start of EVERY turn under
+        // streaming input, not once per process — the flag below is what
+        // keeps the init branch from running this same bookkeeping a second
+        // time (double log truncation, double window bump). The init branch
+        // still forwards the "session" event itself each turn: it carries
+        // freshly-announced slash-commands/skills/agents, and the client's
+        // handler treats it as a refresh.
+        let turnBookkeepingDone = false;
+        if (!runtimeCreated && resumeTarget) {
+          turnBookkeepingDone = true;
+          const reusedSession: string = resumeTarget;
+          capturedSession = reusedSession;
+          setChatRunSession(runId, reusedSession);
+          startSessionLog(reusedSession, displayText, hiddenTurn);
+          startSessionFeedWindow(reusedSession, runId, displayText, hiddenTurn);
+          announceUltraMarkers(send);
+          upsertChatStub({
+            id: reusedSession,
+            model,
+            effort,
+            account: profile.name,
+            project,
+            runtimeMode,
+            fastMode,
+            serviceTier,
+            loomId: loomLink.loomId,
+            role: loomLink.role,
+            userText: displayText,
+          });
+          send("saved", { chatId: reusedSession });
+          const usageFn = (q as unknown as Record<string, () => Promise<unknown>>)
+            .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+          usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
+        }
+        // Carry spawn-flattening across the window boundary BEFORE beginTurn
+        // clears the previous window's sink: agents spawned last turn keep
+        // forwarding under their old tool_use ids, and a fresh flattener would
+        // render their text as main-thread output.
+        {
+          const prior = runtime.windowSink as { turnState?: ClaudeTurnState } | null;
+          if (prior?.turnState) turnState.parentFlatten = prior.turnState.parentFlatten;
+        }
+        const turnFeed = runtime.beginTurn(runId);
+        runtime.push({
+          type: "user",
+          parent_tool_use_id: null,
+          message: { role: "user", content: claudePrompt },
+        });
+        // The reused-runtime path knows its session id already; the created
+        // path installs in the init branch below, the moment the id exists.
+        if (capturedSession) installWindowSink(capturedSession);
         // TELAR'S OWN TOOLS ARE NOT THE CLASSIFIER'S BUSINESS.
         //
         // In `auto` mode a model classifier — a security monitor prompted to
@@ -1982,21 +2298,27 @@ export async function POST(req: Request) {
         // deferred-work.md; what must not be pre-existing is this override
         // trusting it.
         //
-        // Best-effort by design. It is only available in streaming input mode
-        // and is a refinement, not a guarantee — a failure here must never take
-        // down a turn that would otherwise run, so it is caught and dropped.
-        const projectServerNames = new Set(
-          project ? Object.keys(resolveProjectMcpServers(project)) : [],
-        );
-        for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
-          try {
-            await q.setMcpPermissionModeOverride(server, "default");
-          } catch {
-            // An SDK that does not offer the override, or a name that no server
-            // registered under, leaves the classifier in place — the status quo.
+        // Best-effort by design. It is a refinement, not a guarantee — a
+        // failure here must never take down a turn that would otherwise run,
+        // so it is caught and dropped. Only available in streaming input mode,
+        // WHICH THIS ROUTE NOW IS (#28's persistent runtime): before that
+        // migration this loop ran on every turn and silently no-opped on every
+        // one of them. Once per runtime — the override sticks for the
+        // process's lifetime.
+        if (runtimeCreated) {
+          const projectServerNames = new Set(
+            project ? Object.keys(resolveProjectMcpServers(project)) : [],
+          );
+          for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
+            try {
+              await q.setMcpPermissionModeOverride(server, "default");
+            } catch {
+              // An SDK that does not offer the override, or a name that no server
+              // registered under, leaves the classifier in place — the status quo.
+            }
           }
         }
-        for await (const msg of q) {
+        for await (const msg of turnFeed) {
           if (msg.type === "system" && msg.subtype === "init") {
             const init = msg as {
               session_id: string;
@@ -2006,184 +2328,89 @@ export async function POST(req: Request) {
               tools?: string[];
             };
             capturedSession = init.session_id;
-            setChatRunSession(runId, capturedSession);
-            // Open the live log (truncate + write the `user` header) BEFORE the
-            // first send() so the session event is the log's second line and a
-            // reconnecting client can tail this turn (Phase 1b). displayText
-            // (not the resolved kickoff instruction) so a mid-turn reconnect's
-            // synthetic "user" event can never leak the machinery prompt.
-            // `hiddenTurn` also suppresses the line entirely — neither the
-            // kickoff nor story 4.1's Ultra wake trigger renders a user bubble
-            // on its local POST path, so a mid-turn reconnect must not
-            // manufacture one for either (M11.3 finding).
-            startSessionLog(capturedSession, displayText, hiddenTurn);
+            // The CLI re-announces init at the start of EVERY turn under
+            // streaming input (measured, mid-window round 4). The "session"
+            // event forwards every time — it carries freshly-announced
+            // slash-commands/skills/agents the client treats as a refresh —
+            // but the ONE-TIME turn bookkeeping below must not run twice on
+            // a reused runtime whose pre-loop block already did it (double
+            // log truncation, double window bump, duplicate stub write).
+            if (!turnBookkeepingDone) {
+              turnBookkeepingDone = true;
+              setChatRunSession(runId, capturedSession);
+              // Re-key the runtime from the creating turn's runId to the
+              // SDK-confirmed session id, so the NEXT turn on this session
+              // finds and reuses the live process (#28 persistent runtime).
+              runtime.adoptSession(capturedSession);
+              // Open the live log (truncate + write the `user` header) BEFORE
+              // the first send() so the session event is the log's second
+              // line and a reconnecting client can tail this turn (Phase 1b).
+              // displayText (not the resolved kickoff instruction) so a
+              // mid-turn reconnect's synthetic "user" event can never leak
+              // the machinery prompt. `hiddenTurn` also suppresses the line
+              // entirely — neither the kickoff nor story 4.1's Ultra wake
+              // trigger renders a user bubble on its local POST path, so a
+              // mid-turn reconnect must not manufacture one either (M11.3).
+              startSessionLog(capturedSession, displayText, hiddenTurn);
+              startSessionFeedWindow(capturedSession, runId, displayText, hiddenTurn);
+              installWindowSink(capturedSession);
+              announceUltraMarkers(send);
+              // Register-at-create (contract §1): persist a stub chat row NOW
+              // — the instant the session id is confirmed, before the first
+              // turn finishes — then emit the SAME "saved" event the client
+              // already handles (session-view.tsx's "saved" case just flips
+              // chatPersisted + refreshes). So rename / minimize-to-dock
+              // unlock at the START of the turn with zero new client event
+              // types. Idempotent by id: a resumed session's row already
+              // exists (no-op), and the end-of-turn appendTurn updates THIS
+              // row in place — never a duplicate. best-available title now is
+              // the message-prefix fallback (upsertChatStub derives it from
+              // userText); the generated title upgrades it via appendTurn.
+              upsertChatStub({
+                id: capturedSession,
+                model,
+                effort,
+                account: profile.name,
+                project,
+                runtimeMode,
+                fastMode,
+                serviceTier,
+                // Best-available loom link at init (existing chat's, else the
+                // turn-1 wire seed); appendTurn narrows in any link a loom
+                // tool establishes during the turn.
+                loomId: loomLink.loomId,
+                role: loomLink.role,
+                userText: displayText,
+              });
+              send("saved", { chatId: capturedSession });
+            }
             send("session", {
               sessionId: capturedSession,
               slashCommands: init.slash_commands ?? [],
               skills: init.skills ?? [],
               agents: init.agents ?? [],
             });
-            // Register-at-create (contract §1): persist a stub chat row NOW —
-            // the instant the session id is confirmed, before the first turn
-            // finishes — then emit the SAME "saved" event the client already
-            // handles (session-view.tsx's "saved" case just flips chatPersisted
-            // + refreshes). So rename / minimize-to-dock unlock at the START of
-            // the turn with zero new client event types. Idempotent by id: a
-            // resumed session's row already exists (no-op), and the end-of-turn
-            // appendTurn updates THIS row in place — never a duplicate.
-            // best-available title now is the message-prefix fallback
-            // (upsertChatStub derives it from userText); the generated title
-            // upgrades it at end-of-turn via appendTurn.
-            upsertChatStub({
-              id: capturedSession,
-              model,
-              effort,
-              account: profile.name,
-              project,
-              runtimeMode,
-              fastMode,
-              serviceTier,
-              // Best-available loom link at init (existing chat's, else the
-              // turn-1 wire seed); appendTurn narrows in any link a loom tool
-              // establishes during the turn.
-              loomId: loomLink.loomId,
-              role: loomLink.role,
-              userText: displayText,
-            });
-            send("saved", { chatId: capturedSession });
             // Capture the live session totals while the subprocess is still
             // alive; this is the fallback when navigation interrupts a final
             // result event.
             const usageFn = (q as unknown as Record<string, () => Promise<any>>)
               .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
             usagePromise = usageFn ? usageFn.call(q).catch(() => null) : null;
-          } else if (msg.type === "stream_event") {
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const ev = (msg as { event: Record<string, any> }).event;
-            if (ev?.type === "content_block_start") {
-              if (ev.content_block?.type === "thinking") {
-                send("thinking", parent ? { parent } : {});
-              }
-              streamingText.set(parent, "");
-            } else if (
-              ev?.type === "content_block_delta" &&
-              ev.delta?.type === "text_delta"
-            ) {
-              streamingText.set(parent, (streamingText.get(parent) ?? "") + ev.delta.text);
-              send("delta", { text: ev.delta.text, ...(parent ? { parent } : {}) });
-            } else if (
-              ev?.type === "content_block_delta" &&
-              ev.delta?.type === "thinking_delta"
-            ) {
-              // Interleaved narration text, not persisted (see StorePart —
-              // there's no "thinking" variant there): live-only, same
-              // treatment as permission cards. `thinking` above already told
-              // the client a block started; this streams its growing text.
-              send("thinking_delta", {
-                text: ev.delta.thinking ?? "",
-                ...(parent ? { parent } : {}),
-              });
+          } else {
+            // The whole SDKMessage→event translation — parts bookkeeping,
+            // parent flattening, first-write-wins tool results, supersedes
+            // eviction, the capture-don't-act result rule — lives in the
+            // TESTED projector (server/providers/claude/project-message.ts,
+            // extracted verbatim from the branches that sat here). This loop
+            // keeps only what needs the live query or the response in scope.
+            const projection = projectClaudeMessage(msg, turnState);
+            for (const ev of projection.events) send(ev.event, ev.data);
+            if (projection.compaction) {
+              // The counts, merged into the same record the PostCompact hook
+              // above records (issue #25) — in whichever order the two arrive.
+              noteCompaction("compact_boundary", projection.compaction);
             }
-          } else if (msg.type === "assistant") {
-            // A non-null parent_tool_use_id means this message came from a
-            // subagent's own internal conversation (spawned via the detected
-            // agent-spawn tool), relayed on this same top-level stream
-            // because forwardSubagentText is on. It's still appended to the
-            // same flat `parts` array — attributed via parentId, flattening
-            // arbitrarily deep subagent-of-a-subagent nesting to the
-            // top-level spawn's tool_use id — rather than skipped, so the
-            // client can render it as its own tab.
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const msgUuid = (msg as { uuid?: string }).uuid;
-            // Context-window occupancy = the FINAL main-thread model call's
-            // prompt (input + cache-read + cache-create). Each assistant
-            // message in a multi-step turn carries its own single-call usage;
-            // the result message's usage is the SUM across every step, which
-            // is far larger than the actual window (13 tool steps → ~13× the
-            // real context). Capture the last main-thread (non-subagent) call
-            // so the "CTX" the UI shows is the real thing, not a step total.
-            if (!parent) {
-              const mu = (msg as unknown as { message?: { usage?: Record<string, number> } })
-                .message?.usage;
-              if (mu) lastMainUsage = mu;
-            }
-            const content =
-              (msg as { message?: { content?: Array<Record<string, any>> } })
-                .message?.content ?? [];
-            for (const block of content) {
-              if (block.type === "text") {
-                parts.push({
-                  type: "text",
-                  text: block.text as string,
-                  ...(parent ? { parentId: parent } : {}),
-                });
-                partOrigin.push(msgUuid);
-                send("text", { text: block.text, ...(parent ? { parent } : {}) }); // finalize the streamed block
-                streamingText.set(parent, "");
-              }
-              if (block.type === "tool_use") {
-                const id = block.id as string;
-                const name = block.name as string;
-                const rawInput = (block.input ?? {}) as Record<string, unknown>;
-                const input = capToolInput(rawInput);
-                const part: Extract<Part, { type: "tool" }> = {
-                  type: "tool",
-                  id,
-                  name,
-                  input,
-                  ...(parent ? { parentId: parent } : {}),
-                };
-                // This tool_use IS a spawn step: enrich its part with agent
-                // meta (contract 3) and record it in parentFlatten so any
-                // messages the spawned subagent forwards under this exact
-                // id resolve straight to it — including a subagent that
-                // itself spawns a sub-subagent, which noteSpawn flattens to
-                // this same top-level id via `parent` above.
-                //
-                // Matched directly against the candidate list, NOT against a
-                // single name detected once from the init message's `tools`
-                // array: live testing showed init.tools advertises the spawn
-                // tool under its legacy registered name ("Task") while the
-                // actual tool_use blocks on the wire carry the SDK's current
-                // canonical name ("Agent") — the two disagree within the same
-                // session, so a single detected name silently never matches.
-                if ((AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(name)) {
-                  part.agent = agentMetaFromInput(rawInput);
-                  parentFlatten.noteSpawn(id, parent);
-                }
-                parts.push(part);
-                partOrigin.push(msgUuid);
-                send("tool", {
-                  id,
-                  name,
-                  input,
-                  ...(part.agent ? { agent: part.agent } : {}),
-                  ...(parent ? { parent } : {}),
-                });
-              }
-            }
-            // Refusal-fallback retry: the SDK retried on a fallback model and
-            // this message's `supersedes` names the wire uuids of previously
-            // -delivered message frames it replaces (including tombstoned
-            // tool_result frames from the refused leg). Evict whatever this
-            // turn already queued from those frames so a retracted tool call
-            // never gets persisted as if the model's final output included it.
-            const supersedes = (msg as { supersedes?: string[] }).supersedes;
-            if (supersedes?.length) {
-              const dead = new Set(supersedes);
-              for (let i = parts.length - 1; i >= 0; i--) {
-                const origin = partOrigin[i];
-                if (origin && dead.has(origin)) {
-                  parts.splice(i, 1);
-                  partOrigin.splice(i, 1);
-                }
-              }
-            }
-            if (!parent) {
+            if (projection.mainAssistantStep) {
               try {
                 // Await before advancing to the final result frame. The SDK's
                 // background reader can receive this control response while
@@ -2207,209 +2434,6 @@ export async function POST(req: Request) {
                 }
               }
             }
-          } else if (msg.type === "user") {
-            // Tool results: the SDK relays the model's `user` turn carrying
-            // tool_result blocks — both this turn's own and, with
-            // forwardSubagentText on, any forwarded subagent's. Attach
-            // output/isError onto the matching "tool" part (by tool_use_id,
-            // globally unique regardless of nesting depth) so persistence
-            // includes results, and mirror the same data over SSE. A
-            // tool_result whose id matches no part pushed above is stray
-            // side-channel noise — skip it rather than crash or emit a
-            // dangling event.
-            const parent = parentFlatten.resolve(
-              (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id,
-            );
-            const content =
-              (msg as { message?: { content?: Array<Record<string, any>> } })
-                .message?.content ?? [];
-            for (const block of content) {
-              if (block.type !== "tool_result") continue;
-              const id = block.tool_use_id as string;
-              const part = parts.find(
-                (p): p is Extract<Part, { type: "tool" }> =>
-                  p.type === "tool" && p.id === id,
-              );
-              if (!part) continue;
-              // A duplicate/retried delivery for the same tool_use_id: first
-              // write wins rather than silently overwriting an already
-              // -resolved result with a second (possibly stale) one.
-              if (part.output !== undefined) continue;
-              const output = capToolOutput(extractToolResultText(block.content));
-              const isError = !!block.is_error;
-              // #28: a call the CLI filled in after an interrupt is NOT a
-              // refusal, and telar rendered the two identically. Flagged here,
-              // where the result is first seen, so the surface and the persisted
-              // transcript agree — a reader coming back tomorrow should not have
-              // to re-derive this from the message text.
-              const cancelled = isCancelledToolResult(output);
-              part.output = output;
-              part.isError = isError;
-              if (cancelled) part.cancelled = true;
-              send("tool_result", {
-                id,
-                output,
-                isError,
-                ...(cancelled ? { cancelled: true } : {}),
-                ...(parent ? { parent } : {}),
-              });
-            }
-          } else if (msg.type === "system" && msg.subtype === "task_notification") {
-            // Authoritative completion signal for a backgrounded subagent.
-            // Subagents spawned via Agent/Task run in the background by
-            // default: the spawn tool_use's own tool_result ("Async agent
-            // launched successfully…") lands almost immediately and is NOT
-            // the subagent's real completion — this system message, keyed by
-            // the spawn's own tool_use id (not parent_tool_use_id — it's a
-            // control-plane notification ABOUT a tool_use, not a forwarded
-            // message FROM one), is. Recorded on the matching tool part so
-            // the client's agentStatus() can tell "still actually running"
-            // from "the launch ack merely already arrived" (see
-            // session-view.tsx).
-            const tn = msg as {
-              tool_use_id?: string;
-              status?: "completed" | "failed" | "stopped";
-            };
-            if (tn.tool_use_id && tn.status) {
-              const part = parts.find(
-                (p): p is Extract<Part, { type: "tool" }> =>
-                  p.type === "tool" && p.id === tn.tool_use_id,
-              );
-              if (part) {
-                part.taskStatus = tn.status;
-                send("task_status", { id: tn.tool_use_id, status: tn.status });
-              }
-            }
-          } else if (msg.type === "system" && msg.subtype === "permission_denied") {
-            // Auto-denied without an interactive prompt — the model's normal
-            // tool_use/tool_result exchange still happens (already handled
-            // by the "assistant"/"user" cases above), so in the common case
-            // this just adds WHY onto the tool part they already created.
-            // The fallback branch below covers the rare ordering where this
-            // message is seen before that tool_use block ever is.
-            const pd = msg as unknown as {
-              tool_name: string;
-              tool_use_id: string;
-              message: string;
-              decision_reason_type?: string;
-              // WHY THESE TWO ARE READ NOW. Both are on the SDK's message and
-              // both used to be dropped here, which is precisely why a day of
-              // stalled sub-agents could not be diagnosed from telar's own
-              // output: the harness was reporting WHY on every single denial
-              // and this handler discarded it. `agent_id` is documented as
-              // "Subagent ID when the denied tool call originated inside a
-              // subagent. Mirrors can_use_tool for host-side routing" — without
-              // it a surface cannot say WHICH agent was blocked, and with many
-              // agents live that is the difference between a diagnosis and a
-              // guess.
-              decision_reason?: string;
-              agent_id?: string;
-            };
-            // The message the MODEL is given, which is not the message the SDK
-            // supplied — see lib/permission-denial.ts. The SDK's default text
-            // asserts the user refused; for a classifier or working-directory
-            // block nobody was asked, and a sub-agent told to "wait for the
-            // user" waits until its turn budget is gone.
-            const denialMessage = autoDenialMessage(
-              pd.decision_reason_type,
-              pd.decision_reason,
-              pd.message,
-            );
-            send("permission_denied", {
-              toolName: pd.tool_name,
-              toolUseId: pd.tool_use_id,
-              message: denialMessage,
-              reason: pd.decision_reason_type,
-              // Forwarded for the surface, NOT for the model: the operator
-              // needs the raw discriminator and the originating agent to tell
-              // an auto-block apart from their own refusal at a glance.
-              reasonDetail: pd.decision_reason,
-              agentId: pd.agent_id,
-              sdkMessage: pd.message,
-            });
-            const existing = parts.find(
-              (p): p is Extract<Part, { type: "tool" }> =>
-                p.type === "tool" && p.id === pd.tool_use_id,
-            );
-            if (existing) {
-              existing.autoDenied = true;
-              existing.isError = true;
-              if (existing.output === undefined) existing.output = denialMessage;
-            } else {
-              parts.push({
-                type: "tool",
-                id: pd.tool_use_id,
-                name: pd.tool_name,
-                isError: true,
-                autoDenied: true,
-                output: denialMessage,
-              });
-              partOrigin.push(undefined);
-            }
-          } else if (msg.type === "system" && msg.subtype === "compact_boundary") {
-            // The SDK's own record that it just rewrote this session's history
-            // down to a summary — fired for BOTH triggers: `manual` is this
-            // route's own "/compact" substitution above, `auto` is the SDK
-            // protecting itself from running out of context window on an
-            // ordinary turn nobody asked to compact. The PreCompact/PostCompact
-            // hooks below (query() options) already sent "compacting"/
-            // "compacted" for the client's live "compacting…" indicator; this
-            // message arrives on the SAME stream slightly later; carrying the
-            // token-count metadata neither hook receives (PreCompact only
-            // knows the trigger, PostCompact only knows the summary text) — so
-            // it is broadcast as its own event rather than folded into either
-            // hook's send(), which would mean inventing numbers the hook was
-            // never given.
-            const cb = msg as unknown as {
-              compact_metadata?: {
-                trigger?: "manual" | "auto";
-                pre_tokens?: number;
-                post_tokens?: number;
-                duration_ms?: number;
-              };
-            };
-            const boundary: CompactionFacts = {
-              at: Date.now(),
-              trigger: cb.compact_metadata?.trigger === "auto" ? "auto" : "manual",
-              preTokens: cb.compact_metadata?.pre_tokens,
-              postTokens: cb.compact_metadata?.post_tokens,
-              durationMs: cb.compact_metadata?.duration_ms,
-            };
-            // The counts, merged into the same record the PostCompact hook
-            // above records (issue #25) — in whichever order the two arrive.
-            // `postTokens` is the post-compaction context size the client's
-            // wheel adopts instead of waiting for an unrelated turn to
-            // re-measure.
-            noteCompaction("compact_boundary", boundary);
-            send("compact_boundary", boundary);
-          } else if (msg.type === "result") {
-            // Capture only — do NOT log usage / send
-            // "done" here. A backgrounded subagent can wake an SDK
-            // auto-continuation that produces a second "result" later in
-            // this same stream, and these fields are running totals for the
-            // whole query() invocation, not per-message deltas; acting on
-            // every "result" would double-count cost/usage for one turn.
-            // `lastResult` is read exactly once, after the loop ends (see
-            // the `finally` block), so only the final (most complete) totals
-            // are ever persisted or broadcast.
-            const r = msg as unknown as {
-              subtype: string;
-              total_cost_usd?: number;
-              num_turns?: number;
-              usage?: {
-                input_tokens?: number;
-                output_tokens?: number;
-                cache_read_input_tokens?: number;
-                cache_creation_input_tokens?: number;
-              };
-            };
-            costUsd = r.total_cost_usd ?? 0;
-            lastResult = {
-              subtype: r.subtype,
-              totalCostUsd: costUsd,
-              turns: r.num_turns,
-              usage: r.usage,
-            };
           }
         }
         }
@@ -2417,61 +2441,66 @@ export async function POST(req: Request) {
       } catch (e) {
         if (!abort.signal.aborted) send("error", { message: String(e) });
       } finally {
-        // Fail-closed teardown: deny any permission requests still open on this
-        // stream so their canUseTool promises unblock and no pending is leaked.
-        for (const id of myPending) resolvePending(id, { behavior: "deny", reason: "aborted" });
-        myPending.clear();
+        // Detach this turn's live wiring FIRST: a background agent's late
+        // canUseTool call must route through the window sink (or the honest
+        // detached deny), never a dead SSE controller (#28 persistent runtime).
+        runtimeRef?.detachTurn();
+        // Whether this session's window outlives the POST: tasks still live
+        // and a sink installed to serve them. Read once — the pump updates
+        // liveTaskCount concurrently, and the teardown decisions below must
+        // all agree on one answer.
+        const windowContinues = !!(
+          runtimeRef &&
+          !runtimeRef.closed &&
+          runtimeRef.liveTaskCount > 0 &&
+          runtimeRef.windowSink
+        );
+        // Fail-closed teardown of open permission cards — UNLESS the window
+        // continues: a card a background agent parked (or is about to park)
+        // stays answerable for as long as the agent it belongs to is alive;
+        // the sink's onSettled drains whatever is left at the window's end.
+        if (!windowContinues) {
+          for (const id of myPending) {
+            resolvePending(id, { behavior: "deny", reason: "aborted" });
+          }
+          myPending.clear();
+        }
+        // A runtime whose query never reached system:init is a broken spawn —
+        // close it rather than leaving a keyed-by-runId zombie no later turn
+        // will ever find.
+        if (!capturedSession) runtimeRef?.closeNow("init never arrived");
         // Persist in teardown, not in the happy path: a client disconnect
         // (navigation, closed tab) aborts the SDK loop with a throw, and the
         // turn must survive it — the SDK session already exists server-side.
         try {
-          // Flush every parent's in-progress (never text-block-finalized)
-          // streamed text — the main turn's (key null) and any forwarded
-          // subagent's alike — so an abort/crash mid-stream doesn't drop
-          // whatever was already visible to the user.
-          for (const [parent, text] of streamingText) {
-            if (text) parts.push({ type: "text", text, ...(parent ? { parentId: parent } : {}) });
-          }
-          // A tool part still missing output at this point never got a
-          // matching tool_result — the turn was aborted or crashed mid-flight
-          // (a graceful "result" message only arrives once every tool call
-          // belonging to it has resolved, denials included). Flag it so the
-          // client can render "interrupted" instead of rendering identically
-          // to a genuinely empty successful result.
-          let anyInterrupted = false;
-          for (const part of parts) {
-            if (part.type === "tool" && part.output === undefined) {
-              part.interrupted = true;
-              anyInterrupted = true;
-            }
-          }
-          // The mutation above is local-only (about to be persisted below) —
-          // without this, a live client watching this same stream never
-          // learns a tool call got flagged interrupted (no SSE event carried
-          // that fact before now), so its copy keeps reading `output:
-          // undefined, interrupted: undefined` and a subagent tab's status
-          // dot shimmers as "running" forever even after the turn is over.
-          // Payload-free: the client already knows which message is its own
-          // in-flight one and applies the exact same "tool part still
-          // missing output" rule locally (see markToolsInterrupted).
+          // The three teardown finalizers, in order (their reasoning lives
+          // with them in server/providers/claude/project-message.ts): flush
+          // in-progress streamed text so an abort doesn't drop what was
+          // visible, flag outputless tool parts as interrupted, then ration
+          // per-parent tool detail before the blocking chats.json write.
+          flushStreamingText(turnState);
+          const anyInterrupted = markInterruptedTools(turnState);
+          // The interrupted flags are local-only (about to be persisted) —
+          // without this broadcast, a live client watching this stream never
+          // learns a tool call got flagged, so a subagent tab's status dot
+          // shimmers as "running" forever after the turn is over. Payload-
+          // free: the client applies the exact same "tool part still missing
+          // output" rule locally (see markToolsInterrupted).
           if (anyInterrupted) send("interrupted", {});
-          // Bound how many tool parts keep full input/output detail — but
-          // ration that budget PER PARENT (main thread = undefined, each
-          // subagent spawn = its own tool_use id), not with one shared
-          // counter. forwardSubagentText means a single chatty subagent's
-          // tool calls now share this same flat array with the main thread's
-          // own; a single shared counter would let that subagent's noise
-          // consume the whole budget and strip detail from the main thread's
-          // own tool calls, which is what a user actually asked for most.
-          const detailedByParent = new Map<string | undefined, number>();
-          for (const part of parts) {
-            if (part.type !== "tool") continue;
-            const count = (detailedByParent.get(part.parentId) ?? 0) + 1;
-            detailedByParent.set(part.parentId, count);
-            if (count > MAX_DETAILED_TOOL_PARTS) {
-              delete part.input;
-              delete part.output;
-            }
+          rationToolDetail(turnState);
+          // The window is NOT outliving this POST (empty roster): whatever
+          // spawn is still ack-only will never complete — settle it now, on
+          // the live stream, before appendTurn persists the marked parts.
+          if (!windowContinues) settleSpawnParts(send);
+          // Completions observed for an EARLIER turn's spawns (their parts
+          // live in already-persisted messages, not in this state) write
+          // through to the store now — the appendTurn below only carries THIS
+          // turn's parts. Idempotent for this turn's own statuses.
+          if (capturedSession && turnState.taskStatuses.size) {
+            recordTaskStatuses(
+              capturedSession,
+              [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
+            );
           }
           // Fetch the live session-cost control call unconditionally (not
           // gated on `lastResult`): a client disconnect/navigation aborts the
@@ -2503,14 +2532,14 @@ export async function POST(req: Request) {
           // than replacing it), so folding it in here as a substitute
           // `lastResult` is consistent with how a graceful completion would
           // have been accounted for, just recovered via a different SDK call.
-          if (!lastResult && u?.session) {
+          if (!turnState.lastResult && u?.session) {
             const modelUsages = Object.values(u.session.model_usage ?? {}) as Array<{
               inputTokens?: number;
               outputTokens?: number;
               cacheReadInputTokens?: number;
               cacheCreationInputTokens?: number;
             }>;
-            costUsd = u.session.total_cost_usd ?? 0;
+            turnState.costUsd = u.session.total_cost_usd ?? 0;
             const usage = modelUsages.reduce(
               (acc, m) => ({
                 input_tokens: acc.input_tokens + (m.inputTokens ?? 0),
@@ -2526,29 +2555,29 @@ export async function POST(req: Request) {
                 cache_creation_input_tokens: 0,
               },
             );
-            lastResult = { subtype: "aborted", totalCostUsd: costUsd, usage };
+            turnState.lastResult = { subtype: "aborted", totalCostUsd: turnState.costUsd, usage };
           }
           // Act on the LAST "result" message — real or, absent one, the
           // synthesized fallback above (see the "result" case for why only
           // the last one is ever used) — the usage.ndjson entry and the
           // "done" broadcast both fire at most
           // once per POST.
-          if (lastResult) {
+          if (turnState.lastResult) {
             if (capturedSession) {
               logUsage({
                 ts: Date.now(),
                 account: profile.name,
                 model,
                 sessionId: capturedSession,
-                inputTokens: lastResult.usage?.input_tokens ?? 0,
-                outputTokens: lastResult.usage?.output_tokens ?? 0,
-                cacheReadTokens: lastResult.usage?.cache_read_input_tokens ?? 0,
-                cacheCreateTokens: lastResult.usage?.cache_creation_input_tokens ?? 0,
-                costUsd: lastResult.totalCostUsd,
+                inputTokens: turnState.lastResult.usage?.input_tokens ?? 0,
+                outputTokens: turnState.lastResult.usage?.output_tokens ?? 0,
+                cacheReadTokens: turnState.lastResult.usage?.cache_read_input_tokens ?? 0,
+                cacheCreateTokens: turnState.lastResult.usage?.cache_creation_input_tokens ?? 0,
+                costUsd: turnState.lastResult.totalCostUsd,
               });
             }
             send("done", {
-              subtype: lastResult.subtype,
+              subtype: turnState.lastResult.subtype,
               // The SESSION'S TOTAL so far, projected over usage.ndjson — not
               // this turn's delta (AD-18: every spend readout is a projection
               // over the one ledger, never an independent counter). The line
@@ -2561,12 +2590,22 @@ export async function POST(req: Request) {
               // nothing was logged or persisted either.
               costUsd: capturedSession
                 ? sessionSpendUsd(capturedSession)
-                : lastResult.totalCostUsd,
-              turns: lastResult.turns,
-              usage: lastResult.usage,
+                : turnState.lastResult.totalCostUsd,
+              turns: turnState.lastResult.turns,
+              usage: turnState.lastResult.usage,
               // Real context-window occupancy (final call), not the step sum.
-              context: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              context: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
+              // The window handoff (#28 turn-as-event): how many background
+              // tasks outlive this turn, and the feed cursor the client's
+              // background tail should attach AFTER — everything up to it was
+              // already rendered by this very stream.
+              tasksLive: windowContinues ? runtimeRef?.liveTaskCount ?? 0 : 0,
+              feedCursor: capturedSession ? sessionFeedCursor(capturedSession) : null,
+              // For the client's tail: a fresh session's send() closure
+              // captured a null sessionId, and the handoff must not depend on
+              // React state having caught up with the "session" event.
+              sessionId: capturedSession,
             });
           }
           // A COMPACT-ONLY REQUEST APPENDS NO TURN (issue #25). The Codex
@@ -2659,19 +2698,19 @@ export async function POST(req: Request) {
               // reload as something the human appeared to type.
               hideUserMessage: hiddenTurn,
               assistantMessage: { role: "assistant", parts },
-              costUsd,
+              costUsd: turnState.costUsd,
               title,
-              usage: lastResult?.usage
+              usage: turnState.lastResult?.usage
                 ? {
-                    inputTokens: lastResult.usage.input_tokens ?? 0,
-                    outputTokens: lastResult.usage.output_tokens ?? 0,
-                    cacheReadTokens: lastResult.usage.cache_read_input_tokens ?? 0,
-                    cacheCreateTokens: lastResult.usage.cache_creation_input_tokens ?? 0,
+                    inputTokens: turnState.lastResult.usage.input_tokens ?? 0,
+                    outputTokens: turnState.lastResult.usage.output_tokens ?? 0,
+                    cacheReadTokens: turnState.lastResult.usage.cache_read_input_tokens ?? 0,
+                    cacheCreateTokens: turnState.lastResult.usage.cache_creation_input_tokens ?? 0,
                   }
                 : undefined,
               // Final-call context (not the step sum) — persisted so CTX is
               // right on resume, independent of the cumulative usage above.
-              contextTokens: contextUsage?.totalTokens ?? contextOf(lastMainUsage),
+              contextTokens: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
             });
             turnPersisted = true;
@@ -2715,30 +2754,43 @@ export async function POST(req: Request) {
         } catch {
           // persistence failure must never mask the stream teardown
         }
-        // Never let title generation outlive this response. `abort` is only
-        // ever triggered above by req.signal's 'abort' listener (client
-        // disconnect) — a turn that completes/errors/aborts normally never
-        // signals it otherwise, so titlePromise's underlying subprocess would
-        // otherwise keep running unobserved: (1) it lost the TITLE_RACE_MS
-        // race above (still running past the bounded wait), or (2) the main
-        // query() never reached system:init at all (capturedSession stayed
-        // null, so the whole persistence block — the only place that awaits
-        // titlePromise — never ran). Aborting here is a no-op if
-        // generateTitle already finished on its own (its own `finally`
-        // already called abort.abort(); idempotent) and a no-op for a
-        // resumed session (titlePromise is null there, nothing was ever
-        // fired) — otherwise it force-ends the orphaned subprocess right now
-        // instead of leaving it to whatever natural conclusion it reaches on
-        // its own after the HTTP response has already closed.
-        if (titlePromise) abort.abort();
-        // Terminal marker the live-tail subscriber closes on. Written BEFORE
+        // Stamp what the turn's persistence covered, whether or not it ran
+        // (a compact turn persists nothing and spawns nothing): from here on,
+        // parts the background window adds are the sink's to persist at
+        // settle, and only from here on — before this line the turn's own
+        // appendTurn still covered every part, so the sink persists none.
+        {
+          // Widened read: TS cannot see the closure assignment installWindowSink
+          // makes, and narrows the variable to its initializer otherwise.
+          const mark = windowPersistMark as { n: number; done: boolean } | null;
+          if (mark) {
+            mark.n = turnState.parts.length;
+            mark.done = true;
+          }
+        }
+        // Never let title generation outlive this response. `titleAbort` is
+        // the title's OWN controller (#28 persistent runtime: the turn's
+        // `abort` now kills the whole session runtime, so it must never fire
+        // as routine teardown). This is a no-op if generateTitle already
+        // finished (its own finally aborted its internal controller) and a
+        // no-op for a resumed session (titlePromise is null) — otherwise it
+        // force-ends the orphaned subprocess right now: it lost the
+        // TITLE_RACE_MS race above, or the main query never reached
+        // system:init so the persistence block — the only awaiter — never ran.
+        if (titlePromise) titleAbort.abort();
+        // Terminal marker the live-tail subscriber closes on — written BEFORE
         // endChatRun so a still-connected subscriber reads "closed" while the
-        // run is technically still registered as live (Phase 1b).
-        if (capturedSession) appendSessionEvent(capturedSession, "closed", {});
-        // Turn over — drop the current-turn delta ring (contract §2). The
-        // "closed" marker above lives in the file; the ring's in-flight tokens
-        // are all superseded by now, so a late reconnect reads the file only.
-        if (capturedSession) endSessionDeltas(capturedSession);
+        // run is technically still registered as live (Phase 1b). UNLESS the
+        // window continues: then the marker belongs to the window's END, and
+        // the sink's onSettled writes it (with the delta-ring drop) when the
+        // task roster empties. A sink that never fires because tasks==0 at
+        // teardown is cleared here so it cannot linger armed.
+        if (capturedSession && !windowContinues) {
+          if (runtimeRef && !runtimeRef.closed) runtimeRef.windowSink = null;
+          appendSessionEvent(capturedSession, "closed", {});
+          appendFeedEvent(capturedSession, "closed", {});
+          endSessionDeltas(capturedSession);
+        }
         endChatRun(runId);
         // The server, not a mounted renderer, owns advancing durable intent.
         // Release the active run first, then let the one session dispatcher

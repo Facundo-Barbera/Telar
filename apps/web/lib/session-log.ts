@@ -98,6 +98,152 @@ export function readSessionEvents(
   return { events, nextLine: lines.length };
 }
 
+// ── Session feed (server-layer contract §B) ────────────────────────────────
+// The successor to live.ndjson's line-counted tail, cursor-addressed so a
+// subscriber can attach anywhere: every non-delta event in an ACTIVITY WINDOW
+// (a turn plus whatever background work outlives it) gets a monotonic `seq`
+// under a per-window `win`. The cursor pair mirrors the delta ring's
+// {gen,index} re-base contract below — a reader whose `win` is stale gets the
+// current window replayed from its start, which is exactly the semantics the
+// dock's reconnect tail already assumes ("EACH RECONNECT REPLAYS FROM THE
+// TURN'S START"). The file TRUNCATES at window start, same lifecycle as
+// live.ndjson: completed windows live in chats.json, the feed is the live
+// surface only — which is what keeps it bounded without a rotation policy.
+//
+// Same owner as everything else here (AD-5: session-log.ts co-owns the
+// sessions/<id>/ subtree with core's sessions.ts), same best-effort
+// discipline: feed writes never throw into a turn.
+//
+// SHADOW MODE (this commit): the chat route mirrors its events here in
+// parallel with live.ndjson; nothing reads the feed yet except tests and the
+// events route's opt-in `?after=` form. The turn-end flip makes it primary.
+
+export type FeedCursor = { win: number; seq: number };
+export type FeedEvent = { win: number; seq: number; event: string; data: unknown };
+
+const feedFile = (sessionId: string) => path.join(sessionDir(sessionId), "feed.ndjson");
+
+type FeedState = { win: number; seq: number };
+const fg = globalThis as unknown as { __telarSessionFeeds?: Map<string, FeedState> };
+const feedStates = (fg.__telarSessionFeeds ??= new Map<string, FeedState>());
+
+// Recover the allocator from the file's last line — a dev-server reload (or a
+// second process, degraded-but-correct as with the delta ring) must continue
+// the window rather than fork a second seq space.
+function feedStateFor(sessionId: string): FeedState {
+  const cached = feedStates.get(sessionId);
+  if (cached) return cached;
+  let recovered: FeedState = { win: 0, seq: 0 };
+  try {
+    const raw = fs.readFileSync(feedFile(sessionId), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    const last = lines[lines.length - 1];
+    if (last) {
+      const parsed = JSON.parse(last) as FeedEvent;
+      if (typeof parsed.win === "number" && typeof parsed.seq === "number") {
+        recovered = { win: parsed.win, seq: parsed.seq };
+      }
+    }
+  } catch {
+    // no feed yet — a fresh window starts at win 1 below
+  }
+  feedStates.set(sessionId, recovered);
+  return recovered;
+}
+
+/** Open a fresh window: truncate the file, bump `win`, write the window
+ *  header (seq 0, carrying the turn's runId) and — unless the turn is hidden
+ *  machinery, same rule as startSessionLog — a synthetic `user` event so a
+ *  subscriber attaching mid-window can render the user bubble. */
+export function startSessionFeedWindow(
+  sessionId: string,
+  runId: string,
+  userText: string,
+  hidden = false,
+): void {
+  try {
+    const prior = feedStateFor(sessionId);
+    const state: FeedState = { win: prior.win + 1, seq: 0 };
+    feedStates.set(sessionId, state);
+    fs.mkdirSync(sessionDir(sessionId), { recursive: true });
+    const lines = [
+      JSON.stringify({ win: state.win, seq: 0, event: "window", data: { runId } }),
+    ];
+    if (!hidden) {
+      state.seq = 1;
+      lines.push(
+        JSON.stringify({ win: state.win, seq: 1, event: "user", data: { text: userText } }),
+      );
+    }
+    fs.writeFileSync(feedFile(sessionId), lines.join("\n") + "\n");
+  } catch {
+    // best-effort — never let the feed break the turn
+  }
+}
+
+/** Append one event to the current window. Callers keep the token firehose
+ *  (delta/thinking_delta) OUT of the feed — those stay on the bounded ring
+ *  below, exactly as they stay out of live.ndjson. Returns the cursor the
+ *  event landed at, or null if the write failed. */
+export function appendFeedEvent(
+  sessionId: string,
+  event: string,
+  data: unknown,
+): FeedCursor | null {
+  try {
+    const state = feedStateFor(sessionId);
+    state.seq += 1;
+    fs.appendFileSync(
+      feedFile(sessionId),
+      JSON.stringify({ win: state.win, seq: state.seq, event, data }) + "\n",
+    );
+    return { win: state.win, seq: state.seq };
+  } catch {
+    return null;
+  }
+}
+
+/** Where the current window stands — what a turn's terminal event reports so
+ *  the client knows the cursor to attach its background tail at. */
+export function sessionFeedCursor(sessionId: string): FeedCursor {
+  const state = feedStateFor(sessionId);
+  return { win: state.win, seq: state.seq };
+}
+
+/** Read the current window from `after` (exclusive). A null/stale-window
+ *  cursor replays the window from its start — the header (seq 0) included, so
+ *  the reader can re-base on the new `win`. Missing file → nothing yet. */
+export function readFeedEvents(
+  sessionId: string,
+  after: FeedCursor | null,
+): { events: FeedEvent[]; next: FeedCursor } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(feedFile(sessionId), "utf8");
+  } catch {
+    return { events: [], next: after ?? { win: 0, seq: 0 } };
+  }
+  const lines = raw.split("\n").filter((l) => l.length > 0);
+  const events: FeedEvent[] = [];
+  let win = after?.win ?? 0;
+  let seq = after?.seq ?? 0;
+  for (const line of lines) {
+    let parsed: FeedEvent;
+    try {
+      parsed = JSON.parse(line) as FeedEvent;
+    } catch {
+      continue; // corrupt/partial line — skip, same tolerance as the tail above
+    }
+    if (typeof parsed.win !== "number" || typeof parsed.seq !== "number") continue;
+    const stale = after === null || after.win !== parsed.win;
+    if (!stale && parsed.seq <= after.seq) continue;
+    events.push(parsed);
+    win = parsed.win;
+    seq = parsed.seq;
+  }
+  return { events, next: { win, seq } };
+}
+
 // ── Live delta ring (contract §2) ──────────────────────────────────────────
 // The token-level firehose (delta / thinking_delta) is deliberately kept OUT of
 // the ndjson file above — it's high-volume and only ever needed live. Instead

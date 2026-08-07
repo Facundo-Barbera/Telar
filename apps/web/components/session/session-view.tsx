@@ -98,7 +98,8 @@ import type { WorkState } from "@/components/session/working-indicator";
 import {
   browserQueueStorage,
   isTerminalQueueState,
-  partitionQueue,
+  pendingView,
+  plainQueueError,
   queueStorageKey,
   readQueue,
   stripQueuedAttachments,
@@ -261,6 +262,17 @@ const PLANNER_GREETING =
 // nothing at all to a transcript.
 type Status = "ready" | "submitted" | "streaming" | "error";
 
+// #28 turn-as-event: what a turn's "done" hands the background tail — how many
+// tasks outlive the turn, the session they belong to (from the payload, never
+// React state), and the feed cursor the POST's rendering stopped at. Held in a
+// ref and read through this alias because TS narrows a ref's `.current` to its
+// last visible assignment (null) across the async send() body.
+type WindowHandoff = {
+  tasksLive: number;
+  sessionId: string | null;
+  cursor: { win: number; seq: number } | null;
+};
+
 // RE-EXPORTED, NOT REDECLARED. apps/web/lib/gallery-fixtures/showcase.ts imports
 // this type from THIS module, and lib/gallery-fixtures/** sits outside story
 // 3.1's write set — so the name has to keep resolving here. It is the same
@@ -321,7 +333,9 @@ function seedMessages(chat: InitialChat | undefined): ChatMessage[] {
     parts: m.parts.map((p) =>
       p.type === "text"
         ? { type: "text" as const, text: p.text, done: true, parentId: p.parentId }
-        : // Attachments seed straight through: the part IS its own render input
+        : p.type === "marker"
+          ? { type: "marker" as const, text: p.text, attention: p.attention }
+          : // Attachments seed straight through: the part IS its own render input
           // (metadata only), and the chip decides for itself whether the bytes
           // behind each id still exist. A chat archived since it was written
           // reloads to tombstones rather than to broken images.
@@ -404,36 +418,32 @@ function QueueChip({
   onEdit,
   onCommit,
   onRemove,
-  state,
   error,
+  onRetry,
 }: {
-  /** Absent for chips outside the send order — see the "Not sent" block. */
+  /** Rendered only when the strip holds more than one message (rule 8). */
   index?: number;
   text: string;
   editing: boolean;
   /**
-   * AN AFFORDANCE ONLY WHERE THE ENGINE ALLOWS THE ACT. Omitting these hides
-   * the control rather than disabling it, because the engine's answer is not
-   * "not now" but "never": core admits an edit only for a `queued` item and a
-   * cancel only for `queued`/`failed`/`ambiguous`, so a pencil on a `running`
-   * chip is a button whose entire behaviour is a 409 and a red banner. This
-   * was the state of both buttons on every chip in the "Not sent" block.
+   * AN AFFORDANCE ONLY WHERE THE ACT IS REAL. Omitting these hides the
+   * control rather than disabling it — a pencil that answers with an error
+   * banner is a false promise (feel contract rule 10).
    */
   onEdit?: () => void;
   onCommit?: (v: string) => void;
   onRemove?: () => void;
-  state?: SessionQueuedMessage["state"];
+  /** One plain sentence; the line renders Retry/Discard beside it (rule 11).
+   *  No lifecycle label exists on this component, by construction (rule 8). */
   error?: string;
+  onRetry?: () => void;
 }) {
   const [draft, setDraft] = useState(text);
   useEffect(() => setDraft(text), [text, editing]);
-  // The engine's own word for where this message is. A LOCAL item has no state
-  // at all, so an engine refusal (`error`, never accepted) would otherwise wear
-  // no badge and read as an ordinary pending message — see partitionQueue.
-  const badge = state && state !== "queued" ? state : error ? "not sent" : null;
 
   return (
-    <div className="group flex items-center gap-2 rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
+    <div className="group rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
+      <div className="flex items-center gap-2">
       {index !== undefined && (
         <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
           {index}
@@ -472,17 +482,6 @@ function QueueChip({
           {text}
         </span>
       )}
-      {badge && (
-        <span
-          className={cn(
-            "shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground",
-            badge !== "claimed" && badge !== "running" && "text-destructive",
-          )}
-          title={error}
-        >
-          {badge}
-        </span>
-      )}
       {onEdit && (
         <Button
           type="button"
@@ -506,6 +505,28 @@ function QueueChip({
         >
           <XIcon />
         </Button>
+      )}
+      </div>
+      {error && (
+        <div className="mt-1 flex items-center gap-2 pl-6 text-[11px] text-destructive">
+          <span className="min-w-0 flex-1">{error}</span>
+          {onRetry && (
+            <Button type="button" size="xs" variant="outline" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+          {onRemove && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={onRemove}
+            >
+              Discard
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1178,12 +1199,38 @@ function SessionWorkspace({
   // session — its own AbortController, aborted on unmount / sessionId change.
   // Aborting only closes THIS reader, never the detached server run.
   const reconnectAbortRef = useRef<AbortController | null>(null);
-  /** State twin of `reconnectAbortRef`, existing ONLY so the queue drains can
-   *  depend on it. The ref stays the synchronous truth every gate reads; this
-   *  is what re-runs those effects when the tail opens or closes. */
+  /** TRUE while the feed subscriber is rendering a TURN (window→done in
+   *  cursor mode, events-flowing in replay mode) — the synchronous truth the
+   *  injection/drain gates read. NOT "the subscriber is armed": the
+   *  subscriber is armed whenever no local POST runs (feel contract rule 7 —
+   *  a server-drained queued turn must stream into this very mount), and
+   *  gating sends on mere armedness would block them forever. */
+  const feedTurnLiveRef = useRef(false);
+  /** State twin of `feedTurnLiveRef`, existing ONLY so the gate effects can
+   *  depend on it — the ref stays the synchronous truth. */
   const [reconnectLive, setReconnectLive] = useState(false);
-  // Guard so the reconnect effect attaches at most once per session id.
-  const reconnectedRef = useRef<string | null>(null);
+  /** Last server-advanced feed cursor — where this mount's rendering stopped.
+   *  Null means "replay the open window from its start" (fresh mount). */
+  const feedCursorRef = useRef<{ win: number; seq: number } | null>(null);
+  /** TRUE when the mount already rendered the window but holds no cursor —
+   *  a turn that ended WITHOUT a done handoff (Stop, error). The subscriber
+   *  then attaches strictly after NOW (?tail=1, cursor resolved server-side)
+   *  instead of replaying what this tab just showed: replay mode here was
+   *  the duplicate-bubble regression a live Stop exposed. */
+  const feedTailFromNowRef = useRef(false);
+  // #28 turn-as-event: the turn's POST ends at `result`, and background agents
+  // keep working. The "done" event records the handoff (how many tasks live,
+  // and the feed cursor rendering stopped at); send() then opens the
+  // BACKGROUND TAIL — a feed subscription strictly after that cursor, so
+  // nothing the POST already rendered repeats. It renders through
+  // applyServerEvent but immediately re-settles status: background work must
+  // never re-busy the composer.
+  const windowHandoffRef = useRef<WindowHandoff | null>(null);
+  /** Background agents still working after the turn ended (feel contract
+   *  rule 20): rendered as ONE line above the composer — words, not a 2px
+   *  dot — for exactly as long as it is true. Seeded by the done handoff's
+   *  tasksLive, decremented per completion, cleared at the window's close. */
+  const [bgTasksLive, setBgTasksLive] = useState(0);
 
   // The god-view handoff and the loom lifecycle it starts — see
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
@@ -1290,7 +1337,10 @@ function SessionWorkspace({
   // valid after the composer has cleared and revoked the originals — the queue
   // can outlive several turns.
   const [messageQueue, setMessageQueue] = useState<SessionQueuedMessage[]>([]);
-  const [engineQueuePaused, setEngineQueuePaused] = useState(false);
+  /** TRUE between a Stop and the user's next send: everything pending is
+   *  held as LOCAL drafts (nothing server-side to drain — no mode, no Resume
+   *  button; feel contract rules 12/15) and the strip says so in one line. */
+  const [heldAfterStop, setHeldAfterStop] = useState(false);
   const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
   const queueSeqRef = useRef(0);
 
@@ -1344,7 +1394,7 @@ function SessionWorkspace({
   // with; it is NOT the list to render. Once the engine claims a message the
   // transcript owns it, and leaving it under "Queued · sends in order" showed
   // one message as both already answered and still waiting to send.
-  const queueView = useMemo(() => partitionQueue(messageQueue), [messageQueue]);
+  const pendingLines = useMemo(() => pendingView(messageQueue), [messageQueue]);
 
   // AN EDIT CANNOT SURVIVE THE ENGINE TAKING THE MESSAGE — say so instead of
   // dropping it. A chip whose item leaves the editable set unmounts, React
@@ -1665,12 +1715,32 @@ function SessionWorkspace({
       }
       return;
     }
-    // Every other event targets this turn's assistant message. On the POST path
-    // send() pre-created it and set asstIdRef; on reconnect there is none yet,
-    // so the first assistant-side event lazily creates it here (same shape
-    // send() uses) and records its id for the rest of the turn.
-    let asstId = asstIdRef.current;
-    if (!asstId) {
+    // Every other event targets an assistant message. On the POST path send()
+    // pre-created it and set asstIdRef; on reconnect there is none yet, so the
+    // first CONTENT event lazily creates it (same shape send() uses).
+    //
+    // CONTENT EVENTS ONLY, and that restriction is the callback boundary: the
+    // "done" case nulls the ref, so the first content a background
+    // continuation produces — the completion marker, then the model's
+    // reaction to the returning agent — opens a FRESH bubble instead of
+    // smearing onto a turn that already ended. (This matches the settle-time
+    // persistence, which already saves post-turn output as its own follow-up
+    // assistant message — live and reloaded transcripts now agree.) Patch
+    // events (a result/status for a part in an EARLIER bubble) never conjure
+    // an empty bubble — they patch by part id across every message below.
+    // "" (never null) so patch-type cases that fire with no bubble in scope
+    // no-op by id-miss instead of needing per-case guards.
+    let asstId = asstIdRef.current ?? "";
+    const appendsContent =
+      event === "text" ||
+      event === "delta" ||
+      event === "thinking" ||
+      event === "thinking_delta" ||
+      event === "tool" ||
+      event === "marker" ||
+      event === "permission" ||
+      event === "permission_denied";
+    if (!asstId && appendsContent) {
       const id = `m${nextId.current++}`;
       asstIdRef.current = id;
       asstId = id;
@@ -1857,21 +1927,23 @@ function SessionWorkspace({
                 break;
               }
               case "tool_result":
-                // Can arrive after later parts already exist (more tool calls
-                // or text streamed in since) — find the part by id wherever
-                // it landed in this turn's own message rather than assuming
-                // it's the newest part. Scoped to asstId (like every other
-                // case here) rather than scanning every message in the
-                // conversation — this turn's tool ids only ever land on the
-                // message this same turn opened.
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "tool" && p.id === payload.id
-                      ? { ...p, output: payload.output, isError: payload.isError }
-                      : p,
-                  ),
-                }));
+                // BY PART ID, ACROSS EVERY MESSAGE. This used to scope to
+                // asstId ("this turn's tool ids only land on this turn's
+                // message") — true when a turn was one bubble, false now that
+                // a background continuation opens a fresh bubble after done
+                // and a mid-window second turn runs while an earlier turn's
+                // tools are still resolving: the result must find its part
+                // wherever it lives, tool_use ids being globally unique.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "tool" && p.id === payload.id
+                        ? { ...p, output: payload.output, isError: payload.isError }
+                        : p,
+                    ),
+                  })),
+                );
                 // The "make this real → god-view" moment (docs/loom-model.md
                 // §5): mcp__loom__start_loom's success result is
                 // `{loomId, url}` (lib/loom-mcp.ts's start_loom tool) —
@@ -1899,14 +1971,40 @@ function SessionWorkspace({
               case "task_status":
                 // Authoritative completion signal for a backgrounded
                 // subagent (route.ts's task_notification handler) — see
-                // agentStatus's comment. Scoped to asstId like "tool_result".
+                // agentStatus's comment. By part id across every message,
+                // same reasoning as "tool_result": the spawn may live in an
+                // earlier bubble (or an earlier TURN) than the one receiving
+                // events when its completion lands.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "tool" && p.id === payload.id
+                        ? { ...p, taskStatus: payload.status }
+                        : p,
+                    ),
+                  })),
+                );
+                // One agent came back — the presence line counts down (never
+                // below zero: nested completions can outnumber the roster).
+                setBgTasksLive((n) => Math.max(0, n - 1));
+                break;
+              case "marker":
+                // A system-event line in the main flow ("agent finished ·
+                // explore lib", "ultra finished · sweep") — server-authored
+                // state, appended at the position it arrived so the transcript
+                // reads coherently. Renders via the Marker primitive
+                // (conversation:marker); persisted server-side as a part.
                 patch(asstId, (m) => ({
                   ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "tool" && p.id === payload.id
-                      ? { ...p, taskStatus: payload.status }
-                      : p,
-                  ),
+                  parts: [
+                    ...m.parts,
+                    {
+                      type: "marker" as const,
+                      text: String(payload.text ?? ""),
+                      ...(payload.attention ? { attention: true as const } : {}),
+                    },
+                  ],
                 }));
                 break;
               case "permission":
@@ -1940,15 +2038,19 @@ function SessionWorkspace({
                 }));
                 break;
               case "permission_result":
-                // Scoped to asstId — see the "tool_result" case above.
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: m.parts.map((p) =>
-                    p.type === "permission" && p.id === payload.id
-                      ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
-                      : p,
-                  ),
-                }));
+                // By part id across every message — see "tool_result": a card
+                // parked by a background agent can outlive the bubble (and
+                // the turn) that opened it.
+                setMessages((ms) =>
+                  ms.map((m) => ({
+                    ...m,
+                    parts: m.parts.map((p) =>
+                      p.type === "permission" && p.id === payload.id
+                        ? { ...p, status: payload.behavior === "allow" ? "allowed" : "denied" }
+                        : p,
+                    ),
+                  })),
+                );
                 break;
               case "permission_denied": {
                 // Auto/acceptEdits mode's classifier (or the guardrail hook)
@@ -2031,6 +2133,32 @@ function SessionWorkspace({
                 ) {
                   setCompactedContext(null);
                 }
+                // The window handoff (#28 turn-as-event): the turn ended at
+                // `result`, but background agents may still be working. Record
+                // where this stream's rendering stopped so send() can attach
+                // the background tail strictly AFTER it.
+                windowHandoffRef.current = {
+                  tasksLive: typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
+                  // From the payload, not React state: a fresh session's send()
+                  // closure captured sessionId before the "session" event set it.
+                  sessionId:
+                    typeof payload.sessionId === "string" ? payload.sessionId : null,
+                  cursor:
+                    payload.feedCursor &&
+                    typeof payload.feedCursor.win === "number" &&
+                    typeof payload.feedCursor.seq === "number"
+                      ? { win: payload.feedCursor.win, seq: payload.feedCursor.seq }
+                      : null,
+                };
+                // The callback boundary: this turn's bubble is finished. The
+                // next content — a completion marker and the model's reaction
+                // to a returning agent — opens a FRESH bubble via the lazy
+                // mint above, so a background continuation reads as its own
+                // response, not as growth on a turn that already ended.
+                asstIdRef.current = null;
+                setBgTasksLive(
+                  typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
+                );
                 break;
               case "saved":
                 setChatPersisted(true);
@@ -2046,58 +2174,106 @@ function SessionWorkspace({
     }
   }, [sessionId, project, rightPanelScopeKey, provisionalRightPanelScopeKey]);
 
-  // §1b reconnect: returning to a session whose turn is STILL running. The
-  // page seeded prior turns from chats.json; here we tail the live event log so
-  // the in-flight turn (its "user" header + assistant events, none of them in
-  // chats.json yet) rebuilds and plays to completion. Runs at most once per
-  // session id, never while a local POST turn drives this mount (abortRef), and
-  // only for a real, confirmed session id that's currently idle.
-  useEffect(() => {
-    if (!sessionId) return;
-    if (statusRef.current !== "ready") return;
-    if (abortRef.current) return; // a local turn already owns this mount
-    if (reconnectedRef.current === sessionId) return;
-    reconnectedRef.current = sessionId;
-    // Fresh assistant container for the (not-yet-persisted) in-flight turn.
-    asstIdRef.current = null;
-
+  // THE SESSION-FEED SUBSCRIBER (feel contract rules 6-7, 21-22) — the one
+  // reader behind every non-local render: reconnect to a live window, the
+  // post-turn background tail, and — the rule-7 case this generalization
+  // exists for — a server-drained QUEUED turn, which now streams into the
+  // mount the user is looking at exactly like a turn they sent (user bubble,
+  // busy line, streaming reply; nothing to click, nothing to reload).
+  //
+  // Armed whenever no local POST owns rendering; re-arms after every stream
+  // end so the next server-side turn is picked up. Two modes per connection:
+  // - CURSOR (feedCursorRef set): strictly-after tail of the feed. A "window"
+  //   event means a NEW turn started server-side → fresh bubble, busy status,
+  //   feedTurnLiveRef true until its "done". Traffic with no window seen this
+  //   connection is background chatter and never re-busies the composer.
+  // - REPLAY (no cursor): rebuild the open window from its start — the
+  //   reconnect case. Busy while events flow, settle at stream end (the old
+  //   §1b semantics, preserved verbatim).
+  const armFeedSubscriber = useCallback((sid: string) => {
+    if (abortRef.current) return; // a local turn owns rendering; send() re-arms
+    if (reconnectAbortRef.current) return; // already armed
     const abort = new AbortController();
     reconnectAbortRef.current = abort;
-    // A REF CANNOT WAKE AN EFFECT. The queue drain gates on
-    // `reconnectAbortRef.current`, and that ref goes null in the `finally`
-    // below — on the `!sawEvent` path (the turn had already finished before
-    // this mount), NOTHING ELSE CHANGES: `setStatus` is skipped, so the drain
-    // effect never re-runs and a queue that was blocked at mount stays blocked
-    // forever. This state mirrors the ref for the sole purpose of being a
-    // dependency; the gates keep reading the ref, which is the synchronous
-    // truth. See the drain effect's deps.
-    setReconnectLive(true);
-    let sawAnyEvent = false;
 
-    (async () => {
+    const enterTurn = () => {
+      if (!feedTurnLiveRef.current) {
+        feedTurnLiveRef.current = true;
+        setReconnectLive(true);
+      }
+      setStatus((s) => (s === "ready" || s === "error" ? "streaming" : s));
+    };
+    const exitTurn = () => {
+      if (feedTurnLiveRef.current) {
+        feedTurnLiveRef.current = false;
+        setReconnectLive(false);
+        setStatus((s) => (s === "streaming" ? "ready" : s));
+      }
+    };
+
+    void (async () => {
       try {
         let retryMs = 250;
         while (!abort.signal.aborted) {
+          const cursor = feedCursorRef.current;
+          // Tail-from-now counts as cursor mode: strictly-after semantics,
+          // background-chatter status rules, no replay of rendered content.
+          const cursorMode = cursor !== null || feedTailFromNowRef.current;
+          const url = cursor
+            ? `/api/chat/${encodeURIComponent(sid)}/events?win=${cursor.win}&seq=${cursor.seq}`
+            : feedTailFromNowRef.current
+              ? `/api/chat/${encodeURIComponent(sid)}/events?tail=1`
+              : `/api/chat/${encodeURIComponent(sid)}/events`;
           let sawEvent = false;
-          let sawClosed = false;
-          const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/events`, {
-            signal: abort.signal,
-          });
-          if (!res.ok || !res.body) throw new Error(`tail HTTP ${res.status}`);
+          const res = await fetch(url, { signal: abort.signal });
+          if (!res.ok || !res.body) throw new Error(`feed HTTP ${res.status}`);
           await consumeSSE(res.body.getReader(), (event, payload) => {
             sawEvent = true;
-            sawAnyEvent = true;
-            if (event === "closed") sawClosed = true;
-            // First byte of a live turn — flip to streaming so the busy UI shows
-            // while applyServerEvent rebuilds it. A not-live session emits nothing.
-            setStatus((current) => (current === "ready" ? "streaming" : current));
+            if (event === "closed") {
+              // The window is over: nothing is still working (rule 20's line
+              // must vanish the moment it stops being true).
+              setBgTasksLive(0);
+              exitTurn();
+              return;
+            }
+            if (event === "cursor") {
+              if (typeof payload?.win === "number" && typeof payload?.seq === "number") {
+                feedCursorRef.current = { win: payload.win, seq: payload.seq };
+                // A real cursor supersedes the tail-from-now sentinel.
+                feedTailFromNowRef.current = false;
+              }
+              return;
+            }
+            if (event === "window") {
+              // A turn is STARTING server-side (the engine draining a queued
+              // message, or another surface's send) — render it as our own.
+              asstIdRef.current = null;
+              enterTurn();
+              return;
+            }
+            if (!cursorMode) {
+              // Replay mode: busy while the rebuild flows (old §1b behavior).
+              enterTurn();
+              applyServerEvent(event, payload);
+              return;
+            }
             applyServerEvent(event, payload);
+            if (event === "done") {
+              exitTurn();
+              return;
+            }
+            // Background chatter (no window open this connection) must never
+            // re-busy the composer; both updates land in one React batch.
+            if (!feedTurnLiveRef.current) {
+              setStatus((s) => (s === "streaming" ? "ready" : s));
+            }
           });
-          if (sawClosed || abort.signal.aborted) break;
-          // No first event means the session was idle at connect time. Once a
-          // live stream has begun, however, a close without its durable terminal
-          // marker is a transport drop and must retry in this same mount.
-          if (!sawEvent && !sawAnyEvent) break;
+          if (abort.signal.aborted) break;
+          exitTurn();
+          // An idle session finishes the request instantly (the route's
+          // first-tick gate); stay armed on a lazy cadence so the next
+          // server-side turn is picked up. Any traffic resets the backoff.
+          retryMs = sawEvent ? 250 : Math.min(4_000, retryMs * 2);
           await new Promise<void>((resolve, reject) => {
             const onAbort = () => {
               clearTimeout(timer);
@@ -2109,33 +2285,37 @@ function SessionWorkspace({
             }, retryMs);
             abort.signal.addEventListener("abort", onAbort, { once: true });
           });
-          retryMs = Math.min(4_000, retryMs * 2);
-          // Rebuild from line zero on reconnect; applyServerEvent's id-based
-          // updates are authoritative and avoid a half-visible sub-agent.
-          asstIdRef.current = null;
+          // A replay-mode transport drop rebuilds from line zero next round;
+          // id-based updates are authoritative (old behavior, kept).
+          if (!cursorMode && sawEvent) asstIdRef.current = null;
         }
-        // The run's own "done" set cost/tokens but never touches status; once the
-        // log drains ("closed" → reader done), settle a still-streaming view back.
-        if (sawAnyEvent) setStatus((s) => (s === "streaming" ? "ready" : s));
       } catch {
-        // Aborted on unmount / sessionId change, or a dropped connection — the
-        // detached server run is untouched; a later mount can reconnect again.
+        // Aborted (local send / unmount / session change) or dropped — the
+        // server run is untouched; the next arm resumes from the cursor.
       } finally {
-        // Clear the ref once the tail drains so it means "a reconnect reader is
-        // live" — the injection guard reads it to keep from POSTing a second
-        // concurrent turn during the tail (§6.D). Guard on identity so we never
-        // clobber a newer reader. (Cleanup nulls it too, on unmount/dep change.)
-        if (reconnectAbortRef.current === abort) reconnectAbortRef.current = null;
-        setReconnectLive(false);
+        // Identity-guarded: a successor already replaced the ref, leave it.
+        if (reconnectAbortRef.current === abort) {
+          reconnectAbortRef.current = null;
+        }
+        exitTurn();
       }
     })();
+  }, [applyServerEvent]);
 
+  // Arm on mount / session change; disarm on unmount. send() disarms for the
+  // lifetime of its own POST and re-arms from the done handoff's cursor.
+  useEffect(() => {
+    if (!sessionId) return;
+    feedCursorRef.current = null; // fresh mount: replay the open window, if any
+    feedTailFromNowRef.current = false;
+    armFeedSubscriber(sessionId);
     return () => {
-      abort.abort();
+      reconnectAbortRef.current?.abort();
       reconnectAbortRef.current = null;
+      feedTurnLiveRef.current = false;
       setReconnectLive(false);
     };
-  }, [sessionId, applyServerEvent]);
+  }, [sessionId, armFeedSubscriber]);
 
   // The complete immutable envelope handed to either the immediate-turn
   // adapter or the durable queue. Keeping one builder prevents a queued turn
@@ -2193,9 +2373,18 @@ function SessionWorkspace({
       text: string,
       opts?: { hidden?: boolean; files?: PromptInputMessage["files"] },
     ) => {
-      // A new turn clears the interrupted latch: whatever killed the LAST turn
-      // is no longer a reason to hold the queue back.
+      // A new turn clears the interrupted latch AND the hold: sending a
+      // message is the user act that releases whatever a Stop held (rule 15).
       turnInterruptedRef.current = false;
+      setHeldAfterStop(false);
+      // This POST owns rendering now — the feed subscriber stands down for
+      // its lifetime (the finally re-arms it from the done handoff's cursor);
+      // background agents' output rides this turn's stream meanwhile.
+      reconnectAbortRef.current?.abort();
+      reconnectAbortRef.current = null;
+      feedTurnLiveRef.current = false;
+      setReconnectLive(false);
+      windowHandoffRef.current = null;
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
       // recorded against it. THE FLAG LIVES IN THE ADAPTER, NEVER ON THE
@@ -2324,6 +2513,10 @@ function SessionWorkspace({
           setStatus("error");
         } else {
           setStatus("ready");
+          // The turn ended at `result`, but its background agents may not be
+          // done — attach the background tail where this stream's rendering
+          // stopped, so their work stays visible (and their tool parts keep
+          // resolving) without holding the composer.
         }
       } catch (err) {
         // The server's teardown fail-closed-denies any permission still open
@@ -2355,6 +2548,22 @@ function SessionWorkspace({
         setThinking(false);
         abortRef.current = null;
         runIdRef.current = null;
+        // Re-arm the feed subscriber now that this POST no longer owns
+        // rendering: from the done handoff's cursor when one landed (the
+        // background window streams strictly after what this POST already
+        // rendered), else with no cursor — an idle session's connect finishes
+        // silently at the route's gate, and a server-drained queued turn is
+        // picked up as a fresh window replay. This replaces the dedicated
+        // background tail; the subscriber IS the tail now.
+        {
+          const handoff = windowHandoffRef.current as WindowHandoff | null;
+          feedCursorRef.current = handoff?.cursor ?? null;
+          // No handoff (Stop/error before done): this mount rendered the
+          // window already — attach strictly after now, never replay it.
+          feedTailFromNowRef.current = !handoff?.cursor;
+          const sid = handoff?.sessionId ?? sessionId;
+          if (sid) armFeedSubscriber(sid);
+        }
         // Backstop, same reasoning as compactNow's own: PreCompact can fire
         // on an ORDINARY turn (Claude auto-compacting to stay under its
         // context window, mid-send()) with no `compact: true` anywhere on
@@ -2368,7 +2577,7 @@ function SessionWorkspace({
         setCompacting(false);
       }
     },
-    [sessionId, buildTurnPayload, applyServerEvent],
+    [sessionId, buildTurnPayload, applyServerEvent, armFeedSubscriber],
   );
 
   // The composer's Compact affordance. Deliberately NOT a `send(..., {hidden:
@@ -2405,12 +2614,38 @@ function SessionWorkspace({
         body: JSON.stringify(rid ? { runId: rid, sessionId } : { sessionId }),
       }).catch(() => {});
     }
-    // Stop means stop. Without this latch the queue drains the moment `status`
-    // returns to "ready", so the agent the user just halted restarts itself
-    // with their queued message.
+    // Stop means stop — and HOLD, without a mode (feel contract rules 14/15).
+    // Everything pending pulls back to LOCAL drafts: engine-queued items are
+    // cancelled server-side (nothing left for the engine to drain at turn
+    // end) and kept in the strip as ordinary editable messages under one
+    // "Held" line. The next send — or the strip's Send now — releases them.
     turnInterruptedRef.current = true;
+    setHeldAfterStop(true);
+    const pullBack = messageQueue.filter(
+      (item) => item.accepted && item.state === "queued" && item.revision !== undefined,
+    );
+    for (const item of pullBack) {
+      // Inline (removeEngineQueueItem is declared later in the component and
+      // cannot be a dependency here) and best-effort: a failed cancel leaves
+      // the item to drain normally, which is the pre-hold behavior, not a mode.
+      void fetch(
+        `/api/chat/${encodeURIComponent(sessionId ?? "")}/queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revision: item.revision }),
+        },
+      ).catch(() => {});
+    }
+    setMessageQueue((q) =>
+      q.map((item) =>
+        item.accepted && item.state === "queued"
+          ? { ...item, accepted: false, state: undefined, revision: undefined }
+          : item,
+      ),
+    );
     abortRef.current?.abort();
-  }, [sessionId]);
+  }, [sessionId, messageQueue]);
 
   // ESCAPE, TWICE, TO STOP — and the first press must be VISIBLE.
   //
@@ -2784,7 +3019,7 @@ function SessionWorkspace({
     reconnectLive,
     pendingWakes,
     abortRef,
-    reconnectAbortRef,
+    feedTurnLiveRef,
     send,
   });
 
@@ -2843,12 +3078,25 @@ function SessionWorkspace({
 
   // Local entries exist only until the engine owns them. This also migrates an
   // issue-#5 localStorage queue when a session remounts after this upgrade.
+  // HELD after a Stop (rules 14/15): nothing re-enqueues until the user acts —
+  // releaseHeldMessages (Send now / the next send) clears the hold and this
+  // effect, depending on it, hands the drafts back to the engine.
   useEffect(() => {
     if (!sessionId) return;
+    if (heldAfterStop || turnInterruptedRef.current) return;
     for (const item of messageQueue) {
       if (!item.accepted && !item.error) void enqueueWithEngine(item);
     }
-  }, [sessionId, messageQueue, enqueueWithEngine]);
+  }, [sessionId, messageQueue, enqueueWithEngine, heldAfterStop]);
+
+  /** The hold's one exit, and it is a user act: clear the latch; the enqueue
+   *  effect above re-hands the drafts to the engine, which drains them in
+   *  order. send() calls this too — a new message releases what was held. */
+  const releaseHeldMessages = useCallback(() => {
+    turnInterruptedRef.current = false;
+    setHeldAfterStop(false);
+  }, []);
+
 
   const refreshEngineQueue = useCallback(async () => {
     if (!sessionId) return;
@@ -2864,7 +3112,9 @@ function SessionWorkspace({
         error?: string;
       }>;
     };
-    setEngineQueuePaused(Boolean(envelope.paused));
+    // envelope.paused is no longer read: no automatic producer exists (feel
+    // contract rules 12/15 — the explicit PATCH primitive remains for a
+    // future user-facing hold, and a Stop holds CLIENT-side instead).
     // Terminal items are dropped HERE and nowhere else: `messageQueue` is the
     // set the 2s poll's stop condition measures, so a committed item left in it
     // would keep this session polling forever. Which of the survivors the user
@@ -2885,22 +3135,6 @@ function SessionWorkspace({
       ...active,
     ]);
   }, [sessionId]);
-
-  const resumeEngineQueue = useCallback(async () => {
-    if (!sessionId) return;
-    const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/queue`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused: false }),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => null);
-      setAttachmentError(body?.error ?? `Queue resume failed (HTTP ${response.status})`);
-      return;
-    }
-    setEngineQueuePaused(false);
-    await refreshEngineQueue();
-  }, [sessionId, refreshEngineQueue]);
 
   const editEngineQueueItem = useCallback(
     async (item: SessionQueuedMessage, text: string) => {
@@ -2940,6 +3174,44 @@ function SessionWorkspace({
       await refreshEngineQueue();
     },
     [sessionId, refreshEngineQueue],
+  );
+
+  /** Retry a line that did not send: the settled engine copy is dismissed and
+   *  the text re-enters as a fresh local draft, which the enqueue effect
+   *  hands back to the engine — no mode, no Resume, one click (rule 11). */
+  const retryPendingLine = useCallback(
+    (item: SessionQueuedMessage) => {
+      if (item.accepted) void removeEngineQueueItem(item);
+      setMessageQueue((q) => [
+        ...q.filter((x) => x.id !== item.id),
+        {
+          id: globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2),
+          text: item.text,
+        },
+      ]);
+    },
+    [removeEngineQueueItem],
+  );
+
+  /** ArrowUp on an empty composer pulls the NEWEST pending message back into
+   *  the input as an ordinary draft (feel contract rule 10): the line leaves
+   *  the strip, its text enters the box, nothing is left behind. The value is
+   *  set through the native setter + input event so React and the prompt
+   *  controller both observe it. */
+  const recallPendingIntoComposer = useCallback(
+    (el: HTMLTextAreaElement) => {
+      const line = pendingLines.at(-1);
+      if (!line) return;
+      if (line.item.accepted) void removeEngineQueueItem(line.item);
+      setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(el, line.item.text);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    [pendingLines, removeEngineQueueItem],
   );
 
   useEffect(() => {
@@ -3583,149 +3855,89 @@ function SessionWorkspace({
             )}
           >
             <ComposerAutocompleteMenus ac={autocomplete} provider={provider} />
-            {/* PAUSED IS A PROPERTY OF THE QUEUE, NOT OF THE WAITING LIST, so
-                it is stated at the queue's level and not inside one of its
-                groups. It used to live in the waiting block's heading with
-                Resume beside it, which put the only control in the one place
-                it could not be reached: the engine pauses PRECISELY when it
-                mints an attention item (session-engine.ts fails a turn and
-                then pauses; recoverSessionQueue pauses behind an `ambiguous`
-                one), so the canonical paused state is one failed message and
-                nothing waiting. `claimNextSessionTurn` returns null while
-                `paused`, so that was a stopped queue with no visible way to
-                start it — a hang whose only escape was to queue an unrelated
-                message so the block reappeared. */}
-            {engineQueuePaused && (
-              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-primary/25 bg-primary/[0.04] px-2.5 py-1.5">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Queue paused · review before resuming
+            {/* BACKGROUND PRESENCE (feel contract rule 20): background work
+                that outlives the turn says so in WORDS, in one fixed place,
+                for exactly as long as it is true — never concurrent with the
+                in-turn working line (rule 2: the !busy gate), never only a
+                dot on an icon. Stop here targets the SESSION (the whole
+                window), which is the only thing "stop the background work"
+                can mean. */}
+            {!busy && bgTasksLive > 0 && (
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
+                <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                  <span className="relative flex size-2">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
+                    <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                  </span>
+                  {bgTasksLive === 1
+                    ? "1 agent still working"
+                    : `${bgTasksLive} agents still working`}
                 </span>
-                <Button type="button" size="xs" variant="outline" onClick={() => void resumeEngineQueue()}>
-                  Resume
+                <Button type="button" size="xs" variant="outline" onClick={() => stopTurn()}>
+                  Stop
                 </Button>
               </div>
             )}
-            {/* WAITING ONLY. The badge counts this set and nothing else: a `1`
-                beside a message the agent is already answering is precisely
-                what read as a pending duplicate send (issue #31). In-flight
-                items get no chip here — while this mount is streaming, the
-                transcript and the working indicator already say where they
-                are; see the "Sending" block for the window where they do not. */}
-            {queueView.waiting.length > 0 && (
+            {/* THE PENDING STRIP (feel contract rules 5-10) — the holding
+                place: your messages, in order, waiting to send, directly
+                above the composer. One block, message-styled lines, editable
+                in place until the moment they fire; a line that failed keeps
+                its text with one plain sentence and Retry/Discard on the
+                line. NO lifecycle vocabulary can render here, by
+                construction (pendingView). Claimed/running items have no
+                line at all: the feed subscriber streams the drained turn
+                into the transcript, which is their one representation.
+                After a Stop, the strip holds everything un-sent and says so
+                in one line; Send now (or your next message) releases it. */}
+            {pendingLines.length > 0 && (
               <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    {/* "in order" is a promise about a send that is going to
-                        happen; while the queue is paused it is not. */}
-                    {engineQueuePaused ? "Queued · held until you resume" : "Queued · sends in order"}
-                  </span>
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                    {queueView.waiting.length}
-                  </span>
-                </div>
-                {queueView.waiting.map((m, i) => (
+                {(heldAfterStop || pendingLines.length > 1) && (
+                  <div className="flex items-center justify-between px-1.5 pt-0.5">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {heldAfterStop
+                        ? "Held — sends with your next message"
+                        : `${pendingLines.length} waiting`}
+                    </span>
+                    {heldAfterStop && (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        onClick={() => releaseHeldMessages()}
+                      >
+                        Send now
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {pendingLines.map((line, i) => (
                   <QueueChip
-                    key={m.id}
-                    index={i + 1}
-                    text={m.text}
-                    editing={editingQueueId === m.id}
-                    onEdit={() => {
-                      if (!m.accepted || m.state === "queued") setEditingQueueId(m.id);
-                    }}
-                    onCommit={(v) => {
-                      setMessageQueue((q) => q.map((x) => (x.id === m.id ? { ...x, text: v } : x)));
-                      setEditingQueueId(null);
-                      if (m.accepted) void editEngineQueueItem(m, v);
-                    }}
-                    onRemove={() => {
-                      if (m.accepted) void removeEngineQueueItem(m);
-                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
-                    }}
-                    state={m.state}
-                    error={m.error}
-                  />
-                ))}
-              </div>
-            )}
-            {/* THE ONE WINDOW WHERE NOTHING ELSE SPEAKS FOR AN IN-FLIGHT ITEM.
-                A queued turn is drained SERVER-SIDE (queue route →
-                kickSessionQueue → its own POST /api/chat), and this mount has
-                no feed for it: the §1b reconnect tail arms at most once per
-                session id and is long finished by then. So when the engine
-                takes a message while this window is idle, the transcript does
-                not gain the bubble, no working indicator runs — and hiding the
-                chip too would leave the message the user committed to with no
-                representation anywhere on screen until they navigate away and
-                come back.
-                GATED ON `!busy`, which is exactly the condition "this mount is
-                not itself streaming the answer": while it is, the transcript
-                owns the message and a chip here would be the duplicate #31 is
-                about. The missing feed is a separate defect in the same seam as
-                #24 and is NOT fixed here; this only keeps the message visible
-                while it stands. */}
-            {!busy && queueView.inFlight.length > 0 && (
-              <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Sending · the agent is answering this
-                  </span>
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">
-                    {queueView.inFlight.length}
-                  </span>
-                </div>
-                {/* No edit, no remove, and no ordinal: core admits neither
-                    transition once an item is claimed, and this is no longer a
-                    send order — it is one message, already taken. */}
-                {queueView.inFlight.map((m) => (
-                  <QueueChip key={m.id} text={m.text} editing={false} state={m.state} error={m.error} />
-                ))}
-              </div>
-            )}
-            {/* NOT A QUEUE. These did not send, and the one thing they must never
-                do is disappear quietly — a lost message the user committed to is
-                the failure #5 and #7 exist to prevent. Deliberately NOT
-                numbered: an ordinal implies a send order these are no longer
-                part of. WHICH BUTTONS APPEAR IS THE ENGINE'S ANSWER, not a
-                style choice — an item the engine accepted and then failed can
-                be dismissed (dismissFailedSessionTurn) but never edited, while
-                one the engine REFUSED is still purely local, so editing it
-                clears the error and lets the retry effect try again. */}
-            {queueView.attention.length > 0 && (
-              <div className="mb-2 space-y-1.5 rounded-xl border border-destructive/30 bg-destructive/[0.06] p-2">
-                <div className="flex items-center justify-between px-1.5 pt-0.5">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-destructive">
-                    Not sent · needs your attention
-                  </span>
-                  <span className="rounded-full bg-destructive/15 px-1.5 text-[10px] font-medium text-destructive">
-                    {queueView.attention.length}
-                  </span>
-                </div>
-                {queueView.attention.map((m) => (
-                  <QueueChip
-                    key={m.id}
-                    text={m.text}
-                    editing={editingQueueId === m.id}
-                    onEdit={m.accepted ? undefined : () => setEditingQueueId(m.id)}
+                    key={line.item.id}
+                    index={pendingLines.length > 1 ? i + 1 : undefined}
+                    text={line.item.text}
+                    editing={editingQueueId === line.item.id}
+                    onEdit={line.editable ? () => setEditingQueueId(line.item.id) : undefined}
                     onCommit={
-                      m.accepted
-                        ? undefined
-                        : (v) => {
-                            // Clearing `error` is the RETRY: the effect that
-                            // sends local items skips anything carrying one, so
-                            // without this an edited message would sit here
-                            // corrected and still never leave.
+                      line.editable
+                        ? (v) => {
                             setMessageQueue((q) =>
-                              q.map((x) => (x.id === m.id ? { ...x, text: v, error: undefined } : x)),
+                              q.map((x) =>
+                                x.id === line.item.id
+                                  ? { ...x, text: v, error: undefined }
+                                  : x,
+                              ),
                             );
                             setEditingQueueId(null);
+                            if (line.item.accepted) void editEngineQueueItem(line.item, v);
                           }
+                        : undefined
                     }
                     onRemove={() => {
-                      if (m.accepted) void removeEngineQueueItem(m);
-                      else setMessageQueue((q) => q.filter((x) => x.id !== m.id));
+                      if (line.item.accepted) void removeEngineQueueItem(line.item);
+                      else setMessageQueue((q) => q.filter((x) => x.id !== line.item.id));
                     }}
-                    state={m.state}
-                    error={m.error}
+                    error={line.error ? plainQueueError(line.error) : undefined}
+                    onRetry={line.error ? () => retryPendingLine(line.item) : undefined}
                   />
                 ))}
               </div>
@@ -3817,7 +4029,22 @@ function SessionWorkspace({
                         ? "Enter queues a message…"
                         : "Ask for changes, explore the code, or attach context…"
                   }
-                  onKeyDown={autocomplete.onComposerKeyDown}
+                  onKeyDown={(e) => {
+                    // Up-recall (rule 10): an empty composer + ArrowUp pulls
+                    // the newest pending message back as an editable draft.
+                    // Everywhere else, native caret behavior and the
+                    // autocomplete's own handling are untouched.
+                    if (
+                      e.key === "ArrowUp" &&
+                      e.currentTarget.value === "" &&
+                      pendingLines.length > 0
+                    ) {
+                      e.preventDefault();
+                      recallPendingIntoComposer(e.currentTarget);
+                      return;
+                    }
+                    autocomplete.onComposerKeyDown(e);
+                  }}
                   // Every edit un-dismisses BOTH menus and re-measures the
                   // caret — typing past a completed mention has to be able to
                   // re-open the menu. One handler for both, in the hook.

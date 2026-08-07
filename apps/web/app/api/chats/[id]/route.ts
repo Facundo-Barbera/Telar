@@ -1,4 +1,6 @@
 import { deleteAttachmentsForChat } from "@/lib/attachments";
+import { stopChatRun } from "@/lib/chat-runs";
+import { closeSessionRuntime } from "@/lib/server/session-runtime";
 import {
   deleteChat,
   getChat,
@@ -108,6 +110,13 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  // Teardown BEFORE deletion, same pair as /api/chat/stop: the persistent
+  // runtime (and any background agents it is hosting) is keyed by this id and
+  // outlives its turns, so deleting only the files left a warm process — and
+  // its agents — running for a session that no longer exists, still writing
+  // into the deleted chat's logs. A run mid-turn is stopped by the same call.
+  stopChatRun(id, "api/chats/delete");
+  closeSessionRuntime(id);
   deleteChat(id);
   deleteAttachmentsForChat(id);
   return new Response(null, { status: 204 });

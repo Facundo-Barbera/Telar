@@ -135,6 +135,101 @@ export type QueuePartition<T> = {
 export const isTerminalQueueState = (state?: QueueItemLifecycle): boolean =>
   state === "committed" || state === "cancelled";
 
+/**
+ * THE PENDING STRIP'S MEMBERSHIP RULE (feel contract rules 5-10) — the
+ * successor to partitionQueue's three-bucket lifecycle display. One list:
+ * your messages, in order, waiting to send. No lifecycle vocabulary can
+ * render, by construction — a line is text + editability + at most one plain
+ * error sentence.
+ *
+ *   pending, editable  — no state yet (between Enter and the engine's ack)
+ *                        and engine-`queued`: both are "your next message,
+ *                        waiting", and both may be edited or pulled back.
+ *   DROPPED            — `claimed`/`running`. The session feed subscriber
+ *                        renders the drained turn into the transcript now
+ *                        (user bubble, working line, streaming reply), so a
+ *                        strip line would be the second, contradictory
+ *                        representation rule 9 forbids.
+ *   pending with error — `failed`/`ambiguous`/engine-refused. Not history and
+ *                        never silently gone: the text is preserved, one
+ *                        sentence says why, and the surface offers Retry /
+ *                        Discard on the line itself. Editable when the item is
+ *                        still purely local (editing IS the retry); an
+ *                        engine-settled failure retries by re-enqueue.
+ *
+ * Terminal items are dropped. The exhaustive switch and `never` guard carry
+ * over from partitionQueue — a new core state fails to COMPILE here instead
+ * of silently rendering beside a promise to send.
+ */
+export type PendingLine<T> = {
+  item: T;
+  /** In-place edit allowed (local or engine-queued — pre-claim). */
+  editable: boolean;
+  /** Set for a line that did not send; the surface renders Retry/Discard. */
+  error?: string;
+};
+
+export function pendingView<
+  T extends { state?: QueueItemLifecycle; accepted?: boolean; error?: string },
+>(items: readonly T[]): PendingLine<T>[] {
+  const lines: PendingLine<T>[] = [];
+  for (const item of items) {
+    if (item.state === undefined) {
+      if (item.error && !item.accepted) lines.push({ item, editable: true, error: item.error });
+      else lines.push({ item, editable: true });
+      continue;
+    }
+    switch (item.state) {
+      case "committed":
+      case "cancelled":
+        break; // history; belongs to no surface
+      case "claimed":
+      case "running":
+        break; // the transcript owns it now (feed subscriber)
+      case "queued":
+        lines.push({ item, editable: true });
+        break;
+      case "failed":
+      case "ambiguous":
+        lines.push({ item, editable: !item.accepted, error: item.error ?? "Wasn't sent." });
+        break;
+      default: {
+        const unreachable: never = item.state;
+        // Runtime fallback for an envelope written by a newer build: show it
+        // as an errored line (true of anything this code cannot classify),
+        // never as an ordinary promise to send.
+        lines.push({ item, editable: false, error: "Wasn't sent." });
+        void unreachable;
+      }
+    }
+  }
+  return lines;
+}
+
+/**
+ * One plain sentence for a queue error (feel contract rules 11/23): raw
+ * exception text, HTTP codes, and revision-conflict strings never reach the
+ * screen. Pure so the mapping is provable without a DOM.
+ */
+export function plainQueueError(err: unknown): string {
+  const raw =
+    typeof err === "string"
+      ? err
+      : err instanceof Error
+        ? err.message
+        : String(err ?? "");
+  if (/revision|conflict|stale/i.test(raw)) {
+    return "Someone else edited this message — reopen it and try again.";
+  }
+  if (/HTTP 4\d\d/.test(raw) || /not accepted|refused|invalid/i.test(raw)) {
+    return "The server didn't accept this message — edit it and try again.";
+  }
+  if (/HTTP 5\d\d|fetch|network|Failed to fetch|ECONN/i.test(raw)) {
+    return "Couldn't reach the server — try again.";
+  }
+  return raw && raw.length <= 120 ? raw : "Something went wrong sending this — try again.";
+}
+
 export function partitionQueue<
   T extends { state?: QueueItemLifecycle; accepted?: boolean; error?: string },
 >(items: readonly T[]): QueuePartition<T> {

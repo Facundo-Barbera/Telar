@@ -213,6 +213,95 @@ describe("groupParts — a TEXTLESS thinking block is not a boundary", () => {
   });
 });
 
+describe("groupParts — adjacent completion markers are ONE line", () => {
+  // Two agents landing back-to-back with nothing rendered between them are one
+  // event to a reader — however far apart the clock says they finished. The
+  // rule is ADJACENCY IN THE PARTS LIST, deliberately not a timing window:
+  // parts persist individually (history stays per-agent), and the merge is a
+  // projection computed here at render.
+  const marker = (t: string, attention?: boolean): Part => ({
+    type: "marker",
+    text: t,
+    ...(attention ? { attention } : {}),
+  });
+  const payloadText = (item: RenderItem) =>
+    (toTranscriptItem(item).payload as { text: string }).text;
+
+  test("two adjacent 'agent finished' markers coalesce, keyed by the first", () => {
+    const items = groupParts("m1", [
+      marker("agent finished · explore lib"),
+      marker("agent finished · map feed"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["marker"]);
+    expect(items[0].key).toBe("m1:0");
+    expect(payloadText(items[0])).toBe("2 agents finished · explore lib · map feed");
+  });
+
+  test("anything rendered between them severs the run — each line verbatim", () => {
+    const items = groupParts("m1", [
+      marker("agent finished · a"),
+      text("narration"),
+      marker("agent finished · b"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["marker", "text", "marker"]);
+    expect(payloadText(items[0])).toBe("agent finished · a");
+    expect(payloadText(items[2])).toBe("agent finished · b");
+  });
+
+  test("an attention line (a failure) NEVER merges — amber is not buried in a list", () => {
+    const items = groupParts("m1", [
+      marker("agent finished · a"),
+      marker("agent failed · b", true),
+      marker("agent finished · c"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["marker", "marker", "marker"]);
+    const failed = toTranscriptItem(items[1]).payload as { text: string; attention?: boolean };
+    expect(failed.text).toBe("agent failed · b");
+    expect(failed.attention).toBe(true);
+  });
+
+  test("different verbs and different nouns each keep their own line", () => {
+    const verbs = groupParts("m1", [
+      marker("agent finished · a"),
+      marker("agent stopped · b"),
+    ]);
+    expect(verbs.map((i) => i.kind)).toEqual(["marker", "marker"]);
+    const nouns = groupParts("m1", [
+      marker("agent finished · a"),
+      marker("ultra finished · sweep"),
+    ]);
+    expect(nouns.map((i) => i.kind)).toEqual(["marker", "marker"]);
+  });
+
+  test("past three labels the rest are a count — ten agents settle into one readable line", () => {
+    const items = groupParts(
+      "m1",
+      ["a", "b", "c", "d", "e"].map((l) => marker(`agent finished · ${l}`)),
+    );
+    expect(items).toHaveLength(1);
+    expect(payloadText(items[0])).toBe("5 agents finished · a · b · c · +2 more");
+  });
+
+  test("a labelless marker still merges, and the count stays honest", () => {
+    const items = groupParts("m1", [marker("agent finished"), marker("agent finished · a")]);
+    expect(items).toHaveLength(1);
+    expect(payloadText(items[0])).toBe("2 agents finished · a");
+  });
+
+  test("a marker outside the completion grammar never merges — compaction dividers stay whole", () => {
+    const items = groupParts("m1", [
+      marker("context compacted · 41% recovered"),
+      marker("context compacted · 12% recovered"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["marker", "marker"]);
+  });
+
+  test("a single marker renders its text verbatim — no count of one", () => {
+    const items = groupParts("m1", [marker("agent finished · explore lib")]);
+    expect(payloadText(items[0])).toBe("agent finished · explore lib");
+  });
+});
+
 describe("liveStepWindow — a live group shows its current step, not its history", () => {
   const steps = ["a", "b", "c", "d"];
 

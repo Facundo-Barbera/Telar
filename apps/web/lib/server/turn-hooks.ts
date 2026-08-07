@@ -84,6 +84,10 @@ export function makePreToolUseGuardrail(sessionProfile: SessionProfile) {
     // permission checks entirely) or `isolation` ("remote" moves it off-box)
     // before either reaches the SDK. `updatedInput` on a PreToolUse hook's
     // output replaces the tool's input the same way canUseTool's own does.
+    // `run_in_background` deliberately passes through: the post-result
+    // kill-zone that briefly made backgrounded agents unsafe is gone with the
+    // persistent session runtime (#28 — evidence beside canUseTool's spawn
+    // branch in route.ts).
     if (
       (AGENT_SPAWN_TOOL_CANDIDATES as readonly string[]).includes(input.tool_name) &&
       ("mode" in toolInput || "isolation" in toolInput)

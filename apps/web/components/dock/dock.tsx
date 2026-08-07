@@ -373,28 +373,10 @@ function IconBtn({ onClick, label, children }: { onClick: () => void; label: str
 // outright is the one case the bridge outlives (issue #7): the items are parked
 // in the store instead of dropped, and resume when the session is docked again.
 function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
-  const { enqueue, setRuntime } = useDock();
+  const { enqueue } = useDock();
   const [text, setText] = useState("");
   const working = rt?.working ?? false;
   const queued = rt?.queued ?? [];
-  const queuedEngineCount = rt?.queuedEngineCount ?? 0;
-
-  const resumeQueue = async () => {
-    const response = await fetch(`/api/chat/${encodeURIComponent(id)}/queue`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paused: false }),
-    });
-    if (!response.ok) return;
-    const queue = await response.json();
-    const items = Array.isArray(queue?.items) ? queue.items : [];
-    setRuntime(id, {
-      queuePaused: false,
-      queuedEngineCount: items.filter(
-        (item: { state?: string }) => item.state !== "committed" && item.state !== "cancelled",
-      ).length,
-    });
-  };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -406,21 +388,22 @@ function DockComposer({ id, rt }: { id: string; rt?: Runtime }) {
 
   return (
     <div className="shrink-0 border-t border-border p-2">
-      {rt?.queuePaused && (
-        <div className="mb-1.5 flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs">
-          <span>Queue paused{queuedEngineCount > 0 ? ` · ${queuedEngineCount} waiting` : ""}</span>
-          <button type="button" className="font-medium text-primary hover:underline" onClick={() => void resumeQueue()}>
-            Resume
-          </button>
-        </div>
-      )}
+      {/* THE SAME STRIP, THE SAME WORDS (feel contract rules 8/22): pending
+          messages render as message lines with no lifecycle vocabulary — no
+          "queued" badge, no paused banner (nothing produces a paused state
+          any more; a Stop holds client-side in the full view). Ordinals only
+          when there is an order to speak of. */}
       {queued.length > 0 && (
         <div className="mb-1.5 flex flex-col gap-1">
-          {queued.map((q) => (
+          {queued.map((q, i) => (
             <div key={q.id} className="flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1 text-xs">
+              {queued.length > 1 && (
+                <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[9px] font-medium text-primary">
+                  {i + 1}
+                </span>
+              )}
               <ClockIcon className="size-3 shrink-0 text-primary" />
               <span className="min-w-0 flex-1 truncate">{q.text}</span>
-              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">queued</span>
             </div>
           ))}
         </div>

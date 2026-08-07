@@ -86,10 +86,17 @@ describe("server session queue dispatcher", () => {
     expect(seen).toEqual(["later"]);
   });
 
-  test("records a failed item and pauses later work", async () => {
+  test("records a failed item and the messages behind it keep going", async () => {
+    // One message failing is that message's error, never a session mode
+    // (feel contract rules 11/12): the failed item keeps its reason and its
+    // own Retry, the queue is NOT paused, and the next item still runs —
+    // recovery takes zero clicks in zero places.
     const id = session("failure");
-    registerSessionTurnExecutor(async () => {
-      throw new Error("profile rejected");
+    const seen: string[] = [];
+    registerSessionTurnExecutor(async (payload) => {
+      const message = (payload as { message: string }).message;
+      if (message === "bad") throw new Error("profile rejected");
+      seen.push(message);
     });
     enqueueSessionTurn(id, { idempotencyKey: "bad", payload: { message: "bad" } });
     enqueueSessionTurn(id, { idempotencyKey: "held", payload: { message: "held" } });
@@ -97,9 +104,10 @@ describe("server session queue dispatcher", () => {
     await kickSessionQueue(id);
 
     const queue = readSessionQueue(id);
-    expect(queue.paused).toBe(true);
+    expect(queue.paused).toBe(false);
     expect(queue.items[0]?.state).toBe("failed");
     expect(queue.items[0]?.error).toBe("profile rejected");
-    expect(queue.items[1]?.state).toBe("queued");
+    expect(queue.items[1]?.state).toBe("committed");
+    expect(seen).toEqual(["held"]);
   });
 });

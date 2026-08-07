@@ -32,7 +32,10 @@ describe("session meter popovers", () => {
     expect(route).toContain("q.getContextUsage()");
     expect(route).toContain("fromClaudeContextUsage(await q.getContextUsage())");
     expect(route).not.toContain("contextUsagePromise");
-    expect(route).toContain("contextUsage?.totalTokens ?? contextOf(lastMainUsage)");
+    // lastMainUsage moved onto the projector's ClaudeTurnState (the estimate
+    // fallback's capture is tested there); the route still prefers the exact
+    // snapshot and falls back to the estimate — that preference is the pin.
+    expect(route).toContain("contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage)");
     expect(route).toContain("contextUsage,");
     expect(store).toContain("contextUsage?: ContextUsageSnapshot");
     expect(store).toContain("chat.contextUsage = opts.contextUsage");

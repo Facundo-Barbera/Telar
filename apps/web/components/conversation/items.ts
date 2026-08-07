@@ -23,6 +23,7 @@
 // NOTHING HERE IMPORTS @telar/core AT RUNTIME (AD-3, and INV-4c enforces it).
 
 import type { ReactNode } from "react";
+import { isAsyncLaunchAck } from "@/lib/transcript";
 import type { AgentTab } from "@/components/session/agent-tabs";
 import type { AgentInfo, ToolPart } from "@/components/session/tool-step";
 import type { WorkState } from "@/components/session/working-indicator";
@@ -39,6 +40,11 @@ import type { ItemKindId } from "./registry";
 // the right default.
 export type StorePart =
   | { type: "text"; text: string; parentId?: string }
+  // A system-event line in the transcript flow ("agent finished · explore
+  // lib") — the Marker primitive's voice, persisted at the chronological
+  // position the event arrived. Server-authored text; the shell renders it
+  // without knowing any domain.
+  | { type: "marker"; text: string; attention?: boolean }
   | {
       type: "tool";
       name: string;
@@ -90,6 +96,9 @@ export type StoreMessage = { role: "user" | "assistant"; parts: StorePart[] };
 export type Part =
   | { type: "text"; text: string; done: boolean; parentId?: string }
   | { type: "thinking"; text: string; done: boolean; parentId?: string }
+  // Identical to its StorePart twin — a marker is complete the moment it
+  // exists (nothing about it streams).
+  | { type: "marker"; text: string; attention?: boolean }
   | ToolPart
   // Identical to its StorePart twin: an attachment part is complete the moment
   // it exists (nothing about it streams), so unlike text it needs no `done`.
@@ -129,11 +138,14 @@ export type PermissionPart = Extract<Part, { type: "permission" }>;
 // lookup means every routing decision (grouping, streaming merge, bucketing)
 // agrees on what "main thread" means.
 export const parentOf = (p: Part): string | undefined =>
-  // Attachments join permission cards as a MAIN-THREAD-ONLY part: a subagent
-  // has no composer, so nothing can attach a file from inside a spawn. Naming
-  // both here rather than giving the variant an unused `parentId` field keeps
-  // "can this be parented" a fact about the union instead of a field nobody sets.
-  p.type === "permission" || p.type === "attachments" ? undefined : p.parentId;
+  // Attachments join permission cards — and markers — as MAIN-THREAD-ONLY
+  // parts: a subagent has no composer, and a marker is a system-event line
+  // whose whole purpose is to surface in the main flow. Naming them here
+  // rather than giving the variants an unused `parentId` field keeps "can
+  // this be parented" a fact about the union instead of a field nobody sets.
+  p.type === "permission" || p.type === "attachments" || p.type === "marker"
+    ? undefined
+    : p.parentId;
 
 // One spawned subagent's own transcript, reconstructed identically whether
 // it's arriving live (SSE events tagged with `parent`) or reconstructed from
@@ -288,10 +300,11 @@ export function agentStatus(spawn: ToolPart): AgentTab["status"] {
 // literal launch phrase, or (in case wording drifts) the "internal
 // metadata" + "agentId" combination that's specific to this ack and not
 // something a genuine subagent result would ever contain together.
-export function isAsyncLaunchAck(text: string): boolean {
-  if (text.includes("Async agent launched successfully")) return true;
-  return text.includes("internal metadata") && text.includes("agentId");
-}
+// Moved to lib/transcript.ts — the SERVER also needs it now: a window that
+// ends must mark still-acked spawns as stopped (store.settleSpawnStatuses),
+// and server code cannot import from components/. Re-exported (and imported
+// above for agentStatus) so this module's surface is unchanged.
+export { isAsyncLaunchAck };
 
 // ── the projection, moved verbatim ─────────────────────────────────────────
 
@@ -305,7 +318,50 @@ export type RenderItem =
   | { kind: "thinking"; key: string; part: Extract<Part, { type: "thinking" }> }
   | { kind: "permission"; key: string; part: Extract<Part, { type: "permission" }> }
   | { kind: "attachments"; key: string; part: Extract<Part, { type: "attachments" }> }
+  | { kind: "marker"; key: string; parts: MarkerPart[] }
   | { kind: "tools"; key: string; parts: ToolPart[] };
+
+type MarkerPart = Extract<Part, { type: "marker" }>;
+
+// Adjacent completion markers coalesce into ONE line ("2 agents finished ·
+// A · B") — two agents landing back-to-back with nothing rendered between
+// them are one event to a reader, however far apart the clock says they
+// were. Adjacency in the parts list IS the rule; there is no timing window.
+// Only same-noun same-verb markers merge, and an `attention` line (a
+// failure) never merges — amber is not to be buried in a list. Parts stay
+// individual in the store; merging is a projection, computed at render.
+//
+// The noun is deliberately ANY word, not an enumeration: the shell is frozen
+// and owns no module semantics (AD-12 / INV-10c), so it may not know which
+// domains produce completion markers — it knows only the grammar
+// "<noun> <verb> · <label>". The verb whitelist is what keeps other marker
+// voices ("nodes spawned · 4", compaction dividers) out of the merge.
+const MERGEABLE_MARKER = /^([a-z]+) (finished|stopped)(?: · (.*))?$/;
+
+const markersCoalesce = (a: MarkerPart, b: MarkerPart): boolean => {
+  if (a.attention || b.attention) return false;
+  const pa = MERGEABLE_MARKER.exec(a.text);
+  const pb = MERGEABLE_MARKER.exec(b.text);
+  return pa !== null && pb !== null && pa[1] === pb[1] && pa[2] === pb[2];
+};
+
+// The merged line keeps the marker voice — a terse clause, never prose. At
+// most three labels are named; the rest are a count, so a ten-agent settle
+// is one readable line instead of a paragraph-wide pill.
+export function mergedMarkerText(parts: readonly MarkerPart[]): string {
+  const first = parts[0];
+  if (!first) return "";
+  if (parts.length === 1) return first.text;
+  const parsed = parts.map((p) => MERGEABLE_MARKER.exec(p.text));
+  const head = parsed[0];
+  if (!head) return first.text; // unreachable: coalesce requires the parse
+  const labels = parsed.flatMap((m) => (m?.[3] ? [m[3]] : []));
+  const shown = labels.slice(0, 3);
+  const extra = labels.length - shown.length;
+  const tail = [...shown, ...(extra > 0 ? [`+${extra} more`] : [])].join(" · ");
+  const lead = `${parts.length} ${head[1]}s ${head[2]}`;
+  return tail ? `${lead} · ${tail}` : lead;
+}
 
 export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
   const items: RenderItem[] = [];
@@ -345,6 +401,14 @@ export function groupParts(messageId: string, parts: Part[]): RenderItem[] {
       items.push({ kind: "thinking", key: `${messageId}:${idx}`, part });
     } else if (part.type === "attachments") {
       items.push({ kind: "attachments", key: `${messageId}:${idx}`, part });
+    } else if (part.type === "marker") {
+      const last = items[items.length - 1];
+      const prev = last?.kind === "marker" ? last.parts[last.parts.length - 1] : undefined;
+      if (last?.kind === "marker" && prev && markersCoalesce(prev, part)) {
+        last.parts.push(part);
+      } else {
+        items.push({ kind: "marker", key: `${messageId}:${idx}`, parts: [part] });
+      }
     } else {
       items.push({ kind: "permission", key: `${messageId}:${idx}`, part });
     }
@@ -535,6 +599,17 @@ export function toTranscriptItem(item: RenderItem, hooks: ItemPayloadHooks = {})
         kind: CONVERSATION_KINDS.permission,
         key: item.key,
         payload: { part: item.part, onRespond: hooks.onRespond } satisfies PermissionPayload,
+      };
+    case "marker":
+      return {
+        kind: CONVERSATION_KINDS.marker,
+        key: item.key,
+        payload: {
+          text: mergedMarkerText(item.parts),
+          // attention never coalesces (markersCoalesce), so a group is
+          // either one attention line or all-quiet — never a mix.
+          attention: item.parts[0]?.attention,
+        } satisfies MarkerPayload,
       };
     case "tools":
       return {
