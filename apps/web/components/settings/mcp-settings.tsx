@@ -1271,7 +1271,40 @@ export function McpSettings({ name }: { name: string }) {
         "popup,width=520,height=720",
       );
       if (!popup) {
+        // Two ways to land here: a plain browser blocked the popup (the
+        // assignment below then really navigates, and we return via the
+        // callback redirect), or the desktop shell denied window.open and sent
+        // the login to the SYSTEM browser (it cancels this navigation too).
+        // In the desktop case no popup, message, or redirect ever reaches this
+        // page, so poll the status route until the flow lands server-side.
         window.location.href = data.url;
+        // Tick counter, not Date.now(): the wall clock is impure under the
+        // react-hooks/purity lint, and elapsed-ticks is all we need.
+        let ticks = 0;
+        const poll = window.setInterval(async () => {
+          // ~5 minutes at one tick per 2s.
+          if (++ticks > 150) {
+            // Login abandoned/failed in the external browser — stop quietly;
+            // the pill keeps showing the true persisted state.
+            window.clearInterval(poll);
+            setOauthBusy((cur) => (cur === server.key ? null : cur));
+            return;
+          }
+          try {
+            const res = await fetch(
+              `/api/mcp/oauth/status?project=${encodeURIComponent(name)}`,
+            );
+            if (!res.ok) return;
+            const status = normalizeStatus(await res.json());
+            if (!status[server.key]?.connected) return;
+            window.clearInterval(poll);
+            setHttpStatus(status);
+            setOauthBusy((cur) => (cur === server.key ? null : cur));
+            setOauthNotice({ kind: "success", text: `Connected ${server.key}.` });
+          } catch {
+            // transient — keep polling until the timeout
+          }
+        }, 2_000);
         return;
       }
       const poll = window.setInterval(() => {
