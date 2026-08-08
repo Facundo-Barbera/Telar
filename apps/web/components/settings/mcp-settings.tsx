@@ -1278,9 +1278,12 @@ export function McpSettings({ name }: { name: string }) {
         // In the desktop case no popup, message, or redirect ever reaches this
         // page, so poll the status route until the flow lands server-side.
         window.location.href = data.url;
-        const started = Date.now();
+        // Tick counter, not Date.now(): the wall clock is impure under the
+        // react-hooks/purity lint, and elapsed-ticks is all we need.
+        let ticks = 0;
         const poll = window.setInterval(async () => {
-          if (Date.now() - started > 5 * 60_000) {
+          // ~5 minutes at one tick per 2s.
+          if (++ticks > 150) {
             // Login abandoned/failed in the external browser — stop quietly;
             // the pill keeps showing the true persisted state.
             window.clearInterval(poll);
