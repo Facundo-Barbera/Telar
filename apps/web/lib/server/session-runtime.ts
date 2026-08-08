@@ -89,6 +89,14 @@ export const DETACHED_DENY_TEXT =
  *  result; only the window's terminal marker waits out the linger. */
 const SETTLE_LINGER_MS = 1_500;
 
+/** The linger span while a detached AUTO-CONTINUATION is generating. An
+ *  extended-thinking block's silent gap routinely exceeds the short linger
+ *  (owner's live find: the window closed mid-thought and the continuation's
+ *  final answer was dropped). Long enough to ride out thinking; still a real
+ *  watchdog against a wedged CLI, and the continuation's own result always
+ *  returns the window to the short span. */
+const CONTINUATION_WATCHDOG_MS = 60_000;
+
 /** Idle runtimes (no turn attached, no message traffic) are reaped after this
  *  long. A reaped runtime's next POST recreates it with `resume` — the cost is
  *  a process spawn, the same cost every turn paid before this module. */
@@ -200,6 +208,11 @@ type RuntimeInternals = SessionRuntime & {
   _pumpError: unknown;
   _settle: ReturnType<typeof setTimeout> | null;
   _settleLingerMs: number;
+  _continuationWatchdogMs: number;
+  /** A detached GENERATION message was seen since the last result — the
+   *  SDK's auto-continuation is mid-flight and the linger runs on the
+   *  watchdog span until its own result closes the loop. */
+  _continuationOpen: boolean;
 };
 
 const g = globalThis as unknown as { __telarSessionRuntimes?: Map<string, RuntimeInternals> };
@@ -235,6 +248,31 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
   } catch {
     // the sink is best-effort rendering — it must never wedge the pump
   }
+  // THE CONTINUATION IS GENERATION, NOT CHATTER (owner's live find on
+  // nightly .4). A task_notification wakes the SDK's auto-continuation of
+  // the main thread — and its first move is often an extended-thinking
+  // block whose SILENT gap exceeds the short linger. Measured: the window
+  // closed mid-thought ("marker → thinking → closed" in the live log) and
+  // the continuation's tool calls and final answer — real gh commands, the
+  // whole rundown the user was promised — ran into a sink-less runtime and
+  // were dropped. So a detached message that IS generation (assistant
+  // output, stream events, tool_result carriers) holds the window on a
+  // long watchdog; the continuation's own `result` returns to the short
+  // linger, which is the endgame it was designed for. Control-plane
+  // chatter alone never extends beyond the short span.
+  const parented =
+    (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id != null;
+  if (m.type === "result") rt._continuationOpen = false;
+  else if (
+    !parented &&
+    (m.type === "assistant" || m.type === "stream_event" || m.type === "user")
+  ) {
+    // MAIN-THREAD generation only: a subagent's relayed output carries
+    // parent_tool_use_id and its lifecycle is the roster's business — the
+    // roster emptying IS its end, and holding the watchdog for it would
+    // resurrect the quiet-grace this module exists to have killed.
+    rt._continuationOpen = true;
+  }
   // The roster emptied while no turn was attached: the window is ENDING — but
   // not instantly. The CLI sends trailing control-plane messages AFTER the
   // roster update (measured: a completing agent's task_notification landed
@@ -251,17 +289,19 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
 
 function armSettleLinger(rt: RuntimeInternals): void {
   if (rt._settle) clearTimeout(rt._settle);
+  const span = rt._continuationOpen ? rt._continuationWatchdogMs : rt._settleLingerMs;
   const t = setTimeout(() => {
     rt._settle = null;
     const sink = rt.windowSink;
     if (!sink || rt.turnActive || rt.liveTaskCount > 0) return;
     rt.windowSink = null;
+    rt._continuationOpen = false;
     try {
       sink.onSettled();
     } catch {
       // best-effort, as above
     }
-  }, rt._settleLingerMs);
+  }, span);
   (t as { unref?: () => void }).unref?.();
   rt._settle = t;
 }
@@ -304,6 +344,8 @@ export function acquireSessionRuntime(args: {
   }) => Query;
   /** Tests only — production callers take the default. */
   settleLingerMs?: number;
+  /** Test hook, like settleLingerMs. */
+  continuationWatchdogMs?: number;
 }): { runtime: SessionRuntime; created: boolean } {
   reapIdle(Date.now());
 
@@ -349,6 +391,8 @@ export function acquireSessionRuntime(args: {
     _pumpError: undefined,
     _settle: null,
     _settleLingerMs: args.settleLingerMs ?? SETTLE_LINGER_MS,
+    _continuationWatchdogMs: args.continuationWatchdogMs ?? CONTINUATION_WATCHDOG_MS,
+    _continuationOpen: false,
 
     push(message) {
       inputQueue.push(message);
@@ -360,6 +404,7 @@ export function acquireSessionRuntime(args: {
       rt._turn = turnQueue;
       rt.turnActive = true;
       rt.interruptedTurn = false;
+      rt._continuationOpen = false;
       // The new turn's POST renders live traffic now — the previous window's
       // sink is done (its still-live tasks' output rides THIS turn's feed),
       // and a pending settle linger with it.

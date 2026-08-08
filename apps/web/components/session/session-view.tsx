@@ -2037,20 +2037,34 @@ function SessionWorkspace({
                 // state, appended at the position it arrived so the transcript
                 // reads coherently. Renders via the Marker primitive
                 // (conversation:marker); persisted server-side as a part.
-                patch(asstId, (m) => ({
-                  ...m,
-                  parts: [
-                    ...m.parts,
-                    {
-                      type: "marker" as const,
-                      text: String(payload.text ?? ""),
-                      ...(payload.attention ? { attention: true as const } : {}),
-                      // The spawn id, when the projector attached one — what
-                      // makes the rendered line click through to the agent.
-                      ...(typeof payload.agentId === "string" ? { agentId: payload.agentId } : {}),
-                    },
-                  ],
-                }));
+                patch(asstId, (m) => {
+                  const markerPart = {
+                    type: "marker" as const,
+                    text: String(payload.text ?? ""),
+                    ...(payload.attention ? { attention: true as const } : {}),
+                    // The spawn id, when the projector attached one — what
+                    // makes the rendered line click through to the agent.
+                    ...(typeof payload.agentId === "string" ? { agentId: payload.agentId } : {}),
+                  };
+                  // NEVER SEVER A STREAMING BLOCK (owner's live find on
+                  // nightly .4: "Two more verd" froze mid-word above the
+                  // marker while the block restarted below it). A marker is
+                  // main-thread like the block, so appending it makes it the
+                  // delta lookup's merge target and orphans the open part.
+                  // Landing it BEFORE the open block keeps the deltas
+                  // merging — and matches the persisted order, where the
+                  // projector flushes the completed block after the marker.
+                  const parts = [...m.parts];
+                  const last = parts[parts.length - 1];
+                  const openMainBlock =
+                    last &&
+                    (last.type === "text" || last.type === "thinking") &&
+                    !last.done &&
+                    parentOf(last) === undefined;
+                  if (openMainBlock) parts.splice(parts.length - 1, 0, markerPart);
+                  else parts.push(markerPart);
+                  return { ...m, parts };
+                });
                 // A stop just marked this exchange (F2) — offer its removal
                 // (F3-of-one) right where the user is looking, until they
                 // move on. The wording is the marker's own, so the trigger

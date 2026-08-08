@@ -60,13 +60,19 @@ function fakeQuery() {
 }
 
 let keyCounter = 0;
-function makeRuntime(opts?: { fingerprint?: string; key?: string; settleLingerMs?: number }) {
+function makeRuntime(opts?: {
+  fingerprint?: string;
+  key?: string;
+  settleLingerMs?: number;
+  continuationWatchdogMs?: number;
+}) {
   const fq = fakeQuery();
   const key = opts?.key ?? `test-run-${++keyCounter}`;
   const { runtime, created } = acquireSessionRuntime({
     key,
     fingerprint: opts?.fingerprint ?? "fp-1",
     settleLingerMs: opts?.settleLingerMs ?? 20,
+    continuationWatchdogMs: opts?.continuationWatchdogMs ?? 400,
     create: ({ input }) => {
       // Drain the input channel in the background, recording what arrived —
       // the real query does exactly this over stdin.
@@ -150,7 +156,11 @@ describe("session runtime", () => {
     rt.emit(tasksChanged(1));
     rt.emit(result);
     await collect(feed); // turn over; sink survives detach
-    rt.emit(assistant); // the background agent keeps talking
+    // The background agent keeps talking — PARENTED, as forwardSubagentText
+    // really relays it. (An unparented detached assistant message is the
+    // main thread's own auto-continuation and holds the watchdog instead —
+    // its own test below.)
+    rt.emit({ ...assistant, parent_tool_use_id: "spawn-1" });
     await tick();
     expect(sank).toEqual(["assistant"]);
     expect(settled).toBe(0);
@@ -267,6 +277,61 @@ describe("session runtime", () => {
     expect(closeSessionRuntime("sess-stop")).toBe(true);
     expect(rt.runtime.closed).toBe(true);
     expect(closeSessionRuntime("sess-stop")).toBe(false);
+  });
+
+  test("a detached auto-continuation SURVIVES its thinking silence — the watchdog holds the window", async () => {
+    // The live failure this pins (owner's find on nightly .4): the last
+    // task_notification woke the SDK's auto-continuation, its extended-
+    // thinking gap outlasted the short linger, and the window closed
+    // mid-thought — the continuation's tool calls and final answer were
+    // generated into a sink-less runtime and dropped.
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 200 });
+    const feed = rt.runtime.beginTurn("run-1");
+    const sank: string[] = [];
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: (m) => sank.push((m as { type: string }).type),
+      onSettled: () => settled++,
+    };
+    rt.emit(tasksChanged(1));
+    rt.emit(result);
+    await collect(feed);
+    rt.emit(tasksChanged(0)); // roster empties → short linger arms
+    await tick();
+    // The continuation begins: one stream event, then SILENCE (thinking).
+    rt.emit({ type: "stream_event", event: { type: "content_block_start", content_block: { type: "thinking" } } });
+    await sleep(60); // > the 20ms short linger — the old code settled here
+    expect(settled).toBe(0);
+    expect(rt.runtime.windowSink).not.toBeNull();
+    // The continuation delivers its answer and its OWN result — endgame:
+    // the short linger takes back over and the window settles normally.
+    rt.emit(assistant);
+    rt.emit({ type: "result", subtype: "success" });
+    await sleep(60);
+    expect(settled).toBe(1);
+    expect(sank).toContain("assistant");
+    expect(rt.runtime.closed).toBe(false);
+    rt.runtime.closeNow("test over");
+  });
+
+  test("control chatter alone never extends past the short linger", async () => {
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 5_000 });
+    const feed = rt.runtime.beginTurn("run-1");
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+    };
+    rt.emit(tasksChanged(1));
+    rt.emit(result);
+    await collect(feed);
+    rt.emit(tasksChanged(0));
+    rt.emit({ type: "system", subtype: "task_notification", tool_use_id: "t1", status: "completed" });
+    await sleep(60); // control-plane only — the 5s watchdog must NOT be in play
+    expect(settled).toBe(1);
+    rt.runtime.closeNow("test over");
   });
 
   test("interrupt stops the TURN and keeps the runtime (F2) — flag set, next turn clears it", async () => {
