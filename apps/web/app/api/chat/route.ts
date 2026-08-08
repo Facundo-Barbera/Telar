@@ -142,6 +142,7 @@ import {
   armPendingFork,
   clearPendingFork,
   markLastTurnInterrupted,
+  EMPTY_TURN_MARKER,
   recordTaskStatuses,
   sessionSpendUsd,
   settleSpawnStatuses,
@@ -2912,6 +2913,14 @@ export async function POST(req: Request) {
               contextUsage,
             });
             turnPersisted = true;
+            // The LIVE half of the empty-turn truth (appendTurn grew the
+            // persisted half — see its comment): a turn that ends with zero
+            // assistant parts tells the attached client the same attention
+            // line the reload will show, instead of a silent nothing that
+            // reads as "answered".
+            if (!hiddenTurn && parts.length === 0) {
+              send("marker", { text: EMPTY_TURN_MARKER, attention: true });
+            }
             send("saved", { chatId: capturedSession });
           }
           // ISSUE #25 — the compaction boundary itself, written LAST so its

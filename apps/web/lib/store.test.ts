@@ -832,3 +832,59 @@ describe("rollbackChat — the truncation, under an optimistic check", () => {
     }
   });
 });
+
+describe("an empty turn may not persist silently — the lost-nightly find (2026-08-08)", () => {
+  const turn = (id: string, parts: Parameters<typeof store.appendTurn>[0]["assistantMessage"]["parts"], opts?: Partial<Parameters<typeof store.appendTurn>[0]>) =>
+    store.appendTurn({
+      id,
+      model: "sonnet",
+      account: "personal",
+      userMessage: { role: "user", parts: [{ type: "text", text: "Let's create a nightly" }] },
+      assistantMessage: { role: "assistant", parts },
+      costUsd: 0,
+      ...opts,
+    } as Parameters<typeof store.appendTurn>[0]);
+
+  test("zero assistant parts persist as the attention marker, not a silent husk", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-empty-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("empty-1", []);
+      const msgs = store.getChat("empty-1")?.messages ?? [];
+      const last = msgs[msgs.length - 1];
+      expect(last?.role).toBe("assistant");
+      expect(last?.parts).toEqual([
+        { type: "marker", text: store.EMPTY_TURN_MARKER, attention: true },
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a turn with real parts is untouched", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-empty-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("full-1", [{ type: "text", text: "done" }]);
+      const msgs = store.getChat("full-1")?.messages ?? [];
+      expect(msgs[msgs.length - 1]?.parts).toEqual([{ type: "text", text: "done" }]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("hidden turns are machinery and stay out of it", () => {
+    // A hidden settle-append only ever fires with parts; an empty hidden turn
+    // reaching the store is not a user-facing lie, and decorating it would
+    // put an attention line on a message no human ever asked a question of.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-empty-"));
+    process.env.TELAR_HOME = root;
+    try {
+      turn("hidden-1", [], { hideUserMessage: true });
+      const msgs = store.getChat("hidden-1")?.messages ?? [];
+      expect(msgs[msgs.length - 1]?.parts).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

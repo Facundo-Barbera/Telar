@@ -616,6 +616,11 @@ export function settleSpawnStatuses(id: string, toolUseIds?: string[]): boolean 
   return changed;
 }
 
+/** The line an empty turn wears — one string, shared by appendTurn's
+ *  persisted marker and the route's live event, so the reload and the live
+ *  surface cannot tell two different stories about the same void. */
+export const EMPTY_TURN_MARKER = "no response arrived — the turn ended empty";
+
 // A turn the server died under must SAY so (creative-run defect: after a
 // restart both liveness checks are false, the events route finishes silently,
 // and a half-finished turn reads as a completed one). Appends one attention
@@ -869,6 +874,25 @@ export function appendTurn(opts: {
     chat.title = opts.title.trim();
   }
   const startMessage = chat.messages.length;
+  // A TURN MAY NOT PERSIST AN EMPTY RESPONSE SILENTLY (the lost-nightly find,
+  // 2026-08-08): a user's message persisted, followed by an assistant message
+  // with ZERO parts — a turn that started, produced nothing, surfaced no
+  // error, and closed its feed window normally, so even the crash
+  // truth-teller correctly declined to mark it. The husk read as "answered"
+  // on every surface while the model's own conversation never saw the
+  // message at all — the store and the transcript forked. Whatever kills a
+  // turn that early, the record must say so: an empty response gains the
+  // same attention-marker vocabulary the interrupted repair uses, so the
+  // reader sees a visible line instead of a silent void and knows to resend.
+  // Hidden turns are machinery (settle-appends only fire with parts) and are
+  // left alone.
+  if (!opts.hideUserMessage && opts.assistantMessage.parts.length === 0) {
+    opts.assistantMessage.parts.push({
+      type: "marker",
+      text: EMPTY_TURN_MARKER,
+      attention: true,
+    });
+  }
   if (opts.hideUserMessage) {
     chat.messages.push(opts.assistantMessage);
   } else {
