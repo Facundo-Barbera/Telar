@@ -1270,13 +1270,20 @@ export function agentTokenTotal(agent: {
   return t.input + t.output;
 }
 
-// PANEL ORDER FOR THE WORKFLOWS SECTION — live work first, finished work last.
+// PANEL ORDER FOR A MIXED LIST OF RUNS — live work first, finished work last.
 //
-// WHAT WAS WRONG. The section rendered `[...ultraRuns.values()]` in map
-// insertion order, which is arrival order, which after a busy session is
+// WHAT WAS WRONG (issue #48). A section rendered `[...ultraRuns.values()]` in
+// map insertion order, which is arrival order, which after a busy session is
 // neither. A run that finished an hour ago sat above one working right now, and
 // the only thing distinguishing them was a word inside the card. Ten runs in,
 // the section is mostly history with the live one somewhere in it.
+//
+// ITS FIRST CALLER NO LONGER NEEDS IT. The pinned environment's Ultras section
+// used to hold both kinds and ordered them here; it is LIVE-ONLY now (issue
+// #47 — see workspace-inspector.tsx's header), so it has nothing left to sort.
+// This function stays because `splitRunsForRail` below is built on it and the
+// ACTIVITY RAIL, which owns history, still shows exactly the mixed list the
+// rule was written for.
 //
 // STABLE WITHIN EACH GROUP, deliberately. This is a partition, not a re-sort:
 // runs keep their existing relative order inside "live" and inside "finished",

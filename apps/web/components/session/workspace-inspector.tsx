@@ -22,6 +22,7 @@ import {
   GlobeIcon,
   PaperclipIcon,
   PlusIcon,
+  TerminalIcon,
   WorkflowIcon,
 } from "lucide-react";
 import {
@@ -32,7 +33,8 @@ import {
 import type { AttachmentRef } from "@/components/conversation";
 import { attachmentUrl } from "@/lib/attachment-contract";
 import type { RailAgent } from "@/components/session/subagent-rail";
-import { orderRunsForPanel, type RunSnapshot } from "@/lib/ultra-runs";
+import { backgroundTaskLabel, type BackgroundTask } from "@/lib/background-tasks";
+import type { RunSnapshot } from "@/lib/ultra-runs";
 import type { GitOverviewResponse } from "@/components/projects/git-tab-shared";
 import { cachedJson } from "@/lib/client-json-cache";
 import { refreshIncludes } from "@/lib/telar-refresh";
@@ -63,26 +65,36 @@ function SectionHeading({ children, action }: {
   );
 }
 
-// HOW MANY ROWS A SECTION SHOWS BEFORE IT STOPS.
+// THE PINNED ENVIRONMENT IS THE PRESENT TENSE, AND ONLY THE PRESENT TENSE.
 //
-// This popover is a GLANCE at the session's environment, and every list in it
-// grows without limit — sub-agents, Ultra runs, attachments, browser tabs all
-// accumulate for as long as the session lives. A busy evening put ten runs in
-// the Ultras section alone, at which point the panel is a scroll rather than a
-// glance and the things at the top are the OLDEST.
+// Owner's ruling (issue #47): "After a task is finished, failed, or whatever,
+// it should be removed from it. Pinned env is to see what's happening." So the
+// work sections below — Processes, Subagents, Ultras — render LIVE ENTRIES
+// ONLY. A finished sub-agent, a failed Ultra run, a settled anything: gone from
+// this popover the moment it stops being current, with no finished tail, no
+// "Done" row, and no count of what used to be here.
 //
-// Five is chosen to be smaller than any section is interesting: it is enough to
-// see what is happening and few enough that the sections below stay on screen.
+// HISTORY IS NOT LOST, IT IS SOMEBODY ELSE'S JOB. The Activity rail owns every
+// finished run and agent — its own cards, its own detail panes, its own
+// ordering — and this change does not touch it. The two surfaces stopped
+// duplicating each other: one answers "what is happening", the other "what
+// happened".
+//
+// WHAT THIS SUPERSEDES. Issue #48 taught these sections to ORDER before they
+// CUT (live rows first, so a running agent could not be hidden behind a page of
+// finished ones) — a real fix for a list that contained both. Live-only makes
+// the question moot: every surviving row is live, so there is nothing to sort
+// above anything else. The cap below stayed anyway, for the honest case of a
+// session running more concurrent work than a glance can hold.
 const SECTION_ROW_CAP = 5;
 
 /** A section body that shows the first `SECTION_ROW_CAP` rows and hides the
  *  rest behind one toggle.
  *
- *  THE CALLER ORDERS, THIS ONLY CUTS. A cap over an arbitrary order can hide
- *  the one row that matters — a running Ultra beneath eight finished ones — so
- *  sorting belongs upstream where the domain is known, and this component takes
- *  no view on which rows deserve to survive. It cuts from the END, so whatever
- *  the caller put first is what stays.
+ *  IT ONLY CUTS, AND IT CUTS FROM THE END — whatever the caller passed first is
+ *  what stays. The callers no longer pre-sort (see the live-only note above:
+ *  every row they pass is live and equal), but the rule is kept because the
+ *  component still takes no view on which rows deserve to survive.
  *
  *  The toggle is a row rather than a chevron on the heading: at this size a
  *  heading affordance is a coin-flip target, and the count is the useful part
@@ -216,22 +228,55 @@ const formatBytes = (bytes: number): string => {
   return kb < 1024 ? `${Math.round(kb)} KB` : `${(kb / 1024).toFixed(1)} MB`;
 };
 
-function agentTone(status: RailAgent["status"]): "default" | "live" | "attention" {
-  if (status === "error") return "attention";
-  if (status === "running") return "live";
-  return "default";
-}
-
-// The Subagents twin of `orderRunsForPanel` (issue #48): live rows first so the
-// cap below never hides a running agent behind a page of finished ones. Same
-// rules as the Ultras rule, for the same reasons — `running` is the only live
-// state (`error` is terminal and sinks with `done`; the counts stay honest),
-// and the partition is stable so a row only moves when its own status changes.
-function orderAgentsForPanel(agents: readonly RailAgent[]): RailAgent[] {
-  const live: RailAgent[] = [];
-  const finished: RailAgent[] = [];
-  for (const agent of agents) (agent.status === "running" ? live : finished).push(agent);
-  return [...live, ...finished];
+/** THE CONTEXT SECTION, COLLAPSED TO ONE ROW BY DEFAULT.
+ *
+ *  Attachments are the one list here that CANNOT SELF-PRUNE. A sub-agent
+ *  finishes and leaves the panel; a background command ends and leaves the
+ *  panel; a file the human attached in the first minute of a session is still
+ *  attached in the fortieth, because that is what attaching means. Under a
+ *  live-only panel that makes Context the only section that grows forever, and
+ *  the section least likely to be what "what is happening" was asking about.
+ *
+ *  So it is THIN BY DEFAULT: one summary row — how many, how much — that opens
+ *  on click into the capped rows (with their image hover previews) that used to
+ *  be the only rendering. Nothing is hidden that a single click does not
+ *  restore, and the collapsed state still answers the question a glance asks
+ *  ("is there a lot of stuff in here?") without spending five rows on it. */
+function ContextSection({ attachments }: { attachments: readonly AttachmentRef[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const totalBytes = attachments.reduce((sum, item) => sum + item.size, 0);
+  const summary = `${attachments.length} attachment${attachments.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)}`;
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        className="flex min-h-9 w-full items-center gap-2.5 rounded-xl px-2.5 text-left transition-colors hover:bg-muted/70"
+      >
+        <PaperclipIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-sm">{summary}</span>
+        <ChevronRightIcon
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground/60 transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+      </button>
+      {expanded && (
+        // NEWEST FIRST FEEDS THE CUT (issue #48). The adapter hands attachments
+        // newest-first, so the cap keeps what the session touched most recently
+        // and the stale tail is what collapses behind the toggle. No ordering
+        // here: capping an oldest-first list would pin the five stalest rows on
+        // a "now" surface.
+        <CappedRows
+          items={attachments}
+          noun="attachments"
+          render={(item) => <AttachmentRow item={item} key={item.id} />}
+        />
+      )}
+    </>
+  );
 }
 
 export function WorkspaceInspector({
@@ -242,6 +287,7 @@ export function WorkspaceInspector({
   onReservedChange = () => {},
   agents,
   workflows,
+  tasks = [],
   attachments = [],
   needsAttention,
   onSelectAgent,
@@ -254,6 +300,13 @@ export function WorkspaceInspector({
   onReservedChange?: (reserved: boolean) => void;
   agents: readonly RailAgent[];
   workflows: readonly RunSnapshot[];
+  /** The harness's own roster of live background tasks — backgrounded Bash
+   *  commands, backgrounded agents, whatever else it puts there. Live by
+   *  construction (a task that ends leaves the payload), so unlike `agents` and
+   *  `workflows` this needs no filtering. Claude only: the Codex harness has no
+   *  mapped equivalent, so a Codex session passes an empty list and the section
+   *  renders nothing — see lib/background-tasks.ts. */
+  tasks?: readonly BackgroundTask[];
   /** Everything the human has attached to THIS session, newest first. Derived
    *  from the transcript by the adapter — this component stores nothing. */
   attachments?: readonly AttachmentRef[];
@@ -310,9 +363,19 @@ export function WorkspaceInspector({
   const browserTabs = panel.session.tabs.filter(
     (tab): tab is BrowserPanelTab => tab.kind === "browser",
   );
+  // LIVE-ONLY, at the top of the render so nothing downstream can forget it:
+  // `running` is the only live state on either list (`error`/`failed` are
+  // terminal — a failed agent is not "what is happening", it is what happened,
+  // and the Activity rail still has it).
+  const liveAgents = agents.filter((agent) => agent.status === "running");
+  const liveWorkflows = workflows.filter((run) => run.state === "running");
+  // The trigger's quiet dot — still DERIVED from current state rather than from
+  // any transition (issue #17), so it stays lit for exactly as long as
+  // something is live, and still never the thing that pops the panel open.
+  // Background tasks count: a backgrounded command is activity even when no
+  // agent or run is.
   const activityRunning =
-    agents.some((agent) => agent.status === "running") ||
-    workflows.some((run) => run.state === "running");
+    liveAgents.length > 0 || liveWorkflows.length > 0 || tasks.length > 0;
   const branch = git?.header.branch ?? "Current checkout";
   const dirtyFiles = git?.header.dirtyFiles ?? 0;
   const panelWidth = clampSidebarWidth(
@@ -521,21 +584,58 @@ export function WorkspaceInspector({
             />
           </div>
 
-          {agents.length > 0 && (
+          {tasks.length > 0 && (
+            <>
+              <div className="my-2 h-px bg-border/70" />
+              <SectionHeading>Processes</SectionHeading>
+              {/* WHAT THE HARNESS IS RUNNING IN THE BACKGROUND RIGHT NOW —
+                  backgrounded Bash commands and anything else it puts on the
+                  roster — beside Changes and Browser, where the rest of "what
+                  is this session touching" already lives.
+
+                  NO FILTER AND NO STATUS COLUMN, because the roster is a LEVEL:
+                  the harness re-sends the full set on every membership change,
+                  so a task that ends simply stops being in it. There is no
+                  finished state to render and nothing here can go stale on its
+                  own. Every row is live, hence the uniform `live` tone.
+
+                  The rows are not clickable: unlike an agent or an Ultra run, a
+                  background command has no detail surface to go to (its output
+                  lands in the transcript). A chevron would promise one. */}
+              <CappedRows
+                items={tasks}
+                noun="processes"
+                render={(task) => (
+                  <InspectorRow
+                    key={task.id}
+                    icon={TerminalIcon}
+                    label={backgroundTaskLabel(task)}
+                    detail={task.description}
+                    tone="live"
+                  />
+                )}
+              />
+            </>
+          )}
+
+          {liveAgents.length > 0 && (
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Subagents</SectionHeading>
-              {/* ORDERED BEFORE IT IS CUT — see `orderAgentsForPanel`. */}
+              {/* Live only — a finished or failed agent is gone from here
+                  entirely (the Activity rail keeps it). Every row is running,
+                  so the detail is the same word on all of them and the tone is
+                  uniformly `live`. */}
               <CappedRows
-                items={orderAgentsForPanel(agents)}
+                items={liveAgents}
                 noun="sub-agents"
                 render={(agent) => (
                   <InspectorRow
                     key={agent.id}
                     icon={BotIcon}
                     label={agent.label}
-                    detail={agent.status === "running" ? "Running" : agent.status === "error" ? "Needs attention" : "Done"}
-                    tone={agentTone(agent.status)}
+                    detail="Running"
+                    tone="live"
                     onClick={() => openActivity(() => onSelectAgent(agent.id))}
                   />
                 )}
@@ -543,15 +643,15 @@ export function WorkspaceInspector({
             </>
           )}
 
-          {workflows.length > 0 && (
+          {liveWorkflows.length > 0 && (
             <>
               <SectionHeading>Ultras</SectionHeading>
-              {/* ORDERED BEFORE IT IS CUT. `CappedRows` slices from the end, so
-                  without this a live run could be the eleventh row and get
-                  hidden behind the toggle while eight finished ones stayed
-                  visible — the exact inversion the cap exists to prevent. */}
+              {/* Live only, same rule as Subagents: `done`, `failed` and
+                  `stopped` runs leave the pinned environment the moment they
+                  land. A session that finished thirteen runs and is running
+                  none renders no Ultras section at all. */}
               <CappedRows
-                items={orderRunsForPanel(workflows)}
+                items={liveWorkflows}
                 noun="runs"
                 render={(run) => (
                   <InspectorRow
@@ -559,7 +659,7 @@ export function WorkspaceInspector({
                     icon={WorkflowIcon}
                     label={run.name}
                     detail={run.state}
-                    tone={run.state === "running" ? "live" : "default"}
+                    tone="live"
                     onClick={() => openActivity(() => onSelectWorkflow(run.runId))}
                   />
                 )}
@@ -571,18 +671,7 @@ export function WorkspaceInspector({
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Context</SectionHeading>
-              {/* NEWEST FIRST FEEDS THE CUT (issue #48). This list was the one
-                  bare `.map` in the file — every image ever attached rendered
-                  forever, at full row weight. The adapter hands attachments
-                  newest-first, so the cap keeps what the session touched most
-                  recently and the stale tail is what collapses behind the
-                  toggle. No new ordering here: capping an oldest-first list
-                  would pin the five stalest rows on a "now" surface. */}
-              <CappedRows
-                items={attachments}
-                noun="attachments"
-                render={(item) => <AttachmentRow item={item} key={item.id} />}
-              />
+              <ContextSection attachments={attachments} />
             </>
           )}
 

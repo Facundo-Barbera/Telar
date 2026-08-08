@@ -298,6 +298,55 @@ describe("projectClaudeMessage", () => {
   });
 });
 
+describe("background_tasks_changed — the live roster on its way to the pinned environment", () => {
+  const rosterChanged = (tasks: unknown[]) =>
+    asMsg({ type: "system", subtype: "background_tasks_changed", tasks });
+
+  test("projects one `tasks` event carrying the whole normalized roster", () => {
+    // The pinned environment renders type + description, so the projection has
+    // to carry the entries — the old handling counted them and threw the rest
+    // away before anything downstream could see it.
+    const state = newClaudeTurnState();
+    const { events } = projectClaudeMessage(
+      rosterChanged([
+        { task_id: "t1", task_type: "bash", description: "bun run test:web" },
+        { task_id: "t2", task_type: "agent", description: "explore lib" },
+      ]),
+      state,
+    );
+    expect(events).toEqual([
+      {
+        event: "tasks",
+        data: {
+          tasks: [
+            { id: "t1", type: "bash", description: "bun run test:web" },
+            { id: "t2", type: "agent", description: "explore lib" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  test("an empty roster is still an event — a LEVEL signal, so silence is not the same as zero", () => {
+    const state = newClaudeTurnState();
+    const { events } = projectClaudeMessage(rosterChanged([]), state);
+    expect(events).toEqual([{ event: "tasks", data: { tasks: [] } }]);
+  });
+
+  test("persists nothing: a live roster is not transcript content", () => {
+    // A task that ends simply leaves the list. What the transcript keeps is the
+    // completion MARKER from task_notification, not a row from this level.
+    const state = newClaudeTurnState();
+    projectClaudeMessage(
+      rosterChanged([{ task_id: "t1", task_type: "bash", description: "sleep 30" }]),
+      state,
+    );
+    expect(state.parts).toEqual([]);
+    expect(state.partOrigin).toEqual([]);
+    expect(state.taskStatuses.size).toBe(0);
+  });
+});
+
 describe("teardown finalizers", () => {
   test("flushStreamingText pushes leftover streamed text per parent", () => {
     const state = newClaudeTurnState();

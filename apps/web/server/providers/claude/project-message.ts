@@ -27,6 +27,7 @@
 // caller handles it before consulting this function.
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { normalizeBackgroundTasks } from "@/lib/background-tasks";
 import type { CompactionFacts } from "@/lib/compaction";
 import { autoDenialMessage } from "@/lib/permission-denial";
 import { isCancelledToolResult } from "@/lib/tool-cancellation";
@@ -329,6 +330,29 @@ export function projectClaudeMessage(
         ...(parent ? { parent } : {}),
       });
     }
+    return { events };
+  }
+
+  if (msg.type === "system" && msg.subtype === "background_tasks_changed") {
+    // THE LIVE ROSTER, ON ITS WAY TO THE PINNED ENVIRONMENT. The SDK emits the
+    // FULL set of live background tasks whenever membership changes; the
+    // session runtime keeps its own copy for the window decisions, and this
+    // event is the same fact travelling to the client so the "Processes"
+    // section changes MID-TURN rather than only at `done`.
+    //
+    // A LEVEL, NOT AN EDGE, and the whole event is designed around that: the
+    // client REPLACES its list with this payload. That is the SDK's own
+    // instruction ("so a missed bookend cannot wedge a stale running
+    // indicator") and it is why nothing downstream tries to decrement a
+    // counter on task_notification any more — the ids here are the roster's,
+    // and the SDK explicitly forbids correlating them with the edge stream.
+    //
+    // NOT A PART: a live roster is not transcript content. It persists
+    // nowhere, appends no bubble, and a task that ends simply leaves the list
+    // — the completion MARKER above is what the transcript keeps.
+    send("tasks", {
+      tasks: normalizeBackgroundTasks((msg as unknown as { tasks?: unknown }).tasks),
+    });
     return { events };
   }
 

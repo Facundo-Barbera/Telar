@@ -69,6 +69,10 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import {
+  normalizeBackgroundTasks,
+  type BackgroundTask,
+} from "@/lib/background-tasks";
 
 /** What the model is told when a gated tool call arrives while no turn (and
  *  therefore no interactive surface) is attached. Deliberately NOT the CLI's
@@ -171,8 +175,16 @@ export type SessionRuntime = {
   sessionId: string | null;
   query: Query;
   /** Live background tasks per the SDK's `background_tasks_changed` (REPLACE
-   *  semantics — the payload is the full set). */
-  liveTaskCount: number;
+   *  semantics — the payload is the full set).
+   *
+   *  THE LIST, NOT A COUNT. This used to be `liveTaskCount: number` and the
+   *  descriptions died at the point of receipt — so the pinned environment,
+   *  whose whole job is "what is this session touching RIGHT NOW", could not
+   *  name a single piece of background work, and the composer called a
+   *  backgrounded `bun test` an "agent". Keeping the roster costs one array per
+   *  session and is what every surface downstream renders. Claude-only; see
+   *  lib/background-tasks.ts on why a Codex session's roster is always empty. */
+  liveTasks: readonly BackgroundTask[];
   turnActive: boolean;
   lastActivity: number;
   closed: boolean;
@@ -228,7 +240,13 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
   rt.lastActivity = Date.now();
   const m = msg as { type?: string; subtype?: string; tasks?: unknown[] };
   if (m.type === "system" && m.subtype === "background_tasks_changed") {
-    rt.liveTaskCount = Array.isArray(m.tasks) ? m.tasks.length : 0;
+    // A LEVEL SIGNAL: swap the roster for the payload, never pair edges (the
+    // SDK's own instruction — a missed bookend would otherwise wedge a stale
+    // "still working" indicator forever). The message ALSO travels on, to the
+    // turn feed or the window sink below, where the projector turns it into
+    // the client's "tasks" event; this assignment is the server's own copy,
+    // read by the teardown's window decisions and the done payload.
+    rt.liveTasks = normalizeBackgroundTasks(m.tasks);
   }
 
   if (rt.turnActive && rt._turn) {
@@ -284,7 +302,7 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
   // silence. This holds nothing hostage — unlike the deleted quiet-grace,
   // the turn (and the composer) ended at the result long ago; only the
   // window's terminal marker waits.
-  if (rt.liveTaskCount === 0) armSettleLinger(rt);
+  if (rt.liveTasks.length === 0) armSettleLinger(rt);
 }
 
 function armSettleLinger(rt: RuntimeInternals): void {
@@ -293,7 +311,7 @@ function armSettleLinger(rt: RuntimeInternals): void {
   const t = setTimeout(() => {
     rt._settle = null;
     const sink = rt.windowSink;
-    if (!sink || rt.turnActive || rt.liveTaskCount > 0) return;
+    if (!sink || rt.turnActive || rt.liveTasks.length > 0) return;
     rt.windowSink = null;
     rt._continuationOpen = false;
     try {
@@ -378,7 +396,7 @@ export function acquireSessionRuntime(args: {
     slots,
     sessionId: null,
     query: undefined as unknown as Query,
-    liveTaskCount: 0,
+    liveTasks: [],
     turnActive: false,
     interruptedTurn: false,
     lastActivity: Date.now(),
@@ -559,7 +577,7 @@ export async function interruptSessionRuntime(
 export function isSessionWindowLive(key: string): boolean {
   const rt = runtimes.get(key);
   if (!rt || rt.closed) return false;
-  return rt.turnActive || rt.liveTaskCount > 0 || rt.windowSink !== null;
+  return rt.turnActive || rt.liveTasks.length > 0 || rt.windowSink !== null;
 }
 
 /** Test/diagnostic surface. */

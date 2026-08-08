@@ -2545,13 +2545,13 @@ export async function POST(req: Request) {
         // detached deny), never a dead SSE controller (#28 persistent runtime).
         runtimeRef?.detachTurn();
         // Whether this session's window outlives the POST: tasks still live
-        // and a sink installed to serve them. Read once — the pump updates
-        // liveTaskCount concurrently, and the teardown decisions below must
+        // and a sink installed to serve them. Read once — the pump swaps
+        // liveTasks concurrently, and the teardown decisions below must
         // all agree on one answer.
         const windowContinues = !!(
           runtimeRef &&
           !runtimeRef.closed &&
-          runtimeRef.liveTaskCount > 0 &&
+          runtimeRef.liveTasks.length > 0 &&
           runtimeRef.windowSink
         );
         // Fail-closed teardown of open permission cards — UNLESS the window
@@ -2743,11 +2743,19 @@ export async function POST(req: Request) {
               // Real context-window occupancy (final call), not the step sum.
               context: contextUsage?.totalTokens ?? contextOf(turnState.lastMainUsage),
               contextUsage,
-              // The window handoff (#28 turn-as-event): how many background
-              // tasks outlive this turn, and the feed cursor the client's
-              // background tail should attach AFTER — everything up to it was
-              // already rendered by this very stream.
-              tasksLive: windowContinues ? runtimeRef?.liveTaskCount ?? 0 : 0,
+              // The window handoff (#28 turn-as-event): WHICH background tasks
+              // outlive this turn, and the feed cursor the client's background
+              // tail should attach AFTER — everything up to it was already
+              // rendered by this very stream.
+              //
+              // THE ROSTER, NOT A COUNT. This was `tasksLive: number` while the
+              // runtime kept only a length; the client now renders the live
+              // list in the pinned environment ("Processes") and names the
+              // kinds in the composer's aggregate line, and both need the same
+              // entries the mid-turn "tasks" events carry. Empty when the
+              // window does NOT continue, which is the same statement the old
+              // zero made: nothing outlives this turn.
+              tasks: windowContinues ? runtimeRef?.liveTasks ?? [] : [],
               feedCursor: capturedSession ? sessionFeedCursor(capturedSession) : null,
               // For the client's tail: a fresh session's send() closure
               // captured a null sessionId, and the handoff must not depend on

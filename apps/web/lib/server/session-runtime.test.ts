@@ -143,6 +143,38 @@ describe("session runtime", () => {
     rt.runtime.closeNow("test over");
   });
 
+  test("the roster is KEPT AS A LIST, descriptions and all, and replaced wholesale", async () => {
+    // It used to be `liveTaskCount`, a length — so the descriptions died at the
+    // point of receipt and the pinned environment could not name a single piece
+    // of background work. REPLACE, never merge: the payload is the full set
+    // after the change (the SDK's own level-signal contract).
+    const rt = makeRuntime();
+    rt.runtime.beginTurn("run-1");
+    rt.emit({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [
+        { task_id: "t1", task_type: "bash", description: "bun run test:web" },
+        { task_id: "t2", task_type: "agent", description: "explore lib" },
+      ],
+    });
+    await tick();
+    expect(rt.runtime.liveTasks).toEqual([
+      { id: "t1", type: "bash", description: "bun run test:web" },
+      { id: "t2", type: "agent", description: "explore lib" },
+    ]);
+    rt.emit({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [{ task_id: "t2", task_type: "agent", description: "explore lib" }],
+    });
+    await tick();
+    expect(rt.runtime.liveTasks).toEqual([
+      { id: "t2", type: "agent", description: "explore lib" },
+    ]);
+    rt.runtime.closeNow("test over");
+  });
+
   test("detached traffic reaches the window sink, and the roster emptying settles it once", async () => {
     const rt = makeRuntime();
     const feed = rt.runtime.beginTurn("run-1");
