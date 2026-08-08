@@ -277,7 +277,13 @@ describe("ensureClient", () => {
       fetchImpl,
     };
     const c1 = await ensureClient(args);
-    expect(c1).toEqual({ strategy: "dcr", id: "dcr-123", secret: "sek", registrationAccessToken: "rat" });
+    expect(c1).toEqual({
+      strategy: "dcr",
+      id: "dcr-123",
+      secret: "sek",
+      registrationAccessToken: "rat",
+      redirectUri: "http://localhost:3131/api/mcp/oauth/callback",
+    });
     expect(registrations).toBe(1);
     expect(getRecord(project, server)?.client.id).toBe("dcr-123"); // persisted
 
@@ -313,6 +319,77 @@ describe("ensureClient", () => {
     });
     expect(c.id).toBe("shared-1");
     expect(getRecord(project, "B")?.client.id).toBe("shared-1"); // persisted for B too
+  });
+
+  test("DCR re-registers when the stored client was minted for a DIFFERENT redirect_uri", async () => {
+    const project = "proj-redirect-moved";
+    const server = "srv";
+    const as = asMeta({ issuer: "https://moved-issuer.example.com", registrationEndpoint: AS.registerEndpoint });
+    // A mid-flow registration from a cockpit that ran on another port.
+    putRecord({
+      project,
+      server,
+      resource: "https://mcp.example.com/mcp",
+      as,
+      client: { strategy: "dcr", id: "old-port", redirectUri: "http://localhost:3131/api/mcp/oauth/callback" },
+      tokens: { accessToken: "" },
+    });
+    const { fetchImpl } = makeFetch({
+      [AS.registerEndpoint]: () => Response.json({ client_id: "new-port" }),
+    });
+    const c = await ensureClient({
+      project,
+      server,
+      resource: "https://mcp.example.com/mcp",
+      as,
+      auth: { type: "oauth" },
+      redirectUri: "http://localhost:3000/api/mcp/oauth/callback",
+      fetchImpl,
+    });
+    expect(c.id).toBe("new-port"); // fresh registration, not the stale client
+    expect(c.redirectUri).toBe("http://localhost:3000/api/mcp/oauth/callback");
+    expect(getRecord(project, server)?.client.id).toBe("new-port");
+  });
+
+  test("legacy record without redirectUri counts as registered on the default origin", async () => {
+    const project = "proj-legacy";
+    const server = "srv";
+    const as = asMeta({ issuer: "https://legacy-issuer.example.com", registrationEndpoint: AS.registerEndpoint });
+    // A proven pre-redirectUri record: registered before the field existed,
+    // which always meant the default cockpit origin.
+    putRecord({
+      project,
+      server,
+      resource: "https://mcp.example.com/mcp",
+      as,
+      client: { strategy: "dcr", id: "legacy-1" },
+      tokens: { accessToken: "tok" },
+    });
+    // Same (default) redirect → reuse, no network.
+    const same = await ensureClient({
+      project,
+      server,
+      resource: "https://mcp.example.com/mcp",
+      as,
+      auth: { type: "oauth" },
+      redirectUri: "http://localhost:3131/api/mcp/oauth/callback",
+      fetchImpl: noFetch,
+    });
+    expect(same.id).toBe("legacy-1");
+    // Different port → the legacy client can't serve it; re-register.
+    const { fetchImpl } = makeFetch({
+      [AS.registerEndpoint]: () => Response.json({ client_id: "legacy-2" }),
+    });
+    const moved = await ensureClient({
+      project,
+      server,
+      resource: "https://mcp.example.com/mcp",
+      as,
+      auth: { type: "oauth" },
+      redirectUri: "http://localhost:3000/api/mcp/oauth/callback",
+      fetchImpl,
+    });
+    expect(moved.id).toBe("legacy-2");
   });
 
   test("manual client path when no registration_endpoint (no network)", async () => {

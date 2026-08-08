@@ -44,7 +44,9 @@ export async function POST(req: Request) {
   const auth = cfg.auth ?? { type: "oauth" as const };
 
   try {
-    const ctx = await beginConnect({ project, server, serverUrl: cfg.url, auth });
+    // The pending flow lives in this process, so the AS must redirect back to
+    // whatever origin THIS request came in on — not a hardcoded default port.
+    const ctx = await beginConnect({ project, server, serverUrl: cfg.url, auth, redirectOrigin: new URL(req.url).origin });
     putPending({ project, server, ctx, createdAt: Date.now() });
     return Response.json({ url: ctx.authorizationUrl });
   } catch (e) {
