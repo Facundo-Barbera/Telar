@@ -4578,7 +4578,15 @@ const STAYED_IN_ADAPTER: ReadonlyArray<[string, string, number?]> = [
   ["applyServerEvent", "the SSE switch"],
   ["consumeSSE", "the wire reader"],
   ['fetch("/api/chat"', "the turn POST"],
-  ["new EventSource(", "the live subscribers — BOTH of them", 2],
+  // The needle was `new EventSource(` until issue #82: the connection diet
+  // moved socket CONSTRUCTION into lib/shared-event-source.ts (one refcounted
+  // socket per URL — the browser's 6-connection cap was freezing navigation),
+  // and the hooks now acquire from the registry instead of constructing.
+  // What this row pins is unchanged: the adapter side still OWNS both live
+  // loom subscriptions — their listeners, their lifecycle, their release —
+  // and the shell still holds none. Construction syntax was the proxy;
+  // acquisition is the same fact spelled the new way.
+  ["acquireSharedEventSource(", "the live loom subscribers — BOTH of them", 2],
   // Session spend is still persisted by the route and projected in list
   // surfaces, but its live composer indicator was intentionally removed. It is
   // no longer adapter state and therefore no longer belongs in this carve-out
