@@ -6,11 +6,11 @@
 //
 // SCOPE, NARROWER THAN THE DEMO SOURCE
 // (lib/demo-gallery/workspace/packet.tsx, never imported — hand-ported by eye
-// per that directory's rule 7). The demo's "Its turn came" section ("Plan
-// loom from this packet" / "Start a session instead") is the WEAVE — the
-// item's `tracking` field is explicitly "set at weave (story 5.5)" per
-// schema.ts's own comment, so that handoff is a later story's capability, not
-// CAP-6. Attachments here show real counts only (files/mockups) — the demo's
+// per that directory's rule 7). The demo's "Its turn came" section IS here now
+// (story 5.5 / CAP-11: "a single ripened packet handed to a session, and a
+// selected batch woven as one loom") — see ItsTurnCame below, which is where
+// `Item.tracking` finally gets its writer. Attachments here show real counts
+// only (files/mockups) — the demo's
 // per-attachment titles and descriptions are fixture data this store has no
 // field for; a dropped file carries a name and an extension, nothing more.
 //
@@ -26,10 +26,13 @@
 // cards `rounded-lg` → `rounded-md`, internal rules → `border-border/70`.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
+  ExternalLinkIcon,
   FileTextIcon,
   LayoutTemplateIcon,
+  MessageSquareIcon,
   MoonIcon,
   MoveRightIcon,
   PlusIcon,
@@ -38,6 +41,7 @@ import {
   StickyNoteIcon,
   TriangleAlertIcon,
   UserIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import type { PacketActor } from "@telar/core";
 import { Button } from "@/components/ui/button";
@@ -46,8 +50,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
+import { DetachReceipt } from "@/components/common/detach-receipt";
 import { cn } from "@/lib/utils";
 import { dispatchTelarRefresh } from "@/lib/telar-refresh";
+import { trackedDetachReceipt, type DetachReceipt as DetachReceiptData } from "@/lib/detach-receipt";
+import { sessionBriefing } from "@/lib/session-briefing";
+import { seedNewSessionDraft } from "@/components/session/composer-draft";
+import { newSessionHref } from "@/lib/session-list";
 import { DeadlineChip, ProjectChip, VerdictChip } from "@/components/workspace/chips";
 import type { PacketView as PacketViewData } from "@/lib/workspace-api";
 
@@ -95,6 +104,125 @@ function SectionLabel({ children }: { children: ReactNode }) {
     <h2 className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
       {children}
     </h2>
+  );
+}
+
+// ── "Its turn came" (story 5.5 / CAP-11, the single-packet handoff) ─────────
+//
+// THE TWO PATHS ARE EQUAL WEIGHT, and the demo's own layout says so: a filled
+// primary for the loom, an OUTLINED button of the same width for the session,
+// and a quiet third that is neither. The spec's word is "instead", not
+// "otherwise" — a session is where most packets should go, and a surface that
+// renders it as a fallback would push every small thing through a loom.
+//
+// NOTHING RUNS UNTIL A HUMAN CLICKS. The weave POSTs to /api/workspace/weave,
+// which plans a DRAFT loom (never startLoomFromBundle) — so even this click
+// spends nothing; the loom's own start is a second human decision, taken on the
+// loom side ("Continue planning" on the loom page, which opens the Loom Session
+// bound to this draft, where the contract is written and start_loom is
+// approved). The caption under the buttons is the demo's, kept verbatim because
+// it is the honest description of everything above it.
+function ItsTurnCame({ view, onWoven }: { view: PacketViewData; onWoven: () => void }) {
+  const router = useRouter();
+  const { item } = view;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The receipt the POST returned, when it was this mount that wove.
+  const [receipt, setReceipt] = useState<DetachReceiptData | null>(null);
+
+  // ON A LATER VISIT THE TALLY IS GONE, AND IS NOT GUESSED. Only this mount's
+  // own response knows what the loom was handed; the packet's fields are what
+  // they are TODAY, so re-deriving "premise = the fixed brief · context = 2
+  // attachments" from them would let an edit made after the weave rewrite what
+  // the receipt says the loom received. trackedDetachReceipt drops those two
+  // segments and keeps the two that are still true (detach-receipt.ts).
+  const tracked = item.tracking
+    ? (receipt ?? trackedDetachReceipt(item.tracking.loomId, 1))
+    : receipt;
+
+  const weave = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await postJson("/api/workspace/weave", "POST", { itemIds: [item.id] });
+      setReceipt(res.receipt as DetachReceiptData);
+      // The row does NOT leave the queue — it now carries a tracking mark, and
+      // the queue re-reads to show it (CAP-11: it leaves when the loom lands
+      // and the human accepts, neither of which happens here).
+      dispatchTelarRefresh({ domains: ["workspace"] });
+      onWoven();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [item.id, onWoven]);
+
+  // The session path hands the briefing to the composer through THAT module's
+  // own seeding verb (components/session/composer-draft.tsx owns the key, the
+  // replace prompt and the already-mounted case) and then navigates — no new
+  // endpoint, no server round-trip, and the text is visible and editable in the
+  // composer before a single token is spent.
+  const startSession = useCallback(() => {
+    if (!item.project) return;
+    seedNewSessionDraft(item.project, sessionBriefing({ ...item, attachments: view.attachments }));
+    router.push(newSessionHref(item.project));
+  }, [item, router, view.attachments]);
+
+  return (
+    <section className="space-y-2">
+      <SectionLabel>Its turn came</SectionLabel>
+      {tracked ? (
+        <>
+          <DetachReceipt receipt={tracked} />
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            render={<Link href={`/looms/${item.tracking?.loomId ?? tracked.loomId}`} />}
+          >
+            <ExternalLinkIcon />
+            Open the loom
+          </Button>
+        </>
+      ) : (
+        <>
+          {error && (
+            <Alert variant="destructive">
+              <TriangleAlertIcon />
+              <AlertTitle>Nothing was woven</AlertTitle>
+              <AlertDescription className="text-xs break-words">{error}</AlertDescription>
+            </Alert>
+          )}
+          <Button className="w-full" disabled={busy} onClick={() => void weave()}>
+            <WorkflowIcon />
+            Plan loom from this packet
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full"
+            disabled={busy || !item.project}
+            title={
+              item.project
+                ? undefined
+                : "This packet is floating — file it to a project first, and a session can open there."
+            }
+            onClick={startSession}
+          >
+            <MessageSquareIcon />
+            Start a session instead
+          </Button>
+          <Button variant="ghost" size="sm" className="w-full" render={<Link href="/workspace" />}>
+            Not now — back to the stack
+          </Button>
+          <p className="pt-1 text-center text-[10px] leading-relaxed text-muted-foreground/60">
+            everything above was prepared by agents —
+            <br />
+            nothing runs until you click
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -414,7 +542,7 @@ export function PacketView({ id }: { id: string }) {
               </section>
             </div>
 
-            <aside>
+            <aside className="space-y-6">
               <section>
                 <SectionLabel>Ripening</SectionLabel>
                 {timeline.length === 0 ? (
@@ -460,6 +588,10 @@ export function PacketView({ id }: { id: string }) {
                   </div>
                 )}
               </section>
+              {/* The handoff sits UNDER the ripening timeline on purpose: the
+                  demo's own order, and the honest one — "its turn came" is the
+                  end of that history, not a control panel above it. */}
+              <ItsTurnCame view={view} onWoven={() => void load()} />
             </aside>
           </div>
         </div>

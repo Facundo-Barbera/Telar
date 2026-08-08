@@ -63,8 +63,14 @@ export type TimelineEvent = z.infer<typeof TimelineEvent>;
 
 // AD-8/NFR-X-7 — cross-tree references are WEAK: an id plus enough label to
 // render without a lookup, so a dangling ref renders as a tombstone and never
-// throws. Set at weave; NO TOOL IN THIS STORY WRITES IT (story 5.5 owns the
-// handoff), and it is absent from ItemPatch so no tool CAN.
+// throws. `label` is a SNAPSHOT of the loom's title at weave time and is what
+// the queue's tracking chip says out loud; the loom's own title may drift from
+// it afterwards (startLoomFromBundle re-derives one from objective.md), and the
+// row deliberately keeps saying what it was handed to rather than following.
+//
+// SET AT WEAVE, and story 5.5's `weave_batch` / POST /api/workspace/weave are
+// what write it — through store.ts's trackLoom, which is the only writer in the
+// tree. It stays absent from ItemPatch, so updateItem still cannot reach it.
 export const LoomRef = z.looseObject({
   loomId: z.string(),
   label: z.string().optional(),

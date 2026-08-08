@@ -46,6 +46,7 @@ import { atomicWrite, telarDir } from "../manifest";
 import {
   ITEM_SCHEMA_VERSION,
   Item,
+  LoomRef,
   WorkspaceLane,
   type Deadline,
   type ItemVerdict,
@@ -1227,6 +1228,89 @@ export function promoteSubtask(
   return { parent: nextParent, promoted };
 }
 
+// ── the weave stamp (story 5.5, CAP-11) ──────────────────────────────────────
+//
+// THE ONLY WRITER OF `Item.tracking` IN THE TREE. schema.ts's LoomRef carried
+// the comment "set at weave; no tool in this story writes it" through 5.1–5.4;
+// this is that write, and everything about how it is shaped is the spec's
+// sentence rather than convenience:
+//
+//   "Member rows STAY in the queue marked as tracking the loom and leave only
+//    when it lands AND the human accepts — never at weave time."
+//
+// SO THIS FUNCTION TOUCHES lanes.yaml AT ALL. Not "does not need to" — MUST
+// NOT. Removing the woven ids from their stacks is exactly the "leave at weave
+// time" behaviour CAP-11 forbids, and it would also be the silent deletion path
+// SPEC.md's non-goals rule out, reached without ever calling rmSync. A weave is
+// a PACKET-ONLY write, one file per member, and the queue looks the same
+// afterwards except for a mark.
+//
+// THERE IS NO UN-TRACK PATH, and its absence is the other half of the same
+// rule. The row leaves when the loom LANDS and a HUMAN ACCEPTS — neither of
+// which this module may observe or perform (SPEC.md: "This module stops at the
+// detach boundary: never write loom state and never done a loom from here").
+// A `clearTracking` here would be a workspace-side way to pretend a loom
+// finished.
+//
+// RE-POINTING AN ALREADY-TRACKED ITEM WRITES NOTHING and is reported instead.
+// Overwriting would silently orphan the FIRST loom's membership: that loom is
+// still weaving on a premise built from this packet, and the queue would stop
+// saying so. Re-stamping the SAME loom is a no-op-shaped success, so a retried
+// weave (an approval card answered twice, a route retried) is idempotent.
+//
+// `replacing` IS THE ONE EXIT FROM THAT REFUSAL, and it exists because without
+// it a stamp is a one-way door: a loom the human cancelled, or one deleted from
+// the god-view, can never land and can never be accepted, so its members could
+// never leave the queue and could never be woven again either — the only repair
+// would be hand-editing packet.yaml. The CALLER names the ids whose old ref it
+// has established is dead (this module cannot see looms — AD-5 gives it the
+// workspace subtree and nothing else), which is exactly the split loom-mcp.ts's
+// draft_bundle_file already uses when it remints off a terminal loom. An id not
+// in `replacing` is still refused, so "dead" is always a decision someone made
+// with the loom in front of them, never a default.
+//
+// NOT REACHABLE THROUGH ItemPatch — updateItem THROWS on `tracking`, and that
+// stays true. This is a separate named verb for the same reason promoteSubtask
+// is: the caller has to mean it.
+export type TrackLoomResult = {
+  tracked: Item[];
+  // Ids that resolved to no readable packet — reported, never thrown (AD-8's
+  // weak-reference law: a dangling id is a tombstone, not a crash).
+  missing: string[];
+  // Ids already tracking a DIFFERENT loom. Nothing was written for these.
+  alreadyTracking: Array<{ id: string; loomId: string }>;
+};
+
+export function trackLoom(
+  itemIds: string[],
+  ref: LoomRef,
+  opts?: { replacing?: readonly string[] },
+): TrackLoomResult {
+  const tracking = LoomRef.parse(ref);
+  const replacing = new Set(opts?.replacing ?? []);
+  const out: TrackLoomResult = { tracked: [], missing: [], alreadyTracking: [] };
+  // De-duplicated, order preserved: a caller passing the same id twice (a UI
+  // selection merged from two lanes) must not write the packet twice.
+  for (const id of [...new Set(itemIds)]) {
+    const current = getWorkspaceItem(id);
+    if (!current) {
+      out.missing.push(id);
+      continue;
+    }
+    assertPacketAddressMatches(id, current);
+    const existing = current.tracking?.loomId;
+    if (existing && existing !== tracking.loomId && !replacing.has(id)) {
+      out.alreadyTracking.push({ id, loomId: existing });
+      continue;
+    }
+    const next = Item.parse({ ...current, tracking, schemaVersion: ITEM_SCHEMA_VERSION });
+    // PACKET ONLY. No writeLaneRows call belongs anywhere in this function.
+    writePacket(next);
+    out.tracked.push(next);
+  }
+  return out;
+}
+
 // ── the pure projections (§5.5-D15) ──────────────────────────────────────────
 //
 // All four take ALREADY-READ data and touch no disk. That is what makes them
@@ -1394,6 +1478,18 @@ export function attachmentTally(names: string[]): { files: number; mockups: numb
   }
   return { files, mockups };
 }
+
+// NO `packetAttachmentDir` EXPORT LIVES HERE, and its absence is load-bearing.
+// Story 5.5's first pass added one so the handoff could write "Attachments (in
+// <abs packet dir>): …" into a loom's context manifest. A loom cannot follow
+// that path: AD-5 / INV-11b put TELAR_HOME/workspace outside every session's
+// working root and forbid any module from granting it, and a loom mounts no
+// workspace MCP server — so under Codex's purely path-based sandbox the pointer
+// is unfollowable, and under Claude it would "work" only by being the exact leak
+// INV-11b exists to forbid. The handoff NAMES attachments instead (see
+// apps/web/lib/workspace-handoff.ts) and says plainly that the bytes stayed in
+// the workspace. Do not re-add this export; a caller that wants the bytes must
+// come through the port like everyone else.
 
 // The one disk read that feeds attachmentTally. Returns [] for an item with no
 // attachments directory — the bare-todo case, which is the common one.

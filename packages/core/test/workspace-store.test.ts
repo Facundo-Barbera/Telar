@@ -62,6 +62,7 @@ const {
   reorderLane,
   retireLane,
   setSubtaskDone,
+  trackLoom,
   updateItem,
   workspaceDir,
   workspaceHomeDir,
@@ -1638,5 +1639,97 @@ describe("5.2 agentsAddedCount — the queue footer's \"agents added N\"", () =>
   test("agentsAddedCount does not count an item with a different provenance, even a human-authored one that happens to mention a session", () => {
     const item = Item.parse({ id: "i-x", title: "x", provenance: "pasted transcript", captured: "Tue 16:42" });
     expect(agentsAddedCount([item])).toBe(0);
+  });
+});
+
+// ── 5.5 the weave stamp — CAP-11's "the row stays in the queue" ──────────────
+//
+// The whole point of this group is what trackLoom does NOT do. Two of the four
+// arms below assert a file was not rewritten (lanes.yaml) rather than that a
+// field was written, because "the rows leave at weave time" is the failure this
+// store has to make impossible, not merely avoid today.
+
+describe("5.5 trackLoom — the only writer of Item.tracking", () => {
+  test("stamps every member's packet and leaves lanes.yaml BYTE-IDENTICAL — the rows stay in the queue", () => {
+    ensureWorkspace();
+    createLane({ label: "Office", window: "work hours" });
+    const a = createItem({ title: "exports: csv", lane: "office" });
+    const b = createItem({ title: "exports: pdf", lane: "office" });
+    const untouched = createItem({ title: "not in the batch", lane: "office" });
+    const lanesBefore = hashOf(lanesPath());
+    const untouchedBefore = hashOf(packetPath(untouched.id));
+
+    const result = trackLoom([a.id, b.id], { loomId: "loom-abc", label: "exports series" });
+
+    expect(result.tracked.map((i) => i.id)).toEqual([a.id, b.id]);
+    expect(result.missing).toEqual([]);
+    expect(result.alreadyTracking).toEqual([]);
+    expect(getWorkspaceItem(a.id)!.tracking).toEqual({ loomId: "loom-abc", label: "exports series" });
+    expect(getWorkspaceItem(b.id)!.tracking).toEqual({ loomId: "loom-abc", label: "exports series" });
+
+    // THE ASSERTION THIS GROUP EXISTS FOR. A weave that removed the woven ids
+    // from their stacks would be the "leave at weave time" behaviour CAP-11
+    // forbids AND a deletion path that never calls rmSync.
+    expect(hashOf(lanesPath())).toBe(lanesBefore);
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([a.id, b.id, untouched.id]);
+    // The rows are still ranked exactly where they were.
+    expect(queueSlice(readLanes(), listItems().items).map((r) => [r.lane, r.rank, r.item.id])).toEqual([
+      ["office", 1, a.id],
+      ["office", 2, b.id],
+      ["office", 3, untouched.id],
+    ]);
+    // A non-member's packet was not rewritten either.
+    expect(hashOf(packetPath(untouched.id))).toBe(untouchedBefore);
+  });
+
+  test("re-stamping the SAME loom is idempotent, and re-pointing at a DIFFERENT one writes nothing and is reported", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "already woven" });
+    trackLoom([item.id], { loomId: "loom-first" });
+    const after = hashOf(packetPath(item.id));
+
+    // Same loom twice — a retried approval, a route replayed. No churn.
+    const again = trackLoom([item.id], { loomId: "loom-first" });
+    expect(again.tracked.map((i) => i.id)).toEqual([item.id]);
+    expect(getWorkspaceItem(item.id)!.tracking!.loomId).toBe("loom-first");
+
+    // A SECOND loom would silently orphan the first loom's membership: it is
+    // still weaving on a premise built from this packet.
+    const repoint = trackLoom([item.id], { loomId: "loom-second" });
+    expect(repoint.tracked).toEqual([]);
+    expect(repoint.alreadyTracking).toEqual([{ id: item.id, loomId: "loom-first" }]);
+    expect(getWorkspaceItem(item.id)!.tracking!.loomId).toBe("loom-first");
+    expect(hashOf(packetPath(item.id))).toBe(after);
+  });
+
+  test("an id that resolves to no readable packet is REPORTED, never thrown, and the readable members are still stamped", () => {
+    ensureWorkspace();
+    const real = createItem({ title: "real" });
+    const result = trackLoom(["i-does-not-exist", real.id, real.id], { loomId: "loom-x" });
+    expect(result.missing).toEqual(["i-does-not-exist"]);
+    // De-duplicated: the same id passed twice writes one packet, once.
+    expect(result.tracked.map((i) => i.id)).toEqual([real.id]);
+    expect(getWorkspaceItem(real.id)!.tracking!.loomId).toBe("loom-x");
+  });
+
+  test("tracking is STILL unreachable through updateItem — the patch path throws, so trackLoom is the only door", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "guarded" });
+    expect(() =>
+      // The type forbids this; the cast is the runtime half of "enforced twice".
+      updateItem(item.id, { tracking: { loomId: "loom-sneaky" } } as unknown as ItemPatch),
+    ).toThrow("tracking");
+    expect(getWorkspaceItem(item.id)!.tracking).toBeUndefined();
+  });
+
+  test("the stamp survives a round-trip through the packet's own schema, unknown keys included", () => {
+    ensureWorkspace();
+    const item = createItem({ title: "round trip", raw: "the user's own words" });
+    trackLoom([item.id], { loomId: "loom-round", label: "round" });
+    const onDisk = YAML.parse(fs.readFileSync(packetPath(item.id), "utf8"));
+    expect(onDisk.tracking).toEqual({ loomId: "loom-round", label: "round" });
+    // NEVER OVERWRITTEN BY ANY WRITE PATH (AC9) — the weave is not an exception.
+    expect(onDisk.raw).toBe("the user's own words");
+    expect(Item.parse(onDisk).tracking!.loomId).toBe("loom-round");
   });
 });

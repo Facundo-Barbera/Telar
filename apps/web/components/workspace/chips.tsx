@@ -36,6 +36,7 @@ import {
   CircleDotIcon,
   ListTodoIcon,
   MessageSquareIcon,
+  WorkflowIcon,
   WrenchIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -112,6 +113,44 @@ export function ProjectChip({ name, mirrored }: { name?: string; mirrored?: stri
         </span>
       )}
     </span>
+  );
+}
+
+// THE SENT-TO-LOOM MARK (story 5.5 / CAP-11). A row that was woven STAYS in
+// the queue — "member rows leave only when it lands AND the human accepts" —
+// so the queue needs a way to say "this one is out at a loom" without saying
+// "this one is done". Hence a mark, not a strike-through and not a move.
+//
+// GRAMMAR, unchanged: neutral outline body, hue on the ICON alone (ui-contract
+// §5's quiet-colour law), mono 10px. `--info` and not `--success`, deliberately
+// — the loom is IN FLIGHT, and a green tick here would read as the acceptance
+// only a human can give (AD-8).
+//
+// RENDERING ONLY, per this story's own scope note: it links to the god view and
+// nothing else. The steering channel an edit to a tracked row would post to is
+// the loom spec's story 11, not this one's, so there is no edit affordance here
+// to promise something no endpoint answers yet.
+//
+// `label` IS THE WEAK REF'S OWN SECOND HALF, and reading it here is what makes
+// AD-8's "an id plus enough label to render WITHOUT A LOOKUP" true rather than
+// aspirational: the queue renders this chip from packet.yaml alone, with no
+// loom read anywhere in the list path. It is a snapshot of the title at weave
+// time and may drift from the loom's current one — deliberately, since what the
+// row is claiming is what it was handed to, not what that thing is called now.
+export function TrackingChip({ loomId, label }: { loomId: string; label?: string }) {
+  return (
+    <Link
+      href={`/looms/${loomId}`}
+      title={
+        label
+          ? `Sent to loom ${loomId} — “${label}” · this row stays here until the loom lands and you accept it`
+          : `Sent to loom ${loomId} — this row stays here until the loom lands and you accept it`
+      }
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+    >
+      <WorkflowIcon className="size-2.5 text-info" />
+      at loom
+    </Link>
   );
 }
 

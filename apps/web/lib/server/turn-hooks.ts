@@ -15,6 +15,7 @@ import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionProfile } from "@telar/core";
 import type { CompactionEventName, CompactionFacts } from "@/lib/compaction";
 import { LOOM_ANSWER_BLOCKED_TOOL, LOOM_START_TOOL } from "@/lib/loom-mcp";
+import { WORKSPACE_WEAVE_TOOL } from "@/lib/workspace-mcp";
 import { makeGuardrailDecision } from "@/lib/permissions";
 import { AGENT_SPAWN_TOOL_CANDIDATES } from "@/lib/transcript";
 
@@ -64,7 +65,20 @@ export function makePreToolUseGuardrail(sessionProfile: SessionProfile) {
     // recipe that resumes a parked loop, so — like start_loom — it must force the
     // interactive card in every mode, and the human's Approve click is the
     // provenance stamp answerBlocked's `by` records.
-    if (input.tool_name === LOOM_START_TOOL || input.tool_name === LOOM_ANSWER_BLOCKED_TOOL) {
+    //
+    // THE THIRD NAME IS THE WORKSPACE'S WEAVE (story 5.5 / CAP-11), and it is
+    // here for a DIFFERENT reason than the two above, which is worth saying
+    // plainly: weaving spends nothing and accepts nothing — it plans a DRAFT
+    // loom and marks the rows that track it. It is hard-routed because
+    // SPEC-organization-workspace makes approval-gated advance the protocol
+    // shape for it ("proposal → explicit human approval → effect, rendered as
+    // the shared ApprovalCard"): the human decides what leaves the queue as one
+    // loom. Same mechanism, same every-mode guarantee, different justification.
+    if (
+      input.tool_name === LOOM_START_TOOL ||
+      input.tool_name === LOOM_ANSWER_BLOCKED_TOOL ||
+      input.tool_name === WORKSPACE_WEAVE_TOOL
+    ) {
       return {
         continue: true,
         hookSpecificOutput: {
@@ -73,7 +87,9 @@ export function makePreToolUseGuardrail(sessionProfile: SessionProfile) {
           permissionDecisionReason:
             input.tool_name === LOOM_START_TOOL
               ? "Starting a loom always requires the human's explicit approval (docs/loom-model.md §M.6)."
-              : "Answering a blocked loom always requires the human's explicit approval (docs/loom-model.md §M.6).",
+              : input.tool_name === LOOM_ANSWER_BLOCKED_TOOL
+                ? "Answering a blocked loom always requires the human's explicit approval (docs/loom-model.md §M.6)."
+                : "Weaving workspace items into one loom is a proposal — the human approves it before anything is handed over (SPEC-organization-workspace CAP-11).",
         },
       };
     }

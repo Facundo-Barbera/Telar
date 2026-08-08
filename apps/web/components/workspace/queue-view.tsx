@@ -11,10 +11,11 @@
 // per that directory's rule 7). Cut, and why:
 //   - No "What's next" recommendation card: hardcoded demo content, no spec'd
 //     capability behind it in this story.
-//   - No "Weave as one loom" batch bar: loom creation from the queue is a
-//     different capability (5.5's handoff), not CAP-4/5/6. Selection here
-//     exists ONLY to name which rows a lane-split moves — it does not become
-//     an ApprovalCard or a loom-creation path.
+//   - The "Weave as one loom" batch bar ARRIVED with story 5.5 (CAP-11) and is
+//     below: selection is no longer lane-scoped, because a batch is "the rows
+//     that cohere as one piece of work", which is not a claim about which
+//     stack they happen to sit in. A lane split still reads the same
+//     selection, filtered to its own lane.
 //   - No per-row attachment icons: getQueueView() deliberately does not tally
 //     attachments per row (that read belongs to the packet-detail page, where
 //     it's already available via getPacketView).
@@ -46,17 +47,20 @@
 // ui-contract.md §3 asks for, through `Chip`'s existing `count` slot.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   ListTodoIcon,
+  MessageSquareIcon,
   PencilIcon,
   PlusIcon,
   RotateCwIcon,
   SplitIcon,
   Trash2Icon,
   TriangleAlertIcon,
+  WorkflowIcon,
 } from "lucide-react";
 import type { Item } from "@telar/core";
 import { Button } from "@/components/ui/button";
@@ -65,12 +69,18 @@ import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Chip, GroupHeader, SearchField } from "@/components/common/list-controls";
+import { DetachReceipt } from "@/components/common/detach-receipt";
 import { dispatchTelarRefresh } from "@/lib/telar-refresh";
 import { cn } from "@/lib/utils";
+import type { DetachReceipt as DetachReceiptData } from "@/lib/detach-receipt";
+import { sessionBriefing, type BriefingPacket } from "@/lib/session-briefing";
+import { seedNewSessionDraft } from "@/components/session/composer-draft";
+import { newSessionHref } from "@/lib/session-list";
 import {
   DeadlineChip,
   ProjectChip,
   ProvenanceTag,
+  TrackingChip,
   VerdictChip,
   WorkspaceTabs,
 } from "@/components/workspace/chips";
@@ -82,6 +92,16 @@ async function postJson(url: string, method: string, body?: unknown) {
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+// The read half of the same two lines, split out rather than folded into
+// postJson with an undefined method — a GET that goes through a function called
+// postJson is the kind of small lie that outlives the person who wrote it.
+async function getJson(url: string) {
+  const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data;
@@ -201,7 +221,7 @@ function ItemRow({
           type="checkbox"
           checked={selected}
           onChange={onToggleSelect}
-          title="Select to split into a new lane"
+          title="Select rows to weave as one loom, or to split into a new lane"
           className="size-3.5 shrink-0 rounded-sm border-border accent-primary"
         />
         <button
@@ -256,6 +276,16 @@ function ItemRow({
             {done}/{subtasks.length}
           </span>
         )}
+        {/* CAP-11's whole point, rendered: the row is still HERE, wearing a
+            mark that says where it went. Nothing about it is struck through,
+            greyed or moved — it leaves this stack when the loom lands and the
+            human accepts, and neither of those has happened. */}
+        {item.tracking && (
+          <TrackingChip
+            loomId={item.tracking.loomId}
+            {...(item.tracking.label ? { label: item.tracking.label } : {})}
+          />
+        )}
         <ProvenanceTag label={item.provenance} />
         {item.deadline ? <DeadlineChip deadline={item.deadline} /> : <span className="w-8 shrink-0" />}
         {item.verdict ? <VerdictChip verdict={item.verdict} /> : <span className="w-14 shrink-0" />}
@@ -271,17 +301,27 @@ function ItemRow({
 function LaneSection({
   lane,
   onChanged,
+  selection,
+  onToggleSelect,
+  onClearSelection,
 }: {
   lane: QueueView["lanes"][number];
   onChanged: () => void;
+  // SELECTION IS THE QUEUE'S NOW, not this lane's (story 5.5): a weave batch is
+  // "the rows that cohere", which routinely crosses stacks. What stays
+  // lane-local is the SPLIT, and it stays local by filtering the shared
+  // selection to its own rows rather than by owning a second one — two
+  // selections would put two checkbox meanings on one row.
+  selection: ReadonlySet<string>;
+  onToggleSelect: (id: string) => void;
+  onClearSelection: (ids: string[]) => void;
 }) {
   const [openState, setOpenState] = useState(true);
-  // Selection is scoped to this lane and exists for exactly one purpose: naming
-  // which rows a split carries into the new lane. It is not a batch-action bar
-  // (see the module header) and it is cleared on every reload, so it never
-  // outlives the render it was made in.
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const orderedIds = useMemo(() => lane.rows.map((r) => r.item.id), [lane.rows]);
+  const selected = useMemo(
+    () => orderedIds.filter((id) => selection.has(id)),
+    [orderedIds, selection],
+  );
 
   const rename = useCallback(async () => {
     const label = prompt("Rename lane", lane.label);
@@ -335,23 +375,14 @@ function LaneSection({
     [orderedIds, reorderTo],
   );
 
-  const toggleSelect = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
   // CAP-4: "the master may PROPOSE a split, human-approval-gated, never
   // auto-applied" — there is no agent path into this function at all (it is
   // reached only from this button, behind two human-typed prompts), so the
   // approval gate is structural here, not a card to render.
   const split = useCallback(async () => {
-    if (selected.size === 0) return;
+    if (selected.length === 0) return;
     const label = prompt(
-      `Split ${selected.size} item${selected.size === 1 ? "" : "s"} out of "${lane.label}" into a new lane — its label?`,
+      `Split ${selected.length} item${selected.length === 1 ? "" : "s"} out of "${lane.label}" into a new lane — its label?`,
     );
     if (!label || !label.trim()) return;
     const window_ = prompt('When does this new lane\'s work tend to happen? (e.g. "evenings")');
@@ -361,14 +392,16 @@ function LaneSection({
         sourceKey: lane.key,
         label,
         window: window_,
-        itemIds: [...selected],
+        itemIds: selected,
       });
-      setSelected(new Set());
+      // Only THIS lane's rows are dropped from the selection — a batch the
+      // human was assembling across other stacks survives its own split.
+      onClearSelection(selected);
       onChanged();
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
     }
-  }, [lane.key, lane.label, onChanged, selected]);
+  }, [lane.key, lane.label, onChanged, onClearSelection, selected]);
 
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card">
@@ -380,10 +413,10 @@ function LaneSection({
         onToggle={() => setOpenState((o) => !o)}
         action={
           <div className="flex items-center gap-1">
-            {selected.size > 0 && (
+            {selected.length > 0 && (
               <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => void split()}>
                 <SplitIcon className="size-3.5" />
-                Split {selected.size} into new lane
+                Split {selected.length} into new lane
               </Button>
             )}
             {/* `icon-sm` IS size-7 with the matched corner radius — the variant
@@ -411,8 +444,8 @@ function LaneSection({
                 key={r.item.id}
                 rank={r.rank}
                 item={r.item}
-                selected={selected.has(r.item.id)}
-                onToggleSelect={() => toggleSelect(r.item.id)}
+                selected={selection.has(r.item.id)}
+                onToggleSelect={() => onToggleSelect(r.item.id)}
                 canMoveUp={idx > 0}
                 canMoveDown={idx < lane.rows.length - 1}
                 onMoveUp={() => moveBy(r.item.id, -1)}
@@ -426,11 +459,182 @@ function LaneSection({
   );
 }
 
+// ── the batch bar (story 5.5 / CAP-11, the batch handoff) ───────────────────
+//
+// Floats over the stacks while a selection exists, and becomes the DETACH
+// RECEIPT in place when the weave lands — the demo's own choreography, and the
+// reason the receipt has a `bare` mode: this card already has the border and
+// the shadow, so mounting the boxed version inside it would draw two.
+//
+// NO CLIENT-SIDE PREFLIGHT, deliberately. It would be easy to grey out "Weave"
+// when the selection spans two projects or includes a floating row — and it
+// would put a second, drifting copy of lib/workspace-handoff.ts's refusal rules
+// in a component. The button always posts; the server's own sentence (which
+// names the item and the way out) lands right here. One place decides what may
+// be woven, and it is the one with the packets in front of it.
+function BatchBar({
+  items,
+  onClear,
+  onWoven,
+}: {
+  items: Item[];
+  onClear: () => void;
+  onWoven: () => void;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<DetachReceiptData | null>(null);
+
+  const weave = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await postJson("/api/workspace/weave", "POST", {
+        itemIds: items.map((i) => i.id),
+      });
+      setReceipt(res.receipt as DetachReceiptData);
+      // The rows STAY: the reload repaints them with their new tracking mark.
+      // Nothing here removes, accepts or completes anything (AD-8).
+      onWoven();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [items, onWoven]);
+
+  // "Sessions, one each" is CAP-11's equal alternative to the weave, and it is
+  // honest about its own limit: a session opens with ONE composer draft, keyed
+  // per project (components/session/composer-draft.tsx), so N of them cannot be
+  // opened by one click without either colliding on that key or opening N tabs
+  // this app has no idiom for. One selected row starts its session from here;
+  // a batch is told where the per-packet button lives rather than being handed
+  // a button that quietly does one of the N.
+  //
+  // THE PACKET IS RE-READ FIRST, and that fetch is the whole reason this is
+  // async. getQueueView deliberately does not tally attachments per row (the
+  // module header says why), so seeding straight from the row would produce a
+  // briefing MISSING the "2 files sit beside the packet" line that the same
+  // packet's own page includes — one packet, two briefings, depending on which
+  // button the human happened to use. One extra GET buys the identical text.
+  const single = items.length === 1 ? items[0]! : null;
+  const startSession = useCallback(async () => {
+    if (!single?.project) return;
+    setBusy(true);
+    setError(null);
+    let packet: BriefingPacket = single;
+    try {
+      const view = await getJson(`/api/workspace/items/${encodeURIComponent(single.id)}`);
+      packet = { ...single, attachments: view.attachments };
+    } catch {
+      // The row itself is a valid briefing packet — an unreachable read costs
+      // the attachment line, not the handoff.
+    } finally {
+      setBusy(false);
+    }
+    seedNewSessionDraft(single.project, sessionBriefing(packet));
+    router.push(newSessionHref(single.project));
+  }, [router, single]);
+
+  return (
+    <div className="sticky bottom-4 z-20 mt-4">
+      <div className="mx-auto w-fit max-w-full rounded-xl border border-border bg-card px-4 py-2.5 shadow-lg">
+        {receipt ? (
+          <div className="flex items-start gap-3">
+            <DetachReceipt receipt={receipt} bare />
+            <Button
+              variant="ghost"
+              size="xs"
+              className="shrink-0 text-muted-foreground"
+              onClick={() => {
+                setReceipt(null);
+                onClear();
+              }}
+            >
+              Dismiss
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+              {items.length} selected
+            </span>
+            <Button size="xs" disabled={busy} onClick={() => void weave()}>
+              <WorkflowIcon />
+              Weave as one loom
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy || !single?.project}
+              title={
+                single
+                  ? single.project
+                    ? undefined
+                    : "This row is floating — file it to a project first, and a session can open there."
+                  : "A session opens from one packet: open a row and use “Start a session instead”."
+              }
+              onClick={() => void startSession()}
+            >
+              <MessageSquareIcon />
+              Sessions, one each
+            </Button>
+            {/* DISABLED WHILE A WEAVE IS IN FLIGHT. Clearing empties the
+                selection, which unmounts this bar — so a click here mid-POST
+                would throw away the receipt for a weave that DID happen, and
+                the human would be left with rows that are silently tracking a
+                loom they were never told about. */}
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-muted-foreground"
+              disabled={busy}
+              onClick={onClear}
+            >
+              Clear
+            </Button>
+            {error && (
+              <p className="w-full min-w-0 text-xs leading-relaxed text-destructive">{error}</p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function QueueView() {
   const [view, setView] = useState<QueueView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [laneFilter, setLaneFilter] = useState<string>("all");
+  // ONE selection for the whole queue (see LaneSection's props): the split
+  // reads its own lane's slice, the batch bar reads all of it. Kept as ids
+  // rather than items so a reload can drop the ones that no longer exist
+  // without the set ever holding a stale packet.
+  const [selection, setSelection] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback((ids?: string[]) => {
+    if (!ids) {
+      setSelection(new Set());
+      return;
+    }
+    setSelection((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -498,6 +702,14 @@ export function QueueView() {
   );
 
   const populated = view !== null && view.lanes.length > 0;
+
+  // The selected ROWS, resolved against the latest read — and resolved against
+  // every lane, not the filtered ones: a needle typed after the selection was
+  // made must not silently shrink the batch the bar says it will weave.
+  const selectedItems = useMemo(() => {
+    if (!view) return [];
+    return view.lanes.flatMap((l) => l.rows.filter((r) => selection.has(r.item.id)).map((r) => r.item));
+  }, [view, selection]);
 
   return (
     <div className="flex h-dvh flex-col">
@@ -610,12 +822,29 @@ export function QueueView() {
                 </Alert>
               )}
               {filteredLanes.map((l) => (
-                <LaneSection key={l.key} lane={l} onChanged={() => void load()} />
+                <LaneSection
+                  key={l.key}
+                  lane={l}
+                  onChanged={() => void load()}
+                  selection={selection}
+                  onToggleSelect={toggleSelect}
+                  onClearSelection={clearSelection}
+                />
               ))}
               <p className="px-1 py-2 text-center text-[11px] text-muted-foreground/60">
                 {view!.totalItems} items — every one traces to something you fed in or a mirror · agents added{" "}
                 {view!.agentsAdded} · sub-tasks live inside items, the count never grows from breakdown
               </p>
+              {/* The conservation line stays ABOVE the bar: the count it states
+                  is unaffected by a weave, which is precisely the fact CAP-11
+                  wants visible when a batch is handed over. */}
+              {selectedItems.length > 0 && (
+                <BatchBar
+                  items={selectedItems}
+                  onClear={() => clearSelection()}
+                  onWoven={() => void load()}
+                />
+              )}
             </>
           )}
         </div>

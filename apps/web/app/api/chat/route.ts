@@ -103,10 +103,15 @@ import {
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
 import { createUltraMcpServer, ultraTools, ULTRA_MCP_VERSION } from "@/lib/ultra-mcp";
+// WORKSPACE_WEAVE_TOOL joins the two loom constants above as a name no profile
+// grants and no stored rule can satisfy (story 5.5 / CAP-11 — approval-gated
+// advance). It is deliberately NOT in WORKSPACE_AUTO_TOOLS, and every moat site
+// below names all three.
 import {
   createWorkspaceMcpServer,
   workspaceTools,
   WORKSPACE_MCP_VERSION,
+  WORKSPACE_WEAVE_TOOL,
 } from "@/lib/workspace-mcp";
 import {
   browserTools,
@@ -628,15 +633,31 @@ export async function POST(req: Request) {
   // Both a STEERER (loom Chat tab) and an ESCALATION (blocked-loom "Discuss
   // with the orchestrator") turn-1 seed bind a loomId the same way, validated
   // identically.
+  //
+  // A PLANNER MAY ALSO ARRIVE PRE-BOUND, and only to a DRAFT (`l.draft`). A
+  // planning session normally mints its own draft lazily on the first
+  // draft_bundle_file; this seed instead ADOPTS one that already exists, which
+  // is the only way a draft written outside a planning session ever reaches a
+  // human and a start button — the workspace's weave (CAP-11) fills a draft's
+  // bundle with a packet's premise and then stops at the detach boundary, and
+  // start_loom's CONTRACT GATE would refuse that bundle forever with nobody
+  // able to add the contract. Adopting is strictly narrower than what the
+  // planner could already do: it may write bundle files and a contract into
+  // THIS draft rather than a fresh one, and the spend still waits on the same
+  // human-approved start_loom. `l.draft` is the load-bearing half — a running
+  // or terminal loom must never become a planner's drafting target (that is
+  // draft_bundle_file's remint rule, and steering is the steerer's job).
   let wireLoomId: string | undefined;
   if (
     !existingChat &&
-    (role === "steerer" || role === "escalation") &&
+    (role === "steerer" || role === "escalation" || role === "planner") &&
     typeof rawLoomId === "string" &&
     rawLoomId
   ) {
     const l = getLoom(rawLoomId);
-    if (l && l.project === project) wireLoomId = rawLoomId;
+    if (l && l.project === project && (role !== "planner" || l.draft === true)) {
+      wireLoomId = rawLoomId;
+    }
   }
   const loomLink: LoomSessionLink = {
     loomId: existingChat?.loomId ?? wireLoomId,
@@ -656,9 +677,17 @@ export async function POST(req: Request) {
     // (draft_bundle_file lazily sets loomId on first use) and read back by
     // appendTurn. The hoist moves the SAME OBJECT earlier — do not freeze it,
     // spread it, or hand the profile builder a copy that then diverges.
+    // "planner" joins the two seeded roles here for the ADOPTED-draft case
+    // only: the link must persist, or a resumed turn would see loomId without a
+    // role and draft_bundle_file's remint rule would read an unlabelled link.
+    // A planner that mints its own draft still gets this role written from
+    // inside draft_bundle_file, exactly as before — nothing changes for it,
+    // because `wireLoomId` is undefined there.
     role:
       existingChat?.role ??
-      (wireLoomId && (role === "steerer" || role === "escalation") ? role : undefined),
+      (wireLoomId && (role === "steerer" || role === "escalation" || role === "planner")
+        ? role
+        : undefined),
   };
 
   // AD-9 — the session profile, resolved BEFORE the route body runs. Story 2.1
@@ -1155,10 +1184,16 @@ export async function POST(req: Request) {
         // requires a human's click on start_loom and answer_blocked in EVERY
         // permission mode, and the PreToolUse hook force-routes both back here
         // precisely so that click cannot be skipped. They must keep asking.
+        //
+        // THE WORKSPACE'S WEAVE IS THE THIRD SUCH NAME (CAP-11): it hands the
+        // human's own queue rows to a loom, and the surface's contract is that
+        // a human approves that. Full access widens what a MODE may
+        // auto-approve; it does not decide what leaves the workspace.
         if (
           runtimeMode === "full-access" &&
           toolName !== LOOM_START_TOOL &&
-          toolName !== LOOM_ANSWER_BLOCKED_TOOL
+          toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
+          toolName !== WORKSPACE_WEAVE_TOOL
         ) {
           return { behavior: "allow", updatedInput: input };
         }
@@ -1171,9 +1206,13 @@ export async function POST(req: Request) {
         // stored-rules fast path for it unconditionally; it always falls
         // through to the interactive prompt below (see also the `always`
         // guard further down, which refuses to ever persist a rule for it).
+        // mcp__workspace__weave_batch is skipped here for the same reason: an
+        // "always allow" on one weave would silently hand every later
+        // selection to a loom without the human seeing which rows.
         if (
           toolName !== LOOM_START_TOOL &&
           toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
+          toolName !== WORKSPACE_WEAVE_TOOL &&
           readRules(project).some((r) => ruleMatches(r, toolName, input))
         ) {
           return { behavior: "allow", updatedInput: input };
@@ -1226,7 +1265,12 @@ export async function POST(req: Request) {
           // Never persisted for start_loom OR answer_blocked (see the readRules
           // skip above) — every commit/answer gets its own interactive approval,
           // no exceptions (§M.6 — the human's click is the provenance stamp).
-          if (decision.always && toolName !== LOOM_START_TOOL && toolName !== LOOM_ANSWER_BLOCKED_TOOL) {
+          if (
+            decision.always &&
+            toolName !== LOOM_START_TOOL &&
+            toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
+            toolName !== WORKSPACE_WEAVE_TOOL
+          ) {
             addRule(project, decision.rule ?? rule);
           }
           // Never forward the SDK's own `suggestions` back as
@@ -1472,9 +1516,15 @@ export async function POST(req: Request) {
             const canonicalToolName = req.namespace
               ? `mcp__${req.namespace}__${req.tool}`
               : req.tool;
+            //
+            // weave_batch rides the same line for the same structural reason: a
+            // Codex session gets the workspace toolset too, has no PreToolUse
+            // hook to force the card, and would otherwise auto-accept a weave
+            // the human never saw (CAP-11 — approval-gated advance).
             const isMoatTool =
               canonicalToolName === LOOM_START_TOOL ||
-              canonicalToolName === LOOM_ANSWER_BLOCKED_TOOL;
+              canonicalToolName === LOOM_ANSWER_BLOCKED_TOOL ||
+              canonicalToolName === WORKSPACE_WEAVE_TOOL;
 
             // Other Telar dynamic tools retain their existing lifecycle gates.
             // Browser reads are safe to perform immediately; browser mutations

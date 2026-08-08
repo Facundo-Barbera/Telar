@@ -1042,7 +1042,18 @@ const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
   // are close enough to be worth naming: promote_subtask (NFR-OW-15 forbids an
   // agent promotion path AND `promote` is an ACCEPT_STEM), close_lane,
   // land_packet, merge_lane, mark_completed and list_deliverables all fail.
-  workspace: { file: WORKSPACE_MCP, tools: ["list_items", "list_lanes", "create_item", "update_item"] },
+  //
+  // STORY 5.5 ADDED A FIFTH, `weave_batch`, AND IT IS THE FIRST TOOL ON THIS
+  // SERVER THAT IS NOT PRE-APPROVED. So the inventory (5) and
+  // WORKSPACE_AUTO_TOOLS (still 4) deliberately DISAGREE by exactly that one
+  // name — INV-11c below asserts the difference IS the moat tool rather than
+  // letting the two lists drift apart quietly. It is not an accept path: a
+  // weave plans a DRAFT loom and marks the rows that track it; the rows stay in
+  // the queue and leave only when the loom lands and the human accepts.
+  workspace: {
+    file: WORKSPACE_MCP,
+    tools: ["list_items", "list_lanes", "create_item", "update_item", "weave_batch"],
+  },
   // engine.ts's agent() builds this per call. IT IS AN MCP SURFACE TOO, and
   // AC1 says "no MCP surface" — so it is in the inventory, not exempt from it.
   out: { file: ENGINE, tools: ["emit_result"] },
@@ -5875,8 +5886,18 @@ describe("INV-11 the workspace item store is reachable only through its port —
       expect(qualified.startsWith("mcp__workspace__")).toBe(true);
       expect(acceptShapedTokens(qualified.replace("mcp__workspace__", ""))).toEqual([]);
     }
-    // …and it agrees with the pinned inventory, so the two cannot drift.
-    expect(names.map((n) => n.replace("mcp__workspace__", ""))).toEqual(MCP_INVENTORY.workspace!.tools);
+    // …and it agrees with the pinned inventory EXCEPT for the moat tool, which
+    // is the whole of story 5.5's change to this surface: the auto list is the
+    // inventory MINUS the one name a human has to approve. Written as a
+    // difference rather than as two hardcoded lists, so adding a sixth tool
+    // still fails here until someone decides which side it belongs on.
+    const weaveTool = exportedStringConst(src!.code, "WORKSPACE_WEAVE_TOOL");
+    expect(weaveTool).toBe("mcp__workspace__weave_batch");
+    expect(names).not.toContain(weaveTool!);
+    expect(acceptShapedTokens(weaveTool!.replace("mcp__workspace__", ""))).toEqual([]);
+    expect(names.map((n) => n.replace("mcp__workspace__", ""))).toEqual(
+      MCP_INVENTORY.workspace!.tools.filter((t) => t !== weaveTool!.replace("mcp__workspace__", "")),
+    );
 
     // DISCRIMINATOR: the same function fires on the names this surface is
     // forbidden to grow. `promote_subtask` is the sharpest — NFR-OW-15 forbids
@@ -5994,6 +6015,104 @@ describe("INV-11 the workspace item store is reachable only through its port —
     expect(fsCallsIn('import fs from "node:fs";\nawait fs.promises.' + "rm" + "(dir);", DELETERS)).toEqual([
       "rm",
     ]);
+  });
+
+  test("INV-11g the workspace weave is approval-gated in every mode — the hook AND all four route sites", () => {
+    // Story 5.5 / CAP-11: "weave_batch is approval-gated and renders as the
+    // shared ApprovalCard." INV-1g proves this shape for the two LOOM moat
+    // tools; this is the same proof for the workspace's one, and it is a
+    // separate arm because the two are gated for different reasons (§M.6 spend
+    // vs "the human decides what leaves the queue") and a later story may move
+    // one without the other.
+    const mcp = byRel.get(WORKSPACE_MCP);
+    const hooks = byRel.get(CHAT_TURN_HOOKS);
+    const route = byRel.get(CHAT_ROUTE);
+    for (const [rel, file] of [
+      [WORKSPACE_MCP, mcp],
+      [CHAT_TURN_HOOKS, hooks],
+      [CHAT_ROUTE, route],
+    ] as const) {
+      if (!file) {
+        throw new Error(
+          `INV-11g: ${rel} is not in the index, so the workspace weave's approval gate cannot be ` +
+            `checked at all. CONSEQUENCE: a weave could auto-run in full-access/auto mode with no ` +
+            `human ever seeing which of their queue rows were handed to a loom. NEXT STEP: if the ` +
+            `module moved, update the constant rather than deleting this test.`,
+        );
+      }
+    }
+    const weaveTool = exportedStringConst(mcp!.code, "WORKSPACE_WEAVE_TOOL");
+    const auto = exportedStringArray(mcp!.code, "WORKSPACE_AUTO_TOOLS");
+    const broken: string[] = [];
+    const HOOK =
+      "CAP-11 — the workspace weave hands the human's own queue rows to a loom, so it is " +
+      "approval-gated in EVERY permission mode: excluded from the pre-approved list, hard-routed " +
+      "to `ask` by the PreToolUse hook, and named at every moat site in the chat route. ";
+
+    if (weaveTool !== "mcp__workspace__weave_batch") {
+      broken.push(
+        `${WORKSPACE_MCP} no longer exports WORKSPACE_WEAVE_TOOL = "mcp__workspace__weave_batch" ` +
+          `(found ${JSON.stringify(weaveTool)}). ${HOOK}CONSEQUENCE: every comparison below holds ` +
+          `against a constant that names no real tool. NEXT STEP: restore the export, or move the ` +
+          `constant and its comparisons together and re-pin them here.`,
+      );
+    }
+    if (weaveTool && auto?.includes(weaveTool)) {
+      broken.push(
+        `WORKSPACE_WEAVE_TOOL appears in WORKSPACE_AUTO_TOOLS. ${HOOK}CONSEQUENCE: the SDK's ` +
+          `pre-approval fast path runs the weave with no card at all. NEXT STEP: remove it from ` +
+          `WORKSPACE_AUTO_TOOLS; the moat tool is never a granted one.`,
+      );
+    }
+    if (weaveTool && !MCP_INVENTORY.workspace!.tools.includes(weaveTool.replace("mcp__workspace__", ""))) {
+      broken.push(
+        `WORKSPACE_WEAVE_TOOL points at a tool the workspace server does not register. ${HOOK}` +
+          `CONSEQUENCE: the gate guards a name nothing calls while the real tool runs ungated. ` +
+          `NEXT STEP: reconcile the constant with MCP_INVENTORY.`,
+      );
+    }
+    // THE HOOK HALF. The comparison form is pinned the way INV-1g pins the loom
+    // pair: `input.tool_name === WORKSPACE_WEAVE_TOOL`, against the IMPORTED
+    // constant, so a literal that drifts from the export cannot satisfy it.
+    if (!/import\s*\{[^}]*WORKSPACE_WEAVE_TOOL[^}]*\}\s*from\s*["']@\/lib\/workspace-mcp["']/.test(hooks!.code)) {
+      broken.push(
+        `${CHAT_TURN_HOOKS} does not import WORKSPACE_WEAVE_TOOL from @/lib/workspace-mcp. ${HOOK}` +
+          `CONSEQUENCE: any gate it applies is against a local literal that can drift from the ` +
+          `tool's real name. NEXT STEP: import the constant and compare against it.`,
+      );
+    }
+    if (!/input\.tool_name\s*===\s*WORKSPACE_WEAVE_TOOL/.test(hooks!.code)) {
+      broken.push(
+        `${CHAT_TURN_HOOKS}'s PreToolUse guardrail does not compare input.tool_name against ` +
+          `WORKSPACE_WEAVE_TOOL. ${HOOK}CONSEQUENCE: auto/acceptEdits/bypassPermissions approve the ` +
+          `weave without ever invoking canUseTool, so the ApprovalCard never appears. NEXT STEP: ` +
+          `add it to the \`ask\` branch beside the two loom tools.`,
+      );
+    }
+    // THE ROUTE HALF — FOUR SITES, counted rather than merely present: the
+    // full-access bypass, the stored-rules fast path, the "always" rule
+    // persistence, and the Codex dynamic-tool moat check. Three of four passing
+    // is a hole in whichever one is missing, and a bare `toContain` cannot tell
+    // the difference.
+    const routeSites = route!.code.match(/WORKSPACE_WEAVE_TOOL/g)?.length ?? 0;
+    // 1 import + 4 comparison sites.
+    if (routeSites < 5) {
+      broken.push(
+        `${CHAT_ROUTE} names WORKSPACE_WEAVE_TOOL ${routeSites} times (expected the import plus ` +
+          `FOUR moat sites: the full-access bypass, the readRules fast path, the \`always\` rule ` +
+          `guard, and onCodexDynamicTool's isMoatTool). ${HOOK}CONSEQUENCE: whichever site is ` +
+          `missing is a mode in which a weave runs unapproved — full access, a stored "always ` +
+          `allow", or any Codex session (which has no PreToolUse hook at all). NEXT STEP: name it ` +
+          `at every site the two loom constants are named at.`,
+      );
+    }
+    expect(broken).toEqual([]);
+
+    // ANTI-VACUITY: the two patterns above really can fail. Assembled at
+    // runtime so this file's own text does not satisfy the scans it defines.
+    const CONST = "WORKSPACE_WEAVE" + "_TOOL";
+    expect(new RegExp(`input\\.tool_name\\s*===\\s*${CONST}`).test(`if (input.tool_name === ${CONST}) {`)).toBe(true);
+    expect(new RegExp(`input\\.tool_name\\s*===\\s*${CONST}`).test(`if (input.tool_name === "mcp__workspace__weave_batch") {`)).toBe(false);
   });
 
   test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {

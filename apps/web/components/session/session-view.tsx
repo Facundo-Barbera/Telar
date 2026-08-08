@@ -95,6 +95,8 @@ import {
   LoomsPill,
   InlineLoomRow,
 } from "@/components/session/session-loom";
+import { DetachReceipt } from "@/components/common/detach-receipt";
+import { birthDetachReceipt } from "@/lib/detach-receipt";
 import { ContextPill } from "@/components/session/session-meters";
 import { useDockOptional } from "@/components/dock/dock-provider";
 import { stepPreview, type AgentInfo, type ToolPart } from "@/components/session/tool-step";
@@ -837,6 +839,10 @@ export function SessionView(props: {
   // suppressed, leaving just the transcript + composer. Undefined everywhere a
   // SessionView owns its own page.
   embedded?: boolean;
+  // The loom this session is bound to on the wire. Required for a steerer or an
+  // escalation (both attach to a RUNNING loom); optional for a planner, where it
+  // means "adopt this existing DRAFT instead of minting one" — the workspace
+  // weave's handoff path (/looms/plan/<project>?loom=<id>).
   loomId?: string;
 }) {
   // The slash-command menu and account lock both need to read/drive the
@@ -1269,6 +1275,7 @@ function SessionWorkspace({
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
   // mcp__loom__start_loom's tool_result lands on this session's own wire.
   const {
+    handoff: loomHandoff,
     setHandoff: setLoomHandoff,
     events: loomEvents,
     dismissEvent: dismissLoomEvent,
@@ -2481,8 +2488,14 @@ function SessionWorkspace({
       runtimeMode,
       ...(provider === "claude" && fastMode ? { fastMode: true } : {}),
       ...(provider === "codex" && serviceTier !== "standard" ? { serviceTier } : {}),
+      // A planner normally carries NO loomId — it mints its own draft on first
+      // draft_bundle_file. It carries one only when the page adopted an
+      // existing draft (/looms/plan/<project>?loom=<id>), which is how a draft
+      // written outside a planning session — the workspace weave's — gets a
+      // human, a contract and a start button. route.ts validates it (draft,
+      // this project) and ignores it otherwise.
       ...(planner
-        ? { role: "planner" }
+        ? { role: "planner", ...(loomId ? { loomId } : {}) }
         : steerer
           ? { role: "steerer", loomId }
           : escalation
@@ -4101,10 +4114,26 @@ function SessionWorkspace({
   // dock migration that completed #13): NOTHING displaces this pane any
   // more — runs and sub-agents both open in the dock's activity slot — so
   // the trailing loom rows are exactly as visible as the chat they follow.
+  // THE BIRTH SESSION'S DETACH RECEIPT leads the trailing block (CAP-11's
+  // universal grammar — SPEC-organization-workspace: "one mono line, identical
+  // whether it fires from a birth session, the queue's batch weave, or a
+  // packet's handoff"). It is composed by lib/detach-receipt.ts and drawn by
+  // components/common/detach-receipt.tsx — the SAME function and the SAME
+  // component the workspace's two handoffs use — so "identical" is a mechanism
+  // rather than three authors agreeing on a string.
+  //
+  // ONE LINE, AND IT IS DURABLE: `handoff` is seeded from the persisted
+  // Chat.loomId, so the receipt survives a reload exactly as the pill does. It
+  // carries no premise/context segment because a session hands over the
+  // conversation itself and has no tally to name — see birthDetachReceipt.
+  // It is NOT dismissible, unlike the lifecycle rows below it: the loom's
+  // states come and go, but "this session detached one" is a fact about the
+  // transcript.
   const transcriptTrailing = useMemo(
     () =>
-      loomEvents.length > 0 ? (
+      loomHandoff || loomEvents.length > 0 ? (
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pt-3">
+          {loomHandoff && <DetachReceipt receipt={birthDetachReceipt(loomHandoff.loomId)} />}
           {loomEvents.map((row) => (
             <InlineLoomRow
               key={row.id}
@@ -4114,7 +4143,7 @@ function SessionWorkspace({
           ))}
         </div>
       ) : undefined,
-    [loomEvents, dismissLoomEvent],
+    [loomHandoff, loomEvents, dismissLoomEvent],
   );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;

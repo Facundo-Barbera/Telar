@@ -195,13 +195,41 @@ describe("the chip grammar is frozen, and lives in exactly one module", () => {
   });
 
   test("the quiet-colour law holds: no chip BODY carries a state hue", () => {
-    // Hue lives on an icon only. VerdictChip's `bg-primary/10` is the single
-    // sanctioned exception and is semantic-neutral, not a status colour — so
-    // the four state tokens must not appear as a chip fill or outline here at
-    // all. (This is the law the restyle had to work inside: rounding and type
-    // scale were fair game, chip colour was not.)
-    const src = read(CHIPS);
-    expect(src).not.toMatch(/\b(?:bg|border|text)-(?:info|verify|success|warning|destructive)\b/);
+    // "Hue lives on the icon only; chips stay neutral outlines" (ui-contract.md
+    // §5). VerdictChip's `bg-primary/10` is the single sanctioned fill and is
+    // semantic-neutral, not a status colour.
+    //
+    // THE SCAN WAS WIDENED IN STORY 5.5, and only back to what the law actually
+    // says. It used to ban every `bg-|border-|text-` state token in the whole
+    // file, which was exact while no chip had an icon — then TrackingChip
+    // arrived (`<WorkflowIcon className="size-2.5 text-info" />`), which is the
+    // law's own permitted case, and a blanket ban would have forced a colourless
+    // icon or, worse, a deleted test. So the two halves are now scanned
+    // separately: a FILL or an OUTLINE in a state hue is banned outright,
+    // anywhere; a state TEXT colour is legal on a lucide icon element and
+    // nowhere else. A chip container that reaches for `text-warning` still
+    // fails, which is the case the original was written to catch.
+    const STATE = "(?:info|verify|success|warning|destructive)";
+    // Self-closing lucide elements — `<XIcon className="… text-info" />`. The
+    // hue's ONLY legal home in this file.
+    const ICON_ELEMENT = /<[A-Z][A-Za-z0-9]*Icon\b[^>]*\/>/g;
+    const src = stripComments(read(CHIPS));
+
+    expect(src).not.toMatch(new RegExp(`\\b(?:bg|border)-${STATE}\\b`));
+    const bodies = src.replace(ICON_ELEMENT, "");
+    expect(bodies).not.toMatch(new RegExp(`\\btext-${STATE}\\b`));
+
+    // ANTI-VACUITY. Without this, deleting every icon from the file would make
+    // the second assertion pass for the wrong reason, and a typo'd element
+    // pattern would silently strip nothing (or everything).
+    expect(src.match(ICON_ELEMENT)?.length ?? 0).toBeGreaterThan(0);
+    expect(bodies.length).toBeLessThan(src.length);
+    // DISCRIMINATORS: the pair really does separate the icon from the body.
+    const chipBody = '<span className="rounded-full border border-border text-success">x</span>';
+    expect(chipBody.replace(ICON_ELEMENT, "")).toMatch(new RegExp(`\\btext-${STATE}\\b`));
+    const hueOnIcon = '<CheckIcon className="size-3 text-success" />';
+    expect(hueOnIcon.replace(ICON_ELEMENT, "")).not.toMatch(new RegExp(`\\btext-${STATE}\\b`));
+    expect('<span className="bg-warning/10" />').toMatch(new RegExp(`\\b(?:bg|border)-${STATE}\\b`));
   });
 
   test("no surface re-spells a chip inline — both import the one module", () => {

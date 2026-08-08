@@ -54,6 +54,13 @@ type FakeLane = { key: string; label: string; window: string; note?: string; ite
 let lanes: FakeLane[] = [];
 let items: FakeItem[] = [];
 let unreadable: { id: string; reason: string }[] = [];
+// Story 5.5: the attachment names every packet reports (one list for the whole
+// fake store — the receipt's context segment counts them, it does not care
+// which packet they hang off), plus the handoff's recorded side effects.
+let attachments: string[] = [];
+const draftLoomCalls: Record<string, unknown>[] = [];
+const bundleWrites: Array<{ id: string; relPath: string; contents: string }> = [];
+let createDraftLoomThrows: string | null = null;
 const createItemCalls: Record<string, unknown>[] = [];
 const updateItemCalls: Array<{ id: string; patch: Record<string, unknown> }> = [];
 let createItemThrows: string | null = null;
@@ -152,15 +159,48 @@ mock.module("@telar/core", () => ({
     return item;
   },
   updateItem: stubUpdateItem,
-  readPacketAttachments: () => [],
-  attachmentTally: () => ({ files: 0, mockups: 0 }),
+  readPacketAttachments: () => attachments,
+  attachmentTally: (names: string[]) => ({ files: names.length, mockups: 0 }),
+  // ── story 5.5's handoff half ────────────────────────────────────────────
+  // weave_batch calls lib/workspace-handoff, which calls THESE. They are
+  // stubbed here for the same reason the store is: this suite proves the
+  // SERVER's behaviour (scope, refusals, what the model is told), and the
+  // handoff's own behaviour is lib/workspace-handoff.test.ts's.
+  //
+  // trackLoom is the one that matters most as a double: the real one writes
+  // ONLY packets and never lanes.yaml, so this one mutates the fake item and
+  // leaves `lanes` alone. A double that dropped the id from its stack would
+  // let this suite prove "the rows stay in the queue" against a store that
+  // removes them.
+  createDraftLoom: (input: Record<string, unknown>) => {
+    draftLoomCalls.push(input);
+    if (createDraftLoomThrows) throw new Error(createDraftLoomThrows);
+    return { id: "loom-w1", draft: true, state: "queued" };
+  },
+  writeBundleFile: (id: string, relPath: string, contents: string) => {
+    bundleWrites.push({ id, relPath, contents });
+  },
+  updateDraftObjectiveFromBundle: () => {},
+  packetAttachmentDir: (id: string) => `/fake/workspace/packets/${id}`,
+  trackLoom: (ids: string[], ref: Record<string, unknown>) => {
+    const tracked: FakeItem[] = [];
+    for (const id of ids) {
+      const item = items.find((i) => i.id === id);
+      if (!item) continue;
+      item.tracking = ref;
+      tracked.push(item);
+    }
+    return { tracked, missing: [], alreadyTracking: [] };
+  },
 }));
 
 afterAll(() => {
   mock.module("@telar/core", () => realCoreSnapshot);
 });
 
-const { createWorkspaceMcpServer, WORKSPACE_AUTO_TOOLS } = await import("./workspace-mcp");
+const { createWorkspaceMcpServer, WORKSPACE_AUTO_TOOLS, WORKSPACE_WEAVE_TOOL } = await import(
+  "./workspace-mcp"
+);
 
 // Reach into the SDK server's registered tools to invoke a handler directly —
 // identical idiom to ultra-mcp.test.ts's toolHandler.
@@ -213,16 +253,20 @@ beforeEach(() => {
     { id: "i-f1", title: "A floating note", lane: "aurora", provenance: "note", captured: "Wed 11:02", schemaVersion: 1 },
   ];
   unreadable = [];
+  attachments = [];
   createItemCalls.length = 0;
   updateItemCalls.length = 0;
+  draftLoomCalls.length = 0;
+  bundleWrites.length = 0;
   createItemThrows = null;
   updateItemThrows = null;
+  createDraftLoomThrows = null;
 });
 
 // ── AC6 proof 4 — registration ──────────────────────────────────────────────
 
 describe("workspace MCP server — tool registration", () => {
-  test("registers exactly the four tools, IN ORDER, matching WORKSPACE_AUTO_TOOLS", () => {
+  test("registers the four AUTO tools plus the one APPROVAL-GATED tool, IN ORDER", () => {
     // The ultra-style registry test. The loom side has no equivalent; that is
     // the hole this deliberately does not reproduce.
     expect([...WORKSPACE_AUTO_TOOLS]).toEqual([
@@ -232,11 +276,20 @@ describe("workspace MCP server — tool registration", () => {
       "mcp__workspace__update_item",
     ]);
     const names = Object.keys(registry(makeServer()));
-    expect(names).toEqual(["list_items", "list_lanes", "create_item", "update_item"]);
+    // STORY 5.5 ADDED THE FIFTH, LAST, and it is NOT in WORKSPACE_AUTO_TOOLS:
+    // weave_batch is approval-gated (CAP-11), so the auto list and the
+    // registration deliberately differ by exactly that one name. Both facts are
+    // asserted, because "the lists differ" is only safe when the difference is
+    // pinned.
+    expect(names).toEqual(["list_items", "list_lanes", "create_item", "update_item", "weave_batch"]);
+    expect([...WORKSPACE_AUTO_TOOLS]).not.toContain(WORKSPACE_WEAVE_TOOL);
+    expect(WORKSPACE_WEAVE_TOOL).toBe("mcp__workspace__weave_batch");
     // The constant and the registration say the same thing in the same order —
     // MCP_INVENTORY compares tool lists as ORDERED lists, so a reorder here
     // would drift from invariants.test.ts with a message about ordering.
-    expect(names.map((n) => `mcp__workspace__${n}`)).toEqual([...WORKSPACE_AUTO_TOOLS]);
+    expect(names.filter((n) => `mcp__workspace__${n}` !== WORKSPACE_WEAVE_TOOL).map((n) => `mcp__workspace__${n}`)).toEqual([
+      ...WORKSPACE_AUTO_TOOLS,
+    ]);
   });
 
   test("the four names carry no accept-shaped token — the moat, judged semantically", () => {
@@ -267,11 +320,18 @@ describe("AC8 the negative tool contract — input shapes carry no identity and 
     expect(new Set(inputSchemaKeys(s, "update_item"))).toEqual(
       new Set(["itemId", "title", "laneKey", "desk", "unplaced", "mirrored"]),
     );
+    // Story 5.5. `itemIds` is the selection, `reason` is the master's one-line
+    // rationale and `title` names the loom — no `by`, no `account`, no
+    // `project`: the weave takes its project from the ITEMS and its scope from
+    // the server's own options, exactly like every tool above it.
+    expect(new Set(inputSchemaKeys(s, "weave_batch"))).toEqual(
+      new Set(["itemIds", "reason", "title"]),
+    );
 
-    // ANTI-VACUITY FIRST: the scan really found the four real tools, so the
+    // ANTI-VACUITY FIRST: the scan really found the five real tools, so the
     // absences below are statements about a surface rather than about {}.
     const all = Object.keys(registry(s));
-    expect(all.length).toBe(4);
+    expect(all.length).toBe(5);
 
     const everyKey = all.flatMap((n) => inputSchemaKeys(s, n));
     expect(everyKey.length).toBeGreaterThanOrEqual(8);
@@ -630,6 +690,141 @@ describe("update_item is narrow by construction", () => {
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain("Could not update");
     expect(textOf(res)).toContain("AC9");
+  });
+});
+
+// ── story 5.5 / CAP-11 — weave_batch, the one approval-gated tool ──────────
+//
+// The GATE itself is not provable from here: "hard-routed to the interactive
+// card in every permission mode" is a claim about lib/server/turn-hooks.ts and
+// the chat route, and invariants.test.ts's INV-11g holds it. What IS this
+// file's is everything the tool does once a human has approved it — scope, the
+// refusals, and the words the model reads back.
+
+describe("CAP-11 weave_batch — the batch handoff", () => {
+  const aurora2: FakeItem = {
+    id: "i-a2",
+    title: "Exports: PDF",
+    project: "aurora",
+    lane: "aurora",
+    provenance: "note",
+    captured: "Wed 10:10",
+    schemaVersion: 1,
+    fixed: "Ship the PDF export behind the same toggle as CSV.",
+    acceptance: ["a PDF lands in downloads", "the toggle hides it"],
+  };
+
+  test("weaves the selection into ONE draft loom, hands over premise + context, and leaves every row in its lane", async () => {
+    items.push(aurora2);
+    lanes.find((l) => l.key === "aurora")!.items.push("i-a2");
+    attachments = ["notes.md", "flow.png"];
+
+    const out = jsonOf(
+      await toolHandler(makeServer(), "weave_batch")({
+        itemIds: ["i-a1", "i-a2"],
+        reason: "both touch aurora's exports module",
+      }),
+    );
+
+    // ONE loom for the whole batch — item-model.md's "one loom carries the
+    // whole batch", not one per row.
+    expect(draftLoomCalls.length).toBe(1);
+    expect(draftLoomCalls[0]!.project).toBe("aurora");
+    expect(out.loomId).toBe("loom-w1");
+    expect(out.url).toBe("/looms/loom-w1");
+    // A DRAFT. This tool never starts a loom — the commit that spends is the
+    // loom side's, behind its own human click (§M.6).
+    expect(out.draft).toBe(true);
+
+    // The premise is the packets' own words: `fixed` + `acceptance`, nothing
+    // re-authored (item-model.md).
+    const objective = bundleWrites.find((w) => w.relPath === "objective.md")!;
+    expect(objective.id).toBe("loom-w1");
+    expect(objective.contents).toContain("Ship the PDF export behind the same toggle as CSV.");
+    expect(objective.contents).toContain("a PDF lands in downloads");
+    expect(objective.contents).toContain("both touch aurora's exports module");
+    const context = bundleWrites.find((w) => w.relPath === "context.md")!;
+    expect(context.contents).toContain("notes.md");
+    expect(context.contents).toContain("flow.png");
+
+    // THE ROWS STAY. Both are marked as tracking the loom and neither leaves
+    // its stack — CAP-11's "leave only when it lands AND the human accepts".
+    expect(out.tracking).toEqual(["i-a1", "i-a2"]);
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toEqual({ loomId: "loom-w1", label: expect.any(String) });
+    expect(lanes.find((l) => l.key === "aurora")!.items).toEqual(["i-a1", "i-a2"]);
+
+    // THE UNIVERSAL RECEIPT, in the model's own result: same grammar as the
+    // line the queue and a birth session render.
+    expect(out.receipt).toStartWith("loom created — loom-w1 · premise = ");
+    expect(out.receipt).toEndWith("detached from the workspace");
+    expect(out.receipt).toContain("context = 4 attachments"); // 2 items × the fake store's 2
+    expect(out.note).toContain("leave when it lands and you accept");
+  });
+
+  test("an out-of-scope id is refused with the SAME sentence a nonexistent id gets, and nothing is created", async () => {
+    // update_item's anti-oracle rule, applied to the verb that would otherwise
+    // let a project session learn which ids another project holds.
+    const foreign = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1", "i-o1"] });
+    const unknown = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1", "i-nope"] });
+    expect(isError(foreign)).toBe(true);
+    expect(textOf(foreign)).toBe('No workspace item found with id "i-o1".');
+    expect(textOf(unknown)).toBe('No workspace item found with id "i-nope".');
+    // SCOPE IS CHECKED BEFORE THE WEAVE: no loom, no bundle, no stamp.
+    expect(draftLoomCalls).toEqual([]);
+    expect(bundleWrites).toEqual([]);
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toBeUndefined();
+  });
+
+  test("a floating item is refused with the alternative named — a session, not a failure", async () => {
+    // An unscoped server (5.3's project-less master) can SEE the floating item,
+    // which is what makes this refusal about the weave rather than about scope.
+    const res = await toolHandler(makeServer({ project: undefined }), "weave_batch")({
+      itemIds: ["i-f1"],
+    });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("floating");
+    expect(textOf(res)).toContain("start a session instead");
+    expect(draftLoomCalls).toEqual([]);
+  });
+
+  test("a selection spanning two projects is refused — one loom weaves in one project", async () => {
+    const res = await toolHandler(makeServer({ project: undefined }), "weave_batch")({
+      itemIds: ["i-a1", "i-o1"],
+    });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("spans 2 projects");
+    expect(draftLoomCalls).toEqual([]);
+  });
+
+  test("an item already tracking a loom is REFUSED, never re-woven — it leaves when that loom lands", async () => {
+    items.find((i) => i.id === "i-a1")!.tracking = { loomId: "loom-earlier" };
+    const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("loom-earlier");
+    expect(textOf(res)).toContain("lands and you accept");
+    expect(draftLoomCalls).toEqual([]);
+    // …and the original stamp is untouched.
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toEqual({ loomId: "loom-earlier" });
+  });
+
+  test("a failure inside the handoff becomes an actionable errResult and stamps nothing", async () => {
+    createDraftLoomThrows = 'Unknown project "aurora" — not in the registry.';
+    const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("not in the registry");
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toBeUndefined();
+  });
+
+  test("the tool's own description tells the model it is a PROPOSAL and that nothing is accepted", async () => {
+    // The description is the only place the model learns the shape of the gate.
+    const t = registry(makeServer())["weave_batch"] as { description?: string };
+    const description = t.description ?? "";
+    expect(description).toContain("PROPOSE");
+    expect(description).toContain("approve");
+    expect(description).toContain("DRAFT");
+    expect(description).toContain("STAY");
+    // The equal-weight alternative CAP-11 requires on both handoffs.
+    expect(description).toContain("session instead");
   });
 });
 

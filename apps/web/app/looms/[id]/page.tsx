@@ -7,7 +7,9 @@ import {
   ArrowLeftIcon,
   BanIcon,
   ClockIcon,
+  FileTextIcon,
   Loader2Icon,
+  PencilLineIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import type { Loom, LoomEvent } from "@telar/core";
@@ -41,6 +43,57 @@ function BackLink() {
     >
       <ArrowLeftIcon className="size-4" />
     </Link>
+  );
+}
+
+// A DRAFT is not a run, so it gets no god-view: `attempts` is empty, no
+// operator has ever spoken, and every panel below would render as an empty
+// husk that looks like a stalled loom. What a draft needs is the one thing it
+// is missing — a human to finish its Spec Bundle and approve the start.
+//
+// THE DOOR THIS OPENS. Drafts minted by a planning session are already reachable
+// (that session is still on screen). A draft minted by the WORKSPACE weave
+// (SPEC-organization-workspace CAP-11) is not: the weave writes the packet's
+// premise into the bundle and stops at the detach boundary, deliberately
+// writing no Verification Contract — and start_loom's CONTRACT GATE refuses a
+// bundle without one. The detach receipt links here, so this panel is where
+// that handoff is picked up: "Continue planning" opens a Loom Session BOUND to
+// this draft (/looms/plan/<project>?loom=<id>), which can add the contract and
+// then ask for the human approval start_loom always requires.
+//
+// It writes NO loom state — a link and a drawer.
+function DraftPanel({ loom, onViewSpec }: { loom: Loom; onViewSpec: () => void }) {
+  return (
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-8">
+      <div className="rounded-xl border border-dashed border-border bg-card/50 p-5">
+        <div className="flex items-center gap-2">
+          <PencilLineIcon className="size-4 text-info" />
+          <p className="text-sm font-medium">Draft — not started</p>
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This loom&apos;s Spec Bundle is still being written. Nothing runs and
+          nothing is spent until a Verification Contract is in place and you
+          approve the start yourself.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            render={<Link href={`/looms/plan/${loom.project}?loom=${loom.id}`} />}
+          >
+            <PencilLineIcon />
+            Continue planning
+          </Button>
+          <Button variant="outline" size="sm" onClick={onViewSpec}>
+            <FileTextIcon />
+            View spec
+          </Button>
+        </div>
+      </div>
+      <div className="rounded-xl border p-4">
+        <p className="text-xs font-medium text-muted-foreground">Objective (so far)</p>
+        <p className="mt-1.5 whitespace-pre-wrap text-sm">{loom.prompt}</p>
+      </div>
+    </div>
   );
 }
 
@@ -405,7 +458,12 @@ export default function LoomDetailPage() {
       />
 
       <div className="flex-1 overflow-y-auto">
-        {loom.state === "scoping" ? (
+        {loom.draft ? (
+          <>
+            <DraftPanel loom={loom} onViewSpec={() => setSpecOpen(true)} />
+            <SpecDrawer loomId={loom.id} open={specOpen} onClose={() => setSpecOpen(false)} />
+          </>
+        ) : loom.state === "scoping" ? (
           <div className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-8">
             <ScopingCharter />
             <WorkstreamsPreview loomId={loom.id} />

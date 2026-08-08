@@ -64,6 +64,13 @@ import {
   type Item,
   type ItemPatch,
 } from "@telar/core";
+// The handoff itself lives in lib/workspace-handoff.ts, not here: it is the
+// same operation the queue's batch bar and the packet's own button perform
+// through /api/workspace/weave, and a tool with its own copy of it would be a
+// second definition of what a premise is. This file keeps what it always kept —
+// scope, argument shapes, and the words the model reads.
+import { detachReceiptLine } from "@/lib/detach-receipt";
+import { weaveItems } from "@/lib/workspace-handoff";
 
 // Every workspace tool auto-runs. ui-contract.md §5 — "The tool pills are real
 // in v1" — so a permission card on every "what are the tasks here?" would be a
@@ -83,6 +90,27 @@ export const WORKSPACE_AUTO_TOOLS = [
   "mcp__workspace__create_item",
   "mcp__workspace__update_item",
 ] as const;
+
+// THE ONE TOOL ON THIS SERVER THAT IS NOT PRE-APPROVED, and the list above does
+// NOT grow to hold it (story 5.5 / CAP-11). SPEC.md: "Approval-gated advance is
+// the protocol shape … (`weave_batch`, lane splits): proposal → explicit human
+// approval → effect, rendered as the shared ApprovalCard."
+//
+// The mechanism is loom-mcp.ts's LOOM_START_TOOL, exactly: the name is absent
+// from WORKSPACE_AUTO_TOOLS (so core's WORKSPACE_AUTO_TOOL_NAMES, and therefore
+// BASE_ALLOWED_TOOLS, never grants it), AND lib/server/turn-hooks.ts's
+// PreToolUse guardrail hard-routes it to `ask` in EVERY permission mode — the
+// exclusion alone only closes the SDK's pre-approval fast path, not
+// auto/acceptEdits/bypassPermissions. The chat route's four moat sites carry it
+// too, so a stored "always allow" rule can never satisfy it either.
+//
+// IT IS NOT AN ACCEPT PATH, and the gate is not there because it might be: a
+// weave plans a DRAFT loom and marks the rows that track it (see
+// lib/workspace-handoff.ts). It is gated because it detaches work — the human
+// decides what leaves the queue as one loom, and the "master's proposal" only
+// proposes. Nothing here accepts, completes or deletes anything, which is why
+// `weave_batch` survives INV-1c's ACCEPT_STEMS check on its own name.
+export const WORKSPACE_WEAVE_TOOL = "mcp__workspace__weave_batch";
 
 export type WorkspaceMcpOpts = {
   // The project SLUG this session belongs to — route.ts's own `project` request
@@ -148,6 +176,8 @@ const LIST_ITEMS_DESCRIPTION = `List the user's workspace tasks for THIS session
 const LIST_LANES_DESCRIPTION = `List the user's lanes: key, label, the coarse window the lane's work tends to happen in, and how many items it holds. Lanes are the user's own data, not a fixed set — call this before create_item so you file into a lane that exists. You cannot create, rename, split or retire a lane; that is the user's to do.`;
 
 const CREATE_ITEM_DESCRIPTION = `File a new task into the user's workspace. Give it a title and, ideally, the key of an existing lane (call list_lanes first). Returns the item's id, the lane it landed in, its 1-based rank, its provenance and that it is on the desk. If you name a lane that does not exist — or name none — the item lands in the store's unfiled lane and is marked unplaced so the user is asked where it belongs; NO LANE IS EVER CREATED FOR YOU. The item is filed to this session's project automatically. There is no way to delete an item.`;
+
+const WEAVE_BATCH_DESCRIPTION = `PROPOSE weaving one or more ripened workspace items into a SINGLE loom — the handoff at the end of ripening. The human must approve this call before anything happens; you are proposing, not doing. Pass the item ids that cohere as one piece of work and a one-line reason they belong together. What the loom is handed is the packets themselves: premise = each item's fixed brief and acceptance criteria, context = its attachments — nothing is re-authored. The loom is created as a DRAFT and is NOT started; a human starts it. The woven rows STAY in the user's queue marked as tracking that loom and leave only when it lands and the user accepts, so this neither completes nor removes anything. All items must belong to the same project; a floating item cannot be woven. An item already tracking a loom is refused rather than re-woven. If the work is small or exploratory, say so and suggest a session instead — that is an equal alternative, not a fallback.`;
 
 const UPDATE_ITEM_DESCRIPTION = `Modify an existing workspace task: retitle it, move it to another existing lane (it goes to the BOTTOM of that lane), take it off the desk (desk:false — this drains it to the queue and never deletes it), mark it unplaced, or attach a foreign issue reference. Naming a lane that does not exist lands the item in the unfiled lane and marks it unplaced, exactly as create_item does; NO LANE IS EVER CREATED FOR YOU, so call list_lanes first. Every other field is out of reach on purpose: the user's original words (raw), the sub-task list, the timeline and the promotion link cannot be changed by a tool.`;
 
@@ -383,6 +413,77 @@ export function workspaceTools(opts: WorkspaceMcpOpts) {
               2,
             ),
           );
+        },
+      ),
+      // LAST IN REGISTRATION ORDER, because it was added last (story 5.5) and
+      // MCP_INVENTORY compares this server's tool list as an ORDERED one.
+      // Everything above it auto-runs; this one cannot (WORKSPACE_WEAVE_TOOL).
+      tool(
+        "weave_batch",
+        WEAVE_BATCH_DESCRIPTION,
+        // A RAW ZOD SHAPE, like every shape in this file (INV-11e: no z.object(
+        // here, ever). No `by`, no `account`, no `project` — the weave takes its
+        // project from the ITEMS, and scope from the server's own options.
+        {
+          itemIds: z.array(z.string().min(1)).min(1),
+          reason: z.string().optional(),
+          title: z.string().optional(),
+        },
+        async ({ itemIds, reason, title }) => {
+          // SCOPE IS CHECKED BEFORE THE WEAVE, and the answer for an
+          // out-of-scope id is byte-identical to the answer for one that does
+          // not exist — update_item's anti-oracle rule, applied to a verb that
+          // would otherwise let a project session enumerate another project's
+          // ids by watching which ones weave.
+          for (const id of itemIds) {
+            const existing = getWorkspaceItem(id);
+            if (!existing || !inScope(existing)) {
+              return errResult(`No workspace item found with id "${id}".`);
+            }
+          }
+          try {
+            const result = weaveItems(itemIds, {
+              ...(reason ? { reason } : {}),
+              ...(title ? { title } : {}),
+              // THE SESSION'S OWN ACCOUNT, server-resolved, never tool input —
+              // the identity rule loom-mcp.ts's start_loom states for `by`,
+              // applied to the draft this plans. Without it a weave proposed
+              // from a non-default-account session would bill its loom to the
+              // project manifest's account instead of the human who is here,
+              // which is the same silent mis-attribution `by` exists to
+              // prevent. The HTTP route passes none (it has no session to read
+              // one from) and takes the manifest default deliberately.
+              account: opts.account.name,
+            });
+            return okResult(
+              JSON.stringify(
+                {
+                  loomId: result.loomId,
+                  url: result.url,
+                  project: result.project,
+                  title: result.title,
+                  // The rows that STAY in the queue, tracking the loom. Named
+                  // `tracking` and not `woven` so the model reads back the true
+                  // sentence: nothing left the queue.
+                  tracking: result.tracked,
+                  draft: true,
+                  // THE UNIVERSAL RECEIPT LINE, composed by the same function
+                  // the queue, the packet and a birth session render (see
+                  // lib/detach-receipt.ts) — so the model's own words for what
+                  // happened match the words on the screen.
+                  receipt: detachReceiptLine(result.receipt),
+                  note: result.receipt.note,
+                },
+                null,
+                2,
+              ),
+            );
+          } catch (e) {
+            // HandoffRefused's message IS the product — it names which item is
+            // floating, which already tracks a loom, or which projects the
+            // selection spans, and what the human can do instead.
+            return errResult(e instanceof Error ? e.message : String(e));
+          }
         },
       ),
   ];
