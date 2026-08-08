@@ -73,18 +73,49 @@ export function workspaceDir(): string {
 // project-less master profile needs `cwd: <TELAR_HOME>/workspace/home`, so that
 // story adds an optional `cwd` to the SPEC — and it must reach that subtree
 // through the owning module's exported port, never by composing a path here."
-// This module is the owner; story 5.3 calls this instead of composing.
+// This module is the owner, and STORY 5.6 (the master profile) is the caller
+// that arrived: apps/web/lib/session-profiles.ts's master ANCHOR calls this
+// instead of composing `<telarDir>/workspace/home` of its own, which is what
+// keeps INV-3a's path-composition inventory unchanged by that story. (The
+// prediction above was right about the port and wrong about the shape — 5.6
+// added no `cwd` to SessionProfileSpec; see that file and
+// docs/session-profile-port.md.)
 //
 // It holds NO store files, and ensureWorkspace asserts that by construction:
-// lanes.yaml and packets/ are siblings of home/, never children. That is what
-// makes SPEC.md's "the store above it stays outside the master's path-based
-// write boundary" structurally true rather than merely intended — a master
-// session rooted here can write freely without reaching one item.
+// lanes.yaml and packets/ are siblings of home/, never children.
+//
+// THAT LAYOUT IS NOT THE BOUNDARY, AND AN EARLIER VERSION OF THIS COMMENT SAID
+// IT WAS ("structurally true rather than merely intended — a master session
+// rooted here can write freely without reaching one item"). A review measured
+// it: siblings are reachable by `../lanes.yaml`, `Write`/`Edit`/`Bash` are one
+// "always allow" click — or one full-access turn — away, and the master's
+// manifest guardrails are the schema's defaults, which protect nothing. The
+// layout defeats a RELATIVE-PATH ACCIDENT and nothing more.
+//
+// The boundary is a MECHANISM instead: `workspaceStorePaths()` below names
+// these two entries, `buildMasterProfile` puts them in the profile's
+// `addProtectedPaths`, and `makeGuardrailDecision` denies before any permission
+// mode gets a vote. See apps/web/lib/session-profiles.ts.
 //
 // Composed off workspaceDir() rather than off telarDir(), so it contributes no
 // second root-composition site.
 export function workspaceHomeDir(): string {
   return path.join(workspaceDir(), "home");
+}
+
+// THE STORE'S OWN ENTRIES, ABSOLUTE — the item data a session must not be able
+// to rewrite with a file tool, as opposed to through the workspace MCP server
+// where the Human-Accept Moat lives.
+//
+// Exported for the same AD-5 reason `workspaceHomeDir` is: the master profile
+// has to NAME these paths to protect them, and a caller composing
+// `<workspace>/lanes.yaml` of its own would be a second, unowned site for the
+// layout this module owns (INV-3a's inventory pins that there is one).
+//
+// `home/` is deliberately NOT here: it is the master's cwd, and protecting a
+// session's own working directory would deny every write it is meant to make.
+export function workspaceStorePaths(): readonly string[] {
+  return [lanesFile(), packetsRoot()];
 }
 
 // The lanes filename, as a value, for the same reason PACKET_FILE below is one:

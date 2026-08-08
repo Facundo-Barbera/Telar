@@ -129,6 +129,12 @@ describe("the production right-panel mount", () => {
     const layout = read("app/layout.tsx");
     const events = read("app/api/browser/events/route.ts");
     const chat = read("app/api/chat/route.ts");
+    // STORY 5.6 — the Claude branch's MCP mount (the `browser` server included)
+    // moved out of the chat route into the kind-keyed registry, so the two
+    // assertions about how the browser server is CONSTRUCTED read that file
+    // now. They are the same two facts, pinned at their new home rather than
+    // dropped; the route still owns the Codex-side dynamic tools below.
+    const sessionMcp = read("lib/session-mcp.ts");
     const desktopMain = read("../desktop/main.js");
     const browserManager = read("../desktop/browser-manager.js");
     expect(browser).not.toContain("<iframe");
@@ -187,14 +193,16 @@ describe("the production right-panel mount", () => {
     expect(browserManager).toContain("}, 6000)");
     expect(events).not.toContain("send(runtime.version)");
     expect(events).toContain("JSON.stringify(event)");
-    expect(chat).toContain("createBrowserMcpServer");
+    expect(sessionMcp).toContain("createBrowserMcpServer");
     // Codex rebuilds its dynamic tools every turn, so a static scope stays
     // correct there; the Claude path's persistent runtime (#28) builds its
     // MCP servers once per session, so ITS scope is a call-time getter —
     // draft until the session id exists, canonical after (adoptScope parity).
     expect(chat).toContain("browserTools({ scopeKey: browserScopeKey })");
-    expect(chat).toContain("scopeKey: () => {");
-    expect(chat).toContain("return sid ? `${project}:${sid}` : browserScopeKey;");
+    expect(sessionMcp).toContain("scopeKey: () => {");
+    expect(sessionMcp).toContain(
+      "return sid ? `${ctx.project}:${sid}` : ctx.browserScopeKey;",
+    );
     expect(chat).toContain("CODEX_BROWSER_TOOL_NAMESPACE");
   });
 });

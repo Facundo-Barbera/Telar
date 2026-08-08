@@ -47,12 +47,15 @@ import {
   LOOM_AUTO_TOOL_NAMES,
   NATIVE_CLAUDE_SETTING_SOURCES,
   ProjectManifest,
+  registeredAnchorKinds,
   registeredSessionKinds,
   resetSessionProfiles,
   resolveSessionProfile,
   ULTRA_AUTO_TOOL_NAMES,
   WORKSPACE_AUTO_TOOL_NAMES,
   unmetCapabilities,
+  workspaceHomeDir,
+  workspaceStorePaths,
   type SessionKind,
   type SessionProfileBuilder,
   type SessionResolutionContext,
@@ -66,7 +69,7 @@ import {
   LOOM_START_TOOL,
 } from "./loom-mcp";
 import { ULTRA_AUTO_TOOLS } from "./ultra-mcp";
-import { WORKSPACE_AUTO_TOOLS } from "./workspace-mcp";
+import { WORKSPACE_AUTO_TOOLS, WORKSPACE_WEAVE_TOOL } from "./workspace-mcp";
 import { ULTRA_AUTHORING_REFERENCE } from "./ultra-authoring";
 import { makeGuardrailDecision } from "./permissions";
 import {
@@ -78,15 +81,20 @@ import {
 } from "./session-prompts";
 import {
   buildEscalationProfile,
+  buildMasterProfile,
   buildPlannerProfile,
   buildProjectProfile,
   buildSteererProfile,
+  MASTER_PERMISSIONS_KEY,
   registerSessionProfiles,
 } from "./session-profiles";
 
 // Captured at MODULE SCOPE, immediately after the import above — this IS the
 // side effect, observed rather than described.
 const KINDS_AFTER_IMPORT = [...registeredSessionKinds()];
+// The anchor half of the same side effect (story 5.6), captured in the same
+// breath so no later reset can make either assertion lie.
+const ANCHOR_KINDS_AFTER_IMPORT = [...registeredAnchorKinds()];
 
 const manifest = ProjectManifest.parse({
   name: "demo",
@@ -120,6 +128,11 @@ const D11: Array<{
   requiredCapabilities: readonly string[];
   staticPrompt: string | null;
   getsUltraNote: boolean;
+  // STORY 5.6 — which setting sources the kind asks the harness for. A column
+  // rather than a blanket assertion because the master is the first builder
+  // that is NOT the native stack, and "every builder loads Claude's complete
+  // native stack" would otherwise have to be deleted instead of narrowed.
+  settingSources: readonly string[];
 }> = [
   {
     kind: "project",
@@ -127,6 +140,7 @@ const D11: Array<{
     requiredCapabilities: [],
     staticPrompt: null,
     getsUltraNote: true,
+    settingSources: NATIVE_CLAUDE_SETTING_SOURCES,
   },
   {
     kind: "planner",
@@ -134,6 +148,7 @@ const D11: Array<{
     requiredCapabilities: ["system-prompt-append"],
     staticPrompt: PLANNER_SYSTEM_PROMPT,
     getsUltraNote: true,
+    settingSources: NATIVE_CLAUDE_SETTING_SOURCES,
   },
   {
     kind: "steerer",
@@ -141,6 +156,7 @@ const D11: Array<{
     requiredCapabilities: ["system-prompt-append"],
     staticPrompt: STEERER_SYSTEM_PROMPT,
     getsUltraNote: true,
+    settingSources: NATIVE_CLAUDE_SETTING_SOURCES,
   },
   {
     kind: "escalation",
@@ -153,15 +169,51 @@ const D11: Array<{
     // parameter at all, so this is enforced by a signature rather than
     // remembered.
     getsUltraNote: false,
+    settingSources: NATIVE_CLAUDE_SETTING_SOURCES,
+  },
+  {
+    // STORY 5.6's project-less master (SPEC-organization-workspace CAP-1).
+    kind: "master",
+    build: buildMasterProfile,
+    requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
+    // NO APPENDIX AT ALL, and that is the story's own boundary rather than an
+    // oversight: story 6 is backend-only, and the master's words (the briefing
+    // bands, the receipt, the desk) are stories 7, 9 and 10. An omitted appendix
+    // also requires no `system-prompt-append` capability, so it cannot 400 a
+    // provider over a feature this profile does not use yet.
+    staticPrompt: null,
+    // NEVER. The master is offered no ultra tools — its mount is the workspace
+    // server alone — so a note telling it to annotate a turn for Ultra would
+    // describe a surface it cannot reach.
+    getsUltraNote: false,
+    // ZERO AMBIENT CONFIG DISCOVERY, the one setting the spec states as a
+    // literal. brownfield.md: the master is not IN a repo, so it must not
+    // inherit the operator's ~/.claude or some checkout's .mcp.json.
+    settingSources: [],
   },
 ];
 
 describe("the registration side effect route.ts depends on", () => {
-  test("importing @/lib/session-profiles populates the registry with ALL FOUR kinds", () => {
+  test("importing @/lib/session-profiles populates the registry with EVERY kind", () => {
     // If this ever reads [] the app is broken on every chat request while
     // bun test, tsc and lint all stay green. That is the whole reason this
     // assertion exists.
-    expect(KINDS_AFTER_IMPORT).toEqual(["project", "planner", "steerer", "escalation"]);
+    expect(KINDS_AFTER_IMPORT).toEqual([
+      "project",
+      "planner",
+      "steerer",
+      "escalation",
+      "master",
+    ]);
+  });
+
+  test("the same import registers an ANCHOR for every one of them — story 5.6's second half", () => {
+    // A kind with a builder and no anchor is a 500 in the route's pre-stream
+    // preamble; a kind with an anchor and no builder is a 500 a few lines
+    // later. Both registries are filled by the same module-scope call, so this
+    // equality is what keeps them from being filled HALFWAY.
+    expect([...ANCHOR_KINDS_AFTER_IMPORT].sort()).toEqual([...KINDS_AFTER_IMPORT].sort());
+    expect(ANCHOR_KINDS_AFTER_IMPORT.length).toBeGreaterThan(0);
   });
 });
 
@@ -279,7 +331,7 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
   });
 });
 
-describe("the four builders carry D11's per-kind decisions", () => {
+describe("the builders carry D11's per-kind decisions", () => {
   beforeEach(() => {
     resetSessionProfiles();
     registerSessionProfiles();
@@ -407,11 +459,21 @@ describe("the four builders carry D11's per-kind decisions", () => {
     }
   });
 
-  test("every builder loads Claude's complete native setting stack", () => {
+  test("each builder asks for exactly the setting sources D11 gives it", () => {
+    // Every project-anchored kind loads Claude's complete native stack, which
+    // is what a `claude` launched in that checkout would load. The master loads
+    // NOTHING, and this is the assertion that would catch it silently picking
+    // up the operator's ~/.claude.
     for (const row of D11) {
       const settingSources = resolveSessionProfile(ctx({ kind: row.kind })).settingSources;
-      expect(settingSources).toEqual(NATIVE_CLAUDE_SETTING_SOURCES);
+      expect([...settingSources]).toEqual([...row.settingSources]);
     }
+    // Anti-vacuity: the two columns are genuinely different, so the loop above
+    // is not passing because every row says the same thing.
+    expect(resolveSessionProfile(ctx({ kind: "master" })).settingSources).toEqual([]);
+    expect(
+      resolveSessionProfile(ctx({ kind: "project" })).settingSources.length,
+    ).toBeGreaterThan(0);
   });
 
   test("every kind's cwd IS manifest.root — AC2, by construction", () => {
@@ -440,6 +502,398 @@ describe("the four builders carry D11's per-kind decisions", () => {
         "AskUserQuestion",
       );
     }
+  });
+});
+
+// ── story 5.6 — the project-less master ─────────────────────────────────────
+
+// THE PROFILE HALF (pure — every expectation derived from the constant the
+// server actually registers its tools from, never a restated list of names).
+// The ANCHOR half, which touches the disk, runs in a sandboxed child below.
+describe("5.6 the master profile — a session anchored to no project", () => {
+  beforeEach(() => {
+    resetSessionProfiles();
+    registerSessionProfiles();
+  });
+
+  test("the master's allow is the read triad PLUS the workspace tools, and nothing else", () => {
+    const allow = [...resolveSessionProfile(ctx({ kind: "master" })).toolPolicy.allow];
+    for (const name of WORKSPACE_AUTO_TOOLS) expect(allow).toContain(name);
+    for (const name of ["Read", "Grep", "Glob"]) expect(allow).toContain(name);
+    expect(allow.length).toBe(3 + WORKSPACE_AUTO_TOOLS.length);
+    // THE EXCLUSIONS ARE THE ASSERTION. Every one of these is a name the base
+    // vocabulary WOULD have granted had `allow` been omitted (a project session
+    // gets all of them), so this is what makes the narrowing real:
+    //   - Bash/Write/Edit — the master has a home directory, not a checkout, and
+    //     nothing in CAP-1 asks it to write code.
+    //   - WebSearch/WebFetch — CAP-13's external-reference surface (story 12)
+    //     designs those; pre-granting them here would make that decision for it.
+    //   - the loom and ultra tools — not mounted for this kind at all.
+    // WebSearch/WebFetch/ToolSearch are the sharp ones: they ARE in the base
+    // vocabulary, so an omitted `allow` would have granted them silently.
+    for (const name of ["WebSearch", "WebFetch", "ToolSearch"]) {
+      expect(allow).not.toContain(name);
+      expect([...BASE_ALLOWED_TOOLS]).toContain(name);
+    }
+    // Bash/Write/Edit are not in the base vocabulary at all (they were never
+    // auto-run for any kind); the master does not re-admit them either.
+    for (const name of ["Bash", "Write", "Edit"]) {
+      expect(allow).not.toContain(name);
+    }
+    for (const name of [...LOOM_AUTO_TOOLS, ...ULTRA_AUTO_TOOLS]) {
+      expect(allow).not.toContain(name);
+    }
+  });
+
+  test("the master DENIES every loom and ultra name — a card for an unmounted server is not an option", () => {
+    const deny = [...resolveSessionProfile(ctx({ kind: "master" })).toolPolicy.deny];
+    for (const name of [...LOOM_AUTO_TOOLS, ...ULTRA_AUTO_TOOLS]) {
+      expect(deny).toContain(name);
+    }
+    // The two moat names too, and they are the interesting half: they are
+    // UNSPELLABLE in `allow` by type, so an un-denied one would not fail to
+    // compile — it would fall through to canUseTool and put a human-gated card
+    // on screen for a loom server this session never mounted.
+    expect(deny).toContain(LOOM_START_TOOL);
+    expect(deny).toContain(LOOM_ANSWER_BLOCKED_TOOL);
+    // Anti-vacuity: the deny set is a NARROWING of a mounted surface, not a
+    // blanket — the workspace tools it actually has are not in it.
+    for (const name of WORKSPACE_AUTO_TOOLS) expect(deny).not.toContain(name);
+  });
+
+  test("THE MOAT — weave_batch is in neither list, so it stays callable-but-human-gated", () => {
+    const { toolPolicy } = resolveSessionProfile(ctx({ kind: "master" }));
+    // Story 5.5 / CAP-11: a weave hands the human's own queue rows to a loom
+    // and a human approves that, in every permission mode. In `allow` it would
+    // auto-run; in `deny` the master's whole proposal surface would be gone.
+    // Neither — exactly as escalation treats answer_blocked.
+    expect([...toolPolicy.allow]).not.toContain(WORKSPACE_WEAVE_TOOL);
+    expect([...toolPolicy.deny]).not.toContain(WORKSPACE_WEAVE_TOOL);
+    // …and it is genuinely a workspace tool, not a name this test invented.
+    expect(WORKSPACE_WEAVE_TOOL.startsWith("mcp__workspace__")).toBe(true);
+    expect([...WORKSPACE_AUTO_TOOLS]).not.toContain(WORKSPACE_WEAVE_TOOL);
+  });
+
+  test("the master requires the three capabilities Codex does not publish — AD-11, not silent degradation", () => {
+    const master = resolveSessionProfile(ctx({ kind: "master" }));
+    // runCodexTurn has no MCP plumbing at all (brownfield.md's gap), so a
+    // Codex-backed master would come up with NO workspace server and no way to
+    // say so. The gate turns that into the route's existing pre-SSE 400.
+    expect([...unmetCapabilities(master, "codex")]).toEqual([
+      "pre-tool-use-hooks",
+      "tool-allow-deny-lists",
+    ]);
+    expect(unmetCapabilities(master, "claude")).toEqual([]);
+    // `setting-sources` is deliberately NOT required — see the D11 row.
+    expect([...master.requiredCapabilities]).not.toContain("setting-sources");
+  });
+
+  test("the synthetic permissions key is not a shape a real project name takes", () => {
+    // apps/web/lib/permissions.ts keys stored allow-rules by project name. A
+    // project-less session with no key of its own would file its rules under
+    // the string "undefined" — one bucket every future project-less surface
+    // silently joins.
+    expect(MASTER_PERMISSIONS_KEY).toBe("__master__");
+    expect(MASTER_PERMISSIONS_KEY).not.toBe("undefined");
+    expect(MASTER_PERMISSIONS_KEY.startsWith("__")).toBe(true);
+  });
+});
+
+// ── story 5.6's anchor, in a sandboxed child ────────────────────────────────
+
+describe("5.6 the master anchor resolves a cwd under TELAR_HOME, never a home directory", () => {
+  test("cwd is TELAR_HOME/workspace/home, it EXISTS, and the store sits above it", () => {
+    // WHY A CHILD PROCESS, for the third reason this file has one: the master
+    // anchor calls ensureWorkspace(), which MKDIRS under the resolved state
+    // root — and outside a sandbox that root is the operator's real ~/.telar.
+    // Mutating process.env.TELAR_HOME in the shared bun process is equally
+    // forbidden (every suite runs in ONE process). So: a child, with HOME and
+    // TELAR_HOME pointed at throwaway directories, importing by ABSOLUTE PATH
+    // so a temp dir with no node_modules of its own still resolves.
+    //
+    // HOME IS POINTED AT A THROWAWAY FOR A SECOND REASON HERE. The spec's
+    // hardest line is "NEVER use /Users/facundo (or any home dir) as cwd —
+    // trust never persists there", and the probe below asserts the resolved cwd
+    // is not the home directory it was given. With the real HOME that assertion
+    // would be weaker, because a wrong answer might still differ from it.
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-master-anchor-"));
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "telar-master-home-"));
+    const telarHome = path.join(dir, "telar");
+    try {
+      const probe = path.join(dir, "probe.ts");
+      fs.writeFileSync(
+        probe,
+        [
+          // The catalogue module registers both halves at module scope; the
+          // resolver is core's. Importing them together is exactly what the
+          // route does.
+          `import ${JSON.stringify(path.join(here, "session-profiles"))};`,
+          // CORE BY ABSOLUTE PATH TOO, and not by its "@telar/core" specifier:
+          // the probe file lives in a temp directory, and a bare specifier
+          // resolved from THERE finds a stale copy in bun's install cache —
+          // measured, and it fails as a missing export rather than as a wrong
+          // answer. Both this path and the one @/lib/session-profiles resolves
+          // are the same real file (apps/web/node_modules/@telar/core is a
+          // symlink to packages/core), so the registry the catalogue filled at
+          // module scope is the registry this reads.
+          `import { registerProject, resolveSessionAnchor, resolveSessionProfile } from ${JSON.stringify(
+            path.join(here, "..", "..", "..", "packages", "core", "src", "index.ts"),
+          )};`,
+          `import fs from "node:fs";`,
+          `import path from "node:path";`,
+          `const anchor = resolveSessionAnchor({ kind: "master" });`,
+          // The anchor feeds the fold: cwd is manifest.root, so this proves the
+          // whole path from registration to the value the SDK is handed.
+          `const profile = resolveSessionProfile({ kind: "master", provider: "claude", manifest: anchor.manifest, permissionMode: "default", ultraAnnotated: false });`,
+          `const ws = path.dirname(profile.cwd);`,
+          `console.log(JSON.stringify({`,
+          `  cwd: profile.cwd,`,
+          `  permissionsKey: anchor.permissionsKey,`,
+          `  manifestName: anchor.manifest.name,`,
+          `  guardrails: anchor.manifest.guardrails,`,
+          // THE ACTUAL WRITE BOUNDARY, read off the FOLDED profile rather than
+          // the manifest: `addProtectedPaths` is a spec field, so only the fold
+          // can show it arriving. Reported as absolute paths and compared to
+          // the sandbox's own TELAR_HOME below.
+          `  protectedPaths: profile.guardrails.protectedPaths,`,
+          // The anchor's project, which for THIS kind is the absence of a key.
+          // Reported as a sentinel because JSON.stringify drops `undefined`.
+          `  hasProject: Object.prototype.hasOwnProperty.call(anchor, "project"),`,
+          `  project: anchor.project ?? null,`,
+          // …and its opposite for a project-anchored kind, so "absent" reads as
+          // a decision rather than as a field this shape never carries. The
+          // project is registered inside the sandbox, against the sandboxed
+          // TELAR_HOME, so this touches nothing real.
+          `  projectAnchorProject: (() => {`,
+          `    const root = path.join(${JSON.stringify(dir)}, "proj");`,
+          `    fs.mkdirSync(root, { recursive: true });`,
+          `    fs.writeFileSync(path.join(root, "telar.yaml"), "name: demo\\n");`,
+          `    registerProject(root);`,
+          `    return resolveSessionAnchor({ kind: "project", project: "demo" }).project;`,
+          `  })(),`,
+          // F4 — `__like_this__` is reserved, enforced at the registry's single
+          // write path, because a real project by that name would file its
+          // stored permission rules in the master's own bucket.
+          `  reservedNameRefused: (() => {`,
+          `    const root = path.join(${JSON.stringify(dir)}, "reserved");`,
+          `    fs.mkdirSync(root, { recursive: true });`,
+          `    fs.writeFileSync(path.join(root, "telar.yaml"), "name: __master__\\n");`,
+          `    try { registerProject(root); return false; } catch { return true; }`,
+          `  })(),`,
+          `  exists: fs.existsSync(profile.cwd) && fs.statSync(profile.cwd).isDirectory(),`,
+          `  empty: fs.readdirSync(profile.cwd).length === 0,`,
+          `  workspace: ws,`,
+          `  siblings: fs.readdirSync(ws).sort(),`,
+          `  idempotent: (() => { const again = resolveSessionAnchor({ kind: "master" }); return again.manifest.root === profile.cwd; })(),`,
+          // The other half of "the profile REPLACES the derivation": a project
+          // kind still goes through getProject and still throws for an unknown
+          // one, which is the route's pre-SSE 400.
+          `  unknownProjectThrows: (() => { try { resolveSessionAnchor({ kind: "project", project: "nope" }); return false; } catch { return true; } })(),`,
+          `  noProjectThrows: (() => { try { resolveSessionAnchor({ kind: "project" }); return false; } catch { return true; } })(),`,
+          `}));`,
+        ].join("\n"),
+      );
+      const out = spawnSync(process.execPath, [probe], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: fakeHome, TELAR_HOME: telarHome, NODE_ENV: "test" },
+      });
+      const line = (out.stdout ?? "").trim().split("\n").pop() ?? "";
+      let parsed: Record<string, unknown> | null = null;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        /* fall through to the diagnostic below */
+      }
+      if (!parsed) {
+        throw new Error(
+          `story 5.6: the sandboxed master-anchor probe produced no JSON. ` +
+            `status=${out.status} stdout=${JSON.stringify(out.stdout)} ` +
+            `stderr=${JSON.stringify(out.stderr)}. CONSEQUENCE: the master's cwd, its ` +
+            `existence and the "store stays above it" boundary are ALL unproved while this ` +
+            `test reads as green. NEXT STEP: fix the probe or its module resolution — do not ` +
+            `weaken the assertion, and do NOT resolve the master anchor in this process ` +
+            `(ensureWorkspace mkdirs under the real ~/.telar).`,
+        );
+      }
+
+      // THE PATH THE SPEC NAMES, composed here from the sandbox's own
+      // TELAR_HOME rather than read back from the answer.
+      expect(parsed.cwd).toBe(path.join(telarHome, "workspace", "home"));
+      // NEVER A HOME DIRECTORY (brownfield.md — trust never persists there).
+      expect(parsed.cwd).not.toBe(fakeHome);
+      expect(parsed.cwd).not.toBe(os.homedir());
+      expect(String(parsed.cwd).startsWith(telarHome + path.sep)).toBe(true);
+      // A cwd that does not exist is not a cwd: Claude Code tolerates an empty
+      // directory, but neither harness tolerates a missing one.
+      expect(parsed.exists).toBe(true);
+      // DEDICATED AND EMPTY — the spec's word. It is a workspace directory, not
+      // a checkout, and nothing seeds it.
+      expect(parsed.empty).toBe(true);
+      // THE LAYOUT, AND ONLY THE LAYOUT. This block used to end "…so a session
+      // whose cwd is home/ cannot reach them by relative path at all", which is
+      // false and was the load-bearing sentence of a boundary claim: siblings
+      // are reachable, they are spelled `../lanes.yaml`. The layout is a
+      // convenience (an accidental relative write lands in home/, not in the
+      // store); the BOUNDARY is `addProtectedPaths`, asserted immediately below
+      // from the resolved profile's own guardrails.
+      expect(parsed.workspace).toBe(path.join(telarHome, "workspace"));
+      expect(parsed.siblings).toContain("home");
+      expect(parsed.siblings).toContain("lanes.yaml");
+      expect(parsed.siblings).toContain("packets");
+      // The synthetic identity, and the DEFAULT guardrails the spec asks for —
+      // "default" meaning literally the schema's own, because the anchor parses
+      // a manifest rather than hand-building one.
+      expect(parsed.permissionsKey).toBe("__master__");
+      expect(parsed.manifestName).toBe("__master__");
+      expect(parsed.guardrails).toEqual({ disallowedTools: [], protectedPaths: [] });
+      // THE WRITE BOUNDARY, as a mechanism rather than as a directory layout
+      // (the review finding this probe's sibling assertion above used to stand
+      // in for). The manifest's own guardrails are empty — that is the line
+      // right above — so every entry here arrived through the spec's
+      // `addProtectedPaths`, which is the one channel AD-10 gives a builder.
+      expect(parsed.protectedPaths).toEqual([
+        path.join(telarHome, "workspace", "lanes.yaml"),
+        path.join(telarHome, "workspace", "packets"),
+      ]);
+      // home/ — the master's own cwd — is deliberately NOT protected. A session
+      // that cannot write in its own working directory is not a session.
+      expect(parsed.protectedPaths).not.toContain(parsed.cwd);
+      // THE ANCHOR CARRIES NO PROJECT for this kind, and that absence is what
+      // makes the route's project-only paths (the telar.yaml MCP union, the
+      // persisted project column, the browser scope) collapse without a single
+      // kind check. Asserted as a MISSING KEY, not just a falsy value.
+      expect(parsed.hasProject).toBe(false);
+      expect(parsed.project).toBe(null);
+      // …while a project-anchored kind carries the REGISTRY's name — the wire
+      // value having survived getProject, which is the thing the route reads.
+      expect(parsed.projectAnchorProject).toBe("demo");
+      // F4: the synthetic key's shape is reserved at the registry's own write
+      // path, so a real project can never share the master's permissions
+      // bucket. Registration REFUSES rather than warning.
+      expect(parsed.reservedNameRefused).toBe(true);
+      // AD-15: resolving twice is the same directory, not a new scratch dir per
+      // turn — a stable home is what lets per-directory trust accrue at all.
+      expect(parsed.idempotent).toBe(true);
+      // The derivation was REPLACED for this kind, not removed for all of them.
+      expect(parsed.unknownProjectThrows).toBe(true);
+      expect(parsed.noProjectThrows).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ── story 5.6's write boundary, as a DECISION rather than a directory layout ─
+//
+// The review finding this block answers: the first cut of the master profile
+// claimed "the store above it stays outside the master's write boundary" and
+// implemented that claim as sibling directories. Measured, that bought one
+// thing — an accidental relative write lands in home/ — and nothing else:
+// `../lanes.yaml` is a path, `protectedPaths` was empty, Write/Edit/Bash being
+// absent from `allow` means ASK rather than blocked, and a full-access turn
+// auto-allows every non-moat tool outright. These tests drive the SAME
+// predicate both enforcement points call (the PreToolUse hook and canUseTool),
+// so what they assert is what the guardrail actually decides.
+//
+// IN-PROCESS AND STILL HERMETIC: `workspaceStorePaths()` composes paths and
+// touches no disk (unlike `ensureWorkspace()`, which is why the anchor is
+// probed in a child), and the manifest is parsed here rather than resolved, so
+// nothing under the operator's real ~/.telar is created, read or renamed.
+describe("5.6 the master's write boundary is the guardrail, not the layout", () => {
+  beforeEach(() => {
+    resetSessionProfiles();
+    registerSessionProfiles();
+  });
+
+  // The master's own manifest shape: the schema's DEFAULT guardrails (which is
+  // what the anchor really parses — the child probe above measures exactly
+  // that), so every protected path in the resolved profile can only have come
+  // from the spec's `addProtectedPaths`.
+  const masterProfile = () =>
+    resolveSessionProfile(
+      ctx({
+        kind: "master",
+        manifest: ProjectManifest.parse({
+          name: "__master__",
+          root: workspaceHomeDir(),
+          account: "personal",
+          guardrails: { disallowedTools: [], protectedPaths: [] },
+        }),
+        project: undefined,
+      }),
+    );
+
+  const decideMaster = (tool: string, input: Record<string, unknown>) => {
+    const profile = masterProfile();
+    return makeGuardrailDecision(profile, profile.cwd, tool, input);
+  };
+
+  test("the fold ADDS the store's paths to guardrails that were empty — AD-10's one channel", () => {
+    const profile = masterProfile();
+    // Derived from the store's own port, never restated: this is the same
+    // expression the builder passes, so a store that moves its files moves this
+    // expectation with it.
+    expect([...profile.guardrails.protectedPaths]).toEqual([...workspaceStorePaths()]);
+    // Anti-vacuity: the port is non-empty and names the two things the spec
+    // does (the lanes file and the packet bodies).
+    expect(workspaceStorePaths().length).toBe(2);
+    expect(workspaceStorePaths().some((p) => p.endsWith("lanes.yaml"))).toBe(true);
+    expect(workspaceStorePaths().some((p) => p.endsWith("packets"))).toBe(true);
+    // …and the master's cwd is NOT among them. A session that cannot write in
+    // its own working directory is not a session — the boundary is the store,
+    // not the home.
+    expect([...profile.guardrails.protectedPaths]).not.toContain(profile.cwd);
+  });
+
+  test("a RELATIVE write at the store is denied — `../lanes.yaml` is the actual attack shape", () => {
+    // The sibling layout's whole defence was that the store is not under the
+    // cwd. This is the path that says it is one `..` away. isProtectedPath
+    // resolves both sides against the root, so the relative spelling and the
+    // absolute one reduce to the same decision.
+    for (const spelling of ["../lanes.yaml", workspaceStorePaths()[0]!]) {
+      const d = decideMaster("Write", { file_path: spelling });
+      expect(d.behavior).toBe("deny");
+      expect(d.behavior === "deny" && d.message).toContain("protected path");
+    }
+    // A packet BODY, i.e. a path INSIDE a protected directory rather than the
+    // directory itself — the containment half of the predicate.
+    const inside = decideMaster("Edit", { file_path: "../packets/itm_abc/packet.json" });
+    expect(inside.behavior).toBe("deny");
+  });
+
+  test("Bash is covered too — the tool whose target never appears in a path key", () => {
+    // `protectedPaths` only inspects path-shaped input keys, and Bash populates
+    // none of them. Without the word-split half, the master's most powerful
+    // route to the store would be the one the boundary did not cover.
+    const d = decideMaster("Bash", { command: "rm -rf ../packets" });
+    expect(d.behavior).toBe("deny");
+    expect(d.behavior === "deny" && d.message).toContain("protected path");
+  });
+
+  test("THE DISCRIMINATOR — the master can still write in its own home directory", () => {
+    // Without this row a guardrail that denied everything would satisfy the
+    // three above, and the "fix" would be an outage wearing a boundary's
+    // clothes. notes.md is the shape CAP-1's briefing scratch work takes.
+    expect(decideMaster("Write", { file_path: "notes.md" }).behavior).toBe("allow");
+    expect(decideMaster("Bash", { command: "ls -la ." }).behavior).toBe("allow");
+  });
+
+  test("READING the store is NOT blocked, and saying so is the point", () => {
+    // guardrails.ts is explicit: this guards MODIFICATION, not disclosure —
+    // Read/Grep/Glob are never path-checked. The master is SUPPOSED to read its
+    // own store; what it must not do is rewrite it behind the moat's back.
+    // Asserted so the boundary's scope is recorded by a test rather than by a
+    // comment that can quietly over-claim (which is exactly what happened).
+    expect(decideMaster("Read", { file_path: "../lanes.yaml" }).behavior).toBe("allow");
+  });
+
+  test("a project session's guardrails are untouched by any of this", () => {
+    // AD-10 is "may restrict more, never less" — for THIS kind. The store's
+    // paths must not leak into a kind that never asked for them.
+    const p = resolveSessionProfile(ctx({ kind: "project" }));
+    expect([...p.guardrails.protectedPaths]).toEqual([".env"]);
   });
 });
 

@@ -20,6 +20,15 @@
 // named sites. Everything path-shaped arrives already resolved, on the
 // context. The whole module is otherwise PURE: no clock, no randomness, no
 // I/O, no seams — which is why its suite needs no TELAR_HOME sandbox.
+//
+// STORY 5.6 QUALIFIED THAT LAST SENTENCE IN EXACTLY ONE PLACE, and the
+// qualification is worth stating precisely because the rest still holds: the
+// ANCHOR REGISTRY at the bottom of this file STORES resolvers that do I/O (the
+// project one reads the project registry; the master one ensures its own
+// directory exists). This module still opens nothing itself, imports no
+// node:fs/os/path, and composes no path — the master's cwd arrives through the
+// workspace store's exported workspaceHomeDir(), which is the owner of that
+// subtree. The fold below is unchanged and still pure.
 import type {
   McpServerConfig as SdkMcpServerConfig,
   PermissionMode,
@@ -30,15 +39,23 @@ import { providerCapabilities, type ProviderCapability } from "./providers";
 
 // --- The kinds ---------------------------------------------------------------
 
-// The four session kinds that exist TODAY, named from the chat route's own
+// The session kinds that exist TODAY, named from the chat route's own
 // vocabulary: the wire `role` is "planner" | "steerer" | "escalation" |
-// undefined, and undefined is the ordinary project session.
+// "master" | undefined, and undefined is the ordinary project session.
 //
 // The union stays CLOSED even though registration (below) is open. A new kind
 // adds a member here — one line, in core, reviewed — and registers its builder
 // in the owning surface's own file. The TYPE is a contract core owns; the DATA
 // is the surface's.
-export type SessionKind = "project" | "planner" | "steerer" | "escalation";
+//
+// "master" is SPEC-organization-workspace's project-less front door (its CAP-1,
+// story 5.6), and it is the FIRST kind that is not anchored to a project. That
+// is why this story also had to add the ANCHOR registry at the bottom of this
+// file: every other kind derives its manifest from `getProject(project)`, which
+// 400s when there is no project, and AD-9 says a new surface adds a profile
+// rather than an `if` in the handler — so the derivation itself became
+// per-kind data instead of a branch the route keeps.
+export type SessionKind = "project" | "planner" | "steerer" | "escalation" | "master";
 
 // Every value the union can take, in one place, so a test can enumerate the
 // whole space (the ADMISSION_CLASSES idiom, admission.ts).
@@ -47,12 +64,14 @@ export const SESSION_KINDS: readonly SessionKind[] = [
   "planner",
   "steerer",
   "escalation",
+  "master",
 ] as const;
 
 // The wire `role` a chat request may carry. Mirrors the route's own narrowing:
-// anything that is not one of these three collapses to undefined, so a stray
-// value can never be mistaken for a real loom turn.
-export type SessionRole = "planner" | "steerer" | "escalation";
+// anything that is not one of these four collapses to undefined, so a stray
+// value can never be mistaken for a real loom turn — or, since story 5.6, for a
+// project-less master turn.
+export type SessionRole = "planner" | "steerer" | "escalation" | "master";
 
 // Which kind a request is, from what the WIRE reliably carries — and nothing
 // else. Deliberately UNDER-detects: it is NOT what the chat route resolves a
@@ -62,8 +81,16 @@ export type SessionRole = "planner" | "steerer" | "escalation";
 // requires NO capability, so a mis-detected session degrades to a weaker
 // requirement and never a spurious 400. Full reasoning:
 // docs/session-profile-port.md
+// "master" joins the pass-through arm rather than getting a case of its own:
+// the wire word and the kind are the same word, exactly as they are for the
+// three loom roles. What it does NOT do is change the fallback — an
+// unrecognised role still lands on `project`, so the under-detection above
+// still degrades toward the kind that requires no capability and anchors to a
+// real project.
 export function sessionKindFromRole(role?: string): SessionKind {
-  return role === "planner" || role === "steerer" || role === "escalation" ? role : "project";
+  return role === "planner" || role === "steerer" || role === "escalation" || role === "master"
+    ? role
+    : "project";
 }
 
 // "Which strings are session roles", in ONE place — resolveSessionKind below
@@ -72,13 +99,16 @@ export function sessionKindFromRole(role?: string): SessionKind {
 // undefined, so a stray or hostile wire value can never be mistaken for a
 // real loom turn.
 export function sessionRoleFromWire(raw: unknown): SessionRole | undefined {
-  return raw === "planner" || raw === "steerer" || raw === "escalation" ? raw : undefined;
+  return raw === "planner" || raw === "steerer" || raw === "escalation" || raw === "master"
+    ? raw
+    : undefined;
 }
 
 // The kind, from EVERYTHING the pre-stream preamble knows: the wire role, the
 // merged session<->loom link's role, and the VALIDATED loom id.
 //
-// PRECEDENCE ORDER IS LOAD-BEARING (escalation, steerer, planner, plain) —
+// PRECEDENCE ORDER IS LOAD-BEARING (master, escalation, steerer, planner,
+// plain) —
 // measured from the chat route's own systemPrompt ternary chain, including
 // its collision case (a resumed steerer chat whose client also sends
 // `role: "planner"` resolves as STEERER). An unordered Record or independent
@@ -89,15 +119,60 @@ export function sessionRoleFromWire(raw: unknown): SessionRole | undefined {
 export function resolveSessionKind(input: {
   // The narrowed WIRE role (sessionRoleFromWire above).
   readonly role?: SessionRole;
-  // loomLink.role — the merged persisted/wire link role.
-  readonly linkRole?: SessionRole;
+  // The role this chat was PERSISTED with, when it is a resume (store.ts's
+  // Chat.role). Story 5.6's review added it: see the master arm below.
+  readonly persistedRole?: SessionRole;
+  // loomLink.role — the merged persisted/wire link role. Never "master": a
+  // master session has no loom to link to (see LoomLinkRole below).
+  readonly linkRole?: LoomLinkRole;
   // loomLink.loomId — VALIDATED, never the raw wire value.
   readonly loomId?: string;
 }): SessionKind {
+  // MASTER FIRST, and the ordering is a statement about what the other three
+  // are: every one of them is a LOOM role, and a loom belongs to a project the
+  // master does not have. `linkRole` cannot be "master" by type and a master
+  // request carries no validated `loomId` (validation checks
+  // `loom.project === project`, and there is no project), so this arm cannot
+  // collide with the three below — it is first for readability, not to win a
+  // fight.
+  //
+  // IT READS `role` AND `persistedRole` AND NOTHING ELSE, WHICH IS THE WHOLE
+  // POINT — those are exactly the two inputs the chat route also has BEFORE it
+  // resolves the anchor. The route calls this function twice: once with just
+  // those two (to pick the anchor, before a project exists to validate a loom
+  // id against) and once with everything. The extra inputs the second call adds
+  // can only sharpen the answer AMONG THE PROJECT-ANCHORED KINDS, so the two
+  // calls can never disagree about the one distinction the anchor turns on.
+  // That is the structural version of a claim story 5.6's first cut left to
+  // coincidence — it derived the anchor kind from a DIFFERENT function
+  // (sessionKindFromRole) and nothing pinned the two together.
+  //
+  // `persistedRole` is also what makes a master chat RESUMABLE. Wire-only was
+  // the first cut's rule, defended as fail-safe; a review measured the failure
+  // it is safe INTO — a master row carries no project, so a resumed turn whose
+  // client omitted `role` anchored to `getProject("")` and 400'd. Reading the
+  // row the session itself wrote is not trusting the client; the row was
+  // written by this route.
+  if (input.role === "master" || input.persistedRole === "master") return "master";
   if (input.role === "escalation" && input.loomId) return "escalation";
   if (input.linkRole === "steerer") return "steerer";
   if (input.role === "planner" || input.linkRole === "planner") return "planner";
   return "project";
+}
+
+// The three roles a SESSION<->LOOM LINK can hold — every session role except
+// the master's, because a master session has no loom. Derived from SessionRole
+// by Exclude rather than restated, so adding a project-less kind to the union
+// above cannot silently make it spellable as a link role.
+export type LoomLinkRole = Exclude<SessionRole, "master">;
+
+// Narrow a session role to a loom link role. The chat route persists ONE role
+// per chat (store.ts's Chat.role) and reads it back as both — this is the one
+// place that conversion happens, so a project-less role can never be written
+// into a loom link, and a future project-less kind gets the same treatment for
+// free.
+export function loomLinkRoleOf(role?: SessionRole): LoomLinkRole | undefined {
+  return role === undefined || role === "master" ? undefined : role;
 }
 
 // --- The tool policy ---------------------------------------------------------
@@ -256,8 +331,12 @@ export type ProfilePermissionMode = Exclude<
 //   - no `guardrails` — a spec may only ADD restriction, via the two
 //     add-prefixed fields below, so a mis-authored profile cannot hand back an
 //     empty guardrail set and widen access;
-//   - no `cwd` — the context supplies it, so in this story no profile can
-//     redirect where a session runs;
+//   - no `cwd` — the context supplies it, so no profile can redirect where a
+//     session runs. STILL TRUE AFTER STORY 5.6, which is the story
+//     docs/session-profile-port.md predicted would add one: the project-less
+//     master needed `cwd: <TELAR_HOME>/workspace/home` and got it from its
+//     registered ANCHOR (below), which is the context's own source, rather
+//     than from a field here that every other profile would also have gained;
 //   - no field of any kind that could reach hook registration. INV-6a pins that.
 export type SessionProfileSpec = {
   readonly kind: SessionKind;
@@ -369,14 +448,174 @@ export function registerSessionProfile(kind: SessionKind, build: SessionProfileB
 // are: bun runs EVERY test file in one process, so this module-scope Map leaks
 // across suites and a duplicate-registration throw from one file would take
 // down another, in an order that is not stable. Call it in beforeEach.
+//
+// It clears BOTH maps — builders and anchors — because they are two halves of
+// one registration (the module that declares a kind declares both), and a reset
+// that emptied one would leave a suite able to resolve an anchor for a kind
+// whose builder is gone. One seam, one meaning: "no kind is declared".
 export function resetSessionProfiles(): void {
   builders.clear();
+  anchors.clear();
 }
 
 // Which kinds currently have a builder. Exported so a caller (and a test) can
 // see the registry's contents without reaching into the Map.
 export function registeredSessionKinds(): readonly SessionKind[] {
   return SESSION_KINDS.filter((k) => builders.has(k));
+}
+
+// --- The anchor ---------------------------------------------------------------
+
+// WHAT A SESSION IS ANCHORED TO, resolved BEFORE the profile and by the same
+// registry idiom. Story 5.6 (SPEC-organization-workspace CAP-1) added it for
+// the master session, which has NO project.
+//
+// The problem it solves, stated as the route used to state it:
+// `manifest = getProject(project).manifest` inside a try/catch that returns a
+// plain 400 — the "one hard coupling" of brownfield.md, and the thing that
+// makes a project-less session impossible. AD-9 forbids the obvious fix ("a new
+// surface adds a profile, it does not add an `if`"), and skipping the gate for
+// one kind was refused outright by the story: the profile REPLACES the
+// derivation for its kind rather than stepping past it. So the derivation moved
+// here, keyed by kind, exactly like the builders.
+//
+// WHY IT IS A SECOND REGISTRY AND NOT A FIELD ON THE SPEC — the ordering makes
+// it one. `manifest` is an INPUT to SessionResolutionContext: the fold reads
+// `ctx.manifest.root` for `cwd` and unions `ctx.manifest.guardrails`, so a
+// profile cannot supply what the profile is resolved from. Note what this
+// preserves: `SessionProfileSpec` still has no `cwd` and no `guardrails`, so
+// INV-6a's field pin is untouched and no profile can redirect where a session
+// runs or hand back an emptier guardrail set than its anchor's. See
+// docs/session-profile-port.md for the `cwd`-on-the-spec alternative this
+// replaced, and why.
+export type SessionAnchor = {
+  // The manifest the fold derives `cwd` and guardrails from. For every
+  // project-anchored kind this is the registry's own manifest, byte for byte
+  // what `getProject` returned before. For a project-less kind it is a
+  // SYNTHETIC manifest whose `root` is that surface's own directory — and it
+  // must be the REAL directory the session will run in, because `root` is what
+  // becomes `cwd`; a placeholder here would be a lie the whole route reads.
+  readonly manifest: ProjectManifest;
+  // The key this session's stored permission rules live under
+  // (apps/web/lib/permissions.ts is keyed by project name). A project-less
+  // session still needs somewhere to remember "always allow Write" — the
+  // master's is the synthetic `__master__` — and a resolver that returned
+  // another kind's key would let one surface inherit another's allow-rules,
+  // which is why this value is declared beside the manifest instead of being
+  // re-derived at each call site.
+  readonly permissionsKey: string;
+  // WHICH PROJECT THIS SESSION IS ACTUALLY ANCHORED TO — absent for a
+  // project-less kind, and the reason it exists is a REVIEW FINDING against
+  // the first cut of story 5.6.
+  //
+  // That cut let the anchor answer "cwd, guardrails, permissions key" and left
+  // the wire `project` field live for everything else. So a request carrying
+  // `{ role: "master", project: "aurora" }` was anchored project-lessly and
+  // then, three hundred lines later and INSIDE the stream, still had aurora's
+  // `telar.yaml` MCP servers spread onto its mount and its chat row persisted
+  // under aurora — while a bogus name turned the route's pre-SSE 400 into a
+  // mid-stream SSE error, because `resolveProjectMcpServers` throws. A wire
+  // field that no resolver validated was still deciding behaviour.
+  //
+  // This is the fix, and its shape is the point: the anchor is the ONE answer
+  // to "which project, if any", so the route shadows the wire field with it and
+  // there is no second reader left to disagree. For every project-anchored kind
+  // it is byte-identical to the wire string (the resolver returns the name it
+  // just looked up); for the master it is `undefined`, which is what makes the
+  // project-only code paths downstream collapse to nothing rather than needing
+  // a kind check.
+  readonly project?: string;
+};
+
+// A surface's contribution. NOT pure, unlike a builder's contract as originally
+// written: the project resolver reads the project registry off disk. That I/O
+// belongs to the module that registers it — this file still opens nothing,
+// composes no path and reads no env, so AD-5/AD-20 and INV-3a are untouched.
+export type SessionAnchorResolver = (input: { readonly project?: string }) => SessionAnchor;
+
+const anchors = new Map<SessionKind, SessionAnchorResolver>();
+
+// Same collision rule, same reasoning as registerSessionProfile above: two
+// modules each deciding what a kind is anchored to would make the answer depend
+// on import order.
+export function registerSessionAnchor(kind: SessionKind, resolve: SessionAnchorResolver): void {
+  if (anchors.has(kind)) {
+    throw new Error(
+      `session-profile: cannot register an anchor for "${kind}" — one is already declared. ` +
+        `Two modules each deciding what a kind is anchored to would make cwd, guardrails and ` +
+        `the permissions key depend on import order, which is not stable. Extend the existing ` +
+        `resolver in the module that owns this kind.`,
+    );
+  }
+  anchors.set(kind, resolve);
+}
+
+// Which kinds currently have an anchor. The asymmetry with
+// registeredSessionKinds() is deliberate and is what a test wants: the two
+// lists must be EQUAL, and only two accessors can say so.
+export function registeredAnchorKinds(): readonly SessionKind[] {
+  return SESSION_KINDS.filter((k) => anchors.has(k));
+}
+
+// The registered resolver itself, by kind — exported for ONE purpose, and it is
+// a review finding's mechanism rather than a convenience.
+//
+// The chat route derives a kind TWICE per request: once pre-anchor from what
+// the wire and the resumed chat row reliably carry, and once (sharper, with a
+// validated loom id) for the profile. Two derivations that disagree would give
+// one request its cwd from one kind and its tool surface from another. They
+// cannot disagree about ANYTHING ELSE cheaply — but they must not disagree
+// about the ANCHOR, and identity of the registered resolver is exactly that
+// claim, testable over the closed input space without resolving anything (no
+// project registry, no `ensureWorkspace`). apps/web/lib/session-profiles.test.ts
+// enumerates every role × persisted-role × loom-id triple against it.
+export function sessionAnchorResolverFor(kind: SessionKind): SessionAnchorResolver | undefined {
+  return anchors.get(kind);
+}
+
+// THE SYNTHETIC-KEY SHAPE, RESERVED — `__master__` and anything else spelled
+// like it. A project-less kind's permissions key shares one namespace with real
+// project names (apps/web/lib/permissions.ts keys stored allow-rules by name),
+// and story 5.6's first cut relied on `__master__` merely being "not a shape a
+// real project is given". That is a convention, not a guard: nothing stopped a
+// project registered under the literal name `__master__` from sharing the
+// master's rule bucket AND its pending-approval coalescing group.
+//
+// A SHAPE RATHER THAN A LIST, so core does not have to know every surface's
+// synthetic key: the rule is leading AND trailing double underscores, which no
+// directory basename a human scaffolds from produces. Enforced where names
+// enter the registry (manifest.ts's rememberProject), deliberately NOT in the
+// ProjectManifest schema — the master's own anchor PARSES a manifest named
+// `__master__`, so a schema refusal would break the very surface this protects.
+export function isReservedProjectName(name: string): boolean {
+  return /^__.+__$/.test(name.trim());
+}
+
+// Resolve what this request is anchored to. Called by the route BEFORE the
+// profile, from the wire role alone (sessionKindFromRole's under-detection is
+// the correct narrowing there — the loom-link reads that sharpen the kind need
+// a project, which is the very thing being resolved).
+//
+// THROWS TWICE OVER, and both throws are the route's existing pre-SSE 400:
+// once when no module declared the kind (a missing side-effect import), and
+// once when the registered resolver itself refuses — which is exactly what
+// `getProject` does for an unknown project. The route's try/catch around this
+// call is the SAME try/catch it always had around getProject.
+export function resolveSessionAnchor(input: {
+  readonly kind: SessionKind;
+  readonly project?: string;
+}): SessionAnchor {
+  const resolve = anchors.get(input.kind);
+  if (!resolve) {
+    const known = registeredAnchorKinds();
+    throw new Error(
+      `session-profile: cannot anchor "${input.kind}" — no module declared one. ` +
+        `Declared kinds: ${known.length > 0 ? known.join(", ") : "(none)"}. ` +
+        `An anchor registers at MODULE SCOPE beside its builder, so the module that owns this ` +
+        `kind has to be imported for its side effect before the first request reaches it.`,
+    );
+  }
+  return resolve({ project: input.project });
 }
 
 // --- The fold -----------------------------------------------------------------
@@ -450,8 +689,11 @@ export function resolveSessionProfile(ctx: SessionResolutionContext): SessionPro
 
   return {
     kind: ctx.kind,
-    // From the CONTEXT, never from the spec — so no profile in this story can
-    // redirect where a session runs. See the epic-5 forward note in the header.
+    // From the CONTEXT, never from the spec — so no profile can redirect where
+    // a session runs. A project-less kind changes its cwd by registering a
+    // different ANCHOR (see "The anchor" above), which moves BOTH cwd and the
+    // guardrails they must agree with, together, and cannot move one of them
+    // for one kind while the route keeps reading the other.
     cwd: ctx.manifest.root,
     guardrails,
     settingSources: spec.settingSources,

@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import { z } from "zod";
 import { ProjectManifest } from "./schemas";
+import { isReservedProjectName } from "./session-profile";
 
 // `manifest` caches the last-known-good parsed manifest so getProject can
 // self-heal a telar.yaml wiped by a build agent's `git clean`/`checkout`.
@@ -106,6 +107,28 @@ export function writeManifest(root: string, m: ProjectManifest): void {
 }
 
 function rememberProject(root: string, manifest: ProjectManifest): ProjectManifest {
+  // THE ONE WRITE PATH INTO THE REGISTRY (registerProject and createProject both
+  // come through here), which is why the reserved-name guard lives here and
+  // nowhere else.
+  //
+  // Story 5.6 gave the project-less master the synthetic permissions key
+  // `__master__`, and permission rules are keyed by PROJECT NAME — one
+  // namespace, shared. Its first cut relied on `__master__` merely not being a
+  // shape anyone would choose; a review found nothing actually stopped it. A
+  // project registered under that literal name would have inherited the
+  // master's standing allow-rules and joined its pending-approval coalescing
+  // group, which is a permission boundary decided by a directory basename.
+  //
+  // It REFUSES rather than renames: a silent rename would put the project in
+  // the registry under a name its own telar.yaml does not carry, and every
+  // later lookup by the name the human typed would miss.
+  if (isReservedProjectName(manifest.name)) {
+    throw new Error(
+      `Refusing to register a project named "${manifest.name}": names spelled __like_this__ are ` +
+        `reserved for Telar's own project-less sessions (their stored permission rules are keyed ` +
+        `in the same namespace). Rename it in ${manifestFile(path.resolve(root))}.`,
+    );
+  }
   const reg = readRegistry();
   reg[manifest.name] = {
     name: manifest.name,

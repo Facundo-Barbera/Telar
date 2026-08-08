@@ -4,7 +4,12 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { ledgerReadDegraded, sessionCostFolds, usageTokensBySession } from "@telar/core";
+import {
+  ledgerReadDegraded,
+  sessionCostFolds,
+  usageTokensBySession,
+  type SessionRole,
+} from "@telar/core";
 import type { ClientPermissionMode } from "./permission-modes";
 import type { CompactionFacts, CompactionRecord } from "./compaction";
 import { previewPlainText } from "./preview-text";
@@ -173,8 +178,21 @@ export type Chat = {
   // like "steerer" so the surface can reattach across navigation/reload —
   // both are loom-born and filtered out of the regular project session list
   // (GET /api/chats), reachable only from the loom's own UI instead.
+  //
+  // WIDENED TO THE WHOLE SESSION-ROLE UNION BY STORY 5.6, and it is the field
+  // that makes a project-less session RESUMABLE. `role` was three loom roles,
+  // typed as a literal union here — so "master" could not be written, a master
+  // chat's row carried no role AND no project, and the next turn's route had
+  // nothing to re-derive the kind from: it anchored through `getProject("")`
+  // and 400'd. Fail-safe in direction, guaranteed in practice for any client
+  // that does not re-send `role` on every single turn.
+  //
+  // The type comes from core (`SessionRole`) rather than being restated, so a
+  // future kind cannot be added to the wire vocabulary and silently stay
+  // unpersistable. What a LOOM LINK may hold is the narrower `LoomLinkRole`,
+  // and `loomLinkRoleOf` is the one conversion — see the chat route's loomLink.
   loomId?: string;
-  role?: "planner" | "steerer" | "escalation";
+  role?: SessionRole;
   createdAt: number;
   updatedAt: number;
   costUsd: number;
@@ -750,7 +768,9 @@ export function upsertChatStub(opts: {
   fastMode?: boolean;
   serviceTier?: string;
   loomId?: string;
-  role?: "planner" | "steerer" | "escalation";
+  // STORY 5.6 — the whole session-role union (see Chat.role above): a master
+  // chat has to be able to say what it is, or it cannot be resumed.
+  role?: SessionRole;
   title?: string;
   userText: string;
 }): void {
@@ -798,7 +818,9 @@ export function appendTurn(opts: {
   // Chat.loomId/role). Undefined means "no change"; only ever narrows a
   // link in, never clears one (see the guarded assignment below).
   loomId?: string;
-  role?: "planner" | "steerer" | "escalation";
+  // STORY 5.6 — the whole session-role union (see Chat.role above): a master
+  // chat has to be able to say what it is, or it cannot be resumed.
+  role?: SessionRole;
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
   // M11.3 fix — the escalation kickoff's userMessage carries the server-

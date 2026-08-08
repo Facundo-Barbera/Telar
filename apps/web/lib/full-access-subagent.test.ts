@@ -143,7 +143,14 @@ describe("AD-1 §M.6 — the accept moat holds on the Codex path too", () => {
     expect(codexDynamicToolSource).toContain(
       '!isMoatTool && (runtimeMode === "full-access" || runtimeMode === "auto")',
     );
-    expect(codexDynamicToolSource).toContain("!isMoatTool && readRules(project)");
+    // `permissionsKey`, not `project`, since story 5.6: the route reads the
+    // key off the session's ANCHOR (the project slug for every project-anchored
+    // kind, `__master__` for the project-less master) so a project-less session
+    // cannot file its rules in a shared "undefined" bucket. The moat guard in
+    // front of it is what this row is about and is unchanged — but it is
+    // pinned by SOURCE, so the rename has to be acknowledged here rather than
+    // silently loosened to a substring that no longer names the read.
+    expect(codexDynamicToolSource).toContain("!isMoatTool && readRules(permissionsKey)");
   });
 
   test("a moat tool's approval is never persisted as a standing rule", () => {

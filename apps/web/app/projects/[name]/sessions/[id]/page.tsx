@@ -5,6 +5,7 @@ import {
   resolveEnabledAccount,
 } from "@telar/core/accounts";
 import { getProject } from "@telar/core/manifest";
+import { loomLinkRoleOf } from "@telar/core";
 import { getChat, publicTurnAnchors } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/common/page-header";
@@ -115,7 +116,14 @@ export default async function SessionPage({
         // that the persisted context size predates it.
         compactions: chat.compactions,
         loomId: chat.loomId,
-        role: chat.role,
+        // NARROWED, not passed through (story 5.6): `Chat.role` now carries the
+        // whole SESSION role union because a project-less master row has to be
+        // able to say what it is, while this prop is the LOOM LINK's role — it
+        // seeds the header's planning/steering chips and nothing else. The
+        // conversion lives in core beside the two unions; "master" reads back
+        // here as no link, which is exactly right for a session that has none
+        // (and cannot reach this project-scoped page in the first place).
+        role: loomLinkRoleOf(chat.role),
         turns: chat.turns,
         // The pencil's map (STEP 5): which bubbles are rollback-addressable.
         // Projected — {turn, startMessage, hidden, at}, never a uuid (wire

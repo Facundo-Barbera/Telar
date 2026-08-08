@@ -18,19 +18,22 @@ import {
   ackUltraWakes,
   getAccount,
   getLoom,
-  getProject,
   pendingUltraWakes,
   providerOf,
   resolveProjectMcpServers,
   resolveEnabledAccount,
+  resolveSessionAnchor,
   resolveSessionKind,
   resolveSessionProfile,
+  loomLinkRoleOf,
   loadPolicy,
   sessionRoleFromWire,
   signInCommand,
   unmetCapabilities,
   type AccountProfile,
   type ProjectManifest,
+  type SessionAnchor,
+  type SessionKind,
   type SessionRole,
 } from "@telar/core";
 import {
@@ -51,10 +54,16 @@ import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { logPermissionCheck, logPermissionOutcome } from "@/lib/permission-diagnostics";
 
-/** The in-process MCP servers telar itself constructs and whose whole tool
- *  surface it wrote. Kept beside the `mcpServers` literal's own key list, which
- *  is the only other place these four names appear together. */
-const TELAR_OWN_MCP_SERVERS = ["browser", "loom", "ultra", "workspace"] as const;
+/* THE IN-PROCESS MCP SERVERS TELAR ITSELF CONSTRUCTS used to be a hand-written
+ * tuple here (`["browser", "loom", "ultra", "workspace"]`). Story 5.6's review
+ * removed it: once @/lib/session-mcp became the source of truth for which
+ * servers a kind mounts, a second list of the same fact could only drift — a
+ * future kind mounting a new server would silently miss
+ * setMcpPermissionModeOverride, which is exactly the class of drift the registry
+ * was introduced to end. The list is now `Object.keys(telarMcpServers)` at the
+ * one site that needs it, which is per-SESSION rather than global and is
+ * therefore also more correct: it never names a server this session did not
+ * mount. */
 import {
   appendixCarriesUltraWake,
   isUltraWakeTrigger,
@@ -95,20 +104,18 @@ import {
 // "a name a profile may grant" and "a name only a human may approve" is exactly
 // why.
 import {
-  createLoomMcpServer,
   loomTools,
   LOOM_ANSWER_BLOCKED_TOOL,
   LOOM_MCP_VERSION,
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
-import { createUltraMcpServer, ultraTools, ULTRA_MCP_VERSION } from "@/lib/ultra-mcp";
+import { ultraTools, ULTRA_MCP_VERSION } from "@/lib/ultra-mcp";
 // WORKSPACE_WEAVE_TOOL joins the two loom constants above as a name no profile
 // grants and no stored rule can satisfy (story 5.5 / CAP-11 — approval-gated
 // advance). It is deliberately NOT in WORKSPACE_AUTO_TOOLS, and every moat site
 // below names all three.
 import {
-  createWorkspaceMcpServer,
   workspaceTools,
   WORKSPACE_MCP_VERSION,
   WORKSPACE_WEAVE_TOOL,
@@ -117,7 +124,6 @@ import {
   browserTools,
   BROWSER_MCP_VERSION,
   CODEX_BROWSER_TOOL_NAMESPACE,
-  createBrowserMcpServer,
   isReadOnlyBrowserCall,
 } from "@/lib/browser-mcp";
 import { namespaceOf } from "@/lib/harness-tools";
@@ -186,13 +192,18 @@ import {
   type ClaudeTurnState,
 } from "@/server/providers/claude/project-message";
 // SIDE-EFFECT IMPORT, and it is load-bearing. @/lib/session-profiles registers
-// the four SessionProfileSpec builders at MODULE SCOPE, and module scope only
-// runs if something imports the module. Without this line the profile registry
-// is EMPTY at request time and resolveSessionProfile below throws on every chat
-// request — a 500 on the live path that no gate would catch, because there is
-// no test file for this route anywhere in the tree, so bun test / tsc / lint
-// all stay green while the app is broken. Do not "tidy" it away as unused.
+// every SessionProfileSpec builder AND (story 5.6) every session ANCHOR at
+// MODULE SCOPE, and module scope only runs if something imports the module.
+// Without this line the profile registry is EMPTY at request time and
+// resolveSessionAnchor/resolveSessionProfile below throw on every chat request
+// — a 500 on the live path that no gate would catch, because there is no test
+// file for this route anywhere in the tree, so bun test / tsc / lint all stay
+// green while the app is broken. Do not "tidy" it away as unused.
 import "@/lib/session-profiles";
+// The MCP mount registry — same module-scope registration, but reached by a
+// NAMED import below (resolveSessionMcpServers), so it cannot be dropped as
+// unused the way the line above could.
+import { resolveSessionMcpServers } from "@/lib/session-mcp";
 
 // MAX_DETAILED_TOOL_PARTS (the per-parent tool-detail ceiling) moved to
 // server/providers/claude/project-message.ts with the rationing it bounds.
@@ -255,7 +266,12 @@ export async function POST(req: Request) {
     message: rawMessage,
     sessionId,
     model: rawModel,
-    project,
+    // THE WIRE'S REQUEST, NOT THE ANSWER — read `project` below the anchor
+    // block instead, which shadows this with what the session is actually
+    // anchored to. Named `rawProject` for the same reason `rawRole`/`rawUltra`
+    // are: it is an unvalidated value off `req.json()`, and story 5.6's review
+    // found three places still consuming it after the anchor had replaced it.
+    project: rawProject,
     browserScopeKey: rawBrowserScopeKey,
     account,
     effort: rawEffort,
@@ -345,24 +361,16 @@ export async function POST(req: Request) {
   // to undefined so a stray or hostile wire value can never be mistaken for a
   // real loom turn.
   const role: SessionRole | undefined = sessionRoleFromWire(rawRole);
+  // Narrowed the same fail-safe way as `role`: a non-string, or an empty
+  // string, collapses to undefined, which the project anchor refuses (a 400)
+  // and the master anchor never looks at. Typing it here is also what makes the
+  // shadowing `const project` below a real `string | undefined` rather than the
+  // `any` `req.json()` hands out.
+  const wireProject: string | undefined =
+    typeof rawProject === "string" && rawProject ? rawProject : undefined;
   const runId: string =
     typeof rawRunId === "string" && rawRunId ? rawRunId : crypto.randomUUID();
   const ultraAnnotated: boolean = rawUltra === true;
-  // The Electron browser host is shared, but its tabs and tool namespace are
-  // not. Existing chats have one canonical scope. Fresh composers provide a
-  // unique draft scope that is adopted into the SDK session id when the first
-  // `session` event arrives, preventing two new-session windows from sharing
-  // tabs while still keeping one bounded desktop browser process.
-  const canonicalBrowserScope = `${project}:${sessionId ?? ""}`;
-  const suppliedBrowserScope = typeof rawBrowserScopeKey === "string"
-    ? rawBrowserScopeKey.trim()
-    : "";
-  const draftPrefix = `${project}:draft:`;
-  const browserScopeKey = sessionId
-    ? canonicalBrowserScope
-    : suppliedBrowserScope.startsWith(draftPrefix) && /^[\w.-]+$/.test(suppliedBrowserScope.slice(draftPrefix.length))
-      ? suppliedBrowserScope
-      : `${project}:draft:${runId}`;
 
   // M11 finding-1: the escalation surface auto-fires a HIDDEN first turn whose
   // wire message is the kickoff sentinel (see @/lib/escalation-kickoff). On a
@@ -428,17 +436,126 @@ export async function POST(req: Request) {
         ? "Ultra run finished"
         : message;
 
-  // Resolve the anchoring project up front — an unknown/missing project is a
-  // plain 400, not an SSE error, so the client fails before any stream opens.
-  let manifest: ProjectManifest;
+  // THE RESUMED ROW, READ BEFORE THE ANCHOR (see the fuller note at the
+  // `loomLink` composition below, which is where these two used to be read).
+  // The anchor needs it: a resumed session whose client stops re-sending `role`
+  // must anchor the way it did on turn 1, and the chat row is the only place
+  // that fact survives. `getChat` returns undefined for a missing id and never
+  // throws, so this cannot turn a resume into a 400.
+  const resumeTarget = sessionId ?? null;
+  const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
+
+  // Resolve what this session is ANCHORED to, up front — an unknown/missing
+  // project is a plain 400, not an SSE error, so the client fails before any
+  // stream opens.
+  //
+  // STORY 5.6 REPLACED THE DERIVATION, IT DID NOT ADD A BRANCH. This line used
+  // to read `manifest = getProject(project).manifest`, which is exactly why a
+  // project-less master session was impossible (brownfield.md's "one hard
+  // coupling"). AD-9 forbids the obvious fix — "a new surface adds a profile,
+  // it does not add an `if`" — so the derivation became per-kind DATA in
+  // core's anchor registry, and for every project-anchored kind it is still
+  // literally `getProject(project).manifest` (@/lib/session-profiles's
+  // projectAnchor), throwing the same error into the same catch below.
+  //
+  // THE SAME FUNCTION AS THE `resolveSessionKind` CALL FURTHER DOWN, CALLED
+  // WITH LESS. That is a review fix, and it is the difference between "the two
+  // derivations happen to agree" and "they cannot disagree": the first cut used
+  // `sessionKindFromRole` here and `resolveSessionKind` there, two functions
+  // with two precedence chains, and nothing pinned them together. The extra
+  // inputs the later call adds — the merged loom link role and a VALIDATED loom
+  // id — need a project, which is the very thing being resolved here, and they
+  // can only sharpen the answer AMONG PROJECT-ANCHORED KINDS. The one arm that
+  // selects a different anchor reads `role`/`persistedRole` only, and both are
+  // in hand now. session-profiles.test.ts enumerates the whole input space
+  // against `sessionAnchorResolverFor` rather than trusting this paragraph.
+  //
+  // `persistedRole` is also what makes a resumed master turn work at all: a
+  // master chat row carries no project, so deriving from the wire alone meant
+  // any client that did not re-send `role` on every turn got a 400.
+  const anchorKind: SessionKind = resolveSessionKind({
+    role,
+    persistedRole: existingChat?.role,
+  });
+  let anchor: SessionAnchor;
   try {
-    manifest = getProject(project).manifest;
-  } catch {
+    anchor = resolveSessionAnchor({
+      kind: anchorKind,
+      project: wireProject,
+    });
+  } catch (err) {
+    // THE ANCHOR'S OWN WORDS, not a guess about why it refused. This catch used
+    // to render `Unknown project "<wire value>"` for every cause — which is the
+    // truth for `getProject`, and a lie for the two other things that reach it:
+    // `ensureWorkspace()` failing on a real filesystem error (EACCES, or
+    // `workspace/home` existing as a file), and the registry's "no module
+    // declared an anchor for this kind" throw, which is a missing side-effect
+    // import and a 500-class bug wearing a 400's clothes. getProject's own
+    // message still starts with `Unknown project "…"`, so the common path reads
+    // as it always did.
+    const detail = err instanceof Error ? err.message.trim() : "";
     return Response.json(
-      { error: `Unknown project "${project ?? ""}".` },
+      { error: detail || `Unknown project "${wireProject ?? ""}".` },
       { status: 400 },
     );
   }
+  const manifest: ProjectManifest = anchor.manifest;
+  // WHERE THIS SESSION'S STORED PERMISSION RULES LIVE — the project slug for
+  // every project-anchored kind (byte-identical to the `project` this route
+  // passed to readRules/addRule before), and the synthetic `__master__` for the
+  // project-less master. Read from the anchor rather than re-derived, so the
+  // rules a session accumulates can never end up in a different bucket from the
+  // one its own anchor named.
+  const permissionsKey: string = anchor.permissionsKey;
+  // ── THE WIRE `project` FIELD ENDS HERE ──────────────────────────────────────
+  //
+  // Below this line `project` is the ANCHOR's answer, and the shadowing is the
+  // mechanism rather than a style choice. Story 5.6's first cut moved the
+  // manifest, the guardrails and the permissions key onto the anchor and left
+  // the wire field live for everything else — so a `{ role: "master", project:
+  // "aurora" }` request ran the project-less master WITH aurora's `telar.yaml`
+  // MCP servers spread onto its mount (later keys win, so a project server named
+  // `workspace` even shadowed the master's own), persisted its row under aurora,
+  // and — with a name no project owns — threw `getProject` from INSIDE
+  // `new ReadableStream(`, converting this route's pre-SSE 400 into a mid-stream
+  // SSE error for the one kind that had just been added. A review found all
+  // three. One `const` closes the class: there is no second reader of the wire
+  // field left to disagree with the gate.
+  //
+  // For every project-anchored kind this is byte-identical to what the wire
+  // carried (projectAnchor returns the name getProject just accepted). For the
+  // master it is `undefined`, which is what makes each project-only path below
+  // — `resolveProjectMcpServers`, the persisted `project` column — collapse to
+  // nothing without a single kind check.
+  const project: string | undefined = anchor.project;
+
+  // The Electron browser host is shared, but its tabs and tool namespace are
+  // not. Existing chats have one canonical scope. Fresh composers provide a
+  // unique draft scope that is adopted into the SDK session id when the first
+  // `session` event arrives, preventing two new-session windows from sharing
+  // tabs while still keeping one bounded desktop browser process.
+  //
+  // KEYED ON THE ANCHOR'S PERMISSIONS KEY, NOT ON `project`, and it moved below
+  // the anchor to be able to say so. For every project-anchored kind the two
+  // strings are the same value, so every existing scope — and every draft
+  // prefix the client composes from its own project — is byte-identical. What
+  // changes is the project-less case, which was recorded as a residual in
+  // deferred-work.md: keyed on `project` it produced the literal prefix
+  // `undefined:`, one shared browser scope for every project-less session ever
+  // opened. `__master__:` is per-anchor by construction, so the residual is
+  // closed before the first kind that mounts a browser server arrives rather
+  // than after.
+  const scopeAnchorKey = permissionsKey;
+  const canonicalBrowserScope = `${scopeAnchorKey}:${sessionId ?? ""}`;
+  const suppliedBrowserScope = typeof rawBrowserScopeKey === "string"
+    ? rawBrowserScopeKey.trim()
+    : "";
+  const draftPrefix = `${scopeAnchorKey}:draft:`;
+  const browserScopeKey = sessionId
+    ? canonicalBrowserScope
+    : suppliedBrowserScope.startsWith(draftPrefix) && /^[\w.-]+$/.test(suppliedBrowserScope.slice(draftPrefix.length))
+      ? suppliedBrowserScope
+      : `${scopeAnchorKey}:draft:${runId}`;
 
   // Same treatment as the project check: an unknown account is a plain 400
   // before any stream opens, not something canUseTool/the SDK ever sees.
@@ -469,7 +586,15 @@ export async function POST(req: Request) {
     if (!named) {
       return Response.json(
         {
-          error: `Project "${project ?? manifest.name}" cannot start because no compatible account is enabled. Check Settings → Accounts.`,
+          // NAMES THE PROJECT ONLY WHEN THERE IS ONE. The fallback used to be
+          // `manifest.name`, which for a project-less session renders
+          // `Project "__master__" cannot start…` — a message naming a project
+          // that does not exist, about a synthetic identity the user has never
+          // seen. Story 5.6's review flagged it as harmless-until-story-7; this
+          // is cheaper than remembering.
+          error: project
+            ? `Project "${project}" cannot start because no compatible account is enabled. Check Settings → Accounts.`
+            : `This session cannot start because no compatible account is enabled. Check Settings → Accounts.`,
         },
         { status: 400 },
       );
@@ -623,8 +748,12 @@ export async function POST(req: Request) {
   // still fails SAFE to a plain session and must NEVER become a 400 — a 400
   // that depends on whether a client resent a field is a non-deterministic
   // failure, which is worse than no gate.
-  const resumeTarget = sessionId ?? null;
-  const existingChat = resumeTarget ? getChat(resumeTarget) : undefined;
+  //
+  // `resumeTarget`/`existingChat` MOVED FURTHER UP STILL (story 5.6's review):
+  // the ANCHOR needs the persisted role, for the same reason this hoist exists
+  // — a resumed session whose client omits `role` must not be re-derived into a
+  // different kind than the one it was created as. Same single read, earlier
+  // again, and getLoom stays here because it needs the anchored project.
   // Turn-1 wire seed for an embedded steerer session (mirrors the planner
   // path, but steerer also binds a loomId). Validated: the loom must exist
   // AND belong to the anchoring project — a bad/foreign id fails safe to a
@@ -683,12 +812,40 @@ export async function POST(req: Request) {
     // A planner that mints its own draft still gets this role written from
     // inside draft_bundle_file, exactly as before — nothing changes for it,
     // because `wireLoomId` is undefined there.
+    //
+    // NARROWED THROUGH `loomLinkRoleOf` (story 5.6): store.ts's `Chat.role` now
+    // carries the SESSION role, which since the master exists is a wider union
+    // than a loom link's. The conversion lives in core beside the two unions so
+    // a project-less role can never be written into a link — and it is a
+    // narrowing, not a cast: a persisted "master" reads back as no link at all,
+    // which is exactly right for a session that has no loom.
     role:
-      existingChat?.role ??
+      loomLinkRoleOf(existingChat?.role) ??
       (wireLoomId && (role === "steerer" || role === "escalation" || role === "planner")
         ? role
         : undefined),
   };
+
+  // WHAT GETS WRITTEN INTO THE CHAT ROW'S `role` (story 5.6, review finding
+  // #2). Until the master existed, "the session's role" and "the loom link's
+  // role" were the same three values, so the route persisted `loomLink.role`
+  // and nobody had to name the difference. A master session has no loom and
+  // never will, so under that rule its row persisted `role: undefined` — and
+  // `undefined` is precisely what the anchor gate reads back on the NEXT turn,
+  // meaning every master chat resumed as a project session and 400'd on the
+  // missing project. The row is the only carrier a resume has.
+  //
+  // A FUNCTION, not a const: `loomLink` is mutated in place BY THE LOOM TOOLS
+  // AS THE TURN RUNS (see the block above), so a value snapshotted here would
+  // persist the link the turn STARTED with. Every call site below is on the
+  // far side of the stream.
+  //
+  // The master arm reads `anchorKind`, not `role`, on purpose: the anchor is
+  // the one derivation that already merged the wire role with the persisted
+  // one, so a resumed master whose client dropped `role` re-persists "master"
+  // rather than silently downgrading its own row on the second turn.
+  const persistedSessionRole = (): SessionRole | undefined =>
+    anchorKind === "master" ? "master" : loomLink.role;
 
   // AD-9 — the session profile, resolved BEFORE the route body runs. Story 2.1
   // landed the resolve and the gate; story 2.2 made the handler CONSUME it, so
@@ -711,10 +868,18 @@ export async function POST(req: Request) {
   // sends `role: "planner"` satisfies two predicates and must resolve as
   // STEERER, exactly as it did before.
   const sessionProfile = resolveSessionProfile({
-    kind: resolveSessionKind({ role, linkRole: loomLink.role, loomId: loomLink.loomId }),
+    // THE SECOND CALL, with everything the preamble now knows. Same function as
+    // the anchor's above — see that block for why the extra inputs cannot move
+    // this off the anchor's kind.
+    kind: resolveSessionKind({
+      role,
+      persistedRole: existingChat?.role,
+      linkRole: loomLink.role,
+      loomId: loomLink.loomId,
+    }),
     provider,
     manifest,
-    project: typeof project === "string" ? project : undefined,
+    project,
     role,
     // VALIDATED now, not the raw wire value: the steerer/escalation builders
     // hand this id to buildSteererContext/buildEscalationContext, and a builder
@@ -1213,7 +1378,7 @@ export async function POST(req: Request) {
           toolName !== LOOM_START_TOOL &&
           toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
           toolName !== WORKSPACE_WEAVE_TOOL &&
-          readRules(project).some((r) => ruleMatches(r, toolName, input))
+          readRules(permissionsKey).some((r) => ruleMatches(r, toolName, input))
         ) {
           return { behavior: "allow", updatedInput: input };
         }
@@ -1228,7 +1393,11 @@ export async function POST(req: Request) {
         // you" (sessionsAwaitingApproval) — capturedSession once init has
         // confirmed it, the client's resume target before that.
         const { id, promise } = createPending(
-          project,
+          // THE ANCHOR'S KEY, NOT THE WIRE PROJECT (story 5.6) — identical for
+          // every project-anchored session, `__master__` for the project-less
+          // one. It is also this card's coalescing group in resolvePending, so
+          // a master's "always allow" can never sweep a project's pending card.
+          permissionsKey,
           toolName,
           input,
           rule,
@@ -1271,7 +1440,7 @@ export async function POST(req: Request) {
             toolName !== LOOM_ANSWER_BLOCKED_TOOL &&
             toolName !== WORKSPACE_WEAVE_TOOL
           ) {
-            addRule(project, decision.rule ?? rule);
+            addRule(permissionsKey, decision.rule ?? rule);
           }
           // Never forward the SDK's own `suggestions` back as
           // `updatedPermissions`, even session-scoped ones. The SDK's
@@ -1463,7 +1632,7 @@ export async function POST(req: Request) {
             const rule = ruleFor("Bash", input);
             const ruleOptions = ruleOptionsFor("Bash", input);
             const { id, promise } = createPending(
-              project,
+              permissionsKey,
               "Bash",
               input,
               rule,
@@ -1484,7 +1653,7 @@ export async function POST(req: Request) {
             }
             send("permission_result", { id, behavior: decision.behavior });
             if (decision.behavior === "allow" && decision.always) {
-              addRule(project, decision.rule ?? rule);
+              addRule(permissionsKey, decision.rule ?? rule);
             }
             return decision.behavior === "allow" ? "accept" : "decline";
           };
@@ -1560,7 +1729,9 @@ export async function POST(req: Request) {
             const rule = ruleFor(toolName, req.arguments);
             if (
               !isMoatTool &&
-              readRules(project).some((stored) => ruleMatches(stored, toolName, req.arguments))
+              readRules(permissionsKey).some((stored) =>
+                ruleMatches(stored, toolName, req.arguments),
+              )
             ) {
               return "accept";
             }
@@ -1568,7 +1739,7 @@ export async function POST(req: Request) {
 
             const ruleOptions = ruleOptionsFor(toolName, req.arguments);
             const { id, promise } = createPending(
-              project,
+              permissionsKey,
               toolName,
               req.arguments,
               rule,
@@ -1601,7 +1772,7 @@ export async function POST(req: Request) {
             // Keeping only one leaves a rule on disk asserting a standing
             // approval the human never gave.
             if (decision.behavior === "allow" && decision.always && !isMoatTool) {
-              addRule(project, decision.rule ?? rule);
+              addRule(permissionsKey, decision.rule ?? rule);
             }
             return decision.behavior === "allow" ? "accept" : "decline";
           };
@@ -1615,6 +1786,18 @@ export async function POST(req: Request) {
           // This is the fix for the session where a user asked Codex to run an
           // Ultra: there was no ultra tool in its toolset, no error saying so,
           // and a model that narrated spawning three agents it never spawned.
+          // THE CODEX BRANCH IS PROJECT-ANCHORED BY CONSTRUCTION (story 5.6).
+          // `project` became `string | undefined` when it stopped being the raw
+          // wire field and started being the ANCHOR's answer, and the only kind
+          // that answers `undefined` is the master — which cannot reach this
+          // branch: buildMasterProfile requires the `mcp-servers` capability
+          // and runCodexTurn does not have it, so AD-11's pre-SSE 400 fires
+          // long before here (that gate is the profile's own comment, and
+          // session-profiles.test.ts pins it). `?? ""` is what the type system
+          // needs at a seam that cannot see the gate — the same idiom, for the
+          // same reason, as @/lib/session-mcp's projectSessionMcpMount — never
+          // a reachable value.
+          const codexProject = project ?? "";
           const codexToolNamespaces = [
             namespaceOf(
               CODEX_BROWSER_TOOL_NAMESPACE,
@@ -1622,20 +1805,20 @@ export async function POST(req: Request) {
               browserTools({ scopeKey: browserScopeKey }),
             ),
             namespaceOf("ultra", ULTRA_MCP_VERSION, ultraTools({
-              project,
+              project: codexProject,
               account: profile,
               getSessionId: () => capturedSession,
               getMessageId: () => runId,
             })),
             namespaceOf("loom", LOOM_MCP_VERSION, loomTools({
-              project,
+              project: codexProject,
               objectiveSeed: message,
               account: profile.name,
               link: loomLink,
               getSessionId: () => capturedSession,
             })),
             namespaceOf("workspace", WORKSPACE_MCP_VERSION, workspaceTools({
-              project,
+              project: codexProject,
               account: profile,
               getSessionId: () => capturedSession,
             })),
@@ -1709,7 +1892,7 @@ export async function POST(req: Request) {
                   fastMode,
                   serviceTier,
                   loomId: loomLink.loomId,
-                  role: loomLink.role,
+                  role: persistedSessionRole(),
                   userText: displayText,
                 });
                 send("saved", { chatId: capturedSession });
@@ -1881,91 +2064,45 @@ export async function POST(req: Request) {
             }
           }
         } else {
-        // The "loom" in-process MCP server (docs/loom-model.md §5) — draft/
-        // read tools plus the human-gated start_loom commit. `account` is
-        // this chat's own server-resolved identity (profile.name), never
-        // anything the model supplies — see loom-mcp.ts's start_loom, which
-        // stamps it as startLoomFromBundle's `by`/provenance. `getSessionId`
-        // reads `capturedSession` lazily: tool calls only ever run after the
-        // SDK's system:init message below has already set it.
-        // NOTE (#28 persistent runtime): these four servers are constructed
-        // inside the runtime's `create` callback below, ONCE per session
-        // runtime rather than once per POST. The getters they close over read
-        // live runtime state (`self().sessionId`, `slots.runId`) so a reused
+        // WHICH MCP SERVERS THIS SESSION MOUNTS IS THE PROFILE'S ANSWER NOW
+        // (story 5.6), not this file's. The four-server literal that used to
+        // sit here moved verbatim to @/lib/session-mcp's `projectSessionMcpMount`
+        // and is still what every project-anchored kind mounts; the master
+        // mounts the workspace server alone, unscoped. That file's header has
+        // the whole argument for why this is a kind-keyed FACTORY registry
+        // rather than `SessionProfileSpec.mcpServers` — the short version is
+        // directly below.
+        //
+        // NOTE (#28 persistent runtime): these servers are constructed inside
+        // the runtime's `create` callback below, ONCE per session runtime
+        // rather than once per POST. The getters they close over read live
+        // runtime state (`self().sessionId`, `slots.runId`) so a reused
         // runtime's tool calls attribute to the CURRENT turn, not the creating
-        // one. The creating POST's other captures (project, profile, loomLink,
+        // one — which is precisely why a profile builder, which runs eagerly
+        // before the stream opens (INV-6c), cannot be the thing that builds
+        // them. The creating POST's other captures (project, profile, loomLink,
         // sessionProfile) are all part of the runtime fingerprint, so a POST
         // that would disagree about them gets a fresh runtime instead of a
         // stale closure.
+        //
+        // `account`/`project` here are this chat's own server-resolved values
+        // and are NEVER read from tool input: a `project` argument on
+        // list_items would let any project session enumerate and file into
+        // every other project's items, which is the precise leak the
+        // tool-surface design exists to prevent.
         const makeTelarMcpServers = (ctx: {
           slots: { runId: string | null };
           self: () => { sessionId: string | null };
-        }) => ({
-          loom: createLoomMcpServer({
+        }) =>
+          resolveSessionMcpServers(sessionProfile.kind, {
             project,
+            account: profile,
             objectiveSeed: message,
-            account: profile.name,
             link: loomLink,
             getSessionId: () => ctx.self().sessionId ?? capturedSession,
-          }),
-        // The "ultra" in-process MCP server (docs/plans/ultra-harness.md §4) —
-        // ultra/ultra_status/ultra_stop, auto-run like the loom read/draft
-        // tools (see ULTRA_AUTO_TOOLS's own comment for why this differs from
-        // start_loom's human-gated moat). `account`/`project` are this chat's
-        // own server-resolved values, never anything the model supplies (same
-        // rule as loomMcpServer above). `getMessageId` threads the per-turn
-        // `runId` (declared at the top of this POST) as Ultra's own
-        // "messageId" link — the finest-grained id a chat turn has in this
-        // app (see ultra-mcp.ts's UltraMcpOpts doc).
-        //
-        // CORRECTED BY STORY 2.2 — this comment used to claim the ultra server
-        // is "not offered to an escalation session (excluded from mcpServers/
-        // allowedTools below)". Measured: `mcpServers` below is UNCONDITIONAL,
-        // so the server IS registered for an escalation session; what that
-        // surface does not get is its TOOLS, which the escalation profile puts
-        // in `toolPolicy.deny` (the SDK guarantees a disallow beats any allow,
-        // so they are truly uncallable while the server is still registered).
-        // Behaviourally identical to what the old comment described, but a
-        // comment that misstates a moat-adjacent fact is worse than no comment
-        // — and this is the sentence a reader consults when deciding what
-        // `mcpServers` should carry. The escalation surface stays a narrow
-        // read-only discuss wall; the TOOLSET enforces that, not the server
-        // list.
-          ultra: createUltraMcpServer({
-            project,
-            account: profile,
-            getSessionId: () => ctx.self().sessionId ?? capturedSession,
             getMessageId: () => ctx.slots.runId ?? runId,
-          }),
-        // The "workspace" in-process MCP server (story 5.1) — the ONLY path any
-        // session has to the user's item store, which lives under TELAR_HOME and
-        // is deliberately outside every session's cwd. `project` and `account`
-        // are this chat's own server-resolved values and are NEVER read from
-        // tool input: a `project` argument on list_items would let any project
-        // session enumerate and file into every other project's items, which is
-        // the precise leak the tool-surface design exists to prevent. Bound as
-        // `wsMcpServer` rather than anything starting with `workspace` because
-        // INV-6e greps this file for the substring `const workspace` — a guard
-        // left behind by story 2.2's removal of `const workspace = manifest.root`.
-          workspace: createWorkspaceMcpServer({
-            project,
-            account: profile,
-            getSessionId: () => ctx.self().sessionId ?? capturedSession,
-          }),
-        // One lazy, server-owned browser runtime backs both the human surface
-        // and agent tools. Constructing this descriptor does not start a
-        // browser; the Playwright MCP process launches only on first use.
-        // The scope is a GETTER (#28 persistent runtime): draft until the
-        // session id exists, canonical after — matching the client's
-        // adoptScope migration on the `session` event, across every turn this
-        // one process serves.
-          browser: createBrowserMcpServer({
-            scopeKey: () => {
-              const sid = ctx.self().sessionId ?? capturedSession;
-              return sid ? `${project}:${sid}` : browserScopeKey;
-            },
-          }),
-        });
+            browserScopeKey,
+          });
         // The composer-annotation note (doc §4's per-turn Ultra opt-in) used to
         // be composed HERE as `ultraAnnotated && !isEscalationSession ? … : ""`
         // — a session-kind conditional, and the smallest one AC1 had to remove.
@@ -2000,6 +2137,12 @@ export async function POST(req: Request) {
         // restart-on-change is exactly the honest behaviour for it.
         const runtimeFingerprint = JSON.stringify({
           cwd: sessionProfile.cwd,
+          // STORY 5.6 — the kind now selects the MCP MOUNT (@/lib/session-mcp),
+          // so two turns that disagree about it are two turns that would run
+          // with different tool surfaces. Every other kind-derived value here
+          // (appendix, allow, deny, settingSources) already differs in practice;
+          // this makes the one that is not derivable from them explicit.
+          kind: sessionProfile.kind,
           model,
           effort: claudeEffort ?? null,
           permissionMode: permissionMode ?? null,
@@ -2023,11 +2166,19 @@ export async function POST(req: Request) {
           projectMcp: project ? Object.keys(resolveProjectMcpServers(project)) : [],
           pendingFork: pendingFork ?? null,
         });
+        // WHICH SERVERS THIS SESSION ACTUALLY MOUNTED, recorded as the mount
+        // registry answers it — the replacement for the hand-written
+        // TELAR_OWN_MCP_SERVERS tuple this file used to carry (see the note at
+        // the top). Only the setMcpPermissionModeOverride loop below reads it,
+        // and that loop runs ONLY when `create` ran, which is the same branch
+        // that fills this.
+        let telarMcpServerNames: readonly string[] = [];
         const { runtime, created: runtimeCreated } = acquireSessionRuntime({
           key: resumeTarget ?? runId,
           fingerprint: runtimeFingerprint,
           create: ({ slots, input, abort: runtimeAbort, self }) => {
             const telarMcpServers = makeTelarMcpServers({ slots, self });
+            telarMcpServerNames = Object.keys(telarMcpServers);
             return query({
           prompt: input,
           options: {
@@ -2177,6 +2328,14 @@ export async function POST(req: Request) {
             // rotate MCP auth.
             mcpServers: {
               ...telarMcpServers,
+              // STORY 5.6 — a profile's OWN statically-configured servers.
+              // Empty for every profile today, and spread here so it stops
+              // being a field the resolver folds and the route silently drops:
+              // CAP-13's external MCP roster (story 12) is what will fill it,
+              // and it should arrive as data rather than as another edit to
+              // this literal. Placed after the runtime mounts because a profile
+              // is the more specific statement of the two.
+              ...sessionProfile.mcpServers,
               // THE SPREAD IS LAST, AND THAT IS NOT A PROTECTION — object-literal
               // LATER KEYS WIN, so a project telar.yaml server named `workspace`
               // SHADOWS ours. Spread-FIRST would be the protection, and moving it
@@ -2186,8 +2345,36 @@ export async function POST(req: Request) {
               // deferred-work.md; the fix is a reserved-name guard in
               // resolveProjectMcpServers, not a reordering. Do not read this
               // ordering as the guard.
+              // READS THE ANCHORED PROJECT (story 5.6's review), so this is `{}`
+              // for a project-less session BY CONSTRUCTION rather than by a kind
+              // check. Keyed on the wire field — which nothing validated for a
+              // master request — it did two things a project-less session must
+              // never do: mount some project's external servers on top of (and,
+              // per the note above, OVER) the master's own, and reach
+              // `getProject` with an unvalidated name from INSIDE the stream,
+              // where its throw becomes an SSE error instead of the pre-SSE 400
+              // this route promises.
               ...(project ? resolveProjectMcpServers(project) : {}),
             },
+            // NO AMBIENT MCP CONFIG WHEN THE PROFILE ASKED FOR NO AMBIENT
+            // CONFIG. `strictMcpConfig` tells the harness that `mcpServers`
+            // above is the WHOLE roster — no `.mcp.json`, no user-level servers,
+            // nothing a checkout can add.
+            //
+            // DERIVED, NOT BRANCHED (AD-9): it is true exactly when a profile
+            // declared `settingSources: []`, which is the master and nothing
+            // else today, so every existing kind keeps loading what a native
+            // `claude` would and this is a no-op for them. The alternative was
+            // `if (kind === "master")`, which is the `if` this whole port
+            // exists to not write.
+            //
+            // It is here because story 5.6's profile comment CLAIMED it and a
+            // review measured that no chat turn ever passed it — only
+            // ultra/runner.ts and engine.ts did. Two ways to close that: delete
+            // the claim, or make it true. `settingSources: []` alone already
+            // starves the config stack; this is the second, independent
+            // statement of the same intent (AD-1), and it costs a boolean.
+            strictMcpConfig: sessionProfile.settingSources.length === 0,
             // Explicit Telar servers are added beside MCP servers from the
             // selected Claude configuration, matching a native Claude launch.
             //
@@ -2443,7 +2630,7 @@ export async function POST(req: Request) {
             fastMode,
             serviceTier,
             loomId: loomLink.loomId,
-            role: loomLink.role,
+            role: persistedSessionRole(),
             userText: displayText,
           });
           send("saved", { chatId: reusedSession });
@@ -2489,9 +2676,11 @@ export async function POST(req: Request) {
         // classifier non-decision reaches the model as.
         //
         // The override is per SERVER NAME, so it names only servers telar
-        // constructs. A project's own `telar.yaml` MCP servers are deliberately
-        // absent: those are third-party surfaces this app did not write, and
-        // they keep the classifier.
+        // constructs — read off the mount this session was actually built with
+        // (`telarMcpServerNames`), never a hand-kept list. A project's own
+        // `telar.yaml` MCP servers are deliberately absent: those are
+        // third-party surfaces this app did not write, and they keep the
+        // classifier.
         //
         // AND A SHADOWED NAME IS SKIPPED, which is the sharp edge here. The
         // mcpServers literal above spreads the project's own servers LAST, and
@@ -2514,7 +2703,7 @@ export async function POST(req: Request) {
           const projectServerNames = new Set(
             project ? Object.keys(resolveProjectMcpServers(project)) : [],
           );
-          for (const server of TELAR_OWN_MCP_SERVERS.filter((n) => !projectServerNames.has(n))) {
+          for (const server of telarMcpServerNames.filter((n) => !projectServerNames.has(n))) {
             try {
               await q.setMcpPermissionModeOverride(server, "default");
             } catch {
@@ -2585,7 +2774,7 @@ export async function POST(req: Request) {
                 // turn-1 wire seed); appendTurn narrows in any link a loom
                 // tool establishes during the turn.
                 loomId: loomLink.loomId,
-                role: loomLink.role,
+                role: persistedSessionRole(),
                 userText: displayText,
               });
               send("saved", { chatId: capturedSession });
@@ -2944,9 +3133,12 @@ export async function POST(req: Request) {
               // Session<->Loom link (docs/loom-model.md §5): undefined
               // means "no change" (appendTurn only ever narrows a link in,
               // see its own comment) — loomLink stays untouched for a plain
-              // turn that never called a loom tool.
+              // turn that never called a loom tool. `role` is the SESSION's
+              // role rather than the link's since story 5.6 — the two agree
+              // for every project-anchored kind, and the master (which has no
+              // link and never will) is the whole reason for the distinction.
               loomId: loomLink.loomId,
-              role: loomLink.role,
+              role: persistedSessionRole(),
               // The attachment part rides AFTER the text, matching the order the
               // composer stages them in and the order the live turn rendered.
               // Metadata only — see the `attachments` variant in lib/store.ts.

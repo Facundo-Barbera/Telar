@@ -28,6 +28,14 @@
 // suites use. INV-3a's path-composition inventory is unchanged by this story
 // for exactly the same reason.
 //
+// STILL TRUE AFTER STORY 5.6's anchor registry, and it is worth saying why: an
+// anchor RESOLVER may touch the disk (apps/web's master anchor calls
+// ensureWorkspace()), but core only stores and calls it, and every anchor in
+// this file is a pure fake returning a parsed manifest. The suite that runs the
+// real, disk-touching one is apps/web/lib/session-profiles.test.ts, and it runs
+// it in a CHILD PROCESS with TELAR_HOME pointed at a temp dir — never in this
+// shared one.
+//
 // MODULE-SINGLETON HAZARD. The profile registry is a module-scope Map and bun
 // runs EVERY test file in ONE process, so it leaks across suites: without a
 // reset a duplicate-registration throw from one file would take down another,
@@ -50,9 +58,12 @@ import {
   ProjectManifest,
   providerCapabilities,
   providerPublishes,
+  registerSessionAnchor,
   registerSessionProfile,
+  registeredAnchorKinds,
   registeredSessionKinds,
   resetSessionProfiles,
+  resolveSessionAnchor,
   resolveSessionKind,
   resolveSessionProfile,
   SESSION_KINDS,
@@ -96,7 +107,7 @@ const ctx = (over: Partial<SessionResolutionContext> = {}): SessionResolutionCon
   ...over,
 });
 
-// The four kinds as the web builders declare them (D11's table). Registered
+// The kinds as the web builders declare them (D11's table). Registered
 // here as synthetic specs because core cannot import apps/web — the REAL
 // builders are pinned against this same table in
 // apps/web/lib/session-profiles.test.ts, which is the only place a wrong
@@ -107,9 +118,15 @@ const D11_REQUIRED: Record<string, readonly ProviderCapability[]> = {
   planner: ["system-prompt-append"],
   steerer: ["system-prompt-append"],
   escalation: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
+  // STORY 5.6's project-less master. The same three as escalation and for
+  // parallel reasons — its workspace MCP mount, the moat's PreToolUse hook and
+  // an allow-narrowing — and deliberately NOT `setting-sources`: the master
+  // asks the harness for nothing (`settingSources: []`), so requiring the
+  // capability would 400 a provider over a feature it switches off.
+  master: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
 };
 
-const registerFourKinds = (): void => {
+const registerEveryKind = (): void => {
   for (const kind of SESSION_KINDS) {
     registerSessionProfile(kind, () => ({
       kind,
@@ -141,7 +158,26 @@ const registerFourKinds = (): void => {
               ],
               deny: ["AskUserQuestion"],
             }
-          : { deny: ["AskUserQuestion"] },
+          : kind === "master"
+            ? {
+                // STORY 5.6's master mirrors escalation's SHAPE — an explicit
+                // allow-narrowing — with the workspace names in place of the
+                // loom ones, because the workspace server is the only thing it
+                // mounts. Same standing as the mirror above: nothing here
+                // asserts on the value, and the pin against the real
+                // WORKSPACE_AUTO_TOOLS constant lives in the web suite.
+                allow: [
+                  "Read",
+                  "Grep",
+                  "Glob",
+                  "mcp__workspace__list_items",
+                  "mcp__workspace__list_lanes",
+                  "mcp__workspace__create_item",
+                  "mcp__workspace__update_item",
+                ],
+                deny: ["AskUserQuestion"],
+              }
+            : { deny: ["AskUserQuestion"] },
       requiredCapabilities: D11_REQUIRED[kind]!,
       systemPromptAppendix: "",
     }));
@@ -151,8 +187,8 @@ const registerFourKinds = (): void => {
 // ── AC1 — a typed profile, resolved from a registered kind ──────────────────
 
 describe("AC1 the fold — a typed SessionProfile with AD-9's seven fields plus the registry key", () => {
-  test("AC1 each of the four registered kinds resolves to a profile carrying all eight fields", () => {
-    registerFourKinds();
+  test("AC1 each registered kind resolves to a profile carrying all eight fields", () => {
+    registerEveryKind();
     for (const kind of SESSION_KINDS) {
       const resolved = resolveSessionProfile(ctx({ kind }));
       // The field inventory, asserted as a VALUE so the diff bun prints is the
@@ -179,7 +215,7 @@ describe("AC1 the fold — a typed SessionProfile with AD-9's seven fields plus 
   });
 
   test("AC1 cwd comes from the CONTEXT, never from the spec — no profile can redirect where a session runs", () => {
-    registerFourKinds();
+    registerEveryKind();
     const resolved = resolveSessionProfile(
       ctx({ kind: "planner", manifest: manifestWith() }),
     );
@@ -230,13 +266,19 @@ describe("AC1 the fold — a typed SessionProfile with AD-9's seven fields plus 
   });
 
   test("resetSessionProfiles() empties the registry — the module-singleton mitigation actually works", () => {
-    registerFourKinds();
-    expect(registeredSessionKinds()).toEqual(["project", "planner", "steerer", "escalation"]);
+    registerEveryKind();
+    expect(registeredSessionKinds()).toEqual([
+      "project",
+      "planner",
+      "steerer",
+      "escalation",
+      "master",
+    ]);
     resetSessionProfiles();
     expect(registeredSessionKinds()).toEqual([]);
     // …and re-registering after a reset does not throw, which is what makes
     // beforeEach a mitigation rather than a second failure mode.
-    expect(() => registerFourKinds()).not.toThrow();
+    expect(() => registerEveryKind()).not.toThrow();
   });
 
   test("AC1 a builder returning a spec for a DIFFERENT kind is refused, not silently applied", () => {
@@ -415,7 +457,7 @@ describe("AC4 the kind comes from what the WIRE reliably carries — under-detec
     // reattached ones", so the wire role alone is sufficient. A Codex account
     // cannot run an escalation session whether or not the loom id resolves.
     expect(sessionKindFromRole("escalation")).toBe("escalation");
-    registerFourKinds();
+    registerEveryKind();
     const resolved = resolveSessionProfile(
       ctx({ kind: sessionKindFromRole("escalation"), role: "escalation" }),
     );
@@ -432,10 +474,16 @@ describe("AC4 the kind comes from what the WIRE reliably carries — under-detec
 // ── story 2.2 — the SHARPENED kind, resolved from everything the preamble sees ─
 
 describe("2.2 sessionRoleFromWire — one home for 'which strings are session roles'", () => {
-  test("the three recognized values narrow, and everything else collapses to undefined", () => {
+  test("the four recognized values narrow, and everything else collapses to undefined", () => {
     expect(sessionRoleFromWire("planner")).toBe("planner");
     expect(sessionRoleFromWire("steerer")).toBe("steerer");
     expect(sessionRoleFromWire("escalation")).toBe("escalation");
+    // STORY 5.6 — `master` is the fourth, and it is the one the route's ANCHOR
+    // gate reads: a wire value this function does not recognise resolves to
+    // kind `project` and gets the project gate it always had, so a master
+    // session that misspells its own role degrades into a 400 rather than into
+    // a project-less session with a project's tools.
+    expect(sessionRoleFromWire("master")).toBe("master");
     // The fail-safe half: a stray, absent or hostile wire value can never be
     // mistaken for a real loom turn. This is the route's own eight-line ternary,
     // moved rather than reinvented — it was the SECOND copy of this fact and
@@ -449,7 +497,7 @@ describe("2.2 sessionRoleFromWire — one home for 'which strings are session ro
     // Two functions answering adjacent questions about the same three strings.
     // If they ever disagree, the wire narrowing and the kind narrowing have
     // drifted and one of them is lying about what a role is.
-    for (const raw of ["planner", "steerer", "escalation"]) {
+    for (const raw of ["planner", "steerer", "escalation", "master"]) {
       expect(sessionRoleFromWire(raw)).toBe(sessionKindFromRole(raw) as never);
     }
     expect(sessionKindFromRole(sessionRoleFromWire("nonsense"))).toBe("project");
@@ -549,10 +597,17 @@ describe("2.2 resolveSessionKind — the route's own precedence, as an ordered f
           { role: "planner" },
           { linkRole: "steerer", loomId: "l" },
           { role: "escalation", loomId: "l" },
+          { role: "master" },
         ] as const
       ).map((i) => resolveSessionKind(i)),
     );
-    expect([...answers].sort()).toEqual(["escalation", "planner", "project", "steerer"]);
+    expect([...answers].sort()).toEqual([
+      "escalation",
+      "master",
+      "planner",
+      "project",
+      "steerer",
+    ]);
   });
 
   test("every kind resolveSessionKind can return HAS a registered builder — no unreachable answer", () => {
@@ -560,8 +615,10 @@ describe("2.2 resolveSessionKind — the route's own precedence, as an ordered f
     // return but nothing declares would throw on the live path, and the throw
     // would say "no module declared it" for a kind the resolver itself just
     // invented.
-    registerFourKinds();
-    const reachable = ["project", "planner", "steerer", "escalation"];
+    registerEveryKind();
+    // `master` joined this list in story 5.6 and is reachable the same way the
+    // others are — from the wire, `{ role: "master" }`, asserted below.
+    const reachable = ["project", "planner", "steerer", "escalation", "master"];
     expect([...registeredSessionKinds()].sort()).toEqual([...reachable].sort());
   });
 });
@@ -593,7 +650,7 @@ describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () 
 
   test("the deliberate redundancy holds for EVERY registered kind, spec additions included", () => {
     resetSessionProfiles();
-    registerFourKinds();
+    registerEveryKind();
     for (const kind of SESSION_KINDS) {
       const resolved = resolveSessionProfile(
         ctx({ kind, manifest: manifestWith({ disallowedTools: ["Bash", "Write"] }) }),
@@ -680,7 +737,7 @@ describe("2.2 the fold unions the manifest's deny set into toolPolicy.deny", () 
 
 describe("AC4 the capability check — pure, name-returning, never throwing", () => {
   test("AC4 unmetCapabilities names what a Codex escalation session is missing", () => {
-    registerFourKinds();
+    registerEveryKind();
     const escalation = resolveSessionProfile(ctx({ kind: "escalation", provider: "codex" }));
     // `mcp-servers` LEFT THIS LIST when the adapter learned dynamic tools —
     // Codex now reaches the same ultra/loom/workspace handlers the Claude
@@ -695,7 +752,7 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
   });
 
   test("AC4 unmetCapabilities returns [] when the provider publishes everything required", () => {
-    registerFourKinds();
+    registerEveryKind();
     for (const kind of SESSION_KINDS) {
       const resolved = resolveSessionProfile(ctx({ kind }));
       expect(unmetCapabilities(resolved, "claude")).toEqual([]);
@@ -703,7 +760,7 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
   });
 
   test("AC4 a planner or steerer session on Codex is now missing NOTHING", () => {
-    registerFourKinds();
+    registerEveryKind();
     // The inversion is the fix. These two kinds require system-prompt-append
     // and nothing else, and that appendix used to be built by the route and
     // then dropped on the floor — which is what made a planner or steerer a
@@ -718,7 +775,7 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
   test("AC4/AC5 the `project` kind requires NOTHING, on BOTH provider ids", () => {
     // This is what keeps AC5 true: the existing project-session path passes the
     // new gate unchanged, on Claude and on Codex alike.
-    registerFourKinds();
+    registerEveryKind();
     for (const provider of ["claude", "codex"] as const) {
       const resolved = resolveSessionProfile(ctx({ kind: "project", provider }));
       expect(resolved.requiredCapabilities).toEqual([]);
@@ -727,7 +784,7 @@ describe("AC4 the capability check — pure, name-returning, never throwing", ()
   });
 
   test("AC4 unmetCapabilities never throws and knows nothing about HTTP", () => {
-    registerFourKinds();
+    registerEveryKind();
     const escalation = resolveSessionProfile(ctx({ kind: "escalation" }));
     // An undefined provider id defaults to claude through providerOf, exactly
     // as every other provider lookup in the tree does.
@@ -1056,6 +1113,118 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
 });
 
 // ── prove-run leg L6 ────────────────────────────────────────────────────────
+// ── story 5.6 — the ANCHOR registry: what a session of this kind runs AGAINST ─
+
+// THE PROJECT-LESS SESSION IS THE WHOLE REASON THIS EXISTS. Until story 5.6 the
+// chat route computed `manifest = getProject(project).manifest` before anything
+// else, which is a 400 for a session that HAS no project — and SPEC
+// -organization-workspace's master is exactly that session. AD-9 forbids the
+// obvious repair ("a new surface adds a profile, it does not add an `if`"), and
+// widening SessionProfileSpec with a `cwd` was rejected for a sharper reason:
+// INV-6a pins that field set, and a spec field that redirects where a session
+// RUNS is a grant, not a restriction — every profile in the tree could then move
+// its own working directory.
+//
+// So the DERIVATION became per-kind data, in a second registry beside the
+// builders. Core still composes no path and reads no file: an anchor resolver
+// is a function this module STORES and calls, and the one that touches the disk
+// lives in apps/web (its cwd comes from the workspace store's own exported
+// port, never a path composed here — AD-5/INV-3a).
+describe("5.6 the anchor registry — the project gate replaced, not skipped", () => {
+  const fakeManifest = (name: string, root: string): ProjectManifest =>
+    ProjectManifest.parse({ name, root });
+
+  const registerBothHalves = (): void => {
+    registerEveryKind();
+    for (const kind of SESSION_KINDS) {
+      registerSessionAnchor(kind, ({ project }) =>
+        kind === "master"
+          ? { manifest: fakeManifest("__master__", "/state/workspace/home"), permissionsKey: "__master__" }
+          : { manifest: fakeManifest(project ?? "", `/repos/${project ?? ""}`), permissionsKey: project ?? "" },
+      );
+    }
+  };
+
+  test("an anchored kind answers with a manifest AND the key its permission rules live under", () => {
+    registerBothHalves();
+    const project = resolveSessionAnchor({ kind: "project", project: "demo" });
+    expect(project.manifest.root).toBe("/repos/demo");
+    expect(project.permissionsKey).toBe("demo");
+
+    // The master takes NO project and still resolves — the one property the old
+    // `getProject(project)` line made impossible.
+    const master = resolveSessionAnchor({ kind: "master" });
+    expect(master.manifest.root).toBe("/state/workspace/home");
+    expect(master.permissionsKey).toBe("__master__");
+  });
+
+  test("the permissions key is SEPARATE from the manifest root, so a project-less session cannot share a bucket", () => {
+    registerBothHalves();
+    // A session with no project would otherwise key its stored allow-rules
+    // under the string "undefined" — one shared bucket every future
+    // project-less surface silently joins. The master's key is its own.
+    const master = resolveSessionAnchor({ kind: "master" });
+    const keys = SESSION_KINDS.filter((k) => k !== "master").map(
+      (k) => resolveSessionAnchor({ kind: k, project: "demo" }).permissionsKey,
+    );
+    expect(keys.every((k) => k === "demo")).toBe(true);
+    expect(keys).not.toContain(master.permissionsKey);
+    expect(master.permissionsKey).not.toBe("undefined");
+  });
+
+  test("an UNDECLARED kind throws and names what IS declared — never a silent default anchor", () => {
+    registerSessionAnchor("project", () => ({
+      manifest: fakeManifest("demo", "/repos/demo"),
+      permissionsKey: "demo",
+    }));
+    // The failure this refuses to have: falling back to "the project anchor"
+    // would run a new kind in some project's checkout with that project's
+    // guardrails, which is the widest possible wrong answer.
+    let message = "";
+    try {
+      resolveSessionAnchor({ kind: "master" });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('cannot anchor "master"');
+    expect(message).toContain("no module declared one");
+    expect(message).toContain("Declared kinds: project");
+    expect(message).toContain("MODULE SCOPE");
+  });
+
+  test("a DUPLICATE anchor registration throws — two modules cannot disagree about where a kind runs", () => {
+    const anchor = () => ({
+      manifest: fakeManifest("demo", "/repos/demo"),
+      permissionsKey: "demo",
+    });
+    registerSessionAnchor("project", anchor);
+    // Same discipline as the builder registry: import order deciding a
+    // session's cwd is not a stable answer.
+    expect(() => registerSessionAnchor("project", anchor)).toThrow(/already declared/);
+  });
+
+  test("resetSessionProfiles() clears anchors TOO — one seam, or a suite leaks half the registry", () => {
+    registerBothHalves();
+    expect([...registeredAnchorKinds()].sort()).toEqual([...SESSION_KINDS].sort());
+    resetSessionProfiles();
+    expect(registeredAnchorKinds()).toEqual([]);
+    expect(registeredSessionKinds()).toEqual([]);
+    // …and re-registering after the reset does not throw, which is what makes
+    // beforeEach a mitigation rather than a second failure mode.
+    expect(() => registerBothHalves()).not.toThrow();
+  });
+
+  test("EVERY kind with a builder has an anchor — a half-registered kind 500s in the route preamble", () => {
+    registerBothHalves();
+    // The two registries are consulted a few lines apart in the same pre-stream
+    // preamble: a kind with a builder and no anchor throws before the profile
+    // resolves, a kind with an anchor and no builder throws just after. The
+    // real pin over the SHIPPED lists is in apps/web/lib/session-profiles.test.ts,
+    // which is the only file that can import the catalogue.
+    expect([...registeredAnchorKinds()].sort()).toEqual([...registeredSessionKinds()].sort());
+  });
+});
+
 // SPEC-runtime-foundations' success signal is ONE SCRIPTED RUN in which every
 // port serves a consumer. Story 1.3 delivered L1–L5 in
 // packages/core/test/track-a-prove-run.test.ts; this is Track B's leg, and it
@@ -1076,7 +1245,7 @@ const transcript = (leg: string, what: string) => console.log(`[track-b] ${leg} 
 describe("prove-run L6", () => {
   test("L6 a profile declaring a capability the provider port does not publish fails before the stream opens", () => {
     resetSessionProfiles();
-    registerFourKinds();
+    registerEveryKind();
 
     // The port serves a consumer FOR REAL: an escalation profile resolves, and
     // the checker reports what Codex does not publish.

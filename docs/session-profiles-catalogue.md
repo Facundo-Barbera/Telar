@@ -220,3 +220,97 @@ the four workspace names in NEITHER list, falling through to `canUseTool`:
 an interactive permission card offering a WRITE path on what this profile's
 own comment calls a narrow read-only discuss wall. Denying them makes them
 truly uncallable (the SDK guarantees a disallow beats any allow).
+
+## `buildMasterProfile` (story 5.6)
+
+SPEC-organization-workspace's CAP-1 receptionist: the first session kind in
+Telar anchored to NO project. Everything it supplies is fixed by that
+spec's story 6, and every line of it is in the builder rather than in the
+route — AD-9's own case, "a new surface adds a profile, it does not add an
+`if`".
+
+**`settingSources: []`** — zero ambient config discovery, and the only
+builder here that is not `NATIVE_CLAUDE_SETTING_SOURCES`. `brownfield.md`'s
+harness finding: the master must not inherit the operator's `~/.claude` or
+some checkout's `.mcp.json`, because it is not IN a repo. The capability
+`setting-sources` is deliberately NOT required — `[]` asks the harness for
+nothing, so requiring it would 400 a provider over a feature this profile
+switches off.
+
+**`cwd` and default guardrails come from the ANCHOR, not from the spec.**
+`<TELAR_HOME>/workspace/home`, resolved by `masterAnchor` in the same file
+and reached through the workspace store's exported `workspaceHomeDir()`
+(AD-5/INV-3a: that module owns the subtree and no other file composes a
+path into it). The anchor calls `ensureWorkspace()` first, because a cwd
+that does not exist is not a cwd — Claude Code tolerates an empty directory
+but not a missing one, and Codex's `-C` requires it to exist. That call
+creates `home/` as a SIBLING of `lanes.yaml` and `packets/`, which is what
+makes SPEC.md's "the store above it stays outside the master's write
+boundary" a fact about the filesystem rather than an intention. The
+manifest is `ProjectManifest.parse`d, so "default guardrails" means
+literally the schema's own defaults rather than a second copy of them
+written out here. The full argument for why this is an anchor registry and
+not a `cwd` field on `SessionProfileSpec` is in
+`docs/session-profile-port.md`.
+
+**NEVER A HOME DIRECTORY.** `brownfield.md`: "Never use /Users/facundo as
+cwd — trust never persists there." Both harnesses key session history,
+auto-memory and trust PER DIRECTORY, which is also the argument for ONE
+stable directory over a throwaway scratch dir per turn: a stable home
+accrues one continuous bucket, scratch dirs fragment it.
+
+**`__master__`, the synthetic permissions key.** `apps/web/lib/permissions.ts`
+stores allow-rules keyed by project name, and a session with no project
+would otherwise key its rules under the string `"undefined"` — one shared
+bucket every future project-less surface silently joins. The double
+underscores are the guard: a project name is a registry key the user types.
+It is ALSO the master manifest's `name`, so the master has exactly one
+synthetic identity rather than two that can drift.
+
+**The tool policy is an allow-NARROWING, like escalation's** and unlike the
+three project kinds', because the master's MCP mount is narrower than
+theirs. `allow` is `Read`/`Grep`/`Glob` plus `WORKSPACE_AUTO_TOOLS`, spread
+from the constant rather than restated. Deliberately NOT the whole
+six-name built-in head of `BASE_ALLOWED_TOOLS`: `WebSearch`/`WebFetch` are
+the external-reference surface CAP-13 (story 12) will design, and a profile
+that pre-granted them would make that story's decision for it. `deny` is
+`AskUserQuestion`, every loom name — `LOOM_AUTO_TOOLS` plus the two moat
+commits `start_loom` and `answer_blocked`, which are unspellable in `allow`
+by type and would otherwise fall through to `canUseTool` as a permission
+card for a server this session never mounts — and every ultra name.
+
+**MOAT:** `mcp__workspace__weave_batch` is in NEITHER list, exactly as
+`answer_blocked` is for escalation. In `allow` it would auto-run; in `deny`
+the master's whole proposal surface would be gone. It stays
+callable-but-human-gated (CAP-11 — approval-gated advance).
+
+**No appendix, deliberately, and it is the story's own boundary.** Story 6
+is "backend only — no briefing intelligence and no chat UI". The master's
+words are stories 7, 9 and 10, and a placeholder paragraph written here
+would be prompt text nobody designed. An omitted appendix resolves to `""`
+and requires no `system-prompt-append` capability.
+
+**Required capabilities are `mcp-servers`, `pre-tool-use-hooks` and
+`tool-allow-deny-lists`** — the AD-11 gate that keeps a Codex-backed master
+from silently becoming a session with no workspace at all (`runCodexTurn`
+has no MCP plumbing; brownfield.md's gap, story 13's work).
+
+## The anchors, and the MCP mount
+
+Since story 5.6 `registerSessionProfiles()` registers TWO things per kind:
+the builder above, and an ANCHOR (`registerSessionAnchor`) that answers
+what the session runs against. Every project-anchored kind shares one
+resolver, which is the chat route's old `getProject(project).manifest`
+moved verbatim — same throw, same pre-SSE 400 — and returns the project
+slug as its permissions key. A kind with a builder and no anchor 500s in
+the route's pre-stream preamble; the suites assert the two lists are equal.
+
+Which MCP servers a kind mounts is a THIRD registry,
+`apps/web/lib/session-mcp.ts`, and it is a registry of FACTORIES rather
+than a profile field: those servers are constructed once per session
+runtime and close over live getters (#28), while a profile builder runs
+eagerly before the stream opens and can only produce values. The project
+mount is the route's own four-server literal (loom, ultra, workspace,
+browser); the master mounts the workspace server ALONE and UNSCOPED — the
+cross-project view CAP-1's briefing needs, and a property of how the server
+was built rather than of anything a tool argument may ask for.

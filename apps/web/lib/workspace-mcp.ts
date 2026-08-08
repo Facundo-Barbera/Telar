@@ -122,11 +122,14 @@ export type WorkspaceMcpOpts = {
   // calls "the opposite of the isolation the rest of the system maintains", and
   // is precisely the leak the tool-surface design exists to prevent.
   //
-  // OPTIONAL, because `undefined` means UNSCOPED — story 5.3's project-less
-  // master session sees every project's items. Story 5.1 never constructs the
-  // server that way; the branch exists so 5.3 does not have to edit this file,
-  // and a cross-project view is therefore always a property of how the SERVER
-  // was built, never of what a caller asked for.
+  // OPTIONAL, because `undefined` means UNSCOPED — the project-less master
+  // session sees every project's items. Story 5.1 never constructed the server
+  // that way; the branch existed so the master story would not have to edit
+  // this file, and STORY 5.6 (numbered 5.3 in the guess above, which is what
+  // this note now corrects) took it up exactly as anticipated: @/lib/session-mcp's
+  // master mount omits `project` and no other caller does. A cross-project view
+  // is therefore always a property of how the SERVER was built, never of what a
+  // caller asked for.
   project?: string;
   // The chat's own resolved account profile — the human this session belongs to.
   // Used only to compose the creation timeline entry's text. Never read from

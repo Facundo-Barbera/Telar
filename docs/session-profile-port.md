@@ -65,6 +65,21 @@ mutates mid-stream, which is a side effect and not data. Epic 5's
 project-less master profile is the story with a reason to pay for that
 restructure; until then every spec omits the field and it resolves to `{}`.
 
+**Story 5.6 measured that restructure and did NOT route it through this
+field.** The reason is #28's persistent runtime rather than anything about
+profiles: the four servers are constructed inside
+`acquireSessionRuntime`'s `create` callback — once per session RUNTIME, not
+once per POST — and each closes over getters that read live state
+(`self().sessionId`, `slots.runId`) so a reused runtime's tool calls
+attribute to the CURRENT turn. A builder runs EAGERLY, before the stream
+opens (INV-6c pins that ordering), so it can only produce values; a builder
+that constructed them would capture the first POST's ids forever. What the
+kind selects is therefore a FACTORY, and factories live in a parallel
+kind-keyed registry, `apps/web/lib/session-mcp.ts`. `mcpServers` keeps its
+meaning for what it CAN carry — statically-configured servers, which is
+what CAP-13's external MCP roster will be — and the route now spreads both,
+so a profile that declares one is no longer silently dropped.
+
 ## AD-5/AD-20 — no state-root composition
 
 This module owns NO state subtree and composes NO path off `TELAR_HOME`. It
@@ -74,10 +89,33 @@ path-composition inventory at an exact list of named sites, and a module
 that resolved the state root would have to be added to it. Everything
 path-shaped arrives already resolved, on the context.
 
-**Forward note for epic 5:** AD-9's project-less master profile needs
-`cwd: <TELAR_HOME>/workspace/home`, so that story adds an optional `cwd` to
-the spec — and it must reach that subtree through the owning module's
-exported port, never by composing a path here.
+**Forward note for epic 5, and how it actually resolved.** The note used to
+read: "AD-9's project-less master profile needs `cwd:
+<TELAR_HOME>/workspace/home`, so that story adds an optional `cwd` to the
+spec — and it must reach that subtree through the owning module's exported
+port, never by composing a path here." Story 5.6 kept the second half and
+rejected the first.
+
+`cwd` is not a restriction. `SessionProfileSpec` is deliberately a set of
+fields a profile may only NARROW with (INV-6a pins the exact set, and
+`GRANT_SHAPED_FIELDS` names what may never appear), and a spec field that
+moved where a session RUNS would let every profile in the tree redirect its
+own working directory — a grant, wearing a restriction's clothes.
+
+So the DERIVATION moved instead. The route's `manifest =
+getProject(project).manifest` became `resolveSessionAnchor({ kind, project
+})`: a second registry, keyed by the same `SessionKind`, whose resolver
+returns the `ProjectManifest` this kind runs against plus the key its
+permission rules are stored under. For every project-anchored kind the
+registered resolver IS `getProject(project).manifest`, throwing the same
+error into the same `catch` and producing the same pre-SSE 400. The master
+registers one that returns a manifest parsed with `root:
+workspaceHomeDir()` — the owning module's exported port, never a path
+composed here — and the synthetic permissions key `__master__`.
+
+Core still composes no path and opens no file: it STORES a resolver and
+calls it. The one that touches the disk lives in apps/web, and its suite
+runs it in a child process with `TELAR_HOME` pointed at a temp directory.
 
 The whole module is PURE (the project's Design Law: deterministic control
 flow in code, non-determinism pushed to injected seams). No clock, no
@@ -232,8 +270,11 @@ comment about it:
 - no `guardrails` — a spec may only ADD restriction, via the two
   add-prefixed fields, so a mis-authored profile cannot hand back an empty
   guardrail set and widen access;
-- no `cwd` — the context supplies it, so in this story no profile can
-  redirect where a session runs;
+- no `cwd` — the context supplies it, so no profile can redirect where a
+  session runs. STILL TRUE AFTER STORY 5.6: the project-less master got its
+  `<TELAR_HOME>/workspace/home` from the ANCHOR REGISTRY (see the epic-5
+  note above), which resolves a manifest per kind, rather than from a new
+  spec field every other profile would also have gained;
 - no field of any kind that could reach hook registration. INV-6a pins
   that.
 
@@ -307,7 +348,12 @@ NOT this type. Adding a field to `SessionResolutionContext` breaks nothing.
 type one field at a time. The clean end state is a contributor registry any
 module can add an appendix fragment to; it is recorded in
 `deferred-work.md` with epic 5's project-less master profile as owner,
-because that is the first story with a reason to pay for it.
+because that is the first story with a reason to pay for it. STORY 5.6 DID
+NOT PAY FOR IT AND COULD NOT HAVE: the master profile carries NO appendix
+at all (its words — the briefing bands, the receipt, the desk — are the
+later stories in that epic), so it added no field to this type and the
+item's ownership moves to whichever of those stories first composes the
+master's prompt from more than one source.
 
 ## The registry
 
@@ -321,6 +367,14 @@ the resolver.
 A duplicate kind is a real collision — two modules each believing they
 define what a "steerer" session is — not a last-writer-wins convenience.
 Throwing is the only way the second module ever finds out.
+
+**A SECOND REGISTRY SITS BESIDE IT SINCE STORY 5.6** — `registerSessionAnchor`
+/ `resolveSessionAnchor`, same key, same idioms (module-scope registration,
+throw on duplicate, throw on unresolved, cleared by the same
+`resetSessionProfiles()` seam). It answers the other half of "what is this
+session", the half the fold cannot: WHAT IT RUNS AGAINST. A surface now
+registers both halves in the same function, and a kind that registers only
+one fails in the route's pre-stream preamble rather than mid-turn.
 
 `resetSessionProfiles` is a test seam, exported for exactly the reason
 `resetBus()` and `resetAdmission()` are: bun runs EVERY test file in one

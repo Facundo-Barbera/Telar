@@ -1,4 +1,4 @@
-import { getLoom } from "@telar/core";
+import { getLoom, loomLinkRoleOf } from "@telar/core";
 import { getChat, listChats } from "@/lib/store";
 import type { InitialChat } from "@/components/session/session-view";
 
@@ -54,7 +54,11 @@ export async function GET(
     // steerer chat reattached here reads the same dividers as the session page.
     compactions: chat.compactions,
     loomId: chat.loomId,
-    role: chat.role,
+    // NARROWED through core's helper (story 5.6): `Chat.role` is the whole
+    // session-role union now, this field is the LOOM LINK's role. Every chat
+    // this route can return is loom-born, so the conversion is a no-op here —
+    // it is present so the two unions cannot drift apart silently.
+    role: loomLinkRoleOf(chat.role),
   };
   return Response.json({ chat: initial });
 }

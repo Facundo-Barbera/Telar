@@ -40,7 +40,14 @@ export async function GET(req: Request) {
   }
   const awaiting = sessionsAwaitingApproval();
   const chats = listChats(project, { archived })
-    .filter((c) => c.role !== "steerer" && c.role !== "escalation")
+    // "master" joins the filter for the same reason the other two are in it,
+    // one story earlier than its own surface (story 5.6 is backend-only; the
+    // master chat UI is story 7). A master session is project-less, so every
+    // consumer of this list would render it with a blank project column in the
+    // global recents while `?project=` scoping hid it everywhere else — a row
+    // reachable from nowhere in particular. Filtering at birth means the row
+    // never has to be retro-hidden once its own surface exists.
+    .filter((c) => c.role !== "steerer" && c.role !== "escalation" && c.role !== "master")
     // `live` is the sidebar's running dot. It is DERIVED per request from the
     // in-flight registry (lib/chat-runs.ts) and never persisted — a turn that
     // dies with the server must not leave a row claiming to be running. This is
