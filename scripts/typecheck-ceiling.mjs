@@ -39,8 +39,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Lower this when the backlog shrinks. It may never be raised — that is the
@@ -123,7 +124,50 @@ const spawnTsc = (extra, what) => {
   return r;
 };
 
-const listRun = spawnTsc(["--listFilesOnly"], "file-listing");
+// THE LISTING GOES TO A FILE, NOT A PIPE (issue #74). The split into two
+// passes isolated the measurement; it did not stop the loss. Measured across
+// five CI failures: the captured stdout of this pass came back truncated at
+// 0, 0, 64 and 14 test files on equivalent content — four distinct partial
+// lengths, the same tsc 6.0.3 as every green run, and never a kill signal.
+// That rules out the commit, the compiler version and OOM, and leaves the
+// pipe capture itself. A shell redirect writes the list where nothing can
+// race it — and if tsc ever emits a genuinely short list and exits 0, the
+// file will prove THAT instead, which is the diagnostic fork the old error
+// message ("pin the compiler") could never make.
+const listFiles = (what) => {
+  const dir = mkdtempSync(join(tmpdir(), "telar-tsc-list-"));
+  const out = join(dir, "files.txt");
+  try {
+    const r = spawnSync(
+      "sh",
+      [
+        "-c",
+        'bunx --bun tsc -p tsconfig.typecheck.json --pretty false --listFilesOnly > "$TSC_LIST_OUT"',
+      ],
+      { cwd: coreDir, encoding: "utf8", env: { ...process.env, TSC_LIST_OUT: out } },
+    );
+    if (r.signal) {
+      const message =
+        `typecheck-ceiling: the ${what} pass was KILLED by ${r.signal} — it did not finish, so ` +
+        `its output is truncated and the coverage floor means nothing. This is an ` +
+        `INFRASTRUCTURE failure, not a coverage finding. NEXT STEP: give the compiler more ` +
+        `headroom; do not touch tsconfig.typecheck.json and do not lower MIN_TEST_FILES.`;
+      console.error(inActions ? `::error::${message}` : `\n${message}`);
+      process.exit(1);
+    }
+    let raw = "";
+    try {
+      raw = readFileSync(out, "utf8");
+    } catch {
+      // no file at all — fall through to the empty-list guard below
+    }
+    return raw.split("\n").filter((line) => line.startsWith("/"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+let loadedFiles = listFiles("file-listing");
 const run = spawnTsc(["--noEmit"], "typecheck");
 
 // WHICH COMPILER ACTUALLY RAN, printed always. This workspace declares TWO
@@ -153,14 +197,7 @@ const stdout = run.stdout ?? "";
 const positioned = /^(.+)\((\d+),(\d+)\): (error|message) (TS\d+): (.*)$/;
 const global = /^(error|message) (TS\d+): (.*)$/;
 
-const loadedFiles = [];
 const diagnostics = [];
-
-// Paths from the LISTING pass, diagnostics from the CHECK pass — they are two
-// processes now and their outputs are no longer interleaved.
-for (const line of (listRun.stdout ?? "").split("\n")) {
-  if (line.startsWith("/")) loadedFiles.push(line);
-}
 
 for (const line of stdout.split("\n")) {
   if (!line) continue;
@@ -187,7 +224,25 @@ if (loadedFiles.length === 0) {
   process.exit(1);
 }
 
-const testFiles = loadedFiles.filter((f) => f.startsWith(testDirPrefix));
+let testFiles = loadedFiles.filter((f) => f.startsWith(testDirPrefix));
+
+// ONE RETRY ON A FLOOR MISS, BOTH COUNTS PRINTED. If the redirect ever still
+// comes back short, a second run that DISAGREES on the same commit is the
+// smoking gun a single run can never produce (a real coverage regression
+// reproduces; a race does not) — and taking the better of the two keeps an
+// innocent PR green while the evidence lands in the log.
+if (testFiles.length < MIN_TEST_FILES) {
+  const secondLoaded = listFiles("file-listing retry");
+  const secondTest = secondLoaded.filter((f) => f.startsWith(testDirPrefix));
+  console.log(
+    `listing floor missed: ${testFiles.length} test files on the first pass, ` +
+      `${secondTest.length} on the retry — disagreement on one commit is the race, not the config`,
+  );
+  if (secondTest.length > testFiles.length) {
+    loadedFiles = secondLoaded;
+    testFiles = secondTest;
+  }
+}
 
 console.log(
   `tsc ${tscVersion} -p packages/core/tsconfig.typecheck.json: ${loadedFiles.length} files ` +
