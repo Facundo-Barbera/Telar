@@ -31,9 +31,40 @@ describe("the web renderer is actually wired to useCommandKeys", () => {
     expect(hook).toContain('window.addEventListener("keydown", onKeyDown)');
     expect(hook).toContain("resolveWebCommandKeyAction(event)");
     expect(hook).toContain("window.telarDesktop?.commandKeys?.onInvoke");
-    // The desktop path re-applies the focus rule itself — the sender (the
-    // Electron main process) has no DOM and could not have checked it.
-    expect(hook).toContain("isEditableTarget(document.activeElement)");
+    // The desktop path applies NO focus check (issue #46): every menu
+    // accelerator is a CommandOrControl chord and chords are exempt from
+    // the focus rule, which is enforced in exactly one place —
+    // resolveWebCommandKeyAction. Pinned as an ABSENCE so the old
+    // re-check, which silently dropped every menu invoke while the
+    // composer held focus, cannot creep back as a second copy of the rule.
+    expect(hook).not.toContain("isEditableTarget");
+  });
+});
+
+describe("the hold-⌘ hints are actually wired into the sidebar", () => {
+  test("the sidebar mounts the gesture hook and derives the id-keyed jump map", () => {
+    const sidebar = read("components/app-sidebar.tsx");
+    expect(sidebar).toContain("useCommandKeyHints()");
+    expect(sidebar).toContain("commandKeyJumpNumbers(chats, activeSessionId, renderedAt)");
+    // The Settings and New Session hints ride the same visibility flag.
+    expect(sidebar).toContain('hintLabel(",")');
+    expect(sidebar).toContain('hintLabel("n")');
+  });
+
+  test("the hook translates every ending signal, not just keyup — ⌘Tab must not strand hints on", () => {
+    const hook = read("lib/use-command-key-hints.ts");
+    expect(hook).toContain('window.addEventListener("keydown", onKeyDown)');
+    expect(hook).toContain('window.addEventListener("keyup", onKeyUp)');
+    expect(hook).toContain('window.addEventListener("blur", onBlur)');
+    expect(hook).toContain('document.addEventListener("visibilitychange", onVisibility)');
+    // The behavior itself must stay in the pure machine, where it is tested.
+    expect(hook).toContain("nextHintState(state.current, signal)");
+  });
+
+  test("a session row renders the hint the sidebar hands it", () => {
+    const row = read("components/session/session-row.tsx");
+    expect(row).toContain("commandHint");
+    expect(row).toContain("<CommandKeyHint");
   });
 });
 

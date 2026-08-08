@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   commandKeyDestination,
-  isEditableTarget,
   resolveWebCommandKeyAction,
   type CommandKeyId,
 } from "@/lib/command-keys";
@@ -28,8 +27,11 @@ import { recentSessionsForCommandKeys, sessionHref, type SidebarSession } from "
  *   - the Electron menu's native accelerators fire in the MAIN process,
  *     which has no DOM at all, and arrive here as a bare action id over the
  *     telarDesktop.commandKeys bridge (preload.js's existing telar:*
- *     contextBridge pattern). The focus rule is re-applied here, against
- *     document.activeElement, since the sender could not have checked it.
+ *     contextBridge pattern). No focus check on this path, deliberately
+ *     (issue #46): every menu accelerator is a CommandOrControl chord, and
+ *     chords are exempt from the focus rule — which is enforced in exactly
+ *     one place, resolveWebCommandKeyAction, so this handler must not grow
+ *     a second copy that can drift.
  *
  * KNOWN GAP (stated, not silently assumed): in a plain desktop browser tab
  * (not the Electron shell), Cmd+N/Cmd+T/Cmd+1..9 are commonly reserved by
@@ -66,7 +68,6 @@ export function useCommandKeys(chats: readonly SidebarSession[], activeSessionId
     window.addEventListener("keydown", onKeyDown);
 
     const offInvoke = window.telarDesktop?.commandKeys?.onInvoke((id) => {
-      if (isEditableTarget(document.activeElement)) return;
       run(id as CommandKeyId);
     });
 

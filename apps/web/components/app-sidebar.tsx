@@ -57,6 +57,9 @@ import {
 } from "@/components/ui/sidebar";
 import { isLoomRunning } from "@/lib/project-signal";
 import { useCommandKeys } from "@/lib/use-command-keys";
+import { useCommandKeyHints, useMacPlatform } from "@/lib/use-command-key-hints";
+import { commandKeyJumpNumbers, formatCommandKeyHint } from "@/lib/command-key-hints";
+import { CommandKeyHint } from "@/components/command-key-hint";
 import { SessionRow } from "@/components/session/session-row";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -480,6 +483,15 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
   // pins the currently-open session the exact same way the main list does.
   useCommandKeys(chats, activeSessionFromPathname(pathname));
 
+  // Hold ⌘ (Ctrl off-Mac) alone for a beat and the sidebar elements those
+  // bindings reach label themselves with their chord — the discoverability
+  // half of the command keys. The gesture machine lives in
+  // lib/command-key-hints.ts; this component only asks "showing right now?"
+  // and paints badges.
+  const hintsShown = useCommandKeyHints();
+  const macPlatform = useMacPlatform();
+  const hintLabel = (key: string) => formatCommandKeyHint(key, macPlatform);
+
   // Idle workspaces are event-driven. Poll only while a loom is genuinely in
   // flight; mutations already broadcast telar:refresh and a running loom is the
   // sole state that can legitimately advance without a local user action.
@@ -499,6 +511,13 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
   const showProject = !selectedScope && projectNames.length > 1;
 
   const activeSessionId = activeSessionFromPathname(pathname);
+  // Keyed by session ID, not row position: ⌘1..9 index the GLOBAL recent
+  // band, while this list may be scoped, filtered, or searched into another
+  // order. A row wears its true global number or nothing (see
+  // commandKeyJumpNumbers). Computed only while shown — it walks every chat.
+  const jumpNumbers = hintsShown
+    ? commandKeyJumpNumbers(chats, activeSessionId, renderedAt)
+    : null;
   const list = deriveSessionList({
     sessions: chats,
     project: selectedScope,
@@ -643,15 +662,25 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                 </kbd>
               )}
             </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="New session"
-              title="New session"
-              render={<Link href="/" />}
-            >
-              <MessageSquarePlusIcon />
-            </Button>
+            <span className="relative shrink-0">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="New session"
+                title="New session"
+                render={<Link href="/" />}
+              >
+                <MessageSquarePlusIcon />
+              </Button>
+              {/* ⌘N only — ⌘T reaches the same "/" as a new browser tab and
+                  has no distinct element to label. */}
+              {hintsShown && (
+                <CommandKeyHint
+                  label={hintLabel("n")}
+                  className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2"
+                />
+              )}
+            </span>
           </div>
 
           <div className="flex items-center gap-1">
@@ -766,6 +795,11 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
                   onRefresh={loadAll}
+                  commandHint={
+                    jumpNumbers?.has(session.id)
+                      ? hintLabel(String(jumpNumbers.get(session.id)))
+                      : undefined
+                  }
                 />
               ))
             )}
@@ -820,14 +854,14 @@ function SidebarBody({ initialData }: { initialData?: AppSidebarInitialData }) {
 
       <SidebarFooter>
         <div className="p-1">
-          <SettingsButton />
+          <SettingsButton hint={hintsShown ? hintLabel(",") : undefined} />
         </div>
       </SidebarFooter>
     </>
   );
 }
 
-function SettingsButton() {
+function SettingsButton({ hint }: { hint?: string }) {
   const pathname = usePathname();
   const active = pathname.startsWith("/settings");
   return (
@@ -840,6 +874,7 @@ function SettingsButton() {
     >
       <SettingsIcon className="size-4 shrink-0" />
       <span>Settings</span>
+      {hint ? <CommandKeyHint label={hint} className="ml-auto" /> : null}
     </Link>
   );
 }

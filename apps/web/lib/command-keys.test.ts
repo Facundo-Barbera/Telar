@@ -104,37 +104,50 @@ describe("isEditableTarget — the focus rule's primitive", () => {
   });
 });
 
-describe("resolveWebCommandKeyAction — the focus rule enforced (issue #16)", () => {
+describe("resolveWebCommandKeyAction — the focus rule as revised by issue #46", () => {
+  // THE #46 PIN, and the test lesson that issue insisted on: the previous
+  // suite asserted "an editable target suppresses the binding" and passed
+  // happily while describing the defect — the composer is a TEXTAREA and
+  // holds focus nearly all the time, so no chord could ever fire. This
+  // suite pins the USER-VISIBLE rule instead. This exact test failed
+  // against the old implementation, which is the point.
+  test("a ⌘-chord fires while the composer's textarea has focus", () => {
+    expect(
+      resolveWebCommandKeyAction({ key: "n", metaKey: true, target: { tagName: "TEXTAREA" } }),
+    ).toBe("new-session");
+  });
+
+  test("a chord fires from ANY editable surface — input, contenteditable — and with ctrl as well as meta", () => {
+    expect(
+      resolveWebCommandKeyAction({ key: ",", metaKey: true, target: { tagName: "INPUT" } }),
+    ).toBe("settings");
+    expect(
+      resolveWebCommandKeyAction({
+        key: "1",
+        ctrlKey: true,
+        target: { tagName: "SPAN", isContentEditable: true },
+      }),
+    ).toBe("jump-1");
+  });
+
   test("fires from an ordinary element", () => {
     expect(
       resolveWebCommandKeyAction({ key: "n", metaKey: true, target: { tagName: "DIV" } }),
     ).toBe("new-session");
   });
 
-  test("is suppressed from the composer's textarea", () => {
-    expect(
-      resolveWebCommandKeyAction({ key: "n", metaKey: true, target: { tagName: "TEXTAREA" } }),
-    ).toBeNull();
-  });
-
-  test("is suppressed from ANY text field, not the composer specifically — a session-rename input included", () => {
-    expect(
-      resolveWebCommandKeyAction({ key: ",", metaKey: true, target: { tagName: "INPUT" } }),
-    ).toBeNull();
-  });
-
-  test("is suppressed inside a contenteditable region", () => {
-    expect(
-      resolveWebCommandKeyAction({
-        key: "1",
-        metaKey: true,
-        target: { tagName: "SPAN", isContentEditable: true },
-      }),
-    ).toBeNull();
-  });
-
   test("fires with no target at all (the desktop IPC path has none)", () => {
     expect(resolveWebCommandKeyAction({ key: "t", metaKey: true })).toBe("new-tab");
+  });
+
+  // What REMAINS of the focus rule: it guards bare keys, the case where a
+  // shortcut genuinely would steal a keystroke. No bare-key binding exists
+  // today (the matcher already rejects modifier-less events), so this pins
+  // the contract for the first future one.
+  test("a bare key over a text field never fires — the guard that remains", () => {
+    expect(
+      resolveWebCommandKeyAction({ key: "n", target: { tagName: "TEXTAREA" } }),
+    ).toBeNull();
   });
 
   test("still returns null for an unbound chord even outside any field", () => {
