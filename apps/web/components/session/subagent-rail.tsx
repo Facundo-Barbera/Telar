@@ -17,6 +17,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  ActivityIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CompassIcon,
@@ -300,22 +301,28 @@ export function SubagentBanner({
     return () => window.removeEventListener("keydown", onKey);
   }, [onBack]);
 
+  // THE CRUMB SAYS WHERE BACK GOES, AND BACK GOES TO ACTIVITY. This read
+  // "‹ Main" from the era when the pane REPLACED the main transcript and
+  // back restored it; since the dock migration the pane lives in the
+  // activity slot and back returns to the rail — a crumb naming Main was a
+  // signpost to the wrong place. Styling follows the rail's own header
+  // vocabulary (flat, border-b seam, no floating card): this bar is part of
+  // the sidebar surface it sits in, not a bubble visiting from the chat.
   return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-xs">
+    <div className="flex items-center gap-1.5 border-b border-border/70 px-1 pb-2 text-xs">
       <button
         type="button"
         onClick={onBack}
-        aria-label="Back to main conversation"
-        className="-mx-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="Back to Activity"
+        className="-mx-1 inline-flex shrink-0 items-center gap-1 rounded-md px-1 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <ChevronLeftIcon className="size-3.5" />
-        Main
+        <ActivityIcon className="size-3" />
+        Activity
       </button>
       <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40" />
       <StatusMark status={status} />
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-        Viewing {label}
-      </span>
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{label}</span>
       <kbd className="hidden shrink-0 rounded border border-border px-1 font-mono text-[10px] text-muted-foreground/60 sm:inline">
         Esc
       </kbd>

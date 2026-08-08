@@ -81,10 +81,23 @@ describe("Processes: the harness's live background tasks, beside Changes and Bro
   test("the section exists, renders type + description, and is capped like its neighbours", () => {
     const src = inspector();
     expect(src).toContain("<SectionHeading>Processes</SectionHeading>");
-    expect(src).toContain("{tasks.length > 0 && (");
+    expect(src).toContain("{processTasks.length > 0 && (");
     expect(src).toContain("label={backgroundTaskLabel(task)}");
     expect(src).toContain("detail={task.description}");
     expect(src).toContain('noun="processes"');
+  });
+
+  test("no double booking: agent-kind tasks stay out of Processes — Subagents owns them", () => {
+    // The harness's roster includes backgrounded SUB-AGENTS (the SDK
+    // backgrounds "Bash commands and subagents" onto one list), so without
+    // this filter every running scout rendered TWICE in one popover: an
+    // anonymous "Agent" row in Processes and its real card, with name and
+    // steps, in Subagents directly below (owner's find on nightly .1).
+    const src = inspector();
+    expect(src).toContain('backgroundTaskKind(task.type) !== "agent"');
+    // The section renders the FILTERED list, not the raw roster.
+    expect(src).toContain("items={processTasks}");
+    expect(src).not.toContain("items={tasks}");
   });
 
   test("rows are not clickable: a background command has no detail surface to go to", () => {

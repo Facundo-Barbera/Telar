@@ -33,7 +33,11 @@ import {
 import type { AttachmentRef } from "@/components/conversation";
 import { attachmentUrl } from "@/lib/attachment-contract";
 import type { RailAgent } from "@/components/session/subagent-rail";
-import { backgroundTaskLabel, type BackgroundTask } from "@/lib/background-tasks";
+import {
+  backgroundTaskKind,
+  backgroundTaskLabel,
+  type BackgroundTask,
+} from "@/lib/background-tasks";
 import type { RunSnapshot } from "@/lib/ultra-runs";
 import type { GitOverviewResponse } from "@/components/projects/git-tab-shared";
 import { cachedJson } from "@/lib/client-json-cache";
@@ -369,6 +373,14 @@ export function WorkspaceInspector({
   // and the Activity rail still has it).
   const liveAgents = agents.filter((agent) => agent.status === "running");
   const liveWorkflows = workflows.filter((run) => run.state === "running");
+  // NO DOUBLE BOOKING (owner's find on nightly .1): the harness's roster
+  // includes backgrounded SUB-AGENTS, so without this filter every running
+  // scout rendered twice in one popover — an anonymous "Agent" row in
+  // Processes and its real card in Subagents right below. Agent-kind tasks
+  // belong to the Subagents section, which knows their names, steps, and
+  // detail pane; Processes keeps everything the panel would otherwise have
+  // no row for (commands, workflows, unknown kinds).
+  const processTasks = tasks.filter((task) => backgroundTaskKind(task.type) !== "agent");
   // The trigger's quiet dot — still DERIVED from current state rather than from
   // any transition (issue #17), so it stays lit for exactly as long as
   // something is live, and still never the thing that pops the panel open.
@@ -584,7 +596,7 @@ export function WorkspaceInspector({
             />
           </div>
 
-          {tasks.length > 0 && (
+          {processTasks.length > 0 && (
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Processes</SectionHeading>
@@ -603,7 +615,7 @@ export function WorkspaceInspector({
                   background command has no detail surface to go to (its output
                   lands in the transcript). A chevron would promise one. */}
               <CappedRows
-                items={tasks}
+                items={processTasks}
                 noun="processes"
                 render={(task) => (
                   <InspectorRow
