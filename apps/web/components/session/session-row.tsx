@@ -29,6 +29,7 @@ import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon
 import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
 import { SnoozeMenu } from "@/components/session/snooze-menu";
 import { Button } from "@/components/ui/button";
+import { CommandKeyHint } from "@/components/command-key-hint";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
   HoverCard,
@@ -197,6 +198,7 @@ export function SessionRow({
   searchSelected = false,
   renderedAt,
   onRefresh,
+  commandHint,
 }: {
   session: SidebarSession;
   active: boolean;
@@ -205,6 +207,10 @@ export function SessionRow({
   searchSelected?: boolean;
   renderedAt: number;
   onRefresh: () => void;
+  /** The chord that jumps here ("⌘3"), while the hold-⌘ hints are up —
+   *  already formatted, because which glyph it wears is the sidebar's
+   *  platform question, not this row's (lib/command-key-hints.ts). */
+  commandHint?: string;
 }) {
   // Distinguishes the docked desktop sidebar from the mobile <Sheet>, which is
   // a modal and therefore cannot host a body-portaled hover card.
@@ -512,6 +518,16 @@ export function SessionRow({
           />
         </span>
       )}
+
+      {/* Overlays the hover-action corner on purpose: while ⌘ is held the
+          hand is on the keyboard, and the jump number is the one fact the
+          row has to offer that moment. */}
+      {commandHint ? (
+        <CommandKeyHint
+          label={commandHint}
+          className="absolute right-1.5 top-1/2 z-10 -translate-y-1/2"
+        />
+      ) : null}
     </div>
   );
 }

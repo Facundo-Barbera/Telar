@@ -41,6 +41,33 @@ describe("the web renderer is actually wired to useCommandKeys", () => {
   });
 });
 
+describe("the hold-⌘ hints are actually wired into the sidebar", () => {
+  test("the sidebar mounts the gesture hook and derives the id-keyed jump map", () => {
+    const sidebar = read("components/app-sidebar.tsx");
+    expect(sidebar).toContain("useCommandKeyHints()");
+    expect(sidebar).toContain("commandKeyJumpNumbers(chats, activeSessionId, renderedAt)");
+    // The Settings and New Session hints ride the same visibility flag.
+    expect(sidebar).toContain('hintLabel(",")');
+    expect(sidebar).toContain('hintLabel("n")');
+  });
+
+  test("the hook translates every ending signal, not just keyup — ⌘Tab must not strand hints on", () => {
+    const hook = read("lib/use-command-key-hints.ts");
+    expect(hook).toContain('window.addEventListener("keydown", onKeyDown)');
+    expect(hook).toContain('window.addEventListener("keyup", onKeyUp)');
+    expect(hook).toContain('window.addEventListener("blur", onBlur)');
+    expect(hook).toContain('document.addEventListener("visibilitychange", onVisibility)');
+    // The behavior itself must stay in the pure machine, where it is tested.
+    expect(hook).toContain("nextHintState(state.current, signal)");
+  });
+
+  test("a session row renders the hint the sidebar hands it", () => {
+    const row = read("components/session/session-row.tsx");
+    expect(row).toContain("commandHint");
+    expect(row).toContain("<CommandKeyHint");
+  });
+});
+
 describe("the desktop shell is actually wired to the shared binding table", () => {
   test("main.js builds its menu from COMMAND_KEY_BINDINGS, not a hand-written list", () => {
     const main = readDesktop("main.js");

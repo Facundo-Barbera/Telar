@@ -87,6 +87,25 @@ without launching Electron. So on desktop this degrades, on purpose, to the
 same in-place navigation as `new-session` rather than silently doing nothing
 or risking the singleton.
 
+## The hold-⌘ hints (discoverability)
+
+Hold the CommandOrControl modifier alone for `HINT_HOLD_MS` and the sidebar
+elements a binding reaches label themselves: `⌘1..9` on the recent
+conversations, `⌘N` on New Session, `⌘,` on Settings. Release, press any
+other key (a chord means you found what you wanted), or leave the window
+(`⌘Tab`'s keyup lands in another app) and they vanish.
+
+The gesture is a pure three-state machine in `lib/command-key-hints.ts` —
+tested directly, since this repo has no DOM harness — and the DOM hook
+(`lib/use-command-key-hints.ts`) is a thin translator pinned structurally
+by `command-keys-wiring.test.ts`. The jump numbers are keyed by session ID,
+not row position: `⌘1..9` index the GLOBAL recent band while the sidebar
+may be rendering a scoped, filtered, or searched list in another order, so
+a row wears its true global number or nothing. `⌘T` gets no hint — it
+targets the same `/` as `⌘N`, as a new browser tab, and has no distinct
+element to label. `⌘K` needs none: the search field already wears a
+permanent one.
+
 ## What each binding id means, and how that was decided
 
 Decided from how routing and session creation actually work, not assumed:
