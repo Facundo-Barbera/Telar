@@ -189,7 +189,10 @@ describe("session runtime", () => {
   });
 
   test("detached traffic reaches the window sink, and the roster emptying settles it once", async () => {
-    const rt = makeRuntime();
+    // Short watchdog: the roster's empty transition now holds the wake span
+    // (see the continuation-hold tests below), and this scenario's wake
+    // never comes — the settle this test watches for is the watchdog's.
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 40 });
     const feed = rt.runtime.beginTurn("run-1");
     const sank: string[] = [];
     let settled = 0;
@@ -228,7 +231,10 @@ describe("session runtime", () => {
     // The live failure this pins: the CLI updates the roster to empty BEFORE
     // forwarding a completing agent's task_notification. An immediate settle
     // dropped that notification and the agent's tab showed Working forever.
-    const rt = makeRuntime({ settleLingerMs: 40 });
+    // Watchdog at 60: the roster transition holds the wake span now, and
+    // this scenario's wake never comes — the late notification must render
+    // inside that hold and the watchdog must still bound it.
+    const rt = makeRuntime({ settleLingerMs: 40, continuationWatchdogMs: 60 });
     const feed = rt.runtime.beginTurn("run-1");
     const sank: string[] = [];
     let settled = 0;
@@ -422,8 +428,41 @@ describe("session runtime", () => {
     rt.runtime.closeNow("test over");
   });
 
-  test("control chatter alone never extends past the short linger", async () => {
-    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 5_000 });
+  test("the roster emptying OPENS the continuation hold — the wake is expected, not discovered", async () => {
+    // The lost ".5 shipped" wake (issue #71, third dropped wake in one day):
+    // completion marker → 1.5s of model-latency silence → window settled →
+    // the wake's whole response generated into a sink-less runtime, dropped
+    // from screen and store alike. The old doctrine ("control chatter alone
+    // never extends past the short linger") armed the watchdog only once
+    // generation was SEEN — and the latency gap is exactly where the wake
+    // died. The empty transition itself is the SDK's wake trigger, so it
+    // holds the watchdog span from the start.
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 200 });
+    const feed = rt.runtime.beginTurn("run-1");
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+    };
+    rt.emit(tasksChanged(1));
+    rt.emit(result);
+    await collect(feed);
+    rt.emit(tasksChanged(0)); // the wake trigger
+    rt.emit({ type: "system", subtype: "task_notification", tool_use_id: "t1", status: "completed" });
+    await sleep(60); // far past the 20ms linger — the old rule settled HERE
+    expect(settled).toBe(0); // held: the wake is expected
+    // The wake arrives after the latency gap and completes — its own result
+    // returns the window to the short linger, the endgame it was built for.
+    rt.emit(assistant);
+    rt.emit({ type: "result", subtype: "success" });
+    await sleep(60);
+    expect(settled).toBe(1);
+    rt.runtime.closeNow("test over");
+  });
+
+  test("a wake that never comes settles at the watchdog, not never", async () => {
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 120 });
     const feed = rt.runtime.beginTurn("run-1");
     let settled = 0;
     rt.runtime.windowSink = {
@@ -435,8 +474,28 @@ describe("session runtime", () => {
     rt.emit(result);
     await collect(feed);
     rt.emit(tasksChanged(0));
-    rt.emit({ type: "system", subtype: "task_notification", tool_use_id: "t1", status: "completed" });
-    await sleep(60); // control-plane only — the 5s watchdog must NOT be in play
+    await sleep(60);
+    expect(settled).toBe(0); // held, awaiting the wake…
+    await sleep(120);
+    expect(settled).toBe(1); // …but the watchdog is still a real bound
+    rt.runtime.closeNow("test over");
+  });
+
+  test("control chatter with NO wake pending settles on the short linger", async () => {
+    // No roster transition ever happened — nothing is expected, and stray
+    // control-plane messages must not hold the window on the long watchdog.
+    const rt = makeRuntime({ settleLingerMs: 20, continuationWatchdogMs: 5_000 });
+    const feed = rt.runtime.beginTurn("run-1");
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+    };
+    rt.emit(result); // the turn ends with no background tasks at all
+    await collect(feed);
+    rt.emit({ type: "system", subtype: "task_notification", tool_use_id: "prev-turn", status: "completed" });
+    await sleep(80);
     expect(settled).toBe(1);
     rt.runtime.closeNow("test over");
   });
