@@ -31,9 +31,13 @@ describe("the web renderer is actually wired to useCommandKeys", () => {
     expect(hook).toContain('window.addEventListener("keydown", onKeyDown)');
     expect(hook).toContain("resolveWebCommandKeyAction(event)");
     expect(hook).toContain("window.telarDesktop?.commandKeys?.onInvoke");
-    // The desktop path re-applies the focus rule itself — the sender (the
-    // Electron main process) has no DOM and could not have checked it.
-    expect(hook).toContain("isEditableTarget(document.activeElement)");
+    // The desktop path applies NO focus check (issue #46): every menu
+    // accelerator is a CommandOrControl chord and chords are exempt from
+    // the focus rule, which is enforced in exactly one place —
+    // resolveWebCommandKeyAction. Pinned as an ABSENCE so the old
+    // re-check, which silently dropped every menu invoke while the
+    // composer held focus, cannot creep back as a second copy of the rule.
+    expect(hook).not.toContain("isEditableTarget");
   });
 });
 

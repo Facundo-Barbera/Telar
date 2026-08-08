@@ -42,26 +42,38 @@ So the looseness has to be at the boundary (this type), not inside the
 function, which still reads both properties safely regardless of what it is
 handed.
 
-## The focus rule (issue #16), and why it is uniform rather than composer-only
+## The focus rule, as revised by issue #46 (born uniform in #16)
 
-Every binding in the table NAVIGATES: `new-session` and `new-tab` replace or
-open a fresh composer, `jump-N` and `settings` both leave the current view.
-None of them insert a character — `CommandOrControl+letter` is not a
-text-editing chord anywhere in this app — so intercepting one never "steals a
-keystroke" in the literal sense of eating text the user meant to type.
+The rule today: a binding is suppressed while focus is anywhere editable
+ONLY when its chord carries no command/control modifier. Since every binding
+in the table is a `CommandOrControl` chord, the guard currently suppresses
+nothing — it exists for the first future bare-key binding, where a naked
+`n` over a focused field must keep typing an `n`.
 
-What it CAN steal is the VIEW itself. The composer's draft is plain component
-state (`session-view.tsx`'s `input`) — unlike a QUEUED message (issue #5's
-localStorage fix, `lib/message-queue.ts`), an unsent draft is never
-persisted, so navigating away mid-sentence would silently delete whatever was
-half-typed. That is a worse outcome than the shortcut simply not firing, so
-the rule is: every binding is suppressed while focus is anywhere editable —
-the composer, but also a session-rename field, the sidebar's search box, a
-settings input. Nothing here special-cases the composer alone: losing a
-half-edited session title or search query to a slipped `cmd+N` is the same
-class of surprise as losing a half-typed message, so both are guarded the
-same way, uniformly, rather than by a growing list of "except when focus is
-in THIS particular field".
+The rule as issue #16 shipped it was unconditional — every binding
+suppressed from every editable target — and that turned out to be the whole
+bug of issue #46: in Telar the composer is a TEXTAREA and holds focus nearly
+all the time, so there was no state in which most bindings could fire. The
+owner tested them in the running app and none worked, while the tests
+passed, because they asserted the suppression itself rather than the
+user-visible behavior. A modifier chord is exactly the mechanism by which a
+shortcut stays reachable while typing — `⌘N`, `⌘T`, `⌘,` all work inside a
+text field in every macOS application.
+
+The original rationale was draft protection: every binding NAVIGATES, and an
+unsent draft was plain component state, so a slipped chord could silently
+delete a half-typed message. Two things ended that argument. Drafts now
+persist (`telar:draft:*` in localStorage, keyed per session, restored on
+return), so navigation no longer destroys anything. And the cost had the
+wrong sign anyway — a shortcut that never fires is a permanent defect, while
+a slipped chord was always recoverable by navigating back.
+
+The rule is enforced in exactly ONE place, `resolveWebCommandKeyAction`.
+It used to be applied twice — there and again in `use-command-keys.ts`'s
+menu-invoke handler — and two copies is how one gets fixed and the other
+does not (that second copy is precisely what kept the Electron menu path
+dead). The menu path needs no copy at all: every accelerator is a chord,
+and chords are exempt. `command-keys-wiring.test.ts` pins the absence.
 
 ## Why `open-tab` degrades to in-place navigation on desktop
 

@@ -35,13 +35,21 @@ export const COMMAND_KEY_BINDINGS = RAW_COMMAND_KEY_BINDINGS as CommandKeyBindin
 export type EditableTargetLike = unknown;
 
 /**
- * FOCUS RULE (issue #16): every binding is suppressed while focus is
- * anywhere editable — composer, session-rename field, search box, settings
- * input — uniformly, never special-cased to the composer alone. Every
- * binding NAVIGATES and none inserts a character, so this is about
- * protecting an unsent draft (never persisted, unlike a queued message —
- * lib/message-queue.ts) from being silently lost to a slipped shortcut, not
- * about "stealing a keystroke". Full reasoning: docs/command-keys-web-port.md
+ * FOCUS RULE, revised by issue #46 (born in #16): a binding is suppressed
+ * while focus is anywhere editable ONLY when its chord carries no
+ * command/control modifier. A modifier chord is exactly the mechanism by
+ * which a shortcut stays reachable while typing — ⌘N, ⌘T, ⌘, all fire from
+ * inside a text field in every macOS application — and in Telar the composer
+ * TEXTAREA holds focus nearly all the time, so the original unconditional
+ * rule left the table with no state in which most bindings could fire at
+ * all (#46, owner-confirmed). The draft-protection rationale it stood on
+ * has also lapsed: drafts persist per session now (lib's telar:draft:*
+ * localStorage keys), so a slipped navigation no longer deletes anything.
+ *
+ * Every binding in today's table is a CommandOrControl chord, so the guard
+ * currently suppresses nothing. It stays for the first future BARE-KEY
+ * binding — a naked "n" over a focused field must keep typing an "n".
+ * Full reasoning: docs/command-keys-web-port.md
  */
 export function isEditableTarget(target: EditableTargetLike): boolean {
   if (!target || typeof target !== "object") return false;
@@ -57,11 +65,19 @@ export type CommandKeyEvent = CommandKeyEventLike & { target?: EditableTargetLik
 /**
  * Resolve a keydown-shaped event to a binding id, applying the focus rule
  * above. Returns null both when nothing matches and when the focus rule
- * suppresses an otherwise-matching chord — callers never need to (and
+ * suppresses an otherwise-matching bare key — callers never need to (and
  * should not try to) tell the two apart.
+ *
+ * THE ONE ENFORCEMENT POINT (issue #46). The rule used to be applied twice —
+ * here and again in use-command-keys.ts's menu-invoke handler — and two
+ * copies of a rule this subtle is how one got fixed and the other did not.
+ * The menu path needs no copy: every accelerator in the table is a
+ * CommandOrControl chord (pinned by command-keys.test.ts), and chords are
+ * exempt.
  */
 export function resolveWebCommandKeyAction(event: CommandKeyEvent): CommandKeyId | null {
-  if (isEditableTarget(event.target)) return null;
+  const chorded = Boolean(event.metaKey) || Boolean(event.ctrlKey);
+  if (!chorded && isEditableTarget(event.target)) return null;
   return resolveRawCommandKeyAction(event) as CommandKeyId | null;
 }
 
