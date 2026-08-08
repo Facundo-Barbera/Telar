@@ -46,6 +46,7 @@ import {
   PHASE_STATUS_NOTE,
   agentLabelInPhase,
   agentModelLabel,
+  agentModelShortLabel,
   agentRunStatus,
   agentTokenTotal,
   anchorControls,
@@ -322,6 +323,10 @@ function WideAgentRow({
   // guess. Both decisions live in `lib/ultra-runs.ts`, where tests drive them.
   const modelName = agentModelLabel(agent.model);
   const chip = modelName ? (agent.effort ? `${modelName}·${agent.effort}` : modelName) : "—";
+  // The compact tier's chip: registry-resolved like the full one, minus the
+  // provider word and the effort — what survives at glance width is which
+  // TIER ran, not its full product name (lib/ultra-runs.ts, tested there).
+  const shortChip = agentModelShortLabel(agent.model) || "—";
   // TOKENS, NOT MONEY (owner ruling). `undefined` means the provider reported
   // no usage — rendered as a dash, because a confident `0` would claim the
   // agent consumed nothing when the truth is that nothing was measured.
@@ -329,7 +334,11 @@ function WideAgentRow({
   const status = agentRunStatus(agent);
   const failed = status === "failed";
   return (
-    <div className="min-w-0 rounded-md border">
+    // `@container`: each row measures ITS OWN width, so the trailing slots
+    // below can yield by priority when the rail is narrow — the panel is
+    // user-resizable, so a viewport breakpoint would lie about the space this
+    // row actually has.
+    <div className="min-w-0 rounded-md border @container">
       {/* THE MINIMUM AND NOTHING ELSE (owner ruling): a state dot, who it is,
           what it ran on, what it cost. The one-line `snippet` preview that used
           to sit under every row is GONE — twenty rows of clipped mid-sentence
@@ -367,7 +376,19 @@ function WideAgentRow({
             yet — the columns visibly danced as a run progressed. A row now
             reserves its space and fills it with a placeholder, so nothing moves
             when a figure arrives. `tabular-nums` keeps the digits themselves
-            from changing the width as they change value. */}
+            from changing the width as they change value.
+
+            FIXED WIDTH IS NOT FIXED PRIORITY. In a narrow rail these slots
+            used to win against the one flexible element — the agent's NAME —
+            which shrank to nothing while a chip sat there reading "Claude
+            Sonr…". So the trailing group now yields by importance as the ROW
+            (not the viewport — see @container above) gets narrow: below @md
+            the model chip drops to a short tier word ("Sonnet·high" → the
+            full spelling lives in the chip's title and one resize away);
+            below @xs the chip goes entirely. Status and tokens never leave —
+            "did it finish, did it cost" is the row's floor. Both chip tiers
+            keep a fixed width, so the no-dancing rule holds INSIDE each tier
+            and columns still line up between rows at any one rail width. */}
         <AgentStatusBar status={status} />
         {/* NAMED, because it sits inches from a chip reading `Claude Sonnet 1M`
             and the two numbers share a unit without sharing a meaning: this one
@@ -383,8 +404,17 @@ function WideAgentRow({
         >
           {tokens === undefined ? "—" : `${fmtTokens(tokens)} tok`}
         </span>
-        <span className="w-32 shrink-0 truncate rounded border px-1 text-right text-[10px] text-muted-foreground">
+        <span
+          title={chip}
+          className="hidden w-32 shrink-0 truncate rounded border px-1 text-right text-[10px] text-muted-foreground @md:inline-block"
+        >
           {chip}
+        </span>
+        <span
+          title={chip}
+          className="hidden w-16 shrink-0 truncate rounded border px-1 text-right text-[10px] text-muted-foreground @xs:inline-block @md:hidden"
+        >
+          {shortChip}
         </span>
       </button>
       {open && (

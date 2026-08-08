@@ -1230,6 +1230,24 @@ export function agentModelLabel(model: string): string {
   return byTier.context ? `${byTier.name} ${byTier.context}` : byTier.name;
 }
 
+/** THE MODEL AT GLANCE WIDTH: the same registry resolution as
+ *  `agentModelLabel`, minus the words a narrow row cannot afford. The provider
+ *  word goes ("Claude Sonnet" → "Sonnet" — inside one run's rows the provider
+ *  is not the distinguishing fact) and the context suffix never joins. An
+ *  unrecognised string is still returned verbatim, same rule and same reason
+ *  as the full label: misreporting which model ran is worse than an ugly chip.
+ *  Used by the agent row's compact tier (ultra-tab.tsx), where the full chip
+ *  would otherwise starve the agent's NAME — the one column that identifies
+ *  the row. */
+export function agentModelShortLabel(model: string): string {
+  const raw = model.trim();
+  if (raw === "") return "";
+  const exact = MODELS.find((m) => m.id === raw);
+  const byTier = exact ?? MODELS.find((m) => m.tier === raw.toLowerCase());
+  if (!byTier) return raw;
+  return byTier.name.replace(/^Claude\s+/, "");
+}
+
 /** TOKENS, NOT MONEY, for a sub-agent (owner ruling): what a run consumed is
  *  the useful per-agent figure, and the dollar total already has one home in
  *  the run header and another in the session breakdown.
