@@ -2248,63 +2248,94 @@ export async function POST(req: Request) {
                 }
               }
             },
-            onSettled: () => {
-              // Fail-closed at the WINDOW's end, exactly as the turn's finally
-              // fails closed at the turn's — any card still parked belongs to
-              // an agent that just settled and can no longer act on an answer.
-              for (const id of myPending) {
-                resolvePending(id, { behavior: "deny", reason: "aborted" });
-              }
-              myPending.clear();
-              // Write the window's completions through to the store: the
-              // turn's appendTurn persisted these spawns while still only
-              // "launched", and their task_notifications landed after it
-              // (measured: a five-agent window reloaded as five agents that
-              // never reported, beside their own reports). From the MAP, not
-              // the parts: it also carries completions for an EARLIER turn's
-              // spawns, which have no part in this state at all.
-              recordTaskStatuses(
-                sessionId,
-                [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
-              );
-              // And no one is RUNNING once the window ends: mark still-acked
-              // spawns stopped — on the live surfaces, and through the store
-              // for the copies the turn's appendTurn already persisted.
-              const settledIds = settleSpawnParts((event, data) => {
-                appendSessionEvent(sessionId, event, data);
-                appendFeedEvent(sessionId, event, data);
-              });
-              if (settledIds.length) settleSpawnStatuses(sessionId, settledIds);
-              const extra = persisted.done ? turnState.parts.slice(persisted.n) : [];
-              if (extra.length) {
-                appendTurn({
-                  id: sessionId,
-                  model,
-                  effort,
-                  account: profile.name,
-                  project,
-                  runtimeMode,
-                  fastMode,
-                  serviceTier,
-                  // STEP 3: the settle-append carries its OWN anchor — the
-                  // detached projection advanced lastChainUuid past the
-                  // background agents' work, so a later rollback does not
-                  // silently discard it from the model's context. Hidden, no
-                  // prompt of its own.
-                  provider: "claude",
-                  anchor: {
-                    ...(turnState.lastChainUuid ? { tail: turnState.lastChainUuid } : {}),
-                  },
-                  userMessage: { role: "user", parts: [{ type: "text", text: "" }] },
-                  hideUserMessage: true,
-                  assistantMessage: { role: "assistant", parts: extra },
-                  costUsd: 0,
-                });
-              }
-              appendSessionEvent(sessionId, "closed", {});
-              appendFeedEvent(sessionId, "closed", {});
-              endSessionDeltas(sessionId);
-            },
+            // THE ONE PERSISTENCE PATH, shared by every way a window ends
+            // (issue #76). Settle, Stop, and displacement-by-a-new-turn all
+            // write the same facts through; they differ only in the ceremony
+            // around it (below). The guard makes a second call a no-op —
+            // the runtime nulls the sink before flushing, so a double call
+            // is already structurally impossible, but a flush that WRITES
+            // TWICE if that ever changes would duplicate a hidden turn.
+            ...((() => {
+              let flushed = false;
+              const persistWindowArrivals = () => {
+                if (flushed) return;
+                flushed = true;
+                // Write the window's completions through to the store: the
+                // turn's appendTurn persisted these spawns while still only
+                // "launched", and their task_notifications landed after it
+                // (measured: a five-agent window reloaded as five agents
+                // that never reported, beside their own reports). From the
+                // MAP, not the parts: it also carries completions for an
+                // EARLIER turn's spawns, which have no part in this state.
+                recordTaskStatuses(
+                  sessionId,
+                  [...turnState.taskStatuses].map(([toolUseId, status]) => ({ toolUseId, status })),
+                );
+                const extra = persisted.done ? turnState.parts.slice(persisted.n) : [];
+                if (extra.length) {
+                  appendTurn({
+                    id: sessionId,
+                    model,
+                    effort,
+                    account: profile.name,
+                    project,
+                    runtimeMode,
+                    fastMode,
+                    serviceTier,
+                    // STEP 3: the settle-append carries its OWN anchor — the
+                    // detached projection advanced lastChainUuid past the
+                    // background agents' work, so a later rollback does not
+                    // silently discard it from the model's context. Hidden,
+                    // no prompt of its own.
+                    provider: "claude",
+                    anchor: {
+                      ...(turnState.lastChainUuid ? { tail: turnState.lastChainUuid } : {}),
+                    },
+                    userMessage: { role: "user", parts: [{ type: "text", text: "" }] },
+                    hideUserMessage: true,
+                    assistantMessage: { role: "assistant", parts: extra },
+                    costUsd: 0,
+                  });
+                  persisted.n = turnState.parts.length;
+                }
+              };
+              return {
+                onSettled: () => {
+                  // Fail-closed at the WINDOW's end, exactly as the turn's
+                  // finally fails closed at the turn's — any card still
+                  // parked belongs to an agent that just settled and can no
+                  // longer act on an answer.
+                  for (const id of myPending) {
+                    resolvePending(id, { behavior: "deny", reason: "aborted" });
+                  }
+                  myPending.clear();
+                  persistWindowArrivals();
+                  // And no one is RUNNING once the window ends: mark
+                  // still-acked spawns stopped — on the live surfaces, and
+                  // through the store for the copies the turn's appendTurn
+                  // already persisted.
+                  const settledIds = settleSpawnParts((event, data) => {
+                    appendSessionEvent(sessionId, event, data);
+                    appendFeedEvent(sessionId, event, data);
+                  });
+                  if (settledIds.length) settleSpawnStatuses(sessionId, settledIds);
+                  appendSessionEvent(sessionId, "closed", {});
+                  appendFeedEvent(sessionId, "closed", {});
+                  endSessionDeltas(sessionId);
+                },
+                onDisplaced: () => {
+                  // A new turn takes the window over: persist what arrived
+                  // and NOTHING else. No terminal marker (the window
+                  // continues under the new turn), no pending-card denial
+                  // (the new turn re-installs the gate), and no spawn
+                  // settling — a still-live agent legitimately rides the
+                  // new turn's feed, and marking it stopped here would be
+                  // the same lie #76 started with, told in the other
+                  // direction.
+                  persistWindowArrivals();
+                },
+              };
+            })()),
           } as SessionRuntime["windowSink"] & { turnState: ClaudeTurnState };
         };
         // A REUSED runtime's session id is known up front (it is the

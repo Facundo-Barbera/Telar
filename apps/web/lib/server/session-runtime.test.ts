@@ -250,6 +250,68 @@ describe("session runtime", () => {
     rt.runtime.closeNow("test over");
   });
 
+  test("Stop between turns FLUSHES the window, it does not drop it (issue #76)", async () => {
+    // The measured failure: three sub-agents completed, their
+    // task_notifications lived only in the sink's turn state, the user
+    // pressed Stop — closeNow nulled the sink without calling anything, and
+    // a reload rolled every settled agent back to "running" while the wake
+    // response vanished under a marker promising "kept what arrived".
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-flush");
+    let settled = 0;
+    let displaced = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+      onDisplaced: () => displaced++,
+    };
+    // The presence line's Stop between turns is exactly closeSessionRuntime.
+    expect(closeSessionRuntime("sess-flush")).toBe(true);
+    expect(settled).toBe(1); // the window got its ENDING — the full flush
+    expect(displaced).toBe(0);
+    expect(rt.runtime.windowSink).toBeNull();
+    // A second close cannot flush twice — the sink was consumed.
+    rt.runtime.closeNow("again");
+    expect(settled).toBe(1);
+  });
+
+  test("a NEW TURN displaces the sink through onDisplaced — persist, but no window ending", async () => {
+    // Displacement is not settlement: the window continues under the new
+    // turn (still-live agents ride its feed), so the flush must persist what
+    // arrived without the terminal ceremony — onDisplaced, never onSettled.
+    const rt = makeRuntime();
+    let settled = 0;
+    let displaced = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+      onDisplaced: () => displaced++,
+    };
+    const feed = rt.runtime.beginTurn("run-2");
+    expect(displaced).toBe(1);
+    expect(settled).toBe(0);
+    expect(rt.runtime.windowSink).toBeNull();
+    rt.emit(result);
+    await collect(feed);
+    rt.runtime.closeNow("test over");
+  });
+
+  test("a flush that throws never breaks the teardown — best-effort, like the settle path", async () => {
+    const rt = makeRuntime();
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => {
+        throw new Error("store unavailable");
+      },
+    };
+    rt.runtime.closeNow("stop");
+    expect(rt.runtime.closed).toBe(true);
+    expect(rt.runtime.windowSink).toBeNull();
+  });
+
   test("messages between turns are consumed and counted, and the next turn attaches cleanly", async () => {
     const rt = makeRuntime();
     rt.emit(assistant);
