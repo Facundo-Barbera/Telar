@@ -269,15 +269,63 @@
 </svg>
 </div>
 
-<h2>Your call</h2>
+<h2>How t3code and OpenCode answer the same questions</h2>
+<p class="sub">Researched Aug 8 — t3code from its local reference clone (its own source, never vendored deps), OpenCode from the public repo, docs, and issue tracker. The proposal above is validated where it matters, and adjusted where it isn't.</p>
+
+<table style="border-collapse:collapse; width:100%; font-size:13px; background:#fff; border:1px solid var(--line); border-radius:12px; overflow:hidden;">
+<tr>
+  <th style="text-align:left; padding:9px 12px; background:#f3f3f9; color:var(--mut); font-size:11px; letter-spacing:.05em;">QUESTION</th>
+  <th style="text-align:left; padding:9px 12px; background:#f3f3f9; color:var(--mut); font-size:11px; letter-spacing:.05em;">T3CODE</th>
+  <th style="text-align:left; padding:9px 12px; background:#f3f3f9; color:var(--mut); font-size:11px; letter-spacing:.05em;">OPENCODE</th>
+  <th style="text-align:left; padding:9px 12px; background:#f3f3f9; color:var(--mut); font-size:11px; letter-spacing:.05em;">TELAR (TODAY → PLAN)</th>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Who owns the loop</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Server. One event-sourced engine, one worker; background ingestion forked at <i>server boot</i>, never tied to a tab.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Server. <code>prompt_async</code> returns immediately; the loop runs with no client attached. SSE is a pure observer.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Turns are server-run, but <b>machinery is client-authored</b> (D8) → move server-side. <b>Both references agree.</b></td>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Message sent mid-turn</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Steers into the running turn</b> (same turn id, per provider adapter). No queue at all.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Busy-lock; a later queue drains <i>between</i> turns and is buggy in practice; mid-turn injection is an open proposal.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Durable queue draining between turns — <b>already the strongest of the three</b> (idempotent, claim tokens, recovery). Add steering on top, t3code-style.</td>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Background work finishes</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">No mailbox needed — background work is a child of the live server process, so it's already in the transcript.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Writes a synthetic result message into the parent session</b> — re-enters the normal ingestion path (their #35066 fix).</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Ultra runs are detached <i>by design</i>, so a mailbox is required — and "wake as a ticket in the normal line" is <b>exactly what OpenCode shipped</b>.</td>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Keeping tabs in sync</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Gold standard:</b> durable sequenced event log, cursor replay bounded by a gap limit, snapshot fallback, client dedupes by sequence.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Cautionary tale:</b> bare EventEmitter SSE, no replay — documented lost-event and stale-crash bugs on reconnect.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Feed with (win,seq) cursors, replay hands a cursor since PR #86. Direction of travel = t3code's log.</td>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Scheduler / heartbeat</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">None. A never-adopted turn just goes stale after 2 min — accepted weakness, no boot backlog drain.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">None. Purely request-driven — and it has the hang reports to show for it.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Neither reference has one — and both bear the scars.</b> Telar's durable queue + a lazy heartbeat would be stronger than either.</td>
+</tr>
+<tr>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Model's context source</b></td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Provider-held live session (like Telar).</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Rebuilt from its own store every loop iteration — it owns the transcript.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Provider-held (t3code's side of the divide) — which is <i>why</i> the appendix + evidence-gated ack must exist and stay.</td>
+</tr>
+</table>
+
+<h2>Your call — updated with the evidence</h2>
 <div class="q"><b>1 · Machinery goes server-side.</b>
-<p>Ultra outcomes and watch firings enqueue mailbox tickets on the server, keyed per outcome. Kills D8 and the whole "only breaks while you're watching" family. Recommended.</p></div>
+<p>Ultra outcomes and watch firings enqueue mailbox tickets on the server, keyed per outcome. Kills D8. <b>Both references do this</b> — t3code structurally, OpenCode as its shipped subagent-completion fix. Strongly recommended.</p></div>
 <div class="q"><b>2 · The heartbeat.</b>
-<p>A lazy engine pulse, only while anything is queued or running. Kills D5. Cheap and boring. Recommended.</p></div>
+<p>A lazy engine pulse, only while anything is queued or running. Kills D5. <b>Neither reference has one, and both carry the resulting bugs</b> (t3code's stale unstarted turns; OpenCode's hangs). This is the one place we'd deliberately go beyond both. Recommended.</p></div>
 <div class="q"><b>3 · One send contract.</b>
-<p>Every surface enqueues; the dispatcher claims instantly when idle. Kills D6 at the cost of ~a queue write on the fast path.</p></div>
-<div class="q"><b>4 · Steering.</b>
-<p>Push a mid-turn message into the <i>running</i> turn (the runtime's input channel already exists) instead of waiting. Claude-Code parity; build after 1–3.</p></div>
+<p>Every surface enqueues with a client-minted idempotency key; the dispatcher claims instantly when idle. Kills D6. <b>t3code's command-receipt pattern validates it</b> — one path, retries return the original result.</p></div>
+<div class="q"><b>4 · Steering — priority raised.</b>
+<p>t3code doesn't queue at all: a mid-turn message is fed into the <i>running</i> turn, same turn id, at the provider adapter. OpenCode wants this and hasn't shipped it. Telar's runtime already holds the streaming input channel, so after F2 this is closer than assumed — worth pulling forward rather than treating as a someday.</p></div>
 <div class="q"><b>5 · Show the machinery.</b>
 <p>A wake turn currently renders nothing until words arrive. As a mailbox ticket it can honestly show "waking for <i>ultra sweep</i>…" in the strip.</p></div>
 
