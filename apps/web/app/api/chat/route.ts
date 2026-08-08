@@ -2867,6 +2867,14 @@ export async function POST(req: Request) {
             // identity a Claude rewind needs (Codex needs only the index),
             // and the git stamp tells the file-state truth. All degrade to
             // absent; the anchor write itself is inert until STEP 4.
+            // MEASURED BEFORE appendTurn, NOT AFTER (the aliasing bug that
+            // blinded the first real empty-turn catch, 2026-08-08): the
+            // store's own guard MUTATES this same `parts` array — it pushes
+            // the attention marker into an empty response — so a check after
+            // the call sees length 1 and the live marker event and the
+            // diagnostics write both skip, in exactly the case they exist
+            // for. The persisted marker fired; the camera did not.
+            const turnEndedEmpty = !hiddenTurn && parts.length === 0;
             const turnGit = await gitStamp(sessionProfile?.cwd);
             appendTurn({
               id: capturedSession,
@@ -2943,7 +2951,7 @@ export async function POST(req: Request) {
             // assistant parts tells the attached client the same attention
             // line the reload will show, instead of a silent nothing that
             // reads as "answered".
-            if (!hiddenTurn && parts.length === 0) {
+            if (turnEndedEmpty) {
               send("marker", { text: EMPTY_TURN_MARKER, attention: true });
               // THE FORENSICS, WHERE TRUNCATION CANNOT EAT THEM (issue #78).
               // The first empty turn was unexplainable after the fact: the
