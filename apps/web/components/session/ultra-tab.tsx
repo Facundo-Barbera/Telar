@@ -25,6 +25,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  ActivityIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -86,22 +87,27 @@ export function UltraTabBanner({ run, onBack }: { run: RunSnapshot; onBack: () =
   }, [onBack]);
 
   const tone = ULTRA_STATE_TONE[run.state];
+  // THE CRUMB SAYS WHERE BACK GOES, AND BACK GOES TO ACTIVITY — same revision
+  // as SubagentBanner's, same reason: "‹ Main" described the pre-dock era.
+  // Flat border-b seam instead of a floating card, so the bar reads as part
+  // of the sidebar surface it sits in.
   return (
-    <div className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-xs">
+    <div className="flex items-center gap-1.5 border-b border-border/70 px-1 pb-2 text-xs">
       <button
         type="button"
         onClick={onBack}
-        aria-label="Back to main conversation"
-        className="-mx-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label="Back to Activity"
+        className="-mx-1 inline-flex shrink-0 items-center gap-1 rounded-md px-1 py-0.5 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <ChevronLeftIcon className="size-3.5" />
-        Main
+        <ActivityIcon className="size-3" />
+        Activity
       </button>
       <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40" />
       <span className={cn("shrink-0 text-[10px] leading-none", ULTRA_TONE_CLASS[tone])} aria-hidden>
         ●
       </span>
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">Viewing {run.name}</span>
+      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{run.name}</span>
       <span className="shrink-0 text-[11px] text-muted-foreground">{STATE_LABEL[run.state]}</span>
       <kbd className="hidden shrink-0 rounded border border-border px-1 font-mono text-[10px] text-muted-foreground/60 sm:inline">
         Esc
