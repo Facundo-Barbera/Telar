@@ -28,6 +28,10 @@ export type SidebarSession = {
   // never persisted, so a row can only claim to be running while a turn
   // actually is.
   live?: boolean;
+  /** The live turn is a COMPACTION (same derivation and lifetime as `live`).
+   *  Housekeeping is not generation: the row says "Compacting…" instead of
+   *  "Working…" so a state the user chose is recognizable as itself. */
+  compacting?: boolean;
   // Also derived per request by GET /api/chats, from a SEPARATE source: the
   // Ultra run registry (TELAR_HOME/ultra/*), joined on sessionId. A run
   // launched from this session keeps going as its own detached process after

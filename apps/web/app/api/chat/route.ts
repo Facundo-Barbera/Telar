@@ -750,7 +750,17 @@ export async function POST(req: Request) {
   // or appendTurn (a whole-store read/modify/write). A duplicate run id is the
   // same conflict — overwriting its AbortController would orphan live work.
   const abort = new AbortController();
-  if (!registerChatRun(runId, abort, typeof sessionId === "string" && sessionId ? sessionId : null)) {
+  if (
+    !registerChatRun(
+      runId,
+      abort,
+      typeof sessionId === "string" && sessionId ? sessionId : null,
+      // The sidebar's liveness projection distinguishes housekeeping from
+      // generation (isSessionCompacting) — a compact-only turn must not
+      // render as a generic "Working…".
+      compact ? "compact" : null,
+    )
+  ) {
     return Response.json(
       { error: "This session already has an active turn. Queue the message instead." },
       { status: 409 },

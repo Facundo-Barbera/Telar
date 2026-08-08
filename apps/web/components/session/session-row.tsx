@@ -128,6 +128,14 @@ function SessionDetails({
                 />
                 Needs your approval
               </span>
+            ) : session.compacting ? (
+              <span className="flex items-center gap-1 font-medium text-primary">
+                <span
+                  aria-hidden
+                  className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse"
+                />
+                Compacting the conversation…
+              </span>
             ) : session.live ? (
               <span className="flex items-center gap-1 font-medium text-primary">
                 <span
@@ -341,6 +349,11 @@ export function SessionRow({
             <span className="shrink-0 font-medium text-amber-600 dark:text-amber-400">
               Needs your approval
             </span>
+          ) : session.compacting ? (
+            // Housekeeping, named as itself: "Working…" claims generation is
+            // happening, and a user who just chose to compact should see the
+            // row agree with what they did.
+            <span className="shrink-0 font-medium text-primary">Compacting…</span>
           ) : session.live ? (
             <span className="shrink-0 font-medium text-primary">Working…</span>
           ) : backgroundRuns > 0 ? (

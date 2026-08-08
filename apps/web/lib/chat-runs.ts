@@ -12,7 +12,7 @@
 
 import { logStop } from "@/lib/permission-diagnostics";
 
-type ChatRun = { abort: AbortController; sessionId: string | null };
+type ChatRun = { abort: AbortController; sessionId: string | null; kind?: "compact" };
 
 const g = globalThis as unknown as { __telarChatRuns?: Map<string, ChatRun> };
 const runs = (g.__telarChatRuns ??= new Map<string, ChatRun>());
@@ -29,6 +29,13 @@ export function registerChatRun(
   runId: string,
   abort: AbortController,
   sessionId: string | null = null,
+  // WHAT KIND OF TURN this run is, when it is not an ordinary one. The
+  // sidebar's liveness projection reads it (owner's find on nightly .2: a
+  // compaction showed as a generic "Working…", which claims generation is
+  // happening when the truth is housekeeping — a state the user chose and
+  // should be able to recognize). Optional and additive: every existing
+  // caller registers an ordinary turn.
+  kind: "compact" | null = null,
 ): boolean {
   if (runs.has(runId)) return false;
   if (sessionId) {
@@ -36,7 +43,7 @@ export function registerChatRun(
       if (run.sessionId === sessionId) return false;
     }
   }
-  runs.set(runId, { abort, sessionId });
+  runs.set(runId, { abort, sessionId, ...(kind ? { kind } : {}) });
   return true;
 }
 
@@ -88,6 +95,16 @@ export function stopChatRun(key: string, via = "unknown"): boolean {
 export function isSessionRunLive(sessionId: string): boolean {
   for (const run of runs.values()) {
     if (run.sessionId === sessionId) return true;
+  }
+  return false;
+}
+
+// Whether the live run for this session is a COMPACTION — derived per request
+// by GET /api/chats exactly like `live`, and never persisted, so a row can
+// only claim to be compacting while one actually is.
+export function isSessionCompacting(sessionId: string): boolean {
+  for (const run of runs.values()) {
+    if (run.sessionId === sessionId && run.kind === "compact") return true;
   }
   return false;
 }

@@ -59,3 +59,22 @@ describe("chat run admission", () => {
     );
   });
 });
+
+describe("compacting is a named state, not a generic 'Working…' (owner's find on nightly .2)", () => {
+  test("a compact-kind run reports isSessionCompacting; an ordinary one never does", async () => {
+    const { isSessionCompacting } = await import("./chat-runs");
+    const sessionId = id("compact-session");
+    const runId = id("compact-run");
+    expect(registerChatRun(runId, new AbortController(), sessionId, "compact")).toBe(true);
+    expect(isSessionCompacting(sessionId)).toBe(true);
+    expect(isSessionRunLive(sessionId)).toBe(true); // still live — compacting is a KIND of live
+    endChatRun(runId);
+    expect(isSessionCompacting(sessionId)).toBe(false);
+
+    const plainSession = id("plain-session");
+    const plainRun = id("plain-run");
+    expect(registerChatRun(plainRun, new AbortController(), plainSession)).toBe(true);
+    expect(isSessionCompacting(plainSession)).toBe(false);
+    endChatRun(plainRun);
+  });
+});

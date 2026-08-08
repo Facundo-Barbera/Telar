@@ -1,5 +1,5 @@
 import { listUltraRuns } from "@telar/core";
-import { isSessionRunLive } from "@/lib/chat-runs";
+import { isSessionCompacting, isSessionRunLive } from "@/lib/chat-runs";
 import { sessionsAwaitingApproval } from "@/lib/permissions";
 import { isSessionWindowLive } from "@/lib/server/session-runtime";
 import { liveRunCountsBySession } from "@/lib/ultra-runs";
@@ -55,6 +55,10 @@ export async function GET(req: Request) {
         // live as a streaming turn (creative-run defect: the persistent
         // runtime made the second state common, and the dot missed it).
         live: isSessionRunLive(c.id) || isSessionWindowLive(c.id),
+        // Housekeeping is not generation (owner's find on nightly .2): a
+        // compact-only turn is `live`, but the row should say "Compacting…",
+        // not "Working…". Present only while true, same convention as `live`.
+        ...(isSessionCompacting(c.id) ? { compacting: true } : {}),
         // Only present when positive — absent reads the same as "nothing
         // running", same optional-field convention `live`'s own callers use.
         ...(liveBackgroundRuns ? { liveBackgroundRuns } : {}),
