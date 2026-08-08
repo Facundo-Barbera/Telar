@@ -2,152 +2,286 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>How a Telar conversation works</title>
+<title>The Telar session loop</title>
 <style>
   :root {
-    --ink:#22223b; --mut:#7a7a8c; --line:#e9e9f2; --bg:#f6f6fb;
-    --green:#e7f6ec; --green-b:#2f9e5f;
-    --amber:#fdf1dc; --amber-b:#d9930d;
-    --red:#fdeaea; --red-b:#d64545;
-    --purple:#f1eafd; --purple-b:#7c5cd6;
+    --ink:#1d1d35; --mut:#73738c; --line:#e7e7f0; --bg:#f7f7fb;
+    --green-b:#2e9e5b; --red-b:#d64545; --amber-b:#d9930d; --purple-b:#7856d1;
   }
   * { box-sizing: border-box; }
   body { font: 16px/1.6 -apple-system, "Segoe UI", sans-serif; color: var(--ink); margin:0; background: var(--bg); }
-  main { max-width: 980px; margin: 0 auto; padding: 48px 24px 120px; }
-  h1 { font-size: 32px; margin: 0 0 8px; letter-spacing: -0.02em; }
-  h2 { font-size: 22px; margin: 64px 0 6px; letter-spacing: -0.01em; }
-  .sub { color: var(--mut); margin: 0 0 20px; font-size: 15px; }
-  .panel { background:#fff; border:1px solid var(--line); border-radius:16px; padding: 20px; box-shadow: 0 1px 3px rgba(30,30,60,.04); }
-  .mermaid { text-align:center; overflow-x:auto; } .mermaid svg { max-width:100%; height:auto; }
+  main { max-width: 1040px; margin: 0 auto; padding: 48px 28px 120px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 { font-size: 21px; margin: 60px 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--mut); margin: 0 0 18px; font-size: 15px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:18px; padding: 8px; box-shadow: 0 8px 24px rgba(40,40,90,.06); }
+  .panel svg { display:block; width:100%; height:auto; }
 
-  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:13.5px; color:var(--mut); margin: 16px 0 0; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--mut); margin: 14px 4px 0; }
   .chip { display:inline-flex; align-items:center; gap:6px; }
-  .dot { width:11px; height:11px; border-radius:6px; }
+  .dot { width:10px; height:10px; border-radius:5px; }
 
-  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:14px; margin-top: 16px; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px 18px; box-shadow: 0 1px 3px rgba(30,30,60,.04); }
-  .card h3 { margin:0 0 6px; font-size:15px; display:flex; align-items:center; gap:8px;}
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; margin-top: 14px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow: 0 1px 3px rgba(30,30,60,.04); }
+  .card h3 { margin:0 0 5px; font-size:14.5px; display:flex; align-items:center; gap:8px;}
   .card p { margin:0; font-size:13.5px; color:#4b4b63; }
-  .tag { font-size:11px; font-weight:600; padding:2px 8px; border-radius:99px; letter-spacing:.03em; }
-  .t-fix { background:var(--amber); color:#8a5b00; }
-  .t-done { background:var(--green); color:#1c6b40; }
-  .t-open { background:var(--red); color:#9c2f2f; }
+  .card code { background:#f1f1f8; border-radius:4px; padding:0 5px; font-size:11.5px; }
+  .tag { font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:99px; letter-spacing:.04em; flex:none;}
+  .t-fix { background:#e7f6ec; color:#1c6b40; }
+  .t-open { background:#fdeaea; color:#9c2f2f; }
 
-  .q { background:#fff; border:1px solid var(--line); border-left:5px solid var(--purple-b); border-radius:12px; padding:14px 18px; margin:12px 0; }
+  .q { background:#fff; border:1px solid var(--line); border-left:5px solid var(--purple-b); border-radius:12px; padding:13px 18px; margin:12px 0; }
   .q b { font-size:15px; }
   .q p { margin:4px 0 0; font-size:14px; color:#4b4b63;}
   footer { color:var(--mut); font-size:12.5px; margin-top:56px; }
+
+  /* SVG diagram styles */
+  svg text { font-family: -apple-system, "Segoe UI", sans-serif; }
+  .nt { font-size: 15px; font-weight: 650; fill: #1d1d35; }
+  .ns { font-size: 12px; fill: #6b6b84; }
+  .nf { font-size: 12px; fill: #1c6b40; font-weight:600; }
+  .lbl { font-size: 11.5px; fill: #8888a2; font-style: italic; }
+  .lane { font-size: 11.5px; font-weight: 700; fill: #a0a0b8; letter-spacing: .12em; }
+  .node { rx: 12; }
+  .n-green  { fill:#eefaf2; stroke:#7fcf9f; stroke-width:1.4; }
+  .n-gray   { fill:#f7f7fc; stroke:#c3c3d9; stroke-width:1.4; }
+  .n-red    { fill:#fdefef; stroke:#e79090; stroke-width:1.4; }
+  .n-amber  { fill:#fdf6e6; stroke:#e2b95e; stroke-width:1.4; }
+  .n-purple { fill:#f3eefc; stroke:#ae95e6; stroke-width:1.4; }
+  .edge { fill:none; stroke:#a8a8c4; stroke-width:1.6; }
+  .edge2 { fill:none; stroke:#c6a3e0; stroke-width:1.6; stroke-dasharray:5 4; }
+  .badge { fill:#d64545; }
+  .badge-t { font-size:10.5px; font-weight:700; fill:#fff; }
 </style>
 </head>
 <body><main>
 
-<h1>How a Telar conversation works</h1>
-<p class="sub">The path a message takes, what we fixed today, and the simpler shape it should have. · Aug 8, 2026</p>
+<h1>The Telar session loop</h1>
+<p class="sub">How a conversation actually runs — what we fixed, what's still fragile, and the shape to converge on. · Aug 8, 2026 · PR #86</p>
 
-<h2>Today — messages come in from many doors</h2>
-<p class="sub">Everything that can start the agent working funnels into one rule: <b>one turn at a time</b>. But there are four different waiting rooms on the way, and half the doors only work while you have the conversation open on screen.</p>
+<h2>Today — five doors, four waiting rooms, one gate</h2>
+<p class="sub">Everything funnels into <b>one turn at a time</b>, but each door has its own path there. The red boxes are the fragile parts: machinery the <i>client</i> runs, so it only works while a tab is open — and the engine has no timer of its own.</p>
 
 <div class="panel">
-<pre class="mermaid">
-flowchart LR
-  classDef you fill:#e7f6ec,stroke:#2f9e5f,color:#173e2a,rx:10;
-  classDef bg fill:#fdeaea,stroke:#d64545,color:#5c1a1a,rx:10;
-  classDef mid fill:#f6f6fb,stroke:#b9b9d0,color:#22223b,rx:10;
-  classDef out fill:#fff,stroke:#b9b9d0,color:#22223b,rx:10;
+<svg viewBox="0 0 1180 660" role="img" aria-label="Current session loop diagram">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a8a8c4"/>
+    </marker>
+    <marker id="arrp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c6a3e0"/>
+    </marker>
+  </defs>
 
-  A["🧑 You press send"]:::you
-  B["🧑 You send while<br/>it's still working"]:::you
-  C["🗂️ The dock's<br/>mini-composer"]:::you
-  D["⚡ Background events<br/>an Ultra finishes, a loom asks…<br/><b>only fire while the tab is open</b>"]:::bg
+  <!-- lane titles -->
+  <text class="lane" x="128" y="26" text-anchor="middle">WHO STARTS IT</text>
+  <text class="lane" x="412" y="26" text-anchor="middle">WAITING ROOMS</text>
+  <text class="lane" x="696" y="26" text-anchor="middle">DISPATCH</text>
+  <text class="lane" x="1006" y="26" text-anchor="middle">THE TURN &amp; WHAT IT LEAVES</text>
 
-  Q["4 different<br/>waiting rooms"]:::mid
-  T["🤖 One turn at a time<br/>the agent works"]:::mid
-  V["👀 What you see<br/>chat, dock, sidebar"]:::out
+  <!-- senders -->
+  <g>
+    <rect class="node n-green" x="16" y="42" width="225" height="58"/>
+    <text class="nt" x="128" y="66" text-anchor="middle">You send · main chat</text>
+    <text class="ns" x="128" y="86" text-anchor="middle">direct — queues only if busy</text>
 
-  A --> Q
-  B --> Q
-  C --> Q
-  D --> Q
-  Q --> T --> V
-</pre>
+    <rect class="node n-green" x="16" y="118" width="225" height="58"/>
+    <text class="nt" x="128" y="142" text-anchor="middle">You send mid-turn</text>
+    <text class="ns" x="128" y="162" text-anchor="middle">lands on the pending strip</text>
+
+    <rect class="node n-green" x="16" y="194" width="225" height="58"/>
+    <text class="nt" x="128" y="218" text-anchor="middle">Dock mini-composer</text>
+    <text class="ns" x="128" y="238" text-anchor="middle">always enqueues</text>
+
+    <rect class="node n-red" x="16" y="288" width="225" height="74"/>
+    <text class="nt" x="128" y="312" text-anchor="middle">Background events</text>
+    <text class="ns" x="128" y="331" text-anchor="middle">ultra finishes · loom watch fires</text>
+    <text class="ns" x="128" y="348" text-anchor="middle" font-weight="600" fill="#b23c3c">client-run — needs an open tab</text>
+    <circle class="badge" cx="241" cy="288" r="11"/><text class="badge-t" x="241" y="292" text-anchor="middle">D8</text>
+
+    <rect class="node n-gray" x="16" y="398" width="225" height="58"/>
+    <text class="nt" x="128" y="422" text-anchor="middle">Server boot</text>
+    <text class="ns" x="128" y="442" text-anchor="middle">re-kicks known queues, once</text>
+  </g>
+
+  <!-- queues -->
+  <g>
+    <rect class="node n-gray" x="300" y="70" width="225" height="58"/>
+    <text class="nt" x="412" y="94" text-anchor="middle">Pending strip</text>
+    <text class="ns" x="412" y="114" text-anchor="middle">local · editable · held on Stop</text>
+
+    <rect class="node n-gray" x="300" y="152" width="225" height="58"/>
+    <text class="nt" x="412" y="176" text-anchor="middle">Dock bridge</text>
+    <text class="ns" x="412" y="196" text-anchor="middle">localStorage, pre-ack</text>
+
+    <rect class="node n-green" x="300" y="240" width="225" height="58"/>
+    <text class="nt" x="412" y="264" text-anchor="middle">queue.json</text>
+    <text class="ns" x="412" y="284" text-anchor="middle">durable · FIFO · duplicate-proof</text>
+
+    <rect class="node n-red" x="300" y="330" width="225" height="58"/>
+    <text class="nt" x="412" y="354" text-anchor="middle">Injection queue</text>
+    <text class="ns" x="412" y="374" text-anchor="middle">wake &amp; watch sentinels, in-tab</text>
+  </g>
+
+  <!-- dispatch -->
+  <g>
+    <rect class="node n-red" x="584" y="200" width="225" height="74"/>
+    <text class="nt" x="696" y="224" text-anchor="middle">Engine drain</text>
+    <text class="ns" x="696" y="243" text-anchor="middle">kicked by turn-end &amp; queue calls</text>
+    <text class="ns" x="696" y="260" text-anchor="middle" font-weight="600" fill="#b23c3c">no timer — items can strand</text>
+    <circle class="badge" cx="809" cy="200" r="11"/><text class="badge-t" x="809" y="204" text-anchor="middle">D5</text>
+
+    <rect class="node n-green" x="584" y="330" width="225" height="58"/>
+    <text class="nt" x="696" y="354" text-anchor="middle">One-turn gate</text>
+    <text class="ns" x="696" y="374" text-anchor="middle">one active turn per session</text>
+  </g>
+
+  <!-- right column -->
+  <g>
+    <rect class="node n-gray" x="892" y="70" width="228" height="58"/>
+    <text class="nt" x="1006" y="94" text-anchor="middle">The turn</text>
+    <text class="ns" x="1006" y="114" text-anchor="middle">one request = one turn</text>
+
+    <rect class="node n-amber" x="892" y="162" width="228" height="74"/>
+    <text class="nt" x="1006" y="186" text-anchor="middle">Session runtime</text>
+    <text class="ns" x="1006" y="205" text-anchor="middle">warm process · background work</text>
+    <text class="nf" x="1006" y="222" text-anchor="middle">every exit now saves ✓</text>
+
+    <rect class="node n-amber" x="892" y="270" width="228" height="74"/>
+    <text class="nt" x="1006" y="294" text-anchor="middle">Live surfaces</text>
+    <text class="ns" x="1006" y="313" text-anchor="middle">feed + saved chat → your tabs</text>
+    <text class="nf" x="1006" y="330" text-anchor="middle">replay can't duplicate now ✓</text>
+
+    <rect class="node n-amber" x="892" y="396" width="228" height="90"/>
+    <text class="nt" x="1006" y="420" text-anchor="middle">Ultra wake mailbox</text>
+    <text class="ns" x="1006" y="439" text-anchor="middle">outcomes ride every prompt</text>
+    <text class="ns" x="1006" y="456" text-anchor="middle">acked only when truly carried</text>
+    <text class="nf" x="1006" y="474" text-anchor="middle">marker loop &amp; Codex re-tell ✓</text>
+  </g>
+
+  <!-- edges -->
+  <path class="edge" marker-end="url(#arr)" d="M241,71 C420,71 540,300 578,345"/>
+  <text class="lbl" x="452" y="52">fast path when idle</text>
+  <path class="edge" marker-end="url(#arr)" d="M241,147 C266,147 274,113 296,101"/>
+  <path class="edge" marker-end="url(#arr)" d="M241,223 C266,223 272,196 296,185"/>
+  <path class="edge" marker-end="url(#arr)" d="M241,325 C266,325 272,352 296,357"/>
+  <path class="edge" marker-end="url(#arr)" d="M241,427 C400,427 480,290 580,244"/>
+  <path class="edge" marker-end="url(#arr)" d="M525,99 C560,99 560,220 580,232"/>
+  <text class="lbl" x="536" y="130">promotes</text>
+  <path class="edge" marker-end="url(#arr)" d="M525,181 C556,181 556,225 580,236"/>
+  <path class="edge" marker-end="url(#arr)" d="M525,269 C550,269 556,250 580,244"/>
+  <path class="edge" marker-end="url(#arr)" d="M525,359 C548,359 556,360 580,360"/>
+  <text class="lbl" x="530" y="349">hidden turn</text>
+  <path class="edge" marker-end="url(#arr)" d="M696,278 L696,326"/>
+  <path class="edge" marker-end="url(#arr)" d="M809,345 C860,340 862,140 888,105"/>
+  <path class="edge" marker-end="url(#arr)" d="M1006,128 L1006,158"/>
+  <path class="edge" marker-end="url(#arr)" d="M1006,236 L1006,266"/>
+  <path class="edge2" marker-end="url(#arrp)" d="M1120,420 C1160,400 1160,120 1124,92"/>
+  <text class="lbl" x="1170" y="252" text-anchor="end">rides the</text>
+  <text class="lbl" x="1170" y="266" text-anchor="end">prompt</text>
+  <path class="edge2" marker-end="url(#arrp)" d="M948,128 C930,220 930,340 946,392"/>
+  <text class="lbl" x="908" y="380">acks</text>
+</svg>
 </div>
 
 <div class="legend">
-  <span class="chip"><span class="dot" style="background:var(--green-b)"></span>things you do</span>
-  <span class="chip"><span class="dot" style="background:var(--red-b)"></span>fragile today</span>
+  <span class="chip"><span class="dot" style="background:var(--green-b)"></span>solid</span>
+  <span class="chip"><span class="dot" style="background:var(--amber-b)"></span>was broken — fixed on PR #86</span>
+  <span class="chip"><span class="dot" style="background:var(--red-b)"></span>open defect (D5, D8)</span>
 </div>
 
-<h2>What went wrong (and where it stands)</h2>
-<p class="sub">Every bug you've hit lately is one of these — and they're all the same story: a door, a waiting room, or a delivery that didn't follow the rules.</p>
-
+<h2>The bug ledger</h2>
 <div class="cards">
-  <div class="card"><h3><span class="tag t-fix">FIXED</span> The repeating divider</h3>
-    <p>Reconnecting to a busy chat replayed the whole story from the top, and the "Compacted" divider got drawn again each time.</p></div>
-  <div class="card"><h3><span class="tag t-fix">FIXED</span> The looping "ultra stopped"</h3>
-    <p>A stopped Ultra's "you should know this finished" note could never be marked as delivered, so the chat kept announcing it forever — but only while you were watching.</p></div>
-  <div class="card"><h3><span class="tag t-fix">FIXED</span> Work vanishing on reload</h3>
-    <p>If the agent's process died while background work was reporting in, everything you'd watched arrive was never saved.</p></div>
-  <div class="card"><h3><span class="tag t-fix">FIXED</span> Codex told twice (forever)</h3>
-    <p>Codex chats were re-told every finished Ultra on every message, while the UI said "not delivered yet".</p></div>
-  <div class="card"><h3><span class="tag t-open">OPEN</span> Stuck messages</h3>
-    <p>A queued message with no tab open has nothing to wake it up. There's no timer — it waits until something else pokes the session.</p></div>
-  <div class="card"><h3><span class="tag t-open">OPEN</span> Two ways to send</h3>
-    <p>The main chat and the dock deliver your message differently. Usually invisible — until they race.</p></div>
-  <div class="card"><h3><span class="tag t-open">OPEN</span> Blind background events</h3>
-    <p>Ultra finishes and loom questions only reach the agent while a tab is showing that chat. Close the tab, and nothing moves.</p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> Repeating "Compacted" divider</h3>
+    <p>Reconnecting replayed the whole open window with no resume cursor, and the divider fold can't tell a redelivered event from a new one. Replay now serves from the cursor-addressed feed. <code>events/route.ts</code></p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> The "ultra stopped" marker loop</h3>
+    <p>A stopped run's heal re-minted its timestamp on every read, so the wake could never be marked delivered — the tab re-woke the agent forever. The heal is idempotent now. <code>ultra/storage.ts</code></p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> Work lost when the process died</h3>
+    <p>A CLI crash mid-window dropped everything you'd watched arrive — never saved, never closed. The last unflushed teardown path now flushes. <code>session-runtime.ts</code></p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> Codex re-told every wake, forever</h3>
+    <p>An ack gate written before Codex received the prompt appendix was never updated when it started to. Delivery is now judged per run, per prompt — never per provider. <code>route.ts</code></p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN · D5</span> Stranded queue items</h3>
+    <p>The engine only drains when kicked — turn end, queue traffic, boot. A message queued with no open tab can wait indefinitely. Needs a heartbeat.</p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN · D8</span> Tab-dependent machinery</h3>
+    <p>Wake polling, watch subscriptions and their injection queue live in the session view. No tab, no wake — and every remount resets their memory (today's loop rode exactly this).</p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN · D6</span> Two send contracts</h3>
+    <p>Main chat sends direct and queues on conflict; the dock always queues. Same session, different ordering and retry behavior when they race.</p></div>
 </div>
 
-<h2>The shape it should have</h2>
-<p class="sub">One waiting line. One dispatcher. Everything — your messages <i>and</i> background events — becomes a ticket in the same line, each ticket unique so nothing can ever loop or double-fire. Tabs just <i>watch</i>; nothing depends on them being open.</p>
+<h2>The shape to converge on</h2>
+<p class="sub">One durable mailbox, one always-on dispatcher. Your messages <i>and</i> machinery become tickets in the same line — each keyed to its event, so a wake can exist <b>at most once per outcome</b> and loops become structurally impossible. Tabs render; they never drive.</p>
 
 <div class="panel">
-<pre class="mermaid">
-flowchart LR
-  classDef you fill:#e7f6ec,stroke:#2f9e5f,color:#173e2a,rx:10;
-  classDef plan fill:#f1eafd,stroke:#7c5cd6,color:#3a2a66,rx:10;
-  classDef mid fill:#f6f6fb,stroke:#b9b9d0,color:#22223b,rx:10;
+<svg viewBox="0 0 1180 400" role="img" aria-label="Proposed session loop diagram">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a8a8c4"/>
+    </marker>
+    <marker id="arrp2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c6a3e0"/>
+    </marker>
+  </defs>
 
-  A2["🧑 Anything you send<br/>chat · dock · anywhere"]:::you
-  D2["⚡ Anything that happens<br/>Ultra finishes · loom asks"]:::plan
+  <g>
+    <rect class="node n-green" x="16" y="70" width="240" height="74"/>
+    <text class="nt" x="136" y="96" text-anchor="middle">Anything you send</text>
+    <text class="ns" x="136" y="115" text-anchor="middle">chat · dock · API</text>
+    <text class="ns" x="136" y="132" text-anchor="middle">one contract everywhere</text>
 
-  L["🎟️ One waiting line<br/>every ticket unique<br/>your messages go first"]:::plan
-  E["⏰ One dispatcher<br/>always on, tab or no tab<br/>checks in on a timer"]:::plan
-  T2["🤖 One turn at a time"]:::mid
-  V2["👀 Tabs just watch"]:::mid
+    <rect class="node n-purple" x="16" y="220" width="240" height="74"/>
+    <text class="nt" x="136" y="246" text-anchor="middle">Anything that happens</text>
+    <text class="ns" x="136" y="265" text-anchor="middle">ultra reaches an outcome · watch fires</text>
+    <text class="ns" x="136" y="282" text-anchor="middle">observed server-side</text>
+  </g>
 
-  A2 --> L
-  D2 --> L
-  L --> E --> T2 --> V2
-</pre>
+  <g>
+    <rect class="node n-purple" x="330" y="130" width="240" height="106"/>
+    <text class="nt" x="450" y="158" text-anchor="middle">One durable mailbox</text>
+    <text class="ns" x="450" y="178" text-anchor="middle">typed tickets: user · wake · watch</text>
+    <text class="ns" x="450" y="195" text-anchor="middle">keyed per event — can't double-fire</text>
+    <text class="ns" x="450" y="212" text-anchor="middle">your messages go first</text>
+  </g>
+
+  <g>
+    <rect class="node n-purple" x="646" y="142" width="230" height="86"/>
+    <text class="nt" x="761" y="170" text-anchor="middle">One dispatcher</text>
+    <text class="ns" x="761" y="190" text-anchor="middle">always on — tab or no tab</text>
+    <text class="ns" x="761" y="207" text-anchor="middle">heartbeat while work waits</text>
+  </g>
+
+  <g>
+    <rect class="node n-gray" x="940" y="80" width="220" height="66"/>
+    <text class="nt" x="1050" y="106" text-anchor="middle">The turn</text>
+    <text class="ns" x="1050" y="126" text-anchor="middle">warm runtime · appendix + ack</text>
+
+    <rect class="node n-gray" x="940" y="230" width="220" height="66"/>
+    <text class="nt" x="1050" y="256" text-anchor="middle">Tabs just watch</text>
+    <text class="ns" x="1050" y="276" text-anchor="middle">feed with cursors, everywhere</text>
+  </g>
+
+  <path class="edge" marker-end="url(#arr2)" d="M256,107 C300,107 300,160 326,168"/>
+  <path class="edge" marker-end="url(#arr2)" d="M256,257 C300,257 300,208 326,198"/>
+  <path class="edge" marker-end="url(#arr2)" d="M570,183 L642,185"/>
+  <path class="edge" marker-end="url(#arr2)" d="M876,178 C910,172 912,130 936,116"/>
+  <path class="edge" marker-end="url(#arr2)" d="M1050,146 L1050,226"/>
+  <path class="edge2" marker-end="url(#arrp2)" d="M136,148 C160,330 700,340 936,280"/>
+  <text class="lbl" x="480" y="330">future: steer straight into a running turn</text>
+</svg>
 </div>
 
-<h2>What I'd like your call on</h2>
+<h2>Your call</h2>
+<div class="q"><b>1 · Machinery goes server-side.</b>
+<p>Ultra outcomes and watch firings enqueue mailbox tickets on the server, keyed per outcome. Kills D8 and the whole "only breaks while you're watching" family. Recommended.</p></div>
+<div class="q"><b>2 · The heartbeat.</b>
+<p>A lazy engine pulse, only while anything is queued or running. Kills D5. Cheap and boring. Recommended.</p></div>
+<div class="q"><b>3 · One send contract.</b>
+<p>Every surface enqueues; the dispatcher claims instantly when idle. Kills D6 at the cost of ~a queue write on the fast path.</p></div>
+<div class="q"><b>4 · Steering.</b>
+<p>Push a mid-turn message into the <i>running</i> turn (the runtime's input channel already exists) instead of waiting. Claude-Code parity; build after 1–3.</p></div>
+<div class="q"><b>5 · Show the machinery.</b>
+<p>A wake turn currently renders nothing until words arrive. As a mailbox ticket it can honestly show "waking for <i>ultra sweep</i>…" in the strip.</p></div>
 
-<div class="q"><b>1 · Should background events stop depending on open tabs?</b>
-<p>Move them server-side into the waiting line. This kills the whole "only breaks while you're watching" family for good. My recommendation: yes.</p></div>
+<footer>Fixes & doctrine: PR #86 · deep companion: <b>docs/session-context-integrity.md</b> · queue lifecycle: <b>docs/plans/message-lifecycle.md</b></footer>
 
-<div class="q"><b>2 · Add the timer?</b>
-<p>A gentle pulse (only while something is waiting) so a queued message can never get stuck. Cheap, boring, effective. My recommendation: yes.</p></div>
-
-<div class="q"><b>3 · Make the dock and the chat send the same way?</b>
-<p>One delivery path for every surface. Costs maybe a millisecond on the fast path, removes a whole class of races.</p></div>
-
-<div class="q"><b>4 · "Send now" into a running turn?</b>
-<p>Today a message typed mid-turn waits its turn. Claude Code can nudge a working agent mid-stream — Telar's plumbing could too. Nice-to-have, after the basics.</p></div>
-
-<div class="q"><b>5 · Show the machinery?</b>
-<p>When the system wakes the agent for a finished Ultra, the chat currently shows nothing until words arrive. A small honest line — "waking for ultra sweep…" — would end the "is it doing anything?" doubt.</p></div>
-
-<footer>Everything above is already fixed or proposed on PR #86 · deep-dive companion: <b>docs/session-context-integrity.md</b></footer>
-
-<script type="module">
-  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({
-    startOnLoad: true,
-    theme: "base",
-    themeVariables: { fontSize: "15px", fontFamily: "-apple-system, Segoe UI, sans-serif" },
-    flowchart: { curve: "basis", nodeSpacing: 40, rankSpacing: 70 }
-  });
-</script>
 </main></body>
 </html>
