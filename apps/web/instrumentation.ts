@@ -30,4 +30,20 @@ export async function register() {
     // read/kick retries; server availability must not depend on one bad queue.
     console.error("[instrumentation] session queue recovery failed on boot", err);
   }
+
+  // The boot kick above is a ONE-SHOT; everything queued or observed after it
+  // needs a pulse, because no renderer drives the engine any more (defects
+  // D5/D8, docs/plans/session-loop-graph.html). Idempotent on purpose — HMR runs
+  // register() again against a globalThis-backed interval.
+  //
+  // ITS OWN TRY, and not for tidiness: it sat inside the boot recovery above,
+  // where one corrupt queue.json anywhere under TELAR_HOME skipped the pulse for
+  // the life of the process. No other call site starts it, so the guarantee it
+  // is the only holder of was nested under an unrelated failure.
+  try {
+    const { startSessionHeartbeat } = await import("./lib/server/session-engine");
+    startSessionHeartbeat();
+  } catch (err) {
+    console.error("[instrumentation] session heartbeat did not start", err);
+  }
 }

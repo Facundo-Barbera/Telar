@@ -1,19 +1,19 @@
 // Story 4.1 / FR-UW-1 — the completion wake's DELIVERY seam. PURE and
-// dependency-free, shared by the client (session-view.tsx), the server
-// (app/api/chat/route.ts) and the system-prompt composer (session-prompts.ts)
-// so all three agree on the contract and it is unit-testable without
-// importing any of them. Modelled on apps/web/lib/escalation-kickoff.ts —
-// read that file before changing this one.
+// dependency-free, shared by the ticket author (lib/server/session-engine.ts),
+// the server (app/api/chat/route.ts) and the system-prompt composer
+// (session-prompts.ts) so all three agree on the contract and it is
+// unit-testable without importing any of them. Modelled on
+// apps/web/lib/escalation-kickoff.ts — read that file before changing this one.
 //
-// Full flow (mailbox → idle-turn injection → prompt swap → appendix delivery
-// → ack) and the template's one inverted condition vs. escalation-kickoff:
-// docs/ultra-wake-delivery.md
+// Full flow (mailbox → server-authored wake ticket → prompt swap → appendix
+// delivery → ack) and the template's one inverted condition vs.
+// escalation-kickoff: docs/ultra-wake-delivery.md
 
-// The sentinel carried as the wire `message` of the injected turn. Opaque on
-// purpose: the client suppresses the user bubble, route.ts always substitutes it
-// before the model sees it, and `hideUserMessage` keeps it out of the persisted
-// transcript — so a human could never type this by accident and reach the wake
-// branch.
+// The sentinel carried as the wire `message` of the wake turn. Opaque on
+// purpose: the ticket's `hidden` keeps it out of every queue surface, route.ts
+// always substitutes it before the model sees it, and `hideUserMessage` keeps it
+// out of the persisted transcript — so a human could never type this by accident
+// and reach the wake branch.
 export const ULTRA_WAKE_SENTINEL = "__telar_ultra_wake__";
 
 // The canonical instruction route.ts feeds the model IN PLACE OF the sentinel.
@@ -57,60 +57,19 @@ export function resolveUltraWakeMessage(
   return isUltraWakeTrigger(sessionId, message) ? ULTRA_WAKE_PROMPT : message;
 }
 
-// CLIENT: which of this poll's pending runs have not been announced yet, and
-// the announced-set to carry into the next poll.
+// THE CLIENT LATCH USED TO LIVE HERE — `freshUltraWakes` (which runs a poll had
+// already announced) and `shouldEnqueueUltraWake` (T10's "one trigger, however
+// many runs"). Both are gone with the client producer that was their only
+// caller, and their JOB is not: the announced-set is now the ticket key
+// `wake:<runId>:<terminalAt>` in the durable queue, which one terminal event can
+// mint exactly once however many times it is scanned and across every remount
+// the ref-held Set could not survive; T10's surplus-trigger guard is now the
+// engine's CLAIM-TIME re-validation (session-engine's drain commits a wake
+// ticket whose mailbox is already empty, without running a turn), which reads
+// the mailbox itself rather than a poll snapshot that could lag the ack by
+// POLL_MS. Their over-time simulation went with them; the server behaviour is
+// pinned in lib/server/session-engine.test.ts.
 //
-// PURE AND LIVING HERE ON PURPOSE, not inline in session-view.tsx — this is
-// the latch that decides whether an unprompted turn fires, and it must be
-// something a test can drive (see SF-1 in docs/ultra-wake-delivery.md for
-// what shipped while it wasn't).
-//
-// The contract, in three sentences. A run is announced at most once per
-// terminal — the caller enqueues ONE trigger however many runs are fresh
-// (T10), because the appendix carries a list. A run that is still pending
-// stays announced, so a turn that has not yet been acked cannot re-fire. A
-// run that DROPS OUT of pending is forgotten, which is what re-arms a run
-// resumed to a new terminal under the same id (see
-// UltraWakeRecord.deliveredTerminalAt).
-export function freshUltraWakes(
-  announced: ReadonlySet<string>,
-  pendingRunIds: readonly string[],
-): { fresh: string[]; announced: Set<string> } {
-  // One pass, rebuilding rather than deleting: an id absent from
-  // `pendingRunIds` is simply never carried over, which IS the pruning. Building
-  // a new set also keeps this free of aliasing on the caller's, so the caller
-  // can hold it in a ref without the prune being visible before the assignment.
-  const next = new Set<string>();
-  const fresh: string[] = [];
-  for (const id of pendingRunIds) {
-    if (next.has(id)) continue; // a duplicate within one poll is still one run
-    next.add(id);
-    if (!announced.has(id)) fresh.push(id);
-  }
-  return { fresh, announced: next };
-}
-
-// CLIENT: given this poll's fresh runs and what is already waiting in the
-// injection queue, may this poll enqueue a wake trigger?
-//
-// THE SECOND HALF OF T10 — checked at the QUEUE directly, at enqueue time,
-// because the announced-set alone does not stop a second run enqueueing a
-// second trigger while the first is undispatched, and session-view's SF-2
-// drop-guard reads a poll snapshot that can lag the server-side ack. Full
-// refutation history: docs/ultra-wake-delivery.md.
-//
-// One trigger, however many runs — the appendix's formatter takes a list. A
-// run marked announced but not separately triggered is correct, not lost:
-// the trigger already queued composes its appendix from the mailbox at
-// DISPATCH time, not at enqueue time.
-export function shouldEnqueueUltraWake(
-  fresh: readonly string[],
-  queued: readonly { text: string }[],
-): boolean {
-  if (fresh.length === 0) return false;
-  return !queued.some((i) => i.text === ULTRA_WAKE_SENTINEL);
-}
-
 // What the formatter needs. Declared STRUCTURALLY rather than imported from
 // `@telar/core`, so this module keeps zero module edges and stays trivially safe
 // to reach from a "use client" file (AD-3). `PendingUltraWake` satisfies it by

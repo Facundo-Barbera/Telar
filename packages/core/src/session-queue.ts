@@ -23,6 +23,13 @@ export type SessionQueueState =
   | "cancelled"
   | "ambiguous";
 
+/**
+ * Who authored the turn. `wake` and `watch` are SERVER-authored machinery
+ * tickets (an ultra run reaching an outcome, a loom watch firing), keyed per
+ * event so one terminal event can produce at most one ticket ever.
+ */
+export type SessionTurnKind = "user" | "wake" | "watch";
+
 export type SessionQueueItem<T extends JsonValue = JsonValue> = {
   /** Stable client identity. It is never replaced, including after adoption. */
   idempotencyKey: string;
@@ -32,6 +39,15 @@ export type SessionQueueItem<T extends JsonValue = JsonValue> = {
   revision: number;
   state: SessionQueueState;
   payload: T;
+  /**
+   * ABSENT IS `user`, and the default is never written back. Every queue.json
+   * on disk predates machinery tickets and carries no kind; a stored "user"
+   * and an absent one would be two spellings of one item, so readers ask
+   * sessionTurnKind rather than the field.
+   */
+  kind?: SessionTurnKind;
+  /** The turn's user message is not rendered. Absent is `false`, never stored. */
+  hidden?: boolean;
   acceptedAt: number;
   updatedAt: number;
   claim?: { token: string; by: string; at: number };
@@ -53,6 +69,8 @@ export type EnqueueSessionTurn<T extends JsonValue> = {
   idempotencyKey: string;
   payload: T;
   canonicalKey?: string;
+  kind?: SessionTurnKind;
+  hidden?: boolean;
 };
 
 export type ClaimedSessionTurn<T extends JsonValue = JsonValue> = {
@@ -76,8 +94,13 @@ const VALID_STATES = new Set<SessionQueueState>([
   "cancelled",
   "ambiguous",
 ]);
+const VALID_KINDS = new Set<SessionTurnKind>(["user", "wake", "watch"]);
 
 const nowDefault = () => Date.now();
+
+/** The one place "absent means user" is decided; see SessionQueueItem.kind. */
+export const sessionTurnKind = (item: Pick<SessionQueueItem, "kind">): SessionTurnKind =>
+  item.kind ?? "user";
 
 export class SessionQueueConflictError extends Error {
   constructor(message: string) {
@@ -184,6 +207,8 @@ function validateEnvelope<T extends JsonValue>(sessionId: string, value: unknown
       !Number.isSafeInteger(item.revision) ||
       item.revision < 0 ||
       !VALID_STATES.has(item.state) ||
+      (item.kind !== undefined && !VALID_KINDS.has(item.kind)) ||
+      (item.hidden !== undefined && typeof item.hidden !== "boolean") ||
       !Number.isFinite(item.acceptedAt) ||
       !Number.isFinite(item.updatedAt)
     ) {
@@ -292,11 +317,19 @@ export function enqueueSessionTurn<T extends JsonValue>(
 ): SessionQueueItem<T> {
   nonEmpty(input.idempotencyKey, "idempotencyKey");
   if (input.canonicalKey !== undefined) nonEmpty(input.canonicalKey, "canonicalKey");
+  if (input.kind !== undefined && !VALID_KINDS.has(input.kind)) {
+    throw new SessionQueueConflictError(`unknown turn kind ${JSON.stringify(input.kind)}`);
+  }
+  if (input.hidden !== undefined && typeof input.hidden !== "boolean") {
+    throw new SessionQueueConflictError("hidden must be a boolean");
+  }
   assertJson(input.payload);
   const canonicalKey =
     input.canonicalKey && input.canonicalKey !== input.idempotencyKey
       ? input.canonicalKey
       : undefined;
+  const kind = input.kind && input.kind !== "user" ? input.kind : undefined;
+  const hidden = input.hidden === true ? true : undefined;
   return mutate<T, SessionQueueItem<T>>(sessionId, (envelope) => {
     const duplicate = findByKey(envelope, input.idempotencyKey);
     if (duplicate) return { changed: false, result: copyItem(duplicate) };
@@ -312,6 +345,8 @@ export function enqueueSessionTurn<T extends JsonValue>(
       revision: 0,
       state: "queued",
       payload: structuredClone(input.payload),
+      ...(kind ? { kind } : {}),
+      ...(hidden ? { hidden } : {}),
       acceptedAt: at,
       updatedAt: at,
     };

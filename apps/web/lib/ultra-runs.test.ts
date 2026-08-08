@@ -1850,41 +1850,44 @@ describe("4.2 AC9 — NO BUDGET UI ANYWHERE, and it is a scan rather than a prom
   });
 });
 
-describe("4.2 §5.5-D1 item 7 — the wake's dispatch can never carry the chip's key", () => {
-  test("the injection drain's dispatch literal is UNTOUCHED", () => {
-    // Story 4.1's hidden wake turn fires through the SAME `send` and the same
-    // body literal as a user message. Its drain passes a hard-coded option
-    // object, so no arm state can reach it — and this pins that line so a later
-    // edit cannot quietly route it through `sendOptionsFor`.
+describe("4.2 §5.5-D1 item 7 — the wake's turn can never carry the chip's key", () => {
+  test("the wake's dispatch is server-authored, and no client module can mint one", () => {
+    // The claim is unchanged and its ground moved: the wake turn's body used to
+    // be `send`'s, one hard-coded option object away from every composer key,
+    // and it is now composed entirely server-side by `machineryTurnPayload` from
+    // the session's chats.json row. No composer state exists on that path to
+    // reach it.
     //
-    // WHY A STATIC PIN RATHER THAN A PURE TEST: the claim is about a line of
-    // effect body in a client component, and there is no DOM harness in this
-    // repo to drive it. Asserting the line's SHAPE is the honest executable
-    // form; the reducer's own behaviour is asserted above.
-    //
-    // The drain now lives in the injections hook rather than in session-view —
-    // the dispatch literal is the SAME line, moved. Both files are read because
-    // the negative half of the claim is about what the COMPOSER may add to a
-    // send, and that still lives in the adapter.
-    const drain = readSource("apps/web/components/session/use-session-injections.ts");
+    // WHY A STATIC PIN RATHER THAN A PURE TEST: the negative half of the claim
+    // is about what a FILE may contain, which no unit test can ask of behaviour.
+    // The reducer's own behaviour is asserted above.
+    const engine = readSource("apps/web/lib/server/session-engine.ts");
     const adapter = readSource("apps/web/components/session/session-view.tsx");
-    expect(drain).toContain("void send(next.text, next.hidden ? { hidden: true } : undefined);");
-    // The composer no longer exposes an Ultra arm at all. A wake can therefore
-    // only carry its hidden marker; no composer state can add an Ultra key.
-    for (const src of [drain, adapter]) {
+    const alerts = readSource("apps/web/components/session/use-watcher-alerts.ts");
+    expect(engine).toContain("machineryTurnPayload(sessionId, ULTRA_WAKE_SENTINEL, key)");
+    expect(engine).not.toContain("ultra: true");
+    // THE CLIENT CANNOT FIRE A WAKE AT ALL NOW, which is strictly more than the
+    // key-cannot-ride claim: the sentinel is in no client module, so there is no
+    // trigger for a composer key to ride on…
+    for (const src of [adapter, alerts]) {
+      expect(src).not.toContain("ULTRA_WAKE_SENTINEL");
       expect(src).not.toContain("...(opts?.ultra ? { ultra: true } : {}),");
       expect(src).not.toContain("...(ultraArmed ? { ultra: true } : {})");
       expect(src).not.toContain("ultraArm.armed ? { ultra: true }");
     }
+    // …and the one door a client could enqueue through refuses the fields that
+    // would make a ticket machinery.
+    const queueRoute = readSource("apps/web/app/api/chat/[sessionId]/queue/route.ts");
+    expect(queueRoute).toContain("body.kind !== undefined || body.hidden !== undefined");
   });
 
-  test("the arm reducer says ARMED and the wake's options still carry no `ultra` key", () => {
+  test("the arm reducer says ARMED and the wake ticket still carries no `ultra` key", () => {
     // The pure half of the same claim, stated as §5.5-D1 item 7 asks: even with
-    // the reducer armed, the wake's dispatch options are the hidden literal.
+    // the reducer armed, the wake's own options are the engine's ticket literal.
     const armed = armReducer({ armed: false }, "arm");
     expect(armed.armed).toBe(true);
-    const wakeOptions = { hidden: true } as const;
-    expect("ultra" in wakeOptions).toBe(false);
+    const wakeTicket = { kind: "wake", hidden: true } as const;
+    expect("ultra" in wakeTicket).toBe(false);
   });
 });
 

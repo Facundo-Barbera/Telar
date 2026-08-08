@@ -4,7 +4,7 @@
 // per-origin cap (6 connections) and every navigation's RSC fetch queued
 // behind SSE streams that would not yield — the app read as frozen. Among
 // the holders was a GUARANTEED duplicate: a session that both IS a loom
-// (use-loom-handoff) and WATCHES that same loom (use-session-injections)
+// (use-loom-handoff) and WATCHES that same loom (use-watcher-alerts)
 // opened two independent EventSources to the identical
 // /api/looms/[id]/events URL — two sockets, one stream of facts.
 //
@@ -18,7 +18,7 @@
 // THE TERMINAL "end" IS THE REGISTRY'S TO HANDLE, for the same reason: the
 // loom events route sends `end` then closes, and without a central close
 // EventSource would auto-reconnect forever against a finished loom (the
-// churn use-session-injections' own comment warned about). The registry
+// churn use-watcher-alerts' own comment warned about). The registry
 // closes and evicts on `end`; a later acquire of the same URL gets a fresh
 // socket, which is correct — "the loom ended" is a fact about that stream,
 // not about the URL for all time.
