@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkUnitState } from "@telar/core";
 import type { LoomEventRow, LoomTone, PillLoom } from "@/components/session/session-loom";
 import { shortId } from "@/lib/format";
+import { acquireSharedEventSource } from "@/lib/shared-event-source";
 
 // Map a real WorkUnitState to the loom pill/row urgency tone (accent only) and a
 // human verb. blocked/failed/halted demand the human (amber + pulse); ready /
@@ -73,7 +74,12 @@ export function useLoomHandoff({
     if (!loomId) return;
     lastStateRef.current = null;
     const url = loomUrl ?? `/looms/${loomId}`;
-    const es = new EventSource(`/api/looms/${encodeURIComponent(loomId)}/events`);
+    // SHARED, not owned (issue #82): the watcher hook may hold this same
+    // loom's stream, and two sockets for one URL is a connection-cap tax.
+    // Listeners are ours to add and remove; the socket is the registry's.
+    const { source: es, release } = acquireSharedEventSource(
+      `/api/looms/${encodeURIComponent(loomId)}/events`,
+    );
     const onRun = (e: MessageEvent) => {
       let loom: { state?: WorkUnitState; title?: unknown };
       try {
@@ -104,8 +110,12 @@ export function useLoomHandoff({
       }
     };
     es.addEventListener("run", onRun as EventListener);
-    es.addEventListener("end", () => es.close());
-    return () => es.close();
+    // No "end" close here: the registry owns the terminal close (a consumer
+    // closing a shared socket would sever every other subscriber).
+    return () => {
+      es.removeEventListener("run", onRun as EventListener);
+      release();
+    };
   }, [loomId, loomUrl]);
 
   // The aggregate looms pill's data — one loom per session in practice (the

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Watch, WorkUnitState } from "@telar/core";
 import { cachedJson } from "@/lib/client-json-cache";
+import { acquireSharedEventSource } from "@/lib/shared-event-source";
 import type { PendingUltraWake } from "@telar/core";
 import {
   freshUltraWakes,
@@ -125,8 +126,13 @@ export function useSessionInjections({
     const loomIds = watchedLoomIds ? watchedLoomIds.split(",") : [];
     if (loomIds.length === 0) return;
     const sources = loomIds.map((loomId) => {
-      const es = new EventSource(`/api/looms/${encodeURIComponent(loomId)}/events`);
-      es.addEventListener("run", (e) => {
+      // SHARED, not owned (issue #82): when this session both IS a loom and
+      // WATCHES it, the handoff hook holds the same URL — one socket serves
+      // both instead of the measured duplicate.
+      const { source: es, release } = acquireSharedEventSource(
+        `/api/looms/${encodeURIComponent(loomId)}/events`,
+      );
+      const onRun = (e: Event) => {
         let loom: { state?: WorkUnitState; title?: unknown };
         try {
           loom = JSON.parse((e as MessageEvent).data);
@@ -154,16 +160,21 @@ export function useSessionInjections({
             text: `[watcher] loom ${loomId} (${title}) reached ${state}. How do you want to proceed?`,
           },
         ]);
-      });
-      // A terminal loom sends `end` then closes; stop EventSource's auto-reconnect
-      // so a done/failed/needs-review loom doesn't churn re-opening the stream.
-      es.addEventListener("end", () => es.close());
-      return es;
+      };
+      es.addEventListener("run", onRun as EventListener);
+      // No "end" close here: the registry owns the terminal close and the
+      // auto-reconnect churn guard with it (a consumer closing a shared
+      // socket would sever the handoff hook's subscription to the same loom).
+      return { es, onRun, release };
     });
-    // CRITICAL: close EVERY source on unmount or when the watched-loom SET
-    // changes — no leaks, no double-subscribe.
+    // CRITICAL: detach EVERY listener and release EVERY hold on unmount or
+    // when the watched-loom SET changes — no leaks, no double-subscribe. The
+    // socket itself closes only when its LAST subscriber releases.
     return () => {
-      for (const es of sources) es.close();
+      for (const { es, onRun, release } of sources) {
+        es.removeEventListener("run", onRun as EventListener);
+        release();
+      }
     };
   }, [watchedLoomIds]);
 
