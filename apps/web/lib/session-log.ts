@@ -74,6 +74,26 @@ export function appendSessionEvent(sessionId: string, event: string, data: unkno
   }
 }
 
+// DURABLE per-session diagnostics (issue #78). Both live surfaces truncate by
+// design — live.ndjson per turn, feed.ndjson per window — which is exactly how
+// the first empty-turn's evidence was lost, and the packaged app's server
+// stdout goes nowhere (#39's find). This file is APPEND-ONLY and never
+// truncated: rare, structural anomalies land here (an empty turn's stderr
+// tail) so the next occurrence carries its own forensics. Best-effort, like
+// every log write here.
+export function appendSessionDiagnostic(sessionId: string, entry: Record<string, unknown>): void {
+  try {
+    const dir = sessionDir(sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(
+      path.join(dir, "diagnostics.ndjson"),
+      JSON.stringify({ at: Date.now(), ...entry }) + "\n",
+    );
+  } catch {
+    // best-effort
+  }
+}
+
 // Tail the log from `afterLine` (complete lines already consumed); pass back
 // nextLine to drain incrementally. Missing file → nothing yet.
 export function readSessionEvents(

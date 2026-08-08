@@ -75,6 +75,7 @@ import {
 import {
   appendFeedEvent,
   appendSessionEvent,
+  appendSessionDiagnostic,
   clearSessionDeltas,
   endSessionDeltas,
   pushSessionDelta,
@@ -142,6 +143,7 @@ import {
   armPendingFork,
   clearPendingFork,
   markLastTurnInterrupted,
+  EMPTY_TURN_MARKER,
   recordTaskStatuses,
   sessionSpendUsd,
   settleSpawnStatuses,
@@ -988,6 +990,13 @@ export async function POST(req: Request) {
       // all before the finally has run (until then the turn's persistence
       // still covers every part).
       let windowPersistMark: { n: number; done: boolean } | null = null;
+      // How many SDK messages this turn's feed actually delivered — the
+      // empty-turn diagnostic's key discriminator (issue #78): zero means the
+      // CLI never spoke at all (spawn/resume failure), while "some, but no
+      // parts" means it spoke and produced nothing renderable. Declared here,
+      // beside the other turn-teardown state, because the loop that counts
+      // and the finally that reads sit in different blocks.
+      let turnSdkMessages = 0;
       let usagePromise: Promise<any> | null = null;
       // Claude's stable control API returns the same structured attribution as
       // `/context`. It must be requested while the query is still
@@ -1998,6 +2007,12 @@ export async function POST(req: Request) {
             // account; the whole neighbourhood was edited by story 2.2, which is
             // exactly the context in which such a slip happens.
             env: runtimeEnv,
+            // The CLI's stderr, kept as a bounded tail on the runtime (issue
+            // #78): the first empty turn left NO forensics because this went
+            // nowhere. Routed to the runtime, not a POST-local buffer — the
+            // process outlives its turns and the lines most worth reading
+            // often precede the turn that exposes them.
+            stderr: (data: string) => self().noteStderr(data),
             // Kind-specific guidance (docs/loom-model.md §5, adaptive-
             // verification.md §8) is ADDITIVE via the preset's own `append`, and
             // WHICH text that is has stopped being decided here: the profile's
@@ -2459,6 +2474,7 @@ export async function POST(req: Request) {
           }
         }
         for await (const msg of turnFeed) {
+          turnSdkMessages++;
           if (msg.type === "system" && msg.subtype === "init") {
             const init = msg as {
               session_id: string;
@@ -2922,6 +2938,29 @@ export async function POST(req: Request) {
               contextUsage,
             });
             turnPersisted = true;
+            // The LIVE half of the empty-turn truth (appendTurn grew the
+            // persisted half — see its comment): a turn that ends with zero
+            // assistant parts tells the attached client the same attention
+            // line the reload will show, instead of a silent nothing that
+            // reads as "answered".
+            if (!hiddenTurn && parts.length === 0) {
+              send("marker", { text: EMPTY_TURN_MARKER, attention: true });
+              // THE FORENSICS, WHERE TRUNCATION CANNOT EAT THEM (issue #78).
+              // The first empty turn was unexplainable after the fact: the
+              // live log truncates per turn, the feed per window, and the
+              // packaged server's stdout goes nowhere — so the evidence
+              // died with the surfaces. diagnostics.ndjson is append-only.
+              // `sdkMessages: 0` says the CLI never spoke (spawn/resume
+              // failure); nonzero says it spoke and produced nothing
+              // renderable — the two halves of #78's open question.
+              appendSessionDiagnostic(capturedSession, {
+                kind: "empty-turn",
+                runId,
+                sdkMessages: turnSdkMessages,
+                runtimeClosed: runtimeRef?.closed ?? null,
+                stderr: runtimeRef?.stderrLines.slice(-40) ?? [],
+              });
+            }
             send("saved", { chatId: capturedSession });
           }
           // ISSUE #25 — the compaction boundary itself, written LAST so its

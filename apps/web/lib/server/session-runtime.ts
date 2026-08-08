@@ -210,6 +210,14 @@ export type SessionRuntime = {
   /** Messages consumed while no turn was attached — kept as an observability
    *  counter; with a window sink installed they are rendered, not dropped. */
   detachedMessages: number;
+  /** The CLI subprocess's recent stderr, as a bounded tail (issue #78). The
+   *  first empty-turn had NO forensics: the CLI produced zero events and its
+   *  stderr went nowhere. The route wires the SDK's `stderr` callback to
+   *  `noteStderr`; the empty-turn diagnostic reads this tail. Lives on the
+   *  runtime, not the POST — the process outlives its turns and the lines
+   *  most worth reading often precede the turn that exposes them. */
+  stderrLines: string[];
+  noteStderr(data: string): void;
   /** See WindowSink. Installed by the turn's POST, read by the pump. */
   windowSink: WindowSink | null;
   push(message: SDKUserMessage): void;
@@ -416,6 +424,7 @@ export function acquireSessionRuntime(args: {
     lastActivity: Date.now(),
     closed: false,
     detachedMessages: 0,
+    stderrLines: [],
     windowSink: null,
     _input: inputQueue,
     _turn: null,
@@ -428,6 +437,18 @@ export function acquireSessionRuntime(args: {
 
     push(message) {
       inputQueue.push(message);
+    },
+
+    noteStderr(data) {
+      // Line-wise, bounded: keep the last STDERR_TAIL_LINES lines. A crashing
+      // CLI can dump kilobytes; a diagnostic needs the tail, not the firehose.
+      for (const line of data.split("\n")) {
+        if (!line.trim()) continue;
+        rt.stderrLines.push(line);
+      }
+      if (rt.stderrLines.length > STDERR_TAIL_LINES) {
+        rt.stderrLines.splice(0, rt.stderrLines.length - STDERR_TAIL_LINES);
+      }
     },
 
     beginTurn(runId) {
@@ -559,6 +580,10 @@ export function closeSessionRuntime(key: string): boolean {
 // to the kill the Stop button has always meant. 5s is generous for a control
 // round-trip and short enough that Stop still feels like Stop.
 const INTERRUPT_WATCHDOG_MS = 5_000;
+
+/** How much CLI stderr a runtime remembers (issue #78) — enough to carry a
+ *  crash's stack plus its preamble, small enough to never matter in memory. */
+const STDERR_TAIL_LINES = 80;
 
 /** Stop the TURN and keep the runtime (message-lifecycle F2): the warm
  *  process, its context, and its background agents all survive — measured,

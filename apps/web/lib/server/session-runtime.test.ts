@@ -109,6 +109,19 @@ const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 describe("session runtime", () => {
+  test("the runtime keeps a bounded CLI stderr tail (issue #78)", () => {
+    // The first empty turn had no forensics: the CLI's stderr went nowhere.
+    // The tail lives on the RUNTIME (the process outlives its turns) and is
+    // bounded — a crashing CLI can dump kilobytes, a diagnostic wants the end.
+    const rt = makeRuntime();
+    rt.runtime.noteStderr("first\nsecond\n");
+    expect(rt.runtime.stderrLines).toEqual(["first", "second"]);
+    for (let i = 0; i < 200; i++) rt.runtime.noteStderr(`line-${i}`);
+    expect(rt.runtime.stderrLines.length).toBe(80);
+    expect(rt.runtime.stderrLines.at(-1)).toBe("line-199");
+    rt.runtime.closeNow("test over");
+  });
+
   test("pushed messages reach the query's input channel", async () => {
     const rt = makeRuntime();
     rt.runtime.push(user("hello"));
