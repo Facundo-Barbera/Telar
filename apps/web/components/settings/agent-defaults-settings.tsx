@@ -1,6 +1,6 @@
 "use client";
 
-// Agent defaults — the INITIAL permission mode + model for a BRAND-NEW session in
+// Agent defaults — the INITIAL runtime mode + model for a BRAND-NEW session in
 // a project that has no remembered composer config. Per-project memory
 // (telar:composer:<project>) and per-session choices always win over these; the
 // composer reads them only as the seed for a never-configured project (see
@@ -8,13 +8,14 @@
 //
 // Loom Doctrine: a UI preference, never an engine flag. Nothing here writes
 // telar.yaml / .telar or any engine env — it only changes what a new composer
-// starts on. import type keeps models/permission-modes client-safe (data only).
+// starts on.
 
 import type { ReactNode } from "react";
+import type { RuntimeMode } from "@telar/core/runtime-mode";
 import { BotIcon, CheckIcon, ShieldCheckIcon, SparklesIcon, ZapIcon } from "lucide-react";
 import { useUiPrefs, setUiPrefs } from "@/lib/ui-prefs";
 import { modelsForProvider } from "@/lib/models";
-import { type ClientPermissionMode } from "@/lib/permission-modes";
+import { RUNTIME_MODE_OPTIONS } from "@/lib/runtime-mode-client";
 import {
   Select,
   SelectContent,
@@ -24,25 +25,27 @@ import {
 } from "@/components/ui/select";
 import { SettingsGroup, Row, Segmented } from "./settings-shell";
 
-// Claude-only: the composer's default seed is a Claude session; Codex sessions
-// pick their own model + approval preset and ignore these.
+// The model seed stays Claude-only (Codex sessions pick their own model), but
+// the MODE default is provider-neutral — the same runtime-mode vocabulary the
+// composer itself speaks (issue #65 retired the old Claude-only one here).
 const MODEL_OPTIONS = modelsForProvider("claude");
 
-const PERM_LABEL: Record<ClientPermissionMode, ReactNode> = {
-  auto: <><ZapIcon className="size-3.5" />Auto</>,
-  acceptEdits: <><CheckIcon className="size-3.5" />Accept edits</>,
-  default: <><BotIcon className="size-3.5" />Ask me</>,
-};
+// The composer's own labels/descriptions, minus "full-access" — deliberately.
+// A per-session escalation to full access is a choice made looking at that
+// session; a standing default of it for EVERY new session is the one setting
+// this page should not offer. The composer still offers it per session.
+const MODE_OPTIONS = RUNTIME_MODE_OPTIONS.filter((o) => o.value !== "full-access");
 
-const PERM_HINT: Record<ClientPermissionMode, string> = {
-  auto: "A classifier approves routine tool calls automatically — the loom happy path.",
-  acceptEdits: "File edits apply without asking; other actions still prompt.",
-  default: "Every tool call asks first.",
+const MODE_ICON: Partial<Record<RuntimeMode, ReactNode>> = {
+  auto: <ZapIcon className="size-3.5" />,
+  "auto-accept-edits": <CheckIcon className="size-3.5" />,
+  "approval-required": <BotIcon className="size-3.5" />,
 };
 
 export function AgentDefaultsSettings() {
-  const { defaultModel, defaultPermissionMode } = useUiPrefs();
+  const { defaultModel, defaultRuntimeMode } = useUiPrefs();
   const model = MODEL_OPTIONS.find((m) => m.id === defaultModel);
+  const activeMode = MODE_OPTIONS.find((o) => o.value === defaultRuntimeMode);
 
   return (
     <SettingsGroup
@@ -50,18 +53,22 @@ export function AgentDefaultsSettings() {
       description="The starting point for a new session in a project you haven't configured yet. A project's remembered config and any per-session change always win."
     >
       <Row
-        label="Default permission mode"
-        hint={PERM_HINT[defaultPermissionMode]}
+        label="Default runtime mode"
+        hint={activeMode?.description ?? ""}
         icon={ShieldCheckIcon}
         control={
-          <Segmented<ClientPermissionMode>
-            value={defaultPermissionMode}
-            onChange={(v) => setUiPrefs({ defaultPermissionMode: v })}
-            options={[
-              { value: "auto", label: PERM_LABEL.auto },
-              { value: "acceptEdits", label: PERM_LABEL.acceptEdits },
-              { value: "default", label: PERM_LABEL.default },
-            ]}
+          <Segmented<RuntimeMode>
+            value={defaultRuntimeMode}
+            onChange={(v) => setUiPrefs({ defaultRuntimeMode: v })}
+            options={MODE_OPTIONS.map((o) => ({
+              value: o.value,
+              label: (
+                <>
+                  {MODE_ICON[o.value]}
+                  {o.label}
+                </>
+              ),
+            }))}
           />
         }
       />

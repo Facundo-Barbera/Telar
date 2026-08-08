@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { getUiPrefs } from "@/lib/ui-prefs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -4556,6 +4557,11 @@ function SessionWorkspace({
                         if (isRuntimeMode(value)) setRuntimeMode(value);
                       },
                       defaultValue: DEFAULT_RUNTIME_MODE,
+                      // The Settings default (issue #65) — read lazily at seed
+                      // time, not render time, because the seed fires once for
+                      // a never-configured project and must see the prefs as
+                      // they are THEN.
+                      seedValue: () => getUiPrefs().defaultRuntimeMode,
                     }}
                   />
                 </PromptInputTools>
