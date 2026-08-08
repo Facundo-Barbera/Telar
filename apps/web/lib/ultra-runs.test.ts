@@ -38,6 +38,8 @@ import {
   ultraTabRunId,
   UNPHASED,
   agentLabelInPhase,
+  agentModelLabel,
+  agentModelShortLabel,
   agentRows,
   agentTokenTotal,
   orderRunsForPanel,
@@ -2335,5 +2337,29 @@ describe("splitRunsForRail — issue #45: only `done` collapses", () => {
     const runs = [run("a", "running"), run("b", "done"), run("c", "failed"), run("d", "done")];
     const { pinned, done } = splitRunsForRail(runs);
     expect(pinned.length + done.length).toBe(runs.length);
+  });
+});
+
+describe("agentModelShortLabel — the compact chip drops provider and context, never accuracy", () => {
+  test("a script alias resolves to the tier word alone", () => {
+    expect(agentModelShortLabel("sonnet")).toBe("Sonnet");
+    expect(agentModelShortLabel("opus")).toBe("Opus");
+  });
+
+  test("no provider word, no context suffix — the two things a narrow row cannot afford", () => {
+    const short = agentModelShortLabel("sonnet");
+    expect(short.includes("Claude")).toBe(false);
+    expect(agentModelLabel("sonnet").length).toBeGreaterThan(short.length);
+  });
+
+  test("an unrecognised string comes back verbatim — same rule as the full label, same reason", () => {
+    expect(agentModelShortLabel("some-model-this-build-never-met")).toBe(
+      "some-model-this-build-never-met",
+    );
+  });
+
+  test("empty stays empty (the row renders its own placeholder)", () => {
+    expect(agentModelShortLabel("")).toBe("");
+    expect(agentModelShortLabel("   ")).toBe("");
   });
 });
