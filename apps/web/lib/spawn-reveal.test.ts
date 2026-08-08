@@ -35,11 +35,17 @@ describe("issue #18 — a spawned subagent stays backgrounded until a human goes
 
   test("the quiet indicator #17 asked for is untouched: still derived, never gated on a fresh spawn", () => {
     const inspector = read("components/session/workspace-inspector.tsx");
-    // Reactive to CURRENT state (`.some(status === "running")`), not to a
-    // transition — so it stays lit for the whole time an agent is live,
-    // exactly the "read as active" #17 asked for, and is never the thing
-    // that pops the panel open.
-    expect(inspector).toContain("agents.some((agent) => agent.status === \"running\") ||");
+    // Reactive to CURRENT state, not to a transition — so it stays lit for the
+    // whole time an agent is live, exactly the "read as active" #17 asked for,
+    // and is never the thing that pops the panel open. The derivation moved
+    // from `agents.some(status === "running")` to the LIVE-ONLY lists the
+    // pinned environment now renders (issue #47); it is the same predicate over
+    // the same current state, plus the background-task roster, which is live by
+    // construction.
+    expect(inspector).toContain("const liveAgents = agents.filter((agent) => agent.status === \"running\");");
+    expect(inspector).toContain(
+      "liveAgents.length > 0 || liveWorkflows.length > 0 || tasks.length > 0;",
+    );
     expect(inspector).toContain("(needsAttention || activityRunning) && (");
   });
 });

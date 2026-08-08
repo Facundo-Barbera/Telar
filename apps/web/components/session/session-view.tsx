@@ -148,6 +148,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { consumeSSE } from "@/lib/sse";
+import {
+  backgroundWorkPhrase,
+  normalizeBackgroundTasks,
+  type BackgroundTask,
+} from "@/lib/background-tasks";
 import type { ContextUsageSnapshot } from "@/lib/context-usage";
 // Type-only (this is a "use client" file — no runtime value from @telar/core).
 import {
@@ -268,13 +273,18 @@ const PLANNER_GREETING =
 // nothing at all to a transcript.
 type Status = "ready" | "submitted" | "streaming" | "error";
 
-// #28 turn-as-event: what a turn's "done" hands the background tail — how many
-// tasks outlive the turn, the session they belong to (from the payload, never
-// React state), and the feed cursor the POST's rendering stopped at. Held in a
-// ref and read through this alias because TS narrows a ref's `.current` to its
-// last visible assignment (null) across the async send() body.
+// #28 turn-as-event: what a turn's "done" hands the background tail — the
+// session the window belongs to (from the payload, never React state) and the
+// feed cursor the POST's rendering stopped at. Held in a ref and read through
+// this alias because TS narrows a ref's `.current` to its last visible
+// assignment (null) across the async send() body.
+//
+// THE LIVE TASK ROSTER IS NOT IN HERE, though "done" carries it: the roster is
+// RENDERED STATE (the pinned environment's Processes rows, the composer's
+// aggregate line) that changes mid-turn on its own "tasks" events, so it lives
+// in `bgTasks` where a re-render can see it. A ref would freeze it at the
+// turn's end, which is the one moment it is least interesting.
 type WindowHandoff = {
-  tasksLive: number;
   sessionId: string | null;
   cursor: { win: number; seq: number } | null;
 };
@@ -1239,11 +1249,21 @@ function SessionWorkspace({
   // applyServerEvent but immediately re-settles status: background work must
   // never re-busy the composer.
   const windowHandoffRef = useRef<WindowHandoff | null>(null);
-  /** Background agents still working after the turn ended (feel contract
-   *  rule 20): rendered as ONE line above the composer — words, not a 2px
-   *  dot — for exactly as long as it is true. Seeded by the done handoff's
-   *  tasksLive, decremented per completion, cleared at the window's close. */
-  const [bgTasksLive, setBgTasksLive] = useState(0);
+  /** THE SESSION'S LIVE BACKGROUND WORK — the harness's own roster
+   *  (`background_tasks_changed`, projected as "tasks" events), REPLACED
+   *  wholesale on every arrival because the signal is a level, not an edge.
+   *
+   *  Two surfaces read it: the ONE line above the composer that says work is
+   *  still going (feel contract rule 20 — words, not a 2px dot, for exactly as
+   *  long as it is true) and the pinned environment's Processes section, which
+   *  names each one. It was a bare COUNT until the roster arrived, which is why
+   *  the line called a backgrounded `bun test` an "agent" and why the pinned
+   *  environment could not mention background commands at all.
+   *
+   *  Cleared at the window's close and by a rollback; never decremented by
+   *  hand — the SDK forbids correlating the roster with the task_notification
+   *  edges, and a level signal makes the arithmetic unnecessary anyway. */
+  const [bgTasks, setBgTasks] = useState<BackgroundTask[]>([]);
 
   // The god-view handoff and the loom lifecycle it starts — see
   // use-loom-handoff.ts. `setLoomHandoff` is called by applyServerEvent when
@@ -2028,9 +2048,15 @@ function SessionWorkspace({
                     ),
                   })),
                 );
-                // One agent came back — the presence line counts down (never
-                // below zero: nested completions can outnumber the roster).
-                setBgTasksLive((n) => Math.max(0, n - 1));
+                // THE PRESENCE LINE NO LONGER COUNTS DOWN HERE. It used to
+                // (`setBgTasksLive(n => Math.max(0, n - 1))`) because the
+                // client held a number seeded once at "done" and had no other
+                // way to learn a task had ended — with the guard against
+                // nested completions outnumbering the roster that the guess
+                // required. The roster now arrives as its own level signal
+                // ("tasks", below), and the SDK is explicit that its ids must
+                // not be correlated with these completion edges, so pairing
+                // the two would be both unnecessary and wrong.
                 break;
               case "marker":
                 // A system-event line in the main flow ("agent finished ·
@@ -2081,7 +2107,21 @@ function SessionWorkspace({
                 // to the persisted count and end any leftover liveness.
                 setMessages((ms) => ms.slice(0, Number(payload.messages ?? ms.length)));
                 setStoppedExchange(false);
-                setBgTasksLive(0);
+                setBgTasks([]);
+                break;
+              case "tasks":
+                // THE LIVE BACKGROUND ROSTER, mid-turn and between turns alike
+                // (the projector emits it for the SDK's
+                // `background_tasks_changed`; the window sink puts it in the
+                // feed so the background tail gets it too). REPLACE, never
+                // merge: the payload is the full set after the change, and
+                // treating it as a level is what stops a missed edge from
+                // wedging a "still working" indicator forever.
+                //
+                // Not content: no bubble, nothing persisted, and a task that
+                // ends simply leaves the list — its completion marker is what
+                // the transcript keeps.
+                setBgTasks(normalizeBackgroundTasks(payload?.tasks));
                 break;
               case "permission":
                 // The turn stays in flight while the card is pending — status
@@ -2223,7 +2263,6 @@ function SessionWorkspace({
                 // where this stream's rendering stopped so send() can attach
                 // the background tail strictly AFTER it.
                 windowHandoffRef.current = {
-                  tasksLive: typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
                   // From the payload, not React state: a fresh session's send()
                   // closure captured sessionId before the "session" event set it.
                   sessionId:
@@ -2241,9 +2280,12 @@ function SessionWorkspace({
                 // mint above, so a background continuation reads as its own
                 // response, not as growth on a turn that already ended.
                 asstIdRef.current = null;
-                setBgTasksLive(
-                  typeof payload.tasksLive === "number" ? payload.tasksLive : 0,
-                );
+                // The roster that outlives this turn, as a LIST (it was a
+                // count, `tasksLive`, while the server kept only a length).
+                // Empty when nothing outlives the turn, which is the same
+                // statement the old zero made — and the same REPLACE the
+                // "tasks" case does, so the two paths cannot disagree.
+                setBgTasks(normalizeBackgroundTasks(payload.tasks));
                 break;
               case "saved":
                 setChatPersisted(true);
@@ -2316,8 +2358,9 @@ function SessionWorkspace({
             sawEvent = true;
             if (event === "closed") {
               // The window is over: nothing is still working (rule 20's line
-              // must vanish the moment it stops being true).
-              setBgTasksLive(0);
+              // must vanish the moment it stops being true, and the pinned
+              // environment's Processes rows with it).
+              setBgTasks([]);
               exitTurn();
               return;
             }
@@ -4132,6 +4175,7 @@ function SessionWorkspace({
             onReservedChange={setWorkspaceInspectorReserved}
             agents={railAgents}
             workflows={ultraRunList}
+            tasks={bgTasks}
             attachments={sessionAttachments}
             needsAttention={activityAttention}
             onSelectAgent={setActiveTab}
@@ -4250,17 +4294,22 @@ function SessionWorkspace({
                 in-turn working line (rule 2: the !busy gate), never only a
                 dot on an icon. Stop here targets the SESSION (the whole
                 window), which is the only thing "stop the background work"
-                can mean. */}
-            {!busy && bgTasksLive > 0 && (
+                can mean — unchanged by the roster below it.
+
+                THE WORDS ARE NOW HONEST ABOUT TYPE. This read "N agent(s)
+                still working" for everything the harness had backgrounded,
+                because a count was all the client held: a backgrounded
+                `bun test` was announced as an agent. `backgroundWorkPhrase`
+                groups the roster by kind — "1 command · 1 agent still
+                working" — and says nothing a `task_type` did not. */}
+            {!busy && bgTasks.length > 0 && (
               <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
                 <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
                   <span className="relative flex size-2">
                     <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
                     <span className="relative inline-flex size-2 rounded-full bg-primary" />
                   </span>
-                  {bgTasksLive === 1
-                    ? "1 agent still working"
-                    : `${bgTasksLive} agents still working`}
+                  {backgroundWorkPhrase(bgTasks)}
                 </span>
                 <Button type="button" size="xs" variant="outline" onClick={() => stopTurn()}>
                   Stop
