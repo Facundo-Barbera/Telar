@@ -79,6 +79,7 @@ import {
   currentCompaction,
   emptyCompactionFold,
   foldCompactionEvent,
+  isFoldMintedKey,
   seedCompactedContext,
   seedTranscriptCompactions,
   upsertCompaction,
@@ -2428,9 +2429,27 @@ function SessionWorkspace({
             }, retryMs);
             abort.signal.addEventListener("abort", onAbort, { once: true });
           });
-          // A replay-mode transport drop rebuilds from line zero next round;
-          // id-based updates are authoritative (old behavior, kept).
-          if (!cursorMode && sawEvent) asstIdRef.current = null;
+          // A replay round that received a cursor (the feed-backed server
+          // hands one after its first drain) resumes STRICTLY AFTER next
+          // round — everything applied stands, bubble and dividers alike.
+          // Only the cursor-less round (the events route's degraded
+          // live.ndjson fallback) still rebuilds from line zero, and a
+          // rebuild must start from EMPTY state: fresh bubble (id-based
+          // updates are authoritative, old behavior) AND a fresh compaction
+          // fold. The fold's own rule — a repeated event opens a NEW
+          // compaction — is correct for genuinely-new events and blind to
+          // redelivery, so re-folding a replay through last round's state
+          // minted a second divider for the same compaction (the duplicate
+          // "Compacted · manual · …" pair). The replay re-mints the same
+          // c-keys from zero, so dropping last round's fold-minted entries
+          // first is what makes the rebuild converge instead of stack;
+          // seeded (stored-*) entries describe completed turns the replay
+          // never carries, so they stand.
+          if (!cursorMode && sawEvent && feedCursorRef.current === null) {
+            asstIdRef.current = null;
+            compactionFoldRef.current = emptyCompactionFold<TranscriptCompaction>();
+            setCompactions((list) => list.filter((c) => !isFoldMintedKey(c.key)));
+          }
         }
       } catch {
         // Aborted (local send / unmount / session change) or dropped — the

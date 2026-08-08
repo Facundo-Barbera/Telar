@@ -107,28 +107,48 @@ export async function GET(
         const live = windowOrRunLive();
         let sawClosed = false;
         let structuralCount = 0;
-        if (afterCursor) {
-          // Feed mode: strictly-after-cursor tail of the window's events.
+        // BOTH MODES ARE FEED READS NOW, and that is what ended the duplicate
+        // divider. Replay used to be a line-counted read of live.ndjson that
+        // never told the client where it stood: a cursor-less subscriber
+        // stayed cursor-less forever, so every reconnect replayed the whole
+        // open window into client state that had already applied it — and the
+        // compaction fold, whose rule is "a repeated event opens a NEW
+        // compaction" (correct for genuinely-new events, blind to
+        // redelivery), minted a second divider for the same compaction.
+        // Reading the feed instead gives replay the one thing the line count
+        // could not: the exact (win, seq) resume point IN THE SAME READ as
+        // the events it covers — no straddle window where an event lands
+        // after the read but before the cursor capture. A null cursor is
+        // readFeedEvents' own "replay the window from its start", so the
+        // first drain replays and every later one tails, in one code path.
+        {
+          const wasReplay = feedCursor === null;
           const { events, next } = readFeedEvents(sessionId, feedCursor);
-          feedCursor = next;
-          for (const { event, data } of events) {
-            structuralCount++;
-            send(event, data);
-            if (event === "closed") sawClosed = true;
-          }
-          // Advance the client's resume point: a transport drop reconnects
-          // with the LAST cursor it saw, not the one it started from, so
-          // nothing already applied replays.
-          if (structuralCount > 0 && !sawClosed) send("cursor", feedCursor);
-        } else {
-          // Replay mode: finalized/structural events first (the skeleton) — so
-          // the current block's deltas below apply on top in the right order.
-          const { events, nextLine } = readSessionEvents(sessionId, line);
-          line = nextLine;
-          for (const { event, data } of events) {
-            structuralCount++;
-            send(event, data);
-            if (event === "closed") sawClosed = true;
+          if (wasReplay && events.length === 0 && !afterCursor) {
+            // Degraded fallback: the feed is best-effort (a write failure is
+            // reported, not thrown), so a window whose feed never made it to
+            // disk still replays from live.ndjson exactly as before — with
+            // the old no-cursor semantics, since there is nothing to resume
+            // from. The duplicate-on-reconnect exposure survives only here.
+            const { events: lines, nextLine } = readSessionEvents(sessionId, line);
+            line = nextLine;
+            for (const { event, data } of lines) {
+              structuralCount++;
+              send(event, data);
+              if (event === "closed") sawClosed = true;
+            }
+          } else {
+            feedCursor = next;
+            for (const { event, data } of events) {
+              structuralCount++;
+              send(event, data);
+              if (event === "closed") sawClosed = true;
+            }
+            // Advance the client's resume point: a transport drop reconnects
+            // with the LAST cursor it saw — for a replay subscriber, the
+            // first cursor it has ever had — so nothing already applied
+            // replays.
+            if (structuralCount > 0 && !sawClosed) send("cursor", feedCursor);
           }
         }
         if (sawClosed) return finish();

@@ -249,8 +249,10 @@ describe("ultra wake — the delivery gate (review SF-3)", () => {
   // everything `pendingUltraWakes` returned, on the assumption that the appendix
   // it was composed beside must have carried it. Two ways that is false and both
   // are reachable: `ultraWakeAppendix` wraps its read in `safeLiveContext`, which
-  // degrades a failed read to ""; and `runCodexTurn` takes no `systemPrompt`, so
-  // a Codex turn discards the appendix wholesale. Either way the wake would be
+  // degrades a failed read to ""; and a provider path can discard the appendix
+  // (runCodexTurn once took no `systemPrompt` at all — it carries the appendix
+  // as `instructions` now, which is why the route's ack is gated per run by this
+  // predicate rather than per provider). Either way the wake would be
   // stamped delivered having been delivered ZERO times — the one outcome
   // wake.ts's header says is impossible. The route now asks the composed prompt
   // itself, through this predicate.
