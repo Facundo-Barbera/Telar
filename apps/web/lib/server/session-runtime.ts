@@ -123,10 +123,24 @@ export type TurnSlots = {
  *  projects into the session feed; onSettled closes the window (terminal
  *  marker + persistence of post-turn output) when the task roster empties
  *  while no turn is attached. Cleared by beginTurn (the new turn's own POST
- *  renders live traffic), by settle, and by close. */
+ *  renders live traffic — via onDisplaced), by settle, and by close (via
+ *  onSettled: a Stop ends the window as surely as silence does).
+ *
+ *  NO TEARDOWN PATH MAY DROP THIS SINK UNFLUSHED (issue #76). Everything the
+ *  window accumulated — completions in taskStatuses, the continuation's
+ *  parts past the turn's persist mark — exists ONLY here until a flush
+ *  writes it through. The measured failure: Stop between turns went through
+ *  closeNow, which nulled the sink without calling anything, so three
+ *  settled agents rolled back to "running" on reload and the wake response
+ *  vanished, directly under a marker promising "kept what arrived". */
 export type WindowSink = {
   onDetachedMessage: (message: SDKMessage) => void;
   onSettled: () => void;
+  /** The window is being TAKEN OVER by a new turn, not closed: persist what
+   *  arrived (statuses, post-turn parts) and nothing else — no terminal
+   *  marker, no spawn settling (still-live agents legitimately ride the new
+   *  turn's feed). Optional so tests and older installers stay valid. */
+  onDisplaced?: () => void;
   /** The turn's own canUseTool closure, kept reachable for the window: its
    *  card emission degrades to the log/feed mirror once the POST is gone, and
    *  the pending registry + permission route work without a live response —
@@ -425,8 +439,22 @@ export function acquireSessionRuntime(args: {
       rt._continuationOpen = false;
       // The new turn's POST renders live traffic now — the previous window's
       // sink is done (its still-live tasks' output rides THIS turn's feed),
-      // and a pending settle linger with it.
-      rt.windowSink = null;
+      // and a pending settle linger with it. FLUSHED, not dropped (issue
+      // #76): completions and continuation parts that arrived mid-window
+      // live only in that sink's state until written through, and a user
+      // sending a new message must not silently discard what a reload would
+      // then miss.
+      {
+        const sink = rt.windowSink;
+        rt.windowSink = null;
+        if (sink?.onDisplaced) {
+          try {
+            sink.onDisplaced();
+          } catch {
+            // best-effort, same posture as the settle path
+          }
+        }
+      }
       if (rt._settle) clearTimeout(rt._settle);
       rt._settle = null;
       rt.slots.runId = runId;
@@ -478,7 +506,23 @@ export function acquireSessionRuntime(args: {
       void reason; // named for call sites; the runtime does not log (yet)
       if (!rt.closed) {
         rt.closed = true;
-        rt.windowSink = null;
+        // A Stop ENDS the window — so it gets the window's ending, not a
+        // silent drop (issue #76): onSettled writes the completions through,
+        // persists the continuation's parts past the persist mark, settles
+        // still-acked spawns, and appends the terminal marker. This is the
+        // same call the settle linger makes; the bug was that only the
+        // patient path made it.
+        {
+          const sink = rt.windowSink;
+          rt.windowSink = null;
+          if (sink) {
+            try {
+              sink.onSettled();
+            } catch {
+              // best-effort, same posture as the settle path
+            }
+          }
+        }
         if (rt._settle) clearTimeout(rt._settle);
         rt._settle = null;
         endTurnFeed(rt);
