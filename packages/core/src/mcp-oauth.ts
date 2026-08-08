@@ -31,6 +31,7 @@ export type OAuthClient = {
   id: string;
   secret?: string;
   registrationAccessToken?: string;
+  redirectUri?: string; // DCR only: the exact redirect_uri the client was registered with
 };
 
 export type OAuthTokens = {
@@ -52,6 +53,9 @@ export type McpOAuthRecord = {
 export type DiscoveryResult = AuthServerMeta & { resource: string };
 
 const DEFAULT_REDIRECT_PATH = "/api/mcp/oauth/callback";
+// Fallback only — the cockpit's default port. Routes pass the origin of the
+// request that initiated the connect (the callback must land on the same
+// process that holds the pending flow), so the flow works on any port.
 const REDIRECT_ORIGIN = "http://localhost:3131";
 
 // ---------------------------------------------------------------------------
@@ -379,23 +383,34 @@ export async function ensureClient(opts: {
   // Supabase) that reject a freshly-minted client_id with "Unrecognized
   // client_id". It also OVERRIDES a stale client this server may have persisted
   // mid-flow from an aborted connect. persistClient keeps any existing tokens.
+  // A registration is bound to the exact redirect_uri it was minted with (the
+  // AS exact-matches it), so a client is only reusable when its registered URI
+  // matches this connect's. Records from before redirectUri was stored were
+  // always registered against the default cockpit origin — reconstruct that.
+  const registeredUri = (c: OAuthClient): string =>
+    c.redirectUri ?? new URL(opts.auth.redirectPath ?? DEFAULT_REDIRECT_PATH, REDIRECT_ORIGIN).toString();
   const proven = findWorkingDcrClient(opts.project, opts.server, opts.as.issuer);
-  if (proven) {
+  if (proven && registeredUri(proven) === opts.redirectUri) {
     persistClient(opts.project, opts.server, opts.resource, opts.as, proven);
     return proven;
   }
   // Else reuse this server's own not-yet-completed registration (so a Connect
   // retried before it completes doesn't register a second app), else register.
   const existing = getRecord(opts.project, opts.server);
-  if (existing?.client.strategy === "dcr" && existing.client.id) return existing.client;
+  if (existing?.client.strategy === "dcr" && existing.client.id && registeredUri(existing.client) === opts.redirectUri) {
+    return existing.client;
+  }
 
-  const client = await dcrRegister({
-    registrationEndpoint: opts.as.registrationEndpoint!,
-    redirectUris: [opts.redirectUri],
-    scopes: opts.auth.scopes,
-    clientName: opts.clientName,
-    fetchImpl: opts.fetchImpl,
-  });
+  const client: OAuthClient = {
+    ...(await dcrRegister({
+      registrationEndpoint: opts.as.registrationEndpoint!,
+      redirectUris: [opts.redirectUri],
+      scopes: opts.auth.scopes,
+      clientName: opts.clientName,
+      fetchImpl: opts.fetchImpl,
+    })),
+    redirectUri: opts.redirectUri,
+  };
   persistClient(opts.project, opts.server, opts.resource, opts.as, client);
   return client;
 }
@@ -682,19 +697,42 @@ export type ConnectContext = {
   redirectUri: string;
 };
 
-function redirectUriFor(auth: McpOAuthConfig): string {
+// The redirect origin comes from the initiating request (or falls back to the
+// default cockpit origin). Same scheme rule as assertSecureUrl — https, or
+// http on loopback — plus it must be a BARE origin: no path, credentials, or
+// query smuggled in.
+function resolveRedirectOrigin(origin?: string): string {
+  if (!origin) return REDIRECT_ORIGIN;
+  let u: URL;
+  try {
+    u = new URL(origin);
+  } catch {
+    throw new Error(`redirectOrigin is not a valid URL: ${origin}`);
+  }
+  if (u.origin !== origin) {
+    throw new Error(`redirectOrigin must be a bare origin (scheme://host[:port]): ${origin}`);
+  }
+  const loopback = LOOPBACK_HOSTS.has(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback)) {
+    throw new Error(`redirectOrigin must be https (or an http loopback origin): ${origin}`);
+  }
+  return u.origin;
+}
+
+function redirectUriFor(auth: McpOAuthConfig, origin: string): string {
   const p = auth.redirectPath ?? DEFAULT_REDIRECT_PATH;
-  // The origin is hardcoded to localhost, but redirectPath is config-supplied:
-  // guard against redirect_uri manipulation. A value like "@evil.com/cb" would
-  // otherwise concatenate into "http://localhost:3131@evil.com/cb" (host
-  // evil.com). Require a plain absolute path and confirm the built URL stays on
-  // REDIRECT_ORIGIN (exact-match redirect, design §6).
+  // The origin is validated by resolveRedirectOrigin, but redirectPath is
+  // config-supplied: guard against redirect_uri manipulation. A value like
+  // "@evil.com/cb" would otherwise concatenate into
+  // "http://localhost:3131@evil.com/cb" (host evil.com). Require a plain
+  // absolute path and confirm the built URL stays on the origin (exact-match
+  // redirect, design §6).
   if (!p.startsWith("/") || p.includes("@")) {
     throw new Error(`invalid auth.redirectPath ${JSON.stringify(p)} — must be an absolute path with no '@'`);
   }
-  const uri = new URL(p, REDIRECT_ORIGIN);
-  if (uri.origin !== REDIRECT_ORIGIN) {
-    throw new Error(`auth.redirectPath ${JSON.stringify(p)} escapes ${REDIRECT_ORIGIN}`);
+  const uri = new URL(p, origin);
+  if (uri.origin !== origin) {
+    throw new Error(`auth.redirectPath ${JSON.stringify(p)} escapes ${origin}`);
   }
   return uri.toString();
 }
@@ -704,12 +742,13 @@ export async function beginConnect(opts: {
   server: string;
   serverUrl: string;
   auth: McpOAuthConfig;
+  redirectOrigin?: string; // origin of the initiating request; default cockpit origin
   clientName?: string;
   clientDocUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<ConnectContext> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
-  const redirectUri = redirectUriFor(opts.auth);
+  const redirectUri = redirectUriFor(opts.auth, resolveRedirectOrigin(opts.redirectOrigin));
   const { resource, ...as } = await discover({
     serverUrl: opts.serverUrl,
     authorizationServer: opts.auth.authorizationServer,

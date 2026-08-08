@@ -258,12 +258,7 @@ export function ToolStepGroup({
   // first — which reads as two different groups that happen to agree.
   if (insideFold && !live) {
     return (
-      <div
-        className={cn(
-          "flex w-full min-w-0 flex-col gap-0.5 text-xs",
-          hasError && "text-destructive",
-        )}
-      >
+      <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
         {toolParts.map(renderRow)}
       </div>
     );
@@ -280,7 +275,7 @@ export function ToolStepGroup({
     const { hidden, visible } = liveStepWindow(toolParts, open);
     const hiddenHasError = hidden.some((p) => p.isError);
     return (
-      <div className={cn("flex w-full min-w-0 flex-col gap-0.5 text-xs", hasError && "text-destructive")}>
+      <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
         {hidden.length > 0 && (
           <button
             type="button"
@@ -321,9 +316,10 @@ export function ToolStepGroup({
         // the current label: that made its width change with both tool names
         // and the prose emitted immediately before it. The low-contrast header
         // keeps the full-width lane visually light while giving every summary
-        // and expanded row the same geometry.
+        // and expanded row the same geometry. Error color is applied per-row
+        // and on the header spans — never here, or every row in the group
+        // inherits red when a single step fails.
         "flex w-full min-w-0 flex-col gap-0.5 text-xs",
-        hasError && "text-destructive",
       )}
     >
       <button
