@@ -1588,6 +1588,21 @@ function SessionWorkspace({
 
   const activeBucket = activeTab === "main" ? null : (agentBucketById.get(activeTab) ?? null);
 
+  // Select a sub-agent AND reveal the dock in one gesture. `setActiveTab`
+  // alone is only half a selection now that the bucket pane lives in the
+  // dock's activity slot: from a surface OUTSIDE the dock (Main's step rows
+  // and completion markers), picking an agent whose pane is hidden would be
+  // a click that did nothing. In-dock surfaces (the rail) keep calling
+  // `setActiveTab` directly — the dock is already open under them — and the
+  // pinned inspector keeps its own openActivity() wrapper.
+  const openAgentInDock = useCallback(
+    (id: string) => {
+      setActiveTab(id);
+      openRightPanelActivity(resolvedRightPanelScopeKey);
+    },
+    [resolvedRightPanelScopeKey],
+  );
+
   // Record the turn boundary once. The live one-second clock lives inside the
   // tiny WorkingIndicator leaf so it cannot rerender this entire session view.
   useEffect(() => {
@@ -3904,7 +3919,9 @@ function SessionWorkspace({
   // than inside one: a marker has no bubble and belongs to no message, it marks
   // the seam where the history above it stopped being what the model holds.
   const transcriptItems = useMemo<TranscriptItem[]>(() => {
-    if (activeBucket) return [agentBucketItem(activeBucket, () => setActiveTab("main"))];
+    // NO BUCKET SHORT-CIRCUIT ANY MORE: a selected sub-agent renders in the
+    // DOCK's activity slot (see the `activeBucket` arm beside the Ultra one),
+    // never in place of this transcript. Main always renders Main.
     const lastMessageId = messages[messages.length - 1]?.id ?? null;
     const markersAfter = (messageId: string | null): TranscriptItem[] =>
       compactions
@@ -3985,7 +4002,11 @@ function SessionWorkspace({
                 toTranscriptItems(groupParts(m.id, mainParts), {
                   onRespond: respondPermission,
                   agentSteps: (id) => agentBucketById.get(id)?.parts.length ?? 0,
-                  onSelectAgent: setActiveTab,
+                  // Selecting from MAIN (a spawn's step row, a completion
+                  // marker's link) must also REVEAL the dock — the pane the
+                  // selection renders in lives there now, and a selection
+                  // nobody can see is a click that did nothing.
+                  onSelectAgent: openAgentInDock,
                 }),
                 ultraAnchorPayloads,
                 pendingUltraAnchor,
@@ -4013,13 +4034,13 @@ function SessionWorkspace({
     ];
   },
     [
-      activeBucket,
       agentBucketById,
       agentProjection,
       busy,
       compactions,
       liveWork,
       messages,
+      openAgentInDock,
       pendingUltraAnchor,
       respondPermission,
       rollbackAnchorByStart,
@@ -4076,13 +4097,13 @@ function SessionWorkspace({
   const freshWorkspace =
     messages.length === 0 && !sessionId && !planner && !escalation && !steerer;
 
-  // `!activeRunTab` DROPPED (issue #13): selecting an Ultra run no longer
-  // displaces this pane, so main chat — and its trailing loom rows — stays
-  // exactly as visible as when no run is selected. Only an active subagent
-  // bucket still hides them, same as before.
+  // `!activeRunTab` DROPPED (issue #13), and `!activeBucket` with it (the
+  // dock migration that completed #13): NOTHING displaces this pane any
+  // more — runs and sub-agents both open in the dock's activity slot — so
+  // the trailing loom rows are exactly as visible as the chat they follow.
   const transcriptTrailing = useMemo(
     () =>
-      !activeBucket && loomEvents.length > 0 ? (
+      loomEvents.length > 0 ? (
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pt-3">
           {loomEvents.map((row) => (
             <InlineLoomRow
@@ -4093,7 +4114,7 @@ function SessionWorkspace({
           ))}
         </div>
       ) : undefined,
-    [activeBucket, loomEvents, dismissLoomEvent],
+    [loomEvents, dismissLoomEvent],
   );
 
   const agentRunning = railAgents.filter((agent) => agent.status === "running").length;
@@ -4245,24 +4266,19 @@ function SessionWorkspace({
         )}
         items={transcriptItems}
         kinds={SESSION_KINDS}
-        // Leaving a sub-agent tab swaps in a DIFFERENT transcript, and the old
-        // tab's scroll position came with it — so returning to the main chat
-        // landed at the top, above the message you came back to read. Selecting
-        // an Ultra run is NOT one of these any more (issue #13): it no longer
-        // touches `transcriptItems`, so it must not touch the scroll key either
-        // — `activeTab` alone would reset this column's scroll every time a run
-        // is opened or closed in the dock, even though what it shows never
-        // changed. Only a real bucket switch changes what this key names.
-        scrollKey={activeBucket ? activeTab : "main"}
+        // ALWAYS "main" now: this column never swaps its transcript for a
+        // sub-agent's any more (the dock migration — the bucket pane in the
+        // activity slot carries its own scrollKey), so nothing may reset
+        // Main's scroll but Main itself. The Ultra half of this rule landed
+        // with issue #13; the bucket half completes it.
+        scrollKey="main"
         // The donor's `isCurrentMessage`: the shell marks only the LAST
         // top-level item live, and the turn renderer derives per-child
-        // `isTrailing` from there. On a subagent tab, "the spawn hasn't
-        // produced a result yet" stands in for "currently streaming" — exactly
-        // what the bucket's own `bucketLive` meant. An active Ultra run is no
-        // longer a third case here — it never displaces this transcript, so
-        // this pane's own liveness (busy) is the honest answer whether or not
-        // a run happens to be open in the dock.
-        live={activeBucket ? agentStatus(activeBucket.spawn) === "running" : busy}
+        // `isTrailing` from there. Neither an open Ultra run nor an open
+        // sub-agent pane is a case here any more — nothing displaces this
+        // transcript, so this pane's own liveness (busy) is always the
+        // honest answer.
+        live={busy}
         empty={freshWorkspace ? undefined : emptyState}
         // Durable in-stream loom record (replaces the banner): a compact row
         // per lifecycle transition — started/parked/resumed/ready — carrying
@@ -4699,6 +4715,25 @@ function SessionWorkspace({
                     setOpen={activityDisclosure.setOpen}
                   />
                 </div>
+              </div>
+            ) : activeBucket ? (
+              // A SUB-AGENT'S CONVERSATION JOINS ULTRA IN THE DOCK (owner's
+              // direction, completing #13): the main chat stays the main chat,
+              // and every secondary display opens as a SIBLING in this slot —
+              // selecting a sub-agent used to REPLACE the main transcript,
+              // which was exactly the takeover #13 ended for runs. Same item,
+              // same registry, same renderer Main used when it hosted this —
+              // a read-only Conversation (no composer: a sub-agent has none)
+              // with the dock's own scroll, so Main's scroll position is
+              // never touched by opening or closing one.
+              <div className="h-full min-h-0 overflow-hidden p-3">
+                <Conversation
+                  className="h-full min-h-0"
+                  items={[agentBucketItem(activeBucket, () => setActiveTab("main"))]}
+                  kinds={SESSION_KINDS}
+                  scrollKey={activeTab}
+                  live={agentStatus(activeBucket.spawn) === "running"}
+                />
               </div>
             ) : (
               <SubagentRail

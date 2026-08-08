@@ -2085,7 +2085,7 @@ describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken f
     expect(src).toContain("ultraRunAnchorKind");
   });
 
-  test("all three run-focus call sites reveal the dock, not just name the run", () => {
+  test("all four dock-focus call sites reveal the dock, not just name the content", () => {
     // Proved as a REGRESSION GAP first: `sidebar-mount.test.ts` pins the
     // arrival effect's dependency array growing by `resolvedRightPanelScopeKey`,
     // but a dependency-array pin does not prove the call inside the effect
@@ -2095,13 +2095,16 @@ describe("AC-U2 — the run-tab selector id round-trips and cannot be mistaken f
     // only names WHICH run; since #13(b) moved the pane out of the transcript,
     // naming the run no longer reveals anything by itself (see the removed
     // memo arm above) — the dock must be told to open, separately, at EVERY
-    // site that focuses a run: the two inline anchor `onFocus` callbacks
-    // (`ultraAnchorPayloads`, `pendingUltraAnchor`) and the `?run=` arrival
-    // effect. Three call sites, three calls — counted, not just asserted present.
+    // site that focuses dock-hosted content: the two inline anchor `onFocus`
+    // callbacks (`ultraAnchorPayloads`, `pendingUltraAnchor`), the `?run=`
+    // arrival effect, and — since the dock migration moved sub-agent panes in
+    // beside the runs — `openAgentInDock`, which Main's step rows and
+    // completion markers select through. Four call sites, four calls —
+    // counted, not just asserted present.
     const src = readSource("apps/web/components/session/session-view.tsx");
     expect(
       src.split("openRightPanelActivity(resolvedRightPanelScopeKey)").length - 1,
-    ).toBe(3);
+    ).toBe(4);
   });
 
   test("the rail is the INDEX that opens the pane, and says which run is open", () => {
