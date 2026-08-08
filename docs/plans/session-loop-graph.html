@@ -2,199 +2,152 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Telar — the session loop, current vs canonical</title>
+<title>How a Telar conversation works</title>
 <style>
-  :root { --ink:#1a1a2e; --mut:#6b7280; --line:#e5e7eb; --ok:#16a34a; --fix:#d97706; --bad:#dc2626; --plan:#7c3aed; }
-  body { font: 15px/1.55 -apple-system, "Segoe UI", sans-serif; color: var(--ink); margin: 0; background:#fafafa; }
-  main { max-width: 1200px; margin: 0 auto; padding: 32px 24px 96px; }
-  h1 { font-size: 26px; margin: 0 0 4px; }
-  h2 { font-size: 20px; margin: 48px 0 8px; border-top: 1px solid var(--line); padding-top: 24px; }
-  .sub { color: var(--mut); margin: 0 0 24px; }
-  .legend { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--mut); margin: 12px 0 20px; }
-  .dot { display:inline-block; width:10px; height:10px; border-radius:5px; margin-right:5px; vertical-align:middle;}
-  .mermaid { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; overflow-x:auto; }
-  table { border-collapse: collapse; width:100%; font-size:13.5px; background:#fff; border-radius:12px; overflow:hidden; border:1px solid var(--line);}
-  th, td { text-align:left; padding: 8px 12px; border-bottom:1px solid var(--line); vertical-align:top;}
-  th { background:#f3f4f6; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut);}
-  .b { font-weight:600; }
-  .ok{color:var(--ok)} .fix{color:var(--fix)} .bad{color:var(--bad)} .plan{color:var(--plan)}
-  code { background:#f1f5f9; border-radius:4px; padding:1px 5px; font-size: 12.5px; }
-  .q { background:#fff; border:1px solid var(--line); border-left:4px solid var(--plan); border-radius:8px; padding:12px 16px; margin:12px 0;}
-  .cap { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
-  .card h3 { margin:0 0 6px; font-size:14px; }
-  .card ul { margin:0; padding-left:18px; font-size:13px; color:#374151;}
+  :root {
+    --ink:#22223b; --mut:#7a7a8c; --line:#e9e9f2; --bg:#f6f6fb;
+    --green:#e7f6ec; --green-b:#2f9e5f;
+    --amber:#fdf1dc; --amber-b:#d9930d;
+    --red:#fdeaea; --red-b:#d64545;
+    --purple:#f1eafd; --purple-b:#7c5cd6;
+  }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.6 -apple-system, "Segoe UI", sans-serif; color: var(--ink); margin:0; background: var(--bg); }
+  main { max-width: 980px; margin: 0 auto; padding: 48px 24px 120px; }
+  h1 { font-size: 32px; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 64px 0 6px; letter-spacing: -0.01em; }
+  .sub { color: var(--mut); margin: 0 0 20px; font-size: 15px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:16px; padding: 20px; box-shadow: 0 1px 3px rgba(30,30,60,.04); }
+  .mermaid { text-align:center; overflow-x:auto; } .mermaid svg { max-width:100%; height:auto; }
+
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:13.5px; color:var(--mut); margin: 16px 0 0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:11px; height:11px; border-radius:6px; }
+
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap:14px; margin-top: 16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px 18px; box-shadow: 0 1px 3px rgba(30,30,60,.04); }
+  .card h3 { margin:0 0 6px; font-size:15px; display:flex; align-items:center; gap:8px;}
+  .card p { margin:0; font-size:13.5px; color:#4b4b63; }
+  .tag { font-size:11px; font-weight:600; padding:2px 8px; border-radius:99px; letter-spacing:.03em; }
+  .t-fix { background:var(--amber); color:#8a5b00; }
+  .t-done { background:var(--green); color:#1c6b40; }
+  .t-open { background:var(--red); color:#9c2f2f; }
+
+  .q { background:#fff; border:1px solid var(--line); border-left:5px solid var(--purple-b); border-radius:12px; padding:14px 18px; margin:12px 0; }
+  .q b { font-size:15px; }
+  .q p { margin:4px 0 0; font-size:14px; color:#4b4b63;}
+  footer { color:var(--mut); font-size:12.5px; margin-top:56px; }
 </style>
 </head>
 <body><main>
 
-<h1>The Telar session loop</h1>
-<p class="sub">Current wiring vs. the canonical Claude-Code-style loop · distilled 2026-08-08 · companion to <code>docs/session-context-integrity.md</code> and <code>docs/plans/message-lifecycle.md</code> · PR #86</p>
+<h1>How a Telar conversation works</h1>
+<p class="sub">The path a message takes, what we fixed today, and the simpler shape it should have. · Aug 8, 2026</p>
+
+<h2>Today — messages come in from many doors</h2>
+<p class="sub">Everything that can start the agent working funnels into one rule: <b>one turn at a time</b>. But there are four different waiting rooms on the way, and half the doors only work while you have the conversation open on screen.</p>
+
+<div class="panel">
+<pre class="mermaid">
+flowchart LR
+  classDef you fill:#e7f6ec,stroke:#2f9e5f,color:#173e2a,rx:10;
+  classDef bg fill:#fdeaea,stroke:#d64545,color:#5c1a1a,rx:10;
+  classDef mid fill:#f6f6fb,stroke:#b9b9d0,color:#22223b,rx:10;
+  classDef out fill:#fff,stroke:#b9b9d0,color:#22223b,rx:10;
+
+  A["🧑 You press send"]:::you
+  B["🧑 You send while<br/>it's still working"]:::you
+  C["🗂️ The dock's<br/>mini-composer"]:::you
+  D["⚡ Background events<br/>an Ultra finishes, a loom asks…<br/><b>only fire while the tab is open</b>"]:::bg
+
+  Q["4 different<br/>waiting rooms"]:::mid
+  T["🤖 One turn at a time<br/>the agent works"]:::mid
+  V["👀 What you see<br/>chat, dock, sidebar"]:::out
+
+  A --> Q
+  B --> Q
+  C --> Q
+  D --> Q
+  Q --> T --> V
+</pre>
+</div>
 
 <div class="legend">
-  <span><span class="dot" style="background:var(--ok)"></span>healthy</span>
-  <span><span class="dot" style="background:var(--fix)"></span>fixed on PR #86 branch</span>
-  <span><span class="dot" style="background:var(--bad)"></span>open defect</span>
-  <span><span class="dot" style="background:var(--plan)"></span>proposed / planned</span>
+  <span class="chip"><span class="dot" style="background:var(--green-b)"></span>things you do</span>
+  <span class="chip"><span class="dot" style="background:var(--red-b)"></span>fragile today</span>
 </div>
 
-<h2>1 · Today: nine entry points, four queues, two owners</h2>
-<p class="sub">Every box that authors a turn trigger is an owner. The core problem is on the left: <b>the client authors machinery</b> (wakes, watches, kickoff) and holds three of the four queues — so machinery only runs while a view is mounted, and each surface has its own send contract.</p>
+<h2>What went wrong (and where it stands)</h2>
+<p class="sub">Every bug you've hit lately is one of these — and they're all the same story: a door, a waiting room, or a delivery that didn't follow the rules.</p>
 
-<pre class="mermaid">
-flowchart LR
-  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d;
-  classDef fix fill:#fef3c7,stroke:#d97706,color:#78350f;
-  classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d;
-  classDef neutral fill:#f8fafc,stroke:#94a3b8,color:#1e293b;
-  classDef store fill:#eef2ff,stroke:#6366f1,color:#312e81;
-
-  subgraph CLIENT["CLIENT (session-view mounted = machinery alive)"]
-    direction TB
-    U1["user send (idle)"]:::ok
-    U2["user send (busy)<br/>→ local strip queue"]:::neutral
-    INJ["injectionQueue<br/>wake sentinel + loom watches<br/><b>client-authored triggers</b>"]:::bad
-    KICK["escalation kickoff<br/>(turn 1 only)"]:::ok
-    POLLW["use-ultra-wake poll (4s)"]:::neutral
-  end
-
-  subgraph DOCK["DOCK (separate contract)"]
-    D1["sendTurn → always queue<br/>localStorage pre-ack bridge"]:::bad
-  end
-
-  subgraph SERVER["SERVER"]
-    Q["queue.json — durable FIFO<br/>idempotency keys, claim tokens"]:::ok
-    ENG["engine drain<br/>kicks: turn-end · queue POST/GET · boot<br/><b>no heartbeat</b>"]:::bad
-    GATE["registerChatRun<br/>single-active-turn (409)"]:::ok
-    TURN["POST /api/chat = one turn"]:::neutral
-    RT["session runtime<br/>live CLI process across turns<br/>roster · window sink · settle/watchdog"]:::fix
-    MB["ultra wake mailbox<br/>pendingUltraWakes ← manifests<br/>self-heal (timestamp now idempotent)"]:::fix
-    APX["system-prompt appendix<br/>composed every turn"]:::ok
-    ACK["ack — evidence-gated<br/>appendixCarriesUltraWake<br/>(provider gate removed)"]:::fix
-  end
-
-  subgraph SURF["PROJECTION SURFACES (UI-only, never read into prompts)"]
-    FEED["feed.ndjson (win,seq)<br/>replay now hands cursor"]:::fix
-    LOG["live.ndjson (degraded fallback)"]:::neutral
-    CH["chats.json + compactions"]:::ok
-    SSE["/events SSE → view + dock"]:::fix
-  end
-
-  U1 -->|"POST direct; 409→queue"| GATE
-  U2 --> Q
-  D1 --> Q
-  INJ -->|"hidden POST"| GATE
-  KICK --> GATE
-  POLLW -.->|"pending wakes"| INJ
-  Q --> ENG --> GATE
-  GATE --> TURN --> RT
-  MB --> APX --> TURN
-  TURN --> ACK -.->|"stamp deliveredTerminalAt"| MB
-  RT --> FEED & LOG & CH
-  FEED --> SSE
-  MB -.->|"poll GET /api/ultra/wakes"| POLLW
-</pre>
-
-<h2>2 · Defect ledger</h2>
-<table>
-<tr><th>#</th><th>Defect</th><th>Mechanism</th><th>Status</th></tr>
-<tr><td>D1</td><td class="b">Duplicate compaction divider</td><td>replay mode never handed a cursor; reconnects re-folded the same events (fold is redelivery-blind by design)</td><td class="fix">fixed · PR #86</td></tr>
-<tr><td>D2</td><td class="b">Process death drops the window</td><td><code>pump()</code> finally never flushed the window sink — UI showed work the store never heard of; no <code>closed</code></td><td class="fix">fixed · PR #86</td></tr>
-<tr><td>D3</td><td class="b">Codex re-told wakes forever</td><td><code>provider !== "codex"</code> ack gate went stale when Codex started receiving the appendix</td><td class="fix">fixed · PR #86</td></tr>
-<tr><td>D4</td><td class="b">The "ultra stopped" marker loop</td><td>self-heal minted a fresh <code>updatedAt</code> per read on failed persist → wake unackable → client freshness latch re-fired hidden turns while the view was mounted</td><td class="fix">fixed · PR #86</td></tr>
-<tr><td>D5</td><td class="b">Queue starvation</td><td>drain kicks are turn-end / queue GET-POST / boot only — an item enqueued with no pollers and no next turn sits until something reconnects</td><td class="bad">open</td></tr>
-<tr><td>D6</td><td class="b">Two send contracts</td><td>view: direct POST, queue only on 409 · dock: always queue — different latency, retry and ordering behavior for the same session</td><td class="bad">open</td></tr>
-<tr><td>D7</td><td class="b">Wake acked-but-unshown window</td><td>ack runs pre-stream; an abort before turn bookkeeping consumes the wake with no visible marker (model did get the appendix)</td><td class="bad">open (narrow)</td></tr>
-<tr><td>D8</td><td class="b">Machinery needs a mounted view</td><td>wake polls, watch subscriptions and the injection drain live in <code>useSessionInjections</code> — session-view only; nothing fires when no tab shows the session</td><td class="bad">open (design)</td></tr>
-<tr><td>D9</td><td class="b">Envelope races across processes</td><td><code>queue.json</code> mutate is read-modify-rename with no cross-process fence — safe single-process only, documented</td><td class="ok">accepted</td></tr>
-<tr><td>D10</td><td class="b">Marker order implies false knowledge</td><td>a completion arriving mid-generation renders above text authored before it (never-sever rule wins); INT-4</td><td class="ok">accepted · doc'd</td></tr>
-</table>
-
-<h2>3 · The canonical loop (proposal)</h2>
-<p class="sub">Claude Code's own shape: <b>one session loop, one ordered inbox</b>. Every stimulus — user message, wake, watch, kickoff — is a typed item entering the same durable mailbox; one server-owned drainer claims at turn boundaries; clients are pure renderers + enqueuers. The two doors into the model stay exactly as they are (live process · appendix + evidence ack).</p>
-
-<pre class="mermaid">
-flowchart LR
-  classDef plan fill:#f3e8ff,stroke:#7c3aed,color:#4c1d95;
-  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d;
-  classDef neutral fill:#f8fafc,stroke:#94a3b8,color:#1e293b;
-
-  subgraph STIM["STIMULI (all surfaces, one contract)"]
-    S1["user message<br/>view · dock · api"]:::ok
-    S2["ultra terminal<br/>(server observes mailbox)"]:::plan
-    S3["loom watch fires<br/>(server subscription)"]:::plan
-    S4["kickoff / machinery"]:::neutral
-  end
-
-  subgraph MBX["ONE DURABLE MAILBOX — queue.json, extended"]
-    direction TB
-    T["typed items: user | wake | watch | kickoff<br/>idempotency: runId+terminalAt · watchId+state · runId<br/>priority: user &gt; machinery · per-source cooldown"]:::plan
-  end
-
-  subgraph LOOP["ONE DRAINER — the engine"]
-    direction TB
-    E["claim at idle only (single-active-turn)<br/>kicks: enqueue · turn-end · boot · <b>heartbeat</b><br/>machinery items re-validated at claim time<br/>(wake still pending? watch still armed?)"]:::plan
-  end
-
-  subgraph EXEC["THE TURN"]
-    TR["provider session<br/>Claude: warm runtime · Codex: per-turn child"]:::ok
-    APX2["appendix (mailbox-composed)<br/>ack only on carried evidence"]:::ok
-    WIN["activity window<br/>roster · sink · settle<br/>every teardown flushes"]:::ok
-  end
-
-  subgraph REND["SURFACES = RENDERERS"]
-    R1["feed (win,seq) + cursor always"]:::ok
-    R2["queue state = the strip, seeded server-side"]:::plan
-  end
-
-  S1 & S2 & S3 & S4 --> T --> E --> TR
-  APX2 --> TR
-  TR --> WIN --> R1
-  T -.-> R2
-  S1 -. "future F2: steering —<br/>push into the LIVE turn's input stream" .-> TR
-</pre>
-
-<h2>4 · What an agent can do today (everything the loop must carry)</h2>
-<div class="cap">
-  <div class="card"><h3>Generation & SDK-native</h3><ul>
-    <li>text / thinking / tool calls, streamed</li>
-    <li>background Bash tasks (roster; Claude only)</li>
-    <li>subagents → dock conversations</li>
-    <li>auto-continuation on roster-empty (wake-hold, #85)</li>
-    <li>compaction — auto &amp; manual, persisted dividers</li>
-    <li>permission asks: live card · parked card between turns · detached deny</li>
-  </ul></div>
-  <div class="card"><h3>MCP surfaces</h3><ul>
-    <li><b>ultra</b>: launch / status / inspect / stop — detached runs, wake mailbox on terminal</li>
-    <li><b>loom</b>: start / answer / steer / watch / bundle … — verification runs, watch → injection</li>
-    <li><b>workspace</b>: items + lanes CRUD</li>
-    <li><b>browser</b>: shared tabs — navigate, snapshot, click, type…</li>
-  </ul></div>
-  <div class="card"><h3>Lifecycle acts on the session</h3><ul>
-    <li>Stop = interrupt-first, keep-what-arrived (F2)</li>
-    <li>queued message edit / cancel / reclaim (F0–F1)</li>
-    <li>rollback — designed, not shipped (F3)</li>
-    <li>settle stays user-driven — no external trigger shelves a session</li>
-  </ul></div>
-  <div class="card"><h3>Provider asymmetries</h3><ul>
-    <li>Codex: no roster, no background window, per-turn child process</li>
-    <li>appendix reaches Codex as <code>instructions</code> (same string, same ack evidence)</li>
-    <li>ultra authoring is Claude-gated; wake <i>delivery</i> is not</li>
-  </ul></div>
+<div class="cards">
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> The repeating divider</h3>
+    <p>Reconnecting to a busy chat replayed the whole story from the top, and the "Compacted" divider got drawn again each time.</p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> The looping "ultra stopped"</h3>
+    <p>A stopped Ultra's "you should know this finished" note could never be marked as delivered, so the chat kept announcing it forever — but only while you were watching.</p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> Work vanishing on reload</h3>
+    <p>If the agent's process died while background work was reporting in, everything you'd watched arrive was never saved.</p></div>
+  <div class="card"><h3><span class="tag t-fix">FIXED</span> Codex told twice (forever)</h3>
+    <p>Codex chats were re-told every finished Ultra on every message, while the UI said "not delivered yet".</p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN</span> Stuck messages</h3>
+    <p>A queued message with no tab open has nothing to wake it up. There's no timer — it waits until something else pokes the session.</p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN</span> Two ways to send</h3>
+    <p>The main chat and the dock deliver your message differently. Usually invisible — until they race.</p></div>
+  <div class="card"><h3><span class="tag t-open">OPEN</span> Blind background events</h3>
+    <p>Ultra finishes and loom questions only reach the agent while a tab is showing that chat. Close the tab, and nothing moves.</p></div>
 </div>
 
-<h2>5 · To discuss</h2>
-<div class="q"><b>Q1 — Server-owned machinery.</b> Move wake/watch trigger authorship from <code>useSessionInjections</code> into the engine: ultra terminals and watch firings enqueue mailbox items server-side (idempotency key <code>runId+terminalAt</code> / <code>watchId+state</code>). Kills D8 (no mounted view needed), makes D4-class loops structurally impossible (one item per terminal, ever), and the client injection queue disappears. Cost: the engine needs a small subscription/scan loop — which Q2 wants anyway.</div>
-<div class="q"><b>Q2 — Heartbeat.</b> A lazy engine timer (e.g. 30s, only while any queue non-empty or any run non-terminal) closes D5 starvation and gives Q1 its scan cadence. Cheap, bounded, no per-session cost when idle.</div>
-<div class="q"><b>Q3 — One send contract.</b> Do all surfaces enqueue-always (dock's shape), with the engine claiming instantly when idle? Uniform ordering and retry; costs one queue write of latency on the idle fast path (measurable, likely ~ms). Alternatively keep the direct-POST fast path but make the dock use it too — either way, <i>one</i> contract.</div>
-<div class="q"><b>Q4 — Steering (Claude Code parity).</b> Today a message typed mid-turn waits for the next turn. The runtime already holds a streaming input channel — F2's infrastructure allows pushing a queued user message into the <i>live</i> turn as a correction. Ship after F2's interrupt lands, as an opt-in per message ("Send now")?</div>
-<div class="q"><b>Q5 — Machinery turn UX.</b> Hidden wake turns render nothing until output arrives (#71's remaining "responding" shimmer). If machinery becomes mailbox items (Q1), the strip can honestly show "waking for ultra sweep…" as a queue row — the UI stops pretending nothing is happening.</div>
+<h2>The shape it should have</h2>
+<p class="sub">One waiting line. One dispatcher. Everything — your messages <i>and</i> background events — becomes a ticket in the same line, each ticket unique so nothing can ever loop or double-fire. Tabs just <i>watch</i>; nothing depends on them being open.</p>
 
-<p class="sub" style="margin-top:32px">Sources: <code>session-queue.ts</code> · <code>session-engine.ts</code> · <code>use-session-injections.ts</code> · <code>session-view.tsx</code> · <code>session-runtime.ts</code> · <code>route.ts</code> · <code>ultra/wake.ts</code> · <code>ultra/storage.ts</code> · scouts 2026-08-08.</p>
+<div class="panel">
+<pre class="mermaid">
+flowchart LR
+  classDef you fill:#e7f6ec,stroke:#2f9e5f,color:#173e2a,rx:10;
+  classDef plan fill:#f1eafd,stroke:#7c5cd6,color:#3a2a66,rx:10;
+  classDef mid fill:#f6f6fb,stroke:#b9b9d0,color:#22223b,rx:10;
+
+  A2["🧑 Anything you send<br/>chat · dock · anywhere"]:::you
+  D2["⚡ Anything that happens<br/>Ultra finishes · loom asks"]:::plan
+
+  L["🎟️ One waiting line<br/>every ticket unique<br/>your messages go first"]:::plan
+  E["⏰ One dispatcher<br/>always on, tab or no tab<br/>checks in on a timer"]:::plan
+  T2["🤖 One turn at a time"]:::mid
+  V2["👀 Tabs just watch"]:::mid
+
+  A2 --> L
+  D2 --> L
+  L --> E --> T2 --> V2
+</pre>
+</div>
+
+<h2>What I'd like your call on</h2>
+
+<div class="q"><b>1 · Should background events stop depending on open tabs?</b>
+<p>Move them server-side into the waiting line. This kills the whole "only breaks while you're watching" family for good. My recommendation: yes.</p></div>
+
+<div class="q"><b>2 · Add the timer?</b>
+<p>A gentle pulse (only while something is waiting) so a queued message can never get stuck. Cheap, boring, effective. My recommendation: yes.</p></div>
+
+<div class="q"><b>3 · Make the dock and the chat send the same way?</b>
+<p>One delivery path for every surface. Costs maybe a millisecond on the fast path, removes a whole class of races.</p></div>
+
+<div class="q"><b>4 · "Send now" into a running turn?</b>
+<p>Today a message typed mid-turn waits its turn. Claude Code can nudge a working agent mid-stream — Telar's plumbing could too. Nice-to-have, after the basics.</p></div>
+
+<div class="q"><b>5 · Show the machinery?</b>
+<p>When the system wakes the agent for a finished Ultra, the chat currently shows nothing until words arrive. A small honest line — "waking for ultra sweep…" — would end the "is it doing anything?" doubt.</p></div>
+
+<footer>Everything above is already fixed or proposed on PR #86 · deep-dive companion: <b>docs/session-context-integrity.md</b></footer>
 
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({ startOnLoad: true, theme: "neutral", flowchart: { curve: "basis" } });
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: { fontSize: "15px", fontFamily: "-apple-system, Segoe UI, sans-serif" },
+    flowchart: { curve: "basis", nodeSpacing: 40, rankSpacing: 70 }
+  });
 </script>
 </main></body>
 </html>
