@@ -5,8 +5,9 @@
 // "telar-ui-prefs" key.
 //
 // CLIENT-BUNDLE RULE: this module imports NOTHING that reaches the Agent SDK or
-// any server-only code (models.ts is import-free data; permission-modes.ts is
-// client-safe constants). It is a plain external store — subscribe + snapshot,
+// any server-only code (models.ts is import-free data; runtime-mode-client.ts
+// is client-safe constants; @telar/core/runtime-mode is imported as a TYPE
+// only). It is a plain external store — subscribe + snapshot,
 // read via useSyncExternalStore — persisted to localStorage. There is no zustand
 // dependency in this app, so we follow the same context/localStorage convention
 // the dock + sidebar use (see dock-provider.tsx, app-sidebar's useStoredList).
@@ -17,9 +18,9 @@
 // config — per-project memory and per-session choices always win over them.
 
 import { useSyncExternalStore } from "react";
+import type { RuntimeMode } from "@telar/core/runtime-mode";
 import { DEFAULT_MODEL } from "./models";
-import type { ClientPermissionMode } from "./permission-modes";
-import { isValidPermissionMode } from "./permission-modes";
+import { DEFAULT_RUNTIME_MODE, isRuntimeMode } from "./runtime-mode-client";
 import type { ProviderSort } from "./provider-order";
 import { isProviderSort } from "./provider-order";
 
@@ -31,7 +32,11 @@ export type UiPrefs = {
   theme: ThemeMode;
   // Initial composer values for NEW sessions only — a fallback, not an override.
   defaultModel: string;
-  defaultPermissionMode: ClientPermissionMode;
+  // Provider-neutral (issue #65): the composer stopped speaking the old
+  // Claude-only permission vocabulary when runtime modes unified the two
+  // harnesses; this default speaks the same language. Old persisted payloads
+  // carrying `defaultPermissionMode` migrate in sanitize() below.
+  defaultRuntimeMode: RuntimeMode;
   notifications: {
     enabled: boolean; // master toggle
     loomParked: boolean; // a loom parked and needs you
@@ -55,7 +60,7 @@ export type UiPrefs = {
 export const DEFAULT_PREFS: UiPrefs = {
   theme: "dark",
   defaultModel: DEFAULT_MODEL,
-  defaultPermissionMode: "auto",
+  defaultRuntimeMode: DEFAULT_RUNTIME_MODE,
   notifications: { enabled: false, loomParked: true, loomReady: true },
   providerCheckIntervalSec: 300,
   // Grouped by provider is the order this list has always had, so it stays the
@@ -68,9 +73,20 @@ export const DEFAULT_PREFS: UiPrefs = {
 
 const THEMES: ThemeMode[] = ["system", "light", "dark"];
 
+// The pre-unification default stored the Claude SDK's vocabulary. Same mapping
+// the chat route applies to old chats (its legacy-mode seed): each old value
+// has exactly one modern meaning, and anything else means "never set".
+function runtimeModeFromLegacyPref(value: unknown): RuntimeMode | undefined {
+  if (value === "default") return "approval-required";
+  if (value === "acceptEdits") return "auto-accept-edits";
+  if (value === "auto") return "auto";
+  return undefined;
+}
+
 // Merge persisted JSON over the defaults, dropping anything malformed — old or
 // partial payloads must always load as a complete, valid UiPrefs.
-function sanitize(raw: unknown): UiPrefs {
+// Exported for its tests alone: load() is the only production caller.
+export function sanitize(raw: unknown): UiPrefs {
   if (!raw || typeof raw !== "object") return DEFAULT_PREFS;
   const r = raw as Record<string, unknown>;
   const n = (r.notifications ?? {}) as Record<string, unknown>;
@@ -89,9 +105,10 @@ function sanitize(raw: unknown): UiPrefs {
         : DEFAULT_PREFS.providerDisabledLast,
     defaultModel:
       typeof r.defaultModel === "string" && r.defaultModel ? r.defaultModel : DEFAULT_PREFS.defaultModel,
-    defaultPermissionMode: isValidPermissionMode(r.defaultPermissionMode)
-      ? r.defaultPermissionMode
-      : DEFAULT_PREFS.defaultPermissionMode,
+    defaultRuntimeMode: isRuntimeMode(r.defaultRuntimeMode)
+      ? r.defaultRuntimeMode
+      : runtimeModeFromLegacyPref(r.defaultPermissionMode) ??
+        DEFAULT_PREFS.defaultRuntimeMode,
     notifications: {
       enabled: typeof n.enabled === "boolean" ? n.enabled : DEFAULT_PREFS.notifications.enabled,
       loomParked:

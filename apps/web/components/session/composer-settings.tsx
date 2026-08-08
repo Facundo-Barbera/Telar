@@ -314,6 +314,13 @@ export function ComposerControls({
       return;
     }
     const preferences = getUiPrefs();
+    // The MODE seed is provider-neutral (issue #65: runtime modes are the one
+    // vocabulary both harnesses speak), so it no longer hides inside the
+    // Claude-model check below — a fresh Codex composer honors the default too.
+    const seed = approval.seedValue?.();
+    if (seed && approval.value === approval.defaultValue) {
+      approval.onChange(seed);
+    }
     if (
       model === DEFAULT_MODEL &&
       modelsForProvider("claude").some(
@@ -321,10 +328,6 @@ export function ComposerControls({
       )
     ) {
       setModel(preferences.defaultModel);
-      const seed = approval.seedValue?.();
-      if (seed && approval.value === approval.defaultValue) {
-        approval.onChange(seed);
-      }
     }
     // Seed only once for this mount. Reacting to later model/approval changes
     // would overwrite deliberate composer choices.
