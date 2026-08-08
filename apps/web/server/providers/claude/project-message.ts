@@ -375,32 +375,52 @@ export function projectClaudeMessage(
       // event here left their tabs "running" forever.
       send("task_status", { id: tn.tool_use_id, status: tn.status });
       // The inline completion marker — a system-event line in the MAIN flow
-      // ("agent finished · explore lib") so a reader can follow when work
-      // ended relative to the narration, not just watch a tab's dot flip.
-      // TOP-LEVEL spawns only: a big window runs dozens of nested helpers
+      // ("agent finished · explore lib", "command finished · dev server") so
+      // a reader can follow when work ended relative to the narration, not
+      // just watch a tab's dot flip.
+      // TOP-LEVEL work only: a big window runs dozens of nested helpers
       // (measured: 22 completions in one), and a marker per helper would
       // drown the flow the marker exists to clarify — nested completions
       // stay tab-only via task_status above. A cross-turn completion (no
       // part in THIS state) cannot tell top-level from nested; it surfaces
       // regardless — rare, and better announced than silent.
-      if (!part || (part.agent && !part.parentId)) {
-        const label = part?.agent
-          ? (part.agent.name ?? part.agent.description ?? part.agent.type ?? "").slice(0, 48)
-          : "";
+      //
+      // COMMANDS GET THE SAME MARKER AS AGENTS (issue #47's wake-parity
+      // fix). The SDK's task_notification is not subagent-specific — it
+      // fires for a backgrounded Bash command too (sdk.d.ts documents
+      // "Bash commands and subagents") — and the old gate here
+      // (`part.agent`) was the ONLY thing that made a finished command
+      // silent: its taskStatus landed on a Bash part nothing renders, and
+      // its sole visible trace was its row leaving the Processes list. The
+      // wire was always symmetric; the silence was ours.
+      if (!part || !part.parentId) {
+        const isAgent = !part || Boolean(part.agent);
+        const label = (part?.agent
+          ? (part.agent.name ?? part.agent.description ?? part.agent.type ?? "")
+          : typeof part?.input?.description === "string"
+            ? part.input.description
+            : typeof part?.input?.command === "string"
+              ? part.input.command
+              : ""
+        ).slice(0, 48);
+        const noun = isAgent ? "agent" : "command";
         const verb = tn.status === "completed" ? "finished" : tn.status;
-        const text = label ? `agent ${verb} · ${label}` : `agent ${verb}`;
+        const text = label ? `${noun} ${verb} · ${label}` : `${noun} ${verb}`;
         const attention = tn.status === "failed" ? true : undefined;
         // The spawn's tool_use id rides along so the rendered marker can
-        // jump to that agent's tab — same id the tabs are keyed by.
+        // jump to that agent's tab — same id the tabs are keyed by. AGENTS
+        // ONLY: a command has no tab today, and a marker that carries an id
+        // the client resolves to nothing renders a link to nowhere.
+        const agentRef = isAgent ? { agentId: tn.tool_use_id } : {};
         const marker = {
           type: "marker" as const,
           text,
           ...(attention ? { attention } : {}),
-          agentId: tn.tool_use_id,
+          ...agentRef,
         };
         parts.push(marker);
         partOrigin.push(undefined); // keep the supersedes index alignment
-        send("marker", { text, ...(attention ? { attention } : {}), agentId: tn.tool_use_id });
+        send("marker", { text, ...(attention ? { attention } : {}), ...agentRef });
       }
     }
     return { events };

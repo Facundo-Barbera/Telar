@@ -177,6 +177,76 @@ describe("projectClaudeMessage", () => {
     expect(state.parts.some((x) => x.type === "marker")).toBe(false);
   });
 
+  test("a backgrounded COMMAND's completion posts a command marker — wake parity (issue #47)", () => {
+    // The SDK's task_notification is NOT subagent-specific: it fires when a
+    // backgrounded Bash command settles too, and the wire shape is identical.
+    // The old gate (`part.agent`) made Telar the source of the silence — a
+    // finished command set an invisible field and its only visible trace was
+    // its row leaving the Processes list.
+    const state = newClaudeTurnState();
+    projectClaudeMessage(
+      assistantTool("bash-1", "Bash", {
+        command: "bun dev",
+        description: "Start the dev server",
+        run_in_background: true,
+      }),
+      state,
+    );
+    const p = projectClaudeMessage(
+      asMsg({ type: "system", subtype: "task_notification", tool_use_id: "bash-1", status: "completed" }),
+      state,
+    );
+    expect(p.events[0]).toEqual({
+      event: "task_status",
+      data: { id: "bash-1", status: "completed" },
+    });
+    // The marker names it a COMMAND, labels it by the Bash description, and
+    // carries NO agentId — a command has no tab, and an id the client cannot
+    // resolve would render a link to nowhere.
+    expect(p.events[1]).toEqual({
+      event: "marker",
+      data: { text: "command finished · Start the dev server" },
+    });
+    expect(state.parts.at(-1)).toEqual({
+      type: "marker",
+      text: "command finished · Start the dev server",
+    });
+    expect(state.partOrigin.length).toBe(state.parts.length);
+  });
+
+  test("a FAILED command's marker draws attention, labelled by the raw command when no description exists", () => {
+    const state = newClaudeTurnState();
+    projectClaudeMessage(
+      assistantTool("bash-2", "Bash", { command: "bun test --watch", run_in_background: true }),
+      state,
+    );
+    const p = projectClaudeMessage(
+      asMsg({ type: "system", subtype: "task_notification", tool_use_id: "bash-2", status: "failed" }),
+      state,
+    );
+    expect(p.events[1]).toEqual({
+      event: "marker",
+      data: { text: "command failed · bun test --watch", attention: true },
+    });
+  });
+
+  test("a command backgrounded BY a sub-agent stays tab-only, same nesting rule as agents", () => {
+    const state = newClaudeTurnState();
+    projectClaudeMessage(assistantTool("top", "Agent", { prompt: "parent" }), state);
+    projectClaudeMessage(
+      assistantTool("bash-3", "Bash", { command: "sleep 5", run_in_background: true }, { parent: "top" }),
+      state,
+    );
+    const p = projectClaudeMessage(
+      asMsg({ type: "system", subtype: "task_notification", tool_use_id: "bash-3", status: "completed" }),
+      state,
+    );
+    expect(p.events).toEqual([
+      { event: "task_status", data: { id: "bash-3", status: "completed" } },
+    ]);
+    expect(state.parts.some((x) => x.type === "marker")).toBe(false);
+  });
+
   test("a task_notification for an EARLIER turn's spawn still emits and is recorded", () => {
     // A mid-window second turn starts a fresh state; the previous turn's
     // spawns have no parts here. Their completions must still reach the
