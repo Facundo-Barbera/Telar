@@ -222,6 +222,18 @@ function agentTone(status: RailAgent["status"]): "default" | "live" | "attention
   return "default";
 }
 
+// The Subagents twin of `orderRunsForPanel` (issue #48): live rows first so the
+// cap below never hides a running agent behind a page of finished ones. Same
+// rules as the Ultras rule, for the same reasons — `running` is the only live
+// state (`error` is terminal and sinks with `done`; the counts stay honest),
+// and the partition is stable so a row only moves when its own status changes.
+function orderAgentsForPanel(agents: readonly RailAgent[]): RailAgent[] {
+  const live: RailAgent[] = [];
+  const finished: RailAgent[] = [];
+  for (const agent of agents) (agent.status === "running" ? live : finished).push(agent);
+  return [...live, ...finished];
+}
+
 export function WorkspaceInspector({
   project,
   scopeKey,
@@ -513,8 +525,9 @@ export function WorkspaceInspector({
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Subagents</SectionHeading>
+              {/* ORDERED BEFORE IT IS CUT — see `orderAgentsForPanel`. */}
               <CappedRows
-                items={agents}
+                items={orderAgentsForPanel(agents)}
                 noun="sub-agents"
                 render={(agent) => (
                   <InspectorRow
@@ -558,11 +571,18 @@ export function WorkspaceInspector({
             <>
               <div className="my-2 h-px bg-border/70" />
               <SectionHeading>Context</SectionHeading>
-              <div className="space-y-0.5">
-                {attachments.map((item) => (
-                  <AttachmentRow item={item} key={item.id} />
-                ))}
-              </div>
+              {/* NEWEST FIRST FEEDS THE CUT (issue #48). This list was the one
+                  bare `.map` in the file — every image ever attached rendered
+                  forever, at full row weight. The adapter hands attachments
+                  newest-first, so the cap keeps what the session touched most
+                  recently and the stale tail is what collapses behind the
+                  toggle. No new ordering here: capping an oldest-first list
+                  would pin the five stalest rows on a "now" surface. */}
+              <CappedRows
+                items={attachments}
+                noun="attachments"
+                render={(item) => <AttachmentRow item={item} key={item.id} />}
+              />
             </>
           )}
 
