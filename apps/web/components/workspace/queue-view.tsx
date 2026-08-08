@@ -32,6 +32,18 @@
 // device for either — reorderLane/splitLaneIntoNew (store.ts/workspace-api.ts)
 // already exist and were reachable only from route handlers with no caller
 // until this pass wired them to these controls.
+//
+// TOKEN/CHROME SWEEP (this pass, no data behaviour touched): this view already
+// composed the shared chrome (PageHeader / EmptyState / Alert / Skeleton /
+// Chip / GroupHeader / SearchField), so the sweep was about the scale it drew
+// them at — bare `rounded` on the native checkboxes → `rounded-sm` plus
+// `accent-primary` (the one raw colour left on the surface: an unstyled
+// checkbox paints its tick in the user agent's own blue), `divide-border` →
+// `divide-border/70` for the hairlines INSIDE a lane card, `size=icon
+// className=size-7` → the `icon-sm` variant that already means that, and
+// `transition-colors` on the small controls that were the only hoverable
+// things here without it. The lane filter chips gained the counts
+// ui-contract.md §3 asks for, through `Chip`'s existing `count` slot.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
@@ -129,7 +141,12 @@ function SubtaskRows({ item }: { item: Item }) {
             checked={!!s.done}
             disabled={busy === s.id}
             onChange={(e) => void toggle(s.id, e.target.checked)}
-            className="size-3.5 shrink-0 rounded border-border"
+            // `accent-primary` is the token fix, not decoration: a bare native
+            // checkbox paints its checked box in the USER-AGENT accent (Safari
+            // blue), which is the one raw colour this surface could not have
+            // spelled out in a class list. Routing it through --primary is how
+            // the mark joins the palette.
+            className="size-3.5 shrink-0 rounded-sm border-border accent-primary"
           />
           <span
             className={cn(
@@ -143,7 +160,7 @@ function SubtaskRows({ item }: { item: Item }) {
             type="button"
             disabled={busy === s.id}
             onClick={() => void promote(s.id)}
-            className="shrink-0 text-[10px] text-muted-foreground/70 underline decoration-dotted hover:text-foreground"
+            className="shrink-0 text-[10px] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
           >
             promote
           </button>
@@ -185,13 +202,15 @@ function ItemRow({
           checked={selected}
           onChange={onToggleSelect}
           title="Select to split into a new lane"
-          className="size-3.5 shrink-0 rounded border-border"
+          className="size-3.5 shrink-0 rounded-sm border-border accent-primary"
         />
         <button
           type="button"
           onClick={() => hasSubtasks && setOpen((o) => !o)}
+          aria-expanded={hasSubtasks ? open : undefined}
           className={cn(
-            "flex size-5 shrink-0 items-center justify-center",
+            "flex size-5 shrink-0 items-center justify-center rounded-md transition-colors",
+            hasSubtasks && "hover:bg-muted/60",
             !hasSubtasks && "invisible",
           )}
         >
@@ -212,7 +231,7 @@ function ItemRow({
             disabled={!canMoveUp}
             onClick={onMoveUp}
             title="Move up"
-            className="flex size-3.5 items-center justify-center text-muted-foreground/70 hover:text-foreground disabled:opacity-20"
+            className="flex size-3.5 items-center justify-center rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-20"
           >
             <ChevronUpIcon className="size-3" />
           </button>
@@ -221,7 +240,7 @@ function ItemRow({
             disabled={!canMoveDown}
             onClick={onMoveDown}
             title="Move down"
-            className="flex size-3.5 items-center justify-center text-muted-foreground/70 hover:text-foreground disabled:opacity-20"
+            className="flex size-3.5 items-center justify-center rounded-sm text-muted-foreground/70 transition-colors hover:text-foreground disabled:opacity-20"
           >
             <ChevronDownIcon className="size-3" />
           </button>
@@ -233,7 +252,7 @@ function ItemRow({
           {item.title}
         </Link>
         {hasSubtasks && (
-          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70 tabular-nums">
             {done}/{subtasks.length}
           </span>
         )}
@@ -367,17 +386,23 @@ function LaneSection({
                 Split {selected.size} into new lane
               </Button>
             )}
-            <Button variant="ghost" size="icon" className="size-7" onClick={() => void rename()} title="Rename lane">
+            {/* `icon-sm` IS size-7 with the matched corner radius — the variant
+                the design system already owns, rather than a `size-8` icon
+                button overridden back down to 7 with a bare `size-7`. */}
+            <Button variant="ghost" size="icon-sm" onClick={() => void rename()} title="Rename lane">
               <PencilIcon className="size-3.5" />
             </Button>
-            <Button variant="ghost" size="icon" className="size-7" onClick={() => void retire()} title="Retire lane">
+            <Button variant="ghost" size="icon-sm" onClick={() => void retire()} title="Retire lane">
               <Trash2Icon className="size-3.5" />
             </Button>
           </div>
         }
       />
       {openState && (
-        <div className="divide-y divide-border">
+        // border-border/70 is the idiom's INTERNAL divider step — the card's
+        // own edge stays full-strength border-border, the hairlines between its
+        // rows sit one step back so the card reads as one object.
+        <div className="divide-y divide-border/70">
           {lane.rows.length === 0 ? (
             <div className="py-4 text-center text-xs text-muted-foreground/60">Nothing filed here.</div>
           ) : (
@@ -445,16 +470,32 @@ export function QueueView() {
     }
   }, []);
 
-  const filteredLanes = useMemo(() => {
+  // SEARCH FIRST, LANE SECOND, and the split matters: the lane chips ARE the
+  // lane filter, so a count on one has to answer "how many will I see if I
+  // click this" — which tracks the search needle but must NOT track the lane
+  // selection. Deriving both the chips and the rendered lanes from one
+  // search-filtered list is what keeps a chip from claiming 12 over a list of
+  // 3 while the user is typing.
+  const searchedLanes = useMemo(() => {
     if (!view) return [];
     const needle = q.trim().toLowerCase();
-    return view.lanes
-      .filter((l) => laneFilter === "all" || l.key === laneFilter)
-      .map((l) => ({
-        ...l,
-        rows: needle ? l.rows.filter((r) => r.item.title.toLowerCase().includes(needle)) : l.rows,
-      }));
-  }, [view, q, laneFilter]);
+    if (!needle) return view.lanes;
+    return view.lanes.map((l) => ({
+      ...l,
+      rows: l.rows.filter((r) => r.item.title.toLowerCase().includes(needle)),
+    }));
+  }, [view, q]);
+
+  const filteredLanes = useMemo(
+    () => searchedLanes.filter((l) => laneFilter === "all" || l.key === laneFilter),
+    [searchedLanes, laneFilter],
+  );
+
+  // The "All lanes" tally, summed off the same list for the same reason.
+  const matchedTotal = useMemo(
+    () => searchedLanes.reduce((n, l) => n + l.rows.length, 0),
+    [searchedLanes],
+  );
 
   const populated = view !== null && view.lanes.length > 0;
 
@@ -478,13 +519,32 @@ export function QueueView() {
 
       {populated && (
         <div className="shrink-0 border-b border-border">
-          <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 py-2.5">
+          {/* flex-wrap, because lane labels are the USER's words and a lane
+              count is a lane the user made — neither has a width this row can
+              assume. Wrapping grows the toolbar; the alternative clips a filter
+              the user cannot then reach. */}
+          <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 px-4 py-2.5">
             <SearchField value={q} onChange={setQ} placeholder="Search items by title…" />
-            <Chip active={laneFilter === "all"} onClick={() => setLaneFilter("all")}>
+            {/* Counts through Chip's own `count` slot (mono, tabular, and
+                already toned for the active state) rather than baked into the
+                label — ui-contract.md §3 asks for "lane filter chips with
+                counts" and the shared control has carried the affordance since
+                the Looms index. Both tallies come off `searchedLanes`, so they
+                shrink with the needle and always describe the list below. */}
+            <Chip
+              active={laneFilter === "all"}
+              onClick={() => setLaneFilter("all")}
+              count={matchedTotal}
+            >
               All lanes
             </Chip>
-            {view!.lanes.map((l) => (
-              <Chip key={l.key} active={laneFilter === l.key} onClick={() => setLaneFilter(l.key)}>
+            {searchedLanes.map((l) => (
+              <Chip
+                key={l.key}
+                active={laneFilter === l.key}
+                onClick={() => setLaneFilter(l.key)}
+                count={l.rows.length}
+              >
                 {l.label}
               </Chip>
             ))}
@@ -494,12 +554,18 @@ export function QueueView() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl space-y-3 px-4 py-4">
+          {/* The skeleton wears the LaneSection's own shell (rounded-xl,
+              border-border, bg-card, /70 hairlines) so first paint does not
+              change container geometry when the data lands — only the row
+              contents resolve. */}
           {view === null && !error && (
-            <div className="divide-y divide-border overflow-hidden rounded-xl border border-border">
+            <div className="divide-y divide-border/70 overflow-hidden rounded-xl border border-border bg-card">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3 px-3 py-3">
-                  <Skeleton className="h-4 w-1/2" />
-                  <Skeleton className="h-4 w-16" />
+                <div key={i} className="flex items-center gap-2 px-3 py-3">
+                  <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                  <Skeleton className="h-4 min-w-0 flex-1" />
+                  <Skeleton className="h-4 w-16 shrink-0 rounded-full" />
+                  <Skeleton className="h-4 w-20 shrink-0 rounded-md" />
                 </div>
               ))}
             </div>

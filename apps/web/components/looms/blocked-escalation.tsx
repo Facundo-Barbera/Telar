@@ -11,10 +11,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 // The "Orchestrator requires help" surface for a loom parked in `blocked`
-// (M10.4). Distinct from the amber "needs you"
-// (needs-review) framing: this is a QUESTION the orchestrator can't
-// guess, not a deliverable to review — so it wears the orange `blocked`
-// language (StateBadge already colors blocked orange).
+// (M10.4). Distinct IN WORDING from the "needs you" (needs-review) framing:
+// this is a QUESTION the orchestrator can't guess, not a deliverable to review.
+// It is NOT distinct in colour, and no longer claims to be: `blocked` folds
+// into --warning alongside needs-review (globals.css, state-badge.tsx,
+// stateRailClass) because both mean a person has to move and amber/orange are
+// indistinguishable once light mode darkens them. Copy carries the difference.
 //
 // Split into reusable pieces so M11.3's conversational escalation surface
 // (discuss-escalation.tsx) can LEAD with the park explanation + a "Discuss with
@@ -30,13 +32,16 @@ export function ParkExplanation({ loom }: { loom: Loom }) {
   return (
     <>
       <div className="flex items-start gap-2.5 px-1">
-        <HandIcon className="mt-0.5 size-5 shrink-0 text-orange-400" />
+        <HandIcon className="mt-0.5 size-5 shrink-0 text-warning" />
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <h2 className="font-heading text-sm font-medium text-orange-300">
+            <h2 className="font-heading text-sm font-medium text-warning">
               Orchestrator requires help
             </h2>
-            <Badge className="bg-orange-500/15 font-mono text-[10px] text-orange-400">
+            <Badge
+              variant="outline"
+              className="border-warning/40 bg-warning/10 font-mono text-[10px] text-warning"
+            >
               blocked
             </Badge>
           </div>
@@ -50,12 +55,12 @@ export function ParkExplanation({ loom }: { loom: Loom }) {
       </div>
 
       {/* The narrative ask the loop parked on. */}
-      <Card className="border-l-2 border-l-orange-500/60 bg-orange-500/[0.04]">
+      <Card className="border-l-2 border-l-warning/60 bg-warning/[0.04]">
         <CardContent className="flex flex-col gap-1.5">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-orange-400/70">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-warning/80">
             The question
           </span>
-          <p className="text-sm leading-relaxed text-orange-100/90">
+          <p className="text-sm leading-relaxed text-foreground">
             {loom.blockedQuestion ??
               "How do I run this app so verification can drive it?"}
           </p>

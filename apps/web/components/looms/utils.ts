@@ -65,26 +65,37 @@ export function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-// The SAME color vocabulary StateBadge owns (sky=running/preparing,
-// violet=verifying, primary=done, emerald=ready, amber=needs-review,
-// orange=blocked, destructive=failed, muted=everything else) — a thin local
-// variant, not a new palette, so every state rail (thread rows, loom cards)
-// reads off one shared definition.
+// The SAME color vocabulary StateBadge owns (info=preparing/running,
+// verify=verifying, primary=done, success=ready, warning=needs-review AND
+// blocked, destructive=failed, muted=everything else) — a thin local variant,
+// not a new palette, so every state rail (thread rows, loom cards) reads off
+// one shared definition.
+//
+// This has to track components/common/state-badge.tsx exactly, because the two
+// render in the same element three lines apart on six surfaces (dashboard-page,
+// loom-card, thread-tree, /looms, /projects/[name]). It used to spell that
+// vocabulary in raw Tailwind ramps, which is how it came to keep an
+// amber/orange split for needs-review vs blocked that the badge had already
+// folded away — a blocked card showed an orange rail beside a warning badge.
+// Both sides are on the five state tokens now, and `blocked` folds into
+// --warning here for the reason globals.css gives: at these lightnesses 22
+// degrees of hue does not read as a distinction.
 export function stateRailClass(state: WorkUnitState): string {
   switch (state) {
+    case "scoping":
     case "preparing":
     case "running":
-      return "bg-sky-400";
+      return "bg-info";
     case "verifying":
-      return "bg-violet-400";
+      return "bg-verify";
     case "ready":
-      return "bg-emerald-400";
+      return "bg-success";
     case "done":
       return "bg-primary";
+    case "charter-review":
     case "needs-review":
-      return "bg-amber-400";
     case "blocked":
-      return "bg-orange-400";
+      return "bg-warning";
     case "failed":
       return "bg-destructive";
     default:

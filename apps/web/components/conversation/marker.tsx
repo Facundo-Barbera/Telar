@@ -41,8 +41,11 @@ export function Marker({
       <span
         className={cn(
           "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[9px]",
+          // --warning, the app's one "a person has to move" colour, and the
+          // same token session-row.tsx cites this primitive for when it tints
+          // an unanswered approval. A ramp here made that cross-reference false.
           attention
-            ? "border-amber-600/40 text-amber-600 dark:text-amber-400"
+            ? "border-warning/40 text-warning"
             : "border-border text-muted-foreground",
         )}
       >

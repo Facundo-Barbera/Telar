@@ -34,7 +34,9 @@ describe("the production right-panel mount", () => {
     const message = read("components/ai-elements/message.tsx");
     expect(inspector).toContain('aria-label="Pinned summary"');
     expect(inspector).toContain("createPortal(");
-    expect(inspector).toContain('className="fixed z-[70]');
+    // In a cn() list rather than a bare className since the enter animation
+    // became conditional CSS classes; the fixed/z-70 layer itself is unchanged.
+    expect(inspector).toContain('"fixed z-[70] overflow-hidden rounded-3xl');
     expect(inspector).toContain('data-presentation={sidebarMode ? "sidebar" : "floating"}');
     expect(inspector).toContain("right: 12");
     expect(inspector).toContain("window.innerHeight - top - 12");
@@ -44,10 +46,29 @@ describe("the production right-panel mount", () => {
     expect(inspector).toContain("{browserTabs.length > 0 && (");
     expect(inspector).toContain("Math.min(320, available)");
     expect(inspector).not.toContain("animate-in");
-    expect(inspector).toContain("<AnimatePresence initial={false}>");
-    expect(inspector).toContain("sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : false");
-    expect(inspector).toContain("sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : undefined");
-    expect(inspector).toContain("duration: reduceMotion ? 0 : 0.28");
+    // THE ENTER ANIMATION IS CSS, NOT A LIBRARY: no motion/react import, no
+    // AnimatePresence deferring the unmount (exit is instant, like the app's
+    // dialogs), and every animated class is motion-safe:-gated — including the
+    // pre-enter state, which is what stands in for motion's useReducedMotion.
+    // The transition is deliberately not a keyframe: this is a fixed layer
+    // fading up from zero opacity, the shape that crashes WebKit 26.x and the
+    // reason the enter/exit utilities are disabled globally, so the assertion
+    // above (no "animate-in") is the other half of this rule.
+    //
+    // Matched against code shapes rather than words, because the component
+    // explains the eviction in prose and must stay free to name what it
+    // replaced.
+    expect(inspector).not.toContain('from "motion/react"');
+    expect(inspector).not.toContain("<AnimatePresence");
+    expect(inspector).not.toContain("<motion.");
+    expect(inspector).not.toContain("useReducedMotion()");
+    expect(inspector).not.toContain("motion-safe:animate-[");
+    expect(inspector).toContain('typeof document !== "undefined" && open && createPortal(');
+    expect(inspector).toContain(
+      "motion-safe:transition-[opacity,transform] motion-safe:duration-[280ms]",
+    );
+    expect(inspector).toContain('!entered && "motion-safe:translate-x-7 motion-safe:opacity-0"');
+    expect(inspector).toContain("second = window.requestAnimationFrame(() => setEntered(true));");
 
     expect(session).toContain("transition-[padding-right] duration-300");
     expect(session).toContain('workspaceInspectorReserved && "min-[1180px]:pr-[21rem]"');

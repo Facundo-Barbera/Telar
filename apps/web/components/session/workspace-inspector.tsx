@@ -9,7 +9,6 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ActivityIcon,
   BotIcon,
@@ -283,6 +282,98 @@ function ContextSection({ attachments }: { attachments: readonly AttachmentRef[]
   );
 }
 
+type InspectorAnchor = {
+  right: number;
+  top: number;
+  width: number;
+  maxHeight?: number;
+};
+
+/** THE POPOVER SHELL, AND ITS ENTER ANIMATION WITHOUT AN ANIMATION LIBRARY.
+ *
+ *  This surface used `motion/react` (AnimatePresence around a motion.div) to
+ *  fade and slide itself in by 28px in sidebar presentation. That is one
+ *  transition over two interpolable properties — a library-sized dependency for
+ *  something CSS interpolates natively, which is the same trade the Shimmer
+ *  eviction documents in app/globals.css.
+ *
+ *  NO BUNDLE WIN YET, and this comment will not claim one: the session route
+ *  still pulls motion-dom in through components/right-panel/right-panel.tsx
+ *  (imported by session-view.tsx), which is the last motion/react consumer on
+ *  this route. Evicting it is what turns these removals into bytes; until then
+ *  the win here is one less animation dialect in the codebase.
+ *
+ *  A CSS TRANSITION RATHER THAN A KEYFRAME, deliberately: this is a fixed layer
+ *  fading up from zero opacity, precisely the shape that crashes the WebKit
+ *  26.x renderer when driven by @keyframes, which is why tw-animate-css's
+ *  enter/exit utilities are force-disabled globally in globals.css. Transitions
+ *  are unaffected by that bug, so this needed no shared keyframe.
+ *
+ *  ON `initial={false}`, which the old AnimatePresence carried: it suppressed
+ *  the enter animation for a child already present on the tree's FIRST render.
+ *  Nothing is lost by not reproducing it — session-view.tsx holds this panel's
+ *  open flag in `useState(false)` and no path seeds it true, so "open on first
+ *  mount" is unreachable. If the flag ever becomes restored state, this needs a
+ *  first-render ref that starts `entered` at true.
+ *
+ *  IT IS A COMPONENT SO THAT MOUNTING IS THE RESET. The caller renders it only
+ *  while open, so `entered` starts false on every open with nothing to re-arm,
+ *  and the double rAF (commit, paint, then flip) gives the browser two distinct
+ *  styles to interpolate between — a single frame can be coalesced into the
+ *  initial paint, which would show the panel already in place.
+ *
+ *  EXIT IS INSTANT, like the app's dialogs: AnimatePresence was the only reason
+ *  the popover outlived `open`, and nothing else depended on that. */
+function InspectorSurface({
+  anchor,
+  sidebarMode,
+  children,
+}: {
+  anchor: InspectorAnchor;
+  sidebarMode: boolean;
+  children: ReactNode;
+}) {
+  const [entered, setEntered] = useState(false);
+
+  useEffect(() => {
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+    };
+  }, []);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Pinned summary"
+      data-presentation={sidebarMode ? "sidebar" : "floating"}
+      style={{ right: anchor.right, top: anchor.top, width: anchor.width }}
+      className={cn(
+        "fixed z-[70] overflow-hidden rounded-3xl border border-border bg-popover text-popover-foreground shadow-2xl",
+        // Sidebar presentation only, exactly as before: the floating popover
+        // appears at once because it opens under the cursor, where a slide
+        // reads as lag rather than as arrival.
+        //
+        // Every animation class is `motion-safe:`-gated, INCLUDING the
+        // pre-enter state — that is what replaces motion's useReducedMotion. A
+        // reduced-motion user matches none of them, so the panel is opaque and
+        // in place on its first frame rather than transparent until an effect
+        // rescues it.
+        sidebarMode && [
+          "motion-safe:transition-[opacity,transform] motion-safe:duration-[280ms] motion-safe:ease-[cubic-bezier(0.22,1,0.36,1)]",
+          !entered && "motion-safe:translate-x-7 motion-safe:opacity-0",
+        ],
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function WorkspaceInspector({
   project,
   scopeKey,
@@ -319,15 +410,13 @@ export function WorkspaceInspector({
   onSelectWorkflow: (id: string) => void;
 }) {
   const panel = useRightPanelStore(scopeKey);
-  const reduceMotion = useReducedMotion();
   const widthPrefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const [anchor, setAnchor] = useState<{
-    right: number;
-    top: number;
-    width: number;
-    maxHeight?: number;
-  }>({ right: 16, top: 48, width: 320 });
+  const [anchor, setAnchor] = useState<InspectorAnchor>({
+    right: 16,
+    top: 48,
+    width: 320,
+  });
   const [wideLayout, setWideLayout] = useState(false);
   const [git, setGit] = useState<GitOverviewResponse | null>(null);
   const [gitPane, setGitPane] = useState<WorkspaceGitPane | null>(null);
@@ -521,24 +610,8 @@ export function WorkspaceInspector({
           />
         )}
       </button>
-      {typeof document !== "undefined" && createPortal(
-        <AnimatePresence initial={false}>
-          {open && (
-            <motion.div
-              key="workspace-inspector"
-              role="dialog"
-              aria-label="Pinned summary"
-              data-presentation={sidebarMode ? "sidebar" : "floating"}
-              style={{ right: anchor.right, top: anchor.top, width: anchor.width }}
-              initial={sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : false}
-              animate={{ opacity: 1, x: 0 }}
-              exit={sidebarMode && !reduceMotion ? { opacity: 0, x: 28 } : undefined}
-              transition={{
-                duration: reduceMotion ? 0 : 0.28,
-                ease: [0.22, 1, 0.36, 1],
-              }}
-              className="fixed z-[70] overflow-hidden rounded-3xl border border-border bg-popover text-popover-foreground shadow-2xl"
-            >
+      {typeof document !== "undefined" && open && createPortal(
+        <InspectorSurface anchor={anchor} sidebarMode={sidebarMode}>
               <div
                 style={sidebarMode ? { maxHeight: anchor.maxHeight } : undefined}
                 className={cn(
@@ -720,9 +793,7 @@ export function WorkspaceInspector({
           )}
           </>}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>,
+        </InspectorSurface>,
         document.body,
       )}
     </div>

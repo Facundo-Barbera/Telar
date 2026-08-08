@@ -4365,7 +4365,7 @@ function SessionWorkspace({
                 exit. No overlay, no dialog, no confirm — reversible until
                 Enter. */}
             {stagedRollback && (
-              <div className="mb-2 flex items-center justify-between rounded-xl border border-amber-600/30 bg-amber-500/[0.06] px-3 py-1.5">
+              <div className="mb-2 flex items-center justify-between rounded-xl border border-warning/30 bg-warning/[0.06] px-3 py-1.5">
                 <span className="text-xs text-muted-foreground">
                   Replaced when you send · Your files stay as they are.
                 </span>

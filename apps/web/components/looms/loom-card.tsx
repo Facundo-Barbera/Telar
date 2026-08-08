@@ -15,17 +15,19 @@ import { fmtAgo, fmtCost } from "@/lib/format";
 import { fmtDuration, loomRole, stateRailClass, sumCost, threadCount } from "./utils";
 
 // WEAVE identity marker — indigo, deliberately outside the state palette
-// (sky/violet/primary/amber/destructive/muted, already owned by StateBadge +
-// the state rail) so a woven loom sitting in needs-review never shows two
-// competing amber signals: state stays amber, "this weaves threads" stays
-// indigo, always.
+// (--info/--verify/--primary/--success/--warning/--destructive/muted, already
+// owned by StateBadge + the state rail) so a woven loom sitting in needs-review
+// never shows two competing "look here" signals: state stays --warning, "this
+// weaves threads" stays indigo, always. The light/dark pair is required — a
+// bare `text-indigo-300` is invisible in light mode (see list-controls.tsx's
+// copy of this chip).
 function WeaveChip({ loom }: { loom: Loom }) {
   if (loomRole(loom) !== "woven") return null;
   const n = threadCount(loom);
   return (
     <Badge
       variant="outline"
-      className="shrink-0 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-300"
+      className="shrink-0 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-700 dark:text-indigo-300"
     >
       <WorkflowIcon className="size-2.5" />
       {n == null ? "weave" : `${n} thread${n === 1 ? "" : "s"}`}
@@ -59,7 +61,10 @@ function ErrorSnippet({ loom }: { loom: Loom }) {
     <p
       className={cn(
         "mt-1 line-clamp-2 font-mono text-xs",
-        loom.state === "failed" ? "text-destructive" : "text-amber-300",
+        // needs-review is --warning, like every other "a person has to move"
+        // signal (StateBadge, the state rail). It used to be `text-amber-300`,
+        // a dark-only step that all but vanished on a light card.
+        loom.state === "failed" ? "text-destructive" : "text-warning",
       )}
     >
       {loom.error}
@@ -79,7 +84,7 @@ export function LoomCard({
   layout?: "row" | "tile";
   /** Tick source for a live elapsed clock on layout="tile" (Date.now(), refreshed by the caller). Omit for a static card. */
   now?: number;
-  /** Reproduce AttentionRow's line-clamp-2 error snippet, toned destructive/amber by state. */
+  /** Reproduce AttentionRow's line-clamp-2 error snippet, toned destructive/warning by state. */
   showError?: boolean;
   className?: string;
 }) {

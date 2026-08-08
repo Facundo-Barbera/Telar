@@ -121,10 +121,10 @@ function SessionDetails({
           </span>
           <span className="mt-0.5 flex items-center gap-1 text-[10px]">
             {session.needsApproval ? (
-              <span className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400">
+              <span className="flex items-center gap-1 font-medium text-warning">
                 <span
                   aria-hidden
-                  className="size-1.5 rounded-full bg-amber-500 motion-safe:animate-pulse"
+                  className="size-1.5 rounded-full bg-warning motion-safe:animate-pulse"
                 />
                 Needs your approval
               </span>
@@ -313,13 +313,13 @@ export function SessionRow({
       <span className="relative flex size-3.5 shrink-0 items-center justify-center">
         <ProviderIcon provider={provider} size={14} />
         {session.needsApproval ? (
-          // Amber, steady, outranking both live states: an unanswered card
+          // Warning, steady, outranking both live states: an unanswered card
           // means the work is paused on the user — the one sidebar state
           // whose job is to interrupt, in the same color the Marker
           // primitive reserves for attention.
           <span
             aria-hidden
-            className="absolute -inset-1 rounded-full bg-amber-500/40 motion-safe:animate-pulse"
+            className="absolute -inset-1 rounded-full bg-warning/40 motion-safe:animate-pulse"
           />
         ) : session.live ? (
           <span
@@ -346,7 +346,7 @@ export function SessionRow({
         </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-sidebar-foreground/45">
           {session.needsApproval ? (
-            <span className="shrink-0 font-medium text-amber-600 dark:text-amber-400">
+            <span className="shrink-0 font-medium text-warning">
               Needs your approval
             </span>
           ) : session.compacting ? (

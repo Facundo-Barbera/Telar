@@ -47,9 +47,9 @@ describe("the row's precedence: approval > live > background > time", () => {
     for (const after of sites.slice(1)) expect(after).toContain("session.live ?");
   });
 
-  test("the state is said in words, in attention amber", () => {
+  test("the state is said in words, in attention warning", () => {
     expect(src.match(/Needs your approval/g)?.length).toBe(2);
-    expect(src).toContain("text-amber-600 dark:text-amber-400");
+    expect(src).toContain("text-warning");
   });
 });
 

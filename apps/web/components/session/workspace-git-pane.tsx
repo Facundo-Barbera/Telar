@@ -57,7 +57,7 @@ function ResultNotice({ error, message }: { error: string | null; message: strin
   return (
     <p className={cn(
       "mx-1 my-2 rounded-xl px-3 py-2 text-xs leading-relaxed",
-      error ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-500",
+      error ? "bg-destructive/10 text-destructive" : "bg-success/10 text-success",
     )}>
       {error ?? message}
     </p>
@@ -67,7 +67,7 @@ function ResultNotice({ error, message }: { error: string | null; message: strin
 function FileBadge({ file }: { file: GitFileStatus }) {
   return (
     <span className="flex shrink-0 items-center gap-1 font-mono text-[10px] tabular-nums">
-      {file.additions > 0 && <span className="text-emerald-500">+{file.additions}</span>}
+      {file.additions > 0 && <span className="text-success">+{file.additions}</span>}
       {file.deletions > 0 && <span className="text-destructive">−{file.deletions}</span>}
       {file.binary && <span className="text-muted-foreground">bin</span>}
     </span>
@@ -215,7 +215,7 @@ export function WorkspaceGitPaneContent({
           <div className="space-y-1">
             <div className="flex items-center gap-2 px-2 pb-1 text-[11px] text-muted-foreground">
               <span>{status.summary.files} files</span>
-              <span className="text-emerald-500">+{status.summary.additions}</span>
+              <span className="text-success">+{status.summary.additions}</span>
               <span className="text-destructive">−{status.summary.deletions}</span>
               <button
                 type="button"
@@ -277,7 +277,7 @@ export function WorkspaceGitPaneContent({
           </div>
         ) : (
           <div className="flex h-24 flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
-            <CheckIcon className="size-5 text-emerald-500" />
+            <CheckIcon className="size-5 text-success" />
             Working tree is clean
           </div>
         )}

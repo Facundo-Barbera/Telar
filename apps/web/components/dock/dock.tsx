@@ -175,7 +175,7 @@ function HeadTooltip({
             <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
               <span className="truncate">{rt?.project || entry.project}</span>
               <span className="opacity-40">·</span>
-              <span className={cn(rt?.parked && "text-amber-500")}>{stateLabel}</span>
+              <span className={cn(rt?.parked && "text-warning")}>{stateLabel}</span>
             </div>
             {/* Story 4.2 / AC7 proof 4 — `name · state · spend` for this
                 session's live Ultra run(s). Already rendered by
@@ -194,7 +194,7 @@ function HeadTooltip({
                 unsent words; this is the sentence for it, on the same hover,
                 with no dwell on a 16px target. */}
             {pendingOf(rt) > 0 && (
-              <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-amber-600 dark:text-amber-400">
+              <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-warning">
                 <ClockIcon className="size-2.5" />
                 <span>{pendingPhrase(pendingOf(rt))}</span>
               </div>
@@ -268,7 +268,7 @@ function Head({ entry }: { entry: DockEntry }) {
           className={cn(
             "absolute inset-0 flex items-center justify-center rounded-full border text-sm font-semibold shadow-md transition-colors",
             parked
-              ? "border-amber-500/70 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+              ? "border-warning/70 bg-warning/10 text-warning"
               : "border-border bg-secondary text-secondary-foreground hover:bg-secondary/70",
             active && "ring-2 ring-ring ring-offset-2 ring-offset-background",
           )}
@@ -319,12 +319,13 @@ function Head({ entry }: { entry: DockEntry }) {
             frame; the drain waits on a detail fetch. So the count is up before
             the send, and clears when the engine takes the item.
 
-            Amber, like `parked` above: this is the dock's colour for "still
-            waiting on something", distinct from the primary unread count. */}
+            --warning, like `parked` above: this is the app's one colour for
+            "still waiting on a person", the same token the sidebar row and the
+            Marker wear, and distinct from the primary unread count. */}
         {pending > 0 && (
           <span
             title={pendingPhrase(pending)}
-            className="absolute -bottom-1 left-1/2 flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border border-amber-500/70 bg-background px-0.5 text-[9px] font-semibold text-amber-600 shadow-sm dark:text-amber-400"
+            className="absolute -bottom-1 left-1/2 flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border border-warning/70 bg-background px-0.5 text-[9px] font-semibold text-warning shadow-sm"
           >
             {/* Bottom CENTRE, and no gap: the two corners below the head are
                 already spoken for (sub-agents left, ultra run right), and this

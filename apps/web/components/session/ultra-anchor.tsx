@@ -109,14 +109,14 @@ export const ULTRA_STATE_TONE: Record<UltraRunState, UltraTone> = {
   stopped: "attention",
 };
 
-// The two Tailwind expressions duplicated from `components/looms/status.tsx`'s
-// `TONE_ICON`, for the reason in the header. `text-*-300` is DARK-ONLY and light
-// mode is real here, so these are the `text-X-600 dark:text-X-400` pairs the
-// original defines — the demo gallery is dark-only throughout and copying its
-// classes ships a light-mode bug.
+// The two expressions duplicated from `components/looms/status.tsx`'s
+// `TONE_ICON`, for the reason in the header, now spelled with the shared
+// state-token vocabulary (`--success` / `--warning`) rather than raw Tailwind
+// ramps — the tokens already adapt to dark mode, so the `dark:` fork this
+// pairing used to need collapses to a single class.
 export const ULTRA_TONE_CLASS: Record<UltraTone, string> = {
-  done: "text-emerald-600 dark:text-emerald-400",
-  attention: "text-amber-600 dark:text-amber-400",
+  done: "text-success",
+  attention: "text-warning",
   danger: "text-destructive",
   // NEUTRAL, and that is the law rather than a palette choice: active work gets
   // a neutral spinner, never a saturated hue.

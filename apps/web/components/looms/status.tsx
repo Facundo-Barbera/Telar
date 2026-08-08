@@ -25,9 +25,14 @@ import { cn } from "@/lib/utils";
 
 export type Tone = "done" | "attention" | "danger" | "active" | "muted";
 
+// Spelled with the shared state tokens (--success / --warning), NOT raw ramps:
+// components/session/ultra-anchor.tsx's ULTRA_TONE_CLASS declares itself a copy
+// of this map, and the two are live on adjacent surfaces, so a ramp here is a
+// two-palette bug there. The tokens carry their own dark-mode value, which is
+// why the `dark:` fork this pairing used to need is gone.
 export const TONE_ICON: Record<Tone, string> = {
-  done: "text-emerald-600 dark:text-emerald-400",
-  attention: "text-amber-600 dark:text-amber-400",
+  done: "text-success",
+  attention: "text-warning",
   danger: "text-destructive",
   active: "text-foreground",
   muted: "text-muted-foreground",

@@ -150,13 +150,27 @@
      3:1 they owe as graphical objects. If you need a deeper fill than /15,
      it is a solid and it takes `text-background`, not `text-destructive`.
 
-     Nothing consumes --info, --verify, --success or --warning yet.
-     components/common/state-badge.tsx is still on hardcoded Tailwind ramps
-     (bg-sky-400, border-amber-500/40, text-violet-300, bg-emerald-400) and is
-     the surface these are meant to claim first. They are declared ahead of
-     that migration on purpose — a state vocabulary that arrives one badge at a
-     time never becomes one — but until state-badge moves, the app carries two
-     and the hardcoded one is live. Do not add a sixth ramp; migrate. */
+     components/common/state-badge.tsx is the intended first consumer of
+     --info, --verify, --success and --warning, and has been migrated off the
+     hardcoded Tailwind ramps (bg-sky-400, border-amber-500/40,
+     text-violet-300, bg-emerald-400) it used to carry. scoping/preparing/
+     running -> info, verifying -> verify, ready -> success, charter-review/
+     needs-review/blocked -> warning (blocked folds in per the note above).
+     done and failed were already on tokens (bg-primary, --destructive) and
+     were left alone. Do not add a sixth ramp; keep new state colors on this
+     vocabulary.
+
+     THE MIGRATION IS NOT FINISHED, and this note will not pretend otherwise
+     while a second vocabulary is live. Everything that renders BESIDE the badge
+     came with it — the state rail (components/looms/utils.ts), TONE_ICON
+     (looms/status.tsx) and its copy ULTRA_TONE_CLASS, Marker, the dock's parked
+     and pending marks, LoomCard's error snippet, blocked-escalation — because a
+     rail in orange next to a badge in --warning is worse than either alone.
+     Still on hardcoded ramps, and NOT beside a migrated surface: settings/*
+     (doctor, cli, mcp-health, provider-instances), projects/git-tab-*,
+     looms/{acceptance-panel,live-feed,decision-log,attempt-card,god-view,...},
+     app/projects/page.tsx. Those are the remaining work; migrate them, do not
+     copy them. */
   --info: oklch(0.51 0.09 215);
   --verify: oklch(0.545 0.2 293);
   --success: oklch(0.495 0.108 162);

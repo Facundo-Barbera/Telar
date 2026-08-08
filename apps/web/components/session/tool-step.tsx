@@ -216,7 +216,16 @@ function TodoBlock({
               {t.state === "completed" ? (
                 <CheckIcon className="size-3 text-primary" />
               ) : t.state === "in_progress" ? (
-                <Loader2Icon className="size-3 animate-spin text-amber-500" />
+                // NEUTRAL, per the quiet-colour law ultra-anchor.tsx states and
+                // ULTRA_TONE_CLASS.active encodes: active work gets a neutral
+                // spinner, never a saturated hue. (This carried `text-amber-500`
+                // before the token sweep; amber's token is --warning, which
+                // means "a person has to move" and is wrong for work in flight,
+                // and --info would swap one saturated hue for another. The
+                // motion is the liveness signal — the row above it is muted and
+                // the finished one is --primary, so it still reads as the
+                // current line.)
+                <Loader2Icon className="size-3 animate-spin text-foreground" />
               ) : (
                 <CircleIcon className="size-3 text-muted-foreground/40" />
               )}

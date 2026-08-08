@@ -207,15 +207,15 @@ export function StatTile({
   );
 }
 
-// An account chip — sky for work, emerald for oss, muted otherwise. Session
+// An account chip — info for work, success for oss, muted otherwise. Session
 // accounts are freeform strings, so the tone is by convention, never an
 // exhaustive enum.
 export function AccountBadge({ account }: { account: string }) {
   const tone =
     account === "work"
-      ? "border-sky-500/25 bg-sky-500/5 text-sky-300"
+      ? "border-info/25 bg-info/5 text-info"
       : account === "oss"
-        ? "border-emerald-500/25 bg-emerald-500/5 text-emerald-300"
+        ? "border-success/25 bg-success/5 text-success"
         : "border-border text-muted-foreground";
   return (
     <Badge variant="outline" className={cn("px-1.5 py-0 text-[10px]", tone)}>
@@ -226,6 +226,11 @@ export function AccountBadge({ account }: { account: string }) {
 
 // The indigo weave marker — kept OUT of the state palette (matches LoomCard's
 // WeaveChip) so a woven loom in needs-review never shows two competing signals.
+// Indigo is the one sanctioned non-token hue for exactly that reason; what is
+// NOT sanctioned is spelling it `text-indigo-300` alone. A `*-300` step is
+// DARK-ONLY — on light mode it lands ~1.6:1 on its own /10 fill — so the hue
+// carries an explicit light value and a `dark:` step, the same pairing
+// LoomCard's copy uses.
 // Reads role + thread count straight off the loom (no extra fetch); verify
 // looms get a quiet outline label, single looms nothing.
 export function WeaveChip({ loom }: { loom: Loom }) {
@@ -245,7 +250,7 @@ export function WeaveChip({ loom }: { loom: Loom }) {
   return (
     <Badge
       variant="outline"
-      className="shrink-0 gap-1 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-300"
+      className="shrink-0 gap-1 border-indigo-500/30 bg-indigo-500/10 px-1.5 py-0 font-mono text-[10px] text-indigo-700 dark:text-indigo-300"
     >
       <WorkflowIcon className="size-2.5" />
       {n == null ? "weave" : `${n} thread${n === 1 ? "" : "s"}`}

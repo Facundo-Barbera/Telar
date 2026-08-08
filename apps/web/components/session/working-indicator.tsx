@@ -87,14 +87,14 @@ export function WorkingIndicator({
     state.kind === "thinking" ? "Thinking" : state.kind === "compacting" ? "Compacting" : "Working";
 
   return (
-    <div className={cn(base, silent && "text-amber-500/80", className)}>
+    <div className={cn(base, silent && "text-warning/80", className)}>
       <PulseDot silent={silent} />
-      <Shimmer as="span" className={cn("text-[11px]", silent && "text-amber-500/80")}>
+      <Shimmer as="span" className={cn("text-[11px]", silent && "text-warning/80")}>
         {label}
       </Shimmer>
       <span className="shrink-0 font-mono tabular-nums">{fmtElapsed(elapsed)}</span>
       {silent && (
-        <span className="shrink-0 font-mono tabular-nums text-amber-500">
+        <span className="shrink-0 font-mono tabular-nums text-warning">
           · no output {fmtElapsed(silentFor)}
         </span>
       )}
@@ -110,7 +110,7 @@ function PulseDot({ silent = false }: { silent?: boolean }) {
       aria-hidden
       className={cn(
         "size-1.5 shrink-0 rounded-full motion-safe:animate-pulse",
-        silent ? "bg-amber-500" : "bg-muted-foreground/50",
+        silent ? "bg-warning" : "bg-muted-foreground/50",
       )}
     />
   );

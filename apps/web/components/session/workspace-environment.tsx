@@ -87,7 +87,7 @@ export function WorkspaceEnvironment({
         <GitBranchIcon className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate font-mono">{branch}</span>
         {git && git.header.dirtyFiles > 0 && (
-          <span className="ml-auto shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
+          <span className="ml-auto shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
             {git.header.dirtyFiles} changed
           </span>
         )}

@@ -43,17 +43,17 @@ const TONE: Record<
     pulse: false,
   },
   blocked: {
-    dot: "bg-amber-500",
-    text: "text-amber-600",
-    tint: "bg-amber-500/10",
-    border: "border-amber-500/40",
+    dot: "bg-warning",
+    text: "text-warning",
+    tint: "bg-warning/10",
+    border: "border-warning/40",
     pulse: true,
   },
   ready: {
-    dot: "bg-emerald-500",
-    text: "text-emerald-600",
-    tint: "bg-emerald-500/10",
-    border: "border-emerald-500/40",
+    dot: "bg-success",
+    text: "text-success",
+    tint: "bg-success/10",
+    border: "border-success/40",
     pulse: false,
   },
 };
@@ -84,8 +84,8 @@ function rollup(looms: PillLoom[]): { tone: LoomTone; label: string } {
 function Pulse() {
   return (
     <span className="relative flex size-1.5 shrink-0">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500/60" />
-      <span className="relative inline-flex size-1.5 rounded-full bg-amber-500" />
+      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-warning/60" />
+      <span className="relative inline-flex size-1.5 rounded-full bg-warning" />
     </span>
   );
 }
