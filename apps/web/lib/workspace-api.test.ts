@@ -10,6 +10,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import YAML from "yaml";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "telar-workspace-api-"));
 process.env.TELAR_HOME = TMP;
@@ -97,7 +98,7 @@ describe("getPacketView", () => {
     expect(after.item.lane).toBe(office.key); // the stale hint, harmlessly
   });
 
-  test("an unfiled item's lane and rank are both null", () => {
+  test("an unfiled item's lane and rank are both null — and the API will no longer MAKE one", () => {
     // An ORDINARY lane, not the seed — retireLane refuses "unfiled"
     // specifically (the fix-round guard against create_item's fallback target
     // being retired out from under it; see store.ts's SEED_LANE_KEY comment),
@@ -106,12 +107,28 @@ describe("getPacketView", () => {
     const item = createWorkspaceItem({ title: "orphaned", lane: lane.key });
     const view = getPacketView(item.id)!;
     expect(view.lane).toBe(lane.key);
-    // Empty the row, then retire it — with the row gone entirely, the item's
-    // own packet.lane hint names a lane absent from lanes.yaml (arm 3, "lane
-    // gone"), which is the genuinely unfiled resting state. Emptying alone
-    // would instead re-adopt it into that same still-existing row (arm 1).
+
+    // THIS USED TO BE THE SETUP AND IS NOW AN ASSERTION (story 5.7's review).
+    // Emptying the stored stack and retiring the row is exactly how an item
+    // came to name a lane that lanes.yaml no longer carries — queueSlice arm 3
+    // then gives it NO ROW, so it falls off the queue and out of `totalItems`
+    // while the desk rail promises in words that a dismissed card "sends it to
+    // the queue". retireLane now refuses while any item still names the lane,
+    // adopted-into-it or stacked, so this state is unreachable through the API.
     reorderQueueLane(lane.key, []);
-    expect(retireWorkspaceLane(lane.key)).toEqual({ ok: true });
+    const refused = retireWorkspaceLane(lane.key);
+    expect(refused.ok).toBe(false);
+    expect((refused as { reason: string }).reason).toContain(item.id);
+
+    // The state is still REACHABLE ON DISK, which is why the projection must
+    // stay total: lanes.yaml is hand-editable by design (AD-6), and a store
+    // written before that guard existed can carry this shape. So the row is
+    // removed the way a human would remove it — in the file — and the view has
+    // to answer null twice rather than throw or invent a lane.
+    const lanesFile = path.join(TMP, "workspace", "lanes.yaml");
+    const rows = YAML.parse(fs.readFileSync(lanesFile, "utf8")) as Array<{ key: string }>;
+    fs.writeFileSync(lanesFile, YAML.stringify(rows.filter((r) => r.key !== lane.key)));
+
     const after = getPacketView(item.id)!;
     expect(after.lane).toBeNull();
     expect(after.rank).toBeNull();

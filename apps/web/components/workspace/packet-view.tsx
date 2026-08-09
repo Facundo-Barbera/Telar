@@ -88,7 +88,7 @@ function BackLink() {
       variant="ghost"
       size="icon-sm"
       className="text-muted-foreground"
-      render={<Link href="/workspace" aria-label="Back to the queue" />}
+      render={<Link href="/workspace/queue" aria-label="Back to the queue" />}
     >
       <ArrowLeftIcon className="size-4" />
     </Button>
@@ -212,7 +212,7 @@ function ItsTurnCame({ view, onWoven }: { view: PacketViewData; onWoven: () => v
             <MessageSquareIcon />
             Start a session instead
           </Button>
-          <Button variant="ghost" size="sm" className="w-full" render={<Link href="/workspace" />}>
+          <Button variant="ghost" size="sm" className="w-full" render={<Link href="/workspace/queue" />}>
             Not now — back to the stack
           </Button>
           <p className="pt-1 text-center text-[10px] leading-relaxed text-muted-foreground/60">
@@ -341,7 +341,7 @@ export function PacketView({ id }: { id: string }) {
             title="This item isn't in the workspace"
             description="It may have been retired, or the id in the address is wrong."
             action={
-              <Button variant="outline" size="sm" render={<Link href="/workspace" />}>
+              <Button variant="outline" size="sm" render={<Link href="/workspace/queue" />}>
                 Back to the queue
               </Button>
             }

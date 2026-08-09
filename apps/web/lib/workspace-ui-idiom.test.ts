@@ -28,8 +28,19 @@ const read = (path: string) => readFileSync(new URL(path, WEB_ROOT), "utf8");
 const CHIPS = "components/workspace/chips.tsx";
 const QUEUE = "components/workspace/queue-view.tsx";
 const PACKET = "components/workspace/packet-view.tsx";
-const PAGES = ["app/workspace/page.tsx", "app/workspace/[id]/page.tsx"];
-const ALL = [CHIPS, QUEUE, PACKET, ...PAGES];
+// Story 5.7's two: the master surface and its Desk rail, hand-ported from
+// lib/demo-gallery/workspace/home.tsx exactly as the three above were ported
+// from queue.tsx/packet.tsx — same prototype, same palette hazard, same scan.
+const MASTER = "components/workspace/master-chat.tsx";
+const DESK = "components/workspace/desk-rail.tsx";
+const PAGES = [
+  // The ROOT is the master chat (story 5.7 moved the queue down a segment, per
+  // ui-contract.md's "the queue does not pretend to be its own destination").
+  "app/workspace/page.tsx",
+  "app/workspace/queue/page.tsx",
+  "app/workspace/[id]/page.tsx",
+];
+const ALL = [CHIPS, QUEUE, PACKET, MASTER, DESK, ...PAGES];
 
 // THE FILES THE STATE-TOKEN MIGRATION ACTUALLY TOUCHED. Scanning only the
 // workspace surfaces was a guard aimed at the wrong wall: none of those three
@@ -169,7 +180,7 @@ describe("workspace surfaces stay on the radius scale", () => {
   // Comment-stripped, for the same reason the ramp scan is: chips.tsx's header
   // has to be able to quote the demo's `rounded border-border/60` as the thing
   // it deliberately does NOT copy.
-  for (const file of [CHIPS, QUEUE, PACKET]) {
+  for (const file of [CHIPS, QUEUE, PACKET, MASTER, DESK]) {
     test(`${file} has no bare \`rounded\``, () => {
       expect(stripComments(read(file))).not.toMatch(/\brounded(?=["'\s])/);
     });
@@ -236,16 +247,28 @@ describe("the chip grammar is frozen, and lives in exactly one module", () => {
     expect('<span className="bg-warning/10" />').toMatch(new RegExp(`\\b(?:bg|border)-${STATE}\\b`));
   });
 
-  test("no surface re-spells a chip inline — both import the one module", () => {
+  test("no surface re-spells a chip inline — every one imports the one module", () => {
     // Cross-surface invariant 1: "deadline, verdict, project and provenance
     // render identically on every surface". That is satisfied structurally,
     // by there being one definition site, and it stops being satisfied the
     // moment a surface inlines its own span instead.
-    for (const file of [QUEUE, PACKET]) {
+    //
+    // DESK IS IN THIS LIST NOW, and it is the file the list was widened for:
+    // the rail shipped a hand-spelled `rounded-md bg-muted … font-mono` project
+    // tag — ProjectChip minus `floating`, minus the mirrored dot-icon — beside
+    // a deadline the projection had flattened into prose, so a self-deadline
+    // lost its dashed outline and its `· self · slid ×N`. Both halves are
+    // fixed: core's deskSlice emits FIELDS, and the rail renders them with
+    // these components.
+    for (const file of [QUEUE, PACKET, DESK]) {
       expect(read(file)).toContain('from "@/components/workspace/chips"');
     }
     expect(read(QUEUE)).toContain("<VerdictChip");
     expect(read(PACKET)).toContain("<VerdictChip");
+    expect(read(DESK)).toContain("<ProjectChip");
+    expect(read(DESK)).toContain("<DeadlineChip");
+    // The inline span it used to be, in the spelling it had.
+    expect(read(DESK)).not.toMatch(/className="rounded-md bg-muted px-1\.5 py-0\.5 font-mono/);
   });
 
   test("production never imports the demo prototypes", () => {
@@ -277,6 +300,55 @@ describe("workspace surfaces compose the shared chrome instead of re-rolling it"
     }
   });
 
+  test("the master surface wears the app's header and the shell's own transcript", () => {
+    // Its chrome budget is deliberately tiny: PageHeader for the top bar, and
+    // then the shared `Conversation` shell for everything below it. A second
+    // hand-rolled chat window is exactly what SPEC.md forbids here.
+    const src = read(MASTER);
+    expect(src).toContain('from "@/components/common/page-header"');
+    expect(src).toContain('from "@/components/conversation"');
+    expect(src).toContain("<PageHeader");
+  });
+
+  test("the desk rail waits, fails and recovers in the shared vocabulary", () => {
+    const src = read(DESK);
+    expect(src).toContain('from "@/components/ui/skeleton"');
+    expect(src).toContain("<Skeleton");
+    expect(src).not.toMatch(/animate-pulse/);
+    // THE FAILURE HALF WAS MISSING, and its absence had a visible cost: a rail
+    // whose FIRST read failed skipped the skeleton, had no cards and no empty
+    // copy, and rendered one 10px destructive line at the bottom of a scroll
+    // container — a failed load that reads as a cleared desk, on the surface
+    // where nothing is ever deleted. Same two states its siblings have:
+    // EmptyState + retry with nothing on screen, the shared destructive Alert
+    // over data that is still good.
+    expect(src).toContain('from "@/components/common/empty-state"');
+    expect(src).toContain('from "@/components/ui/alert"');
+    expect(src).toContain("<EmptyState");
+    expect(src).toContain('<Alert variant="destructive"');
+  });
+
+  test("both workspace tabs are real links now, and chat is the ROOT", () => {
+    // Chat rendered inert through story 5.5 because it had no page. It has one
+    // (app/workspace/page.tsx), so the segmented control must no longer carry a
+    // disabled half — a tab that looks like a tab and does nothing is the exact
+    // affordance the inert version was apologising for.
+    //
+    // AND THE HREFS ARE THE SHELL SENTENCE, not a preference: ui-contract.md
+    // makes the workspace "one top-level destination with two tabs — Chat
+    // (front door) and Queue (the drawer behind it)", so chat holds
+    // `/workspace` and the queue is nested beneath it. Nesting chat under the
+    // queue would state the relationship backwards in the URL bar and in the
+    // sidebar's one workspace entry.
+    const src = read(CHIPS);
+    expect(src).toContain('href="/workspace"');
+    expect(src).toContain('href="/workspace/queue"');
+    expect(src).not.toContain('href="/workspace/chat"');
+    expect(src).not.toContain('aria-disabled="true"');
+    expect(src).not.toContain("cursor-not-allowed");
+    expect(src).toMatch(/aria-current=\{active === "chat" \? "page" : undefined\}/);
+  });
+
   test("the queue's toolbar is the shared list-controls set, with lane counts", () => {
     const src = read(QUEUE);
     expect(src).toContain('from "@/components/common/list-controls"');
@@ -293,7 +365,10 @@ describe("workspace surfaces compose the shared chrome instead of re-rolling it"
     expect(src).toContain("<Input");
     // The back affordance is a Button rendering a Link — one focus ring for
     // the whole app, rather than an anchor re-spelling ghost's hover.
-    expect(src).toContain('render={<Link href="/workspace"');
+    // …and it goes to the QUEUE, which is where a packet was opened from and
+    // is no longer the root (story 5.7 moved it to /workspace/queue). A back
+    // link that lands on the chat is not a back link.
+    expect(src).toContain('render={<Link href="/workspace/queue"');
     // And no re-spelling of the shared field's focus geometry.
     expect(src).not.toContain("focus:ring-ring/30");
   });
@@ -314,7 +389,7 @@ describe("motion stays CSS-only", () => {
     // tw-animate-css's animate-in/out is disabled app-wide over a WebKit
     // crash, which is itself why a fade-up from zero opacity must not be a
     // keyframe.
-    for (const file of [CHIPS, QUEUE, PACKET]) {
+    for (const file of [CHIPS, QUEUE, PACKET, MASTER, DESK]) {
       const src = read(file);
       expect(src).not.toContain('from "motion/react"');
       expect(src).not.toContain('from "framer-motion"');
@@ -326,11 +401,26 @@ describe("motion stays CSS-only", () => {
     // The app's hover convention is `hover:bg-muted/60`-or-`/40` PLUS
     // `transition-colors` (ultra-rail.tsx, subagent-rail.tsx). A hover with no
     // transition is the tell of a hand-port.
-    for (const file of [CHIPS, QUEUE, PACKET]) {
+    //
+    // MASTER IS NOT IN THIS LIST and cannot be: it owns no hoverable control of
+    // its own — its composer is the shared PromptInput kit and its transcript
+    // is the shell's — so requiring a `hover:` there would force a decorative
+    // one into a file whose whole design is that it configures rather than
+    // draws. It stays in the ramp/radius/motion scans, where absence is not a
+    // precondition.
+    for (const file of [CHIPS, QUEUE, PACKET, DESK]) {
       const src = read(file);
       const hovers = src.match(/className=(?:"|\{cn\()[^;]*?hover:/g)?.length ?? 0;
       expect(hovers).toBeGreaterThan(0);
       expect(src).toContain("transition-colors");
+    }
+    // …and the exemption is CONDITIONAL, not a hole: the claim above is that
+    // MASTER draws no hoverable control, so the scan holds it to that. The day
+    // it grows one it rejoins the rule rather than keeping a pass it was
+    // granted for a shape it no longer has.
+    const master = read(MASTER);
+    if (/className=(?:"|\{cn\()[^;]*?hover:/.test(master)) {
+      expect(master).toContain("transition-colors");
     }
   });
 });

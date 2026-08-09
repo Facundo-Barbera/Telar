@@ -1097,6 +1097,28 @@ export function retireLane(key: string): { ok: true } | { ok: false; reason: str
       reason: `Lane "${key}" still holds ${entry.lane.items.length} item${entry.lane.items.length === 1 ? "" : "s"} in its stored stack. Move or clear them first — retiring never evicts an item on the human's behalf.`,
     };
   }
+  // AN ADOPTED ORPHAN IS AN ITEM IN THIS LANE TOO (5.7's review). queueSlice's
+  // arm 1 files an item whose packet names a lane into that lane even when
+  // lanes.yaml's stored stack has forgotten it — the human sees it under this
+  // group header, ranked, indistinguishable from a stacked one. The stored-stack
+  // check above cannot see it, so retiring here used to leave that packet naming
+  // a key no lanes.yaml row carries: arm 3 then gives it NO ROW AT ALL, and it
+  // vanishes from the queue and from `totalItems` while the desk rail is still
+  // promising, in words, that dismissing a card "sends it here". Nothing was
+  // deleted — listItems and /workspace/<id> still resolve it — but the one
+  // surface the human is told to look on stops showing it, which is the same
+  // rule this function already states one paragraph up: retiring never evicts an
+  // item on the human's behalf.
+  const adopted = listItems().items.filter((i) => i.lane === key);
+  if (adopted.length > 0) {
+    return {
+      ok: false,
+      reason: `Lane "${key}"'s stored stack is empty, but ${adopted.length} item${adopted.length === 1 ? "" : "s"} still name${adopted.length === 1 ? "s" : ""} it (${adopted
+        .slice(0, 3)
+        .map((i) => i.id)
+        .join(", ")}${adopted.length > 3 ? ", …" : ""}) and the queue renders ${adopted.length === 1 ? "it" : "them"} under this lane. Move ${adopted.length === 1 ? "it" : "them"} to another lane first — retiring never evicts an item on the human's behalf, and an item naming a retired lane would fall off the queue entirely.`,
+    };
+  }
   writeLaneRows(read.entries.filter((_, i) => i !== idx).map((e) => e.row));
   return { ok: true };
 }
@@ -1432,7 +1454,19 @@ export function agentsAddedCount(items: Item[]): number {
 export type DeskCard = {
   id: string;
   title: string;
-  tag?: string;
+  /** The item's project, rendered by the SHARED ProjectChip on the rail —
+   *  absent means `floating` there, which is the frozen chip grammar's own rule
+   *  and not something a surface re-decides. */
+  project?: string;
+  /** The foreign ref of a mirrored item, the second half of ProjectChip. */
+  mirrored?: string;
+  /** The deadline, STRUCTURED rather than pre-rendered, so the rail can draw it
+   *  with the shared DeadlineChip: external solid, self dashed and suffixed
+   *  `· self`, `· slid ×N` when it slipped. A flattened string here would make
+   *  the Desk the one surface where that grammar does not hold. */
+  deadline?: Deadline;
+  /** Free prose ONLY where no chip exists to say it — today, the question an
+   *  unplaced card is. Everything a chip renders is a field above. */
   hint?: string;
   unplaced?: boolean;
 };
@@ -1452,25 +1486,27 @@ export type DeskCard = {
 // deletes nothing (SPEC.md's "No deletion path" is untouched), the item keeps
 // its lane and its rank, and 5.3's rail needs the verb to exist. What 5.1 does
 // not ship is the RAIL that calls it.
+//
+// FIELDS, NOT SENTENCES (story 5.7's review). This projection used to flatten
+// project, mirrored ref and deadline into one `hint` STRING — which made the
+// Desk the only surface where a self-deadline lost its `· self`/`· slid ×N`
+// dashed chip and a mirrored item lost its dot-icon ref, breaking cross-surface
+// invariant 1 ("deadline, verdict, project and provenance render identically on
+// every surface") at the projection layer, where no amount of care in the rail
+// could put it back. The card now carries the same fields a QueueRow's item
+// does, and the rail renders them with the same chips.tsx components the queue
+// and the packet view import. `hint` survives for the one thing no chip says.
 export function deskSlice(items: Item[]): DeskCard[] {
   return items
     .filter((i) => i.desk === true)
-    .map((i) => {
-      const hint = i.unplaced
-        ? "unplaced — what is it?"
-        : i.deadline
-          ? `${i.deadline.label} · ${i.deadline.kind}`
-          : i.mirrored
-            ? `mirrored ${i.mirrored}`
-            : undefined;
-      return {
-        id: i.id,
-        title: i.title,
-        ...(i.project ? { tag: i.project } : {}),
-        ...(hint ? { hint } : {}),
-        ...(i.unplaced ? { unplaced: true } : {}),
-      };
-    });
+    .map((i) => ({
+      id: i.id,
+      title: i.title,
+      ...(i.project ? { project: i.project } : {}),
+      ...(i.mirrored ? { mirrored: i.mirrored } : {}),
+      ...(i.deadline ? { deadline: i.deadline } : {}),
+      ...(i.unplaced ? { hint: "unplaced — what is it?", unplaced: true } : {}),
+    }));
 }
 
 // Extensions that render as a picture. Everything else is a file. Coarse on

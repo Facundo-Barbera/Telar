@@ -155,9 +155,16 @@ export function TrackingChip({ loomId, label }: { loomId: string; label?: string
 }
 
 // The Workspace surface's internal nav: chat is the front door (story 5.3),
-// the queue is the drawer behind it. "chat" has no page to link to yet, so it
-// renders inert rather than as a dead link — a real href would be a promise
-// this story does not keep.
+// the queue is the drawer behind it. Chat rendered INERT until story 5.7 —
+// "a real href would be a promise this story does not keep" — and 5.7 is the
+// story that keeps it: both tabs are links now and the segmented control
+// finally means what its shape says.
+//
+// AND THE HREFS SAY WHICH IS WHICH. Chat is `/workspace` — the destination
+// ROOT — and the queue is `/workspace/queue` beneath it, because ui-contract's
+// Shell section makes the queue "the drawer behind" the front door rather than
+// the thing you arrive at. Two links pointing the other way would have left
+// the nav's Workspace entry landing on the drawer.
 // The segmented control's geometry is the demo's; the STATES are the app's —
 // `transition-colors` + `hover:bg-muted/60` is the hover convention every
 // reference surface uses (ultra-rail's RunCard/DoneRow, subagent-rail's rows),
@@ -170,16 +177,19 @@ export function WorkspaceTabs({ active }: { active: "chat" | "queue" }) {
   const off = "text-muted-foreground";
   return (
     <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
-      <span
-        aria-disabled="true"
-        title="Chat arrives in a later story"
-        className={cn(base, active === "chat" ? on : off, "cursor-not-allowed opacity-60")}
+      <Link
+        href="/workspace"
+        aria-current={active === "chat" ? "page" : undefined}
+        className={cn(
+          base,
+          active === "chat" ? on : cn(off, "hover:bg-muted/60 hover:text-foreground"),
+        )}
       >
         <MessageSquareIcon className="size-3.5" />
         Chat
-      </span>
+      </Link>
       <Link
-        href="/workspace"
+        href="/workspace/queue"
         aria-current={active === "queue" ? "page" : undefined}
         className={cn(
           base,

@@ -44,12 +44,16 @@ import { cn } from "@/lib/utils";
 // production twin navigates and a gallery stage may not. Everything else in
 // that module is a pure span and comes across by re-export.
 //
-// This one is held back TWICE OVER. The production twin (chips.tsx's
-// WorkspaceTabs) also renders Chat INERT — `cursor-not-allowed opacity-60`, no
-// href — because the chat page does not exist yet and a real link would be a
-// promise story 5.3 does not keep.
-// These mockups ARE the design source for that page, so both tabs render as
-// live segments. Every class below is the production string verbatim (`base` /
+// The production twin used to render Chat INERT — `cursor-not-allowed
+// opacity-60`, no href — because the chat page did not exist and a real link
+// would have been a promise story 5.3 could not keep. STORY 5.7 BUILT THE PAGE
+// — as the workspace ROOT (app/workspace/page.tsx), with the queue moved down
+// to app/workspace/queue, because ui-contract.md's shell sentence makes chat
+// the front door and the queue the drawer behind it. So both halves of the
+// production control are now real <Link>s and the only difference left is the
+// one below: a gallery stage must not navigate off itself, so these two are
+// spans.
+// Every class below is the production string verbatim (`base` /
 // `on` / `off`, including the `transition-colors` + `hover:bg-muted/60` hover
 // convention), so the two copies can disagree about exactly one thing: whether
 // Chat exists. Neither tab is a <Link> — a gallery stage must not navigate off

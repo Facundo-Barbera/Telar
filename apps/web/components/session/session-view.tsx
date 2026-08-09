@@ -171,11 +171,8 @@ import {
   modelsForProvider,
   type ModelInfo,
 } from "@/lib/models";
-import {
-  ATTACHMENT_MAX_BYTES,
-  ATTACHMENT_MAX_FILES,
-  type AttachmentUploadResponse,
-} from "@/lib/attachment-contract";
+import { ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_FILES } from "@/lib/attachment-contract";
+import { uploadAttachments } from "@/lib/attachment-upload";
 import {
   groupAccepts,
   groupDefault,
@@ -403,38 +400,10 @@ function runtimeModeFromLegacy(
 // Escape cancels; the ✕ drops it before it ever sends. No programmatic .focus()
 // beyond the input's own autoFocus (WebKit-safe — it's mount focus, not a
 // roving .focus() call on an existing element).
-/**
- * Persist a turn's staged attachments and return the ids the wire carries.
- *
- * The urls arriving here are DATA urls, not blob urls: PromptInput converts
- * them before it calls onSubmit precisely so the payload survives the composer
- * clearing (which revokes every blob it created). That conversion is also why
- * this can run after the UI has already reset.
- *
- * Throws on failure, which puts the turn on send()'s existing error path — an
- * attachment that silently failed to upload would produce a turn whose text
- * refers to a screenshot the agent was never given.
- */
-async function uploadAttachments(
-  files: PromptInputMessage["files"],
-): Promise<{ id: string; name: string; mediaType: string; size: number }[]> {
-  const form = new FormData();
-  for (const file of files) {
-    if (!file.url) continue;
-    const blob = await fetch(file.url).then((r) => r.blob());
-    form.append("file", blob, file.filename ?? "attachment");
-  }
-  const res = await fetch("/api/chat/attachments", { method: "POST", body: form });
-  if (!res.ok) {
-    const detail = await res
-      .json()
-      .then((b) => (b as { error?: string })?.error)
-      .catch(() => null);
-    throw new Error(detail ?? `attachment upload failed (HTTP ${res.status})`);
-  }
-  const body = (await res.json()) as AttachmentUploadResponse;
-  return body.attachments;
-}
+// `uploadAttachments` MOVED to @/lib/attachment-upload (story 5.7): the master
+// surface's composer is the same vendored PromptInput and stages files the same
+// way, so the POST — and, more importantly, its throw-on-failure contract — is
+// one function both surfaces import rather than two that can drift.
 
 function QueueChip({
   index,

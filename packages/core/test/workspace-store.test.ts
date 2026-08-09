@@ -1200,22 +1200,38 @@ describe("A5 the pure projections take already-read data and touch no disk", () 
     ]);
   });
 
-  test("A5 deskSlice emits {id,title,tag?,hint?,unplaced?} from ITEM FIELDS ALONE", () => {
+  test("A5 deskSlice emits {id,title,project?,mirrored?,deadline?,hint?,unplaced?} from ITEM FIELDS ALONE", () => {
+    // FIELDS, NOT SENTENCES (5.7's review). The deadline and the mirrored ref
+    // used to be flattened into one prose `hint`, which stranded the Desk
+    // outside the frozen chip grammar: a self-deadline cannot render dashed
+    // with `· self`/`· slid ×N`, and a mirrored item cannot render its
+    // dot-icon ref, if the projection has already turned both into a string.
     const cards = deskSlice([
       item({ id: "i-1", title: "Remove CSV export button", project: "aurora", desk: true, deadline: { label: "Fri", kind: "external" } }),
       item({ id: "i-2", title: "Call María — invoice", desk: true }),
       item({ id: "i-3", title: "the pdf thing", desk: true, unplaced: true }),
       item({ id: "i-4", title: "not on the desk" }),
-      item({ id: "i-5", title: "mirrored one", desk: true, mirrored: "#214" }),
+      item({ id: "i-5", title: "mirrored one", desk: true, project: "aurora", mirrored: "#214" }),
+      item({ id: "i-6", title: "slid twice", desk: true, deadline: { label: "Thu", kind: "self", slips: 2 } }),
     ]);
-    expect(cards.map((c) => c.id)).toEqual(["i-1", "i-2", "i-3", "i-5"]);
-    expect(cards[0]).toEqual({ id: "i-1", title: "Remove CSV export button", tag: "aurora", hint: "Fri · external" });
+    expect(cards.map((c) => c.id)).toEqual(["i-1", "i-2", "i-3", "i-5", "i-6"]);
+    expect(cards[0]).toEqual({
+      id: "i-1",
+      title: "Remove CSV export button",
+      project: "aurora",
+      deadline: { label: "Fri", kind: "external" },
+    });
     expect(cards[1]).toEqual({ id: "i-2", title: "Call María — invoice" });
     expect(cards[2]).toEqual({ id: "i-3", title: "the pdf thing", hint: "unplaced — what is it?", unplaced: true });
-    expect(cards[3]).toEqual({ id: "i-5", title: "mirrored one", hint: "mirrored #214" });
-    // The card shape carries no field the fixtures' DeskItem does not.
+    expect(cards[3]).toEqual({ id: "i-5", title: "mirrored one", project: "aurora", mirrored: "#214" });
+    // The slip count survives the projection — it is the witness CAP-7 renders.
+    expect(cards[4]!.deadline).toEqual({ label: "Thu", kind: "self", slips: 2 });
+    // `hint` is prose ONLY where no chip exists to say it: the unplaced question.
+    expect(cards.filter((c) => c.hint !== undefined).map((c) => c.id)).toEqual(["i-3"]);
     for (const c of cards) {
-      for (const k of Object.keys(c)) expect(["id", "title", "tag", "hint", "unplaced"]).toContain(k);
+      for (const k of Object.keys(c)) {
+        expect(["id", "title", "project", "mirrored", "deadline", "hint", "unplaced"]).toContain(k);
+      }
     }
   });
 
@@ -1466,6 +1482,42 @@ describe("5.2 retireLane refuses a non-empty stack and never partially applies",
     expect(item.lane).toBe("unfiled");
     expect(item.unplaced).toBe(true);
     expect(readLanes().find((l) => l.key === "unfiled")!.items).toContain(item.id);
+  });
+
+  // 5.7 fix-round: the stored stack is not the only way an item is IN a lane.
+  // queueSlice's arm 1 adopts an item whose packet names a lane the stored
+  // stack has forgotten — it renders under that group header, ranked,
+  // indistinguishable from a stacked one. Retiring the row on the strength of
+  // an empty `items:` array therefore evicted an item the human could see, and
+  // arm 3 gives an item naming no known lane NO ROW AT ALL: it falls off the
+  // queue and out of `totalItems` while the desk rail promises, in words, that
+  // dismissing a card "sends it here".
+  test("retireLane refuses a lane whose stack is empty but whose packets still name it", () => {
+    ensureWorkspace();
+    writeLanes([lane("unfiled", []), lane("office", [])]);
+    const item = createItem({ title: "invoice for aurora", lane: "office" });
+    expect(item.lane).toBe("office");
+    // The stored stack forgets it — a hand-edited lanes.yaml, a half-applied
+    // move, or any of the ways AD-7 tolerates a file it did not write.
+    writeLanes([lane("unfiled", []), lane("office", [])]);
+    expect(readLanes().find((l) => l.key === "office")!.items).toEqual([]);
+    // …and the queue still shows it under "office", which is the whole point:
+    // arm 1 adopts an orphan whose packet names a real lane.
+    const before = fs.readFileSync(lanesPath(), "utf8");
+    expect(queueSlice(readLanes(), listItems().items).map((r) => [r.lane, r.item.id])).toEqual([
+      ["office", item.id],
+    ]);
+
+    const result = retireLane("office");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain(item.id);
+      expect(result.reason).toContain("never evicts an item on the human's behalf");
+    }
+    expect(fs.readFileSync(lanesPath(), "utf8")).toBe(before); // nothing written
+    // The item is still where it was, and still on the queue.
+    expect(getWorkspaceItem(item.id)!.lane).toBe("office");
+    expect(queueSlice(readLanes(), listItems().items)).toHaveLength(1);
   });
 
   // A lane other than the seed still retires exactly as before — the guard
