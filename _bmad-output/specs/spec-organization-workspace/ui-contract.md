@@ -36,7 +36,7 @@ The app's proven list idiom: search-first toolbar, lane filter chips, collapsibl
 - **What's-next card** pinned above the list: the single suggested move with its reason and a rough size, plus `Open` / `Not this`.
 - **Lane filter chips** with counts, ending in a dashed `+ lane` — lanes are the user's to split, rename, retire.
 - **Group header** (sticky): lane label, count, structural provenance note when the lane was split, and its coarse window right-aligned.
-- **Row**, left to right: checkbox · rank · sub-task disclosure · title · `done/total` when sub-tasks exist · packet tallies (paperclip = files, template = mockups) · provenance tag · deadline chip · verdict chip · project chip (or `floating`, plus mirrored ref).
+- **Row**, left to right: checkbox · sub-task disclosure · rank · title · `done/total` when sub-tasks exist · packet tallies (paperclip = files, template = mockups) · provenance tag · deadline chip · verdict chip · project chip (or `floating`, plus mirrored ref).
 - **Sub-task rows** expand under the parent, indented, inside the same group — never as queue entries.
 - **Footer line** states the conservation law with live numbers: total items, *agents added 0*, and that sub-tasks never grow the count.
 - **Batch bar** (sticky, on selection): count · the master's one-line reason the selection coheres · `Weave as one loom` / `Sessions, one each` / `Clear`. On weave it becomes the **detach receipt** in place — mono, one line, naming premise + context and that it detached from the workspace.

@@ -8,8 +8,10 @@
 //      register a mount for the same kind.
 //   2. THE SCOPE. The master's workspace server is UNSCOPED — a cross-project
 //      view — and a project session's is not. That is a claim about behaviour,
-//      not about a name, so it is proved by CALLING list_items on both mounts
-//      against a real store rather than by reading the source.
+//      not about a name, so it is proved by CALLING both mounts against a real
+//      store rather than by reading the source — `list_items` for the READ half
+//      and `update_item` for the WRITE half, which a review pointed out was the
+//      one with a blast radius and the one this file used to leave unmeasured.
 //
 // THE SCOPE HALF RUNS IN A SANDBOXED CHILD, and the reason is the same one
 // session-profiles.test.ts carries: core's workspace store writes under the
@@ -235,23 +237,40 @@ describe("5.6 the master's workspace server is UNSCOPED, and a project session's
           `import { createItem } from ${JSON.stringify(core)};`,
           // Two items, two projects, one store.
           `createItem({ title: "aurora thing", project: "aurora" });`,
-          `createItem({ title: "borealis thing", project: "borealis" });`,
+          `const borealis = createItem({ title: "borealis thing", project: "borealis" });`,
           `const account = { name: "facundo@personal", provider: "claude" };`,
           `const base = { account, objectiveSeed: "seed", link: {}, getSessionId: () => "sess-1", getMessageId: () => "run-1", browserScopeKey: "k" };`,
           // Reach the SDK server's registered tools and invoke the handler
           // directly — the idiom workspace-mcp.test.ts and ultra-mcp.test.ts
           // both use.
-          `const call = async (server, name) => {`,
+          // `raw` keeps the isError flag and the UNPARSED text, because a
+          // refusal is a plain sentence rather than JSON — parsing it eagerly
+          // (which the first version of this helper did) turns a measured refusal
+          // into a probe crash.
+          `const raw = async (server, name, args) => {`,
           `  const t = server.instance._registeredTools[name];`,
-          `  const r = await t.handler({}, {});`,
-          `  return JSON.parse((r.content ?? []).map((c) => c.text ?? "").join(""));`,
+          `  const r = await t.handler(args ?? {}, {});`,
+          `  return { isError: !!r.isError, text: (r.content ?? []).map((c) => c.text ?? "").join("") };`,
           `};`,
+          `const call = async (server, name, args) => JSON.parse((await raw(server, name, args)).text);`,
           `const master = resolveSessionMcpServers("master", { ...base });`,
           `const scoped = resolveSessionMcpServers("project", { ...base, project: "aurora" });`,
           `const m = await call(master.workspace, "list_items");`,
           `const s = await call(scoped.workspace, "list_items");`,
           `const titles = (r) => (r.items ?? []).map((i) => i.title).sort();`,
-          `console.log(JSON.stringify({ master: titles(m), scoped: titles(s) }));`,
+          // THE WRITE HALF OF THE SAME CLAIM — the half with a blast radius, and
+          // the half a review found unproved. `update_item` checks scope BEFORE
+          // the write, so these two calls measure the same predicate the read
+          // does, in the direction that mutates.
+          `const scopedWrite = await raw(scoped.workspace, "update_item", { itemId: borealis.id, title: "scoped rename" });`,
+          `const masterWrite = await raw(master.workspace, "update_item", { itemId: borealis.id, title: "master rename" });`,
+          `const after = await call(master.workspace, "list_items");`,
+          `console.log(JSON.stringify({`,
+          `  master: titles(m), scoped: titles(s),`,
+          `  scopedWriteRefused: scopedWrite.isError,`,
+          `  masterWriteRefused: masterWrite.isError,`,
+          `  titlesAfter: titles(after),`,
+          `}));`,
         ].join("\n"),
       );
       const out = spawnSync(process.execPath, [probe], {
@@ -264,9 +283,16 @@ describe("5.6 the master's workspace server is UNSCOPED, and a project session's
         },
       });
       const line = (out.stdout ?? "").trim().split("\n").pop() ?? "";
-      let parsed: { master: string[]; scoped: string[] } | null = null;
+      type ProbeAnswer = {
+        master: string[];
+        scoped: string[];
+        scopedWriteRefused: boolean;
+        masterWriteRefused: boolean;
+        titlesAfter: string[];
+      };
+      let parsed: ProbeAnswer | null = null;
       try {
-        parsed = JSON.parse(line) as { master: string[]; scoped: string[] };
+        parsed = JSON.parse(line) as ProbeAnswer;
       } catch {
         /* fall through to the diagnostic below */
       }
@@ -289,6 +315,22 @@ describe("5.6 the master's workspace server is UNSCOPED, and a project session's
       // master's context through to a scoped server, or a scoped one that
       // dropped its project, both fail here.
       expect(parsed.scoped).toEqual(["aurora thing"]);
+      // THE WRITE HALF, WHICH THIS TEST USED TO LEAVE UNPROVED and a review
+      // named as "the half with a blast radius". Cross-project MUTATION from the
+      // master is INTENDED — CAP-1's briefing is about every project and CAP-2's
+      // brain dump files fragments into the ones they belong to, so a master that
+      // could read every item and rewrite none would be a receptionist with no
+      // pen. It is asserted here so it stays a decision: the day it should not be
+      // true, this row is what turns red.
+      expect(parsed.masterWriteRefused).toBe(false);
+      // …and the scoped mount refuses the SAME id, which is what says the
+      // permission came from the mount's scope and not from the item being
+      // reachable. `update_item` checks scope before the write, so a refusal here
+      // means nothing was written either.
+      expect(parsed.scopedWriteRefused).toBe(true);
+      // THE OBSERVABLE OUTCOME, so neither flag can be a lie about what landed on
+      // disk: the master's rename took, the scoped session's did not.
+      expect(parsed.titlesAfter).toEqual(["aurora thing", "master rename"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(fakeHome, { recursive: true, force: true });

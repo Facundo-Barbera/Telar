@@ -54,7 +54,10 @@ import {
   ULTRA_AUTO_TOOL_NAMES,
   WORKSPACE_AUTO_TOOL_NAMES,
   unmetCapabilities,
-  workspaceHomeDir,
+  // `workspaceHomeDir` IS DELIBERATELY NOT IMPORTED HERE — see the
+  // `masterCwdStandIn` note in the write-boundary block below. It is on INV-7's
+  // reader surface, and this file's whole idiom is that a call which resolves
+  // the state root happens in a sandboxed CHILD and nowhere else.
   workspaceStorePaths,
   type SessionKind,
   type SessionProfileBuilder,
@@ -811,13 +814,35 @@ describe("5.6 the master's write boundary is the guardrail, not the layout", () 
   // what the anchor really parses — the child probe above measures exactly
   // that), so every protected path in the resolved profile can only have come
   // from the spec's `addProtectedPaths`.
+  // THE MASTER'S CWD, DERIVED FROM THE STORE'S OWN PATHS INSTEAD OF BY CALLING
+  // `workspaceHomeDir()` HERE — and that is an INV-7 fix, not a tidy-up.
+  //
+  // `workspaceHomeDir` is on `STATE_ROOT_READERS` (packages/core/test/
+  // invariants.test.ts), so calling it in the SHARED bun process made INV-7b and
+  // INV-7c red on this line — the one violation in the whole tree. The other
+  // three sanctioned mechanisms were weighed and rejected: pinning
+  // `process.env.TELAR_HOME` at module scope is what this file's own header
+  // forbids in as many words (every suite runs in ONE process, so the pin leaks
+  // to every file that follows), and moving these five predicate tests into a
+  // child would spend a process on assertions that touch no disk.
+  //
+  // WHAT THIS EXPRESSION IS ALLOWED TO ASSUME, and where each half is proved:
+  // `workspaceStorePaths()` is a pure composer and is NOT on the reader surface;
+  // that the master's real cwd is a SIBLING of those two entries — i.e. that
+  // `../lanes.yaml` is the true attack spelling — is pinned end-to-end by the
+  // sandboxed anchor probe above (`siblings` contains `home`, `lanes.yaml` and
+  // `packets`, and `cwd` is `<TELAR_HOME>/workspace/home`). So this stand-in is
+  // the real layout re-derived from the half of it this process may touch, and
+  // the first test below asserts the sibling relation rather than assuming it.
+  const masterCwdStandIn = path.join(path.dirname(workspaceStorePaths()[0]!), "home");
+
   const masterProfile = () =>
     resolveSessionProfile(
       ctx({
         kind: "master",
         manifest: ProjectManifest.parse({
           name: "__master__",
-          root: workspaceHomeDir(),
+          root: masterCwdStandIn,
           account: "personal",
           guardrails: { disallowedTools: [], protectedPaths: [] },
         }),
@@ -841,6 +866,14 @@ describe("5.6 the master's write boundary is the guardrail, not the layout", () 
     expect(workspaceStorePaths().length).toBe(2);
     expect(workspaceStorePaths().some((p) => p.endsWith("lanes.yaml"))).toBe(true);
     expect(workspaceStorePaths().some((p) => p.endsWith("packets"))).toBe(true);
+    // THE SIBLING RELATION `masterCwdStandIn` RESTS ON, asserted rather than
+    // assumed: both protected entries live in the same directory the master's
+    // cwd does, which is what makes `../lanes.yaml` below the real spelling and
+    // not a fixture. The sandboxed probe above proves the other half — that the
+    // real cwd is that sibling and is named `home`.
+    for (const p of workspaceStorePaths()) {
+      expect(path.dirname(p)).toBe(path.dirname(masterCwdStandIn));
+    }
     // …and the master's cwd is NOT among them. A session that cannot write in
     // its own working directory is not a session — the boundary is the store,
     // not the home.
@@ -880,13 +913,37 @@ describe("5.6 the master's write boundary is the guardrail, not the layout", () 
     expect(decideMaster("Bash", { command: "ls -la ." }).behavior).toBe("allow");
   });
 
-  test("READING the store is NOT blocked, and saying so is the point", () => {
-    // guardrails.ts is explicit: this guards MODIFICATION, not disclosure —
-    // Read/Grep/Glob are never path-checked. The master is SUPPOSED to read its
-    // own store; what it must not do is rewrite it behind the moat's back.
-    // Asserted so the boundary's scope is recorded by a test rather than by a
-    // comment that can quietly over-claim (which is exactly what happened).
-    expect(decideMaster("Read", { file_path: "../lanes.yaml" }).behavior).toBe("allow");
+  test("READING the store with a FILE TOOL is blocked too — the MCP server is the only door", () => {
+    // THIS ROW USED TO ASSERT `allow` AND IT WAS RED. It was written from
+    // guardrails.ts's old claim that "this guards MODIFICATION, not disclosure —
+    // Read/Grep/Glob are never path-checked", which is true of `allowedTools` at
+    // the SDK's canUseTool fast path and FALSE at the PreToolUse hook:
+    // `makeGuardrailDecision` has no tool-name branch before `inputPaths`, so a
+    // protected path is protected against every tool name. The contradiction was
+    // recorded in deferred-work.md (5-13 section) as a policy question with an
+    // owner; this remediation is where it gets answered, because a story may not
+    // leave a red row in its own suite as a bookmark.
+    //
+    // THE ANSWER IS THE CODE'S, AND THE SPEC AGREES WITH IT. Widening
+    // `protectedPaths` to modification-only would let any session `Read` a
+    // project's `.env` — a strictly worse trade — and the master loses nothing,
+    // because SPEC-organization-workspace states the access rule outright:
+    // "Cross-surface access goes through the in-process workspace MCP server,
+    // never through raw file tools." The master reads its items with
+    // `mcp__workspace__list_items`, which is mounted, unscoped and auto-allowed;
+    // `lanes.yaml` and `packets/` are the store's ON-DISK ENCODING, and a session
+    // reading that encoding directly is the shape CAP-12 exists to replace. The
+    // boundary is therefore the whole store, for every file tool, and this row
+    // says so instead of over-claiming in the other direction.
+    for (const tool of ["Read", "Grep", "Glob"]) {
+      const d = decideMaster(tool, { file_path: "../lanes.yaml" });
+      expect(d.behavior).toBe("deny");
+      expect(d.behavior === "deny" && d.message).toContain("protected path");
+    }
+    // THE DISCRIMINATOR for this row specifically — the triad is not blanket-
+    // denied, it is PATH-denied. A read anywhere else still works, which is what
+    // keeps `MASTER_READ_TOOLS` in the profile's `allow` meaningful.
+    expect(decideMaster("Read", { file_path: "notes.md" }).behavior).toBe("allow");
   });
 
   test("a project session's guardrails are untouched by any of this", () => {

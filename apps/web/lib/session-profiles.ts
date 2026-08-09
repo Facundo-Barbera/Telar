@@ -278,19 +278,25 @@ export const buildMasterProfile: SessionProfileBuilder = () => ({
   // rule. Bash is covered too (guardrails.ts word-splits the command, which is
   // why `rm ../lanes.yaml` is caught and not just `Write`).
   //
-  // WHAT IT IS INTENDED NOT TO DO, and what the code actually does, which are
-  // NOT the same thing — stated because the old comment's mistake was claiming
-  // more than the code did, and this one made the same mistake in the opposite
-  // direction. The INTENT is to guard MODIFICATION, not disclosure: the master
-  // may READ its own store off disk and may not rewrite it behind the moat's
-  // back, and every WRITE to an item goes through the workspace server, where
-  // the moat lives. The CODE does not implement that restriction —
-  // `makeGuardrailDecision` consults `protectedPaths` for every tool name, so a
-  // `Read` of the store is denied at the PreToolUse hook too. The test that
-  // asserts the intent ("READING the store is NOT blocked") fails on that, and
-  // it failed before story 13 touched `isProtectedPath`; the contradiction and
-  // its owner are recorded in deferred-work.md's 5-13 section. Do not read
-  // either sentence here as the current behaviour without reading that entry.
+  // IT COVERS DISCLOSURE TOO, AND THAT IS THE DECISION RATHER THAN A SIDE
+  // EFFECT. `makeGuardrailDecision` consults `protectedPaths` for EVERY tool
+  // name — there is no branch before `inputPaths` — so `Read`/`Grep`/`Glob` of
+  // `../lanes.yaml` are denied at the PreToolUse hook exactly as `Write` is.
+  //
+  // TWO EARLIER COMMENTS GOT THIS WRONG IN OPPOSITE DIRECTIONS: the first
+  // claimed a boundary the layout did not provide, and its replacement claimed
+  // the boundary guards "MODIFICATION, not disclosure" and left a RED test
+  // ("READING the store is NOT blocked") standing as the bookmark. The
+  // remediation pass answered it in the code's favour, and the spec is why:
+  // SPEC-organization-workspace says "Cross-surface access goes through the
+  // in-process workspace MCP server, never through raw file tools". `lanes.yaml`
+  // and `packets/` are the store's ON-DISK ENCODING; the master reads its items
+  // through `mcp__workspace__list_items` (mounted, unscoped, auto-allowed) and
+  // has no reason to open the encoding. The alternative — making
+  // `protectedPaths` modification-only — would let every session in Telar `Read`
+  // a project's `.env`, which is a far worse trade for a convenience the master
+  // does not need. session-profiles.test.ts asserts the deny, in all three read
+  // tool names, plus the discriminator that a read ELSEWHERE still works.
   //
   // The paths come from the store's own exported port, never composed here —
   // same AD-5 rule that puts `cwd` behind `workspaceHomeDir()`.

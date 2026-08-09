@@ -76,15 +76,21 @@ function realpathOrSelf(p: string): string {
 // per-invocation cwd computes exactly one candidate and is unchanged by
 // construction.
 //
-// NOTE: this guards MODIFICATION IN INTENT, not disclosure — but the code does
-// NOT implement that restriction, and saying so is the point. `protectedPaths`
-// is consulted for EVERY tool name (see makeGuardrailDecision), so a `Read` of a
-// protected path is denied too. An earlier version of this note claimed
-// "Read/Grep/Glob are pre-allowed and never path-checked"; that is true of
-// `allowedTools` at the SDK's canUseTool fast path and FALSE at the PreToolUse
-// hook, which runs for every tool. The contradiction (and the test that fails on
-// it) is recorded in deferred-work.md's 5-13 section; it is a policy question,
-// not a typo, and it predates story 13.
+// NOTE: THIS GUARDS DISCLOSURE AS WELL AS MODIFICATION, deliberately.
+// `protectedPaths` is consulted for EVERY tool name (see makeGuardrailDecision),
+// so a `Read` of a protected path is denied exactly as a `Write` is. An old
+// version of this note claimed "Read/Grep/Glob are pre-allowed and never
+// path-checked" — true of `allowedTools` at the SDK's canUseTool fast path,
+// FALSE at the PreToolUse hook, which runs for every tool in every permission
+// mode. That contradiction was carried in deferred-work.md's 5-13 section as an
+// open policy question; the 5.6 remediation pass RULED on it and this is the
+// ruling: the behaviour stays. Narrowing to modification-only would let any
+// session `Read` a project's `.env`, which is the exact secret `.env` is the
+// default protected path for, and the one caller that noticed the breadth (the
+// master's store paths — apps/web/lib/session-profiles.ts) has a tool surface
+// for reading that data anyway. apps/web/lib/workspace-mcp.ts already depends on
+// the breadth in the other direction (its "NO PATH-SHAPED INPUT KEY" rule exists
+// because this check runs for every tool name).
 export function isProtectedPath(
   root: string,
   protectedPaths: string[],
