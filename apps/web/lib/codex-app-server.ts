@@ -101,6 +101,92 @@ export type CodexNormalizedEvent =
  */
 export type CodexAttachment = { name: string; mediaType: string; path: string };
 
+/**
+ * ONE EXTERNAL MCP SERVER, as Codex can be told about it.
+ *
+ * Deliberately NOT the Agent SDK's `McpServerConfig`: that union also carries
+ * `sdk` (an in-process server object, which cannot cross a subprocess boundary
+ * at all — those reach Codex as `dynamicTools`, see `tools` below) and `sse`
+ * (which the app-server's config has no spelling for). Narrowing here is what
+ * forces the conversion — and the DROP decision for what does not convert — to
+ * happen in one visible place (`@/lib/codex-mcp`) rather than being implied by
+ * a cast at this seam.
+ */
+export type CodexMcpServerConfig =
+  | {
+      transport: "stdio";
+      command: string;
+      args?: readonly string[];
+      env?: Readonly<Record<string, string>>;
+    }
+  | {
+      transport: "http";
+      url: string;
+      headers?: Readonly<Record<string, string>>;
+    };
+
+/**
+ * The `mcp_servers` table Codex reads, built from Telar's own shape.
+ *
+ * The KEYS are exactly the dotted overrides brownfield.md names —
+ * `mcp_servers.<name>.command`, `.args`, `.env`, `.url`, `.http_headers` — and
+ * every one of them was validated against a real `codex app-server` 0.145.0
+ * with `--strict-config` (which rejects any field this version does not know:
+ * `skip_git_repo_check`, for instance, fails there, which is how we learned it
+ * is not a config field at all).
+ *
+ * Exported because it is pure and is the thing worth pinning in a test: the
+ * conversion from Telar's transport tags to Codex's field names is where a
+ * silent typo would produce a server that simply never starts, with the model
+ * told nothing about it.
+ */
+export function codexMcpConfig(
+  servers: Readonly<Record<string, CodexMcpServerConfig>>,
+): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    out[name] =
+      cfg.transport === "stdio"
+        ? {
+            command: cfg.command,
+            // Omitted rather than sent empty, matching how every other optional
+            // field on this wire is treated: an explicit `args = []` is a
+            // statement, `absent` is not.
+            ...(cfg.args?.length ? { args: [...cfg.args] } : {}),
+            ...(cfg.env && Object.keys(cfg.env).length ? { env: { ...cfg.env } } : {}),
+          }
+        : {
+            url: cfg.url,
+            ...(cfg.headers && Object.keys(cfg.headers).length
+              ? { http_headers: { ...cfg.headers } }
+              : {}),
+          };
+  }
+  return out;
+}
+
+/** One line per (server, message) per process, for a server the app-server told
+ *  us failed to start. Same standing-condition discipline as `@/lib/codex-mcp`'s
+ *  own warn set — a broken server is broken on every turn, and a per-turn line
+ *  is how a real warning gets filtered out by the humans who need to read it.
+ *
+ *  Lives here rather than in `@/lib/codex-mcp` because the fact arrives on this
+ *  file's notification stream, and importing the other way would make a runtime
+ *  cycle out of what is currently a type-only edge. */
+const warnedMcpStartups = new Set<string>();
+
+export function resetCodexMcpStartupWarnings(): void {
+  warnedMcpStartups.clear();
+}
+
+function warnCodexMcpStartupFailure(name: string, error: unknown): void {
+  const detail = typeof error === "string" ? error : JSON.stringify(error ?? null);
+  const key = `${name}:${detail}`;
+  if (warnedMcpStartups.has(key)) return;
+  warnedMcpStartups.add(key);
+  console.warn(`[codex-mcp] MCP server "${name}" failed to start: ${detail}`);
+}
+
 export type CodexRunOptions = {
   prompt: string;
   /**
@@ -172,6 +258,20 @@ export type CodexRunOptions = {
   // appendix used to be built by route.ts and then silently dropped, which is
   // what made planner/steerer profiles a non-session on this provider.
   instructions?: string;
+  // EXTERNAL MCP SERVERS, per invocation — brownfield.md's "Codex MCP gap"
+  // (SPEC-organization-workspace story 13).
+  //
+  // Telar's OWN tools travel as `tools` above; these are the servers a project's
+  // telar.yaml declares (and, later, CAP-13's workspace roster), which the
+  // Claude branch has always spread into `query()`'s `mcpServers` and which
+  // `runCodexTurn` had no argument for at all. A Codex session therefore ran
+  // with the project's MCP servers missing and nothing said so.
+  //
+  // NOTHING GLOBAL IS WRITTEN: this is an overlay on the config Codex would
+  // otherwise load, carried on the thread request itself, and it dies with the
+  // subprocess. See the injection block in the body for why it rides the
+  // JSON-RPC channel rather than argv.
+  mcpServers?: Readonly<Record<string, CodexMcpServerConfig>>;
 };
 
 // THE CODEX CLI GATE, and the resolution behind it.
@@ -826,10 +926,78 @@ export async function* runCodexTurn(
     // an explicit empty dynamicTools as "this client has no tools", which is a
     // different statement from not mentioning tools at all, and the difference
     // shows up as a resumed thread losing the tools it started with.
+    // MCP INJECTION, PER INVOCATION AND PER THREAD (story 13).
+    //
+    // WHY `config` ON THE REQUEST AND NOT `-c` ON THE ARGV — A DEVIATION FROM
+    // THE STORY'S OWN VERBATIM CONSTRAINT, recorded in deferred-work.md's 5-13
+    // section as well as here. brownfield.md names the CLI's dotted overrides
+    // (`-c mcp_servers.<name>.<field>`); both were verified working against
+    // `codex app-server` 0.145.0 — the same `mcp_servers` table reaches the
+    // same place, and the injected server really is spawned per thread (probed
+    // by giving it a command that touches a marker file; note
+    // `mcpServerStatus/list` is NOT the way to see this — it reflects
+    // process-global config and returns nothing for a request overlay, which is
+    // why the observable used here is the `mcpServer/startupStatus/updated`
+    // notification handled below).
+    //
+    // The spec's INVARIANT — per-invocation, nothing global written — is
+    // honoured either way; only the channel differs. The request channel is
+    // chosen because THE VALUES ARE SECRETS: `resolveProjectMcpServers`
+    // materializes stored MCP tokens into each server's `env`/`headers`, and an
+    // argv is world-readable through `ps` to every process running as this user
+    // — which, in this app, includes the sandboxed shells of the agent sessions
+    // themselves. Telar already keeps provider credentials in the CHILD ENV for
+    // exactly that reason (providers.ts `tokenEnvByMode`, accountEnv); putting
+    // MCP tokens on a command line would have been the one place we published
+    // them. This pipe is private to the two processes.
+    //
+    // Both start AND resume carry it: the app-server does not persist a
+    // thread's config overlay, so a resumed thread that stayed silent would
+    // come back with the project's MCP servers missing — the same
+    // silently-degraded turn this story exists to end (it is why `harnessParams`
+    // is shared by both calls, and this joins it).
+    //
+    // THIS OVERLAY ADDS AND SHADOWS; IT CANNOT SUBTRACT. There is no Codex
+    // analogue of the Claude branch's `strictMcpConfig`, so a server already in
+    // the operator's own CODEX_HOME config stays mounted. Harmless today (no
+    // profile that demands a closed roster can reach this provider — see
+    // buildMasterProfile's requiredCapabilities) and recorded in
+    // deferred-work.md's 5-13 section for the story that changes that.
+    //
+    // ONE THING THE JSON CHANNEL IS STRICTLY BETTER AT, since the deviation is
+    // being justified: a dotted `-c mcp_servers.<name>.<field>` override makes
+    // the server NAME part of a config PATH, so a name containing `.` or `=`
+    // would be a config-injection vector. A JSON object key cannot be. (Codex
+    // refuses such names outright — see `@/lib/codex-mcp`'s CODEX_SERVER_NAME,
+    // which drops them before they reach here — so this is defence in depth,
+    // not the only guard.)
+    const mcpConfig = opts.mcpServers ? codexMcpConfig(opts.mcpServers) : {};
     const harnessParams = {
       ...(opts.tools?.length ? { dynamicTools: toDynamicTools(opts.tools) } : {}),
       ...(opts.instructions?.trim() ? { developerInstructions: opts.instructions } : {}),
+      // Omitted entirely when there is nothing to inject — an empty
+      // `config: {}` is a different statement from not overriding config, and
+      // the empty case is every project that declares no MCP server at all.
+      ...(Object.keys(mcpConfig).length ? { config: { mcp_servers: mcpConfig } } : {}),
     };
+    // NO `skipGitRepoCheck`, AND THAT IS MEASURED, NOT FORGOTTEN — a SECOND
+    // deviation from a verbatim spec constraint ("the workspace home is an
+    // empty non-git dir, so skipGitRepoCheck is required"), recorded in
+    // deferred-work.md's 5-13 section as well as here. brownfield.md is
+    // describing the CLI, where `codex exec` refuses to run outside a repo and
+    // `--skip-git-repo-check` is a real flag. It is not true of this transport:
+    //   · probed against `codex app-server` 0.145.0 with a freshly-made empty
+    //     non-git cwd, `thread/start` AND `turn/start` both proceeded for every
+    //     sandbox preset, and `gitInfo` came back `null`;
+    //   · `skip_git_repo_check` is not a config field — `--strict-config`
+    //     answers "unknown configuration field `skip_git_repo_check`";
+    //   · and it is not a request field either: it appears nowhere in
+    //     `codex app-server generate-json-schema`'s v1+v2 output, so neither
+    //     `ThreadStartParams` nor `ThreadResumeParams` can carry it.
+    // The constraint is unimplementable as written on the transport Telar
+    // actually uses, and empirically moot. Nothing to send, and nothing missing
+    // — but a dropped "is required" is a deviation whether or not it costs
+    // anything, so it is written down rather than only reasoned about here.
     const threadStartParams = {
       cwd: opts.cwd,
       approvalPolicy: opts.approvalPolicy,
@@ -1055,6 +1223,28 @@ export async function* runCodexTurn(
             secondary: snap.secondary ?? null,
             planType: snap.planType ?? null,
           };
+          break;
+        }
+        case "mcpServer/startupStatus/updated": {
+          // AN MCP SERVER THAT NEVER STARTED IS THE FAILURE MODE THIS STORY IS
+          // MOST LIKELY TO PRODUCE, and until this case existed the app-server
+          // was the only party that knew. Probed against 0.145.0: an injected
+          // server whose name is not `^[a-zA-Z0-9_-]+$`, or whose command
+          // cannot be spawned or does not speak MCP, fails HERE and nowhere
+          // else — no `error` notification, no turn failure, and
+          // `mcpServerStatus/list` does not report request-overlay servers at
+          // all. The model simply never sees the tools and says nothing.
+          //
+          // A LOG LINE, NOT AN EVENT, and that is a scoped choice rather than
+          // an oversight: there is no client-side surface for "your MCP server
+          // is down" (yielding `error` would abort or falsely decorate the
+          // turn), and inventing one is a UI contract this story does not own.
+          // Recorded in deferred-work.md's 5-13 section. It also covers the
+          // OPERATOR's own ambient servers, which Telar cannot subtract — a
+          // line naming one is still the truth about this session's roster.
+          if (params.status === "failed") {
+            warnCodexMcpStartupFailure(String(params.name ?? "?"), params.error);
+          }
           break;
         }
         case "error": {

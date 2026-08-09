@@ -10,6 +10,7 @@
 // against a real `codex app-server` 0.145.0 process compacting a real
 // thread. See codex-app-server.ts's comment on normalizeCodexAutoCompact and
 // runCodexCompact for the trace itself.
+import fs from "node:fs";
 import readline from "node:readline";
 
 const scenario = process.env.FAKE_CODEX_SCENARIO ?? "success";
@@ -19,12 +20,35 @@ const rl = readline.createInterface({ input: process.stdin });
 const write = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 const notify = (method, params) => write({ jsonrpc: "2.0", method, params });
 
+// REQUEST TAPE (story 13). When FAKE_CODEX_PARAMS_LOG names a file, every
+// inbound request is appended to it as one JSON line. A test asserting on what
+// the client SENDS cannot read it off the normalized event stream — the whole
+// point of an injected `config.mcp_servers` is that it produces no event at
+// all — so the assertion has to be made on the wire itself, on the far side of
+// a real subprocess boundary. Append-only and synchronous so ordering is the
+// wire's ordering, and off entirely (no file, no cost) when unset, which is
+// every other test that uses this fixture.
+const paramsLog = process.env.FAKE_CODEX_PARAMS_LOG;
+const record = (msg) => {
+  if (!paramsLog || !msg.method) return;
+  fs.appendFileSync(paramsLog, JSON.stringify({ method: msg.method, params: msg.params ?? null }) + "\n");
+};
+// The ARGV is taped too, under a method name no JSON-RPC message can collide
+// with. It is what lets a test assert where a secret did NOT go: `-c
+// mcp_servers.<name>.env=...` on a command line is readable by `ps` to every
+// process running as this user, so "not on the argv" is an assertion worth
+// being able to make.
+if (paramsLog) {
+  fs.appendFileSync(paramsLog, JSON.stringify({ method: "@argv", params: { argv: process.argv.slice(1) } }) + "\n");
+}
+
 let threadId = null;
 let turnId = "fake-turn-1";
 
 rl.on("line", (line) => {
   if (!line.trim()) return;
   const msg = JSON.parse(line);
+  record(msg);
   if (msg.method === "initialize") {
     write({ jsonrpc: "2.0", id: msg.id, result: {} });
     return;
@@ -32,7 +56,11 @@ rl.on("line", (line) => {
   if (msg.method === "initialized") return; // notification, no reply
   if (msg.method === "thread/resume") {
     threadId = msg.params?.threadId ?? "fake-thread";
-    write({ jsonrpc: "2.0", id: msg.id, result: {} });
+    // The real ThreadResumeResponse carries the thread, and runCodexTurn reads
+    // `startResult.thread.id` off it — runCodexCompact (the original caller of
+    // this branch) ignores the result entirely, so adding the field serves the
+    // resume path without changing anything the compact tests observe.
+    write({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: threadId } } });
     return;
   }
   if (msg.method === "thread/compact/start") {
@@ -130,6 +158,29 @@ function playTurnScenario() {
     // being the whole point of the connection.
     notify("item/started", { item: { type: "contextCompaction", id: "item-compact" }, threadId, turnId });
     notify("item/completed", { item: { type: "contextCompaction", id: "item-compact" }, threadId, turnId });
+  }
+  if (turnScenario === "mcp-startup-failed") {
+    // COPIED VERBATIM (method, param names, error prose) from a live `codex
+    // app-server` 0.145.0 that was handed an injected server whose name it
+    // refuses. This is the ONLY place the failure appears: no `error`
+    // notification, no turn failure, and the turn goes on to complete
+    // normally — which is precisely why a driver that ignored this method
+    // turned a dead server into silence.
+    notify("mcpServer/startupStatus/updated", {
+      threadId,
+      name: "probesrv",
+      status: "starting",
+      error: null,
+      failureReason: null,
+    });
+    notify("mcpServer/startupStatus/updated", {
+      threadId,
+      name: "probesrv",
+      status: "failed",
+      error:
+        "MCP client for `probesrv` failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response",
+      failureReason: null,
+    });
   }
   // Every turn scenario ends the same ordinary way: one final agentMessage,
   // then turn/completed — auto-compaction is a mid-turn EVENT, not something

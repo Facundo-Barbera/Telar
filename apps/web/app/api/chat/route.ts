@@ -51,6 +51,7 @@ import {
   type CodexReasoningEffort,
 } from "@/lib/models";
 import { runCodexCompact, runCodexTurn } from "@/lib/codex-app-server";
+import { toCodexMcpServers, warnCodexMcpLosses } from "@/lib/codex-mcp";
 import { isEscalationKickoff, resolveEscalationMessage } from "@/lib/escalation-kickoff";
 import { logPermissionCheck, logPermissionOutcome } from "@/lib/permission-diagnostics";
 
@@ -1607,6 +1608,10 @@ export async function POST(req: Request) {
             // residual is recorded in
             // _bmad-output/implementation-artifacts/deferred-work.md, owned by
             // story 5.5, along with the two other holes this does not close.
+            // STILL TRUE AFTER STORY 13: a v2 file-change approval carries no
+            // path at all on the wire (only the legacy applyPatchApproval did),
+            // so there is nothing for a path check to read here even now that
+            // the cwd below is honoured.
             //
             // No card is created for a guardrail-denied action: showing the
             // human a card for something project policy already forbids invites
@@ -1617,12 +1622,29 @@ export async function POST(req: Request) {
             // and the message surfaces once the stream closes. So this is
             // informative rather than destructive, and the human learns WHY the
             // action was declined instead of watching Codex silently fail.
+            //
+            // `req.cwd` IS NOW USED, not just displayed (story 13, closing the
+            // fourth of deferred-work.md's Codex-guardrail holes). It was
+            // captured onto `input` for the card and then dropped on the floor
+            // by the check itself, so `rm -rf .env` approved from a
+            // subdirectory was only ever tested as <sessionProfile.cwd>/.env
+            // and the file it was actually about to delete was invisible.
+            //
+            // IT ADDS A ROOT, IT DOES NOT SWAP ONE. protectedPaths still
+            // resolve against sessionProfile.cwd, and the target is tested
+            // under BOTH that root and this invocation's cwd — see
+            // isProtectedPath's own note. `req.cwd` arrives from another
+            // process and the model controls it, so swapping would have let
+            // `cd .. && rm -rf .env` out of a subdirectory; under the union it
+            // can only add denies. A non-absolute or empty value is refused
+            // there and falls back to the session root.
             if (req.kind === "command") {
               const guardrail = makeGuardrailDecision(
                 sessionProfile,
                 sessionProfile.cwd,
                 "Bash",
                 input,
+                req.cwd,
               );
               if (guardrail.behavior === "deny") {
                 send("error", { message: guardrail.message });
@@ -1790,13 +1812,18 @@ export async function POST(req: Request) {
           // `project` became `string | undefined` when it stopped being the raw
           // wire field and started being the ANCHOR's answer, and the only kind
           // that answers `undefined` is the master — which cannot reach this
-          // branch: buildMasterProfile requires the `mcp-servers` capability
-          // and runCodexTurn does not have it, so AD-11's pre-SSE 400 fires
-          // long before here (that gate is the profile's own comment, and
-          // session-profiles.test.ts pins it). `?? ""` is what the type system
-          // needs at a seam that cannot see the gate — the same idiom, for the
-          // same reason, as @/lib/session-mcp's projectSessionMcpMount — never
-          // a reachable value.
+          // branch: buildMasterProfile requires capabilities this provider does
+          // not publish (`pre-tool-use-hooks` and `tool-allow-deny-lists`), so
+          // AD-11's pre-SSE 400 fires long before here (that gate is the
+          // profile's own comment, and session-profiles.test.ts pins it).
+          // `mcp-servers` IS NO LONGER NAMED HERE because naming it was WRONG,
+          // not because story 13 fixed it: providers.ts has published that
+          // capability for codex since before this story, on `dynamicTools`
+          // grounds. This comment was stale on its own terms; story 13 is only
+          // what noticed. `?? ""` is what the type system needs at a seam that
+          // cannot see the gate — the same idiom, for the same reason, as
+          // @/lib/session-mcp's projectSessionMcpMount — never a reachable
+          // value.
           const codexProject = project ?? "";
           const codexToolNamespaces = [
             namespaceOf(
@@ -1823,6 +1850,50 @@ export async function POST(req: Request) {
               getSessionId: () => capturedSession,
             })),
           ];
+          // EXTERNAL MCP SERVERS, ON CODEX (story 13). The two spreads are the
+          // Claude literal's last two, in the same order and for the same
+          // reasons — a profile's own statically-configured servers, then the
+          // project's telar.yaml servers with their token-injected env/headers
+          // from `resolveProjectMcpServers`, which stays the ONE place those
+          // tokens are read. What is NOT here is `telarMcpServers`: those are
+          // in-process `sdk` servers, and they already reach this provider as
+          // `tools` above. Sending them twice, or dropping them here, are both
+          // wrong; they simply travel a different road.
+          //
+          // `codexProject`, NOT `project`, and the two are the same value: the
+          // block above argues at length that `undefined` is unreachable here
+          // and spends `?? ""` to say so once. Re-asking `project ?  : {}` six
+          // lines later would be a second, contradictory answer to a question
+          // already answered — so the empty-string sentinel is what gates this
+          // too, and there is exactly one story about a project-less Codex
+          // session in this branch.
+          //
+          // SHADOWING VS CO-EXISTENCE, WHICH IS NOT THE CLAUDE STORY. The
+          // Claude literal warns that a project server named `workspace` /
+          // `loom` / `ultra` SHADOWS Telar's, because there both live in one
+          // `mcpServers` object and later keys win. Here they are two disjoint
+          // channels — Telar's are `dynamicTools` (dispatched via
+          // `onCodexDynamicTool`), these are `config.mcp_servers` — so the
+          // project's server CO-EXISTS with ours instead of replacing it, and
+          // the model is offered two confusable sources of the same name. That
+          // is NOT a moat breach (an injected server's calls arrive as
+          // `mcpToolCall`, which the driver only renders; they cannot reach
+          // `isMoatTool` or any accept/complete/delete handler), and it is not
+          // a reordering problem either, so the reserved-name guard deferred on
+          // the Claude side is the fix for both. Re-measured for this transport
+          // and recorded in deferred-work.md's 5-13 section rather than
+          // inherited as if it said the same thing.
+          //
+          // The losses are carried out of the converter rather than swallowed
+          // (AD-11): an `sse` server, a name codex refuses, or a `tools`
+          // allowlist with nowhere to land all get a line naming the server.
+          const codexMcp = toCodexMcpServers({
+            ...sessionProfile.mcpServers,
+            ...(codexProject ? resolveProjectMcpServers(codexProject) : {}),
+          });
+          // Scoped by project so one project's missing server cannot silence
+          // another's in this process's dedupe set.
+          warnCodexMcpLosses(codexMcp, codexProject || "(no project)");
           for await (const nev of runCodexTurn({
             prompt: message,
             // `@path` mentions, lifted out of the message text and handed over
@@ -1850,6 +1921,12 @@ export async function POST(req: Request) {
             onApproval: onCodexApproval,
             onDynamicTool: onCodexDynamicTool,
             tools: codexToolNamespaces,
+            // Omitted entirely when the roster is empty, so a session with no
+            // external servers sends no `config` overlay at all and the
+            // app-server's own resolution is untouched. Every session on this
+            // provider is that session today; the field exists so the ones that
+            // are not stop being silently server-less.
+            ...(Object.keys(codexMcp.servers).length ? { mcpServers: codexMcp.servers } : {}),
             // The same appendix the Claude branch passes as
             // systemPrompt.append. It used to be built and then dropped on the
             // floor here, which is what made planner/steerer profiles a

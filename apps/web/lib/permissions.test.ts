@@ -311,6 +311,72 @@ describe("isProtectedPath", () => {
     expect(isProtectedPath(root, [""], ".env")).toBe(false);
   });
 
+  // ── the invocation's OWN cwd (story 13, deferred-work.md's fourth
+  // Codex-guardrail hole) ────────────────────────────────────────────────────
+  // Codex approval requests carry a `cwd`. It was captured onto the permission
+  // card and then never used as a resolution root, so a relative target was
+  // tested only against the SESSION's cwd and a protected file one directory
+  // down was invisible. The fix ADDS the invocation's root; it does not swap
+  // one root for the other (see the fail-open row below, which is the assertion
+  // a swap fails).
+
+  test("a relative target is tested under the invocation's cwd TOO", () => {
+    // The MISS the hole caused: the command runs in /repo/sub and names
+    // `.env`, which is /repo/sub/.env — protected, and previously invisible
+    // because it was only ever tested as /repo/.env.
+    expect(isProtectedPath(root, ["sub/.env"], ".env", "/repo/sub")).toBe(true);
+    // A target that lands nowhere protected under EITHER root is still clean —
+    // the anti-vacuity half, without which "return true" would pass this file.
+    expect(isProtectedPath(root, ["secrets/"], ".env", "/repo/sub")).toBe(false);
+  });
+
+  test("THE FAIL-OPEN REGRESSION — a hit under `root` survives a foreign cwd", () => {
+    // Resolving the target against `targetRoot` INSTEAD of `root` looks like
+    // the fix and is a one-line evasion: the model controls both the exec's cwd
+    // and the command string, so `cd ..` plus a bare `.env` would land outside
+    // /repo/sub and be allowed, while the four-argument call denies it. Union,
+    // not replacement — every deny this function made before still happens.
+    expect(isProtectedPath(root, [".env"], ".env", "/repo/sub")).toBe(true);
+    expect(isProtectedPath(root, [".env"], ".env", "/tmp/elsewhere")).toBe(true);
+    // The cost of that choice, stated so it is a decision and not an accident:
+    // /repo/sub/.env is a DIFFERENT file from /repo/.env and is denied anyway.
+    // That is a false positive, and it is the fail-SAFE direction — the only
+    // one worth having in a best-effort word-splitting check.
+  });
+
+  test("protectedPaths still resolve against ROOT even when the target does not", () => {
+    // The asymmetry is the whole design: a project's protected paths are a
+    // statement about the project, and letting the invocation's cwd move them
+    // would let a tool escape the guardrail by chdir'ing.
+    expect(isProtectedPath(root, [".env"], "/repo/.env", "/somewhere/else")).toBe(true);
+    expect(isProtectedPath(root, [".env"], "../.env", "/repo/sub")).toBe(true);
+    // And a cwd-relative spelling of a path protected in ANOTHER project's root
+    // is not a hit here: `/somewhere/else/.env` is nobody's protected path.
+    expect(isProtectedPath(root, ["nope/.env"], ".env", "/somewhere/else")).toBe(false);
+  });
+
+  test("an absolute target ignores both roots", () => {
+    expect(isProtectedPath(root, [".env"], "/repo/.env", "/repo/sub")).toBe(true);
+    expect(isProtectedPath(root, [".env"], "/elsewhere/.env", "/repo/sub")).toBe(false);
+  });
+
+  test("omitting targetRoot is exactly the old behaviour", () => {
+    // The additive-signature promise, pinned: the three pre-existing call sites
+    // pass four arguments and must be byte-identical in behaviour to before.
+    expect(isProtectedPath(root, [".env"], ".env")).toBe(isProtectedPath(root, [".env"], ".env", root));
+    expect(isProtectedPath(root, [".env"], "sub/.env")).toBe(isProtectedPath(root, [".env"], "sub/.env", root));
+    // …and passing a cwd can only ever ADD hits, never remove one. Stated as a
+    // property over the shapes a real command produces, because "unchanged by
+    // construction" is a claim about every input, not about two.
+    for (const target of [".env", "sub/.env", "../.env", "/repo/.env", "x/../.env", "notes.md"]) {
+      for (const cwd of ["/repo/sub", "/repo/sub/deep", "/tmp/elsewhere", "/repo"]) {
+        if (isProtectedPath(root, [".env", "sub/.env"], target)) {
+          expect(isProtectedPath(root, [".env", "sub/.env"], target, cwd)).toBe(true);
+        }
+      }
+    }
+  });
+
   test("a symlink to a protected file resolves through and is caught", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-symlink-"));
     fs.writeFileSync(path.join(dir, ".env"), "SECRET=1");
@@ -332,6 +398,29 @@ describe("bashTouchesProtectedPath", () => {
   test("unrelated commands and no protected paths never match", () => {
     expect(bashTouchesProtectedPath(root, [".env"], "ls -la")).toBe(false);
     expect(bashTouchesProtectedPath(root, [], "rm -rf .env")).toBe(false);
+  });
+
+  test("the command's words are ALSO tested against the invocation's cwd", () => {
+    // `rm -rf .env` approved from /repo/sub. This is the literal example in
+    // deferred-work.md's residual, and it is the one a human would have read
+    // off the approval card and assumed was checked.
+    expect(bashTouchesProtectedPath(root, ["sub/.env"], "rm -rf .env", "/repo/sub")).toBe(true);
+    // Omitted, unchanged.
+    expect(bashTouchesProtectedPath(root, [".env"], "rm -rf .env")).toBe(true);
+    // Anti-vacuity: a cwd does not make everything a hit.
+    expect(bashTouchesProtectedPath(root, ["sub/.env"], "ls -la", "/repo/sub")).toBe(false);
+  });
+
+  test("`cd .. && rm -rf .env` from a subdirectory is STILL denied", () => {
+    // The regression the first cut of story 13 shipped: with the target
+    // resolved against `targetRoot` INSTEAD of `root`, this word-splits to
+    // `.env`, resolves to /repo/sub/.env, matches nothing, and ALLOWS a
+    // command that HEAD denied. The model writes both the cwd and the command,
+    // so a swap would have been a one-line evasion of protectedPaths on the
+    // exact seam this story set out to harden.
+    expect(bashTouchesProtectedPath(root, [".env"], "cd .. && rm -rf .env", "/repo/sub")).toBe(true);
+    // Even without the `cd`: the word alone must not become invisible.
+    expect(bashTouchesProtectedPath(root, [".env"], "rm -rf .env", "/repo/sub")).toBe(true);
   });
 });
 
@@ -390,6 +479,74 @@ describe("makeGuardrailDecision", () => {
       { command: "ls -la" },
     );
     expect(decision).toEqual({ behavior: "allow" });
+  });
+
+  test("the optional invocation cwd is what a Codex approval's req.cwd feeds", () => {
+    // The route passes `req.cwd` as the fifth argument. The deny it ADDS —
+    // /repo/sub/.env, the file the command was actually about to delete:
+    const denied = makeGuardrailDecision(
+      manifest({ protectedPaths: ["sub/.env"] }),
+      root,
+      "Bash",
+      { command: "rm -rf .env", cwd: "/repo/sub" },
+      "/repo/sub",
+    );
+    expect(denied).toEqual({
+      behavior: "deny",
+      message: "This command touches a protected path in this project.",
+    });
+    // …and the deny it must NOT remove. `/repo/.env` is protected; a cwd the
+    // model chose cannot un-protect it.
+    const stillDenied = makeGuardrailDecision(
+      manifest({ protectedPaths: [".env"] }),
+      root,
+      "Bash",
+      { command: "cd .. && rm -rf .env", cwd: "/repo/sub" },
+      "/repo/sub",
+    );
+    expect(stillDenied.behavior).toBe("deny");
+    // The discriminator: a command that trips nothing under either root is
+    // still allowed, so this is a check and not a blanket refusal.
+    expect(
+      makeGuardrailDecision(
+        manifest({ protectedPaths: [".env"] }),
+        root,
+        "Bash",
+        { command: "ls -la", cwd: "/repo/sub" },
+        "/repo/sub",
+      ),
+    ).toEqual({ behavior: "allow" });
+  });
+
+  test("a NON-ABSOLUTE invocation cwd falls back to root, never to process.cwd()", () => {
+    // `req.cwd` crosses a process boundary from the Codex app-server, so it is
+    // untrusted input, and `path.resolve` blends a relative one into the WEB
+    // SERVER's own directory: "" reaches process.cwd() and "sub" reaches
+    // process.cwd()/sub. Both are the third directory this guard exists to
+    // refuse; only the empty case was closed at first.
+    for (const cwd of ["", "sub", "./sub", ".."]) {
+      expect(
+        makeGuardrailDecision(manifest({ protectedPaths: [".env"] }), root, "Write", { file_path: ".env" }, cwd),
+      ).toEqual({ behavior: "deny", message: '".env" is a protected path in this project.' });
+    }
+    // And the proof it fell back to `root` rather than somewhere else: a target
+    // that is protected ONLY under the relative spelling stays allowed, which
+    // it would not if `sub` had been honoured as a resolution root.
+    expect(
+      makeGuardrailDecision(manifest({ protectedPaths: ["sub/.env"] }), root, "Write", { file_path: ".env" }, "sub"),
+    ).toEqual({ behavior: "allow" });
+  });
+
+  test("a path-shaped input also follows the invocation cwd", () => {
+    expect(
+      makeGuardrailDecision(
+        manifest({ protectedPaths: ["sub/.env"] }),
+        root,
+        "Write",
+        { file_path: ".env" },
+        "/repo/sub",
+      ),
+    ).toEqual({ behavior: "deny", message: '".env" is a protected path in this project.' });
   });
 
   test("disallowedTools takes precedence over a protected-path hit on the same call", () => {

@@ -278,12 +278,19 @@ export const buildMasterProfile: SessionProfileBuilder = () => ({
   // rule. Bash is covered too (guardrails.ts word-splits the command, which is
   // why `rm ../lanes.yaml` is caught and not just `Write`).
   //
-  // WHAT IT DOES NOT DO, stated because the old comment's mistake was claiming
-  // more than the code did: it guards MODIFICATION, not disclosure —
-  // Read/Grep/Glob are never path-checked (guardrails.ts says so at
-  // isProtectedPath). The master may READ its own store off disk; it may not
-  // rewrite it behind the moat's back. Every WRITE to an item goes through the
-  // workspace server, where the moat lives.
+  // WHAT IT IS INTENDED NOT TO DO, and what the code actually does, which are
+  // NOT the same thing — stated because the old comment's mistake was claiming
+  // more than the code did, and this one made the same mistake in the opposite
+  // direction. The INTENT is to guard MODIFICATION, not disclosure: the master
+  // may READ its own store off disk and may not rewrite it behind the moat's
+  // back, and every WRITE to an item goes through the workspace server, where
+  // the moat lives. The CODE does not implement that restriction —
+  // `makeGuardrailDecision` consults `protectedPaths` for every tool name, so a
+  // `Read` of the store is denied at the PreToolUse hook too. The test that
+  // asserts the intent ("READING the store is NOT blocked") fails on that, and
+  // it failed before story 13 touched `isProtectedPath`; the contradiction and
+  // its owner are recorded in deferred-work.md's 5-13 section. Do not read
+  // either sentence here as the current behaviour without reading that entry.
   //
   // The paths come from the store's own exported port, never composed here —
   // same AD-5 rule that puts `cwd` behind `workspaceHomeDir()`.
@@ -314,10 +321,24 @@ export const buildMasterProfile: SessionProfileBuilder = () => ({
   },
   // ALL THREE ARE LOAD-BEARING, and this is the AD-11 gate that keeps a
   // Codex-backed master from silently becoming a session with no workspace at
-  // all: `mcp-servers` is the workspace server itself (runCodexTurn has no MCP
-  // plumbing — brownfield.md's gap, story 13's work), `pre-tool-use-hooks` is
+  // all: `mcp-servers` is the workspace server itself, `pre-tool-use-hooks` is
   // the moat's second enforcement point, `tool-allow-deny-lists` is the
-  // narrowing above. `setting-sources` is NOT required: `settingSources: []`
+  // narrowing above.
+  //
+  // WHICH OF THE THREE ACTUALLY HOLDS THIS GATE SHUT FOR CODEX — re-measured
+  // by story 13, which changed nothing here. It is `pre-tool-use-hooks` and
+  // `tool-allow-deny-lists`, and it was already only those two: providers.ts
+  // has published `mcp-servers` for codex since before this story, on the
+  // grounds that `dynamicTools` is the same capability over a different
+  // transport. What story 13 changed is that the claim is now true of EXTERNAL
+  // servers as well as Telar's own — `runCodexTurn` carries a per-invocation
+  // roster — so a comment elsewhere that read the gate as resting on
+  // `mcp-servers` was stale before this story, not made stale by it. The other
+  // two capabilities still have no app-server equivalent, so a Codex-backed
+  // master still 400s pre-SSE, which is the intended state until that work
+  // lands. Requiring `mcp-servers` remains correct on its own terms: this
+  // profile really does mount servers, and a provider that cannot must not run
+  // it. `setting-sources` is NOT required: `settingSources: []`
   // asks the harness for nothing, so requiring the capability would 400 a
   // provider over a feature this profile switches off.
   requiredCapabilities: ["mcp-servers", "pre-tool-use-hooks", "tool-allow-deny-lists"],
