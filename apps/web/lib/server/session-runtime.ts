@@ -376,6 +376,26 @@ async function pump(rt: RuntimeInternals): Promise<void> {
     }
   } finally {
     rt.closed = true;
+    // The process died out from under the window — the one teardown path
+    // issue #76's sweep missed. The sink's accumulated state (completions in
+    // taskStatuses, continuation parts past the persist mark) exists ONLY in
+    // that closure until a flush writes it through, and without this call a
+    // CLI crash mid-window dropped everything a connected client had already
+    // watched arrive over SSE — and never emitted "closed", so a reconnecting
+    // tail could hang on a window nothing would ever end.
+    {
+      const sink = rt.windowSink;
+      rt.windowSink = null;
+      if (sink) {
+        try {
+          sink.onSettled();
+        } catch {
+          // best-effort, same posture as the settle path
+        }
+      }
+    }
+    if (rt._settle) clearTimeout(rt._settle);
+    rt._settle = null;
     endTurnFeed(rt);
     if (runtimes.get(rt.key) === rt) runtimes.delete(rt.key);
   }

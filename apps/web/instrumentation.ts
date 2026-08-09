@@ -30,4 +30,29 @@ export async function register() {
     // read/kick retries; server availability must not depend on one bad queue.
     console.error("[instrumentation] session queue recovery failed on boot", err);
   }
+
+  // The boot kick above is a ONE-SHOT; everything observed after it arrives by
+  // EVENT, never by clock (the owner's synchronous-system call, reversing this
+  // branch's earlier heartbeat — session-engine's sweep comment carries the
+  // full reasoning and the accepted residuals). Two starts: the reactor, which
+  // turns every `ultra:run-completed` publish into a scan+kick of its session;
+  // and ONE full sweep, which actualizes the durable projections a restart may
+  // have orphaned (a terminal that published into a dead process, a watch that
+  // fired while the server was down). Idempotent on purpose — HMR runs
+  // register() again against a globalThis-backed subscription.
+  //
+  // ITS OWN TRY, and not for tidiness: the heartbeat this replaces sat inside
+  // the boot recovery above, where one corrupt queue.json anywhere under
+  // TELAR_HOME skipped it for the life of the process. No other call site
+  // starts the reactor, so the guarantee it is the only holder of must not be
+  // nested under an unrelated failure.
+  try {
+    const { startSessionMachineryReactor, sweepSessionMachinery } = await import(
+      "./lib/server/session-engine"
+    );
+    startSessionMachineryReactor();
+    sweepSessionMachinery();
+  } catch (err) {
+    console.error("[instrumentation] session machinery reactor did not start", err);
+  }
 }

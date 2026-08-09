@@ -317,6 +317,32 @@ describe("session runtime", () => {
     rt.runtime.closeNow("test over");
   });
 
+  test("the PUMP'S OWN END flushes the sink — a CLI death mid-window is a teardown path too", async () => {
+    // The one teardown path issue #76's sweep missed: the CLI process dying
+    // (its message iterator ending) while a detached window was still open.
+    // Everything the sink accumulated — completions, the continuation's parts
+    // — exists only in its closure until a flush writes it through, and the
+    // pump's finally used to just delete the runtime: the UI had shown the
+    // work arriving live over SSE, the store never heard of it, and no
+    // "closed" event ever ended the window for a reconnecting tail.
+    const rt = makeRuntime();
+    rt.runtime.adoptSession("sess-pump-death");
+    let settled = 0;
+    rt.runtime.windowSink = {
+      canUseTool: null,
+      onDetachedMessage: () => {},
+      onSettled: () => settled++,
+    };
+    rt.finish(); // the subprocess exits: the query's iterator simply ends
+    await tick();
+    expect(settled).toBe(1); // the window got its ending — the full flush
+    expect(rt.runtime.windowSink).toBeNull();
+    expect(rt.runtime.closed).toBe(true);
+    // A later Stop cannot flush twice — the sink was consumed.
+    rt.runtime.closeNow("again");
+    expect(settled).toBe(1);
+  });
+
   test("a flush that throws never breaks the teardown — best-effort, like the settle path", async () => {
     const rt = makeRuntime();
     rt.runtime.windowSink = {

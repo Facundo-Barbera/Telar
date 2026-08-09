@@ -109,6 +109,117 @@ describe("engine-owned durable session queue", () => {
     expect(envelope.items[0]?.payload).toEqual({ text: "first" });
   });
 
+  test("a queue.json written before machinery tickets still parses and claims", () => {
+    const file = queue.sessionQueueFile("s-legacy");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        schemaVersion: 1,
+        sessionId: "s-legacy",
+        revision: 4,
+        nextSequence: 1,
+        paused: false,
+        items: [
+          {
+            idempotencyKey: "pre-machinery",
+            sequence: 0,
+            revision: 0,
+            state: "queued",
+            payload: { text: "queued before kinds existed" },
+            acceptedAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    );
+
+    const stored = queue.readSessionQueue("s-legacy").items[0]!;
+    expect(stored.kind).toBeUndefined();
+    expect(stored.hidden).toBeUndefined();
+    expect(queue.sessionTurnKind(stored)).toBe("user");
+
+    const claimed = queue.claimNextSessionTurn("s-legacy", "engine", () => 5)!;
+    expect(claimed.item.idempotencyKey).toBe("pre-machinery");
+    expect(claimed.item.state).toBe("claimed");
+    expect(queue.sessionTurnKind(claimed.item)).toBe("user");
+  });
+
+  test("machinery kind and hidden round-trip enqueue, claim and reload", () => {
+    const wake = queue.enqueueSessionTurn(
+      "s-kind",
+      {
+        idempotencyKey: "ultra:run-3:done",
+        payload: { text: "ultra sweep finished" },
+        kind: "wake",
+        hidden: true,
+      },
+      () => 10,
+    );
+    const plain = queue.enqueueSessionTurn(
+      "s-kind",
+      { idempotencyKey: "typed-user", payload: { text: "hi" }, kind: "user", hidden: false },
+      () => 11,
+    );
+    expect(wake.kind).toBe("wake");
+    expect(wake.hidden).toBe(true);
+    // "absent means user" only stays true while the default is never written
+    // back: one item shape on disk, whichever version of the code wrote it.
+    expect(plain.kind).toBeUndefined();
+    expect(plain.hidden).toBeUndefined();
+    expect(queue.sessionTurnKind(plain)).toBe("user");
+
+    const claimed = queue.claimNextSessionTurn("s-kind", "engine", () => 12)!;
+    expect(claimed.item.idempotencyKey).toBe("ultra:run-3:done");
+    expect(claimed.item.kind).toBe("wake");
+    expect(claimed.item.hidden).toBe(true);
+
+    const raw = JSON.parse(fs.readFileSync(queue.sessionQueueFile("s-kind"), "utf8"));
+    expect(raw.items[0].kind).toBe("wake");
+    expect(raw.items[0].hidden).toBe(true);
+    expect(Object.keys(raw.items[1])).not.toContain("kind");
+    expect(Object.keys(raw.items[1])).not.toContain("hidden");
+
+    const reloaded = queue.readSessionQueue("s-kind").items[0]!;
+    expect(reloaded.kind).toBe("wake");
+    expect(reloaded.hidden).toBe(true);
+  });
+
+  test("one event can produce one ticket: a re-fired wake returns the first item", () => {
+    const first = queue.enqueueSessionTurn(
+      "s-wake-idem",
+      {
+        idempotencyKey: "ultra:run-3:done",
+        payload: { text: "sweep finished" },
+        kind: "wake",
+        hidden: true,
+      },
+      () => 10,
+    );
+    const refired = queue.enqueueSessionTurn(
+      "s-wake-idem",
+      {
+        idempotencyKey: "ultra:run-3:done",
+        payload: { text: "sweep finished (redelivered)" },
+        kind: "wake",
+        hidden: true,
+      },
+      () => 20,
+    );
+    expect(refired).toEqual(first);
+    // Nor can a redelivery under a different kind reclassify the ticket the
+    // event already owns — the key IS the event.
+    expect(
+      queue.enqueueSessionTurn("s-wake-idem", { idempotencyKey: "ultra:run-3:done", payload: null }),
+    ).toEqual(first);
+
+    const envelope = queue.readSessionQueue("s-wake-idem");
+    expect(envelope.revision).toBe(1);
+    expect(envelope.nextSequence).toBe(1);
+    expect(envelope.items).toHaveLength(1);
+    expect(envelope.items[0]?.payload).toEqual({ text: "sweep finished" });
+  });
+
   test("adopts a canonical key without replacing the stable client key", () => {
     queue.enqueueSessionTurn(
       "s-adopt",
@@ -355,6 +466,32 @@ describe("engine-owned durable session queue", () => {
     const file = queue.sessionQueueFile("s-corrupt");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "{broken");
+    expect(() => queue.readSessionQueue("s-corrupt")).toThrow(queue.SessionQueueCorruptError);
+
+    // An unreadable kind is not a user turn by omission: a ticket authored by
+    // machinery this build does not know about must not be run as one.
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        schemaVersion: 1,
+        sessionId: "s-corrupt",
+        revision: 1,
+        nextSequence: 1,
+        paused: false,
+        items: [
+          {
+            idempotencyKey: "a",
+            sequence: 0,
+            revision: 0,
+            state: "queued",
+            payload: null,
+            kind: "loom",
+            acceptedAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    );
     expect(() => queue.readSessionQueue("s-corrupt")).toThrow(queue.SessionQueueCorruptError);
   });
 

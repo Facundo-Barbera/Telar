@@ -172,6 +172,16 @@ export function foldCompactionEvent<T extends CompactionFacts & { key: string }>
   };
 }
 
+/** Whether a TranscriptCompaction key was minted by the live fold (`c${seq}`)
+ *  rather than seeded from the store (`stored-${i}` — see
+ *  seedTranscriptCompactions). The session view needs the distinction when a
+ *  cursor-less replay restarts from line zero: the replay re-folds the same
+ *  events and re-mints the same keys, so the PREVIOUS round's fold-minted
+ *  entries must be dropped first — keeping both is exactly the duplicate
+ *  divider. Seeded entries describe completed turns the replay never carries,
+ *  so they stand. Lives here, beside the mint, so the shape cannot drift. */
+export const isFoldMintedKey = (key: string): boolean => /^c\d+$/.test(key);
+
 /** The record the event just folded belongs to, counts and all — the merge of
  *  everything this compaction has said so far. Undefined only before any event
  *  has recorded anything (i.e. after "compacting" alone). */

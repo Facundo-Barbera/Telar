@@ -21,7 +21,7 @@
 // The one import is TYPE-ONLY and erased at compile time, so this module still
 // carries no runtime dependency on the server-side @telar/core — see
 // `QueueItemLifecycle` for why the union has to come from there.
-import type { SessionQueueState } from "@telar/core";
+import type { SessionQueueState, SessionTurnKind } from "@telar/core";
 
 /** Per-session key. Namespaced like every other `telar:*` client key. */
 export const queueStorageKey = (sessionId: string) => `telar:queue:${sessionId}`;
@@ -89,6 +89,13 @@ export type QueuedMessage<F = unknown> = {
  * history.
  */
 export type QueueItemLifecycle = SessionQueueState;
+/**
+ * Who authored a queue item. IMPORTED for the same reason the lifecycle is:
+ * the engine mints `wake`/`watch` tickets into the same queue this strip
+ * polls, and a hand copy of that union would let a new machinery kind default
+ * into "your messages, waiting to send".
+ */
+export type QueueItemKind = SessionTurnKind;
 /** The lifecycle minus history: every state an item can be IN the queue in. */
 export type QueueItemState = Exclude<QueueItemLifecycle, "committed" | "cancelled">;
 
@@ -160,6 +167,16 @@ export const isTerminalQueueState = (state?: QueueItemLifecycle): boolean =>
  * Terminal items are dropped. The exhaustive switch and `never` guard carry
  * over from partitionQueue — a new core state fails to COMPILE here instead
  * of silently rendering beside a promise to send.
+ *
+ * MACHINERY IS NOT A LINE, and it is dropped before the lifecycle is even
+ * consulted. The engine now writes its own tickets into this queue — an Ultra
+ * wake, a fired loom watch (session-engine's scanSessionMachinery) — so the
+ * strip sees items no human typed. A wake ticket's `payload.message` is the
+ * raw sentinel, and every line in this strip is editable and cancellable, so
+ * rendering one would offer the user a "message" they never wrote, invite them
+ * to rewrite the sentinel, and let a click cancel machinery. `hidden` is
+ * checked too, and separately: it is the ticket's own statement that its user
+ * message is not to be shown, and a future visible `kind` must still honour it.
  */
 export type PendingLine<T> = {
   item: T;
@@ -169,11 +186,32 @@ export type PendingLine<T> = {
   error?: string;
 };
 
+/**
+ * Did a human author this queue item? THE ONE SPELLING OF THAT QUESTION on the
+ * client, exported because the strip is not the only surface that has to ask:
+ * Stop pulls the session's queued items back into local drafts, and a machinery
+ * ticket swept into that pull-back is cancelled server-side, keeps its key in
+ * the envelope forever, and re-enqueues as a KIND-LESS item the engine's own
+ * dedupe then refuses — the outcome it spoke for is lost with no later scan able
+ * to recover it. Absent `kind` is `user`: every queue.json written before
+ * machinery tickets existed carries none, and core's sessionTurnKind spells the
+ * same default server-side.
+ */
+export const isUserQueueItem = (item: { kind?: QueueItemKind; hidden?: boolean }): boolean =>
+  (item.kind ?? "user") === "user" && !item.hidden;
+
 export function pendingView<
-  T extends { state?: QueueItemLifecycle; accepted?: boolean; error?: string },
+  T extends {
+    state?: QueueItemLifecycle;
+    accepted?: boolean;
+    error?: string;
+    kind?: QueueItemKind;
+    hidden?: boolean;
+  },
 >(items: readonly T[]): PendingLine<T>[] {
   const lines: PendingLine<T>[] = [];
   for (const item of items) {
+    if (!isUserQueueItem(item)) continue;
     if (item.state === undefined) {
       if (item.error && !item.accepted) lines.push({ item, editable: true, error: item.error });
       else lines.push({ item, editable: true });

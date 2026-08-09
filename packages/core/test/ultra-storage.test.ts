@@ -517,6 +517,44 @@ describe("Ultra storage — the self-heal write can no longer throw on a READ pa
     expect(() => listUltraRuns()).not.toThrow();
   });
 
+  test("an UNPERSISTED heal keeps the manifest's own timestamp — identical on every read", async () => {
+    // The wake-marker loop (2026-08-08): the heal used to mint a fresh
+    // `Date.now()` per read when its persist failed, and wake.ts dedupes
+    // delivery by `deliveredTerminalAt === m.updatedAt` — so the terminal was
+    // a moving target no ack could match, the wake stayed pending forever,
+    // and the session fired hidden wake turns in a loop, each announcing the
+    // same "ultra stopped" marker. Idempotent means the TIMESTAMP too.
+    const runId = "u-selfheal-stable-ts";
+    const dir = runDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ runId, meta: {}, state: "running", spend: 0, startedAt: 1, updatedAt: 7 }),
+    );
+    blockManifestWrite(runId);
+    const first = getUltraManifest(runId);
+    const second = getUltraManifest(runId);
+    expect(first?.state).toBe("stopped");
+    expect(first?.updatedAt).toBe(7); // the manifest's own, never a fresh now
+    expect(second?.updatedAt).toBe(7); // and the re-heal is byte-identical
+  });
+
+  test("a PERSISTED heal moves the timestamp exactly once, then every read agrees", async () => {
+    const runId = "u-selfheal-once";
+    const dir = runDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ runId, meta: {}, state: "running", spend: 0, startedAt: 1, updatedAt: 7 }),
+    );
+    const healed = getUltraManifest(runId);
+    expect(healed?.state).toBe("stopped");
+    expect(healed?.updatedAt).toBeGreaterThan(7); // the one durable bump
+    // The disk is terminal now: the heal branch never fires again, so the
+    // stamped timestamp is what every later read (and the ack) sees.
+    expect(getUltraManifest(runId)?.updatedAt).toBe(healed?.updatedAt);
+  });
+
   test("ANTI-VACUITY — an ordinary stale `running` manifest still gets its heal PERSISTED", async () => {
     // The fix must not degrade into "never persist the heal".
     const runId = "u-selfheal-persists";

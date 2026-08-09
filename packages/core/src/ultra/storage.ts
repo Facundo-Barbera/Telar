@@ -169,11 +169,29 @@ export function getUltraManifest(runId: string): UltraManifest | null {
     // so the log would grow without bound and make every reader of that run
     // slower, forever, as the price of a failure that is already observable
     // (the on-disk manifest still says `running`).
-    m = { ...m, state: "stopped", updatedAt: Date.now() };
+    // THE HEALED TIMESTAMP MUST BE IDEMPOTENT, and `Date.now()` here was not
+    // (the wake-marker loop, 2026-08-08): wake.ts dedupes delivery by
+    // `deliveredTerminalAt === m.updatedAt`, so a heal whose persist FAILED
+    // and which then re-minted a fresh timestamp on every read was a terminal
+    // no ack could ever match — the wake stayed pending forever, the client's
+    // freshness latch saw a "new" terminal every poll, and the session fired
+    // hidden wake turns in a loop, each announcing the same "ultra stopped"
+    // marker. The heal keeps the manifest's own `updatedAt` in memory: the
+    // recomputed heal is now IDENTICAL on every read, exactly as the comment
+    // above has always claimed. The one successful persist below is the only
+    // thing that moves the timestamp — once, durably, so every later read
+    // (and the ack's second read) agrees on it.
+    const healed = { ...m, state: "stopped" as const, updatedAt: Date.now() };
     try {
-      saveManifest(m);
+      saveManifest(healed);
+      // Persisted: the disk is terminal now, this branch never fires again
+      // for this run, and every later reader sees exactly this timestamp.
+      m = healed;
     } catch {
-      // Unpersisted, but healed for this reader — and re-healed on the next.
+      // Unpersisted: heal for this reader but KEEP the manifest's own
+      // `updatedAt`, so the next read recomputes the identical heal —
+      // timestamp included.
+      m = { ...m, state: "stopped" };
     }
   }
   return m;

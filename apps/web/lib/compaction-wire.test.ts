@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
+import type { TranscriptCompaction } from "./compaction";
 
 // Point the store at a throwaway home BEFORE importing it (store.test.ts idiom)
 // — nothing here may touch the real ~/.telar.
@@ -26,6 +27,7 @@ afterAll(() => {
 });
 
 const store = await import("./store");
+const compaction = await import("./compaction");
 
 const sessionView = readFileSync(
   new URL("../components/session/session-view.tsx", import.meta.url),
@@ -53,6 +55,10 @@ const turnSource = `${route}\n${turnHooks}\n${projector}`;
 const storeSource = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
 const sessionPage = readFileSync(
   new URL("../app/projects/[name]/sessions/[id]/page.tsx", import.meta.url),
+  "utf8",
+);
+const eventsRoute = readFileSync(
+  new URL("../app/api/chat/[sessionId]/events/route.ts", import.meta.url),
   "utf8",
 );
 
@@ -289,5 +295,67 @@ describe("the context wheel updates at the compaction, not at the next turn", ()
 
   test("survives a reload with the same honesty", () => {
     expect(sessionView).toContain("seedCompactedContext(initialChat?.compactions");
+  });
+});
+
+describe("redelivered events cannot double the divider (the duplicate 'Compacted · manual' pair)", () => {
+  const facts = {
+    at: 1,
+    trigger: "manual" as const,
+    preTokens: 731_000,
+    postTokens: 7_900,
+    durationMs: 168_300,
+  };
+  const triplet = ["compacting", "compacted", "compact_boundary"] as const;
+
+  test("the fold is blind to redelivery BY DESIGN — which is why replay must never re-enter old state", () => {
+    // The fold's rule is "an event cannot happen twice in one compaction" —
+    // correct for genuinely-new events (two bare Codex "compacted"s ARE two
+    // compactions) and structurally unable to tell a redelivered event from a
+    // new one. So the same wire triplet folded twice through ONE state is two
+    // dividers with identical copy: exactly the duplicate a cursor-less
+    // reconnect used to produce by replaying the open window into a fold that
+    // was never reset.
+    let state = compaction.emptyCompactionFold<TranscriptCompaction>();
+    const apply = () => {
+      for (const ev of triplet) {
+        state = compaction.foldCompactionEvent(state, ev, { ...facts, afterMessageId: null });
+      }
+    };
+    apply();
+    expect(state.entries.map((e) => e.key)).toEqual(["c1"]);
+    apply(); // the same events again — a replayed stream, not a second compaction
+    expect(state.entries.map((e) => e.key)).toEqual(["c1", "c2"]);
+    // A rebuild from EMPTY state converges instead: same events, same minted
+    // key, and upsertCompaction merges by key rather than appending.
+    let fresh = compaction.emptyCompactionFold<TranscriptCompaction>();
+    for (const ev of triplet) {
+      fresh = compaction.foldCompactionEvent(fresh, ev, { ...facts, afterMessageId: null });
+    }
+    expect(fresh.entries.map((e) => e.key)).toEqual(["c1"]);
+  });
+
+  test("the events route replays from the FEED and hands the client its resume cursor", () => {
+    // Replay used to be a line-counted read that never told the client where
+    // it stood, so every reconnect replayed the whole open window. The feed
+    // read returns the exact (win, seq) resume point in the same read as the
+    // events it covers, and the route now sends it to replay subscribers too.
+    expect(eventsRoute).toContain("readFeedEvents(sessionId, feedCursor)");
+    expect(eventsRoute).toContain('send("cursor", feedCursor)');
+    // The degraded fallback (a window whose feed never reached disk) still
+    // replays from live.ndjson, cursor-less as before.
+    expect(eventsRoute).toContain("readSessionEvents(sessionId, line)");
+  });
+
+  test("a cursor-less replay round rebuilds the fold from EMPTY, dropping last round's minted entries", () => {
+    // The client half, for the degraded path the server cannot cursor: a
+    // rebuild from line zero must not stack onto the previous round's state.
+    // Fold-minted (c*) entries are re-minted by the replay itself; seeded
+    // (stored-*) entries describe completed turns the replay never carries.
+    expect(sessionView).toContain(
+      "compactionFoldRef.current = emptyCompactionFold<TranscriptCompaction>()",
+    );
+    expect(sessionView).toContain("list.filter((c) => !isFoldMintedKey(c.key))");
+    expect(sessionView).toContain("feedCursorRef.current === null");
   });
 });

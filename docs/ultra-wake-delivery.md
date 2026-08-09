@@ -1,9 +1,10 @@
 # The Ultra completion wake's delivery seam
 
 `apps/web/lib/ultra-wake.ts` is Story 4.1 / FR-UW-1's delivery seam: the
-PURE, dependency-free module shared by the client (`session-view.tsx`), the
-server (`app/api/chat/route.ts`) and the system-prompt composer
-(`session-prompts.ts`), so all three agree on the contract and it is
+PURE, dependency-free module shared by the ticket author
+(`lib/server/session-engine.ts`), the server (`app/api/chat/route.ts`) and the
+system-prompt composer (`session-prompts.ts`), so all three agree on the
+contract and it is
 unit-testable without importing any of them. Modelled on
 `apps/web/lib/escalation-kickoff.ts`, which is the same shape for the same
 reason — read that file before changing this one. This document holds the
@@ -15,10 +16,11 @@ full reasoning; the source file holds only the point-of-use notes.
    `pendingUltraWakes(sessionId)` reports it, durably, whether or not the
    bus event survived (see `packages/core/src/ultra/wake.ts`'s header — the
    projection is the guarantee, the publish is the fast path).
-2. **Idle session:** `use-ultra-wake.ts` polls `GET /api/ultra/wakes`, and
-   `session-view` pushes `ULTRA_WAKE_SENTINEL` into the EXISTING injection
-   queue, which drains through the EXISTING idle gate. The turn fires with
-   `hidden: true`, so no user bubble renders.
+2. **Idle session:** the engine's `scanSessionMachinery` enqueues ONE durable
+   ticket per pending wake — key `wake:<runId>:<terminalAt>`, wire message
+   `ULTRA_WAKE_SENTINEL`, `kind: "wake"`, `hidden: true` — into the session's
+   own queue, which drains through the EXISTING one-turn-at-a-time dispatcher.
+   No user bubble renders, and no queue surface draws the ticket as a line.
 3. `route.ts` recognizes the sentinel and swaps it for `ULTRA_WAKE_PROMPT`,
    so the model is driven by a server-authored instruction. The client never
    authors the facts — it authors only the trigger.
@@ -39,44 +41,54 @@ whose manifest already names a session, and it fires on an idle,
 already-resumed session. A recognizer that mirrored the template
 line-for-line would NEVER FIRE. See `isUltraWakeTrigger` and its named test.
 
-## `freshUltraWakes` — why the latch lives here and not inline
+## The latch: what it had to guarantee, and where it lives now
 
-This is the latch that decides whether an unprompted turn fires, and until
-the story-4.1 review it lived inline in `session-view.tsx` where nothing
-could execute it — which is exactly how SF-1 (a second run finishing inside
-the first wake turn never got its turn) shipped and was then found by
-reading rather than by running. §6.2 classes the RENDER as unprovable
-without a DOM; the DECISION is not, so it is out here where a test can
-drive it.
+The trigger was client-authored until the machinery moved server-side, and
+this section is kept because the RULES survived the move even though the two
+functions that held them (`freshUltraWakes`, `shouldEnqueueUltraWake`) did
+not. Both were deleted with their only caller; each one's job has a named
+successor.
 
-The contract, in three sentences: a run is announced at most once per
-terminal — the caller enqueues ONE trigger however many runs are fresh
-(T10), because the appendix carries a list. A run that is still pending
-stays announced, so a turn that has not yet been acked cannot re-fire. A run
-that DROPS OUT of pending is forgotten, which is what re-arms a run resumed
-to a new terminal under the same id (see `UltraWakeRecord.deliveredTerminalAt`).
+**A run is announced at most once per terminal.** Was an announced-runs `Set`
+in a component ref — which is exactly how it failed: a remount emptied it, so
+a wake could re-announce, and a closed tab meant it never announced at all.
+It is now the idempotency key `wake:<runId>:<terminalAt>`, which lives in
+`queue.json` for the life of the session, so however often the engine scans,
+a terminal event mints one ticket. Keying on the TERMINAL and not the run
+preserves the re-arm rule: a run resumed to a new terminal under the same id
+is a new outcome and earns a new ticket (`UltraWakeRecord.deliveredTerminalAt`).
 
-## `shouldEnqueueUltraWake` — the second half of T10
+**T10: one turn, however many runs.** The story-4.1 review's adversarial pass
+refuted the announced-set alone. It stops one run being announced twice, but
+not a SECOND run enqueueing a SECOND trigger while the first is undispatched:
+with the drain blocked (the §1b reconnect tail), run A queues a trigger and
+run B queues another; the first turn's appendix carries BOTH and acks both;
+the second then fires a hidden turn against an empty appendix. The client's
+answer was an enqueue-time queue check, because its SF-2 drop-guard read a
+poll snapshot that lagged the ack by up to `POLL_MS`. The server has no such
+staleness, so the check moved to where it is exact and later: the drain
+re-validates a CLAIMED wake ticket and commits it without running a turn when
+the outcome it names is settled. Surplus tickets are therefore free — the first
+ticket's turn acks every wake its appendix carried, and the ones behind it cost
+a state transition each.
 
-Out here for the same reason `freshUltraWakes` is: the fix round's own
-adversarial pass refuted an earlier version of the SF-1 latch that had
-`freshUltraWakes` alone deciding, and the defect was invisible until
-something executed the rule over time. What it refuted: the announced-SET
-stops one run being announced twice, but it does NOT stop a SECOND run
-enqueueing a SECOND trigger while the first is still undispatched — which
-the boolean latch it replaced could never do. With the drain blocked (the
-§1b reconnect tail), run A queues a trigger and run B queues another; the
-first turn's appendix carries BOTH and acks both; the second then fires a
-hidden turn against an empty appendix. `session-view`'s SF-2 drop-guard
-cannot catch that: it reads a poll snapshot that lags the server-side ack by
-up to `POLL_MS`. So the queue is asked directly, at enqueue time, where the
-answer is exact.
+**That re-validation takes POSITIVE EVIDENCE, and the difference is a lost
+outcome.** It first asked `pendingUltraWakes(sessionId).length === 0` — but that
+projection swallows every read failure it meets (`getUltraManifest` and
+`readUltraWakeRecord` both answer null on an unreadable or half-written file),
+so "the mailbox reads empty" and "the outcome was delivered" are the same
+answer to it. One unreadable moment at claim time committed the only ticket
+that terminal would ever have, and the retained key deduped every rescan
+afterwards: the wake was lost silently and forever. The drain therefore asks
+for a fact instead — the run's `UltraWakeRecord` stamped `deliveredTerminalAt`
+equal to this ticket's terminal, or a manifest that has moved PAST that
+terminal (a stopped run resumed before its wake drained, whose new terminal
+mints its own ticket). Anything it cannot establish runs the turn: delivered
+twice is the direction this module tolerates, lost is not.
 
-One trigger, however many runs — the appendix's formatter takes a list,
-which is the whole reason T10 is satisfiable at all. A run marked announced
-but not separately triggered is correct, not lost: the trigger already
-queued composes its appendix from the mailbox at DISPATCH time, not at
-enqueue time.
+One turn, however many runs, still holds for the reason it always did: the
+appendix's formatter takes a list, and a ticket composes its appendix from the
+mailbox at DISPATCH time, not at enqueue time.
 
 ## The per-run outcome budget
 
