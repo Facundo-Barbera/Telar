@@ -13,6 +13,7 @@ import {
   markSessionTurnRunning,
   readSessionQueue,
   saveLoom,
+  ultraWakeChannel,
 } from "@telar/core";
 import { endChatRun, registerChatRun } from "@/lib/chat-runs";
 import { upsertChatStub } from "@/lib/store";
@@ -22,9 +23,9 @@ import {
   kickSessionQueue,
   registerSessionTurnExecutor,
   scanSessionMachinery,
-  sessionHeartbeatTick,
-  startSessionHeartbeat,
-  stopSessionHeartbeat,
+  startSessionMachineryReactor,
+  stopSessionMachineryReactor,
+  sweepSessionMachinery,
 } from "./session-engine";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-session-engine-"));
@@ -36,7 +37,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  stopSessionHeartbeat();
+  stopSessionMachineryReactor();
   if (originalHome === undefined) delete process.env.TELAR_HOME;
   else process.env.TELAR_HOME = originalHome;
   fs.rmSync(root, { recursive: true, force: true });
@@ -293,9 +294,11 @@ describe("server-authored machinery tickets", () => {
     expect(item?.error).toBe("profile rejected");
   });
 
-  test("a heartbeat tick drains a queued turn nobody kicked", async () => {
-    // Defect D5: without the pulse this item waits for a tab that may never open.
-    const id = session("heartbeat");
+  test("a boot sweep drains a queued turn nobody kicked", async () => {
+    // Defect D5, the synchronous answer: no clock — the sweep runs once at boot
+    // and once per work-creating event (the reactor). This pins the boot half:
+    // an item queued into a dead process is drained by the restart's one sweep.
+    const id = session("sweep");
     chat(id);
     const seen: string[] = [];
     registerSessionTurnExecutor(async (payload) => {
@@ -303,8 +306,8 @@ describe("server-authored machinery tickets", () => {
     });
     enqueueSessionTurn(id, { idempotencyKey: "unkicked", payload: { message: "unkicked" } });
 
-    sessionHeartbeatTick();
-    await kickSessionQueue(id); // joins the tick's in-flight dispatcher
+    sweepSessionMachinery();
+    await kickSessionQueue(id); // joins the sweep's in-flight dispatcher
 
     expect(seen).toEqual(["unkicked"]);
     expect(readSessionQueue(id).items[0]?.state).toBe("committed");
@@ -365,9 +368,9 @@ describe("server-authored machinery tickets", () => {
     cancelWatch(watch.id);
   });
 
-  test("the pulse authors a watch ticket for a session no tab has ever opened", async () => {
+  test("the boot sweep authors a watch ticket for a session no tab has ever opened", async () => {
     // machinerySessionIds' watch half (defect D8): the session is named by the
-    // watch file alone — it has no queue file at all until this tick writes one.
+    // watch file alone — it has no queue file at all until this sweep writes one.
     const id = session("watch-pulse");
     chat(id);
     const loom = createLoom({
@@ -384,19 +387,22 @@ describe("server-authored machinery tickets", () => {
       seen.push((payload as { message: string }).message);
     });
 
-    sessionHeartbeatTick();
-    await kickSessionQueue(id); // joins the tick's in-flight dispatcher
+    sweepSessionMachinery();
+    await kickSessionQueue(id); // joins the sweep's in-flight dispatcher
 
     expect(seen.some((text) => text.includes("needs a human"))).toBe(true);
     expect(readSessionQueue(id).items[0]?.state).toBe("committed");
     cancelWatch(watch.id);
   });
 
-  test("boot starts the pulse even when queue recovery throws", async () => {
-    // The pulse is D5's only guarantee and register() is its only call site. It
-    // used to share one try with the boot recovery loop, so a TELAR_HOME that
-    // cannot be enumerated took the heartbeat down with it for the life of the
-    // process — the guarantee nested under an unrelated failure.
+  test("boot starts the reactor even when queue recovery throws", async () => {
+    // The reactor is the event half of D5's guarantee and register() is its only
+    // call site. The heartbeat it replaces used to share one try with the boot
+    // recovery loop, so a TELAR_HOME that cannot be enumerated took it down for
+    // the life of the process — the guarantee nested under an unrelated failure.
+    // The reactor starts BEFORE the boot sweep, so the sweep throwing on the
+    // same corrupt root (listSessionQueueIds rethrows non-ENOENT) must not
+    // unwind it.
     const bootRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-boot-"));
     // A FILE where the sessions directory belongs: listSessionQueueIds rethrows
     // anything but ENOENT, so boot recovery throws before it kicks anything.
@@ -404,14 +410,14 @@ describe("server-authored machinery tickets", () => {
     const originalRuntime = process.env.NEXT_RUNTIME;
     process.env.TELAR_HOME = bootRoot;
     process.env.NEXT_RUNTIME = "nodejs";
-    stopSessionHeartbeat();
+    stopSessionMachineryReactor();
     try {
       const { register } = await import("@/instrumentation");
       await register();
       // Already running: the second start is the assertion.
-      expect(startSessionHeartbeat()).toBe(false);
+      expect(startSessionMachineryReactor()).toBe(false);
     } finally {
-      stopSessionHeartbeat();
+      stopSessionMachineryReactor();
       if (originalRuntime === undefined) delete process.env.NEXT_RUNTIME;
       else process.env.NEXT_RUNTIME = originalRuntime;
       process.env.TELAR_HOME = root;
@@ -419,16 +425,51 @@ describe("server-authored machinery tickets", () => {
     }
   });
 
-  test("starting the heartbeat twice does not stack a second interval", () => {
-    // HMR re-evaluates this module; a second interval would outlive the handle
-    // that could clear it and both would race the same queues forever.
+  test("starting the reactor twice does not stack a second subscription", () => {
+    // HMR re-evaluates this module; a second subscription would double-scan
+    // (harmless — the ticket key dedupes) but leak handlers without bound.
     try {
-      expect(startSessionHeartbeat()).toBe(true);
-      expect(startSessionHeartbeat()).toBe(false);
+      expect(startSessionMachineryReactor()).toBe(true);
+      expect(startSessionMachineryReactor()).toBe(false);
     } finally {
-      stopSessionHeartbeat();
+      stopSessionMachineryReactor();
     }
-    expect(startSessionHeartbeat()).toBe(true);
-    stopSessionHeartbeat();
+    expect(startSessionMachineryReactor()).toBe(true);
+    stopSessionMachineryReactor();
+  });
+
+  test("an ultra terminal PUBLISH kicks its session — no tab, no clock", async () => {
+    // The event half of the synchronous design: the reactor turns the
+    // `ultra:run-completed` publish into scan + kick the moment it fires. The
+    // manifest is written before the publish (wake.ts's ordering guarantee),
+    // so the scan this triggers already sees the outcome.
+    const id = session("reactor");
+    chat(id);
+    const seen: string[] = [];
+    registerSessionTurnExecutor(async (payload) => {
+      seen.push((payload as { message: string }).message);
+    });
+    const runId = terminalUltraRun(id, 41_000);
+    try {
+      expect(startSessionMachineryReactor()).toBe(true);
+      ultraWakeChannel().publish("run-completed", {
+        runId,
+        sessionId: id,
+        messageId: "",
+        state: "done",
+        name: "nightly sweep",
+        spendUsd: 0.5,
+        terminalAt: 41_000,
+        result: "swept",
+      });
+      await kickSessionQueue(id); // joins the reactor's in-flight dispatcher
+    } finally {
+      stopSessionMachineryReactor();
+    }
+
+    expect(seen).toEqual([ULTRA_WAKE_SENTINEL]);
+    const item = readSessionQueue(id).items[0];
+    expect(item?.idempotencyKey).toBe(`wake:${runId}:41000`);
+    expect(item?.state).toBe("committed");
   });
 });

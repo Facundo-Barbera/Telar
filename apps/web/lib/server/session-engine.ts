@@ -31,6 +31,7 @@ import {
   readUltraWakeRecord,
   recoverSessionQueue,
   sessionTurnKind,
+  subscribeAgentFacing,
   type JsonValue,
   type SessionQueueItem,
   type UltraManifest,
@@ -93,7 +94,8 @@ type EngineGlobals = {
   executor?: TurnExecutor;
   inFlight?: Map<string, Promise<void>>;
   recovered?: Set<string>;
-  heartbeat?: ReturnType<typeof setInterval>;
+  /** The machinery reactor's bus unsubscribe — see startSessionMachineryReactor. */
+  reactor?: () => void;
 };
 
 const globals = globalThis as unknown as { __telarSessionEngine?: EngineGlobals };
@@ -235,7 +237,7 @@ function wakeOutcomeSettled(key: string): boolean {
  * that.
  *
  * NEVER THROWS, and the two producers are isolated from each other. It runs at
- * the top of every drain and on every heartbeat tick, so a corrupt watch file,
+ * the top of every drain and in every full sweep, so a corrupt watch file,
  * an unreadable manifest or a missing loom may neither strand a human's queued
  * message behind it nor silence the OTHER producer.
  */
@@ -312,7 +314,8 @@ export function scanSessionMachinery(sessionId: string): void {
 async function drain(sessionId: string): Promise<void> {
   ensureRecovered(sessionId);
   // Every kick sweeps machinery: a kick is a moment this server is demonstrably
-  // awake for this session, and the heartbeat below is the only other one.
+  // awake for this session; the boot sweep and the run-completed reactor are
+  // the only other authors.
   scanSessionMachinery(sessionId);
   for (;;) {
     if (isSessionRunLive(sessionId)) return;
@@ -380,9 +383,7 @@ export function kickSessionQueue(sessionId: string): Promise<void> {
   return promise;
 }
 
-const HEARTBEAT_MS = 20_000;
-
-// Which sessions a tick has any reason to look at beyond their own queue: one
+// Which sessions a sweep has any reason to look at beyond their own queue: one
 // named by a loom watch, or by an Ultra run that is still live or whose outcome
 // is not yet marked delivered.
 //
@@ -407,32 +408,34 @@ function machinerySessionIds(): Set<string> {
 }
 
 /**
- * ONE PULSE. Exported so its behaviour is pinned by tests rather than by timers.
+ * ONE FULL SWEEP over every session that could have work: machinery scanned,
+ * queued items kicked. Exported so its behaviour is pinned by tests.
  *
- * WHY THIS EXISTS AT ALL, since neither reference implementation has one:
- * without it the engine drains only when kicked — turn end, queue traffic, boot
- * — so anything queued while no tab is open waits indefinitely (defect D5), and
- * a machinery ticket has no renderer left to author it. t3code's stale unstarted
- * turns and OpenCode's hangs are the same defect in both neighbours; the
- * deliberate divergence is recorded in docs/plans/session-loop-graph.html
- * (question 2, "the one place we'd deliberately go beyond both").
+ * THE SYSTEM IS SYNCHRONOUS, BY DECISION (owner's call, 2026-08-08, reversing
+ * this branch's own earlier 20s heartbeat): every kick is an event, never a
+ * clock. This sweep runs exactly twice per fact — once at BOOT (the durable
+ * projections are the guarantee; the sweep is what actualizes them after a
+ * restart) and once per `ultra:run-completed` publish via the reactor below
+ * (the fast path). That is t3code's posture, and it accepts t3code's residual,
+ * stated rather than hidden: a work-creating event whose publish is lost
+ * mid-process-lifetime — or a loom reaching a watch's trigger state, which has
+ * NO bus event today — strands until the next natural kick (a turn ending,
+ * queue traffic from any tab, the next boot). Closing the watch half means
+ * declaring an agent-facing loom event in core, recorded as the follow-up in
+ * docs/plans/session-loop-graph.html question 2.
  *
- * WHAT A TICK COSTS, stated because the shape invites the opposite reading and
- * this comment once claimed it: `machinerySessionIds` reads EVERY ultra manifest
- * and the whole watch file on every tick, on an idle host, and the run set only
- * grows — there is no index over terminal-but-undelivered runs, and building one
- * is a storage change that does not belong to this pulse. What a tick does NOT
- * do is dispatch on spec: a session is kicked only when its queue file actually
- * holds something `queued`, so no turn starts and no dispatcher is entered for a
- * session with nothing to run. HEARTBEAT_MS buys down the scan, not the
- * dispatch.
+ * WHAT A SWEEP COSTS: `machinerySessionIds` reads EVERY ultra manifest and the
+ * whole watch file, and the run set only grows — acceptable at boot-and-event
+ * cadence where the deleted heartbeat's every-20s reading was not. A sweep does
+ * NOT dispatch on spec: a session is kicked only when its queue file actually
+ * holds something `queued`.
  */
-export function sessionHeartbeatTick(): void {
-  // MACHINERY FIRST, so a ticket minted by this tick is already in the queue
-  // file the sweep below reads — including for a session whose queue file this
-  // scan is what creates. Scanned here as well as inside drain() because a kick
-  // JOINS an in-flight dispatcher rather than starting a second one: while a
-  // long turn runs, this is the only path that gets the ticket for an outcome
+export function sweepSessionMachinery(): void {
+  // MACHINERY FIRST, so a ticket minted by this sweep is already in the queue
+  // file the kick loop below reads — including for a session whose queue file
+  // this scan is what creates. Scanned here as well as inside drain() because a
+  // kick JOINS an in-flight dispatcher rather than starting a second one: while
+  // a long turn runs, this is the only path that gets the ticket for an outcome
   // that landed mid-turn into the queue behind it.
   for (const sessionId of machinerySessionIds()) {
     scanSessionMachinery(sessionId);
@@ -442,49 +445,57 @@ export function sessionHeartbeatTick(): void {
     try {
       queued = readSessionQueue(sessionId).items.some((item) => item.state === "queued");
     } catch (error) {
-      // One unreadable queue is that session's problem, never the pulse's.
-      console.error("[session-engine] heartbeat could not read queue", sessionId, error);
+      // One unreadable queue is that session's problem, never the sweep's.
+      console.error("[session-engine] sweep could not read queue", sessionId, error);
       continue;
     }
-    // A session with a wake it can never clear used to be re-kicked every tick
-    // for the life of the process; nothing queued is nothing to dispatch.
     if (!queued) continue;
     void kickSessionQueue(sessionId).catch((error) => {
-      console.error("[session-engine] heartbeat kick failed", sessionId, error);
+      console.error("[session-engine] sweep kick failed", sessionId, error);
     });
   }
 }
 
 /**
- * Start the pulse. globalThis-backed and idempotent because Next re-evaluates
- * this module on HMR: a second interval would outlive the module that could
- * still clear it, and the two would then race the same queues forever. Unref'd —
- * a heartbeat must never be the reason a process stays alive.
+ * THE REACTOR — the event half of the synchronous design. Subscribes the engine
+ * to `ultra:run-completed` on the WAKE CHANNEL (subscribeAgentFacing is
+ * class-gated to exactly this capability: synthesizing an assistant turn from
+ * an event), so a detached run reaching a terminal kicks its session the moment
+ * the fact is published, with no tab open and no clock. The manifest is written
+ * BEFORE the publish (wake.ts's ordering guarantee), so the scan this triggers
+ * reads a projection that already carries the outcome — handler order against
+ * wake.ts's own recorder does not matter.
  *
- * False when one was already running.
+ * globalThis-backed and idempotent because Next re-evaluates this module on
+ * HMR: a second subscription would double-scan (harmless — the ticket key
+ * dedupes) but would leak handlers without bound. False when already running.
  */
-export function startSessionHeartbeat(): boolean {
-  if (engine.heartbeat) return false;
-  const timer = setInterval(() => {
+export function startSessionMachineryReactor(): boolean {
+  if (engine.reactor) return false;
+  engine.reactor = subscribeAgentFacing("ultra:run-completed", (payload) => {
+    const sessionId = (payload as { sessionId?: unknown })?.sessionId;
+    if (typeof sessionId !== "string" || !sessionId) return;
     try {
-      sessionHeartbeatTick();
+      scanSessionMachinery(sessionId);
     } catch (error) {
-      // A tick that throws must not kill the interval with it.
-      console.error("[session-engine] heartbeat tick failed", error);
+      // The bus counts a throwing handler as failed; the queue is this
+      // handler's whole job, so log rather than propagate.
+      console.error("[session-engine] machinery reactor scan failed", sessionId, error);
     }
-  }, HEARTBEAT_MS);
-  timer.unref?.();
-  engine.heartbeat = timer;
+    void kickSessionQueue(sessionId).catch((error) => {
+      console.error("[session-engine] machinery reactor kick failed", sessionId, error);
+    });
+  });
   return true;
 }
 
 /**
- * Clear the pulse and its globalThis handle. TEST TEARDOWN is its only caller —
- * there is no HMR dispose hook registered anywhere, so the globalThis guard in
- * startSessionHeartbeat is the ONLY thing making a re-evaluation safe.
+ * Drop the subscription and its globalThis handle. TEST TEARDOWN is its only
+ * caller — there is no HMR dispose hook registered anywhere, so the globalThis
+ * guard in startSessionMachineryReactor is the ONLY thing making a
+ * re-evaluation safe.
  */
-export function stopSessionHeartbeat(): void {
-  if (!engine.heartbeat) return;
-  clearInterval(engine.heartbeat);
-  engine.heartbeat = undefined;
+export function stopSessionMachineryReactor(): void {
+  engine.reactor?.();
+  engine.reactor = undefined;
 }
