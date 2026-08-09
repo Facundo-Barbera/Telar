@@ -84,6 +84,91 @@ export type LoomRef = z.infer<typeof LoomRef>;
 export const ItemVerdict = z.enum(["session", "loom"]);
 export type ItemVerdict = z.infer<typeof ItemVerdict>;
 
+// A time-commitment mined out of a capture (story 5.8's enrichment pass,
+// feeding CAP-8's gap detection). SPEC.md's assumption pins where this comes
+// from: "Mining time-commitments from captures (CAP-8) is expert work during
+// the enrichment pass, not a separate parser — the expert already reads every
+// capture." So there is no commitment parser anywhere in the tree; there is
+// this shape, and the expert fills it.
+//
+// IT HANGS OFF THE ITEM, NOT OFF A SECOND STORE, for the same reason the desk
+// is a boolean on the item: the commitment was spoken INSIDE a capture, and the
+// capture is a packet. A floating capture keeps its commitments with no project
+// to file them under, which is the resting state item-model.md already blesses.
+//
+// `when` IS A COARSE HUMAN LABEL AND NOT A DATE — "Thursday", "next week",
+// "after the demo". NFR-OW-11 forbids clocks and scheduling, and nothing in
+// this store parses, compares or sorts it. Story 5.10's gap detection asks the
+// HUMAN whether the moment passed (the briefing is pull-based and answers when
+// arrived at); it does not compute the answer from a clock.
+//
+// `text` IS THE COMMITMENT IN THE CAPTURE'S OWN WORDS. Same law as `raw`: the
+// user must be able to check the expert did not invent a promise they never
+// made, so the quote is stored beside the expert's reading of it.
+export const Expectation = z.looseObject({
+  id: z.string(),
+  text: z.string(),
+  when: z.string(),
+  // Which packet's capture it was mined from. Redundant with the item it is
+  // stored on TODAY, and kept anyway: story 5.10 reads a flat list of every
+  // commitment in the store (minedCommitments) and a line in a briefing that
+  // cannot say which item it came from is a line nobody can act on.
+  itemId: z.string(),
+  // Display label of when the expert mined it, same class as Item.captured.
+  mined: z.string(),
+});
+export type Expectation = z.infer<typeof Expectation>;
+
+// ── experts/<project>/digest.yaml ────────────────────────────────────────────
+
+// The version this build WRITES. Unlike a packet, a digest IS re-derivable —
+// it is the expert's own compression of a project, and a later pass rewrites
+// it — so `migrateDigest` does not exist and an unreadable digest degrades to
+// "no digest" (a cold expert with nothing to rehydrate from) rather than to a
+// throw. The field is recorded so a future build can tell what wrote it.
+export const DIGEST_SCHEMA_VERSION = 1;
+
+// One term the project says in shorthand, and what it means in full. This is
+// the field CAP-9's "decompress shorthand a generic agent cannot" cashes out
+// as: a generic model reading "the SEP path" learns nothing; an expert
+// rehydrated from a digest that spells it out does.
+export const DigestTerm = z.looseObject({
+  term: z.string(),
+  means: z.string(),
+});
+export type DigestTerm = z.infer<typeof DigestTerm>;
+
+// THE PROJECT'S DURABLE STATE DIGEST — CAP-9's rehydration source and the
+// SPEC's "Experts write, master reads" made into a file.
+//
+// EVERY FIELD IS PROSE OR A LIST OF PROSE, deliberately. This is a memory for
+// a model to read, not a record for code to branch on: nothing in this tree
+// switches on any field below, and a digest that grew a `status` or a
+// `nextAction` would be a second, agent-writable planner sitting beside the
+// item store — precisely the "agents may not commit" line NFR-OW-2 draws.
+//
+// z.looseObject for the same reason every packet-nested shape is: a build that
+// cannot read a key must not destroy it on the next write.
+export const ExpertDigest = z.looseObject({
+  // The owning project slug. Also the directory name — see store.ts's
+  // expertDigestFile, which guards it exactly as an item id is guarded.
+  project: z.string(),
+  schemaVersion: z.number().default(DIGEST_SCHEMA_VERSION),
+  // Display label of the last pass that wrote it, same class as Item.captured.
+  updated: z.string(),
+  // "Where this project is, in a paragraph" — the sit-down overview's "where
+  // each project was left" band reads this and nothing else.
+  summary: z.string().default(""),
+  // How this project works: its own methodology, which for a MIRRORED project
+  // is the foreign tracker's methodology translated ("foreign structures stay
+  // foreign… the expert doubles as translator of that project's methodology").
+  methodology: z.string().default(""),
+  glossary: z.array(DigestTerm).default([]),
+  // Free-form durable notes the expert wants its next cold self to have.
+  notes: z.array(z.string()).default([]),
+});
+export type ExpertDigest = z.infer<typeof ExpertDigest>;
+
 // ── lanes.yaml ───────────────────────────────────────────────────────────────
 
 // Named WorkspaceLane, not Lane, as a COMPILER CONSTRAINT: run-server.ts
@@ -175,6 +260,19 @@ export const Item = z.looseObject({
   mirrored: z.string().optional(),
   deadline: Deadline.optional(),
   verdict: ItemVerdict.optional(),
+  // DISCLOSED ADDITION (story 5.8) — the durable half of "the verdict is
+  // advisory". item-model.md: "A human override is durable and is not
+  // re-flipped by a later expert pass." A verdict alone cannot express that:
+  // `verdict: "session"` written by an expert and `verdict: "session"` chosen
+  // by the human are the same two bytes, so the next pass has no way to tell
+  // which one it is looking at and every pass would re-decide.
+  //
+  // TRUE MEANS A HUMAN CHOSE IT, and only setItemVerdict (store.ts) writes it —
+  // absent from ItemPatch, so no tool and no route can forge one. applyExpertPass
+  // reads it and leaves `verdict` alone when it is set, recording what it WOULD
+  // have said on the timeline instead. There is no un-set path for the same
+  // reason there is no un-track path: a human unmakes it by choosing again.
+  verdictOverride: z.boolean().optional(),
   // The conservation valve (NFR-OW-3): decomposition lives INSIDE the item,
   // so breaking work down never grows the queue count.
   subtasks: z.array(Subtask).optional(),
@@ -196,6 +294,10 @@ export const Item = z.looseObject({
   fixed: z.string().optional(),
   // Criteria the work must meet — this plus `fixed` is the loom's premise.
   acceptance: z.array(z.string()).optional(),
+  // Time-commitments the expert mined out of THIS item's capture (CAP-8's
+  // source, story 5.10's input). Written only by applyExpertPass; absent from
+  // ItemPatch like every other ripening field.
+  commitments: z.array(Expectation).optional(),
   timeline: z.array(TimelineEvent).optional(),
 });
 export type Item = z.infer<typeof Item>;

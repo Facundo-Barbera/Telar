@@ -44,6 +44,9 @@ import path from "node:path";
 import YAML from "yaml";
 import { atomicWrite, telarDir } from "../manifest";
 import {
+  DIGEST_SCHEMA_VERSION,
+  ExpertDigest,
+  Expectation,
   ITEM_SCHEMA_VERSION,
   Item,
   LoomRef,
@@ -118,6 +121,79 @@ export function workspaceStorePaths(): readonly string[] {
   return [lanesFile(), packetsRoot()];
 }
 
+// WHERE THE EXPERT DIGESTS LIVE, and the reasoning is the story's own open
+// question ("a durable, project-keyed location; propose and justify" —
+// SPEC-organization-workspace story 8). This is the proposal, and the four
+// candidates it beat are named because each is the obvious one from some angle:
+//
+//   1. INSIDE THE PROJECT'S OWN REPO (`<manifest.root>/.telar/digest.yaml`) —
+//      REJECTED, twice over. "Foreign structures stay foreign": for a mirrored
+//      project Telar holds a view with pointers back and does not get to leave
+//      files in somebody else's tree. And a digest under version control is a
+//      digest that changes with the branch, arrives in diffs, and vanishes on a
+//      clean checkout — while Codex's path-based sandbox would make it writable
+//      by every ordinary session of that project, so a project session could
+//      quietly rewrite its own expert's memory.
+//   2. UNDER THE MASTER'S cwd (`workspace/home/`) — REJECTED. That inverts the
+//      SPEC's direction ("Experts write, master reads"): the master's working
+//      root is the one directory it can write freely, so digests there would be
+//      the master's to rewrite by accident on any turn.
+//   3. IN A PACKET (`packets/<id>/digest.yaml`) — REJECTED. A digest is
+//      PROJECT-keyed and outlives every item; hanging it off one packet makes it
+//      die with that packet and forces the next pass to guess which item holds
+//      the project's memory.
+//   4. A SECOND STATE ROOT (`TELAR_HOME/experts/`) — REJECTED. INV-3a/INV-3b
+//      give TELAR_HOME/workspace exactly one owning module; a sibling root would
+//      be a new root-composition site and a second owner for the same concept.
+//
+// So: `TELAR_HOME/workspace/experts/<project>/digest.yaml`, composed off
+// workspaceDir() (no new root-composition site), a SIBLING of home/, lanes.yaml
+// and packets/, owned by this module like everything else under that root.
+//
+// IT IS DELIBERATELY NOT IN workspaceStorePaths(), and that absence is a
+// decision rather than an omission: `protectedPaths` denies READS as well as
+// writes (makeGuardrailDecision has no branch before inputPaths), and the master
+// is required to read digests — buildMasterProfile keeps Read/Grep/Glob for
+// exactly this ("the triad is what a receptionist needs to read a digest off
+// disk"). Protecting the digests would deny the one access the master's whole
+// design depends on. The store's ITEM data stays protected; the expert's prose
+// memory is readable, which is the asymmetry "experts write, master reads"
+// describes.
+const EXPERTS_DIR = "experts";
+const expertsRoot = () => path.join(workspaceDir(), EXPERTS_DIR);
+
+// The digest filename, a value for the same reason PACKET_FILE is one.
+const DIGEST_FILE = "digest.yaml";
+
+// packetDir's guard, applied to a project slug — the second place a
+// caller-supplied name reaches the filesystem in this module, and it gets the
+// same regex-plus-containment treatment rather than a weaker one. A project
+// name is a registry key the user types, so `../../` in one is not a
+// hypothetical. THROWS; readExpertDigest catches and reports "no digest",
+// writeExpertDigest lets it out (a write to a name this store cannot address
+// must be loud).
+function expertDigestDir(project: string): string {
+  if (typeof project !== "string" || !/^[A-Za-z0-9_.-]+$/.test(project) || project.startsWith(".")) {
+    throw new Error(`invalid project for an expert digest: ${JSON.stringify(project)}`);
+  }
+  const base = expertsRoot();
+  const dir = path.join(base, project);
+  const withSep = base.endsWith(path.sep) ? base : base + path.sep;
+  if (!dir.startsWith(withSep)) {
+    throw new Error(`invalid project for an expert digest: ${JSON.stringify(project)}`);
+  }
+  return dir;
+}
+
+// EXPORTED because the master's surfaces have to be able to SAY where a digest
+// is (and story 5.10's briefing has to be able to grep the tree), and a caller
+// composing `<workspace>/experts/<project>/digest.yaml` of its own would be the
+// second unowned site for a layout this module owns — the same AD-5 rule that
+// puts `cwd` behind workspaceHomeDir().
+export function expertDigestPath(project: string): string {
+  return path.join(expertDigestDir(project), DIGEST_FILE);
+}
+
 // The lanes filename, as a value, for the same reason PACKET_FILE below is one:
 // the writer, the reader and every diagnostic that NAMES the file to a human
 // have to agree about it.
@@ -168,6 +244,13 @@ const newItemId = () => `i-${crypto.randomBytes(6).toString("hex")}`;
 // always has an id already, so there is nothing to derive — a fresh random one
 // is the honest choice, matching newItemId's own reasoning.
 const newSubtaskId = () => `st-${crypto.randomBytes(6).toString("hex")}`;
+
+// Same generator again, for a mined time-commitment (story 5.8). It needs an id
+// for the same reason a sub-task does: story 5.10's gap detection has to be able
+// to say WHICH commitment a briefing line is about, across passes, and the text
+// is not a stable address (an expert re-reading the same capture may quote it
+// slightly differently).
+const newExpectationId = () => `x-${crypto.randomBytes(6).toString("hex")}`;
 
 // ── the seed lane ────────────────────────────────────────────────────────────
 
@@ -900,6 +983,26 @@ export function updateItem(id: string, patch: ItemPatch): Item | null {
   const current = getWorkspaceItem(id);
   if (!current) return null;
 
+  // A HUMAN OVERRIDE IS DURABLE, ON THIS PATH TOO (story 5.8, CAP-9). `verdict`
+  // is patchable, so without this line the generic update verb would be the way
+  // round the override that applyExpertPass honours — and `update_item` is an
+  // AGENT tool. It THROWS rather than dropping the key for AC9's stated reason:
+  // silently ignoring a patch is indistinguishable from honouring it, and a
+  // model told "updated" would tell the user their verdict changed when it did
+  // not. Setting the SAME verdict is not a change and is allowed through, so a
+  // pass that agrees with the human is not an error.
+  if (
+    patch.verdict !== undefined &&
+    current.verdictOverride === true &&
+    patch.verdict !== current.verdict
+  ) {
+    throw new Error(
+      `CAP-9: "${id}" carries a verdict the human set (${current.verdict}), and a human override is durable — ` +
+        `a later expert pass does not re-flip it. The verdict stays ${current.verdict}; nothing was written. ` +
+        `Record the disagreement on the timeline through applyExpertPass instead, where it is visible and advisory.`,
+    );
+  }
+
   // THE ADDRESS IS THE DIRECTORY, NEVER THE CONTENT. writePacket resolves its
   // path from the item's own `id`, so a hand-edited packet.yaml whose `id` no
   // longer matches the directory it sits in would make this write to a DIFFERENT
@@ -1364,6 +1467,244 @@ export function trackLoom(
   return out;
 }
 
+// ── the expert digests (story 5.8, CAP-9) ────────────────────────────────────
+//
+// "Experts produce durable state digests on disk; the master is a thin reader —
+// receptionist, not manager. State lives on disk, not in the conversation; this
+// is what removes the context-window ceiling." (SPEC.md.) Two functions, and the
+// DIRECTION between them is the whole design: `runExpertPass` (expert.ts) is the
+// only caller of the writer in this tree, and every other reader in the app —
+// the master's briefing, a packet view, a session — takes the reader.
+
+// null when there is no digest, when the project name cannot be addressed, and
+// when the file on disk cannot be read or parsed. NEVER THROWS, and the reading
+// of "null" is the one CAP-9 requires: a COLD EXPERT WITH NOTHING TO REHYDRATE
+// FROM. A first pass on a brand-new project is exactly that case, so it must not
+// be an error — expert.ts's prompt says "you have no digest yet" and the pass
+// writes the first one.
+//
+// NO MIGRATE-ON-READ, unlike migratePacket, and the asymmetry is the point: a
+// packet holds `raw` — the user's own words, with no source to rebuild them
+// from — so a version-ahead packet is refused rather than guessed at. A digest
+// is the expert's own compression and the next pass rewrites it, so degrading to
+// "no digest" costs one cold pass and loses nothing a human authored.
+export function readExpertDigest(project: string): ExpertDigest | null {
+  let file: string;
+  try {
+    file = expertDigestPath(project);
+  } catch {
+    return null;
+  }
+  try {
+    return ExpertDigest.parse(YAML.parse(fs.readFileSync(file, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+// Atomic, like every write in this module. `project` is taken from the digest
+// itself rather than as a second argument, so the file's address and its content
+// cannot disagree the way a hand-edited packet's `id` can (assertPacketAddress-
+// Matches exists because that IS possible for packets; here it is unspellable).
+//
+// THROWS on a project name this store cannot address — a write is loud where a
+// read is tolerant, the same split getWorkspaceItem/createItem already draws.
+export function writeExpertDigest(digest: ExpertDigest): ExpertDigest {
+  const parsed = ExpertDigest.parse({ ...digest, schemaVersion: DIGEST_SCHEMA_VERSION });
+  atomicWrite(expertDigestPath(parsed.project), YAML.stringify(parsed));
+  return parsed;
+}
+
+// Which projects have a digest at all — the master's "where each project was
+// left" band needs to know what it can read before it reads it, and a readdir
+// here beats every surface guessing project names. Tolerant: [] when the tree
+// does not exist yet, and a directory holding no readable digest is skipped
+// rather than reported as a project.
+export function listExpertDigests(): ExpertDigest[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(expertsRoot());
+  } catch {
+    return [];
+  }
+  return names
+    .map((n) => readExpertDigest(n))
+    .filter((d): d is ExpertDigest => d !== null)
+    .sort((a, b) => a.project.localeCompare(b.project));
+}
+
+// ── the enrichment pass's write (story 5.8, CAP-6/CAP-8/CAP-9) ───────────────
+//
+// THE ONLY WRITER OF `fixed`, `acceptance`, `commitments` AND THE EXPERT'S
+// TIMELINE EVENTS. ItemPatch cannot name any of them (updateItem throws), which
+// is what makes "the expert's output arrives through one audited verb" true by
+// construction rather than by review.
+//
+// WHAT IT WILL NOT DO, each for a stated law:
+//   - IT NEVER TOUCHES `raw`/`rawSource` (AC9, NFR-OW-19). `fixed` lands BESIDE
+//     the original, which is what lets the user check the expert did not drift.
+//   - IT NEVER TOUCHES lanes.yaml. Enrichment is a packet-only write; routing is
+//     a different verb, and a pass that could re-file items would be an agent
+//     making queue-structure changes as a side effect.
+//   - IT NEVER WRITES A STATUS. There is no field to write (AC8's absence), and
+//     "prepare, never commit" is why.
+//   - IT NEVER RE-FLIPS A HUMAN OVERRIDE. See below — this is CAP-9's own
+//     sentence and the reason `verdictOverride` exists.
+//
+// EVERY TIMELINE EVENT IT APPENDS IS `proposal: true`, because that is what
+// NFR-OW-2 means on screen: "agent output awaiting a human look". The packet
+// view renders the `· proposal` suffix from this flag.
+export type ExpertPass = {
+  // The brief that replaces the shorthand. Optional: a pass may have nothing to
+  // add to a brief that is already right, and rewriting it anyway would churn
+  // the packet and the timeline for no change.
+  fixed?: string;
+  acceptance?: string[];
+  // The triage. ADVISORY (item-model.md): recorded, rendered, and never acted
+  // on by this module — nothing here starts a session or plans a loom.
+  verdict?: ItemVerdict;
+  // WHY it said what it said, in one line. item-model.md: "The expert's verdict
+  // reasoning is a timeline event, not a hidden field — the user can see WHY it
+  // said loom before overriding it." So this is not optional decoration: a
+  // verdict with no reasoning is a verdict the human cannot argue with.
+  reasoning?: string;
+  // What the pass did to the brief, in the expert's own words — the timeline
+  // line for the enrichment itself, distinct from the verdict's reasoning.
+  note?: string;
+  // Time-commitments mined from THIS item's capture (CAP-8). Text + coarse
+  // label only; the store mints the ids and the mined-at label, so a caller
+  // cannot backdate one.
+  commitments?: Array<{ text: string; when: string }>;
+};
+
+export type ExpertPassResult = {
+  item: Item;
+  // What the expert said, whether or not it was applied.
+  verdict?: ItemVerdict;
+  // TRUE when a human override was in force and the expert's verdict was
+  // therefore NOT written. The caller reports this; the surface says it out
+  // loud. Without this channel the tool would report success and the model
+  // would tell the user a verdict changed when it did not.
+  verdictHeld: boolean;
+  // How many timeline events this pass appended.
+  events: number;
+  commitments: number;
+};
+
+// null when the item does not exist or cannot be read — getWorkspaceItem's own
+// contract, not a throw.
+export function applyExpertPass(itemId: string, pass: ExpertPass): ExpertPassResult | null {
+  const current = getWorkspaceItem(itemId);
+  if (!current) return null;
+  assertPacketAddressMatches(itemId, current);
+
+  const at = capturedLabel(new Date());
+  const timeline = [...(current.timeline ?? [])];
+
+  // THE OVERRIDE GATE, AND IT IS THE WHOLE OF CAP-9's "advisory". A human
+  // override is durable: the expert's verdict is still RECORDED — on the
+  // timeline, in the caller's result — but `verdict` is not rewritten, so a
+  // later pass cannot walk back a decision the human already made. The two
+  // halves matter equally: silently dropping the expert's reading would leave
+  // the user unable to see that a fresh look disagreed with them.
+  const held = current.verdictOverride === true && pass.verdict !== undefined;
+  const verdict = held ? current.verdict : (pass.verdict ?? current.verdict);
+
+  if (pass.note) {
+    timeline.push({ at, actor: "expert", text: pass.note, proposal: true });
+  }
+  if (pass.verdict) {
+    timeline.push({
+      at,
+      actor: "expert",
+      text: held
+        ? `reads this as ${pass.verdict}${pass.reasoning ? ` — ${pass.reasoning}` : ""}; your own ${current.verdict ?? "choice"} stands`
+        : `${pass.verdict}${pass.reasoning ? ` — ${pass.reasoning}` : ""}`,
+      proposal: true,
+    });
+  }
+
+  const mined = (pass.commitments ?? []).map((c) =>
+    Expectation.parse({ id: newExpectationId(), text: c.text, when: c.when, itemId, mined: at }),
+  );
+  if (mined.length > 0) {
+    timeline.push({
+      at,
+      actor: "expert",
+      // Named as what it is, so the ripening history reads honestly: the expert
+      // heard a promise in the user's own capture. It does NOT create an item
+      // — CAP-8: "Gap detection reads expectations only — it never creates an
+      // item on its own", and NFR-OW-3's conservation law says the same thing
+      // from the queue's side.
+      text: `mined ${mined.length} time-commitment${mined.length === 1 ? "" : "s"} from the capture`,
+      proposal: true,
+    });
+  }
+
+  const next = Item.parse({
+    ...current,
+    ...(pass.fixed !== undefined ? { fixed: pass.fixed } : {}),
+    ...(pass.acceptance !== undefined ? { acceptance: pass.acceptance } : {}),
+    ...(verdict !== undefined ? { verdict } : {}),
+    // APPENDED, never replaced: a second pass over a capture that mentions the
+    // same sync must not delete the first pass's reading of it, and the user's
+    // packet is the audit trail.
+    ...(mined.length > 0 ? { commitments: [...(current.commitments ?? []), ...mined] } : {}),
+    ...(timeline.length > 0 ? { timeline } : {}),
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+  // PACKET ONLY.
+  writePacket(next);
+  return {
+    item: next,
+    ...(pass.verdict ? { verdict: pass.verdict } : {}),
+    verdictHeld: held,
+    events: timeline.length - (current.timeline?.length ?? 0),
+    commitments: mined.length,
+  };
+}
+
+// THE HUMAN'S OWN VERDICT, and the only writer of `verdictOverride` in the tree.
+//
+// A SEPARATE NAMED VERB rather than a widening of ItemPatch, for promoteSubtask's
+// reason: the caller has to MEAN it. `verdictOverride` is not patchable, so a
+// tool that reached updateItem could never set the durable flag — it would write
+// a verdict the next expert pass overwrites, which is a worse lie than refusing.
+// The route behind this is a human click (POST /api/workspace/items/<id>/verdict)
+// and nothing on the MCP surface names this function.
+//
+// THE TIMELINE EVENT IS `actor: "you"` AND CARRIES NO `proposal` FLAG —
+// promoteSubtask's precedent, and for the same reason: only a human click
+// reaches here, and a proposal marker means "an agent wrote this and nobody has
+// looked", which would be false.
+export function setItemVerdict(itemId: string, verdict: ItemVerdict): Item | null {
+  const current = getWorkspaceItem(itemId);
+  if (!current) return null;
+  assertPacketAddressMatches(itemId, current);
+  const at = capturedLabel(new Date());
+  const next = Item.parse({
+    ...current,
+    verdict,
+    verdictOverride: true,
+    timeline: [
+      ...(current.timeline ?? []),
+      {
+        at,
+        actor: "you",
+        // States the durable consequence as DATA about what happened, which is
+        // also what the next expert pass will read on this packet.
+        text:
+          current.verdict && current.verdict !== verdict
+            ? `verdict set to ${verdict}, over the expert's ${current.verdict}`
+            : `verdict set to ${verdict}`,
+      },
+    ],
+    schemaVersion: ITEM_SCHEMA_VERSION,
+  });
+  writePacket(next);
+  return next;
+}
+
 // ── the pure projections (§5.5-D15) ──────────────────────────────────────────
 //
 // All four take ALREADY-READ data and touch no disk. That is what makes them
@@ -1449,6 +1790,23 @@ export function queueSlice(lanes: WorkspaceLane[], items: Item[]): QueueRow[] {
 // list, never rereads the store.
 export function agentsAddedCount(items: Item[]): number {
   return items.filter((i) => i.provenance === "session").length;
+}
+
+// Every time-commitment the expert has mined, flattened out of the items that
+// hold them (story 5.8's output, story 5.10's input for CAP-8's gap detection).
+// Pure and disk-free like its neighbours: takes an already-read item list.
+//
+// IT RETURNS EXPECTATIONS AND NOTHING ELSE — no "is it overdue", no bucketing,
+// no comparison against a clock. NFR-OW-11 forbids exactly that, and CAP-8's
+// success condition is a line in a briefing the human ARRIVES at, not a trigger:
+// "Gap detection reads expectations only — it never creates an item on its own."
+// Ordered by the item they came from, then by mining order within it, so two
+// reads of the same disk state produce the same list.
+export function minedCommitments(items: Item[]): Expectation[] {
+  return items
+    .slice()
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .flatMap((i) => i.commitments ?? []);
 }
 
 export type DeskCard = {
