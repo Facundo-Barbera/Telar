@@ -27,6 +27,8 @@
 //                      paints its tick in the user agent's blue, and that is
 //                      the one raw colour a class list cannot spell.
 //   · batch receipt  → <DetachReceipt bare>, composed by weaveDetachReceipt.
+//   · tracking mark  → <TrackingChip> in the row itself, in the twin's own
+//                      slot (after the tallies, before the provenance tag).
 //
 // THE RECEIPT IS THE BIGGEST CHANGE AND THE LEAST OPTIONAL. Cross-surface
 // invariant 2 — "the detach receipt is one line, one grammar, identical from
@@ -34,6 +36,14 @@
 // prototypes made by each spelling their own sentence; lib/detach-receipt.ts
 // exists because that is not a mechanism. This file used to hold one of the
 // three phrasings the module replaced. It now renders the module.
+//
+// WHY THERE IS NO ApprovalCard HERE, since silence in a design source reads as
+// a decision: cross-surface invariant 3 gates `weave_batch` behind one, and
+// the flow below is the HUMAN-INITIATED half — a person ticks rows and presses
+// the button, so the approval is the press. The card is what an AGENT proposing
+// a weave has to render, and no prototype draws that path yet
+// (implementation-artifacts/deferred-work.md owns the gap). The absence is
+// scope, not a judgement that the card is unnecessary.
 //
 // WHAT DID NOT CHANGE: the content and the information architecture, which
 // ui-contract.md §3 freezes — what's-next card, chips ending in a dashed
@@ -61,6 +71,7 @@ import {
   DeadlineChip,
   ProjectChip,
   ProvenanceTag,
+  TrackingChip,
   VerdictChip,
   WorkspaceTabs,
 } from "./shared";
@@ -68,6 +79,12 @@ import {
 // Fixture state, not contract (ui-contract.md's own caveat): the two rows that
 // both touch aurora's exports module start "checked", feeding the batch bar.
 const PRESELECTED = ["ws-aurora-export", "ws-diego-pr"];
+
+// The loom the batch bar weaves into. `label` is the weak ref's own second
+// half (AD-8: "an id plus enough label to render WITHOUT a lookup") — a
+// snapshot of the loom's title at weave time, which is why the row can wear
+// its mark with no loom read anywhere in the list path.
+const WOVEN_LOOM = { loomId: "loom/exports-series", label: "aurora exports series" };
 
 const ALL_ITEMS: WsItem[] = WS_LANES.flatMap((l) => l.items);
 
@@ -77,12 +94,16 @@ function ItemRow({
   onToggleSelect,
   open,
   onToggleOpen,
+  tracking,
 }: {
   item: WsItem;
   selected: boolean;
   onToggleSelect: () => void;
   open: boolean;
   onToggleOpen: () => void;
+  // Set once this row has been woven — the weak ref AD-8 describes, an id plus
+  // enough label to render without a lookup. Fixture state, not contract.
+  tracking?: { loomId: string; label?: string };
 }) {
   const sub = item.subtasks;
   const done = sub?.filter((s) => s.done).length ?? 0;
@@ -119,7 +140,12 @@ function ItemRow({
       <span className="w-5 shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/60">
         {item.rank}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm">{item.title}</span>
+      {/* `text-foreground` spelled out, as the production twin spells it. The
+          inherited colour resolves the same today, which is exactly why it
+          belongs here: the reference drawing should not depend on what its
+          ancestor happens to be. What is NOT copied is `hover:underline` — the
+          twin's title is a <Link> to the packet and this one is not. */}
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{item.title}</span>
       {sub && (
         <span
           className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70"
@@ -146,6 +172,19 @@ function ItemRow({
             </span>
           )}
         </span>
+      )}
+      {/* ui-contract.md §3's last bullet, RENDERED: after a weave the member
+          rows stay in the queue, MARKED as tracking the loom. Nothing about
+          them is struck through, greyed or moved — they leave when the loom
+          lands and the human accepts, and neither has happened. Same slot as
+          the production twin's (queue-view.tsx: after the tallies, before the
+          provenance tag), because the mark is part of the row's grammar and
+          not a badge bolted onto one surface's version of it. */}
+      {tracking && (
+        <TrackingChip
+          loomId={tracking.loomId}
+          {...(tracking.label ? { label: tracking.label } : {})}
+        />
       )}
       <span className="hidden shrink-0 sm:block">
         <ProvenanceTag label={item.provenance} />
@@ -198,10 +237,14 @@ function LaneSection({
   lane,
   selection,
   onToggleSelect,
+  tracked,
 }: {
   lane: (typeof WS_LANES)[number];
   selection: ReadonlySet<string>;
   onToggleSelect: (id: string) => void;
+  // The ids that have been woven. Lane-crossing, like the selection it comes
+  // from — a batch is "the rows that cohere", which routinely spans stacks.
+  tracked: ReadonlySet<string>;
 }) {
   const [open, setOpen] = useState(true);
   // The essay's breakdown starts expanded, as it did in the first drawing.
@@ -239,6 +282,7 @@ function LaneSection({
                     return next;
                   })
                 }
+                {...(tracked.has(item.id) ? { tracking: WOVEN_LOOM } : {})}
               />
               {openRows.has(item.id) && <SubtaskRows item={item} />}
             </div>
@@ -254,6 +298,14 @@ export function WorkspaceQueueDemo() {
   const [laneFilter, setLaneFilter] = useState("all");
   const [woven, setWoven] = useState(false);
   const [selection, setSelection] = useState<ReadonlySet<string>>(new Set(PRESELECTED));
+  // WHY THIS IS NOT `woven ? selection : ∅`. The mark belongs to the ROWS that
+  // were handed over, and it has to outlive the selection that named them:
+  // `Clear` empties the selection and takes the batch bar with it, and the
+  // whole claim of ui-contract.md §3's last bullet is that the rows are still
+  // sitting there afterwards, marked. Snapshotting at weave time is also the
+  // honest shape — Item.tracking is written per row by trackLoom, not derived
+  // from whatever happens to be ticked later.
+  const [tracked, setTracked] = useState<ReadonlySet<string>>(new Set());
 
   const toggleSelect = (id: string) =>
     setSelection((prev) => {
@@ -275,7 +327,7 @@ export function WorkspaceQueueDemo() {
   // gets to name one.
   const receipt = useMemo(
     () =>
-      weaveDetachReceipt("loom/exports-series", {
+      weaveDetachReceipt(WOVEN_LOOM.loomId, {
         items: selected.length,
         fixed: 0,
         acceptance: 0,
@@ -356,6 +408,7 @@ export function WorkspaceQueueDemo() {
               lane={lane}
               selection={selection}
               onToggleSelect={toggleSelect}
+              tracked={tracked}
             />
           ))}
 
@@ -383,7 +436,14 @@ export function WorkspaceQueueDemo() {
                         both touch aurora’s exports module — they’d weave well as one series
                       </span>
                     </span>
-                    <Button size="xs" className="shrink-0" onClick={() => setWoven(true)}>
+                    <Button
+                      size="xs"
+                      className="shrink-0"
+                      onClick={() => {
+                        setTracked(new Set(selection));
+                        setWoven(true);
+                      }}
+                    >
                       <WorkflowIcon />
                       Weave as one loom
                     </Button>

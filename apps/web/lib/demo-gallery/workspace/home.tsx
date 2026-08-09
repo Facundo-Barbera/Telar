@@ -136,9 +136,11 @@ function DeskRail() {
   return (
     <aside className="hidden w-72 shrink-0 flex-col border-l border-border bg-muted/10 lg:flex">
       <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-4">
-        <h2 className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
-          Desk
-        </h2>
+        {/* The shared label, not a second copy of its class list. `mb-0`
+            because this header is a flex ROW — the label sits beside its count,
+            so SectionLabel's block-heading margin would push it off the
+            baseline; every other class comes from the one definition site. */}
+        <SectionLabel className="mb-0">Desk</SectionLabel>
         <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">
           {WS_DESK.length}
         </span>
