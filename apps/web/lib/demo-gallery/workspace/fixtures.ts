@@ -12,21 +12,45 @@
 // demands, the master may PROPOSE a split when a cluster crowds a lane, and
 // acceptance is human. The fixture state shows one such split already
 // accepted: "Aurora" carved out of "Office" (see its `note`).
+//
+// ── TWO DIVERGENCES FROM THE STORE, BOTH DELIBERATE AND BOTH LOAD-BEARING ──
+// The workspace store exists now (packages/core/src/workspace/schema.ts), and
+// its own comments cite THIS FILE as the shape it deliberately disagrees with.
+// Neither divergence is drift, and neither may be "fixed" by a later re-skin:
+//
+//   1. `WsLane.items` is an ARRAY OF EMBEDDED ITEMS; `WorkspaceLane.items` is
+//      an ordered array of item IDS. Its note: "deliberately disagreeing with
+//      the design-source fixtures, whose WsLane.items is the RENDERED join.
+//      Storing embedded items would give membership two sources of truth." A
+//      mockup renders; a store persists. Both are right for their job.
+//   2. `WsItem.subtasks` is `{title, done?}[]` with NO id; the persisted
+//      `Subtask` adds one. That is the 0 → 1 migration rung in store.ts, and
+//      its comment names this file as version 0's authority: "a human
+//      transcribing a packet from the mockups writes exactly that". Adding an
+//      id here would delete the only shape that rung exists to read.
+//
+// Similarly `WsItem.rank` is a rendered number here and is NOT persisted at all
+// — the store derives rank from stack position (store.ts's rankOf), which is
+// why lanes.yaml can be reordered without rewriting every packet.
+//
+// WHAT DID GET ALIGNED, in the same pass: the deadline and verdict TYPES, which
+// have no divergence to protect and which the mockups now hand to the REAL
+// chips (components/workspace/chips.tsx, via ./shared). Naming the store's own
+// types is what makes that hand-off type-checked rather than coincidental.
+import type { Deadline, ItemVerdict } from "@telar/core";
 
-export type DeadlineKind = "external" | "self";
-
-export interface WsDeadline {
-  label: string; // "Fri" / "Sep 2"
-  kind: DeadlineKind;
-  slips?: number; // self-deadlines remember how often they slid
-}
+export type DeadlineKind = Deadline["kind"]; // "external" | "self"
+/** "Fri" / "Sep 2", plus `kind` and (self only) how often it slid. */
+export type WsDeadline = Deadline;
+/** Expert triage: where this item should be executed. Advisory only. */
+export type WsVerdict = ItemVerdict;
 
 // One queue item. `packet` present = rich work packet; absent = plain todo.
 // `subtasks` is where decomposition lives — INSIDE the item, so breaking work
 // down never grows the queue (the conservation law's pressure valve).
 export interface WsItem {
   id: string;
-  rank: number;
+  rank: number; // RENDERED, never persisted — see the divergence note above
   title: string;
   project?: string; // absent = floating (no project yet)
   mirrored?: string; // foreign issue ref, e.g. "#214" — Telar holds a view only
@@ -34,8 +58,8 @@ export interface WsItem {
   captured: string; // static "Tue 16:42"-style label
   deadline?: WsDeadline;
   packet?: { files: number; mockups: number };
-  verdict?: "session" | "loom"; // expert triage: how this should be executed
-  subtasks?: { title: string; done?: boolean }[];
+  verdict?: WsVerdict;
+  subtasks?: { title: string; done?: boolean }[]; // NO id — divergence 2
 }
 
 export interface WsLane {
@@ -43,7 +67,7 @@ export interface WsLane {
   label: string;
   window: string; // coarse, shifting — never clock-scheduled
   note?: string; // structural provenance ("split from Office — accepted Mon")
-  items: WsItem[];
+  items: WsItem[]; // EMBEDDED, not ids — divergence 1
 }
 
 export const WS_LANES: WsLane[] = [

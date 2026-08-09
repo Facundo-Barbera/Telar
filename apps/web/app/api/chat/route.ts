@@ -111,6 +111,8 @@ import {
   LOOM_START_TOOL,
   type LoomSessionLink,
 } from "@/lib/loom-mcp";
+// The turn-1 loom seed gate — see its header, and the call site below.
+import { seedLoomIdForTurnOne } from "@/lib/loom-link-seed";
 import { ultraTools, ULTRA_MCP_VERSION } from "@/lib/ultra-mcp";
 // WORKSPACE_WEAVE_TOOL joins the two loom constants above as a name no profile
 // grants and no stored rule can satisfy (story 5.5 / CAP-11 — approval-gated
@@ -777,18 +779,17 @@ export async function POST(req: Request) {
   // human-approved start_loom. `l.draft` is the load-bearing half — a running
   // or terminal loom must never become a planner's drafting target (that is
   // draft_bundle_file's remint rule, and steering is the steerer's job).
-  let wireLoomId: string | undefined;
-  if (
-    !existingChat &&
-    (role === "steerer" || role === "escalation" || role === "planner") &&
-    typeof rawLoomId === "string" &&
-    rawLoomId
-  ) {
-    const l = getLoom(rawLoomId);
-    if (l && l.project === project && (role !== "planner" || l.draft === true)) {
-      wireLoomId = rawLoomId;
-    }
-  }
+  //
+  // THE GATE ITSELF LIVES IN lib/loom-link-seed.ts, injected with `getLoom` so
+  // it reads the store exactly once and only after the cheap checks pass. It was
+  // moved out of this file because it is the whole of the door CAP-11's woven
+  // draft walks through, and an inline `if` in a route this size is a gate no
+  // test can hold still — seedLoomIdForTurnOne's suite pins every refusal,
+  // including the planner-may-only-adopt-a-DRAFT half.
+  const wireLoomId = seedLoomIdForTurnOne(
+    { hasExistingChat: Boolean(existingChat), role, rawLoomId, project },
+    getLoom,
+  );
   const loomLink: LoomSessionLink = {
     loomId: existingChat?.loomId ?? wireLoomId,
     // Both steerer AND escalation are PERSISTED as a link role (store.ts's

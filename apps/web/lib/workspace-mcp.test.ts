@@ -8,6 +8,16 @@
 // what is proved HERE is the server's own behaviour, which is why the store is a
 // stub rather than the real thing.
 //
+// AND THE CLAIM IS ONLY TRUE OF THE KEYS THE FACTORY ACTUALLY DEFINES. bun's
+// mock.module MERGES: an export the factory omits keeps the REAL module's
+// binding (measured — under a factory returning `{ listItems }` alone,
+// `typeof (await import("@telar/core")).getLoom` is still "function"). So the
+// failure mode of forgetting a reader is not a TypeError, it is a silent read of
+// the operator's state root, and story 5.5's `staleTracking` shipped through
+// this file that way for exactly one review cycle. Anything the code under test
+// can reach belongs in the factory, and VACUITY GUARD 2 at the end of the file
+// pins the loom pair by identity so the next omission is loud.
+//
 // THE SOURCE-TEXT ARMS ARE NOT HERE ON PURPOSE. "no z.object( in this file" and
 // "no rmSync in any handler" are claims about SOURCE TEXT, which is
 // invariants.test.ts's native idiom (INV-11 arms 4 and 5) and not this file's.
@@ -58,6 +68,24 @@ let unreadable: { id: string; reason: string }[] = [];
 // fake store — the receipt's context segment counts them, it does not care
 // which packet they hang off), plus the handoff's recorded side effects.
 let attachments: string[] = [];
+// The looms this process can SEE. lib/workspace-handoff.ts's `staleTracking`
+// reads exactly this (getLoom + isTerminalWorkUnitState) to tell a LIVE
+// tracking ref from a dead one, and an id that is absent here is a loom deleted
+// from the god-view.
+//
+// IT MUST BE STUBBED, AND THE REASON IS A PROPERTY OF bun's mock.module THAT
+// THIS FILE'S HEADER GOT WRONG: a key the factory does NOT define falls through
+// to the REAL module rather than becoming undefined (measured — `typeof
+// (await import("@telar/core")).getLoom` is "function" under a factory that
+// returns `{ listItems }` alone). So an un-stubbed reader is not a loud
+// TypeError, it is a silent read of whatever state root this process inherited
+// — the exact failure the "THIS SUITE REACHES NO STATE ROOT" claim above
+// forbids, and the reason the already-tracked test below used to fail: the real
+// getLoom found no "loom-earlier" under the operator's ~/.telar, so the ref read
+// as DEAD and the weave was allowed. Every reader the code under test can reach
+// belongs in this factory; the vacuity guard at the end of the file now pins the
+// loom pair by identity for that reason.
+let looms: Record<string, { id: string; state: string; project: string; draft?: boolean }> = {};
 const draftLoomCalls: Record<string, unknown>[] = [];
 const bundleWrites: Array<{ id: string; relPath: string; contents: string }> = [];
 let createDraftLoomThrows: string | null = null;
@@ -172,6 +200,12 @@ mock.module("@telar/core", () => ({
   // leaves `lanes` alone. A double that dropped the id from its stack would
   // let this suite prove "the rows stay in the queue" against a store that
   // removes them.
+  // READS, not writes — the handoff may LOOK at a loom (to tell a dead tracking
+  // ref from a live one) and may never write one. See `looms` above for why an
+  // omission here would not be caught by anything.
+  getLoom: (id: string) => looms[id] ?? null,
+  isTerminalWorkUnitState: (s: string) =>
+    s === "done" || s === "halted" || s === "failed" || s === "skipped",
   createDraftLoom: (input: Record<string, unknown>) => {
     draftLoomCalls.push(input);
     if (createDraftLoomThrows) throw new Error(createDraftLoomThrows);
@@ -181,16 +215,41 @@ mock.module("@telar/core", () => ({
     bundleWrites.push({ id, relPath, contents });
   },
   updateDraftObjectiveFromBundle: () => {},
-  packetAttachmentDir: (id: string) => `/fake/workspace/packets/${id}`,
-  trackLoom: (ids: string[], ref: Record<string, unknown>) => {
+  // NO `packetAttachmentDir` DOUBLE, because there is no such export any more:
+  // the handoff NAMES a packet's attachments rather than pointing a loom at a
+  // directory INV-11b puts outside its working root (store.ts keeps the
+  // tombstone comment where the export used to be). A double for a deleted
+  // export is a stub that can never be exercised and reads as if the seam were
+  // still there.
+  trackLoom: (
+    ids: string[],
+    ref: Record<string, unknown>,
+    opts?: { replacing?: readonly string[] },
+  ) => {
+    const replacing = new Set(opts?.replacing ?? []);
     const tracked: FakeItem[] = [];
+    const missing: string[] = [];
+    const alreadyTracking: Array<{ id: string; loomId: string }> = [];
     for (const id of ids) {
       const item = items.find((i) => i.id === id);
-      if (!item) continue;
+      if (!item) {
+        missing.push(id);
+        continue;
+      }
+      // HARNESS FIDELITY, same rule as stubUpdateItem's forbidden-key throw: the
+      // real trackLoom REFUSES to re-point an item that already tracks another
+      // loom unless the caller named it in `replacing`. A double that overwrote
+      // unconditionally would let this suite prove the weave safe against a
+      // store that silently orphans the first loom's membership.
+      const existing = (item.tracking as { loomId?: string } | undefined)?.loomId;
+      if (existing && existing !== ref.loomId && !replacing.has(id)) {
+        alreadyTracking.push({ id, loomId: existing });
+        continue;
+      }
       item.tracking = ref;
       tracked.push(item);
     }
-    return { tracked, missing: [], alreadyTracking: [] };
+    return { tracked, missing, alreadyTracking };
   },
 }));
 
@@ -254,6 +313,10 @@ beforeEach(() => {
   ];
   unreadable = [];
   attachments = [];
+  // One LIVE loom the fixtures can point a tracking ref at. "loom-earlier" is
+  // still weaving, so a row that tracks it is not re-weavable; the tests that
+  // want the other answer delete it or settle it into a terminal state.
+  looms = { "loom-earlier": { id: "loom-earlier", state: "running", project: "aurora" } };
   createItemCalls.length = 0;
   updateItemCalls.length = 0;
   draftLoomCalls.length = 0;
@@ -796,7 +859,10 @@ describe("CAP-11 weave_batch — the batch handoff", () => {
     expect(draftLoomCalls).toEqual([]);
   });
 
-  test("an item already tracking a loom is REFUSED, never re-woven — it leaves when that loom lands", async () => {
+  test("an item tracking a LIVE loom is REFUSED, never re-woven — it leaves when that loom lands", async () => {
+    // `looms` holds "loom-earlier" as running (see beforeEach), so the ref is
+    // live and the refusal is about the FIRST loom still weaving on a premise
+    // built from this packet — not about the mark itself.
     items.find((i) => i.id === "i-a1")!.tracking = { loomId: "loom-earlier" };
     const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
     expect(isError(res)).toBe(true);
@@ -806,6 +872,47 @@ describe("CAP-11 weave_batch — the batch handoff", () => {
     // …and the original stamp is untouched.
     expect(items.find((i) => i.id === "i-a1")!.tracking).toEqual({ loomId: "loom-earlier" });
   });
+
+  test("a ref to a CANCELLED loom is re-weavable — the mark is not a life sentence", async () => {
+    // THE OTHER HALF OF THE SAME RULE, and the reason the refusal above is
+    // survivable. A loom the human halted can never land and can never be
+    // accepted, so its members could never leave the queue and — under a blanket
+    // refusal — could never be woven again either. The handoff names those ids in
+    // trackLoom's `replacing`, which is the ONLY lift of the re-point refusal;
+    // the double above enforces that, so this proves the list really was passed.
+    looms["loom-earlier"] = { id: "loom-earlier", state: "halted", project: "aurora" };
+    items.find((i) => i.id === "i-a1")!.tracking = { loomId: "loom-earlier" };
+    const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
+    expect(isError(res)).toBe(false);
+    expect(jsonOf(res).tracking).toEqual(["i-a1"]);
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toMatchObject({ loomId: "loom-w1" });
+  });
+
+  test("a ref to a loom that no longer EXISTS is re-weavable too — a dangling id is a tombstone", async () => {
+    // AD-8's weak reference, dangling: the loom was deleted from the god-view.
+    // Deleting it from `looms` is exactly what getLoom returning null means, and
+    // the row must not be stranded by someone else's cleanup.
+    delete looms["loom-earlier"];
+    items.find((i) => i.id === "i-a1")!.tracking = { loomId: "loom-earlier" };
+    const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
+    expect(isError(res)).toBe(false);
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toMatchObject({ loomId: "loom-w1" });
+  });
+
+  test("a ref to a loom that LANDED is still refused — `done` is not dead, it is waiting on you", async () => {
+    // The discrimination that makes the two tests above safe: `done` is terminal
+    // and is deliberately NOT stale. That loom landed; CAP-11 says the row leaves
+    // when the human accepts it, so re-weaving would erase the thing they are
+    // being asked to accept.
+    looms["loom-earlier"] = { id: "loom-earlier", state: "done", project: "aurora" };
+    items.find((i) => i.id === "i-a1")!.tracking = { loomId: "loom-earlier" };
+    const res = await toolHandler(makeServer(), "weave_batch")({ itemIds: ["i-a1"] });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain("lands and you accept");
+    expect(draftLoomCalls).toEqual([]);
+    expect(items.find((i) => i.id === "i-a1")!.tracking).toEqual({ loomId: "loom-earlier" });
+  });
+
 
   test("a failure inside the handoff becomes an actionable errResult and stamps nothing", async () => {
     createDraftLoomThrows = 'Unknown project "aurora" — not in the registry.';
@@ -852,5 +959,24 @@ describe("the harness itself", () => {
     const core = await import("@telar/core");
     expect(core.readLanes).toBe(stubReadLanes);
     expect(realCoreSnapshot.readLanes).not.toBe(core.readLanes);
+  });
+
+  test("VACUITY GUARD 2 — the LOOM readers are doubled too, because an omission here falls through to the real store", async () => {
+    // MEASURED, NOT ASSUMED: bun's mock.module MERGES. A key the factory does not
+    // define keeps the real module's export, so an un-stubbed reader is a silent
+    // read of the operator's state root rather than a loud TypeError. That is how
+    // `staleTracking`'s getLoom escaped this suite's "reaches no state root"
+    // claim and, finding no "loom-earlier" under the real ~/.telar, read a LIVE
+    // tracking ref as dead and let a re-weave through.
+    //
+    // Identity, never a call — same rule as the guard above. Both halves of the
+    // pair are pinned: isTerminalWorkUnitState is pure, but a real one beside a
+    // stubbed getLoom would still be a state-shaped coupling this suite cannot
+    // see.
+    const core = await import("@telar/core");
+    for (const name of ["getLoom", "isTerminalWorkUnitState"] as const) {
+      expect(typeof realCoreSnapshot[name]).toBe("function");
+      expect(core[name]).not.toBe(realCoreSnapshot[name]);
+    }
   });
 });

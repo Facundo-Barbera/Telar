@@ -307,7 +307,7 @@
   <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Scheduler / heartbeat</b></td>
   <td style="padding:9px 12px; border-top:1px solid var(--line);">None. A never-adopted turn just goes stale after 2 min — accepted weakness, no boot backlog drain.</td>
   <td style="padding:9px 12px; border-top:1px solid var(--line);">None. Purely request-driven — and it has the hang reports to show for it.</td>
-  <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Neither reference has one — and both bear the scars.</b> Telar's durable queue + a lazy heartbeat would be stronger than either.</td>
+  <td style="padding:9px 12px; border-top:1px solid var(--line);">Decided: <b>none — fully synchronous</b> (t3code's posture, owner's call). Event-driven kicks (<code>ultra:run-completed</code> reactor) + one boot sweep; residuals accepted and documented in the engine's sweep comment.</td>
 </tr>
 <tr>
   <td style="padding:9px 12px; border-top:1px solid var(--line);"><b>Model's context source</b></td>
@@ -320,8 +320,8 @@
 <h2>Your call — updated with the evidence</h2>
 <div class="q"><b>1 · Machinery goes server-side.</b>
 <p>Ultra outcomes and watch firings enqueue mailbox tickets on the server, keyed per outcome. Kills D8. <b>Both references do this</b> — t3code structurally, OpenCode as its shipped subagent-completion fix. Strongly recommended.</p></div>
-<div class="q"><b>2 · The heartbeat.</b>
-<p>A lazy engine pulse, only while anything is queued or running. Kills D5. <b>Neither reference has one, and both carry the resulting bugs</b> (t3code's stale unstarted turns; OpenCode's hangs). This is the one place we'd deliberately go beyond both. Recommended.</p></div>
+<div class="q"><b>2 · Fully synchronous — decided, heartbeat reversed.</b>
+<p>Owner's call (Aug 8): every kick is an event, never a clock — t3code's posture. The engine subscribes to <code>ultra:run-completed</code> on the wake channel (the fast path) and runs one full machinery sweep at boot (the durable projections' guarantee, actualized after a restart). Accepted residuals, stated: a publish lost mid-process-lifetime, or a loom reaching a watch state (no bus event exists for looms today), strands until the next natural kick — turn end, queue traffic, boot. Follow-up recorded: declare an agent-facing loom state event in core to close the watch half.</p></div>
 <div class="q"><b>3 · One send contract.</b>
 <p>Every surface enqueues with a client-minted idempotency key; the dispatcher claims instantly when idle. Kills D6. <b>t3code's command-receipt pattern validates it</b> — one path, retries return the original result.</p></div>
 <div class="q"><b>4 · Steering — priority raised.</b>

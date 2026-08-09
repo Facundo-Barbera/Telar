@@ -41,7 +41,11 @@ function attachmentLine(a: { files: number; mockups: number }): string | null {
   // NAMED, NOT ATTACHED. The bytes live beside the packet and the session can
   // read them; a composer draft cannot carry a file, and pretending otherwise
   // would have the session look for an upload that never happened.
-  return `${parts.join(" + ")} sit beside the packet in the workspace.`;
+  //
+  // The verb agrees with the TOTAL, not with the number of clauses: one file and
+  // no mockups read "1 file sit beside the packet" until this counted.
+  const verb = a.files + a.mockups === 1 ? "sits" : "sit";
+  return `${parts.join(" + ")} ${verb} beside the packet in the workspace.`;
 }
 
 export function sessionBriefing(packet: BriefingPacket): string {

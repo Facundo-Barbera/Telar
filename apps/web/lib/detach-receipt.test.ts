@@ -6,8 +6,16 @@
 // claim is exactly the kind that decays silently. Nothing about the types stops
 // a later surface from composing its own line; what stops it is that the ONE
 // line every surface renders is pinned here, character for character, against
-// the demo gallery's own text (birth/birth.tsx:142, workspace/packet.tsx:175,
-// workspace/queue.tsx:248 — the three phrasings this module replaced).
+// the demo gallery's own text — the three phrasings this module replaced
+// (birth/birth.tsx, workspace/packet.tsx, workspace/queue.tsx).
+//
+// TWO OF THE THREE ARE GONE NOW, and that is the mechanism working rather than
+// a citation going stale: the 2026-08-08 re-skin of the workspace prototypes
+// replaced both of their hand-spelled sentences with `weaveDetachReceipt` +
+// `<DetachReceipt>`, because cross-surface invariant 2 is a claim about the
+// DESIGN SOURCE too — a prototype that draws a fourth phrasing is where the
+// fifth one comes from. birth/birth.tsx still holds its original, and the
+// assertions below still pin every character of all three.
 //
 // PURE, SO NO MOCKS. lib/detach-receipt.ts imports nothing, which is itself
 // load-bearing (a client component renders it, and @telar/core is server-only)
@@ -190,8 +198,9 @@ function sources(): string[] {
     for (const entry of readdirSync(new URL(rel, WEB_ROOT), { withFileTypes: true })) {
       const child = `${rel}/${entry.name}`;
       // demo-gallery is READ-ONLY DESIGN SOURCE (that directory's rule 7) and
-      // still holds the three original phrasings on purpose — they are the
-      // prototypes this module was ported from, not production drift.
+      // still holds birth/birth.tsx's original phrasing on purpose — it is the
+      // prototype this module was ported from, not production drift. (The two
+      // workspace prototypes render the shared module now; see the header.)
       if (entry.isDirectory()) {
         if (entry.name === "demo-gallery" || entry.name === "node_modules") continue;
         walk(child);

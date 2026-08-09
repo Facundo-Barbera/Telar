@@ -1722,14 +1722,74 @@ describe("5.5 trackLoom — the only writer of Item.tracking", () => {
     expect(getWorkspaceItem(item.id)!.tracking).toBeUndefined();
   });
 
+  test("`replacing` is the ONE exit from the re-point refusal, and it is per-id, not per-batch", () => {
+    // THE OTHER HALF OF THE REFUSAL ABOVE, and the reason that refusal is not a
+    // life sentence: a loom the human cancelled can never land and can never be
+    // accepted, so without this its members could neither leave the queue nor be
+    // woven again, and the only repair would be hand-editing packet.yaml.
+    //
+    // The caller decides deadness (this module cannot see looms at all — AD-5
+    // gives it the workspace subtree and nothing else), so the test drives the
+    // parameter rather than a loom state.
+    ensureWorkspace();
+    const freed = createItem({ title: "its loom was cancelled" });
+    const held = createItem({ title: "its loom is still weaving" });
+    trackLoom([freed.id, held.id], { loomId: "loom-dead", label: "the first one" });
+
+    const result = trackLoom([freed.id, held.id], { loomId: "loom-new", label: "the second one" }, {
+      replacing: [freed.id],
+    });
+
+    // NAMED → re-pointed, label and all.
+    expect(result.tracked.map((i) => i.id)).toEqual([freed.id]);
+    expect(getWorkspaceItem(freed.id)!.tracking).toEqual({
+      loomId: "loom-new",
+      label: "the second one",
+    });
+    // NOT NAMED → still refused, in the SAME call. An exception that leaked to
+    // the whole batch would let one dead loom free every row beside it.
+    expect(result.alreadyTracking).toEqual([{ id: held.id, loomId: "loom-dead" }]);
+    expect(getWorkspaceItem(held.id)!.tracking).toEqual({
+      loomId: "loom-dead",
+      label: "the first one",
+    });
+    // And an id in `replacing` that is NOT already tracked is simply an ordinary
+    // stamp — the list lifts a refusal, it never becomes a second write path.
+    const fresh = createItem({ title: "never woven" });
+    expect(trackLoom([fresh.id], { loomId: "loom-new" }, { replacing: [fresh.id] }).tracked).toHaveLength(1);
+  });
+
   test("the stamp survives a round-trip through the packet's own schema, unknown keys included", () => {
     ensureWorkspace();
     const item = createItem({ title: "round trip", raw: "the user's own words" });
+
+    // THE UNKNOWN KEY IS HAND-WRITTEN INTO packet.yaml, because nothing this
+    // store's own API can produce one — and without it the "unknown keys
+    // included" half of this title asserted nothing at all (the fixture was a
+    // plain createItem item, so the only field checked below was a declared one
+    // and z.looseObject's whole reason for being went unproved).
+    //
+    // WHY IT MATTERS: item-model.md's forward-compatibility rule is that a
+    // packet written by a NEWER Telar must survive a write by an older one. The
+    // weave stamp is a full read-modify-write of packet.yaml, so it is exactly
+    // the write that would drop such a field.
+    const raw = YAML.parse(fs.readFileSync(packetPath(item.id), "utf8"));
+    fs.writeFileSync(
+      packetPath(item.id),
+      YAML.stringify({ ...raw, futureField: { shape: "not in this schema", n: 7 } }),
+    );
+
     trackLoom([item.id], { loomId: "loom-round", label: "round" });
+
     const onDisk = YAML.parse(fs.readFileSync(packetPath(item.id), "utf8"));
     expect(onDisk.tracking).toEqual({ loomId: "loom-round", label: "round" });
     // NEVER OVERWRITTEN BY ANY WRITE PATH (AC9) — the weave is not an exception.
     expect(onDisk.raw).toBe("the user's own words");
+    // THE ACTUAL looseObject CLAIM: the key this store has never heard of came
+    // back out of the write untouched.
+    expect(onDisk.futureField).toEqual({ shape: "not in this schema", n: 7 });
+    const parsed = Item.parse(onDisk) as unknown as Record<string, unknown>;
+    expect(parsed.futureField).toEqual({ shape: "not in this schema", n: 7 });
     expect(Item.parse(onDisk).tracking!.loomId).toBe("loom-round");
   });
 });

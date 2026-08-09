@@ -5,16 +5,56 @@
 // never scheduling. The batch weave follows the loom-birth doctrine (UX 0):
 // the workspace hands over premise + context and the loom DETACHES — the
 // receipt below is the same one a session gets.
-import { useState } from "react";
+//
+// ── RE-SKIN PASS (2026-08-08): THIS SURFACE NOW HAS A PRODUCTION TWIN ───────
+// components/workspace/queue-view.tsx was hand-ported from this file by eye
+// (rule 7 forbids importing the other way), and in the porting it acquired the
+// idiom this prototype predates. So the re-dress here is not a fresh set of
+// judgement calls — it is MIRRORING THE TWIN, class string for class string,
+// so the design source and the shipped surface stop being two drawings:
+//
+//   · toolbar        → PageHeader + WorkspaceTabs leading, then the shared
+//                      SearchField and `Chip count={…}` from
+//                      components/common/list-controls (the counts the
+//                      hand-rolled chips carried in a nested span are the
+//                      control's OWN `count` slot).
+//   · lane container → `<section className="overflow-hidden rounded-xl border
+//                      border-border bg-card">` with the shared `GroupHeader`,
+//                      and `divide-border/70` for the hairlines INSIDE it (the
+//                      card's own edge stays full-strength).
+//   · checkboxes     → the native input with `accent-primary`, not a hand-drawn
+//                      span with a CheckIcon in it — an unstyled checkbox
+//                      paints its tick in the user agent's blue, and that is
+//                      the one raw colour a class list cannot spell.
+//   · batch receipt  → <DetachReceipt bare>, composed by weaveDetachReceipt.
+//
+// THE RECEIPT IS THE BIGGEST CHANGE AND THE LEAST OPTIONAL. Cross-surface
+// invariant 2 — "the detach receipt is one line, one grammar, identical from
+// birth session, batch weave, or packet handoff" — was a promise three
+// prototypes made by each spelling their own sentence; lib/detach-receipt.ts
+// exists because that is not a mechanism. This file used to hold one of the
+// three phrasings the module replaced. It now renders the module.
+//
+// WHAT DID NOT CHANGE: the content and the information architecture, which
+// ui-contract.md §3 freezes — what's-next card, chips ending in a dashed
+// `+ lane`, sticky group header with the window right-aligned, the row's
+// left-to-right order, sub-tasks indented inside the group, the conservation
+// footer, the batch bar's three buttons.
+import { useMemo, useState } from "react";
 import {
-  CheckIcon,
-  ChevronDownIcon,
-  CircleCheckIcon,
   LayoutTemplateIcon,
+  ListTodoIcon,
+  MessageSquareIcon,
   PaperclipIcon,
-  SearchIcon,
   SparklesIcon,
+  ChevronRightIcon,
+  WorkflowIcon,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Chip, GroupHeader, SearchField } from "@/components/common/list-controls";
+import { DetachReceipt } from "@/components/common/detach-receipt";
+import { PageHeader } from "@/components/common/page-header";
+import { weaveDetachReceipt } from "@/lib/detach-receipt";
 import { cn } from "@/lib/utils";
 import { WS_LANES, WS_ITEM_COUNT, type WsItem } from "./fixtures";
 import {
@@ -25,49 +65,64 @@ import {
   WorkspaceTabs,
 } from "./shared";
 
-// Static selection state: the two rows that both touch aurora's exports module
-// are "checked", feeding the batch action bar at the bottom.
-const SELECTED = new Set(["ws-aurora-export", "ws-diego-pr"]);
+// Fixture state, not contract (ui-contract.md's own caveat): the two rows that
+// both touch aurora's exports module start "checked", feeding the batch bar.
+const PRESELECTED = ["ws-aurora-export", "ws-diego-pr"];
 
-function Checkbox({ checked }: { checked: boolean }) {
-  return (
-    <span
-      className={cn(
-        "flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border",
-        checked
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-border text-transparent",
-      )}
-    >
-      <CheckIcon className="size-2.5" />
-    </span>
-  );
-}
+const ALL_ITEMS: WsItem[] = WS_LANES.flatMap((l) => l.items);
 
-function ItemRow({ item }: { item: WsItem }) {
-  const selected = SELECTED.has(item.id);
+function ItemRow({
+  item,
+  selected,
+  onToggleSelect,
+  open,
+  onToggleOpen,
+}: {
+  item: WsItem;
+  selected: boolean;
+  onToggleSelect: () => void;
+  open: boolean;
+  onToggleOpen: () => void;
+}) {
   const sub = item.subtasks;
   const done = sub?.filter((s) => s.done).length ?? 0;
   return (
     <div
       className={cn(
-        "flex items-center gap-3 px-3 py-2 transition-colors hover:bg-muted/40",
-        selected ? "bg-primary/5" : item.rank === 1 && "bg-muted/20",
+        "flex items-center gap-2 py-2 pr-3 pl-2 transition-colors hover:bg-muted/40",
+        selected && "bg-primary/5",
       )}
     >
-      <Checkbox checked={selected} />
-      <span className="w-4 shrink-0 text-right font-mono text-[10px] text-muted-foreground/50">
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={onToggleSelect}
+        title="Select rows to weave as one loom, or to split into a new lane"
+        className="size-3.5 shrink-0 rounded-sm border-border accent-primary"
+      />
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        aria-expanded={sub ? open : undefined}
+        className={cn(
+          "flex size-5 shrink-0 items-center justify-center rounded-md transition-colors",
+          sub ? "hover:bg-muted/60" : "invisible",
+        )}
+      >
+        <ChevronRightIcon
+          className={cn(
+            "size-3.5 text-muted-foreground transition-transform",
+            open && "rotate-90",
+          )}
+        />
+      </button>
+      <span className="w-5 shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/60">
         {item.rank}
       </span>
-      {sub ? (
-        <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/60" />
-      ) : (
-        <span className="w-3 shrink-0" />
-      )}
       <span className="min-w-0 flex-1 truncate text-sm">{item.title}</span>
       {sub && (
         <span
-          className="shrink-0 font-mono text-[10px] text-muted-foreground/60"
+          className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70"
           title="Sub-tasks — decomposition lives inside the item; the queue count never grows from it"
         >
           {done}/{sub.length}
@@ -75,17 +130,17 @@ function ItemRow({ item }: { item: WsItem }) {
       )}
       {item.packet && (
         <span
-          className="flex shrink-0 items-center gap-1.5 text-muted-foreground/60"
+          className="flex shrink-0 items-center gap-1.5 text-muted-foreground/70"
           title="Work packet — holds files beyond the one-liner"
         >
           {item.packet.files > 0 && (
-            <span className="flex items-center gap-0.5 font-mono text-[10px]">
+            <span className="flex items-center gap-0.5 font-mono text-[10px] tabular-nums">
               <PaperclipIcon className="size-3" />
               {item.packet.files}
             </span>
           )}
           {item.packet.mockups > 0 && (
-            <span className="flex items-center gap-0.5 font-mono text-[10px]">
+            <span className="flex items-center gap-0.5 font-mono text-[10px] tabular-nums">
               <LayoutTemplateIcon className="size-3" />
               {item.packet.mockups}
             </span>
@@ -100,11 +155,7 @@ function ItemRow({ item }: { item: WsItem }) {
       ) : (
         <span className="w-8 shrink-0" />
       )}
-      {item.verdict ? (
-        <VerdictChip verdict={item.verdict} />
-      ) : (
-        <span className="w-14 shrink-0" />
-      )}
+      {item.verdict ? <VerdictChip verdict={item.verdict} /> : <span className="w-14 shrink-0" />}
       <span className="w-24 shrink-0 text-right">
         <ProjectChip name={item.project} mirrored={item.mirrored} />
       </span>
@@ -112,27 +163,27 @@ function ItemRow({ item }: { item: WsItem }) {
   );
 }
 
-// Sub-task rows, rendered expanded under their parent (static: essay is open).
+// Sub-task rows, expanded under their parent and INSIDE the same group — never
+// as queue entries (ui-contract.md §3). The indent and the native checkbox are
+// queue-view.tsx's SubtaskRows verbatim; what the production twin also has and
+// this does not is the `promote` control, because promotion is a mutation and a
+// gallery stage mutates nothing.
 function SubtaskRows({ item }: { item: WsItem }) {
   if (!item.subtasks) return null;
   return (
-    <div className="border-t border-border/40 bg-muted/10 py-1 pl-[4.75rem]">
+    <div className="space-y-1 py-1.5 pr-3 pl-12">
       {item.subtasks.map((s) => (
-        <div key={s.title} className="flex items-center gap-2 py-1 pr-3">
+        <div key={s.title} className="flex items-center gap-2 py-0.5 text-xs">
+          <input
+            type="checkbox"
+            checked={!!s.done}
+            readOnly
+            className="size-3.5 shrink-0 rounded-sm border-border accent-primary"
+          />
           <span
             className={cn(
-              "flex size-3 shrink-0 items-center justify-center rounded-[3px] border",
-              s.done
-                ? "border-muted-foreground/40 bg-muted text-muted-foreground"
-                : "border-border text-transparent",
-            )}
-          >
-            <CheckIcon className="size-2" />
-          </span>
-          <span
-            className={cn(
-              "min-w-0 truncate text-xs",
-              s.done ? "text-muted-foreground/60 line-through" : "text-foreground/80",
+              "min-w-0 flex-1 truncate",
+              s.done ? "text-muted-foreground/60 line-through" : "text-foreground",
             )}
           >
             {s.title}
@@ -143,146 +194,216 @@ function SubtaskRows({ item }: { item: WsItem }) {
   );
 }
 
+function LaneSection({
+  lane,
+  selection,
+  onToggleSelect,
+}: {
+  lane: (typeof WS_LANES)[number];
+  selection: ReadonlySet<string>;
+  onToggleSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  // The essay's breakdown starts expanded, as it did in the first drawing.
+  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(new Set(["ws-essay"]));
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-border bg-card">
+      <GroupHeader
+        icon={ListTodoIcon}
+        label={`${lane.label}${lane.note ? ` · ${lane.note}` : ""}`}
+        count={lane.items.length}
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+        // "…and its coarse window right-aligned" — the header's `action` slot
+        // is where right-aligned belongs, rather than an `ml-auto` span
+        // smuggled into the label.
+        action={
+          <span className="shrink-0 text-[10px] text-muted-foreground/60">{lane.window}</span>
+        }
+      />
+      {open && (
+        <div className="divide-y divide-border/70">
+          {lane.items.map((item) => (
+            <div key={item.id}>
+              <ItemRow
+                item={item}
+                selected={selection.has(item.id)}
+                onToggleSelect={() => onToggleSelect(item.id)}
+                open={openRows.has(item.id)}
+                onToggleOpen={() =>
+                  setOpenRows((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(item.id)) next.delete(item.id);
+                    else next.add(item.id);
+                    return next;
+                  })
+                }
+              />
+              {openRows.has(item.id) && <SubtaskRows item={item} />}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function WorkspaceQueueDemo() {
+  const [q, setQ] = useState("");
+  const [laneFilter, setLaneFilter] = useState("all");
   const [woven, setWoven] = useState(false);
+  const [selection, setSelection] = useState<ReadonlySet<string>>(new Set(PRESELECTED));
+
+  const toggleSelect = (id: string) =>
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const lanes = WS_LANES.filter((l) => laneFilter === "all" || l.key === laneFilter);
+  const selected = ALL_ITEMS.filter((i) => selection.has(i.id));
+
+  // COMPOSED, NOT SPELLED — and composed from what the rows actually show. The
+  // prototype's old line claimed "2 items and their attachments" over two rows
+  // that carry no paperclip at all; the tallies below are read off the same
+  // fixtures the rows render, so the receipt cannot say more than the queue
+  // does. `fixed` is 0 because a queue row has no brief — the fixed brief is a
+  // packet's field, and the packet surface's own handoff is where a receipt
+  // gets to name one.
+  const receipt = useMemo(
+    () =>
+      weaveDetachReceipt("loom/exports-series", {
+        items: selected.length,
+        fixed: 0,
+        acceptance: 0,
+        attachments: selected.reduce(
+          (n, i) => n + (i.packet ? i.packet.files + i.packet.mockups : 0),
+          0,
+        ),
+      }),
+    [selected],
+  );
+
   return (
     <div className="flex h-full flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-6">
-        <h1 className="text-sm font-semibold tracking-tight">Workspace</h1>
-        <WorkspaceTabs active="queue" />
-        <span className="ml-auto text-xs text-muted-foreground">
-          the drawer behind the desk — dismissed items land here
-        </span>
-      </header>
+      <PageHeader
+        leading={<WorkspaceTabs active="queue" />}
+        title="Workspace"
+        description="the drawer behind the desk — dismissed items land here"
+      />
+
+      <div className="shrink-0 border-b border-border">
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 px-4 py-2.5">
+          <SearchField value={q} onChange={setQ} placeholder="Filter the queue…" />
+          <Chip
+            active={laneFilter === "all"}
+            onClick={() => setLaneFilter("all")}
+            count={WS_ITEM_COUNT}
+          >
+            All
+          </Chip>
+          {WS_LANES.map((l) => (
+            <Chip
+              key={l.key}
+              active={laneFilter === l.key}
+              onClick={() => setLaneFilter(l.key)}
+              count={l.items.length}
+            >
+              {l.label}
+            </Chip>
+          ))}
+          {/* The chip row ENDS DASHED, and the dash is the message: lanes are
+              the user's to split, rename and retire, so the affordance that
+              makes one is a proposal-shaped control rather than a solid
+              command. Same h-7 pill box as its siblings above. */}
+          <span
+            className="inline-flex h-7 shrink-0 items-center rounded-full border border-dashed border-border px-2.5 text-xs font-medium text-muted-foreground/70 transition-colors hover:bg-muted/50 hover:text-foreground"
+            title="Lanes are yours — split, rename, retire them as life changes"
+          >
+            + lane
+          </span>
+        </div>
+      </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-6 py-6">
-          <div className="mb-4 flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+        <div className="mx-auto w-full max-w-4xl space-y-3 px-4 py-4">
+          {/* What's next: pinned above the list. One suggested move, its reason
+              and a rough size — and `Not this` carries the same weight as a
+              dismissal anywhere else in the app, i.e. ghost. */}
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
             <SparklesIcon className="size-4 shrink-0 text-muted-foreground" />
             <p className="min-w-0 flex-1 text-sm">
               <span className="font-medium">What’s next:</span> accept the aurora{" "}
-              <span className="font-mono text-xs">payments-retry</span> loom — ~10 minutes,
-              and it’s the only item someone else is waiting on.
+              <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs">
+                payments-retry
+              </span>{" "}
+              loom — ~10 minutes, and it’s the only item someone else is waiting on.
             </p>
-            <span className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground">
+            <Button size="sm" className="shrink-0">
               Open
-            </span>
-            <span className="shrink-0 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted">
+            </Button>
+            <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground">
               Not this
-            </span>
+            </Button>
           </div>
 
-          <div className="mb-4 flex items-center gap-2">
-            <div className="relative min-w-0 flex-1">
-              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
-              <div className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-3 text-xs text-muted-foreground/50">
-                Filter the queue…
-              </div>
-            </div>
-            {["All", ...WS_LANES.map((l) => l.label)].map((label, i) => (
-              <span
-                key={label}
-                className={cn(
-                  "shrink-0 rounded-full border px-2.5 py-1 text-xs",
-                  i === 0
-                    ? "border-primary/40 bg-primary/10 font-medium text-foreground"
-                    : "border-border text-muted-foreground hover:bg-muted",
-                )}
-              >
-                {label}
-                {i > 0 && (
-                  <span className="ml-1 font-mono text-[10px] text-muted-foreground/60">
-                    {WS_LANES[i - 1].items.length}
-                  </span>
-                )}
-              </span>
-            ))}
-            <span
-              className="shrink-0 rounded-full border border-dashed border-border px-2.5 py-1 text-xs text-muted-foreground/60 hover:bg-muted"
-              title="Lanes are yours — split, rename, retire them as life changes"
-            >
-              + lane
-            </span>
-          </div>
+          {lanes.map((lane) => (
+            <LaneSection
+              key={lane.key}
+              lane={lane}
+              selection={selection}
+              onToggleSelect={toggleSelect}
+            />
+          ))}
 
-          <div className="overflow-hidden rounded-lg border border-border">
-            {WS_LANES.map((lane, li) => (
-              <section key={lane.key} className={cn(li > 0 && "border-t border-border")}>
-                <div className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-border bg-muted/40 px-3 py-1.5 backdrop-blur">
-                  <ChevronDownIcon className="size-3 self-center text-muted-foreground/60" />
-                  <h2 className="text-xs font-semibold tracking-tight">{lane.label}</h2>
-                  <span className="font-mono text-[10px] text-muted-foreground/60">
-                    {lane.items.length}
-                  </span>
-                  {lane.note && (
-                    <span className="hidden font-mono text-[9px] text-muted-foreground/40 sm:inline">
-                      · {lane.note}
-                    </span>
-                  )}
-                  <span className="ml-auto text-[10px] text-muted-foreground/50">
-                    {lane.window}
-                  </span>
-                </div>
-                <div className="divide-y divide-border/60">
-                  {lane.items.map((item) => (
-                    <div key={item.id}>
-                      <ItemRow item={item} />
-                      <SubtaskRows item={item} />
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-
-          <p className="mt-6 text-center font-mono text-[10px] text-muted-foreground/50">
+          <p className="pt-3 text-center font-mono text-[10px] leading-relaxed text-muted-foreground/60">
             {WS_ITEM_COUNT} items — every one traces to something you fed in or a mirror ·
             agents added 0 · sub-tasks live inside items, the count never grows from breakdown
           </p>
 
-          <div className="sticky bottom-4 mt-4">
-            {woven ? (
-              <div className="mx-auto flex w-fit max-w-full items-start gap-2 rounded-xl border border-border bg-card px-4 py-2.5 shadow-lg">
-                <CircleCheckIcon className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                <p className="font-mono text-[10px] leading-relaxed text-muted-foreground">
-                  loom created — loom/exports-series · premise + context: 2 items and their
-                  attachments · detached from the workspace · both rows now track the loom
-                  and leave the queue when it lands and you accept
-                </p>
+          {selected.length > 0 && (
+            <div className="sticky bottom-4 z-20 mt-4">
+              <div className="mx-auto w-fit max-w-full rounded-xl border border-border bg-card px-4 py-2.5 shadow-lg">
+                {woven ? (
+                  // In place, as the contract says — and `bare`, because this
+                  // card already draws the border and the shadow the boxed
+                  // receipt would draw a second time.
+                  <DetachReceipt receipt={receipt} bare />
+                ) : (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                      {selected.length} selected
+                    </span>
+                    <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+                      <SparklesIcon className="size-3.5 shrink-0" />
+                      <span className="truncate">
+                        both touch aurora’s exports module — they’d weave well as one series
+                      </span>
+                    </span>
+                    <Button size="xs" className="shrink-0" onClick={() => setWoven(true)}>
+                      <WorkflowIcon />
+                      Weave as one loom
+                    </Button>
+                    <Button variant="outline" size="xs" className="shrink-0">
+                      <MessageSquareIcon />
+                      Sessions, one each
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="shrink-0 text-muted-foreground"
+                      onClick={() => setSelection(new Set())}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="mx-auto flex w-fit max-w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-2.5 shadow-lg">
-                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                  2 selected
-                </span>
-                <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-                  <SparklesIcon className="size-3.5 shrink-0" />
-                  <span className="truncate">
-                    both touch aurora’s exports module — they’d weave well as one series
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setWoven(true)}
-                  className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
-                >
-                  Weave as one loom
-                </button>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-muted"
-                >
-                  Sessions, one each
-                </button>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted"
-                >
-                  Clear
-                </button>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

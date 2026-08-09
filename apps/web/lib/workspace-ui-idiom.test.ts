@@ -201,7 +201,11 @@ describe("the chip grammar is frozen, and lives in exactly one module", () => {
     //
     // THE SCAN WAS WIDENED IN STORY 5.5, and only back to what the law actually
     // says. It used to ban every `bg-|border-|text-` state token in the whole
-    // file, which was exact while no chip had an icon — then TrackingChip
+    // file, which was exact while no chip ICON CARRIED A STATE HUE — the file
+    // already had five icon elements before this story (`WrenchIcon`,
+    // `CheckIcon`, `CircleDotIcon`, `MessageSquareIcon`, `ListTodoIcon`,
+    // measured against the pre-story chips.tsx), and every one of them was
+    // neutral or muted, so the blanket ban cost nothing. Then TrackingChip
     // arrived (`<WorkflowIcon className="size-2.5 text-info" />`), which is the
     // law's own permitted case, and a blanket ban would have forced a colourless
     // icon or, worse, a deleted test. So the two halves are now scanned
