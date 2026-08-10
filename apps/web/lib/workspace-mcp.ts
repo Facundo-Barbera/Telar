@@ -71,6 +71,10 @@ import {
 // scope, argument shapes, and the words the model reads.
 import { detachReceiptLine } from "@/lib/detach-receipt";
 import { weaveItems } from "@/lib/workspace-handoff";
+// Same rule as the weave above: the consultation itself lives in its own layer
+// (lib/workspace-expert.ts), which the HTTP route calls too. This file keeps
+// scope, argument shapes and the words the model reads.
+import { consultExpert, passSummary } from "@/lib/workspace-expert";
 
 // Every workspace tool auto-runs. ui-contract.md §5 — "The tool pills are real
 // in v1" — so a permission card on every "what are the tasks here?" would be a
@@ -89,6 +93,14 @@ export const WORKSPACE_AUTO_TOOLS = [
   "mcp__workspace__list_lanes",
   "mcp__workspace__create_item",
   "mcp__workspace__update_item",
+  // Story 5.8. AUTO-RUN LIKE ITS FOUR NEIGHBOURS AND NOT GATED LIKE
+  // weave_batch, and the distinction is the one CAP-11 draws: a weave DETACHES
+  // work from the queue, so the human decides; a consultation only READS a
+  // packet and writes prose back onto it (a brief, a timeline event, an
+  // advisory verdict). Nothing it can reach starts, accepts or completes
+  // anything, and "should I re-read this item?" is not a question worth a
+  // permission card — the same reason list_items has none.
+  "mcp__workspace__consult_expert",
 ] as const;
 
 // THE ONE TOOL ON THIS SERVER THAT IS NOT PRE-APPROVED, and the list above does
@@ -181,6 +193,14 @@ const LIST_LANES_DESCRIPTION = `List the user's lanes: key, label, the coarse wi
 const CREATE_ITEM_DESCRIPTION = `File a new task into the user's workspace. Give it a title and, ideally, the key of an existing lane (call list_lanes first). Returns the item's id, the lane it landed in, its 1-based rank, its provenance and that it is on the desk. If you name a lane that does not exist — or name none — the item lands in the store's unfiled lane and is marked unplaced so the user is asked where it belongs; NO LANE IS EVER CREATED FOR YOU. The item is filed to this session's project automatically. There is no way to delete an item.`;
 
 const WEAVE_BATCH_DESCRIPTION = `PROPOSE weaving one or more ripened workspace items into a SINGLE loom — the handoff at the end of ripening. The human must approve this call before anything happens; you are proposing, not doing. Pass the item ids that cohere as one piece of work and a one-line reason they belong together. What the loom is handed is the packets themselves: premise = each item's fixed brief and acceptance criteria, context = its attachments — nothing is re-authored. The loom is created as a DRAFT and is NOT started; a human starts it. The woven rows STAY in the user's queue marked as tracking that loom and leave only when it lands and the user accepts, so this neither completes nor removes anything. All items must belong to the same project; a floating item cannot be woven. An item already tracking a loom is refused rather than re-woven. If the work is small or exploratory, say so and suggest a session instead — that is an equal alternative, not a fallback.`;
+
+// THE WORDS THAT DECIDE WHEN THE MASTER CALLS AN EXPERT, so they say what an
+// expert IS (the project's own, spawned per call, remembering only what it wrote
+// to disk) and what its answer is worth (advisory, overridable, and the user's
+// override final). "Cheap" is in there on purpose: a master that treats a
+// consultation as expensive will paraphrase a shorthand capture itself, which is
+// precisely the generic reading CAP-9 exists to replace.
+const CONSULT_EXPERT_DESCRIPTION = `Ask the item's OWN PROJECT EXPERT to re-read it. The expert is scoped to that project — not to this chat — and is spawned fresh for this one call, rehydrating from the durable digest it wrote for itself last time; it can read the project's files but change nothing in them. Use it whenever a captured item is shorthand you cannot faithfully expand, when its project's conventions decide what the words mean, or when the user asks how a piece of work should be run. It rewrites the item's brief (fixed) and acceptance criteria, records its reasoning on the packet timeline, mines any time-commitment the user made inside the capture, and returns an ADVISORY verdict of "session" or "loom". The verdict does not perform anything: it informs the handoff, the user may override it, and their override is final and is NOT re-flipped by a later pass — if "held" comes back true, say the user's own verdict stands rather than reporting a new one. A floating item has no expert; file it into a project first. This is cheap and repeatable; nothing it does starts, accepts, completes or deletes anything.`;
 
 const UPDATE_ITEM_DESCRIPTION = `Modify an existing workspace task: retitle it, move it to another existing lane (it goes to the BOTTOM of that lane), take it off the desk (desk:false — this drains it to the queue and never deletes it), mark it unplaced, or attach a foreign issue reference. Naming a lane that does not exist lands the item in the unfiled lane and marks it unplaced, exactly as create_item does; NO LANE IS EVER CREATED FOR YOU, so call list_lanes first. Every other field is out of reach on purpose: the user's original words (raw), the sub-task list, the timeline and the promotion link cannot be changed by a tool.`;
 
@@ -351,8 +371,15 @@ export function workspaceTools(opts: WorkspaceMcpOpts) {
         "update_item",
         UPDATE_ITEM_DESCRIPTION,
         // EXACTLY ItemPatch's fields, minus `project` (a scope, and scope is
-        // never a tool input) and minus `deadline`/`verdict` (story 5.4's to
-        // write), with `lane` spelled `laneKey` for the same reason as above.
+        // never a tool input), minus `deadline` (5.4's to write) and minus
+        // `verdict` — WHICH MAY NEVER JOIN THIS SHAPE. Story 5.8 shipped both
+        // of that field's writers: an expert pass proposes one through
+        // applyExpertPass, and a human sets a durable one through
+        // POST /api/workspace/items/<id>/verdict. A `verdict` key here would be
+        // a third, agent-driven writer with no override gate in front of it —
+        // and the whole of CAP-9's "a human override is durable and a later
+        // pass does not re-flip it" is that no tool input can spell a verdict.
+        // With `lane` spelled `laneKey` for the same reason as above.
         // No `by`, no `account`, no `sessionId`, no `provenance`, no `raw`.
         {
           itemId: z.string().min(1),
@@ -418,9 +445,88 @@ export function workspaceTools(opts: WorkspaceMcpOpts) {
           );
         },
       ),
-      // LAST IN REGISTRATION ORDER, because it was added last (story 5.5) and
-      // MCP_INVENTORY compares this server's tool list as an ORDERED one.
-      // Everything above it auto-runs; this one cannot (WORKSPACE_WEAVE_TOOL).
+      // Story 5.8's consultation, registered BEFORE weave_batch so this
+      // server's ordered tool list still ends with the one gated tool — and so
+      // WORKSPACE_AUTO_TOOLS, MCP_INVENTORY and the registration order below
+      // all say the same five names in the same sequence.
+      tool(
+        "consult_expert",
+        CONSULT_EXPERT_DESCRIPTION,
+        // ONE ARGUMENT, AND IT IS AN ITEM ID. No `project`: the expert's project
+        // comes from the PACKET (workspace-expert.ts), which is the inverted
+        // scope this capability is built around — the master has no project of
+        // its own to lend, and a `project` key here would be the cross-project
+        // reach WorkspaceMcpOpts.project exists to forbid. No `verdict` either:
+        // the expert decides its own, and a human's override is a click on the
+        // packet, never a tool call.
+        { itemId: z.string().min(1) },
+        async ({ itemId }) => {
+          // NO SCOPE PRE-CHECK HERE, DELIBERATELY (fix-round correction — there
+          // was one, and it was dead). `consultExpert` re-reads the same packet
+          // and applies a semantically identical test (`scope !== undefined &&
+          // item.project !== scope`) with the same anti-oracle sentence, BEFORE
+          // core and before the model call — so this one could never be the arm
+          // that fired, and one consultation read the same packet off disk three
+          // times to re-derive one decision. Scope is still enforced, and still
+          // ahead of the money: it is enforced once, in the layer that owns the
+          // sentence.
+          let out: Awaited<ReturnType<typeof consultExpert>>;
+          try {
+            out = await consultExpert(itemId, opts.project, { account: opts.account });
+          } catch (e) {
+            // NOT "NOTHING WAS WRITTEN" (fix-round correction — it used to say
+            // exactly that, categorically, and it was not always true). A pass
+            // that dies partway can have landed the packet's enrichment already;
+            // core returns `{ok:false}` with a sentence naming what is on disk
+            // for the failure it anticipates, and what reaches HERE is the one it
+            // did not. So this says where to look instead of asserting a state it
+            // cannot know — and warns off the retry, because a repeated pass
+            // appends its mined commitments again rather than replacing them.
+            return errResult(
+              `The expert pass on "${itemId}" failed: ${e instanceof Error ? e.message : String(e)}. ` +
+                `Read the item back before repeating it: any enrichment that had already landed is on the packet's timeline, and a repeat appends its mined commitments a second time.`,
+            );
+          }
+          // A floating item, an unknown id, a pass that produced nothing — each
+          // already carries a sentence naming what the human can do about it.
+          if (!out.ok) return errResult(out.reason);
+          const item = out.applied.item;
+          return okResult(
+            JSON.stringify(
+              {
+                id: item.id,
+                project: out.project,
+                // Whether it had a digest to rehydrate from. Reported so the
+                // model can say "first pass" honestly instead of implying the
+                // expert remembered something.
+                cold: out.cold,
+                fixed: item.fixed,
+                acceptance: item.acceptance ?? [],
+                // THE STORED VERDICT, WHICH IS NOT ALWAYS THE EXPERT'S — see
+                // `held` below. Reporting the expert's own here would tell the
+                // user their override was overturned.
+                verdict: item.verdict ?? null,
+                expertVerdict: out.verdict ?? null,
+                held: out.verdictHeld,
+                // COUNTS, AND NAMED AS COUNTS (fix-round correction — these were
+                // `commitments` and `timelineEvents`). `Item.commitments` is an
+                // array of Expectation everywhere else in the domain and
+                // `acceptance` two lines up is an array in this very object, so a
+                // number wearing the plural noun was a type collision inside one
+                // JSON payload. The prose in `note` narrates both.
+                commitmentsMined: out.applied.commitments,
+                timelineEventsAdded: out.applied.events,
+                note: passSummary(out),
+              },
+              null,
+              2,
+            ),
+          );
+        },
+      ),
+      // LAST IN REGISTRATION ORDER, because it is the one tool here that a human
+      // must approve (WORKSPACE_WEAVE_TOOL) and MCP_INVENTORY compares this
+      // server's tool list as an ORDERED one. Everything above it auto-runs.
       tool(
         "weave_batch",
         WEAVE_BATCH_DESCRIPTION,

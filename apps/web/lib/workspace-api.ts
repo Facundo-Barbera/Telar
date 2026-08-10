@@ -10,12 +10,13 @@
 // fourth lane-structure primitive — it is createLane followed by two
 // reorderLane calls).
 //
-// NONE OF THIS IS REACHABLE FROM AN MCP TOOL. apps/web/lib/workspace-mcp.ts's
-// four tools (list_items, list_lanes, create_item, update_item) are unchanged
-// by this story — see that file's own header and INV-11's pinned inventory.
-// Lane structure and sub-task promotion are human-only (NFR-OW-10, NFR-OW-15)
-// by construction: nothing in the tool-facing surface names any function this
-// file exports.
+// NONE OF THIS IS REACHABLE FROM AN MCP TOOL. Story 5.2 left
+// apps/web/lib/workspace-mcp.ts's four tools (list_items, list_lanes,
+// create_item, update_item) untouched; story 5.8 added a fifth, consult_expert,
+// whose ENTIRE input is an item id — see that file's own header and INV-11's
+// pinned inventory. Lane structure, sub-task promotion and the human's verdict
+// override are human-only (NFR-OW-10, NFR-OW-15, CAP-9) by construction:
+// nothing in the tool-facing surface names any function this file exports.
 import {
   addSubtask,
   agentsAddedCount,
@@ -32,11 +33,13 @@ import {
   renameLane,
   reorderLane,
   retireLane,
+  setItemVerdict,
   setSubtaskDone,
   updateItem,
   type DeskCard,
   type Item,
   type ItemPatch,
+  type ItemVerdict,
   type NewItem,
   type WorkspaceLane,
 } from "@telar/core";
@@ -185,4 +188,24 @@ export function promoteItemSubtask(
   subtaskId: string,
 ): { parent: Item; promoted: Item } | null {
   return promoteSubtask(id, subtaskId);
+}
+
+// ── the human's own verdict (CAP-9, story 5.8) ────────────────────────────────
+
+// THE OTHER HALF OF "THE VERDICT IS ADVISORY", and the only door to it. An
+// expert's verdict arrives through core's applyExpertPass (lib/workspace-expert.ts
+// dispatches the pass); THIS is the human overruling it, and item-model.md says
+// what that has to mean: "A human override is durable and is not re-flipped by a
+// later expert pass." core's setItemVerdict is what makes it durable — it is the
+// only writer of `verdictOverride`, `verdictOverride` is absent from ItemPatch,
+// and updateItem THROWS rather than letting the generic patch verb walk one
+// back.
+//
+// SAME SHAPE AS promoteItemSubtask ABOVE, AND FOR THE SAME REASON: it is reached
+// only from a route handler behind a human's own click. Nothing on the MCP
+// surface names this function — workspace-mcp.ts's consult_expert takes an item
+// id and nothing else, so no tool can spell a verdict at all, let alone a
+// durable one.
+export function recordHumanVerdict(id: string, verdict: ItemVerdict): Item | null {
+  return setItemVerdict(id, verdict);
 }

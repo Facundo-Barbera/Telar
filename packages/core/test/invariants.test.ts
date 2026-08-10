@@ -1050,9 +1050,16 @@ const MCP_INVENTORY: Record<string, { file: string; tools: string[] }> = {
   // letting the two lists drift apart quietly. It is not an accept path: a
   // weave plans a DRAFT loom and marks the rows that track it; the rows stay in
   // the queue and leave only when the loom lands and the human accepts.
+  //
+  // STORY 5.8 ADDED A SIXTH, `consult_expert` (CAP-9), and it goes on the
+  // AUTO side: it asks the item's own project expert to re-read the packet and
+  // writes back a brief, an advisory verdict and timeline events — all
+  // proposals, none of them a state transition. `weave_batch` stays last,
+  // which keeps "the auto list is the inventory MINUS the one gated name" a
+  // suffix relation the arm below can compute rather than restate.
   workspace: {
     file: WORKSPACE_MCP,
-    tools: ["list_items", "list_lanes", "create_item", "update_item", "weave_batch"],
+    tools: ["list_items", "list_lanes", "create_item", "update_item", "consult_expert", "weave_batch"],
   },
   // engine.ts's agent() builds this per call. IT IS AN MCP SURFACE TOO, and
   // AC1 says "no MCP surface" — so it is in the inventory, not exempt from it.
@@ -5874,9 +5881,9 @@ describe("INV-11 the workspace item store is reachable only through its port —
     const names = exportedStringArray(src!.code, "WORKSPACE_AUTO_TOOLS");
     // ANTI-VACUITY: a null or short read would make the loop below assert
     // nothing at all.
-    if (!names || names.length !== 4) {
+    if (!names || names.length !== 5) {
       throw new Error(
-        `AD-1 / INV-11c: WORKSPACE_AUTO_TOOLS read back as ${JSON.stringify(names)} (expected 4 ` +
+        `AD-1 / INV-11c: WORKSPACE_AUTO_TOOLS read back as ${JSON.stringify(names)} (expected 5 ` +
           `names). CONSEQUENCE: the accept-shape check below would run over an empty list and an ` +
           `accept-named workspace tool could ship. NEXT STEP: this is the READER that is broken — ` +
           `check exportedStringArray against ${WORKSPACE_MCP}'s WORKSPACE_AUTO_TOOLS.`,

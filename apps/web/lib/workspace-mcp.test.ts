@@ -94,6 +94,22 @@ const updateItemCalls: Array<{ id: string; patch: Record<string, unknown> }> = [
 let createItemThrows: string | null = null;
 let updateItemThrows: string | null = null;
 
+// ── story 5.8's expert half ─────────────────────────────────────────────────
+// `runExpertPass` MUST BE STUBBED, and this is the sharpest instance of the
+// merge hazard the header describes: the real one calls a MODEL. An omission
+// here would not be a TypeError or even a silent state-root read — it would be
+// a paid provider call from a test run, per test. So the double records the
+// request and returns a canned outcome, and the vacuity guard at the end of the
+// file pins it by identity.
+//
+// `getProject` is stubbed for the ordinary reason: it reads the registry off
+// the operator's state root, and lib/workspace-expert.ts asks it for the
+// project's checkout so the expert gets a cwd.
+let projectRoots: Record<string, string> = {};
+const expertCalls: Array<Record<string, unknown>> = [];
+let expertOutcome: Record<string, unknown> | null = null;
+let expertThrows: string | null = null;
+
 const PATCHABLE = ["title", "lane", "project", "desk", "unplaced", "mirrored", "deadline", "verdict"];
 
 // THE STUBS ARE NAMED LOCAL FUNCTIONS, not inline members of the mock factory,
@@ -109,6 +125,35 @@ let readLanesCalls = 0;
 const stubReadLanes = () => {
   readLanesCalls++;
   return lanes;
+};
+
+// Named for the same reason the others are, and pinned by identity in the
+// vacuity guard: this is the one double whose absence would COST MONEY.
+const stubRunExpertPass = async (req: Record<string, unknown>) => {
+  expertCalls.push(req);
+  if (expertThrows) throw new Error(expertThrows);
+  return (
+    expertOutcome ?? {
+      ok: true,
+      project: req.project,
+      verdict: "loom",
+      verdictHeld: false,
+      cold: true,
+      digest: { project: req.project, updated: "Tue 16:42", summary: "s" },
+      applied: {
+        item: {
+          ...(items.find((i) => i.id === req.itemId) ?? {}),
+          fixed: "the decompressed brief",
+          acceptance: ["it retries per record"],
+          verdict: "loom",
+        },
+        verdict: "loom",
+        verdictHeld: false,
+        events: 3,
+        commitments: 1,
+      },
+    }
+  );
 };
 
 const stubUpdateItem = (id: string, patch: Record<string, unknown>) => {
@@ -187,6 +232,33 @@ mock.module("@telar/core", () => ({
     return item;
   },
   updateItem: stubUpdateItem,
+  // ── story 5.8 ───────────────────────────────────────────────────────────
+  runExpertPass: stubRunExpertPass,
+  // WHICH NAMES THE REGISTRY HOLDS, as a non-throwing read — lib/workspace-
+  // expert.ts's projectRoot uses it to tell an UNREGISTERED project (undefined
+  // cwd, a supported CAP-9 state) apart from a registered one whose manifest is
+  // broken (a throw manifest.ts says must never be masked). Mirrors the real
+  // shape, so a project here is always loadable.
+  listProjects: () =>
+    Object.entries(projectRoots).map(([name, root]) => ({
+      entry: { name, root, addedAt: 0 },
+      manifest: { root },
+      error: null,
+    })),
+  // THE REAL SENTENCE, DELIBERATELY UNDOUBLED. It is a pure function of a title
+  // and it is the one both layers now share; a copy here would re-create in this
+  // file exactly the drift that sharing it removed.
+  floatingExpertRefusal: realCoreSnapshot.floatingExpertRefusal,
+  getProject: (name: string) => {
+    const root = projectRoots[name];
+    // The REAL getProject throws for a project that is not in the registry,
+    // and lib/workspace-expert.ts's projectRoot depends on that: an unknown
+    // project must degrade to "no cwd", never to a failed consultation. A
+    // double that returned null instead would let this suite prove the
+    // degradation against a function that cannot exercise it.
+    if (!root) throw new Error(`Unknown project "${name}" — not in the registry.`);
+    return { entry: { root }, manifest: { root } };
+  },
   readPacketAttachments: () => attachments,
   attachmentTally: (names: string[]) => ({ files: names.length, mockups: 0 }),
   // ── story 5.5's handoff half ────────────────────────────────────────────
@@ -324,12 +396,16 @@ beforeEach(() => {
   createItemThrows = null;
   updateItemThrows = null;
   createDraftLoomThrows = null;
+  projectRoots = { aurora: "/tmp/aurora" };
+  expertCalls.length = 0;
+  expertOutcome = null;
+  expertThrows = null;
 });
 
 // ── AC6 proof 4 — registration ──────────────────────────────────────────────
 
 describe("workspace MCP server — tool registration", () => {
-  test("registers the four AUTO tools plus the one APPROVAL-GATED tool, IN ORDER", () => {
+  test("registers the five AUTO tools plus the one APPROVAL-GATED tool, IN ORDER", () => {
     // The ultra-style registry test. The loom side has no equivalent; that is
     // the hole this deliberately does not reproduce.
     expect([...WORKSPACE_AUTO_TOOLS]).toEqual([
@@ -337,14 +413,25 @@ describe("workspace MCP server — tool registration", () => {
       "mcp__workspace__list_lanes",
       "mcp__workspace__create_item",
       "mcp__workspace__update_item",
+      // Story 5.8 (CAP-9). AUTO, and appended rather than spliced, so the first
+      // four still read as story 5.1's own list.
+      "mcp__workspace__consult_expert",
     ]);
     const names = Object.keys(registry(makeServer()));
-    // STORY 5.5 ADDED THE FIFTH, LAST, and it is NOT in WORKSPACE_AUTO_TOOLS:
-    // weave_batch is approval-gated (CAP-11), so the auto list and the
-    // registration deliberately differ by exactly that one name. Both facts are
-    // asserted, because "the lists differ" is only safe when the difference is
-    // pinned.
-    expect(names).toEqual(["list_items", "list_lanes", "create_item", "update_item", "weave_batch"]);
+    // STORY 5.5 ADDED weave_batch AND IT STAYS LAST, and it is NOT in
+    // WORKSPACE_AUTO_TOOLS: it is approval-gated (CAP-11), so the auto list and
+    // the registration deliberately differ by exactly that one name. Both facts
+    // are asserted, because "the lists differ" is only safe when the difference
+    // is pinned — and story 5.8's sixth tool went in BEFORE it precisely so the
+    // difference stays a suffix.
+    expect(names).toEqual([
+      "list_items",
+      "list_lanes",
+      "create_item",
+      "update_item",
+      "consult_expert",
+      "weave_batch",
+    ]);
     expect([...WORKSPACE_AUTO_TOOLS]).not.toContain(WORKSPACE_WEAVE_TOOL);
     expect(WORKSPACE_WEAVE_TOOL).toBe("mcp__workspace__weave_batch");
     // The constant and the registration say the same thing in the same order —
@@ -355,7 +442,7 @@ describe("workspace MCP server — tool registration", () => {
     ]);
   });
 
-  test("the four names carry no accept-shaped token — the moat, judged semantically", () => {
+  test("the six names carry no accept-shaped token — the moat, judged semantically", () => {
     // ACCEPT_STEMS, verbatim from invariants.test.ts. Duplicated here for the
     // same reason core duplicates the tool names: this file cannot import a
     // test's internals, and the pin is what makes the duplication safe.
@@ -390,11 +477,16 @@ describe("AC8 the negative tool contract — input shapes carry no identity and 
     expect(new Set(inputSchemaKeys(s, "weave_batch"))).toEqual(
       new Set(["itemIds", "reason", "title"]),
     );
+    // Story 5.8. ONE KEY, AND IT IS AN ITEM ID. No `project` — the expert's
+    // project comes from the PACKET, which is the inverted scope CAP-9 is built
+    // around — and no `verdict`, because the expert decides its own and a human
+    // override is a click on the packet, never a tool call.
+    expect(new Set(inputSchemaKeys(s, "consult_expert"))).toEqual(new Set(["itemId"]));
 
-    // ANTI-VACUITY FIRST: the scan really found the five real tools, so the
+    // ANTI-VACUITY FIRST: the scan really found the six real tools, so the
     // absences below are statements about a surface rather than about {}.
     const all = Object.keys(registry(s));
-    expect(all.length).toBe(5);
+    expect(all.length).toBe(6);
 
     const everyKey = all.flatMap((n) => inputSchemaKeys(s, n));
     expect(everyKey.length).toBeGreaterThanOrEqual(8);
@@ -935,6 +1027,138 @@ describe("CAP-11 weave_batch — the batch handoff", () => {
   });
 });
 
+// ── story 5.8 / CAP-9 — the consultation ────────────────────────────────────
+
+describe("consult_expert — the item's own project expert, per call", () => {
+  test("dispatches with the ITEM's project and that project's checkout, never the caller's scope", async () => {
+    const out = jsonOf(await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" }));
+    expect(expertCalls.length).toBe(1);
+    // The inverted scope, asserted: the pass is scoped to the PACKET's project.
+    // The master mounts this server with no project at all, so a pass that took
+    // its scope from the caller would be project-less — which is the breakage
+    // SPEC.md warns about in so many words.
+    expect(expertCalls[0]).toMatchObject({ itemId: "i-a1", project: "aurora", cwd: "/tmp/aurora" });
+    expect(out.project).toBe("aurora");
+    expect(out.fixed).toBe("the decompressed brief");
+    expect(out.verdict).toBe("loom");
+    // Nothing that could be mistaken for a commit.
+    expect(textOf({ content: [{ text: out.note }] })).toContain("Nothing was started");
+  });
+
+  test("the payload's counts are named as counts — no number wearing a plural noun", async () => {
+    // `acceptance` in this same object is an ARRAY, and `Item.commitments` is an
+    // array of Expectation everywhere else in the domain, so `commitments: 1` was
+    // a type collision inside one JSON payload. Pinned as a shape because nothing
+    // did: the suite asserted `fixed`/`verdict`/`held`/`note` and left the rest.
+    const out = jsonOf(await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" }));
+    expect(out.commitmentsMined).toBe(1);
+    expect(out.timelineEventsAdded).toBe(3);
+    expect(Array.isArray(out.acceptance)).toBe(true);
+    expect(out).not.toHaveProperty("commitments");
+    expect(out).not.toHaveProperty("timelineEvents");
+  });
+
+  test("an unregistered project still gets its expert — the DIGEST is what it needs, not a checkout", async () => {
+    projectRoots = {};
+    const r = await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" });
+    expect(isError(r)).toBe(false);
+    // CAP-9's claim is that a cold expert works from the on-disk digest alone.
+    // Refusing here would make that false for a mirrored project with no local
+    // clone — exactly the case the capability is for.
+    expect(expertCalls[0]!.cwd).toBeUndefined();
+    expect(expertCalls[0]!.project).toBe("aurora");
+  });
+
+  test("another project's item answers exactly as a nonexistent one does, and spends no pass", async () => {
+    const other = await toolHandler(makeServer(), "consult_expert")({ itemId: "i-o1" });
+    const missing = await toolHandler(makeServer(), "consult_expert")({ itemId: "i-nope" });
+    expect(isError(other)).toBe(true);
+    expect(isError(missing)).toBe(true);
+    // THE SAME SENTENCE WITH THE CALLER'S OWN ID IN IT — weave_batch's wording,
+    // verbatim — so the surface never becomes an oracle for whether some other
+    // project holds a given id. And the scope check runs BEFORE the pass, so a
+    // guessed id cannot even cost a model call.
+    expect(textOf(other)).toBe('No workspace item found with id "i-o1".');
+    expect(textOf(missing)).toBe('No workspace item found with id "i-nope".');
+    expect(expertCalls.length).toBe(0);
+  });
+
+  test("a floating item is refused with a sentence that names what the human can do", async () => {
+    // The master mounts this server unscoped, so a floating item IS reachable
+    // there — and floating is a resting state, not an error.
+    const r = await toolHandler(makeServer({ project: undefined }), "consult_expert")({
+      itemId: "i-f1",
+    });
+    expect(isError(r)).toBe(true);
+    expect(textOf(r)).toContain("floating");
+    expect(textOf(r)).toContain("File it into a project first");
+    expect(expertCalls.length).toBe(0);
+  });
+
+  test("a HELD verdict is reported as held, so the model cannot announce a verdict that did not change", async () => {
+    expertOutcome = {
+      ok: true,
+      project: "aurora",
+      verdict: "loom",
+      verdictHeld: true,
+      cold: false,
+      digest: { project: "aurora", updated: "Tue 16:42" },
+      applied: {
+        item: { id: "i-a1", title: "…", verdict: "session", verdictOverride: true },
+        verdict: "loom",
+        verdictHeld: true,
+        events: 2,
+        commitments: 0,
+      },
+    };
+    const out = jsonOf(await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" }));
+    // THE STORED VERDICT AND THE EXPERT'S ARE REPORTED SEPARATELY. Collapsing
+    // them would have the model tell the user their own override was overturned
+    // — which CAP-9 says explicitly must not happen and which, worse, would not
+    // even be true of the disk.
+    expect(out.verdict).toBe("session");
+    expect(out.expertVerdict).toBe("loom");
+    expect(out.held).toBe(true);
+    expect(out.note).toContain("stands");
+  });
+
+  test("a refusal or a thrown pass is a sentence, and never a half-truth about what was written", async () => {
+    expertOutcome = { ok: false, reason: "The aurora expert returned no result; nothing was written." };
+    const refused = await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" });
+    expect(isError(refused)).toBe(true);
+    expect(textOf(refused)).toBe("The aurora expert returned no result; nothing was written.");
+
+    expertOutcome = null;
+    expertThrows = "provider unreachable";
+    const threw = await toolHandler(makeServer(), "consult_expert")({ itemId: "i-a1" });
+    expect(isError(threw)).toBe(true);
+    expect(textOf(threw)).toContain("provider unreachable");
+    // AND IT DOES NOT CLAIM "Nothing was written" (fix-round correction — it did,
+    // categorically, and the pass is not atomic: core writes the packet's
+    // enrichment and THEN the digest, so a throw in the gap left the enrichment on
+    // disk while this sentence denied it. Worse, the denial invited a retry, and
+    // applyExpertPass APPENDS mined commitments rather than replacing them.) The
+    // honest sentence points at the packet and warns off the repeat.
+    expect(textOf(threw)).not.toContain("Nothing was written");
+    expect(textOf(threw)).toContain("Read the item back");
+    expect(textOf(threw)).toContain("appends its mined commitments");
+  });
+
+  test("the description tells the model what an expert IS and that the verdict is advisory", async () => {
+    const t = registry(makeServer())["consult_expert"] as { description?: string };
+    const d = t.description ?? "";
+    expect(d).toContain("spawned fresh");
+    expect(d).toContain("digest");
+    expect(d).toContain("ADVISORY");
+    // The two sentences that decide whether the master reports a held verdict
+    // honestly, and whether it treats a consultation as too expensive to make.
+    expect(d).toContain("their override is final");
+    expect(d).toContain("cheap");
+    // It must not read as a commit path.
+    expect(d).toContain("nothing it does starts, accepts, completes or deletes");
+  });
+});
+
 // ── the vacuity guard (T2) ─────────────────────────────────────────────────
 
 describe("the harness itself", () => {
@@ -978,5 +1202,19 @@ describe("the harness itself", () => {
       expect(typeof realCoreSnapshot[name]).toBe("function");
       expect(core[name]).not.toBe(realCoreSnapshot[name]);
     }
+  });
+
+  test("VACUITY GUARD 3 — runExpertPass is doubled, because the real one calls a MODEL", async () => {
+    // The sharpest case of the merge hazard: an omitted double here is not a
+    // silent state-root read, it is a paid provider call per test — and the
+    // consult_expert assertions above would be measuring a language model's
+    // answer rather than the server's behaviour.
+    const core = await import("@telar/core");
+    expect(typeof realCoreSnapshot.runExpertPass).toBe("function");
+    expect(core.runExpertPass).toBe(stubRunExpertPass);
+    expect(core.runExpertPass).not.toBe(realCoreSnapshot.runExpertPass);
+    // getProject too: lib/workspace-expert.ts asks it for the project's checkout
+    // and the real one reads the registry off the operator's state root.
+    expect(core.getProject).not.toBe(realCoreSnapshot.getProject);
   });
 });

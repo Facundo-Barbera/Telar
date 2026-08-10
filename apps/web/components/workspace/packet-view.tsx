@@ -43,7 +43,7 @@ import {
   UserIcon,
   WorkflowIcon,
 } from "lucide-react";
-import type { PacketActor } from "@telar/core";
+import type { ItemVerdict, PacketActor } from "@telar/core";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -104,6 +104,96 @@ function SectionLabel({ children }: { children: ReactNode }) {
     <h2 className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
       {children}
     </h2>
+  );
+}
+
+// ── the verdict, and the human's own say over it (story 5.8 / CAP-9) ────────
+//
+// THE ONE DOOR TO A DURABLE OVERRIDE IN THE WHOLE APP. An expert's verdict
+// arrives on this packet through an enrichment pass and is ADVISORY
+// (item-model.md: "informs the handoff choice, does not perform it"); these two
+// buttons are the human disagreeing, and POST .../verdict is the only route that
+// reaches core's setItemVerdict — the only writer of the durable flag a later
+// expert pass reads before it may write a verdict at all.
+//
+// IT SITS DIRECTLY ABOVE "Its turn came" because that is what it is for: the
+// verdict says which of those two buttons this work wants, and nothing here
+// presses either. Choosing "loom" plans no loom and starts nothing.
+//
+// WHOSE VERDICT IT IS, SAID OUT LOUD — `· yours` / `· expert`, the suffix
+// grammar DeadlineChip already speaks (`· self`, `· slid ×N`). Without it the
+// same two words render identically whether the user chose them or an agent
+// did, and the user cannot tell whether the next pass may move them.
+// DISPATCH-ONLY, NO `onChanged` (fix-round correction — there was one, wired to
+// `() => void load()`, and it fired a SECOND GET beside the one this view's own
+// `telar:refresh` listener already runs off the dispatch below). Two concurrent
+// reads of a force-dynamic route resolve in arbitrary order, which is harmless
+// only while the write is faster than the read. `addSubtask`/`toggleSubtask` are
+// the in-file majority idiom: write, dispatch, let the one listener re-read.
+function VerdictChoice({ item }: { item: PacketViewData["item"] }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const choose = useCallback(
+    async (verdict: ItemVerdict) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await postJson(`/api/workspace/items/${item.id}/verdict`, "POST", { verdict });
+        // The queue renders the same chip off the same field, so both surfaces
+        // re-read rather than this one drifting from the list it came from — and
+        // THIS view re-reads through the same event, via its own listener.
+        dispatchTelarRefresh({ domains: ["workspace"] });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [item.id],
+  );
+
+  return (
+    <section className="space-y-2">
+      <SectionLabel>Verdict</SectionLabel>
+      {error && (
+        <Alert variant="destructive">
+          <TriangleAlertIcon />
+          <AlertTitle>The verdict did not change</AlertTitle>
+          <AlertDescription className="text-xs break-words">{error}</AlertDescription>
+        </Alert>
+      )}
+      <div className="flex items-center gap-1.5">
+        {item.verdict ? (
+          <>
+            <VerdictChip verdict={item.verdict} />
+            <span className="font-mono text-[10px] text-muted-foreground/60">
+              · {item.verdictOverride ? "yours" : "expert"}
+            </span>
+          </>
+        ) : (
+          <span className="font-mono text-[10px] text-muted-foreground/60">none yet</span>
+        )}
+      </div>
+      <div className="flex gap-2">
+        {(["session", "loom"] as const).map((v) => (
+          <Button
+            key={v}
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            // Disabled only for the verdict the user ALREADY set by hand —
+            // re-clicking it would write the same two bytes and a second
+            // timeline event saying nothing happened. Agreeing with the
+            // expert's advisory reading is NOT a no-op: it makes it durable.
+            disabled={busy || (item.verdictOverride === true && item.verdict === v)}
+            onClick={() => void choose(v)}
+          >
+            {v}
+          </Button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -590,7 +680,10 @@ export function PacketView({ id }: { id: string }) {
               </section>
               {/* The handoff sits UNDER the ripening timeline on purpose: the
                   demo's own order, and the honest one — "its turn came" is the
-                  end of that history, not a control panel above it. */}
+                  end of that history, not a control panel above it. The verdict
+                  goes between them: it is the last thing the ripening produced
+                  and the thing the handoff choice reads. */}
+              <VerdictChoice item={item} />
               <ItsTurnCame view={view} onWoven={() => void load()} />
             </aside>
           </div>

@@ -26,6 +26,10 @@ const WEB_ROOT = new URL("../", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, WEB_ROOT), "utf8");
 
 const CHIPS = "components/workspace/chips.tsx";
+// Not a component — the generic item route, scanned by the story 5.8 arm at the
+// bottom of this file because the one thing keeping `verdict` out of an HTTP
+// write is a list in it.
+const ITEM_ROUTE = "app/api/workspace/items/[id]/route.ts";
 const QUEUE = "components/workspace/queue-view.tsx";
 const PACKET = "components/workspace/packet-view.tsx";
 // Story 5.7's two: the master surface and its Desk rail, hand-ported from
@@ -376,6 +380,91 @@ describe("workspace surfaces compose the shared chrome instead of re-rolling it"
   test("icon buttons use the size variant that means size-7, not an override", () => {
     expect(read(QUEUE)).not.toMatch(/size="icon"\s+className="size-7"/);
     expect(read(QUEUE)).toContain('size="icon-sm"');
+  });
+});
+
+// ── story 5.8 / CAP-9 — the verdict's one human door ────────────────────────
+//
+// A SOURCE SCAN, for this file's own stated reason: there is no DOM harness
+// here, and what is guarded is which ENDPOINT a click reaches — a fact about
+// the file, not about a rendered pixel. The endpoint's own behaviour is proved
+// in lib/workspace-verdict-route.test.ts, and the durability it writes
+// (`verdictOverride`, and a later expert pass refusing to re-flip it) on real
+// disk in packages/core/test/workspace-expert.test.ts. What is missing without
+// this arm is the middle link: that the button a human presses goes to the verb
+// that makes their choice durable, rather than to the generic patch route,
+// which would write a verdict the next pass may overwrite.
+describe("a human's verdict is durable from the surface down", () => {
+  test("the packet view posts to the verdict route, and never patches a verdict", () => {
+    const src = read(PACKET);
+    expect(src).toContain("/verdict");
+    expect(src).toMatch(/postJson\(\s*`\/api\/workspace\/items\/\$\{item\.id\}\/verdict`/);
+    // Both halves of the choice exist, so "override" is a real alternative and
+    // not a one-way agreement button.
+    expect(src).toContain('["session", "loom"]');
+    // AND NOT THROUGH THE GENERIC PATCH VERB. app/api/workspace/items/[id]'s
+    // PATCHABLE_KEYS withholds `verdict` deliberately; a surface that reached
+    // for it would be writing the field without the flag.
+    expect(src).not.toMatch(/"PATCH",\s*\{\s*verdict/);
+  });
+
+  test("the generic patch route WITHHOLDS `verdict`, asserted rather than commented", () => {
+    // THE THIRD DOOR TO THE FIELD, and until this arm it was guarded by prose
+    // alone. core's PATCHABLE still contains `verdict` and `updateItem(id,
+    // {verdict})` succeeds whenever `verdictOverride` is unset, so the only thing
+    // stopping an HTTP write is this route's narrower list — whose own header
+    // records that it "previously copied store.ts's full 8-key PATCHABLE
+    // verbatim". The regression has happened once, and story 5.4 is instructed to
+    // widen this very list for `deadline`, which is the moment someone re-copies
+    // the eight.
+    //
+    // WHY IT IS WORSE THAN A BYPASS: a verdict written this way lands with no
+    // `verdictOverride`, and VerdictChoice renders that as `· expert` — the UI
+    // would attribute the human's own write to the expert, and the next pass would
+    // silently re-flip it.
+    const keys = /const PATCHABLE_KEYS = new Set\(\[([^\]]*)\]\)/.exec(read(ITEM_ROUTE));
+    expect(keys).not.toBeNull();
+    // Anti-vacuity: this really is the list the route filters on.
+    expect(keys![1]).toContain('"title"');
+    expect(keys![1]).not.toContain("verdict");
+  });
+
+  test("the verdict click re-reads through the shared refresh event, not through a second load", () => {
+    // PacketView's own `telar:refresh` listener calls `load()`, so a component
+    // that ALSO took an `onChanged` callback fired two concurrent GETs at a
+    // force-dynamic route per click, resolving in arbitrary order — harmless only
+    // while the write stays faster than the read. Dispatch-only is the in-file
+    // majority idiom (`addSubtask`, `toggleSubtask`).
+    const src = read(PACKET);
+    expect(src).toContain('dispatchTelarRefresh({ domains: ["workspace"] })');
+    expect(src).not.toMatch(/<VerdictChoice[^/>]*onChanged/);
+  });
+
+  test("the surface says WHOSE verdict it is — the suffix grammar, not a second chip", () => {
+    const src = read(PACKET);
+    // `· yours` / `· expert`, in the register DeadlineChip already speaks
+    // (`· self`, `· slid ×N`). Without it an advisory reading and a durable
+    // human choice render as the same two words.
+    expect(src).toContain("verdictOverride");
+    expect(src).toContain("yours");
+    expect(src).toContain("expert");
+    // The chip itself is unchanged and still comes from the one module —
+    // ui-contract.md's chip grammar is frozen, so the provenance rides BESIDE
+    // it rather than inside it.
+    expect(src).toContain("<VerdictChip");
+    expect(read(CHIPS)).not.toContain("verdictOverride");
+  });
+
+  test("no agent-facing surface writes a verdict at all", () => {
+    // NFR-OW-2 as it applies to CAP-9: the expert PROPOSES a verdict through an
+    // enrichment pass, and only a human's own click makes one durable. The tool
+    // surface's whole consultation input is an item id, so there is no tool
+    // anywhere that can spell a verdict — asserted here against the file, and
+    // against the pinned inventory in invariants.test.ts.
+    const mcp = read("lib/workspace-mcp.ts");
+    expect(mcp).toContain("consult_expert");
+    expect(mcp).not.toMatch(/verdict:\s*z\./);
+    expect(mcp).not.toContain("setItemVerdict");
   });
 });
 

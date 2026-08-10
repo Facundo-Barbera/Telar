@@ -20,9 +20,15 @@
 // reduced one, and it set this precedent. What this one drops, deliberately:
 //   · SUB-AGENT FRAMES (`payload.parent`) — the master's tool policy mounts the
 //     workspace server and the read triad and nothing else, so nothing it can
-//     call spawns. When the per-project experts of story 8 arrive they are the
-//     first frames with a `parent`, and rendering them is that story's work.
-//     Until then a parented frame is silently main-thread-free, not mis-filed.
+//     call spawns. AN EARLIER NOTE HERE PREDICTED story 8's per-project experts
+//     would be the first parented frames. THEY ARE NOT, and deliberately: a
+//     harness sub-agent inherits its caller's project, and SPEC.md inverts that
+//     ("the master has NO project and each expert it calls is scoped to its
+//     own"), so an expert is an `agent()` call spawned in-process by
+//     consult_expert — the same channel Ultra's children never reach. It
+//     surfaces as one tool frame, not as a parented sub-tree. Nothing in the
+//     master's surface produces a `parent` today; a parented frame remains
+//     silently main-thread-free, not mis-filed.
 //   · ULTRA ANCHORS — ui-contract.md §1: "No Ultra chip here — ultra's mutating
 //     tools dereference a project, which the master lacks." The server does not
 //     mount the server; the client does not render its anchors.

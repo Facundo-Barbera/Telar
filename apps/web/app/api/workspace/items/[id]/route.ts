@@ -13,8 +13,15 @@ export const dynamic = "force-dynamic";
 // RENDER item.deadline/item.verdict via DeadlineChip/VerdictChip). Before
 // this narrowing there was no reachable HTTP path to either field anywhere
 // in the app; this route had quietly opened one, untested and unused by any
-// caller this story ships. Widen this list in 5.4, alongside whatever UI
-// actually writes a deadline or records a verdict — not before.
+// caller this story ships. Widen this list for `deadline` in 5.4, alongside
+// whatever UI actually writes one — not before.
+//
+// `verdict` IS NOW SETTLED AND THE ANSWER IS NEVER. Story 5.8 gave the field
+// its own endpoint — POST items/<id>/verdict — because a verdict a human sets
+// is DURABLE: it goes through core's setItemVerdict, which raises
+// `verdictOverride` so no later expert pass may re-flip it (CAP-9). The generic
+// patch verb cannot do that; a verdict written through here would set the field
+// with no flag, i.e. exactly the overwritable kind. Keep the two verbs apart.
 const PATCHABLE_KEYS = new Set(["title", "lane", "project", "desk", "unplaced", "mirrored"]);
 
 export async function GET(

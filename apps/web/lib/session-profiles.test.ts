@@ -257,7 +257,9 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     // sequence — and comparing sorted here would be the one link in that chain
     // that let a reorder through.
     expect([...WORKSPACE_AUTO_TOOL_NAMES]).toEqual([...WORKSPACE_AUTO_TOOLS]);
-    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);
+    // FOUR IN STORY 5.1, FIVE SINCE STORY 5.8 — consult_expert (CAP-9) is
+    // appended, so the first four still read as story 5.1's list.
+    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(5);
     // Fully qualified on BOTH sides — the bare form would produce tools that
     // never auto-run and that the resolver's runtime filter drops silently.
     for (const n of WORKSPACE_AUTO_TOOL_NAMES) expect(n.startsWith("mcp__workspace__")).toBe(true);
@@ -305,8 +307,11 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     // assertion is split in two rather than weakened to a `toContain`, because
     // an ordered exact-set claim is the only kind that catches a silent grant.
     // Half one: the historical array is still there, in order, untouched.
-    // Half two (below): the suffix is EXACTLY the four workspace names and
-    // nothing else, so a fifth name cannot arrive between them.
+    // Half two (below): the suffix is EXACTLY WORKSPACE_AUTO_TOOLS (four names in
+    // 5.1, five since 5.8's consult_expert) then BROWSER_READ_TOOLS, and nothing
+    // else — so no extra name can arrive between or after them. It is spread from
+    // the constants rather than restated, which is why the assertion did not go
+    // stale when the fifth workspace name landed; only this prose did.
     const routesOldArray = [
       "Read",
       "Grep",
@@ -327,7 +332,8 @@ describe("core's tool-name tuples and @/lib's own cannot drift apart", () => {
     expect(BASE_ALLOWED_TOOLS.length).toBe(
       routesOldArray.length + WORKSPACE_AUTO_TOOLS.length + BROWSER_READ_TOOLS.length,
     );
-    expect(BASE_ALLOWED_TOOLS.length).toBe(30);
+    // 30 UNTIL STORY 5.8, which added consult_expert to the workspace suffix.
+    expect(BASE_ALLOWED_TOOLS.length).toBe(31);
     // No duplicates: unionOrdered would silently absorb one, shortening the
     // resolved allow set rather than failing.
     expect(new Set(BASE_ALLOWED_TOOLS).size).toBe(BASE_ALLOWED_TOOLS.length);

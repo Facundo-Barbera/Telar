@@ -216,13 +216,20 @@ export const ULTRA_AUTO_TOOL_NAMES = [
   "mcp__ultra__ultra_inspect",
 ] as const;
 
-// The workspace MCP server's four auto-run tool names — same duplication
+// The workspace MCP server's five auto-run tool names — same duplication
 // contract, canonical copy in apps/web/lib/workspace-mcp.ts's
 // WORKSPACE_AUTO_TOOLS.
 //
-// ALL FOUR AUTO-RUN as a product requirement (ui-contract.md §5: "the tool
+// ALL FIVE AUTO-RUN as a product requirement (ui-contract.md §5: "the tool
 // pills are real in v1"), safe because filing a task is PREPARE, never COMMIT
 // (NFR-OW-2) — no workspace tool accepts, deletes, promotes or restructures.
+//
+// IT WAS FOUR UNTIL STORY 5.8, which added `consult_expert` (CAP-9): the master
+// asking an item's own project expert to re-read it. It auto-runs like the other
+// four because it only reads a packet and writes prose back onto it — a brief,
+// an advisory verdict and a timeline event, all of them proposals a human looks
+// at. The gated `weave_batch` is still absent from this list, and that ONE-NAME
+// difference is asserted rather than described (invariants.test.ts's INV-11c).
 //
 // FULLY QUALIFIED (`mcp__workspace__*`), UNLIKE invariants.test.ts's
 // MCP_INVENTORY, which pins the BARE names — getting this asymmetry wrong is
@@ -233,6 +240,7 @@ export const WORKSPACE_AUTO_TOOL_NAMES = [
   "mcp__workspace__list_lanes",
   "mcp__workspace__create_item",
   "mcp__workspace__update_item",
+  "mcp__workspace__consult_expert",
 ] as const;
 
 // Read-only access to the browser surface the human and agent share. The
@@ -247,13 +255,15 @@ export const BROWSER_READ_TOOL_NAMES = [
 ] as const;
 
 // The whole AUTO-RUN vocabulary a profile may narrow: the six built-in
-// read/web tools, then loom's, then ultra's three, then the workspace
-// store's four — TWENTY-FOUR names, in the route's own historical order
+// read/web tools, then loom's, then ultra's, then the workspace store's FIVE
+// (four since story 5.1, plus story 5.8's consult_expert), then the browser's
+// read-only five — THIRTY-ONE names, in the route's own historical order
 // (`unionOrdered` preserves it, so a resolved non-escalation `allow` comes
 // out element-for-element identical to this array). Growing it is what makes
 // `toolPolicy` the whole truth about tool grants (AD-10) rather than
 // something the route still partially composes. Full history (six → twenty →
-// twenty-four) and why a parameterised base set was rejected:
+// twenty-four → thirty → thirty-one) and why a parameterised base set was
+// rejected:
 // docs/session-profile-port.md
 //
 // DEVIATION FROM THE HOUSE SHAPE, AND IT IS LOAD-BEARING: `as const` and NO

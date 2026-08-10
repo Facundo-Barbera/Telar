@@ -1589,6 +1589,13 @@ export type ExpertPassResult = {
   // How many timeline events this pass appended.
   events: number;
   commitments: number;
+  // THE PASS'S OWN LABEL, minted by this function's clock and reported rather
+  // than left to be re-derived. runExpertPass stamps the expert digest with it so
+  // the digest and the timeline events of one pass carry the same label; before
+  // this it read the label back off `item.timeline.at(-1)` with a fallback to
+  // `item.captured`, which was an unreachable branch claiming a provenance
+  // (the capture's clock) that it would have violated if it ever ran.
+  at: string;
 };
 
 // null when the item does not exist or cannot be read — getWorkspaceItem's own
@@ -1661,6 +1668,7 @@ export function applyExpertPass(itemId: string, pass: ExpertPass): ExpertPassRes
     verdictHeld: held,
     events: timeline.length - (current.timeline?.length ?? 0),
     commitments: mined.length,
+    at,
   };
 }
 

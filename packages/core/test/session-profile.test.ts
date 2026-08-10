@@ -981,10 +981,12 @@ describe("AC3 over-granting DOES NOT COMPILE — the type, checked by tsc in bot
     ]);
     // Anti-vacuity: a tuple that emptied out would satisfy a `toEqual` against
     // an equally-empty derivation.
-    expect(BASE_ALLOWED_TOOLS.length).toBe(30);
+    expect(BASE_ALLOWED_TOOLS.length).toBe(31);
     expect(LOOM_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
     expect(ULTRA_AUTO_TOOL_NAMES.length).toBeGreaterThan(0);
-    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(4);
+    // FIVE SINCE STORY 5.8 (CAP-9's consult_expert), four before it. The
+    // gated weave_batch is still not among them.
+    expect(WORKSPACE_AUTO_TOOL_NAMES.length).toBe(5);
     expect(BROWSER_READ_TOOL_NAMES.length).toBe(5);
     // FULLY QUALIFIED, like its two siblings and unlike invariants.test.ts's
     // MCP_INVENTORY, which pins the BARE names. Writing the bare form here
