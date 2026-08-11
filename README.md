@@ -44,6 +44,44 @@ bun install
 cd apps/web && bun run dev   # the web cockpit
 ```
 
+### vNext dogfood cockpit
+
+The supported browser-only vNext development door is:
+
+```bash
+bun run dev:vnext
+```
+
+It uses the isolated `TELAR_HOME=$HOME/.telar-vnext-dogfood` by default (or an
+absolute dedicated `TELAR_HOME` you set), starts or attaches the engine, starts
+one vNext worker unless the attached engine already has a live registered
+worker, then opens the web cockpit at `http://127.0.0.1:3000/vnext`. Set
+`TELAR_VNEXT_WEB_PORT` to use a different explicit port. The launcher checks
+the selected loopback port before it starts anything and passes that exact port
+to both Next and the desktop shell; it fails rather than silently using Next's
+automatic fallback. It never uses `~/.telar` or `~/.telar-dev`.
+
+`/vnext` has its own visual shell as well as its own engine state: it does not
+mount the legacy sidebar, dock, Loom/Workspace navigation, account registry, or
+desktop/browser host. Existing `/`, `/projects`, `/looms`, `/workspace`,
+`/settings`, and `/demo-gallery` URLs keep their unchanged legacy shell.
+`/vnext/settings` is a read-only local-runtime guide; it does not manage
+accounts, credentials, or provider configuration.
+
+To use the same cockpit in the development Electron shell, run:
+
+```bash
+bun run dev:vnext:desktop
+```
+
+This starts the engine, worker, and one web server exactly as `dev:vnext` does,
+then launches the existing desktop development runner with
+`TELAR_DESKTOP_URL` set to the same selected `http://127.0.0.1:<port>/vnext`
+route. It therefore does not start a second Next server. Ctrl-C stops only the worker, web, and desktop processes
+this command launched; when it attaches to an already healthy vNext engine, it
+deliberately leaves that engine running. Legacy `bun run dev:desktop` and all
+desktop package/install commands remain unchanged.
+
 ### Local desktop install (unsigned)
 
 Builds a macOS **arm64** (Apple Silicon) `.app` from the current working tree,

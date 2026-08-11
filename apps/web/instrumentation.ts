@@ -8,6 +8,11 @@
 // modules before the first request can be served.
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  // The supported vNext launcher uses this same Next application solely as an
+  // engine client.  Never let legacy boot recovery claim or execute a legacy
+  // queue in that process, even if a user happened to leave legacy state in
+  // the selected dogfood home.
+  if (process.env.TELAR_VNEXT === "1") return;
 
   try {
     const { reconcileStuckLooms } = await import("@telar/core/dispatcher");

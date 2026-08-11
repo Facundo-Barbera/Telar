@@ -7,11 +7,12 @@ import { readFileSync } from "node:fs";
 
 const WEB_ROOT = new URL("../", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, WEB_ROOT), "utf8");
+const legacyLayout = () => read("app/(legacy)/layout.tsx");
 
 describe("the production sidebar mount", () => {
   test("mounts the offcanvas resize rail with the shared app preferences", () => {
     const sidebar = read("components/app-sidebar.tsx");
-    const layout = read("app/layout.tsx");
+    const layout = legacyLayout();
 
     expect(sidebar).toContain('collapsible="offcanvas"');
     expect(sidebar).toContain("resizable={APP_SIDEBAR_RESIZABLE}");
@@ -30,7 +31,7 @@ describe("the production sidebar mount", () => {
     const pageHeader = read("components/common/page-header.tsx");
     const sessionView = read("components/session/session-view.tsx");
     const settingsShell = read("components/settings/settings-shell.tsx");
-    const layout = read("app/layout.tsx");
+    const layout = legacyLayout();
 
     expect(sidebar).toContain('aria-label="Hide main sidebar"');
     expect(sidebar).not.toContain('data-slot="sidebar-reveal-rail"');
@@ -63,7 +64,7 @@ describe("the production sidebar mount", () => {
 
   test("mounts one session sidebar and retires both legacy navigation trees", () => {
     const sidebar = read("components/app-sidebar.tsx");
-    const sessionPage = read("app/projects/[name]/sessions/[id]/page.tsx");
+    const sessionPage = read("app/(legacy)/projects/[name]/sessions/[id]/page.tsx");
 
     expect(sidebar).toContain("deriveSessionList");
     expect(sidebar).toContain('cachedJson<{ chats?: ChatMeta[] }>("/api/chats?archived=include"');
@@ -125,7 +126,7 @@ describe("the production sidebar mount", () => {
   });
 
   test("server-seeds the persistent shell and shares one account registry", () => {
-    const layout = read("app/layout.tsx");
+    const layout = legacyLayout();
     const sidebar = read("components/app-sidebar.tsx");
     const accounts = read("lib/use-accounts.ts");
 

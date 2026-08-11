@@ -19,6 +19,18 @@
         "electron-builder": "^26.15.3",
       },
     },
+    "apps/engine": {
+      "name": "@telar/engine",
+      "version": "0.1.0",
+      "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.224",
+        "@telar/engine-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/node": "^26.1.0",
+        "typescript": "^6.0.3",
+      },
+    },
     "apps/web": {
       "name": "web",
       "version": "0.1.0",
@@ -30,6 +42,7 @@
         "@streamdown/math": "^1.0.2",
         "@streamdown/mermaid": "^1.0.2",
         "@telar/core": "workspace:*",
+        "@telar/engine-client": "workspace:*",
         "ai": "^7.0.17",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -70,6 +83,14 @@
         "yaml": "^2.9.0",
         "zod": "^4.4.3",
       },
+      "devDependencies": {
+        "@types/node": "^26.1.0",
+        "typescript": "^6.0.3",
+      },
+    },
+    "packages/engine-client": {
+      "name": "@telar/engine-client",
+      "version": "0.1.0",
       "devDependencies": {
         "@types/node": "^26.1.0",
         "typescript": "^6.0.3",
@@ -471,6 +492,10 @@
     "@tailwindcss/postcss": ["@tailwindcss/postcss@4.3.2", "", { "dependencies": { "@alloc/quick-lru": "^5.2.0", "@tailwindcss/node": "4.3.2", "@tailwindcss/oxide": "4.3.2", "postcss": "^8.5.15", "tailwindcss": "4.3.2" } }, "sha512-rjVWYCa7Ngbi5AarT6k8TkxUG3Wl1QKzHdIZVsjZSzf36Jmo2IKZt/NHRAwly8oDkbBOH0YTu+CHuf9jPxMc+g=="],
 
     "@telar/core": ["@telar/core@workspace:packages/core"],
+
+    "@telar/engine": ["@telar/engine@workspace:apps/engine"],
+
+    "@telar/engine-client": ["@telar/engine-client@workspace:packages/engine-client"],
 
     "@ts-morph/common": ["@ts-morph/common@0.27.0", "", { "dependencies": { "fast-glob": "^3.3.3", "minimatch": "^10.0.1", "path-browserify": "^1.0.1" } }, "sha512-Wf29UqxWDpc+i61k3oIOzcUfQt79PIT9y/MWfAGlrkjg6lBC1hwDECLXPVJAhWjiGbfBCxZd65F/LIZF3+jeJQ=="],
 

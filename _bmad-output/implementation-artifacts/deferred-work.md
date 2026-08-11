@@ -464,3 +464,7 @@ _Each entry was re-measured against the working tree before being written here. 
 ### A premise in this story's brief that did not match the tree
 
 - **The brief named `apps/web/lib/session-profiles.test.ts`'s "READING the store is NOT blocked…" as a KNOWN PRE-EXISTING RED owned by story 10. It is not red, and the test does not exist.** That file runs **70 pass / 0 fail**. The string survives only as prose in `apps/web/lib/session-profiles.ts`, describing a red row the 5-6 adversarial-review remediation already closed (the entry two sections above records the ruling: `addProtectedPaths` denies reads as well as writes, and the test gained a discriminator rather than being deleted). **Nothing was changed on the strength of the brief's premise**, and story 10 should not go looking for a red row to resolve.
+
+## Deferred from: vNext standalone shell (2026-08-11)
+
+- **Existing React-effect lint findings remain in the legacy surface.** Moving the unchanged legacy routes into `apps/web/app/(legacy)/` makes six existing `react-hooks/set-state-in-effect` findings visible under `demo-gallery`, Loom, and project pages. They are legacy-page debt, not part of the isolated vNext shell; resolving them needs a focused legacy UI pass. **Owner:** the next story that changes those pages.
