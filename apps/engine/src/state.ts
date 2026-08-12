@@ -1042,7 +1042,11 @@ export class EngineStore {
         ? {
             model: {
               instanceId: session.providerInstanceId,
-              model: input.model.model,
+              // EITHER MAY BE ABSENT. "The provider's default model, at maximum
+              // effort" is an ordinary thing to ask for, and spreading rather
+              // than assigning is what keeps it from being stored as an
+              // explicit `undefined` the engine would then hand to a driver.
+              ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
             },
           }

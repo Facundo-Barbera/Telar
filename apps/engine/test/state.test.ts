@@ -557,3 +557,35 @@ test("a GitHub read is cached, and only a refresh gets past the cache", async ()
   await store.projectGitHub("project_one");
   expect(calls).toBe(9);
 });
+
+test("an effort can be set without naming a model, and clearing the model keeps it", () => {
+  // THE DEFECT THIS PINS: `ModelSelection` used to require a model in order to
+  // carry an effort, so a session on the provider default — which is the
+  // default — could not be told to think harder. The composer's reasoning pill
+  // had nothing to write and read as a missing feature.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  const updated = store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, effort: "max" } });
+  expect(updated.model).toEqual({ instanceId: session.providerInstanceId, effort: "max" });
+
+  // And it survives the turn, which is where it actually has to arrive.
+  store.submitTurn("session_one", { runId: "run_one", input: "hi" });
+  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, effort: "max" });
+});
+
+test("a per-turn selection may be an effort alone", () => {
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "hi", model: { effort: "low" } });
+  expect(turn.model).toEqual({ instanceId: session.providerInstanceId, effort: "low" });
+});
+
+test("a selection that selects nothing is refused rather than stored", () => {
+  // An empty selection is an ABSENT selection, and the engine should see it as
+  // one rather than writing a record that says nothing.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  expect(() => store.updateSession("session_one", { model: { instanceId: session.providerInstanceId } as never })).toThrow(
+    EngineStateError,
+  );
+});

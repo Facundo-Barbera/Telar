@@ -264,10 +264,17 @@ export type EngineErrorBody = z.infer<typeof EngineErrorBody>;
  * the model and the effort — the provider is not a per-turn question, and this
  * shape is what makes that true by construction instead of by validation.
  */
-export const TurnModelSelection = z.object({
-  model: z.string().min(1),
-  effort: Effort.optional(),
-});
+export const TurnModelSelection = z
+  .object({
+    /** Absent means "the provider's own default model", which is a real choice
+     *  and not the same as naming one. Effort still applies to it — see
+     *  `ModelSelection`. */
+    model: z.string().min(1).optional(),
+    effort: Effort.optional(),
+  })
+  .refine((value) => value.model !== undefined || value.effort !== undefined, {
+    message: "a turn's model selection must name a model, an effort, or both",
+  });
 export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
 
 /** Submitting a turn. `runId` is the client's idempotency key — resubmitting

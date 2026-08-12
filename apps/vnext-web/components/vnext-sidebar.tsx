@@ -87,7 +87,7 @@ function TelarSidebarHeader() {
         <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="shrink-0" />
         <Link
           href="/"
-          title="Projects"
+          title="New conversation"
           className="mr-auto flex min-w-0 items-center rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
@@ -522,7 +522,7 @@ function SidebarBody() {
                         title={project.root}
                         onClick={() => {
                           onNavigate();
-                          router.push("/");
+                          router.push("/projects");
                         }}
                       >
                         <MoreHorizontalIcon />

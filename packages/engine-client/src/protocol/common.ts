@@ -92,13 +92,32 @@ export type ProviderInstanceId = z.infer<typeof ProviderInstanceId>;
 export const Effort = z.string().min(1);
 export type Effort = z.infer<typeof Effort>;
 
-/** A model on a configured instance. Routing is by `instanceId`; `model` is
- *  the provider's own identifier and is never interpreted here. */
-export const ModelSelection = z.object({
-  instanceId: ProviderInstanceId,
-  model: z.string().min(1),
-  effort: Effort.optional(),
-});
+/**
+ * A model AND/OR AN EFFORT on a configured instance. Routing is by
+ * `instanceId`; `model` is the provider's own identifier and is never
+ * interpreted here.
+ *
+ * `model` IS OPTIONAL, AND MAKING IT REQUIRED WAS A MISTAKE THIS CORRECTS.
+ * Both providers take the two independently — the Agent SDK has `model?` and
+ * `effort?` as separate options, and Codex takes both as separate params on
+ * `turn/start` — so requiring a model in order to store an effort was a coupling
+ * this contract invented. Its cost was concrete and user-visible: a session on
+ * the provider default could not be told to think harder, because there was
+ * nowhere to put the level. "Use whatever model is configured, at maximum
+ * effort" is an ordinary thing to want and is now representable.
+ *
+ * At least one of the two must be present, because a selection that selects
+ * nothing is an absent selection and the engine should see it as one.
+ */
+export const ModelSelection = z
+  .object({
+    instanceId: ProviderInstanceId,
+    model: z.string().min(1).optional(),
+    effort: Effort.optional(),
+  })
+  .refine((value) => value.model !== undefined || value.effort !== undefined, {
+    message: "a model selection must name a model, an effort, or both",
+  });
 export type ModelSelection = z.infer<typeof ModelSelection>;
 
 /**

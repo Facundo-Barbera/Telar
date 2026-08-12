@@ -136,7 +136,12 @@ function SessionMasthead({
             full width when it is not. The folder glyph stands in for it so the
             breadcrumb does not shift sideways when the rail opens. */}
         <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
-        <Link href="/" className="shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+        {/* `/projects`, not `/`: the breadcrumb names the PROJECT, so pressing
+            it should show that project — and `/` is now a composer. */}
+        <Link
+          href="/projects"
+          className="shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
           {projectName ?? session?.projectId ?? projectId}
         </Link>
         <span className="text-border">/</span>
@@ -696,11 +701,14 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           envMode: draftEnvMode,
         });
         target = created.session.id;
-        if (draftModel.model) {
+        // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
+        // an effort chosen must still write that effort — which is exactly the
+        // case that used to fall through this `if` and vanish.
+        if (draftModel.model || draftModel.effort) {
           await api.updateSession(target, {
             model: {
               instanceId: created.session.providerInstanceId,
-              model: draftModel.model,
+              ...(draftModel.model ? { model: draftModel.model } : {}),
               ...(draftModel.effort ? { effort: draftModel.effort } : {}),
             },
           });
@@ -734,11 +742,18 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
        * were written under. It cannot name a provider — `TurnModelSelection` has
        * no field for it — so the session's provider stays fixed for its life.
        */
-      const pending = session?.model ?? (draftModel.model ? { model: draftModel.model, effort: draftModel.effort } : undefined);
+      const pending = session?.model ?? draftModel;
       await api.submitTurn(target, {
         runId,
         input: text,
-        ...(pending?.model ? { model: { model: pending.model, ...(pending.effort ? { effort: pending.effort } : {}) } } : {}),
+        ...(pending?.model || pending?.effort
+          ? {
+              model: {
+                ...(pending.model ? { model: pending.model } : {}),
+                ...(pending.effort ? { effort: pending.effort } : {}),
+              },
+            }
+          : {}),
         ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
       });
       // Only for a session that ALREADY existed. A just-created one is hydrated
@@ -794,9 +809,21 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
     if (!session || !sessionId) return;
     try {
       const updated = await api.updateSession(sessionId, {
-        model: next.model
-          ? { instanceId: session.providerInstanceId, model: next.model, ...(next.effort ? { effort: next.effort } : {}) }
-          : undefined,
+        /**
+         * EITHER HALF ALONE IS A SELECTION. "The provider's default model at
+         * maximum effort" used to be unrepresentable — the contract required a
+         * model before it would carry an effort — so the reasoning pill on a
+         * default-model session had nothing to write and said so. Sending
+         * `undefined` only when BOTH are absent is what clears it.
+         */
+        model:
+          next.model || next.effort
+            ? {
+                instanceId: session.providerInstanceId,
+                ...(next.model ? { model: next.model } : {}),
+                ...(next.effort ? { effort: next.effort } : {}),
+              }
+            : undefined,
       });
       setSession(updated.session);
       setError(undefined);

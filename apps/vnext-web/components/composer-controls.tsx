@@ -244,7 +244,10 @@ export function AgentControl({
             selected={!model}
             disabled={readOnly}
             onSelect={() => {
-              onModelChange?.({});
+              // The EFFORT SURVIVES dropping back to the default model — they
+              // are independent choices, and clearing one because the other
+              // changed is the coupling this pair just stopped having.
+              onModelChange?.(effort ? { effort: effort as Effort } : {});
               setOpen(false);
             }}
           />
@@ -286,13 +289,16 @@ export function AgentControl({
  *
  * The donor drove a per-turn option matrix the vNext contract does not have, so
  * this is the honest subset: `ModelSelection.effort`, which the engine stores on
- * the session and hands to the driver at claim time. Both drivers now read it —
+ * the session and hands to the driver at claim time. Both drivers read it —
  * Codex forwards it to the app-server, Claude passes it to the Agent SDK's
  * `effort` — so the pill is a control rather than a label.
  *
- * IT NEEDS A MODEL. Effort rides on `ModelSelection`, which the engine stores
- * only alongside a model, so with the provider default there is nowhere to put a
- * level. The popover says that rather than the trigger going dead.
+ * IT NO LONGER NEEDS A MODEL, and that was a real defect rather than a
+ * limitation. `ModelSelection` used to require a model in order to carry an
+ * effort, so a session on the provider default — which is the DEFAULT — could
+ * not be told to think harder: this popover said "pick a model first" and the
+ * feature read as missing. Both providers take the two independently, so the
+ * contract now does too.
  */
 export function ReasoningControl({
   driver,
@@ -319,42 +325,38 @@ export function ReasoningControl({
       />
       <PopoverContent align="start" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-2rem))] gap-0 rounded-2xl p-1.5">
         <MenuHeading>Reasoning</MenuHeading>
-        {model ? (
-          <>
-            <ChoiceRow
-              label="Auto"
-              description={`Whatever ${PROVIDER_LABEL[driver]} does by default.`}
-              selected={!effort}
-              disabled={readOnly}
-              onSelect={() => {
-                onModelChange?.({ model });
-                setOpen(false);
-              }}
-            />
-            {levels.map((level) => (
-              <ChoiceRow
-                key={level}
-                label={EFFORT_LABEL[level]}
-                description={EFFORT_HELP[level]}
-                selected={effort === level}
-                disabled={readOnly}
-                onSelect={() => {
-                  onModelChange?.({ model, effort: level });
-                  setOpen(false);
-                }}
-              />
-            ))}
-            {/* A level this list does not offer — another client's, or one this
-                provider spells differently. `Effort` is an open string in the
-                contract, so it is shown rather than silently replaced. */}
-            {effort && !levels.some((level) => level === effort) && (
-              <ChoiceRow label={effort} description="Set outside this cockpit. Kept as-is." selected disabled onSelect={() => undefined} />
-            )}
-          </>
-        ) : (
-          <p className="px-2.5 py-2 text-xs leading-snug text-muted-foreground">
-            An effort level is stored with a model, so pick one first — the provider default has nowhere to keep it.
-          </p>
+        {/* THE MODEL RIDES ALONG UNCHANGED. Every row re-sends whatever model is
+            currently selected — including none — so choosing an effort never
+            silently clears the model, and choosing one on the provider default
+            stays on the provider default. */}
+        <ChoiceRow
+          label="Auto"
+          description={`Whatever ${PROVIDER_LABEL[driver]} does by default.`}
+          selected={!effort}
+          disabled={readOnly}
+          onSelect={() => {
+            onModelChange?.(model ? { model } : {});
+            setOpen(false);
+          }}
+        />
+        {levels.map((level) => (
+          <ChoiceRow
+            key={level}
+            label={EFFORT_LABEL[level]}
+            description={EFFORT_HELP[level]}
+            selected={effort === level}
+            disabled={readOnly}
+            onSelect={() => {
+              onModelChange?.({ ...(model ? { model } : {}), effort: level });
+              setOpen(false);
+            }}
+          />
+        ))}
+        {/* A level this list does not offer — another client's, or one this
+            provider spells differently. `Effort` is an open string in the
+            contract, so it is shown rather than silently replaced. */}
+        {effort && !levels.some((level) => level === effort) && (
+          <ChoiceRow label={effort} description="Set outside this cockpit. Kept as-is." selected disabled onSelect={() => undefined} />
         )}
       </PopoverContent>
     </Popover>
@@ -441,25 +443,19 @@ export function ComposerOverflowMenu({
         {onModelChange && (
           <>
             <DropdownMenuLabel>Reasoning</DropdownMenuLabel>
-            {/* Effort rides on `ModelSelection`, which the engine stores only
-                alongside a model — so with the provider default there is nowhere
-                to put a level, and offering one would silently discard it. */}
-            {model ? (
-              <>
-                <DropdownMenuItem onClick={() => onModelChange({ model })}>
-                  <span className="flex-1">Auto</span>
-                  {!effort && <CheckIcon className="size-3.5 text-primary" />}
-                </DropdownMenuItem>
-                {PROVIDER_EFFORTS[driver].map((level) => (
-                  <DropdownMenuItem key={level} onClick={() => onModelChange({ model, effort: level })}>
-                    <span className="flex-1">{EFFORT_LABEL[level]}</span>
-                    {effort === level && <CheckIcon className="size-3.5 text-primary" />}
-                  </DropdownMenuItem>
-                ))}
-              </>
-            ) : (
-              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">Pick a model to set an effort level.</p>
-            )}
+            {/* Independent of the model, as the providers are — see
+                `ReasoningControl`. Each row re-sends the current model so
+                picking an effort never clears it. */}
+            <DropdownMenuItem onClick={() => onModelChange(model ? { model } : {})}>
+              <span className="flex-1">Auto</span>
+              {!effort && <CheckIcon className="size-3.5 text-primary" />}
+            </DropdownMenuItem>
+            {PROVIDER_EFFORTS[driver].map((level) => (
+              <DropdownMenuItem key={level} onClick={() => onModelChange({ ...(model ? { model } : {}), effort: level })}>
+                <span className="flex-1">{EFFORT_LABEL[level]}</span>
+                {effort === level && <CheckIcon className="size-3.5 text-primary" />}
+              </DropdownMenuItem>
+            ))}
           </>
         )}
 

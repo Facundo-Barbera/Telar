@@ -146,7 +146,10 @@ export function SessionRow({
   // the URL names it, which is right for every other case and exactly wrong
   // here. Hand the reader back to the project's session list instead.
   const leaveIfActive = () => {
-    if (active) router.push("/");
+    // `/projects`, not `/`: `/` is a composer now, and archiving the session you
+    // were reading should hand you the list you came from rather than a blank
+    // message box you did not ask for.
+    if (active) router.push("/projects");
   };
 
   const beginRename = () => {

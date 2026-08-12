@@ -34,6 +34,7 @@ export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
 import { AccessControl, AgentControl, BackgroundPresence, ComposerOverflowMenu, ContextPill, ReasoningControl } from "./composer-controls";
 import { insertReference, readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { FreshGreeting } from "./session/fresh-greeting";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
@@ -459,6 +460,14 @@ export function Composer({
         fresh && "-translate-y-[calc(45dvh-7.5rem)]",
       )}
     >
+      {/* THE GREETING RIDES THE COMPOSER'S OWN TRANSFORM, which is why it lives
+          inside this wrapper rather than in the conversation above: when the
+          first message sends, the whole object slides down together instead of
+          the sentence jumping out from under a composer that is still moving.
+          It is mounted only while fresh, so an ordinary session never pays for
+          the height. */}
+      {fresh && <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} />}
+
       {queued.length > 0 && (
         <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2" aria-label="Queued messages">
           {queued.length > 1 && (
