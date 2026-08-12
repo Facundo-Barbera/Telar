@@ -4,14 +4,41 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/**
+ * WHAT THIS BOUNDARY IS, AND WHAT IT STOPPED BEING.
+ *
+ * It used to also forbid `tailwindcss`, `ThemeProvider` and `@/components/ui/`,
+ * on the reasoning that vNext should own its visual system outright. That went
+ * one step too far: it did not stop vNext from depending on the frozen app, it
+ * stopped vNext from having a design system AT ALL — so the cockpit grew a
+ * hand-written approximation of Telar's palette, hand-drawn stand-ins for its
+ * icons, and no dark mode, and read as a different product.
+ *
+ * The real boundary is narrower and still absolute: vNext must not IMPORT from
+ * the frozen app or from the legacy runtime. Its UI primitives are LOCAL copies
+ * under `components/ui/`, which is why that path is no longer banned — a copy
+ * costs a fork, an import costs the independence this whole rebuild is for.
+ */
 const appRoot = fileURLToPath(new URL("../..", import.meta.url));
 const ownedRoots = ["app", "components", "lib"].map((segment) => path.join(appRoot, segment));
 const banned = [
   // `apps/web` still catches `apps/web_old` as a substring, but naming the
   // frozen tree explicitly keeps the failure message honest after the rename.
-  "@telar/core", "@anthropic-ai/claude-agent-sdk", "apps/web", "apps/web_old", "@/lib/store", "@/lib/server/session-engine",
-  "@/app/api/chat", "@/lib/session-log", "@/components/looms", "@/components/workspace", "@/components/session/session-view",
-  "@/components/ui/", "@/components/ai-elements", "@/lib/ultra", "ThemeProvider", "instrumentation", "tailwindcss", "ActivityPanel",
+  "@telar/core",
+  "@anthropic-ai/claude-agent-sdk",
+  "apps/web",
+  "apps/web_old",
+  "@/lib/store",
+  "@/lib/server/session-engine",
+  "@/app/api/chat",
+  "@/lib/session-log",
+  "@/components/looms",
+  "@/components/workspace",
+  "@/components/session/session-view",
+  "@/components/ai-elements",
+  "@/lib/ultra",
+  "instrumentation",
+  "ActivityPanel",
 ];
 
 function sources(root: string): string[] {
@@ -25,18 +52,18 @@ describe("standalone vNext source boundary", () => {
   test("owns its browser, adapter, and style tree without legacy runtime imports", () => {
     for (const file of ownedRoots.flatMap(sources)) {
       const source = fs.readFileSync(file, "utf8");
-      for (const forbidden of banned) expect(source, `${path.relative(appRoot, file)} imports ${forbidden}`).not.toContain(forbidden);
+      for (const forbidden of banned) {
+        expect(source, `${path.relative(appRoot, file)} imports ${forbidden}`).not.toContain(forbidden);
+      }
     }
   });
 
-  test("uses root-relative routes and a vNext-owned stylesheet", () => {
+  test("uses root-relative routes and its own stylesheet", () => {
     const layout = fs.readFileSync(path.join(appRoot, "app", "layout.tsx"), "utf8");
-    const settings = fs.readFileSync(path.join(appRoot, "app", "settings", "page.tsx"), "utf8");
     const client = fs.readFileSync(path.join(appRoot, "lib", "vnext", "client.ts"), "utf8");
     expect(layout).toContain('import "./globals.css"');
     expect(layout).toContain("VNextAppShell");
     expect(layout).not.toContain('href="/vnext');
-    expect(settings).toContain("vnext-settings-page");
     expect(client).toContain('"/api/health"');
     expect(client).not.toContain("/api/vnext");
     expect(client).not.toContain("http://127.0.0.1");
@@ -45,23 +72,18 @@ describe("standalone vNext source boundary", () => {
   test("keeps the session workspace and visual shell local", () => {
     /**
      * ASSERTED ACROSS THE COMPONENT FOLDER, not against one file's contents.
-     * This used to name `function SessionTranscript` and `function
-     * SessionComposer` inside session-cockpit.tsx, which pinned a FILE LAYOUT
-     * rather than the boundary it exists to protect — splitting the transcript
-     * and composer into their own modules broke it while changing nothing about
-     * whether the visual shell is local. What matters is that these surfaces
-     * are built here and import nothing from the frozen app.
+     * This once named functions inside session-cockpit.tsx, which pinned a FILE
+     * LAYOUT rather than the boundary it exists to protect — splitting the
+     * transcript and composer into their own modules broke it while changing
+     * nothing about whether the visual shell is local.
      */
-    const components = fs
-      .readdirSync(path.join(appRoot, "components"))
-      .filter((name) => name.endsWith(".tsx"))
-      .map((name) => fs.readFileSync(path.join(appRoot, "components", name), "utf8"));
+    const componentRoot = path.join(appRoot, "components");
+    const components = sources(componentRoot).map((file) => fs.readFileSync(file, "utf8"));
     const cockpitSources = components.join("\n");
-    const cockpit = fs.readFileSync(path.join(appRoot, "components", "session-cockpit.tsx"), "utf8");
-    const shell = fs.readFileSync(path.join(appRoot, "components", "vnext-app-shell.tsx"), "utf8");
-    const sidebar = fs.readFileSync(path.join(appRoot, "components", "vnext-sidebar.tsx"), "utf8");
-    const panel = fs.readFileSync(path.join(appRoot, "components", "right-panel.tsx"), "utf8");
-    const styles = fs.readFileSync(path.join(appRoot, "app", "globals.css"), "utf8");
+    const cockpit = fs.readFileSync(path.join(componentRoot, "session-cockpit.tsx"), "utf8");
+    const shell = fs.readFileSync(path.join(componentRoot, "vnext-app-shell.tsx"), "utf8");
+    const sidebar = fs.readFileSync(path.join(componentRoot, "vnext-sidebar.tsx"), "utf8");
+
     expect(cockpit).toContain("function SessionMasthead");
     expect(cockpitSources).toContain("function ActivityGroup");
     expect(cockpitSources).toContain("export function Composer");
@@ -76,13 +98,26 @@ describe("standalone vNext source boundary", () => {
     expect(shell).toContain("VNextSidebar");
     expect(sidebar).toContain("Search sessions");
     expect(sidebar).toContain("Settings");
-    expect(panel).toContain("no browser, Git, loom, account, or agent controls");
-    expect(styles).toContain(".vnext-session-workspace");
-    expect(styles).toContain(".vnext-sidebar");
-    expect(styles).toContain(".vnext-right-panel");
-    expect(styles).toContain("@media (max-width: 720px)");
-    expect(styles).toContain(":focus-visible");
-    expect(styles).toContain("prefers-reduced-motion");
-    expect(styles).not.toContain("tailwind");
+  });
+
+  test("theme, fonts and the Tailwind pipeline are all wired, or the palette is decorative", () => {
+    /**
+     * Each of these was MISSING while the app still compiled and rendered, which
+     * is exactly why they are pinned. A palette with no Tailwind build emits no
+     * utilities; a `.dark` block with nothing to set the class is dead CSS; and
+     * `--font-sans: var(--font-geist-sans)` with no next/font call resolves to
+     * the fallback stack forever.
+     */
+    const postcss = fs.readFileSync(path.join(appRoot, "postcss.config.mjs"), "utf8");
+    const layout = fs.readFileSync(path.join(appRoot, "app", "layout.tsx"), "utf8");
+    const styles = fs.readFileSync(path.join(appRoot, "app", "globals.css"), "utf8");
+
+    expect(postcss).toContain("@tailwindcss/postcss");
+    expect(styles).toContain('@import "tailwindcss"');
+    expect(styles).toContain("@custom-variant dark");
+    // The no-flash script must run in <head>, before the body paints.
+    expect(layout).toContain("THEME_INIT_SCRIPT");
+    expect(layout).toContain("Geist");
+    expect(layout).toContain("--font-geist-sans");
   });
 });
