@@ -3,6 +3,7 @@ import type {
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
+  ModelSelection,
   Project,
   ProviderDriverKind,
   EngineRequest,
@@ -73,9 +74,17 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     // arriving and a local re-declaration only hides it.
     session: (sessionId: string) =>
       request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
-    /** Rename, or change what the session may do without asking. */
-    updateSession: (sessionId: string, patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean }) =>
-      request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** Rename, change the model, or change what the session may do without
+     *  asking. The model must belong to the session's provider instance — the
+     *  engine rejects anything else, because a turn is routed by that instance
+     *  and the provider owns the resume cursor. */
+    updateSession: (
+      sessionId: string,
+      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection },
+    ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** End a session and free its worktree. The branch survives. */
+    archiveSession: (sessionId: string) =>
+      request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),
     /** `answers` is only meaningful for a `user_input` request — the route has
      *  always forwarded it; this signature simply never offered it, so the one
      *  request kind that asks a question could not be answered from the UI. */

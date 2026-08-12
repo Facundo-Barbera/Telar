@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRightIcon, FolderIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
+import { FolderGit2Icon, PencilIcon, TriangleAlertIcon } from "lucide-react";
 import {
   type EngineEvent,
   type EngineRequest,
   type RequestDecision,
   type Item,
+  type ProviderDriverKind,
   type RuntimeMode,
   type Session,
   type Task,
@@ -16,17 +17,34 @@ import {
 } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import { appendJournalEvents, isActiveTurn, itemText, projectJournal, type JournalTurn } from "@/lib/vnext/journal";
+import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { Composer } from "./composer";
 import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
-import { RailToggle, VNextRightPanel } from "./right-panel";
+import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab } from "./right-panel";
+import { WorkspaceInspector } from "./session/workspace-inspector";
+import {
+  closePanelTab,
+  emptyPanelTabs,
+  openPanelTab,
+  readPanelTabs,
+  writePanelTabs,
+  type PanelTabState,
+} from "@/lib/right-panel-tabs";
 import { ApprovalCard } from "./approval-card";
+import { MainSidebarTrigger } from "./main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
+import { useSidebar } from "@/components/ui/sidebar";
 
 const api = createVNextApi();
+/** Below this the session rail, the conversation and the panel cannot all
+ *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
+ *  floor (24rem) + panel floor (20rem), rounded up. */
+const NARROW_WINDOW = 1280;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -58,11 +76,17 @@ function SessionProblem({ error }: { error: VNextApiError }) {
 }
 
 /**
- * The masthead is a BREADCRUMB, not a title bar.
+ * The masthead is a BREADCRUMB, not a title bar. Ported from the frozen app's
+ * session-view header (apps/web_old/components/session/session-view.tsx).
  *
  * It carries identity and nothing else: no model, no cost, no working indicator.
- * A running turn is announced at the TAIL of the transcript where the work is,
- * so the eye has one place to look rather than two that can disagree.
+ * Account/model/context/spend belong to the composer, and a running turn is
+ * announced at the TAIL of the transcript where the work is, so the eye has one
+ * place to look rather than two that can disagree.
+ *
+ * NO BOTTOM BORDER, and a translucent blurred ground instead. The transcript
+ * scrolls UNDER this bar; a hard rule would cut the column, where
+ * `bg-background/65 backdrop-blur` lets the text approach and dissolve.
  */
 function SessionMasthead({
   projectId,
@@ -80,7 +104,7 @@ function SessionMasthead({
   session?: Session;
   sending: boolean;
   onRename: (title: string) => void;
-  /** The session panel's trigger. Passed in rather than constructed here so the
+  /** The session panel's triggers. Passed in rather than constructed here so the
    *  masthead stays identity-only and does not acquire the session record's
    *  items, tasks, turns and events just to hand them straight through. */
   panel: React.ReactNode;
@@ -97,16 +121,19 @@ function SessionMasthead({
   };
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-3 text-sm">
-      <Button variant="ghost" size="icon-sm" aria-label="Back to projects" render={<Link href="/" />}>
-        <FolderIcon className="size-4" />
-      </Button>
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="max-w-48 shrink-0 truncate text-muted-foreground">{projectName ?? session?.projectId ?? projectId}</span>
-        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+    <header className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 bg-background/65 px-4 py-1.5 backdrop-blur">
+      <div className="mr-1 flex min-w-0 items-center gap-2 text-sm">
+        {/* Only mounts while the rail is hidden, leaving the workspace at true
+            full width when it is not. The folder glyph stands in for it so the
+            breadcrumb does not shift sideways when the rail opens. */}
+        <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
+        <Link href="/" className="shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
+          {projectName ?? session?.projectId ?? projectId}
+        </Link>
+        <span className="text-border">/</span>
         {editing ? (
-          <input
-            className="min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 py-1 text-sm font-medium outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          <Input
+            className="h-6 max-w-xs text-base font-semibold"
             aria-label="Session title"
             autoFocus
             value={draftTitle}
@@ -124,27 +151,30 @@ function SessionMasthead({
             }}
           />
         ) : (
-          <>
-            <strong className="min-w-0 truncate font-medium" title={title}>
+          <span className="group/title inline-flex min-w-0 items-center gap-1 font-semibold">
+            <span className="truncate" title={title}>
               {title}
-            </strong>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Rename session"
-              disabled={!session || sending}
-              className="shrink-0 text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover/masthead:opacity-100 hover:opacity-100"
-              onClick={() => {
-                setDraftTitle(title);
-                setEditing(true);
-              }}
-            >
-              <PencilIcon className="size-3.5" />
-            </Button>
-          </>
+            </span>
+            {session && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Rename session"
+                disabled={sending}
+                className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
+                onClick={() => {
+                  setDraftTitle(title);
+                  setEditing(true);
+                }}
+              >
+                <PencilIcon />
+              </Button>
+            )}
+          </span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">{panel}</div>
+      <div className="ml-auto flex flex-wrap items-center gap-2">{panel}</div>
     </header>
   );
 }
@@ -274,7 +304,31 @@ function EmptyTranscript({ loading }: { loading: boolean }) {
   );
 }
 
-export function SessionCockpit({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+/**
+ * @param routeSessionId Absent on the NEW-CONVERSATION front door
+ *   (`/projects/:id/sessions/new`), where nothing is persisted until the first
+ *   message is sent.
+ */
+export function SessionCockpit({ projectId, sessionId: routeSessionId }: { projectId: string; sessionId?: string }) {
+  /**
+   * THE SESSION ID IS STATE, NOT JUST A PROP.
+   *
+   * A fresh conversation has no session until its first message creates one, and
+   * at that moment the URL is rewritten with `history.replaceState` rather than
+   * a router navigation — a navigation would remount this component and throw
+   * away the turn that was just submitted, along with its polling loop. So the
+   * id has to be able to change underneath a mounted cockpit.
+   */
+  const [sessionId, setSessionId] = useState(routeSessionId);
+  /** No session yet: the composer is the whole screen and nothing is polled. */
+  const fresh = !sessionId;
+  /**
+   * What the FIRST message will create the session with. Only meaningful while
+   * fresh — once a session exists, its own record is the truth and the picker
+   * patches that instead.
+   */
+  const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
+  const [draftModel, setDraftModel] = useState<{ model?: string; effort?: string }>({});
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -284,11 +338,20 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const [draft, setDraft] = useState("");
   const [draftRunId, setDraftRunId] = useState<string>();
   const [error, setError] = useState<VNextApiError>();
-  const [loading, setLoading] = useState(true);
+  /** Seeded from whether there is anything to load at all — a fresh canvas has
+   *  no transcript to hydrate, so it must never paint a loading state. */
+  const [loading, setLoading] = useState(Boolean(routeSessionId));
   const [sending, setSending] = useState(false);
-  /** Open by default: the rail is where a fan-out lives, and a sub-agent nobody
-   *  can see is the failure this column exists to prevent. */
-  const [railOpen, setRailOpen] = useState(true);
+  /**
+   * The panel's open tabs, and whether the panel itself is showing.
+   *
+   * CLOSED, WITH NO TABS, UNTIL ASKED. This used to open on mount with all four
+   * surfaces mounted and "Agents" selected, which decides for you what you were
+   * about to look at and takes a third of the window to do it. Lifted out of the
+   * panel because the pinned summary and the composer's foot both need to say
+   * "go there", which means opening a tab that may not exist yet.
+   */
+  const [panel, setPanel] = useState<PanelTabState<PanelTab>>(() => emptyPanelTabs<PanelTab>());
   const [projectName, setProjectName] = useState<string>();
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
@@ -301,6 +364,8 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const hydrate = useCallback(
     () =>
       enqueueSync(async () => {
+        // Nothing to read before the first message creates the session.
+        if (!sessionId) return;
         const hydrated = await hydrateVNextSession(api, sessionId);
         setSession(hydrated.session);
         setTurns(hydrated.turns);
@@ -315,6 +380,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const tail = useCallback(
     () =>
       enqueueSync(async () => {
+        if (!sessionId) return;
         const update = await tailVNextSession(api, sessionId, cursor.current);
         if (update.events.length === 0) return;
         cursor.current = update.cursor;
@@ -329,6 +395,115 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       }),
     [enqueueSync, sessionId],
   );
+
+  /**
+   * Restore this session's panel AFTER mount, never during render.
+   *
+   * `localStorage` does not exist on the server, so seeding `useState` from it
+   * would make the first client render disagree with the server's and throw the
+   * whole tree away. Reading it in an effect costs one extra paint and is the
+   * only shape that is correct in both places.
+   */
+  useEffect(() => {
+    if (!sessionId) return;
+    // Deferred to a task rather than called in the effect body: a synchronous
+    // setState there is a cascading render, and it is the same rule the git
+    // readout in workspace-environment.tsx follows.
+    const task = window.setTimeout(() => setPanel(readPanelTabs<PanelTab>(sessionId, isPanelTab)), 0);
+    return () => window.clearTimeout(task);
+  }, [sessionId]);
+
+  const updatePanel = useCallback(
+    (next: (current: PanelTabState<PanelTab>) => PanelTabState<PanelTab>) => {
+      setPanel((current) => {
+        const updated = next(current);
+        if (sessionId) writePanelTabs(sessionId, updated, Date.now());
+        return updated;
+      });
+    },
+    [sessionId],
+  );
+  /** Folded once here rather than in both the panel and the pinned summary, so
+   *  the two cannot disagree about which tabs are open. */
+  const browser = useMemo(() => latestBrowserState(events), [events]);
+
+  /**
+   * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
+   * collapses the session rail.
+   *
+   * The rail, the conversation and the panel each have a width below which they
+   * stop working, and on a ~1200px window their three floors do not fit. Left
+   * alone, CSS resolves that by squeezing whichever is most compressible — which
+   * was the panel, down to a column of ellipses. The rail is the right thing to
+   * give up: it is navigation you have already used to get here, one click
+   * restores it, and its collapsed state is remembered.
+   *
+   * ONLY ON THE OPENING TRANSITION, and only when it is actually tight — so a
+   * rail you deliberately reopened alongside the panel stays open, and a wide
+   * window never loses it at all. Called from event handlers rather than an
+   * effect on `panel.open`, which is what keeps this a consequence of your click
+   * instead of a render-phase surprise.
+   */
+  const { open: railOpen, setOpen: setRailOpen } = useSidebar();
+  const makeRoomForPanel = useCallback(() => {
+    if (!railOpen) return;
+    if (window.innerWidth >= NARROW_WINDOW) return;
+    setRailOpen(false);
+  }, [railOpen, setRailOpen]);
+
+  /** Open the panel on a named surface — what every "go there" gesture calls. */
+  const showPanelTab = useCallback(
+    (tab: PanelTab) => {
+      makeRoomForPanel();
+      updatePanel((current) => openPanelTab(current, tab));
+    },
+    [makeRoomForPanel, updatePanel],
+  );
+
+  /**
+   * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser.
+   *
+   * Only while the panel is ALREADY open, though. Opening a page is the agent's
+   * decision, not yours, so it may not interrupt what you are reading — but if
+   * you are watching the panel, a new page appearing as a new tab is the least
+   * surprising thing that can happen. `seenPages` is a ref rather than derived
+   * state so that closing a tab does not immediately reopen it on the next poll.
+   */
+  const seenPages = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pages = browser?.tabs ?? [];
+    const fresh = pages.filter((page) => !seenPages.current.has(page.id));
+    for (const page of pages) seenPages.current.add(page.id);
+    if (fresh.length === 0) return;
+    updatePanel((current) => {
+      if (!current.open) return current;
+      return fresh.reduce((state, page) => openPanelTab(state, browserPanelTab(page.id)), current);
+    });
+  }, [browser, updatePanel]);
+
+  /**
+   * Restore an unsent draft, and keep it saved as it is typed.
+   *
+   * Read in an effect for the same reason the panel state is: `localStorage`
+   * does not exist during the server render, so seeding `useState` from it would
+   * make the two disagree. The write is debounced because it runs on every
+   * keystroke and a synchronous `setItem` per character is a jank source on a
+   * long message.
+   */
+  useEffect(() => {
+    const task = window.setTimeout(() => {
+      const stored = readDraft(sessionId, projectId);
+      // Never clobber something already typed — the restore is a fallback for an
+      // empty box, not an authority over it.
+      if (stored) setDraft((current) => current || stored);
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [sessionId, projectId]);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => writeDraft(sessionId, projectId, draft), 400);
+    return () => window.clearTimeout(task);
+  }, [draft, sessionId, projectId]);
 
   // The session record carries a project ID, not its name. One list call
   // resolves it; a failure leaves the breadcrumb on the id, which is worse to
@@ -345,6 +520,12 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   }, [projectId]);
 
   useEffect(() => {
+    // A fresh canvas has nothing to hydrate and nothing to poll — and polling a
+    // session that does not exist yet is how a new-conversation screen ends up
+    // making one request a second to a 404. `loading` is seeded false for that
+    // case rather than cleared here: clearing it would be a setState in an
+    // effect body, and the answer is known before the first render anyway.
+    if (!sessionId) return;
     let cancelled = false;
     void hydrate()
       .then(
@@ -361,7 +542,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [hydrate, tail]);
+  }, [hydrate, tail, sessionId]);
 
   const transcript = useMemo(() => projectJournal(turns, items, events, tasks), [turns, items, events, tasks]);
   /**
@@ -393,7 +574,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
 
   const stop = async () => {
-    if (!active) return;
+    if (!active || !sessionId) return;
     setSending(true);
     try {
       await api.stopTurn(sessionId, active.runId);
@@ -406,6 +587,9 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     }
   };
   const decideRequest = async (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => {
+    // Every one of these acts on a session that must already exist; the fresh
+    // canvas offers none of them.
+    if (!sessionId) return;
     setSending(true);
     try {
       await api.resolveRequest(sessionId, requestId, { decision, ...(extra?.answers ? { answers: extra.answers } : {}) });
@@ -418,6 +602,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     }
   };
   const discardAmbiguous = async (turn: Pick<Turn, "runId">) => {
+    if (!sessionId) return;
     setSending(true);
     try {
       await api.discardAmbiguousTurn(sessionId, turn.runId);
@@ -430,6 +615,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     }
   };
   const retryAmbiguous = async (turn: Pick<Turn, "runId" | "state" | "input">) => {
+    if (!sessionId) return;
     setSending(true);
     try {
       await retryAmbiguousTurn(api, sessionId, turn);
@@ -460,8 +646,41 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     setDraft("");
     setDraftRunId(undefined);
     try {
-      await api.submitTurn(sessionId, { runId, input: text });
-      await hydrate();
+      /**
+       * THE FIRST MESSAGE IS WHAT CREATES THE SESSION.
+       *
+       * A new conversation is a composer and nothing else until you send — no
+       * empty session in the rail, no record for a thought you abandoned. The
+       * title comes from the message because the alternative is a list full of
+       * "Untitled session", and the URL is rewritten with `replaceState` rather
+       * than a router push: a navigation here would remount this component and
+       * discard the turn we are in the middle of submitting.
+       */
+      let target = sessionId;
+      if (!target) {
+        const created = await api.createSession(projectId, {
+          title: text.replace(/\s+/g, " ").slice(0, 80),
+          driver: draftDriver,
+        });
+        target = created.session.id;
+        if (draftModel.model) {
+          await api.updateSession(target, {
+            model: {
+              instanceId: created.session.providerInstanceId,
+              model: draftModel.model,
+              ...(draftModel.effort ? { effort: draftModel.effort } : {}),
+            },
+          });
+        }
+        setSessionId(target);
+        setSession(created.session);
+        window.history.replaceState(null, "", `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(target)}`);
+      }
+      await api.submitTurn(target, { runId, input: text });
+      // Only for a session that ALREADY existed. A just-created one is hydrated
+      // by the effect that fires when `sessionId` changes, and calling it here
+      // would run against the stale id captured in this closure.
+      if (sessionId) await hydrate();
       setError(undefined);
     } catch (cause) {
       // Give the words back. Losing a typed message to a failed POST is
@@ -474,6 +693,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     }
   };
   const withdraw = async (runId: string) => {
+    if (!sessionId) return;
     setSending(true);
     try {
       await api.stopTurn(sessionId, runId);
@@ -486,6 +706,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     }
   };
   const rename = async (nextTitle: string) => {
+    if (!sessionId) return;
     try {
       const next = await api.updateSession(sessionId, { title: nextTitle });
       setSession(next.session);
@@ -494,7 +715,31 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not rename the session."));
     }
   };
+  /**
+   * Change the model the NEXT turn runs on.
+   *
+   * Not gated on `sending`, and deliberately usable mid-turn: the engine
+   * resolves the model when a worker CLAIMS a turn, so this can never disturb
+   * work already in flight — it only decides what the next one runs on. The
+   * instance id comes from the session because the engine rejects a model that
+   * does not belong to it.
+   */
+  const setModel = async (next: { model?: string; effort?: string }) => {
+    if (!session || !sessionId) return;
+    try {
+      const updated = await api.updateSession(sessionId, {
+        model: next.model
+          ? { instanceId: session.providerInstanceId, model: next.model, ...(next.effort ? { effort: next.effort } : {}) }
+          : undefined,
+      });
+      setSession(updated.session);
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not change the model."));
+    }
+  };
   const setRuntimeMode = async (mode: RuntimeMode) => {
+    if (!sessionId) return;
     // Not gated on `sending`: this is the brake, and a brake you cannot reach
     // while the thing is moving is not a brake.
     try {
@@ -518,23 +763,49 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const backgroundTasks = tasks.filter((task) => task.kind === "background" && (task.state === "running" || task.state === "pending")).length;
 
   return (
-    <main className="group/masthead flex min-h-0 flex-1 flex-col">
-      <SessionMasthead
-        projectId={projectId}
-        projectName={projectName}
-        session={session}
-        sending={sending}
-        onRename={(next) => void rename(next)}
-        panel={<RailToggle open={railOpen} onToggle={() => setRailOpen((current) => !current)} />}
-      />
-      {/* THE COMPOSER BELONGS TO THE CHAT COLUMN, NOT TO THE WINDOW. Nesting it
-          beside the transcript rather than under the whole row makes the
-          geometry say what is true: you type INTO the conversation, and the rail
-          is its own full-height column next to it. `min-w-0` is what keeps a
-          long unbroken line in either child from widening the row instead of
-          scrolling inside its own box. */}
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    /**
+     * THE PANEL IS A COLUMN OF THE ROOM, NOT A SHEET OVER IT.
+     *
+     * The row is the top-level element and the panel is its second child, so
+     * opening the panel NARROWS the conversation — transcript, composer and
+     * masthead all reflow — instead of covering it. That is the whole point:
+     * you open this to watch the agent while you keep working, and a surface
+     * that hides the thing it reports on cannot do that.
+     *
+     * It also means the panel runs the FULL HEIGHT of the window. The masthead
+     * lives inside the conversation column (below), so the panel's top edge is
+     * the window's top edge rather than a step down from a bar that spans the
+     * app. `min-w-0` on the column is what keeps a long unbroken line from
+     * widening the row instead of scrolling inside its own box.
+     */
+    <main className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <SessionMasthead
+          projectId={projectId}
+          projectName={projectName}
+          session={session}
+          sending={sending}
+          onRename={(next) => void rename(next)}
+          panel={
+            <>
+              <WorkspaceInspector
+                projectId={session?.projectId ?? projectId}
+                {...(projectName ? { projectName } : {})}
+                {...(session ? { session } : {})}
+                tasks={tasks}
+                {...(browser ? { browser } : {})}
+                onOpenPanel={showPanelTab}
+              />
+              <RailToggle
+                open={panel.open}
+                onToggle={() => {
+                  makeRoomForPanel();
+                  updatePanel((current) => ({ ...current, open: true }));
+                }}
+              />
+            </>
+          }
+        />
         <ConversationViewport className="min-w-0 flex-1">
           <ConversationContent>
             {projectId !== session?.projectId && session && (
@@ -544,7 +815,10 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
               </Alert>
             )}
             {error && <SessionProblem error={error} />}
-            {!error && shown.length === 0 && <EmptyTranscript loading={loading} />}
+            {/* A fresh canvas shows NOTHING here. The composer is lifted to the
+                middle of the screen and is the whole interface; an empty-state
+                card above it would be a second thing competing to be read. */}
+            {!error && !fresh && shown.length === 0 && <EmptyTranscript loading={loading} />}
             {shown.map((turn) => (
               <SessionTurn
                 key={turn.runId}
@@ -563,7 +837,11 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
         </ConversationViewport>
         <Composer
           draft={draft}
-          ready={Boolean(session)}
+          // A fresh canvas is READY: there is nothing to wait for, because the
+          // message you type is the thing that creates the session.
+          ready={fresh || Boolean(session)}
+          fresh={fresh}
+          {...(fresh ? { driver: draftDriver, onDriverChange: setDraftDriver, pendingModel: draftModel } : {})}
           busy={Boolean(active)}
           sending={sending}
           queued={queued}
@@ -580,11 +858,40 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
           onSubmit={() => void submit()}
           onStop={() => void stop()}
           onWithdraw={(runId) => void withdraw(runId)}
+          /**
+           * Recall WITHDRAWS the queued turn and puts its words back in the box.
+           *
+           * The text is restored optimistically, before the withdraw round trip,
+           * so the box fills the instant you click; if the withdraw fails the
+           * error surfaces and the line is still queued, which is recoverable.
+           * Losing the words to a failed request would not be.
+           */
+          onRecall={(item) => {
+            setDraft((current) => (current ? `${current}\n${item.text}` : item.text));
+            void withdraw(item.runId);
+          }}
           onRuntimeMode={(mode) => void setRuntimeMode(mode)}
+          // Before a session exists there is nothing to patch — the choice is
+          // held locally and applied when the first message creates it.
+          onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
+          onOpenChanges={() => showPanelTab("changes")}
         />
-        </div>
-        {railOpen && <VNextRightPanel active={active?.state} items={items} tasks={tasks} turns={turns} events={events} />}
       </div>
+      {panel.open && (
+        <VNextRightPanel
+          {...(active?.state ? { active: active.state } : {})}
+          items={items}
+          tasks={tasks}
+          turns={turns}
+          events={events}
+          tabs={panel.tabs}
+          {...(panel.activeTab ? { tab: panel.activeTab } : {})}
+          onTabChange={(tab) => updatePanel((current) => ({ ...current, activeTab: tab }))}
+          onOpenTab={showPanelTab}
+          onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
+          onClose={() => updatePanel((current) => ({ ...current, open: false }))}
+        />
+      )}
     </main>
   );
 }

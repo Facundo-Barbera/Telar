@@ -1,4 +1,4 @@
-import type { EngineClient, ProviderDriverKind, RequestDecision } from "@telar/engine-client";
+import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { ProviderUnavailableError, type TurnDriver } from "./driver";
 
@@ -96,17 +96,7 @@ export class EngineWorker {
       }
       if (this.active.size !== 0) return;
       const { claim } = await this.options.client.claimTurn(this.options.workerId);
-      if (claim) {
-        void this.execute(
-          claim.sessionId,
-          claim.projectRoot,
-          claim.resumeCursor,
-          claim.turn.runId,
-          claim.turn.claim!.token,
-          claim.turn.input,
-          claim.driver,
-        );
-      }
+      if (claim) void this.execute(claim);
     } catch (error) {
       if (isConnectivityLoss(error)) this.loseConnection(error);
       else throw error;
@@ -115,15 +105,19 @@ export class EngineWorker {
     }
   }
 
-  private async execute(
-    sessionId: string,
-    cwd: string,
-    providerSessionId: string | undefined,
-    runId: string,
-    claimToken: string,
-    prompt: string,
-    driverKind: ProviderDriverKind,
-  ): Promise<void> {
+  /**
+   * Takes the CLAIM rather than seven positional fields.
+   *
+   * The claim is already the engine's complete answer to "what should this
+   * worker run" — unpacking it at the call site meant every new field on the
+   * contract (the model, most recently) had to be threaded through another
+   * positional parameter, in the right order, with nothing to catch a swap of
+   * two adjacent strings.
+   */
+  private async execute(claim: WorkerClaim): Promise<void> {
+    const { sessionId, projectRoot: cwd, resumeCursor: providerSessionId, driver: driverKind, model } = claim;
+    const { runId, input: prompt } = claim.turn;
+    const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
     try {
@@ -138,6 +132,11 @@ export class EngineWorker {
         prompt,
         cwd,
         signal: controller.signal,
+        // Spread rather than passed as possibly-undefined: `exactOptionalPropertyTypes`
+        // distinguishes "absent" from "present and undefined", and the drivers
+        // read absence as "use the provider's own default".
+        ...(model?.model ? { model: model.model } : {}),
+        ...(model?.effort ? { effort: model.effort } : {}),
         providerSessionId,
         // Sessions are the browser's natural boundary: two sessions must not
         // share a tab, and a session's tabs must survive between its turns.

@@ -67,6 +67,17 @@ export type DriverRun = {
   cwd: string;
   signal: AbortSignal;
   /**
+   * Which model to run, resolved by the engine from the session.
+   *
+   * ABSENT MEANS "the provider's own default", and that is a distinct state
+   * from any string this code could invent. A driver that substituted a name
+   * here would silently override whatever the installed harness is configured
+   * to use, and the session would report a model it is not running.
+   */
+  model?: string;
+  /** Reasoning effort, where the provider has the concept. Same absent rule. */
+  effort?: string;
+  /**
    * Scopes this turn's browser. Sessions are the natural boundary: two
    * sessions must not share a tab, and a session's tabs must survive between
    * its turns.
@@ -111,6 +122,22 @@ type SdkCanUseTool = (
 
 type SdkMcpServer = unknown;
 
+/**
+ * The Agent SDK's effort vocabulary, verbatim from its `EffortLevel`.
+ *
+ * `ModelSelection.effort` is an OPEN string on purpose — provider vocabularies
+ * differ, and the contract says so (packages/engine-client/src/protocol/common.ts).
+ * So the word travelling from a session may be one this SDK has never heard of,
+ * set by another client or by a provider that spells its levels differently. It
+ * is DROPPED here rather than forwarded: failing a whole turn over an unknown
+ * display-level nicety is the worse trade, and a level the SDK cannot honour is
+ * indistinguishable from none.
+ */
+type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+const CLAUDE_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
+const claudeEffort = (value: string | undefined): ClaudeEffort | undefined =>
+  value !== undefined && CLAUDE_EFFORTS.has(value) ? (value as ClaudeEffort) : undefined;
+
 type ClaudeSdk = {
   query(input: {
     prompt: string;
@@ -118,6 +145,12 @@ type ClaudeSdk = {
       cwd: string;
       permissionMode: "default";
       abortController: AbortController;
+      /** Omitted entirely when the session names none — the SDK then uses the
+       *  model the local Claude Code install is configured with. */
+      model?: string;
+      /** How hard to think. A CLOSED vocabulary here, unlike `DriverRun.effort`
+       *  — see `claudeEffort` below. */
+      effort?: ClaudeEffort;
       includePartialMessages: true;
       /** Without this the SDK forwards only a sub-agent's tool_use/tool_result
        *  blocks — "enough for a heartbeat counter", in its own words. A nested
@@ -418,7 +451,7 @@ export function createClaudeDriver(
   options: { browser?: BrowserCapability } = {},
 ): TurnDriver {
   return {
-    async run({ prompt, cwd, signal, onObservations, onRequest, providerSessionId, browserScopeKey }) {
+    async run({ prompt, cwd, signal, model, effort, onObservations, onRequest, providerSessionId, browserScopeKey }) {
       let sdk: ClaudeSdk;
       try {
         sdk = await loadSdk();
@@ -427,6 +460,7 @@ export function createClaudeDriver(
           "Claude Agent SDK is unavailable; install and configure Claude Code before retrying",
         );
       }
+      const sdkEffort = claudeEffort(effort);
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
       if (signal.aborted) abort();
@@ -639,6 +673,8 @@ export function createClaudeDriver(
             abortController: controller,
             includePartialMessages: true,
             forwardSubagentText: true,
+            ...(model ? { model } : {}),
+            ...(sdkEffort ? { effort: sdkEffort } : {}),
             ...(providerSessionId ? { resume: providerSessionId } : {}),
             ...(canUseTool ? { canUseTool } : {}),
             ...(mcpServers ? { mcpServers } : {}),

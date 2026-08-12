@@ -18,7 +18,17 @@
  * messages later close the row its call opened.
  */
 import { z } from "zod";
-import { BrowserProvider, BrowserTab, Id, ProviderDriverKind, ProviderInstanceId, ProviderRefs, Timestamp, UsageSnapshot } from "./common";
+import {
+  BrowserProvider,
+  BrowserTab,
+  Id,
+  ModelSelection,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderRefs,
+  Timestamp,
+  UsageSnapshot,
+} from "./common";
 import { Turn } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
@@ -118,6 +128,16 @@ export const WorkerClaim = z.object({
   projectRoot: z.string().min(1),
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
+  /**
+   * Which model runs this turn, resolved by the engine from the session at
+   * CLAIM TIME.
+   *
+   * Carried on the claim for the same reason `projectRoot` and `resumeCursor`
+   * are: the worker holds no store handle, so anything it needs to execute must
+   * arrive with the work. Absent means the session named none and the driver
+   * uses its provider's own default — which is not the same as an invented one.
+   */
+  model: ModelSelection.optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   turn: Turn,

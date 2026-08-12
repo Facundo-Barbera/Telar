@@ -117,10 +117,16 @@ describe("standalone vNext source boundary", () => {
     expect(cockpit).toContain("function SessionMasthead");
     expect(cockpitSources).toContain("function ActivityGroup");
     expect(cockpitSources).toContain("export function Composer");
-    // Nothing under components/ may reach into the frozen app.
+    // Nothing under components/ may reach into the frozen app. READ AS
+    // IMPORTS, for the reason the sibling test above pins: this was a raw
+    // substring scan, and it fired on the ported components' own comments —
+    // which cite `apps/web_old/...` by path to say WHERE a class string or a
+    // layout rule came from. That provenance is the most useful documentation
+    // in a port, and a test that punishes writing it is the test that is wrong.
     for (const source of components) {
-      expect(source).not.toContain("web_old");
-      expect(source).not.toContain("@telar/core");
+      const specifiers = importSpecifiers(source);
+      expect(specifiers.find((specifier) => specifier.includes("web_old"))).toBeUndefined();
+      expect(specifiers.find((specifier) => specifier.includes("@telar/core"))).toBeUndefined();
     }
     expect(cockpit).toContain("Retry as new run");
     expect(cockpit).toContain("Discard recovered run");

@@ -62,6 +62,28 @@ test("the Claude seam resumes and captures the SDK session id", async () => {
   expect(receivedResume).toBe("claude-prior-session");
 });
 
+test("the session's model and effort reach the SDK, and an unknown effort is dropped rather than forwarded", async () => {
+  // The composer's reasoning pill is only worth having if the level survives
+  // the whole way down. `effort` is an OPEN string in the contract because
+  // provider vocabularies differ, so a word this SDK does not know has to be
+  // dropped — forwarding it would fail the turn over a display-level choice.
+  const seen: { model?: string; effort?: string }[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push({ model: input.options.model, effort: input.options.effort });
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, { model: "claude-opus-5", effort: "xhigh" }).result;
+  await run(driver, { model: "claude-opus-5", effort: "deliberate" }).result;
+  await run(driver, {}).result;
+  expect(seen).toEqual([
+    { model: "claude-opus-5", effort: "xhigh" },
+    { model: "claude-opus-5", effort: undefined },
+    { model: undefined, effort: undefined },
+  ]);
+});
+
 test("partial text deltas stream against one item without duplicating the final envelope", async () => {
   let includePartialMessages = false;
   const driver = createClaudeDriver(async () => ({

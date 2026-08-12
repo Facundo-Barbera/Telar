@@ -12,6 +12,7 @@ import {
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
+  type ModelSelection,
   type RuntimeMode,
   type TurnSubmissionResult,
   type WorkerStatus,
@@ -429,6 +430,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               // HTTP surface and an in-process caller refuse the same set.
               ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode as RuntimeMode }),
               ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
+              // Parsed in the store against `ModelSelection`, same reasoning.
+              ...(input.model === undefined ? {} : { model: input.model as ModelSelection }),
             }),
           });
           return;

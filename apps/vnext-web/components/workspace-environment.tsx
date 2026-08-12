@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronsUpDownIcon, FolderGit2Icon, GitBranchIcon, LaptopIcon } from "lucide-react";
+import { ChevronsUpDownIcon, FolderGit2Icon, GitBranchIcon, GitCommitHorizontalIcon, LaptopIcon } from "lucide-react";
 import type { GitOverview, Session } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -35,6 +35,7 @@ export function WorkspaceEnvironment({
   projectId,
   projectName,
   session,
+  onOpenChanges,
 }: {
   projectId: string;
   projectName?: string;
@@ -42,6 +43,7 @@ export function WorkspaceEnvironment({
    *  — so its checkout is the honest thing to name, and the repository's HEAD
    *  would be actively misleading. */
   session?: Session;
+  onOpenChanges?: () => void;
 }) {
   const [git, setGit] = useState<GitOverview>();
   const [reachable, setReachable] = useState(true);
@@ -102,8 +104,8 @@ export function WorkspaceEnvironment({
           <ChevronsUpDownIcon className={cn("size-3.5 shrink-0", dirty === 0 && "ml-auto")} />
         </PopoverTrigger>
 
-        <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
-          <p className="px-2 pt-1 pb-2 font-mono text-[10px] tracking-[0.14em] text-muted-foreground uppercase">environment</p>
+        <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(27rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
+          <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Environment</p>
 
           <div className="rounded-xl bg-muted/35 p-1">
             <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
@@ -141,6 +143,22 @@ export function WorkspaceEnvironment({
                   ? "This session has a checkout of its own, so its work cannot collide with another session on this project."
                   : "This session shares the project checkout with anything else running on it."}
           </p>
+
+          {/* The donor's footer, pointing at the same place: the surface that
+              lists what this session actually wrote. It opens the panel rather
+              than a git pane, because the engine's git read is read-only and
+              the file changes are what there is to look at. */}
+          {onOpenChanges && (
+            <button
+              type="button"
+              onClick={onOpenChanges}
+              className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors hover:bg-muted"
+            >
+              <GitCommitHorizontalIcon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 truncate">Files this session changed</span>
+              <span className="ml-auto shrink-0 text-xs text-muted-foreground">Open panel</span>
+            </button>
+          )}
         </PopoverContent>
       </Popover>
     </div>

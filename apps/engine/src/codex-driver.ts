@@ -130,10 +130,27 @@ class CodexTurnCancelled extends Error {
 
 export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver {
   const resolveBin = options.resolveBin ?? resolveCodexBinary;
-  const model = options.model ?? DEFAULT_CODEX_MODEL;
 
   return {
-    async run({ prompt, cwd, signal, providerSessionId, onObservations, onRequest }: DriverRun): Promise<DriverResult> {
+    async run({
+      prompt,
+      cwd,
+      signal,
+      model: turnModel,
+      effort: turnEffort,
+      providerSessionId,
+      onObservations,
+      onRequest,
+    }: DriverRun): Promise<DriverResult> {
+      /**
+       * PER-TURN FIRST, then the driver's construction default, then Codex's.
+       *
+       * The session's choice is the most specific thing anyone said about this
+       * turn, so it wins; `CodexDriverOptions.model` remains the deployment-wide
+       * default for a worker started without one.
+       */
+      const model = turnModel ?? options.model ?? DEFAULT_CODEX_MODEL;
+      const effort = turnEffort ?? options.effort;
       // Throws `ProviderUnavailableError` when Codex is not installed, BEFORE a
       // subprocess exists — a missing CLI must read as a missing CLI, not as an
       // app-server that exited with a null code.
@@ -398,7 +415,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         const turn = await client.request<{ turn?: { id?: string } }>("turn/start", {
           threadId: rootThreadId,
           input: codexTurnInput(prompt),
-          ...(options.effort ? { effort: options.effort } : {}),
+          ...(effort ? { effort } : {}),
           model,
           approvalPolicy: threadConfig.approvalPolicy,
           approvalsReviewer: threadConfig.approvalsReviewer,

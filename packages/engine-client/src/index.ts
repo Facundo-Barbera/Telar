@@ -16,6 +16,7 @@ import {
   type EngineHealth,
   type Item,
   type GitOverview,
+  type ModelSelection,
   type Project,
   type ProviderDriverKind,
   type Session,
@@ -144,7 +145,7 @@ export class EngineClient {
    */
   updateSession(
     sessionId: string,
-    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean },
+    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }

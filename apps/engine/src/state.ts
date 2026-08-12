@@ -11,6 +11,7 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   Item as ItemSchema,
+  ModelSelection,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
@@ -35,6 +36,7 @@ import {
   type TurnObservation,
   type UsageSnapshot,
   type EnvMode,
+  type ModelSelection as ModelSelectionValue,
   type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
@@ -580,7 +582,10 @@ export class EngineStore {
    * only thing that should settle them; auto-accepting a question somebody is
    * already looking at would be a surprise in the dangerous direction.
    */
-  updateSession(sessionId: string, patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean }): Session {
+  updateSession(
+    sessionId: string,
+    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelectionValue },
+  ): Session {
     const session = this.getSession(sessionId);
     if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
 
@@ -598,9 +603,33 @@ export class EngineStore {
       if (typeof patch.detached !== "boolean") throw new EngineStateError("invalid_request", "detached must be a boolean");
       next.detached = patch.detached;
     }
+    /**
+     * THE MODEL IS CHANGEABLE MID-SESSION; the PROVIDER is not.
+     *
+     * A turn is routed by `providerInstanceId`, and the provider owns the
+     * resume cursor that makes a session continuous — so swapping providers
+     * mid-conversation would strand the history. Swapping models within the
+     * session's own provider does not: the next claimed turn simply runs on the
+     * new one. Validated against the session's instance for exactly that
+     * reason.
+     */
+    if (patch.model !== undefined) {
+      const parsed = ModelSelection.safeParse(patch.model);
+      if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
+      if (parsed.data.instanceId !== session.providerInstanceId) {
+        throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
+      }
+      next.model = parsed.data;
+    }
     // Nothing changed: no write, no event. A client polling a "save" button
     // should not fill the journal with rows that say nothing happened.
-    if (next.title === session.title && next.runtimeMode === session.runtimeMode && next.detached === session.detached) {
+    if (
+      next.title === session.title &&
+      next.runtimeMode === session.runtimeMode &&
+      next.detached === session.detached &&
+      next.model?.model === session.model?.model &&
+      next.model?.effort === session.model?.effort
+    ) {
       return structuredClone(session);
     }
     next.updatedAt = this.now();
@@ -728,6 +757,10 @@ export class EngineStore {
         projectRoot: session.workspace.path,
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
+        // Resolved HERE, at claim time, so a model changed mid-session applies
+        // to the next turn the worker picks up rather than to the one it is
+        // already running.
+        ...(session.model ? { model: session.model } : {}),
         ...(resumeCursor ? { resumeCursor } : {}),
         turn,
       };
