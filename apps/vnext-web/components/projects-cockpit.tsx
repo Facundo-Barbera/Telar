@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import type { EngineHealth, Project, Session } from "@telar/engine-client";
+import type { EngineHealth, Project, ProviderDriverKind, Session } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { sessionsForSelectedProject } from "@/lib/vnext/project-selection";
 
@@ -31,6 +31,15 @@ export function ProjectsCockpit() {
   const [name, setName] = useState("");
   const [root, setRoot] = useState("");
   const [title, setTitle] = useState("");
+  /**
+   * Both are engine capabilities that existed with no way to ask for them: a
+   * session has been able to run on Codex, and to get a git worktree of its
+   * own, since those stages landed — the form simply never offered either, so
+   * every session was Claude-on-the-shared-checkout by omission rather than by
+   * choice.
+   */
+  const [driver, setDriver] = useState<ProviderDriverKind>("claude");
+  const [worktree, setWorktree] = useState(false);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -92,7 +101,11 @@ export function ProjectsCockpit() {
     if (!selectedId) return;
     setSaving(true);
     try {
-      const result = await api.createSession(selectedId, title || undefined);
+      const result = await api.createSession(selectedId, {
+        ...(title ? { title } : {}),
+        driver,
+        envMode: worktree ? "worktree" : "local",
+      });
       window.location.assign(`/projects/${encodeURIComponent(selectedId)}/sessions/${encodeURIComponent(result.session.id)}`);
     } catch (cause) {
       setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not create the session."));
@@ -144,9 +157,26 @@ export function ProjectsCockpit() {
           <article className="vnext-card">
             <div className="vnext-card__header"><div><h2>Sessions</h2><p>{selectedId ? "Persistent transcripts owned by the vNext engine." : "Choose a project to inspect its sessions."}</p></div>{selectedId && <span className="vnext-quiet-label">{projects.find((project) => project.id === selectedId)?.name}</span>}</div>
             {selectedId && (
-              <form className="vnext-row" onSubmit={createSession}>
+              <form className="vnext-new-session" onSubmit={createSession}>
                 <input className="vnext-input vnext-fill" aria-label="Session title" placeholder="Session title (optional)" value={title} onChange={(event) => setTitle(event.target.value)} />
-                <button className="vnext-button" type="submit" disabled={saving}>New session</button>
+                <div className="vnext-new-session__options">
+                  <div className="vnext-segment" role="group" aria-label="Provider">
+                    {(["claude", "codex"] as const).map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        data-selected={driver === option ? "true" : undefined}
+                        aria-pressed={driver === option}
+                        onClick={() => setDriver(option)}
+                      >{option === "claude" ? "Claude" : "Codex"}</button>
+                    ))}
+                  </div>
+                  <label className="vnext-check" title="Cut a git worktree and a branch of its own, so this session cannot collide with another working in the same project.">
+                    <input type="checkbox" checked={worktree} onChange={(event) => setWorktree(event.target.checked)} />
+                    Own worktree
+                  </label>
+                  <button className="vnext-button" type="submit" disabled={saving}>New session</button>
+                </div>
               </form>
             )}
             {selectedId && visibleSessions.length === 0 && <p>No sessions yet.</p>}

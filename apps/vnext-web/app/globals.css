@@ -320,6 +320,33 @@ p { line-height: 1.5; }
    scroller is the only thing that scrolls — the composer must not leave. */
 .vnext-session-workspace { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
 
+/* ── session identity and controls ─────────────────────────────────────── */
+/* Inline rename. The pencil is revealed by hovering the identity group, not
+   parked permanently beside the title — a persistent affordance on something
+   you rename twice a month is noise. */
+.vnext-title-edit { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--v-quiet); opacity: 0; transition: opacity 150ms; }
+.vnext-session-heartbeat__identity:hover .vnext-title-edit, .vnext-title-edit:focus-visible { opacity: 1; }
+.vnext-title-edit:hover { background: var(--v-hover); color: var(--v-ink); }
+.vnext-title-edit svg { width: 12px; height: 12px; }
+.vnext-title-edit:disabled { opacity: 0; }
+.vnext-title-input { min-width: 0; max-width: 320px; border: 0; border-bottom: 1px solid color-mix(in oklab, var(--v-primary) 40%, transparent); padding: 0; outline: 0; background: transparent; color: var(--v-ink); font-size: 13px; font-weight: 600; }
+
+/* What this session IS, at a glance. */
+.vnext-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--v-line); border-radius: 999px; padding: 2px 8px; color: var(--v-quiet); font-size: 11px; }
+.vnext-chip i { color: var(--v-warning); font-style: normal; }
+
+/* Creation options. Both were engine capabilities with no way to ask for them. */
+.vnext-new-session { display: grid; gap: 8px; }
+.vnext-new-session__options { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vnext-segment { display: inline-flex; overflow: hidden; border: 1px solid var(--v-line); border-radius: 8px; }
+.vnext-segment button { border: 0; padding: 6px 12px; background: transparent; color: var(--v-quiet); font-size: 12px; font-weight: 500; }
+.vnext-segment button + button { border-left: 1px solid var(--v-line); }
+.vnext-segment button:hover { background: var(--v-hover); color: var(--v-ink); }
+.vnext-segment button[data-selected] { background: var(--v-hover); color: var(--v-ink); }
+.vnext-check { display: inline-flex; align-items: center; gap: 6px; color: var(--v-quiet); font-size: 12px; }
+.vnext-check input { accent-color: var(--v-primary); }
+.vnext-new-session__options .vnext-button { margin-left: auto; }
+
 /* ── the composer ──────────────────────────────────────────────────────── */
 /* Nothing separates it from the transcript — no divider, no gradient. That
    wide, soft, downward shadow IS the separation, and a conventional card

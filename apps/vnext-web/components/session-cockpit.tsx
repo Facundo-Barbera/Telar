@@ -34,28 +34,74 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
   return { label: terminal.discarded, tone: "muted" };
 }
 
-function StateBadge({ state }: { state: TurnState }) {
-  const status = describeTurnState(state);
-  return <span className="vnext-badge" data-tone={status.tone}><span aria-hidden="true" className="vnext-badge__dot" />{status.label}</span>;
-}
-
 function SessionProblem({ error }: { error: VNextApiError }) {
   const unavailable = error.code === "engine_unavailable" || error.code === "engine_locked";
   return <div role="alert" className="vnext-alert"><strong>{unavailable ? "vNext engine unavailable. " : "vNext request failed. "}</strong>{error.message}</div>;
 }
 
-function SessionMasthead({ projectId, session, sessionId, active, sending, onStop }: {
+/**
+ * The masthead is a BREADCRUMB, not a title bar.
+ *
+ * It carries identity and nothing else: no model, no cost, no working
+ * indicator. The frozen app is emphatic about this and it is right — a running
+ * turn is announced at the tail of the transcript where the work is, so the eye
+ * has one place to look rather than two that can disagree.
+ */
+function SessionMasthead({ projectId, session, sessionId, sending, onRename }: {
   projectId: string;
   session?: Session;
   sessionId: string;
-  active?: { state: TurnState };
   sending: boolean;
-  onStop: () => void;
+  onRename: (title: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const title = session?.title ?? "Session";
+
+  const commit = () => {
+    setEditing(false);
+    const next = draftTitle.trim();
+    // Empty or unchanged is a silent cancel, not an error and not a write.
+    if (next && next !== title) onRename(next.slice(0, 120));
+  };
+
   return <header className="vnext-session-heartbeat">
     <Link className="vnext-backlink" href="/" aria-label="Back to projects"><Icon name="folder" /></Link>
-    <div className="vnext-session-heartbeat__identity"><span>{session?.projectId ?? projectId}</span><i>/</i><strong title={session?.title ?? "Session"}>{session?.title ?? "Session"}</strong></div>
-    <div className="vnext-session-heartbeat__actions">{active && <StateBadge state={active.state} />}{active && <button className="vnext-button vnext-button--danger" type="button" onClick={onStop} disabled={sending}>Stop</button>}<VNextRightPanel projectId={session?.projectId ?? projectId} sessionId={sessionId} active={active?.state} /></div>
+    <div className="vnext-session-heartbeat__identity">
+      <span>{session?.projectId ?? projectId}</span><i>/</i>
+      {editing
+        ? <input
+            className="vnext-title-input"
+            aria-label="Session title"
+            autoFocus
+            value={draftTitle}
+            onChange={(event) => setDraftTitle(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); commit(); }
+              if (event.key === "Escape") { event.preventDefault(); setEditing(false); }
+            }}
+          />
+        : <>
+            <strong title={title}>{title}</strong>
+            <button
+              type="button"
+              className="vnext-title-edit"
+              aria-label="Rename session"
+              disabled={!session || sending}
+              onClick={() => { setDraftTitle(title); setEditing(true); }}
+            ><Icon name="pencil" /></button>
+          </>}
+    </div>
+    <div className="vnext-session-heartbeat__actions">
+      {/* What this session IS, at a glance: which provider runs it, and whether
+          it has a checkout of its own or shares the project's. */}
+      {session && <span className="vnext-chip" title={session.workspace.mode === "worktree" ? `Worktree on ${session.workspace.branch}` : "Working in the project checkout"}>
+        {session.driver === "codex" ? "Codex" : "Claude"}
+        {session.workspace.mode === "worktree" && <i>worktree</i>}
+      </span>}
+      <VNextRightPanel projectId={session?.projectId ?? projectId} sessionId={sessionId} />
+    </div>
   </header>;
 }
 
@@ -177,6 +223,7 @@ function SessionTurn({ turn, requests, sending, live, now, onDecide, onRetry, on
       {!streamedAnswer && turn.resultText && <AgentMarkdown text={turn.resultText} />}
       {turn.failure && <Marker text={turn.failure} tone="attention" />}
       {turn.state === "stopped" && <Marker text="Stopped — kept what arrived." />}
+      {turn.state === "discarded" && <Marker text={describeTurnState(turn.state).label.toLowerCase()} />}
       {live && <WorkingIndicator label={turn.items.some((i) => i.status === "inProgress") ? "Working" : "Thinking"} startedAt={turn.startedAt} now={now} />}
       {turn.usage && !live && <p className="vnext-turn-usage">
         {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
@@ -343,6 +390,10 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not withdraw the queued message.")); }
     finally { setSending(false); }
   };
+  const rename = async (nextTitle: string) => {
+    try { const next = await api.updateSession(sessionId, { title: nextTitle }); setSession(next.session); setError(undefined); }
+    catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not rename the session.")); }
+  };
   const setRuntimeMode = async (mode: RuntimeMode) => {
     // Not gated on `sending`: this is the brake, and a brake you cannot reach
     // while the thing is moving is not a brake.
@@ -351,7 +402,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   };
 
   return <main className="vnext-session-workspace">
-    <SessionMasthead projectId={projectId} session={session} sessionId={sessionId} active={active} sending={sending} onStop={() => void stop()} />
+    <SessionMasthead projectId={projectId} session={session} sessionId={sessionId} sending={sending} onRename={(next) => void rename(next)} />
     <div className="vnext-conversation-column">
       <div className="vnext-transcript" ref={scrollRef} onScroll={onScroll}>
         <div className="vnext-transcript__inner">

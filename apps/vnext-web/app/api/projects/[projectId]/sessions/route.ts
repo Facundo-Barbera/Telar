@@ -26,6 +26,10 @@ export async function POST(request: Request, context: Context) {
       id: optionalString(body.id, "Session id"),
       projectId,
       title: optionalString(body.title, "Session title"),
+      // Validated in the engine against the contract's own lists, so this route
+      // and an in-process caller refuse the same set.
+      ...(body.driver === "claude" || body.driver === "codex" ? { driver: body.driver } : {}),
+      ...(body.envMode === "local" || body.envMode === "worktree" ? { envMode: body.envMode } : {}),
     });
     return Response.json(result, { status: 201 });
   } catch (error) {

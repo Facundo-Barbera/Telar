@@ -3,6 +3,7 @@ import type {
   EngineEvent,
   EngineHealth,
   Project,
+  ProviderDriverKind,
   EngineRequest,
   RequestDecision,
   RuntimeMode,
@@ -62,8 +63,8 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
-    createSession: (projectId: string, title?: string) =>
-      request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, { title }),
+    createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>
+      request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, input),
     // The contract's own snapshot type, not a hand-copied structural twin: this
     // route proxies the engine verbatim, so a field the engine adds is already
     // arriving and a local re-declaration only hides it.
