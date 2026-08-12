@@ -22,6 +22,6 @@ describe("vNext session workspace presentation", () => {
       runId: "uncertain_run",
       state: "ambiguous",
       prompt: "Review this implementation",
-    })).toEqual({ runId: "uncertain_run", state: "ambiguous", text: "Review this implementation" });
+    })).toEqual({ runId: "uncertain_run", state: "ambiguous", input: "Review this implementation" });
   });
 });

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import type { EngineHealth, EngineProject, EngineSession } from "@telar/engine-client";
+import type { EngineHealth, Project, Session } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { sessionsForSelectedProject } from "@/lib/vnext/project-selection";
 
@@ -20,8 +20,8 @@ function EngineProblem({ error }: { error: VNextApiError }) {
 }
 
 export function ProjectsCockpit() {
-  const [projects, setProjects] = useState<EngineProject[]>([]);
-  const [sessions, setSessions] = useState<EngineSession[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsProjectId, setSessionsProjectId] = useState<string>();
   const [selectedId, setSelectedId] = useState<string>();
   const [health, setHealth] = useState<EngineHealth>();

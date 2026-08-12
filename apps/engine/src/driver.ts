@@ -1,20 +1,37 @@
 /**
- * Provider code is deliberately a leaf of vNext.  It receives an AbortSignal
- * and can only report text/final output; it cannot mutate project or session
- * state.  The worker returns those observations to the engine, which owns the
- * durable journal and terminal transition.
+ * Provider code is deliberately a leaf of vNext. It receives an AbortSignal and
+ * can only REPORT what it saw; it cannot mutate project or session state. The
+ * worker relays those observations to the engine, which owns the durable
+ * journal and the terminal transition.
+ *
+ * WHAT CHANGED IN v2, and it is the whole point of the protocol bump: this file
+ * used to read `text_delta` and assistant text blocks and DROP `tool_use`,
+ * `tool_result` and `thinking` on the floor. A session therefore rendered as a
+ * wall of prose with no tool timeline, no reasoning, and nothing to approve.
+ * Every surface the frozen cockpit has and `apps/vnext-web` does not was
+ * downstream of that one omission.
  */
+import crypto from "node:crypto";
+import type { ItemDetail, ItemSeed, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+
 export type DriverRun = {
   prompt: string;
   cwd: string;
   signal: AbortSignal;
-  /** Engine-owned Claude continuity token from the preceding completed turn. */
+  /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
-  onText(text: string): Promise<void>;
+  /** Batched back to the engine. Never called after the run settles. */
+  onObservations(observations: TurnObservation[]): Promise<void>;
+};
+
+export type DriverResult = {
+  text: string;
+  providerSessionId?: string;
+  usage?: UsageSnapshot;
 };
 
 export type TurnDriver = {
-  run(input: DriverRun): Promise<{ text: string; providerSessionId?: string }>;
+  run(input: DriverRun): Promise<DriverResult>;
 };
 
 export class ProviderUnavailableError extends Error {
@@ -37,29 +54,160 @@ type ClaudeSdk = {
   }): AsyncIterable<unknown>;
 };
 
+const itemId = (): string => `item_${crypto.randomUUID().replaceAll("-", "")}`;
+
+/** Trim a value for a collapsed row label without splitting a surrogate pair. */
+function oneLine(value: string, max = 120): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${[...flat].slice(0, max).join("")}…`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Map one provider tool call onto a canonical item.
+ *
+ * THE MAPPING IS BY CAPABILITY, NOT BY NAME, which is the property that lets a
+ * Claude `Bash` and a Codex `exec_command` land on the SAME row type so the UI
+ * needs one renderer rather than one per provider. An unrecognised tool becomes
+ * `dynamic_tool_call` rather than being dropped — a new provider tool should
+ * show up unstyled, never invisible.
+ */
+export function itemDetailForToolCall(name: string, input: unknown): ItemDetail {
+  const args = asRecord(input);
+  const toolInput = input === undefined ? undefined : input;
+
+  if (name === "Bash" || name === "BashOutput") {
+    return {
+      type: "command_execution",
+      command: {
+        command: str(args.command) ?? "",
+        ...(str(args.cwd) ? { cwd: str(args.cwd)! } : {}),
+      },
+    };
+  }
+  if (name === "Read" || name === "NotebookRead") {
+    return {
+      type: "file_read",
+      read: {
+        path: str(args.file_path) ?? str(args.path) ?? "(unknown)",
+        ...(typeof args.offset === "number" ? { fromLine: Math.max(1, args.offset) } : {}),
+      },
+    };
+  }
+  if (name === "Write" || name === "Edit" || name === "NotebookEdit" || name === "MultiEdit") {
+    return {
+      type: "file_change",
+      change: {
+        path: str(args.file_path) ?? str(args.path) ?? "(unknown)",
+        kind: name === "Write" ? "create" : "edit",
+      },
+    };
+  }
+  if (name === "WebSearch") {
+    return { type: "web_search", query: str(args.query) ?? "" };
+  }
+  if (name === "WebFetch") {
+    return { type: "dynamic_tool_call", call: { name, input: toolInput } };
+  }
+  if (name.startsWith("mcp__")) {
+    const [, server] = name.split("__");
+    return {
+      type: "mcp_tool_call",
+      call: { name, ...(server ? { server } : {}), input: toolInput },
+    };
+  }
+  return { type: "dynamic_tool_call", call: { name, input: toolInput } };
+}
+
+/** The collapsed label for a tool row. Derived once, here, and stored. */
+export function titleForToolCall(name: string, detail: ItemDetail): string {
+  switch (detail.type) {
+    case "command_execution":
+      return oneLine(detail.command.command) || name;
+    case "file_read":
+      return detail.read.path;
+    case "file_change":
+      return detail.change.path;
+    case "web_search":
+      return oneLine(detail.query) || name;
+    default:
+      return name;
+  }
+}
+
+/** Claude reports cumulative usage per assistant message; the result message
+ *  carries the authoritative total plus the price. */
+function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined {
+  const usage = asRecord(value);
+  const input = usage.input_tokens;
+  const output = usage.output_tokens;
+  if (typeof input !== "number" && typeof output !== "number") return undefined;
+  const n = (candidate: unknown): number => (typeof candidate === "number" && candidate >= 0 ? candidate : 0);
+  return {
+    tokens: {
+      input: n(input),
+      output: n(output),
+      cacheRead: n(usage.cache_read_input_tokens),
+      cacheCreate: n(usage.cache_creation_input_tokens),
+    },
+    ...(typeof costUsd === "number" && costUsd >= 0 ? { costUsd } : {}),
+  };
+}
+
 /**
  * Thin, injectable bridge to the locally installed Agent SDK. It does not
  * import Telar's legacy route/core execution layer and leaves approvals at the
- * SDK's normal default. A missing SDK/login is surfaced as a failure, never a
- * fabricated answer.
+ * SDK's normal default — `canUseTool` and hooks arrive in stage 2, and until
+ * they do this driver cannot open a request. A missing SDK or login is surfaced
+ * as a failure, never a fabricated answer.
  */
-export function createClaudeDriver(loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>): TurnDriver {
+export function createClaudeDriver(
+  loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
+): TurnDriver {
   return {
-    async run({ prompt, cwd, signal, onText, providerSessionId }) {
+    async run({ prompt, cwd, signal, onObservations, providerSessionId }) {
       let sdk: ClaudeSdk;
       try {
         sdk = await loadSdk();
       } catch {
-        throw new ProviderUnavailableError("Claude Agent SDK is unavailable; install and configure Claude Code before retrying");
+        throw new ProviderUnavailableError(
+          "Claude Agent SDK is unavailable; install and configure Claude Code before retrying",
+        );
       }
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
       if (signal.aborted) abort();
       else signal.addEventListener("abort", abort, { once: true });
+
       let finalText = "";
       let receivedPartialText = false;
       let reportedSessionId: string | undefined;
+      let usage: UsageSnapshot | undefined;
       let completed = false;
+
+      /** Streaming blocks keyed by the provider's content-block index. */
+      const openBlocks = new Map<number, { id: string; kind: "text" | "thinking" }>();
+      /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
+       *  row its call opened rather than opening a second one. */
+      const openTools = new Map<string, { id: string; detail: ItemDetail }>();
+
+      const pending: TurnObservation[] = [];
+      const flush = async (): Promise<void> => {
+        if (pending.length === 0) return;
+        const batch = pending.splice(0, pending.length);
+        await onObservations(batch);
+      };
+      const emit = (observation: TurnObservation): void => {
+        pending.push(observation);
+      };
+
       try {
         for await (const message of sdk.query({
           prompt,
@@ -74,42 +222,180 @@ export function createClaudeDriver(loadSdk: () => Promise<ClaudeSdk> = () => imp
           const item = message as {
             type?: string;
             subtype?: string;
-            message?: { content?: Array<{ type?: string; text?: string }> };
-            event?: { type?: string; delta?: { type?: string; text?: string } };
             session_id?: string;
+            total_cost_usd?: number;
+            usage?: unknown;
+            message?: { content?: unknown[]; usage?: unknown };
+            event?: {
+              type?: string;
+              index?: number;
+              content_block?: { type?: string };
+              delta?: { type?: string; text?: string; thinking?: string };
+            };
           };
-          if (typeof item.session_id === "string" && item.session_id) reportedSessionId = item.session_id;
+
+          if (str(item.session_id)) reportedSessionId = item.session_id;
+
           if (item.type === "result") {
-            if (item.subtype !== "success") throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
+            usage = usageFrom(item.usage, item.total_cost_usd) ?? usage;
+            if (usage) emit({ kind: "usage", usage });
+            if (item.subtype !== "success") {
+              throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
+            }
             completed = true;
+            await flush();
             continue;
           }
-          if (item.type === "stream_event" && item.event?.type === "content_block_delta" && item.event.delta?.type === "text_delta") {
-            const text = item.event.delta.text;
-            if (typeof text === "string" && text.length > 0) {
-              receivedPartialText = true;
-              finalText += text;
-              await onText(text);
+
+          // ── streaming text and reasoning ───────────────────────────────
+          if (item.type === "stream_event") {
+            const event = item.event ?? {};
+            const index = typeof event.index === "number" ? event.index : -1;
+
+            if (event.type === "content_block_start") {
+              const blockType = event.content_block?.type;
+              // TOOL BLOCKS ARE DELIBERATELY NOT OPENED HERE. Their input
+              // arrives as `input_json_delta` fragments that are only valid
+              // JSON once complete, and the assistant envelope below repeats
+              // every tool_use with its input already parsed. Opening in both
+              // places is how a row gets emitted twice.
+              if (blockType === "text" || blockType === "thinking") {
+                const id = itemId();
+                openBlocks.set(index, { id, kind: blockType });
+                emit({
+                  kind: "item.started",
+                  item: {
+                    id,
+                    detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" },
+                  },
+                });
+              }
+              continue;
+            }
+
+            if (event.type === "content_block_delta") {
+              const open = openBlocks.get(index);
+              if (!open) continue;
+              const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
+              if (typeof text !== "string" || text.length === 0) continue;
+              if (open.kind === "text") {
+                receivedPartialText = true;
+                finalText += text;
+              }
+              emit({
+                kind: "content.delta",
+                itemId: open.id,
+                stream: open.kind === "text" ? "assistant_text" : "reasoning_text",
+                text,
+              });
+              // Flush per delta: buffering streamed text defeats streaming.
+              await flush();
+              continue;
+            }
+
+            if (event.type === "content_block_stop") {
+              const open = openBlocks.get(index);
+              if (!open) continue;
+              openBlocks.delete(index);
+              emit({ kind: "item.completed", itemId: open.id, status: "completed" });
+              await flush();
             }
             continue;
           }
-          if (item.type !== "assistant") continue;
-          // With partial messages enabled the final assistant envelope repeats
-          // its content. Text emitted from it would double both the transcript
-          // and final result, so it is only our compatibility fallback.
-          if (receivedPartialText) continue;
-          for (const block of item.message?.content ?? []) {
-            if (block.type !== "text" || typeof block.text !== "string" || block.text.length === 0) continue;
-            finalText += block.text;
-            await onText(block.text);
+
+          // ── tool calls, from the complete envelope ─────────────────────
+          if (item.type === "assistant") {
+            usage = usageFrom(item.message?.usage, undefined) ?? usage;
+            for (const raw of item.message?.content ?? []) {
+              const block = asRecord(raw);
+              if (block.type === "tool_use") {
+                const name = str(block.name) ?? "tool";
+                const useId = str(block.id) ?? itemId();
+                const detail = itemDetailForToolCall(name, block.input);
+                const seed: ItemSeed = {
+                  id: `item_${useId}`,
+                  detail,
+                  title: titleForToolCall(name, detail),
+                  providerRefs: { itemId: useId },
+                };
+                openTools.set(useId, { id: seed.id, detail });
+                emit({ kind: "item.started", item: seed });
+                continue;
+              }
+              // With partial messages enabled the envelope REPEATS its text.
+              // Emitting it again would double both the transcript and the
+              // final result, so this is only the compatibility fallback for
+              // an SDK that produced no stream events at all.
+              if (block.type === "text" && !receivedPartialText) {
+                const text = str(block.text);
+                if (!text) continue;
+                finalText += text;
+                const id = itemId();
+                emit({ kind: "item.started", item: { id, detail: { type: "assistant_message", text } } });
+                emit({ kind: "item.completed", itemId: id, status: "completed" });
+              }
+            }
+            await flush();
+            continue;
+          }
+
+          // ── tool results ──────────────────────────────────────────────
+          if (item.type === "user") {
+            for (const raw of item.message?.content ?? []) {
+              const block = asRecord(raw);
+              if (block.type !== "tool_result") continue;
+              const useId = str(block.tool_use_id);
+              const open = useId ? openTools.get(useId) : undefined;
+              if (!open || !useId) continue;
+              openTools.delete(useId);
+              const failed = block.is_error === true;
+              const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
+              emit({
+                kind: "item.completed",
+                itemId: open.id,
+                status: failed ? "failed" : "completed",
+                detail: withToolOutput(open.detail, output),
+              });
+            }
+            await flush();
           }
         }
+
         if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
         if (!completed) throw new Error("Claude ended without a successful result");
-        return { text: finalText, ...(reportedSessionId ? { providerSessionId: reportedSessionId } : {}) };
+
+        // A tool whose result never arrived (the stream ended first) would
+        // otherwise sit spinning in the UI forever.
+        for (const [, open] of openTools) {
+          emit({ kind: "item.completed", itemId: open.id, status: "failed" });
+        }
+        for (const [, open] of openBlocks) {
+          emit({ kind: "item.completed", itemId: open.id, status: "completed" });
+        }
+        await flush();
+
+        return {
+          text: finalText,
+          ...(reportedSessionId ? { providerSessionId: reportedSessionId } : {}),
+          ...(usage ? { usage } : {}),
+        };
       } finally {
         signal.removeEventListener("abort", abort);
       }
     },
   };
+}
+
+/** Fold a tool's output into the detail its call opened with. */
+function withToolOutput(detail: ItemDetail, output: string): ItemDetail {
+  const preview = output.length > 4_000 ? `${output.slice(0, 4_000)}…` : output;
+  switch (detail.type) {
+    case "command_execution":
+      return { ...detail, command: { ...detail.command, outputPreview: preview } };
+    case "mcp_tool_call":
+    case "dynamic_tool_call":
+      return { ...detail, call: { ...detail.call, output: preview } };
+    default:
+      return detail;
+  }
 }

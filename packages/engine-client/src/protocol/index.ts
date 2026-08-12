@@ -22,3 +22,4 @@ export * from "./items";
 export * from "./requests";
 export * from "./tasks";
 export * from "./events";
+export * from "./observations";

@@ -64,14 +64,18 @@ describe("the package barrel", () => {
    * THE TRAP THIS PINS, because it is invisible to both tsc and a reading of
    * the source: when two modules reachable through `export *` export the same
    * NAME, ES semantics resolve the ambiguity by OMITTING the name — no error,
-   * no warning, just `undefined` at every call site. v1 and v2 share nine
-   * names, and `events.ts` briefly re-exported entity schemas that
-   * `entities.ts` already exported.
+   * no warning, just `undefined` at every call site.
+   *
+   * It bit twice. `events.ts` briefly re-exported the entity schemas that
+   * `entities.ts` already exported; and during the cutover v1 and v2 coexisted
+   * sharing NINE names, which is why v2 was namespaced until v1 was deleted.
+   * v1 is gone now and v2 is the package root — this asserts the root really
+   * carries it rather than silently carrying nothing.
    */
-  test("v2 is namespaced so v1's nine shared names are not silently dropped", () => {
-    expect(packageRoot.protocol.ENGINE_PROTOCOL_VERSION).toBe(2);
-    // v1's value is still reachable and still says 1 — the two coexist.
-    expect(packageRoot.ENGINE_PROTOCOL_VERSION).toBe(1);
+  test("the protocol is exported from the package root, not swallowed by a name clash", () => {
+    expect(packageRoot.ENGINE_PROTOCOL_VERSION).toBe(2);
+    expect(typeof packageRoot.EngineEvent?.safeParse).toBe("function");
+    expect(typeof packageRoot.autoResolution).toBe("function");
   });
 
   test("every entity schema survives the barrel", () => {

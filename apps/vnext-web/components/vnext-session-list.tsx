@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { EngineProject, EngineSession } from "@telar/engine-client";
+import type { Project, Session } from "@telar/engine-client";
 import { Icon } from "./vnext-icons";
 
 export type SessionFilter = "recent" | "active" | "all";
@@ -12,8 +12,8 @@ export function VNextSessionList({
   projects, sessions, activeSessionId, filter, query,
   onNavigate,
 }: {
-  projects: EngineProject[];
-  sessions: EngineSession[];
+  projects: Project[];
+  sessions: Session[];
   activeSessionId?: string;
   filter: SessionFilter;
   query: string;

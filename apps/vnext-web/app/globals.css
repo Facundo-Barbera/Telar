@@ -141,6 +141,28 @@ p { line-height: 1.5; }
 .vnext-conversation-turn__answer { width: 100%; padding: 4px 2px; }
 .vnext-conversation-turn__answer > p { max-width: 690px; font-size: 14px; line-height: 1.7; }
 .vnext-turn-failure { margin-top: 9px !important; border-left: 2px solid var(--v-danger); padding: 7px 10px; background: color-mix(in oklab, var(--v-danger) 5%, var(--v-surface)); color: var(--v-danger); font-size: 12px !important; }
+
+/* ── protocol v2 timeline ──────────────────────────────────────────────────
+   Tool calls and reasoning are COLLAPSED BY DEFAULT. A turn that ran forty
+   tools is unreadable expanded, and the label is what a reader scans. */
+.vnext-timeline { display: flex; flex-direction: column; gap: 6px; }
+.vnext-timeline:empty { display: none; }
+
+.vnext-tool-item { border: 1px solid var(--v-border); border-radius: 6px; background: var(--v-surface); font-size: 12px; }
+.vnext-tool-item > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
+.vnext-tool-item > summary::-webkit-details-marker { display: none; }
+.vnext-tool-item__kind { flex: none; color: var(--v-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.vnext-tool-item__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); }
+.vnext-tool-item__status { flex: none; color: var(--v-muted); font-size: 11px; }
+.vnext-tool-item__status[data-status="failed"] { color: var(--v-danger); }
+/* A running row is the one thing that must read at a glance while streaming. */
+.vnext-tool-item[data-status="inProgress"] { border-color: color-mix(in oklab, var(--v-accent, var(--v-border)) 45%, var(--v-border)); }
+.vnext-tool-item[data-status="failed"] { border-color: color-mix(in oklab, var(--v-danger) 35%, var(--v-border)); }
+.vnext-tool-item__body { margin: 0; border-top: 1px solid var(--v-border); padding: 8px 9px; max-height: 320px; overflow: auto; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.vnext-reasoning-item { font-size: 12px; color: var(--v-muted); }
+.vnext-reasoning-item > summary { cursor: pointer; padding: 2px 0; }
+.vnext-reasoning-item > p { margin: 4px 0 0; padding-left: 10px; border-left: 2px solid var(--v-border); white-space: pre-wrap; overflow-wrap: anywhere; }
 .vnext-recovery { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in oklab, var(--v-warning) 35%, var(--v-line)); border-radius: 9px; padding: 10px 12px; background: color-mix(in oklab, var(--v-warning) 4%, var(--v-surface)); }
 .vnext-recovery strong { font-size: 12px; }
 .vnext-recovery p { max-width: 480px; margin: 3px 0 0; color: var(--v-quiet); font-size: 11px; }

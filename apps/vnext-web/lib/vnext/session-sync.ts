@@ -1,7 +1,7 @@
-import type { EngineEvent, EngineSession, EngineTurn } from "@telar/engine-client";
+import type { EngineEvent, Item, Session, Turn } from "@telar/engine-client";
 import { appendJournalEvents, journalCursor } from "./journal";
 
-type SessionSnapshot = { session: EngineSession; turns: EngineTurn[] };
+type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[] };
 
 export type SessionSyncApi = {
   session(sessionId: string): Promise<SessionSnapshot>;
@@ -11,10 +11,28 @@ export type SessionSyncApi = {
 export type HydratedSession = SessionSnapshot & { events: EngineEvent[]; cursor: number };
 
 /** Every event that changes the durable queue needs its companion snapshot. */
+const QUEUE_CHANGING_EVENTS = new Set<EngineEvent["type"]>([
+  "turn.accepted",
+  "turn.requeued",
+  "turn.claimed",
+  "turn.started",
+  "turn.completed",
+  "turn.failed",
+  "turn.stopped",
+  "turn.ambiguous",
+  "turn.discarded",
+]);
+
+/**
+ * Every event that changes the durable queue needs its companion snapshot.
+ *
+ * ITEM AND DELTA EVENTS ARE DELIBERATELY ABSENT from this set. They are the
+ * high-frequency half of v2 — a streaming turn emits one per token — and the
+ * fold applies them directly. Refetching a snapshot per delta would turn
+ * streaming into a request storm for information the event already carried.
+ */
 export function needsSessionSnapshot(events: EngineEvent[]): boolean {
-  return events.some((event) =>
-    event.type === "turn.accepted" || event.type === "turn.requeued" || event.type === "turn.claimed" || event.type === "turn.running" || event.type === "turn.final" || event.type === "turn.error" || event.type === "turn.stopped" || event.type === "turn.ambiguous" || event.type === "turn.discarded",
-  );
+  return events.some((event) => QUEUE_CHANGING_EVENTS.has(event.type));
 }
 
 /**

@@ -1,23 +1,21 @@
 import type {
+  EngineErrorCode,
   EngineEvent,
   EngineHealth,
-  EngineProject,
-  EngineSession,
-  EngineTurn,
+  Item,
+  Project,
+  Session,
+  Turn,
   TurnSubmissionResult,
 } from "@telar/engine-client";
 
-export type VNextErrorCode =
-  | "engine_unavailable"
-  | "engine_unauthorized"
-  | "engine_locked"
-  | "invalid_request"
-  | "not_found"
-  | "conflict"
-  | "worker_unavailable"
-  | "provider_unavailable"
-  | "driver_failed"
-  | "internal_error";
+/**
+ * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten
+ * hand-written literals that had to be kept in step with the engine's own
+ * `EngineErrorCode` by hand — and when v2 added `protocol_mismatch`, the copy
+ * here was the thing that went stale. An alias cannot.
+ */
+export type VNextErrorCode = EngineErrorCode;
 
 export class VNextApiError extends Error {
   constructor(readonly code: VNextErrorCode, message: string, readonly status?: number) {
@@ -56,23 +54,23 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
 export function createVNextApi(fetcher: Fetcher = fetch) {
   return {
     health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
-    projects: () => request<{ projects: EngineProject[] }>(fetcher, "GET", "/api/projects"),
+    projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
-      request<{ project: EngineProject }>(fetcher, "POST", "/api/projects", input),
+      request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     sessions: (projectId: string) =>
-      request<{ sessions: EngineSession[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
+      request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, title?: string) =>
-      request<{ session: EngineSession }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, { title }),
+      request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, { title }),
     session: (sessionId: string) =>
-      request<{ session: EngineSession; turns: EngineTurn[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+      request<{ session: Session; turns: Turn[]; items: Item[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
     events: (sessionId: string, after: number) =>
-      request<{ events: EngineEvent[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
-    submitTurn: (sessionId: string, input: { runId: string; text: string }) =>
+      request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
+    submitTurn: (sessionId: string, input: { runId: string; input: string }) =>
       request<TurnSubmissionResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns`, input),
     stopTurn: (sessionId: string, runId?: string) =>
-      request<{ turn?: EngineTurn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
+      request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
-      request<{ turn: EngineTurn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
   };
 }
 
@@ -91,7 +89,7 @@ type VNextTurnApi = Pick<ReturnType<typeof createVNextApi>, "discardAmbiguousTur
 export async function retryAmbiguousTurn(
   api: VNextTurnApi,
   sessionId: string,
-  turn: Pick<EngineTurn, "runId" | "state" | "text">,
+  turn: Pick<Turn, "runId" | "state" | "input">,
   createRunId: () => string = newVNextRunId,
 ): Promise<TurnSubmissionResult> {
   if (turn.state !== "ambiguous") {
@@ -102,5 +100,5 @@ export async function retryAmbiguousTurn(
   if (runId === turn.runId) {
     throw new VNextApiError("conflict", "Retry must use a fresh run id.");
   }
-  return api.submitTurn(sessionId, { runId, text: turn.text });
+  return api.submitTurn(sessionId, { runId, input: turn.input });
 }

@@ -6,7 +6,61 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { EngineEvent, EngineProject, EngineSession, EngineTurn, TurnState } from "@telar/engine-client";
+import {
+  DEFAULT_ATTENDED_RUNTIME_MODE,
+  DEFAULT_DETACHED_RUNTIME_MODE,
+  Item as ItemSchema,
+  Project as ProjectSchema,
+  Session as SessionSchema,
+  Turn as TurnSchema,
+  TurnObservation as TurnObservationSchema,
+  type EngineEvent,
+  type Item,
+  type Project,
+  type Session,
+  type Turn,
+  type TurnFailureCode,
+  type TurnObservation,
+  type UsageSnapshot,
+  type WorkerClaim,
+} from "@telar/engine-client";
+
+/**
+ * A journal record before the engine stamps its envelope.
+ *
+ * Derived from `EngineEvent` by REMOVING the four fields only the engine may
+ * assign, so `appendEvent` cannot be handed an id or a sessionId and the union
+ * still narrows on `type`. Writing this as a hand-maintained second union would
+ * be one more shape to keep in sync with the contract.
+ *
+ * THE `T extends unknown` IS NOT DECORATION — it is what makes the omit
+ * DISTRIBUTE. A bare `Omit<EngineEvent, …>` collapses a discriminated union
+ * into a single object type whose only surviving members are the keys every
+ * variant shares, which here is `type` alone. The result still compiles and
+ * still looks right; it simply rejects every payload field with "does not exist
+ * in type JournalEntry". Measured, not theorised: it rejected all eleven call
+ * sites below before the conditional was added.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+type JournalEntry = DistributiveOmit<EngineEvent, "id" | "at" | "sessionId" | "runId">;
+
+type TurnFailure = { code: TurnFailureCode; message: string };
+
+/**
+ * WHICH FAILURES A WORKER MAY REPORT — a strict subset of `TurnFailureCode`.
+ * `cancelled` is the engine's own word for a stop it already recorded, and
+ * `internal_error` is the engine's; a worker claiming either would let a
+ * provider crash masquerade as a control-plane decision.
+ */
+const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "driver_failed", "budget_exhausted"]);
+
+/**
+ * The provider instance a session gets until the account registry is wired in
+ * (stage 4). Named rather than inlined so the seam is greppable: routing is by
+ * instance id in the contract, and this is the one place still assuming there
+ * is exactly one.
+ */
+const DEFAULT_PROVIDER_INSTANCE_ID = "claude:default";
 
 const ID = /^[A-Za-z0-9_-]+$/;
 const MAX_TEXT_LENGTH = 200_000;
@@ -116,11 +170,33 @@ function atomicWrite(file: string, value: unknown, mode = 0o600): void {
   }
 }
 
-type ProjectRegistry = { version: 1; projects: EngineProject[] };
-type SessionQueue = { version: 1; sessionId: string; nextSequence: number; turns: EngineTurn[] };
+/**
+ * DOCUMENT VERSIONS TRACK THE PROTOCOL, and v2 is a HARD BREAK: a v1 document
+ * is not readable and is not migrated. `storedVersion` exists only so the
+ * failure names itself — a raw zod error on a v1 queue would read as
+ * corruption, and an operator would reasonably suspect their disk rather than
+ * the version bump. The dogfood home is throwaway state by design.
+ */
+const STATE_VERSION = 2 as const;
 
-const emptyRegistry = (): ProjectRegistry => ({ version: 1, projects: [] });
-const emptyQueue = (sessionId: string): SessionQueue => ({ version: 1, sessionId, nextSequence: 1, turns: [] });
+type ProjectRegistry = { version: typeof STATE_VERSION; projects: Project[] };
+type SessionQueue = { version: typeof STATE_VERSION; sessionId: string; nextSequence: number; turns: Turn[] };
+
+const emptyRegistry = (): ProjectRegistry => ({ version: STATE_VERSION, projects: [] });
+const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSION, sessionId, nextSequence: 1, turns: [] });
+
+function assertStateVersion(value: unknown, document: string): void {
+  const version = (value as { version?: unknown } | null)?.version;
+  if (version === STATE_VERSION) return;
+  if (version === 1) {
+    throw new EngineStateError(
+      "invalid_request",
+      `this ${document} was written by protocol v1, which vNext no longer reads. ` +
+        `v2 is a deliberate hard break with no migration — clear the vNext state root (TELAR_HOME/vnext) and start fresh.`,
+    );
+  }
+  throw new EngineStateError("invalid_request", `invalid vNext ${document}`);
+}
 
 function latestProviderSessionId(queue: SessionQueue): string | undefined {
   return queue.turns
@@ -128,74 +204,43 @@ function latestProviderSessionId(queue: SessionQueue): string | undefined {
     .sort((left, right) => right.sequence - left.sequence)[0]?.providerSessionId;
 }
 
+/**
+ * PARSING IS THE SCHEMAS' JOB NOW. v1 hand-rolled every one of these checks and
+ * each was a place the type and the validator could drift; the whole reason
+ * `packages/engine-client` took a zod dependency is that there is exactly one
+ * definition per shape and the TypeScript type is derived from it.
+ */
 function parseRegistry(value: unknown): ProjectRegistry {
-  const registry = value as Partial<ProjectRegistry> | null;
-  if (!registry || registry.version !== 1 || !Array.isArray(registry.projects)) {
-    throw new Error("invalid vNext project registry");
-  }
-  for (const project of registry.projects) {
-    assertId(project.id, "project id");
-    assertAbsolutePath(project.root, "project root");
-    if (typeof project.name !== "string" || project.name.trim() === "") throw new Error("invalid project name");
-    if (!Number.isFinite(project.createdAt) || !Number.isFinite(project.updatedAt)) throw new Error("invalid project timestamp");
-  }
-  return registry as ProjectRegistry;
+  assertStateVersion(value, "project registry");
+  const projects = ProjectSchema.array().safeParse((value as { projects?: unknown }).projects);
+  if (!projects.success) throw new EngineStateError("invalid_request", "invalid vNext project registry");
+  for (const project of projects.data) assertAbsolutePath(project.root, "project root");
+  return { version: STATE_VERSION, projects: projects.data };
 }
 
-function parseSession(value: unknown): EngineSession {
-  const session = value as Partial<EngineSession> | null;
-  if (
-    !session ||
-    typeof session.id !== "string" ||
-    typeof session.projectId !== "string" ||
-    typeof session.title !== "string" ||
-    !Number.isFinite(session.createdAt) ||
-    !Number.isFinite(session.updatedAt) ||
-    !session.provider ||
-    session.provider.kind !== "claude" ||
-    (session.provider.sessionId !== undefined && (typeof session.provider.sessionId !== "string" || !session.provider.sessionId.trim()))
-  ) {
-    throw new Error("invalid vNext session metadata");
-  }
-  assertId(session.id, "session id");
-  assertId(session.projectId, "project id");
-  return session as EngineSession;
-}
-
-function isTurnState(value: unknown): value is TurnState {
-  return (
-    value === "queued" ||
-    value === "claimed" ||
-    value === "running" ||
-    value === "completed" ||
-    value === "failed" ||
-    value === "stopped" ||
-    value === "ambiguous" ||
-    value === "discarded"
-  );
+function parseSession(value: unknown): Session {
+  const session = SessionSchema.safeParse(value);
+  if (!session.success) throw new EngineStateError("invalid_request", "invalid vNext session metadata");
+  assertId(session.data.id, "session id");
+  assertId(session.data.projectId, "project id");
+  return session.data;
 }
 
 function parseQueue(value: unknown, sessionId: string): SessionQueue {
-  const queue = value as Partial<SessionQueue> | null;
-  if (
-    !queue ||
-    queue.version !== 1 ||
-    queue.sessionId !== sessionId ||
-    !Number.isSafeInteger(queue.nextSequence) ||
-    !Array.isArray(queue.turns)
-  ) {
-    throw new Error("invalid vNext session queue");
+  assertStateVersion(value, "session queue");
+  const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
+  if (stored.sessionId !== sessionId || !Number.isSafeInteger(stored.nextSequence)) {
+    throw new EngineStateError("invalid_request", "invalid vNext session queue");
   }
+  const turns = TurnSchema.array().safeParse(stored.turns);
+  if (!turns.success) throw new EngineStateError("invalid_request", "invalid vNext session queue");
   const ids = new Set<string>();
-  for (const turn of queue.turns) {
+  for (const turn of turns.data) {
     assertId(turn.runId, "run id");
-    if (ids.has(turn.runId)) throw new Error("duplicate vNext turn id");
+    if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate vNext turn id");
     ids.add(turn.runId);
-    assertText(turn.text);
-    if (!isTurnState(turn.state) || !Number.isSafeInteger(turn.sequence)) throw new Error("invalid vNext turn state");
-    if (!Number.isFinite(turn.acceptedAt) || !Number.isFinite(turn.updatedAt)) throw new Error("invalid vNext turn timestamp");
   }
-  return queue as SessionQueue;
+  return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: turns.data };
 }
 
 function sessionDir(paths: EngineStatePaths, sessionId: string): string {
@@ -216,6 +261,10 @@ function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
 
 function eventsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "events.ndjson");
+}
+
+function itemsFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "items.json");
 }
 
 function readJson(file: string): unknown | undefined {
@@ -278,12 +327,12 @@ export class EngineStore {
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
   }
 
-  listProjects(): EngineProject[] {
+  listProjects(): Project[] {
     const registry = readJson(this.paths.projects);
     return registry === undefined ? [] : structuredClone(parseRegistry(registry).projects);
   }
 
-  registerProject(input: { id?: string; name: string; root: string }): EngineProject {
+  registerProject(input: { id?: string; name: string; root: string }): Project {
     if (input.id !== undefined) assertId(input.id, "project id");
     if (typeof input.name !== "string" || input.name.trim() === "") {
       throw new EngineStateError("invalid_request", "project name must be non-empty");
@@ -305,22 +354,29 @@ export class EngineStore {
       throw new EngineStateError("conflict", "project id or root is already registered");
     }
     const at = this.now();
-    const project: EngineProject = { id, name: input.name.trim(), root: projectRoot, createdAt: at, updatedAt: at };
+    const project: Project = {
+      id,
+      environmentId: "local",
+      name: input.name.trim(),
+      root: projectRoot,
+      createdAt: at,
+      updatedAt: at,
+    };
     parsed.projects.push(project);
     atomicWrite(this.paths.projects, parsed);
     return structuredClone(project);
   }
 
-  getProject(projectId: string): EngineProject {
+  getProject(projectId: string): Project {
     assertId(projectId, "project id");
     const project = this.listProjects().find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
     return project;
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string }): EngineSession {
+  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
-    this.getProject(input.projectId);
+    const project = this.getProject(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = readJson(metadata);
@@ -330,27 +386,40 @@ export class EngineStore {
       throw new EngineStateError("conflict", "session id is already owned by another project");
     }
     const at = this.now();
-    const session: EngineSession = {
+    // Detached is the DEFAULT POSTURE, not a mode a caller opts into: the
+    // engine never requires a client to be connected. `detached` only decides
+    // what happens when a request opens with nobody home, and the two defaults
+    // come from the contract rather than being re-picked here.
+    const detached = input.detached ?? true;
+    const session: Session = {
       id,
       projectId: input.projectId,
+      environmentId: "local",
       title: input.title?.trim() || "New session",
+      state: "active",
       createdAt: at,
       updatedAt: at,
-      provider: { kind: "claude" },
+      providerInstanceId: DEFAULT_PROVIDER_INSTANCE_ID,
+      driver: "claude",
+      workspace: { mode: "local", path: project.root },
+      envMode: "local",
+      runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
+      interactionMode: "default",
+      detached,
     };
     atomicWrite(metadata, session);
     atomicWrite(sessionQueueFile(this.paths, id), emptyQueue(id));
-    this.appendEvent(id, "session.created", { projectId: session.projectId });
+    this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
   }
 
-  getSession(sessionId: string): EngineSession {
+  getSession(sessionId: string): Session {
     const stored = readJson(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
     return structuredClone(parseSession(stored));
   }
 
-  listSessions(projectId: string): EngineSession[] {
+  listSessions(projectId: string): Session[] {
     this.getProject(projectId);
     let entries: fs.Dirent[];
     try {
@@ -373,19 +442,24 @@ export class EngineStore {
       .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
   }
 
-  turns(sessionId: string): EngineTurn[] {
+  turns(sessionId: string): Turn[] {
     this.getSession(sessionId);
     return structuredClone(this.readQueue(sessionId).turns);
   }
 
-  submitTurn(sessionId: string, input: { runId: string; text: string }): { turn: EngineTurn; replayed: boolean } {
+  items(sessionId: string): Item[] {
+    this.getSession(sessionId);
+    return structuredClone([...this.readItems(sessionId).values()]);
+  }
+
+  submitTurn(sessionId: string, input: { runId: string; input: string }): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
-    assertText(input.text);
+    assertText(input.input);
     this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const known = queue.turns.find((turn) => turn.runId === input.runId);
     if (known) {
-      if (known.text !== input.text) throw new EngineStateError("conflict", "run id was already submitted with different text");
+      if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
     if (queue.turns.some((turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running")) {
@@ -395,10 +469,11 @@ export class EngineStore {
       throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
     }
     const at = this.now();
-    const turn: EngineTurn = {
+    const turn: Turn = {
       runId: input.runId,
+      sessionId,
       sequence: queue.nextSequence++,
-      text: input.text,
+      input: input.input,
       state: "queued",
       acceptedAt: at,
       updatedAt: at,
@@ -406,11 +481,13 @@ export class EngineStore {
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.accepted", { sequence: turn.sequence }, turn.runId);
+    // v1 emitted only `{ sequence }` here, which is why the client had to fetch
+    // a snapshot to learn the prompt. The whole turn rides the event now.
+    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
     return { turn: structuredClone(turn), replayed: false };
   }
 
-  claimTurn(sessionId: string, workerId: string): EngineTurn | undefined {
+  claimTurn(sessionId: string, workerId: string): Turn | undefined {
     assertId(workerId, "worker id");
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
@@ -422,21 +499,30 @@ export class EngineStore {
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.claimed", { workerId }, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.claimed", workerId }, turn.runId);
     return structuredClone(turn);
   }
 
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
-  claimNextTurn(workerId: string): { sessionId: string; projectRoot: string; provider: EngineSession["provider"]; turn: EngineTurn } | undefined {
+  claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");
     for (const session of this.allSessions().sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))) {
       const turn = this.claimTurn(session.id, workerId);
-      if (turn) return { sessionId: session.id, projectRoot: this.getProject(session.projectId).root, provider: this.providerForSession(session), turn };
+      if (!turn) continue;
+      const resumeCursor = this.resumeCursorFor(session);
+      return {
+        sessionId: session.id,
+        projectRoot: session.workspace.path,
+        driver: session.driver,
+        providerInstanceId: session.providerInstanceId,
+        ...(resumeCursor ? { resumeCursor } : {}),
+        turn,
+      };
     }
     return undefined;
   }
 
-  markRunning(sessionId: string, runId: string, claimToken: string): EngineTurn {
+  markRunning(sessionId: string, runId: string, claimToken: string): Turn {
     const queue = this.readQueue(sessionId);
     const turn = queue.turns.find((candidate) => candidate.runId === runId);
     if (!turn) throw new EngineStateError("not_found", "turn does not exist");
@@ -445,21 +531,42 @@ export class EngineStore {
     }
     const at = this.now();
     turn.state = "running";
+    turn.startedAt = at;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.running", {}, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
     return structuredClone(turn);
   }
 
-  appendText(sessionId: string, runId: string, claimToken: string, text: string): void {
-    assertStreamText(text);
+  /**
+   * Journal what a worker saw.
+   *
+   * THE WORKER MINTS NOTHING DURABLE. It supplies item ids that are unique
+   * within its turn and opaque here; this method stamps ownership, assigns the
+   * monotonic event id, and is the only writer. A batch is validated in full
+   * BEFORE any of it is appended, so a malformed tail cannot leave half a
+   * provider message in the journal.
+   */
+  ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
     const turn = this.requireRunningClaim(sessionId, runId, claimToken);
-    this.appendEvent(sessionId, "turn.text", { text }, turn.runId);
+    const parsed = TurnObservationSchema.array().safeParse(observations);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
+    const items = this.readItems(sessionId);
+    for (const observation of parsed.data) {
+      this.journalObservation(sessionId, turn, observation, items);
+    }
+    this.writeItems(sessionId, items);
+    return { accepted: parsed.data.length };
   }
 
-  completeTurn(sessionId: string, runId: string, claimToken: string, text: string, providerSessionId?: string): EngineTurn {
-    if (typeof text !== "string" || text.length > MAX_TEXT_LENGTH) {
+  completeTurn(
+    sessionId: string,
+    runId: string,
+    claimToken: string,
+    input: { text: string; providerSessionId?: string; usage?: UsageSnapshot },
+  ): Turn {
+    if (typeof input.text !== "string" || input.text.length > MAX_TEXT_LENGTH) {
       throw new EngineStateError("invalid_request", "final text exceeds the allowed size");
     }
     const queue = this.readQueue(sessionId);
@@ -468,16 +575,26 @@ export class EngineStore {
     turn.state = "completed";
     turn.completedAt = at;
     turn.updatedAt = at;
-    turn.result = { text };
-    if (providerSessionId !== undefined) {
-      if (typeof providerSessionId !== "string" || !providerSessionId.trim() || providerSessionId.length > 4_000) {
+    turn.resultText = input.text;
+    if (input.usage !== undefined) turn.usage = input.usage;
+    if (input.providerSessionId !== undefined) {
+      if (typeof input.providerSessionId !== "string" || !input.providerSessionId.trim() || input.providerSessionId.length > 4_000) {
         throw new EngineStateError("invalid_request", "provider session id is invalid");
       }
-      turn.providerSessionId = providerSessionId;
+      turn.providerSessionId = input.providerSessionId;
     }
     this.writeQueue(sessionId, queue);
-    this.touchSession(sessionId, at, providerSessionId);
-    this.appendEvent(sessionId, "turn.final", { text }, turn.runId);
+    this.touchSession(sessionId, at, input.providerSessionId);
+    this.appendEvent(
+      sessionId,
+      {
+        type: "turn.completed",
+        resultText: input.text,
+        ...(input.usage ? { usage: input.usage } : {}),
+        ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
+      },
+      turn.runId,
+    );
     return structuredClone(turn);
   }
 
@@ -485,25 +602,25 @@ export class EngineStore {
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: "provider_unavailable" | "driver_failed"; message: string },
-  ): EngineTurn {
-    if ((failure.code !== "provider_unavailable" && failure.code !== "driver_failed") || typeof failure.message !== "string" || !failure.message.trim()) {
+    failure: { code: TurnFailure["code"]; message: string },
+  ): Turn {
+    if (!TURN_FAILURE_CODES.has(failure.code) || typeof failure.message !== "string" || !failure.message.trim()) {
       throw new EngineStateError("invalid_request", "turn failure is invalid");
     }
     const queue = this.readQueue(sessionId);
     const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const at = this.now();
     turn.state = "failed";
-    turn.failedAt = at;
+    turn.completedAt = at;
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.error", turn.failure, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     return structuredClone(turn);
   }
 
-  stopTurn(sessionId: string, requestedRunId?: string): { turn?: EngineTurn; stopped: boolean } {
+  stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
     const queue = this.readQueue(sessionId);
     const turn = requestedRunId
       ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
@@ -513,11 +630,11 @@ export class EngineStore {
     if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running") return { turn: structuredClone(turn), stopped: false };
     const at = this.now();
     turn.state = "stopped";
-    turn.stoppedAt = at;
+    turn.completedAt = at;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.stopped", {}, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     return { turn: structuredClone(turn), stopped: true };
   }
 
@@ -526,7 +643,7 @@ export class EngineStore {
    * replayed or deleted.  A human must make this one-way decision before the
    * session can accept fresh work.
    */
-  discardAmbiguousTurn(sessionId: string, runId: string): EngineTurn {
+  discardAmbiguousTurn(sessionId: string, runId: string): Turn {
     assertId(runId, "run id");
     const queue = this.readQueue(sessionId);
     const turn = queue.turns.find((candidate) => candidate.runId === runId);
@@ -536,13 +653,13 @@ export class EngineStore {
     }
     const at = this.now();
     turn.state = "discarded";
-    turn.discardedAt = at;
+    turn.completedAt = at;
     turn.updatedAt = at;
     // The stale worker claim must not remain usable after human resolution.
     delete turn.claim;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
-    this.appendEvent(sessionId, "turn.discarded", { decision: "discarded" }, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
     return structuredClone(turn);
   }
 
@@ -564,10 +681,10 @@ export class EngineStore {
       // `queue.json` is written before `session.json` when a turn completes.
       // If the process dies in that tiny interval, the terminal turn remains
       // the durable source of truth. Repair metadata on startup before any
-      // new claim can decide whether to resume a Claude conversation.
+      // new claim can decide whether to resume a provider conversation.
       let metadataChanged = false;
-      if (!session.provider.sessionId && recoveredProviderSessionId) {
-        session.provider.sessionId = recoveredProviderSessionId;
+      if (!session.resumeCursor && recoveredProviderSessionId) {
+        session.resumeCursor = recoveredProviderSessionId;
         session.updatedAt = at;
         metadataChanged = true;
       }
@@ -581,7 +698,6 @@ export class EngineStore {
           changed = true;
         } else if (turn.state === "running") {
           turn.state = "ambiguous";
-          turn.ambiguousAt = at;
           turn.updatedAt = at;
           ambiguous.push(turn.runId);
           recoveryEvents.push({ type: "turn.ambiguous", runId: turn.runId });
@@ -597,7 +713,7 @@ export class EngineStore {
       }
       if (changed) {
         for (const event of recoveryEvents) {
-          this.appendEvent(session.id, event.type, { reason: "engine_restart" }, event.runId);
+          this.appendEvent(session.id, { type: event.type, reason: "engine_restart" }, event.runId);
         }
       }
     }
@@ -620,14 +736,13 @@ export class EngineStore {
           delete turn.claim;
           turn.updatedAt = at;
           requeued.push(turn.runId);
-          this.appendEvent(session.id, "turn.requeued", { reason: "worker_unavailable" }, turn.runId);
+          this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, turn.runId);
           changed = true;
         } else if (turn.state === "running") {
           turn.state = "ambiguous";
-          turn.ambiguousAt = at;
           turn.updatedAt = at;
           ambiguous.push(turn.runId);
-          this.appendEvent(session.id, "turn.ambiguous", { reason: "worker_unavailable" }, turn.runId);
+          this.appendEvent(session.id, { type: "turn.ambiguous", reason: "worker_unavailable" }, turn.runId);
           changed = true;
         }
       }
@@ -650,7 +765,7 @@ export class EngineStore {
     );
   }
 
-  private allSessions(): EngineSession[] {
+  private allSessions(): Session[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
@@ -673,11 +788,11 @@ export class EngineStore {
     atomicWrite(sessionQueueFile(this.paths, sessionId), queue);
   }
 
-  private requireRunningClaim(sessionId: string, runId: string, claimToken: string): EngineTurn {
+  private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {
     return this.requireRunningClaimFromQueue(this.readQueue(sessionId), runId, claimToken);
   }
 
-  private requireRunningClaimFromQueue(queue: SessionQueue, runId: string, claimToken: string): EngineTurn {
+  private requireRunningClaimFromQueue(queue: SessionQueue, runId: string, claimToken: string): Turn {
     assertId(runId, "run id");
     if (typeof claimToken !== "string" || claimToken.length < 16) {
       throw new EngineStateError("invalid_request", "claim token is invalid");
@@ -690,35 +805,116 @@ export class EngineStore {
     return turn;
   }
 
-  private touchSession(sessionId: string, at: number, providerSessionId?: string): void {
+  private touchSession(sessionId: string, at: number, resumeCursor?: string): void {
     const session = this.getSession(sessionId);
     session.updatedAt = at;
-    if (providerSessionId !== undefined) session.provider.sessionId = providerSessionId;
+    if (resumeCursor !== undefined) session.resumeCursor = resumeCursor;
     atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
   }
 
   /** Prefer metadata, but let a completed durable turn heal an interrupted metadata write. */
-  private providerForSession(session: EngineSession): EngineSession["provider"] {
-    if (session.provider.sessionId) return session.provider;
-    const providerSessionId = latestProviderSessionId(this.readQueue(session.id));
-    if (!providerSessionId) return session.provider;
-    const provider = { ...session.provider, sessionId: providerSessionId };
-    session.provider = provider;
+  private resumeCursorFor(session: Session): string | undefined {
+    if (session.resumeCursor) return session.resumeCursor;
+    const recovered = latestProviderSessionId(this.readQueue(session.id));
+    if (!recovered) return undefined;
+    session.resumeCursor = recovered;
     session.updatedAt = this.now();
     atomicWrite(sessionMetadataFile(this.paths, session.id), session);
-    return provider;
+    return recovered;
   }
 
-  private appendEvent(sessionId: string, type: EngineEvent["type"], data: Record<string, unknown>, runId?: string): EngineEvent {
+  /**
+   * Items are a PROJECTION the engine maintains beside the journal, not a
+   * second source of truth: `items.json` could be rebuilt by replaying
+   * `item.*` events from zero. It exists so opening a long session does not
+   * require that replay, which is the same reason `queue.json` exists beside
+   * `turn.*`.
+   */
+  private readItems(sessionId: string): Map<string, Item> {
+    const stored = readJson(itemsFile(this.paths, sessionId));
+    if (stored === undefined) return new Map();
+    const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext item projection");
+    return new Map(parsed.data.map((item) => [item.id, item]));
+  }
+
+  private writeItems(sessionId: string, items: Map<string, Item>): void {
+    atomicWrite(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+  }
+
+  /** One observation → at most one journal record, plus its projection edit. */
+  private journalObservation(sessionId: string, turn: Turn, observation: TurnObservation, items: Map<string, Item>): void {
+    const at = this.now();
+    if (observation.kind === "usage") {
+      this.appendEvent(sessionId, { type: "usage.updated", usage: observation.usage }, turn.runId);
+      return;
+    }
+    if (observation.kind === "content.delta") {
+      // Deltas do NOT touch the projection. An item's stored text is filled in
+      // by the `item.completed` that closes it; folding every token into
+      // items.json would rewrite the whole document per token.
+      if (!items.has(observation.itemId)) return;
+      this.appendEvent(
+        sessionId,
+        { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
+        turn.runId,
+      );
+      return;
+    }
+    if (observation.kind === "item.completed") {
+      const existing = items.get(observation.itemId);
+      if (!existing) return;
+      const item: Item = {
+        ...existing,
+        status: observation.status,
+        completedAt: at,
+        ...(observation.detail ? { detail: observation.detail } : {}),
+      };
+      items.set(item.id, item);
+      this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
+      return;
+    }
+    const seed = observation.item;
+    const started = observation.kind === "item.started";
+    const item: Item = {
+      id: seed.id,
+      runId: turn.runId,
+      sessionId,
+      status: "inProgress",
+      detail: seed.detail,
+      startedAt: started ? at : (items.get(seed.id)?.startedAt ?? at),
+      ...(seed.title ? { title: seed.title } : {}),
+      ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
+    };
+    items.set(item.id, item);
+    this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
+  }
+
+  /**
+   * The single journal writer.
+   *
+   * TAKES A FULLY-FORMED EVENT MINUS ITS ENVELOPE, which is the v2 change: v1
+   * took `(type, data)` where `data` was `Record<string, unknown>`, so nothing
+   * checked that a `turn.text` actually carried text. The parameter type is the
+   * discriminated union with the engine-assigned fields removed, so a mistyped
+   * payload fails at compile time here rather than at a client's call site.
+   */
+  private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
     const file = eventsFile(this.paths, sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const prior = readJournal(file);
-    const event: EngineEvent = { id: (prior.at(-1)?.id ?? 0) + 1, at: this.now(), type, data, ...(runId ? { runId } : {}) };
+    const record = {
+      id: (prior.at(-1)?.id ?? 0) + 1,
+      at: this.now(),
+      sessionId,
+      ...(runId ? { runId } : {}),
+      ...event,
+    } as EngineEvent;
     // NDJSON is an append-only stream, not a document: do not replace it with
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
-    fs.appendFileSync(file, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
     fs.chmodSync(file, 0o600);
-    return event;
+    return record;
   }
 }
 

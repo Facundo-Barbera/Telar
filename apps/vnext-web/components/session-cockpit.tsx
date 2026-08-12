@@ -2,9 +2,19 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EngineEvent, EngineSession, EngineTurn, TurnState } from "@telar/engine-client";
+import type { EngineEvent, Item, Session, Turn, TurnState } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
-import { appendJournalEvents, isActiveTurn, projectJournal, type JournalTurn } from "@/lib/vnext/journal";
+import {
+  appendJournalEvents,
+  isActiveTurn,
+  isToolItem,
+  itemLabel,
+  itemText,
+  projectJournal,
+  toolOutput,
+  type JournalItem,
+  type JournalTurn,
+} from "@/lib/vnext/journal";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { VNextRightPanel } from "./right-panel";
 import { Icon } from "./vnext-icons";
@@ -37,7 +47,7 @@ function SessionProblem({ error }: { error: VNextApiError }) {
 
 function SessionMasthead({ projectId, session, sessionId, active, sending, onStop }: {
   projectId: string;
-  session?: EngineSession;
+  session?: Session;
   sessionId: string;
   active?: { state: TurnState };
   sending: boolean;
@@ -76,24 +86,96 @@ function RecoveryActions({ sending, onRetry, onDiscard }: {
 }
 
 /** The journal separates the submitted prompt from streamed agent output. */
-export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "state" | "prompt">): Pick<EngineTurn, "runId" | "state" | "text"> {
-  return { runId: turn.runId, state: turn.state, text: turn.prompt };
+export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "state" | "prompt">): Pick<Turn, "runId" | "state" | "input"> {
+  return { runId: turn.runId, state: turn.state, input: turn.prompt };
+}
+
+const TOOL_ICON: Partial<Record<Item["detail"]["type"], string>> = {
+  command_execution: "terminal",
+  file_change: "file",
+  file_read: "file",
+  mcp_tool_call: "plug",
+  dynamic_tool_call: "tool",
+  web_search: "search",
+  browser_action: "globe",
+};
+
+/**
+ * A tool call. Collapsed to its label by default — a turn that ran forty tools
+ * is unreadable expanded, and the label is what a reader scans.
+ *
+ * `<details>` rather than React state on purpose: it keeps open/closed in the
+ * DOM across re-renders, and a streaming turn re-renders constantly.
+ */
+function ToolItem({ item }: { item: JournalItem }) {
+  const output = toolOutput(item);
+  const diff = item.detail.type === "file_change" ? item.detail.change.unifiedDiff : undefined;
+  const body = diff ?? output;
+  return <details className="vnext-tool-item" data-status={item.status}>
+    <summary>
+      <span className="vnext-tool-item__kind" aria-hidden="true">{TOOL_ICON[item.detail.type] ?? "tool"}</span>
+      <code className="vnext-tool-item__label">{itemLabel(item)}</code>
+      <span className="vnext-tool-item__status" data-status={item.status}>
+        {item.status === "inProgress" ? "running" : item.status === "failed" ? "failed" : item.status === "declined" ? "declined" : "done"}
+      </span>
+    </summary>
+    {body ? <pre className="vnext-tool-item__body">{body}</pre> : <p className="vnext-muted vnext-small">No output recorded.</p>}
+  </details>;
+}
+
+/** Extended thinking, collapsed by default: it is long and rarely the point. */
+function ReasoningItem({ item }: { item: JournalItem }) {
+  const text = itemText(item);
+  if (!text) return null;
+  return <details className="vnext-reasoning-item">
+    <summary>Thinking</summary>
+    <p>{text}</p>
+  </details>;
+}
+
+function TimelineItem({ item }: { item: JournalItem }) {
+  if (isToolItem(item)) return <ToolItem item={item} />;
+  if (item.detail.type === "reasoning") return <ReasoningItem item={item} />;
+  if (item.detail.type === "error") {
+    return <p className="vnext-turn-failure" role="alert">{item.detail.error.message}</p>;
+  }
+  if (item.detail.type === "assistant_message") {
+    const text = itemText(item);
+    return text ? <p>{text}</p> : null;
+  }
+  // Forward compatibility: an item type this build does not render still gets
+  // a row. A silently missing row is worse than an unstyled one.
+  return <p className="vnext-muted vnext-small">{itemLabel(item)}</p>;
 }
 
 function SessionTurn({ turn, sending, onRetry, onDiscard }: {
   turn: JournalTurn;
   sending: boolean;
-  onRetry: (turn: Pick<EngineTurn, "runId" | "state" | "text">) => void;
-  onDiscard: (turn: Pick<EngineTurn, "runId">) => void;
+  onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
+  onDiscard: (turn: Pick<Turn, "runId">) => void;
 }) {
+  // The final text is shown only when no assistant item carried it. A completed
+  // turn has both — `resultText` on the turn and the streamed message items —
+  // and rendering both prints the answer twice.
+  const streamedAnswer = turn.items.some((item) => item.detail.type === "assistant_message" && itemText(item));
+  const hasBody = turn.items.length > 0 || turn.resultText || turn.failure;
   return <article className="vnext-conversation-turn">
     <div className="vnext-conversation-turn__prompt">
       <div className="vnext-conversation-turn__meta"><strong>You</strong><StateBadge state={turn.state} /></div>
       <p>{turn.prompt}</p>
     </div>
-    {(turn.text || turn.failure) && <div className="vnext-conversation-turn__answer">
-      <div className="vnext-conversation-turn__meta"><strong>Telar</strong><span className="vnext-muted vnext-small">Engine response</span></div>
-      {turn.text && <p>{turn.text}</p>}
+    {hasBody && <div className="vnext-conversation-turn__answer">
+      <div className="vnext-conversation-turn__meta">
+        <strong>Telar</strong>
+        {turn.usage && <span className="vnext-muted vnext-small">
+          {turn.usage.tokens.input + turn.usage.tokens.output} tokens
+          {typeof turn.usage.costUsd === "number" && ` · $${turn.usage.costUsd.toFixed(4)}`}
+        </span>}
+      </div>
+      <div className="vnext-timeline">
+        {turn.items.map((item) => <TimelineItem key={item.id} item={item} />)}
+      </div>
+      {!streamedAnswer && turn.resultText && <p>{turn.resultText}</p>}
       {turn.failure && <p className="vnext-turn-failure" role="alert"><strong>Turn failed. </strong>{turn.failure}</p>}
     </div>}
     {turn.state === "ambiguous" && <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />}
@@ -105,8 +187,8 @@ function SessionTranscript({ loading, error, transcript, sending, onRetry, onDis
   error?: VNextApiError;
   transcript: ReturnType<typeof projectJournal>;
   sending: boolean;
-  onRetry: (turn: Pick<EngineTurn, "runId" | "state" | "text">) => void;
-  onDiscard: (turn: Pick<EngineTurn, "runId">) => void;
+  onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
+  onDiscard: (turn: Pick<Turn, "runId">) => void;
 }) {
   return <section className="vnext-session-transcript" aria-label="Conversation transcript">
     {loading && <p className="vnext-empty-state">Hydrating durable transcript…</p>}
@@ -133,8 +215,9 @@ function SessionComposer({ draft, ready, active, sending, onDraftChange, onSubmi
 }
 
 export function SessionCockpit({ projectId, sessionId }: { projectId: string; sessionId: string }) {
-  const [session, setSession] = useState<EngineSession>();
-  const [turns, setTurns] = useState<EngineTurn[]>([]);
+  const [session, setSession] = useState<Session>();
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
   const [events, setEvents] = useState<EngineEvent[]>([]);
   const [draft, setDraft] = useState("");
   const [draftRunId, setDraftRunId] = useState<string>();
@@ -151,14 +234,14 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   }, []);
   const hydrate = useCallback(() => enqueueSync(async () => {
     const hydrated = await hydrateVNextSession(api, sessionId);
-    setSession(hydrated.session); setTurns(hydrated.turns); setEvents(hydrated.events); cursor.current = hydrated.cursor;
+    setSession(hydrated.session); setTurns(hydrated.turns); setItems(hydrated.items); setEvents(hydrated.events); cursor.current = hydrated.cursor;
   }), [enqueueSync, sessionId]);
   const tail = useCallback(() => enqueueSync(async () => {
     const update = await tailVNextSession(api, sessionId, cursor.current);
     if (update.events.length === 0) return;
     cursor.current = update.cursor;
     setEvents((current) => appendJournalEvents(current, update.events));
-    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); }
+    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); setItems(update.snapshot.items); }
   }), [enqueueSync, sessionId]);
 
   useEffect(() => {
@@ -168,7 +251,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [hydrate, tail]);
 
-  const transcript = useMemo(() => projectJournal(turns, events), [turns, events]);
+  const transcript = useMemo(() => projectJournal(turns, items, events), [turns, items, events]);
   const active = transcript.find((turn) => isActiveTurn(turn.state));
   const stop = async () => {
     if (!active) return;
@@ -177,13 +260,13 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not stop the turn.")); }
     finally { setSending(false); }
   };
-  const discardAmbiguous = async (turn: Pick<EngineTurn, "runId">) => {
+  const discardAmbiguous = async (turn: Pick<Turn, "runId">) => {
     setSending(true);
     try { await api.discardAmbiguousTurn(sessionId, turn.runId); await hydrate(); setError(undefined); }
     catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not discard the ambiguous turn.")); }
     finally { setSending(false); }
   };
-  const retryAmbiguous = async (turn: Pick<EngineTurn, "runId" | "state" | "text">) => {
+  const retryAmbiguous = async (turn: Pick<Turn, "runId" | "state" | "input">) => {
     setSending(true);
     try { await retryAmbiguousTurn(api, sessionId, turn); await hydrate(); setError(undefined); }
     catch (cause) {
@@ -196,7 +279,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); if (!draft.trim() || active) return;
     const runId = draftRunId ?? newVNextRunId(); setDraftRunId(runId); setSending(true);
-    try { await api.submitTurn(sessionId, { runId, text: draft.trim() }); setDraft(""); setDraftRunId(undefined); await hydrate(); setError(undefined); }
+    try { await api.submitTurn(sessionId, { runId, input: draft.trim() }); setDraft(""); setDraftRunId(undefined); await hydrate(); setError(undefined); }
     catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not submit the turn.")); }
     finally { setSending(false); }
   };

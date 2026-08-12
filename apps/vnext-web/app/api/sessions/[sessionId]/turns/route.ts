@@ -15,7 +15,7 @@ export async function POST(request: Request, context: Context) {
     const [{ sessionId }, body] = await Promise.all([context.params, requestObject(request)]);
     const result = await (await vnextEngine()).submitTurn(sessionId, {
       runId: requiredString(body.runId, "Run id"),
-      text: requiredString(body.text, "Turn text"),
+      input: requiredString(body.input, "Turn input"),
     });
     return Response.json(result, { status: result.replayed ? 200 : 202 });
   } catch (error) {

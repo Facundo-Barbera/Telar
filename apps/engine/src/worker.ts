@@ -4,7 +4,7 @@ import { ProviderUnavailableError, type TurnDriver } from "./driver";
 
 type WorkerClient = Pick<
   EngineClient,
-  "registerWorker" | "workerHeartbeat" | "claimTurn" | "markTurnRunning" | "appendTurnText" | "completeTurn" | "failTurn"
+  "registerWorker" | "workerHeartbeat" | "claimTurn" | "markTurnRunning" | "reportObservations" | "completeTurn" | "failTurn"
 >;
 
 export type EngineWorkerOptions = {
@@ -56,10 +56,10 @@ export class EngineWorker {
         void this.execute(
           claim.sessionId,
           claim.projectRoot,
-          claim.provider.sessionId,
+          claim.resumeCursor,
           claim.turn.runId,
           claim.turn.claim!.token,
-          claim.turn.text,
+          claim.turn.input,
         );
       }
     } catch (error) {
@@ -80,9 +80,23 @@ export class EngineWorker {
         cwd,
         signal: controller.signal,
         providerSessionId,
-        onText: async (text) => this.options.client.appendTurnText(sessionId, runId, claimToken, text),
+        onObservations: async (observations) => {
+          // A stop is terminal the moment the engine records it, and the
+          // driver may still be mid-message when the abort lands. Reporting
+          // after that point would append rows to a turn that is already
+          // settled, which the store rejects as a conflict — so drop them
+          // here rather than turning a clean stop into a failure.
+          if (controller.signal.aborted) return;
+          await this.options.client.reportObservations(sessionId, runId, claimToken, observations);
+        },
       });
-      if (!controller.signal.aborted) await this.options.client.completeTurn(sessionId, runId, claimToken, result.text, result.providerSessionId);
+      if (!controller.signal.aborted) {
+        await this.options.client.completeTurn(sessionId, runId, claimToken, {
+          text: result.text,
+          ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
+          ...(result.usage ? { usage: result.usage } : {}),
+        });
+      }
     } catch (error) {
       // Stop is terminal before a worker sees the heartbeat. Never overwrite it with an error.
       if (controller.signal.aborted || (error instanceof EngineClientError && error.code === "conflict")) return;

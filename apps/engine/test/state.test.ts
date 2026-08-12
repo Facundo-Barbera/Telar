@@ -35,17 +35,17 @@ test("the engine requires an explicit absolute home and writes only beneath its 
 
 test("submitting a stable run id is idempotent and a session has only one active turn", () => {
   const { store } = readyStore();
-  const initial = store.submitTurn("session_one", { runId: "run_one", text: "Hello" });
+  const initial = store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(initial.replayed).toBe(false);
-  expect(store.submitTurn("session_one", { runId: "run_one", text: "Hello" })).toEqual({ ...initial, replayed: true });
-  expect(() => store.submitTurn("session_one", { runId: "run_one", text: "Different" })).toThrow(EngineStateError);
-  expect(() => store.submitTurn("session_one", { runId: "run_two", text: "Second" })).toThrow(/active turn/);
+  expect(store.submitTurn("session_one", { runId: "run_one", input: "Hello" })).toEqual({ ...initial, replayed: true });
+  expect(() => store.submitTurn("session_one", { runId: "run_one", input: "Different" })).toThrow(EngineStateError);
+  expect(() => store.submitTurn("session_one", { runId: "run_two", input: "Second" })).toThrow(/active turn/);
   expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
 });
 
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", text: "Hello" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(store.stopTurn("session_one", "run_one").stopped).toBe(true);
   expect(store.turns("session_one")[0]?.state).toBe("stopped");
   expect(store.stopTurn("session_one", "run_one").stopped).toBe(false);
@@ -54,7 +54,7 @@ test("stop is durable and idempotent", () => {
 
 test("recovery returns merely claimed work to queued and makes running work explicitly ambiguous", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "claimed_turn", text: "Hello" });
+  store.submitTurn("session_one", { runId: "claimed_turn", input: "Hello" });
   expect(store.claimTurn("session_one", "worker_one")?.state).toBe("claimed");
   expect(store.recover()).toEqual({ requeued: ["claimed_turn"], ambiguous: [] });
   expect(store.turns("session_one")[0]?.state).toBe("queued");
@@ -62,26 +62,25 @@ test("recovery returns merely claimed work to queued and makes running work expl
   store.markRunning("session_one", "claimed_turn", claimed!.claim!.token);
   expect(store.recover()).toEqual({ requeued: [], ambiguous: ["claimed_turn"] });
   expect(store.turns("session_one")[0]?.state).toBe("ambiguous");
-  expect(() => store.submitTurn("session_one", { runId: "later_turn", text: "must wait" })).toThrow(/ambiguous/);
+  expect(() => store.submitTurn("session_one", { runId: "later_turn", input: "must wait" })).toThrow(/ambiguous/);
   expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "turn.ambiguous", runId: "claimed_turn" });
 });
 
 test("a human discard resolves only an ambiguous turn and permits a fresh submitted run", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "uncertain_run", text: "Hello" });
+  store.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
   const claimed = store.claimTurn("session_one", "worker_one");
   store.markRunning("session_one", "uncertain_run", claimed!.claim!.token);
   store.recover();
 
   const discarded = store.discardAmbiguousTurn("session_one", "uncertain_run");
-  expect(discarded).toMatchObject({ runId: "uncertain_run", state: "discarded", discardedAt: 100 });
+  expect(discarded).toMatchObject({ runId: "uncertain_run", state: "discarded", completedAt: 100 });
   expect(discarded.claim).toBeUndefined();
   expect(store.readEvents("session_one").at(-1)).toMatchObject({
     type: "turn.discarded",
     runId: "uncertain_run",
-    data: { decision: "discarded" },
   });
-  expect(store.submitTurn("session_one", { runId: "fresh_run", text: "Hello" })).toMatchObject({
+  expect(store.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).toMatchObject({
     replayed: false,
     turn: { runId: "fresh_run", state: "queued" },
   });
@@ -91,28 +90,110 @@ test("a human discard resolves only an ambiguous turn and permits a fresh submit
   ]);
 });
 
-test("startup recovery repairs Claude continuity from a completed turn after an interrupted metadata write", () => {
+test("startup recovery repairs provider continuity from a completed turn after an interrupted metadata write", () => {
   const { store, root: stateRoot } = readyStore();
-  store.submitTurn("session_one", { runId: "first", text: "Hello" });
+  store.submitTurn("session_one", { runId: "first", input: "Hello" });
   const claimed = store.claimTurn("session_one", "worker_one")!;
   store.markRunning("session_one", "first", claimed.claim!.token);
-  store.completeTurn("session_one", "first", claimed.claim!.token, "Done", "claude-session-one");
+  store.completeTurn("session_one", "first", claimed.claim!.token, { text: "Done", providerSessionId: "claude-session-one" });
 
+  // queue.json is written before session.json, so a crash in that interval
+  // leaves the terminal turn as the only record of the resume cursor.
   const metadataFile = path.join(stateRoot, "sessions", "session_one", "session.json");
-  const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8")) as { provider: { kind: string; sessionId?: string } };
-  delete metadata.provider.sessionId;
+  const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8")) as { resumeCursor?: string };
+  delete metadata.resumeCursor;
   fs.writeFileSync(metadataFile, `${JSON.stringify(metadata)}\n`);
 
   const restarted = new EngineStore(stateRoot, () => 200);
   restarted.recover();
-  expect(restarted.getSession("session_one").provider).toEqual({ kind: "claude", sessionId: "claude-session-one" });
-  restarted.submitTurn("session_one", { runId: "second", text: "Again" });
-  expect(restarted.claimNextTurn("worker_two")?.provider).toEqual({ kind: "claude", sessionId: "claude-session-one" });
+  expect(restarted.getSession("session_one").resumeCursor).toBe("claude-session-one");
+  restarted.submitTurn("session_one", { runId: "second", input: "Again" });
+  expect(restarted.claimNextTurn("worker_two")?.resumeCursor).toBe("claude-session-one");
+});
+
+test("observations become durable items and deltas, and only under a live claim", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const token = claimed.claim!.token;
+
+  // A worker may only report against a RUNNING turn it holds the claim for.
+  expect(() =>
+    store.ingestObservations("session_one", "run_one", token, [
+      { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
+    ]),
+  ).toThrow(/not running/);
+
+  store.markRunning("session_one", "run_one", token);
+  expect(() =>
+    store.ingestObservations("session_one", "run_one", "not-the-token-at-all", [
+      { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
+    ]),
+  ).toThrow(EngineStateError);
+
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "i1", detail: { type: "command_execution", command: { command: "ls" } }, title: "ls" } },
+    { kind: "content.delta", itemId: "i1", stream: "command_output", text: "a" },
+    { kind: "item.completed", itemId: "i1", status: "completed" },
+  ]);
+
+  const items = store.items("session_one");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ id: "i1", runId: "run_one", sessionId: "session_one", status: "completed", title: "ls" });
+  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
+    "session.created",
+    "turn.accepted",
+    "turn.claimed",
+    "turn.started",
+    "item.started",
+    "content.delta",
+    "item.completed",
+  ]);
+});
+
+test("a malformed observation rejects the WHOLE batch, leaving no half-written provider message", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_one", claimed.claim!.token);
+  const before = store.readEvents("session_one").length;
+
+  expect(() =>
+    store.ingestObservations("session_one", "run_one", claimed.claim!.token, [
+      { kind: "item.started", item: { id: "good", detail: { type: "assistant_message", text: "" } } },
+      { kind: "item.started", item: { id: "bad", detail: { type: "file_change", command: { command: "ls" } } } },
+    ]),
+  ).toThrow(/observations are invalid/);
+
+  expect(store.readEvents("session_one")).toHaveLength(before);
+  expect(store.items("session_one")).toEqual([]);
+});
+
+test("a delta for an item that was never opened is dropped rather than journalled", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_one", claimed.claim!.token);
+  store.ingestObservations("session_one", "run_one", claimed.claim!.token, [
+    { kind: "content.delta", itemId: "ghost", stream: "assistant_text", text: "x" },
+  ]);
+  expect(store.readEvents("session_one").some((event) => event.type === "content.delta")).toBe(false);
+});
+
+test("a v1 document names the version break instead of reading as corruption", () => {
+  const { store, root: stateRoot } = readyStore();
+  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8")) as { version: number };
+  queue.version = 1;
+  fs.writeFileSync(queueFile, `${JSON.stringify(queue)}\n`);
+  // A bare schema failure here would read as disk corruption and send an
+  // operator looking in the wrong place.
+  expect(() => store.turns("session_one")).toThrow(/protocol v1/);
 });
 
 test("discard cannot alter a non-ambiguous turn", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", text: "Hello" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   expect(() => store.discardAmbiguousTurn("session_one", "run_one")).toThrow(/only an ambiguous turn/);
   expect(store.turns("session_one")[0]).toMatchObject({ runId: "run_one", state: "queued" });
   expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
@@ -140,7 +221,7 @@ test("an interrupted final journal append is truncated, while malformed complete
   fs.appendFileSync(journal, '{"id":2');
   expect(store.readEvents("session_one")).toHaveLength(1);
   expect(fs.readFileSync(journal, "utf8")).toBe(valid);
-  fs.appendFileSync(journal, JSON.stringify({ id: 2, at: 100, type: "turn.accepted", data: {}, runId: "run_one" }));
+  fs.appendFileSync(journal, JSON.stringify({ id: 2, at: 100, type: "turn.accepted", sessionId: "session_one", runId: "run_one", turn: {}, replayed: false }));
   expect(store.readEvents("session_one")).toHaveLength(2);
   expect(fs.readFileSync(journal, "utf8")).toEndWith("\n");
   fs.appendFileSync(journal, "not-json\n");

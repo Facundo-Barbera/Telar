@@ -19,7 +19,7 @@ test("discovery rejects missing or malformed state without falling back to legac
 
 test("client preserves typed engine errors", async () => {
   const client = new EngineClient(
-    { version: 1, daemonId: "daemon", host: "127.0.0.1", port: 4010, token: "x".repeat(32), startedAt: 1 },
+    { version: 2, daemonId: "daemon", host: "127.0.0.1", port: 4010, token: "x".repeat(32), startedAt: 1 },
     (async () =>
       new Response(JSON.stringify({ error: { code: "worker_unavailable", message: "no worker" } }), {
         status: 503,
@@ -34,7 +34,7 @@ test("client preserves typed engine errors", async () => {
 test("client exposes the authenticated ambiguous-turn discard action", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const client = new EngineClient(
-    { version: 1, daemonId: "daemon", host: "127.0.0.1", port: 4010, token: "x".repeat(32), startedAt: 1 },
+    { version: 2, daemonId: "daemon", host: "127.0.0.1", port: 4010, token: "x".repeat(32), startedAt: 1 },
     (async (url, init) => {
       calls.push({ url: String(url), init });
       return Response.json({ turn: { runId: "run_uncertain", state: "discarded" } });
@@ -42,7 +42,7 @@ test("client exposes the authenticated ambiguous-turn discard action", async () 
   );
   await client.discardAmbiguousTurn("session_one", "run_uncertain");
   expect(calls).toEqual([{
-    url: "http://127.0.0.1:4010/v1/sessions/session_one/turns/run_uncertain/discard",
+    url: "http://127.0.0.1:4010/v2/sessions/session_one/turns/run_uncertain/discard",
     init: {
       method: "POST",
       headers: { authorization: `Bearer ${"x".repeat(32)}`, "content-type": "application/json" },

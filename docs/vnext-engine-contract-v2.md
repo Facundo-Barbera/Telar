@@ -261,15 +261,41 @@ on. Two things need care and are not mechanical:
 
 Each stage is independently shippable and leaves the tree green.
 
-| # | Stage | Unblocks |
-| --- | --- | --- |
-| 1 | **Rich turn journal.** Items, content deltas, reasoning, usage. Driver stops discarding blocks. | A real session view. Everything else. |
-| 2 | **Requests + runtime modes.** Approvals end-to-end, parked-request notifications. | Trustworthy detached runs. |
-| 3 | **Persistent runtimes.** Warm processes, supervision, resume. | Detached, properly. |
-| 4 | **Providers.** Codex via app-server, model/effort selection, attachments, MCP. | Parity with the frozen app. |
-| 5 | **Tasks.** Sub-agents on the stream, then Warp on top of them. | Fan-out surfaces. |
-| 6 | **Browser.** Headless provider first, attached second. | Autonomous verification. |
-| 7 | **Worktrees.** `envMode`, parallel sessions. | Many detached sessions at once. |
+| # | Stage | Status | Unblocks |
+| --- | --- | --- | --- |
+| 1 | **Rich turn journal.** Items, content deltas, reasoning, usage. Driver stops discarding blocks. | **DONE** | A real session view. Everything else. |
+| 2 | **Requests + runtime modes.** Approvals end-to-end, parked-request notifications. | contract only | Trustworthy detached runs. |
+| 3 | **Persistent runtimes.** Warm processes, supervision, resume. | not started | Detached, properly. |
+| 4 | **Providers.** Codex via app-server, model/effort selection, attachments, MCP. | not started | Parity with the frozen app. |
+| 5 | **Tasks.** Sub-agents on the stream, then Warp on top of them. | contract only | Fan-out surfaces. |
+| 6 | **Browser.** Headless provider first, attached second. | contract only | Autonomous verification. |
+| 7 | **Worktrees.** `envMode`, parallel sessions. | contract only | Many detached sessions at once. |
+
+**"Contract only" means the shapes exist and are tested, and nothing emits
+them.** The distinction matters: `request.*` is fully modelled, and
+`autoResolution()` is the tested policy every client will read — but the driver
+still runs at `permissionMode: "default"` with no `canUseTool`, so no request
+can open yet. A reader should not infer from the contract that approvals work.
+
+### What stage 1 actually landed
+
+Protocol v2 is live end to end. `apps/engine/src/driver.ts` now maps `tool_use`
+to canonical items by capability, closes each one on its `tool_result` (keyed by
+`tool_use_id`), streams text and thinking as `content.delta`, and reports usage
+and cost. The worker relays observations rather than raw text; the engine stamps
+and journals them and maintains an `items.json` projection beside the queue.
+`apps/vnext-web` renders a real timeline — collapsed tool cards with output,
+collapsible reasoning, per-turn token and cost.
+
+v1 is deleted, not deprecated: `packages/engine-client/src/contract.ts` is gone,
+routes moved `/v1/**` → `/v2/**`, and a v1 state document fails with a message
+naming the version break rather than reading as disk corruption.
+
+**Not yet verified against a real provider.** Every driver test drives a
+synthetic SDK fixture. The item mapping is modelled from t3 code's canonical set
+plus the SDK's documented message shapes, and the first thing stage 2 should do
+is capture actual Claude output and assert the normalizer against it — that is
+where a contract drifts from reality.
 
 Stage 1 is the one that matters. Everything the previous agent could not build
 was downstream of it, and it is **contract-first** (§9.3): the v2 type surface

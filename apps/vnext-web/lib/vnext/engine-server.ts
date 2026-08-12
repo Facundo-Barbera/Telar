@@ -68,6 +68,9 @@ const statusByCode: Record<EngineErrorCode, number> = {
   engine_unavailable: 503,
   engine_unauthorized: 502,
   engine_locked: 503,
+  // 409, not 400: the request was well-formed and the client is not at fault —
+  // it is simply speaking a protocol version this engine no longer answers.
+  protocol_mismatch: 409,
   invalid_request: 400,
   not_found: 404,
   conflict: 409,

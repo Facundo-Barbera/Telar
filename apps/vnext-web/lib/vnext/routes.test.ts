@@ -71,7 +71,7 @@ describe("vNext route adapters", () => {
     await client.registerProject({ id: "project_one", name: "One", root: home });
     await client.createSession({ id: "session_one", projectId: "project_one" });
     await client.registerWorker("worker_one");
-    await client.submitTurn("session_one", { runId: "uncertain_run", text: "Hello" });
+    await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
     const claim = (await client.claimTurn("worker_one")).claim!;
     await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
     daemon.store.recover();
@@ -81,7 +81,7 @@ describe("vNext route adapters", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ turn: { runId: "uncertain_run", state: "discarded" } });
-    await expect(client.submitTurn("session_one", { runId: "fresh_run", text: "Hello" })).resolves.toMatchObject({
+    await expect(client.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).resolves.toMatchObject({
       replayed: false,
       turn: { runId: "fresh_run", state: "queued" },
     });

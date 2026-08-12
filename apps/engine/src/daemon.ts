@@ -94,15 +94,17 @@ function stringValue(value: unknown, label: string, optional = false): string | 
 }
 
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
-  const match = /^\/v1\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-function turnPath(pathname: string): { sessionId: string; runId: string; action: "running" | "text" | "complete" | "fail" | "discard" } | undefined {
-  const match = /^\/v1\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|text|complete|fail|discard)$/.exec(pathname);
+type TurnAction = "running" | "observe" | "complete" | "fail" | "discard";
+
+function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|complete|fail|discard)$/.exec(pathname);
   if (!match) return undefined;
-  return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as "running" | "text" | "complete" | "fail" | "discard" };
+  return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
 }
 
 function writeDiscovery(store: EngineStore, discovery: EngineDiscovery): void {
@@ -184,15 +186,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (!bearerIsValid(request.headers.authorization, token)) {
         throw new HttpError(401, "engine_unauthorized", "vNext engine authentication failed");
       }
-      if (request.method === "GET" && url.pathname === "/v1/health") {
+      if (request.method === "GET" && url.pathname === "/v2/health") {
         writeJson(response, 200, health());
         return;
       }
-      if (request.method === "GET" && url.pathname === "/v1/projects") {
+      if (request.method === "GET" && url.pathname === "/v2/projects") {
         writeJson(response, 200, { projects: store.listProjects() });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/v1/projects") {
+      if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {
           project: store.registerProject({
@@ -203,24 +205,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
-      if (request.method === "GET" && url.pathname === "/v1/sessions") {
+      if (request.method === "GET" && url.pathname === "/v2/sessions") {
         const projectId = url.searchParams.get("projectId");
         if (!projectId) throw new HttpError(400, "invalid_request", "projectId is required");
         writeJson(response, 200, { sessions: store.listSessions(projectId) });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/v1/sessions") {
+      if (request.method === "POST" && url.pathname === "/v2/sessions") {
         const input = await body(request);
         writeJson(response, 201, {
           session: store.createSession({
             id: stringValue(input.id, "session id", true),
             projectId: stringValue(input.projectId, "project id")!,
             title: stringValue(input.title, "session title", true),
+            ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
           }),
         });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/v1/workers/register") {
+      if (request.method === "POST" && url.pathname === "/v2/workers/register") {
         const input = await body(request);
         const workerId = stringValue(input.workerId, "worker id")!;
         if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
@@ -232,7 +235,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
 
-      const workerMatch = /^\/v1\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
+      const workerMatch = /^\/v2\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
       if (workerMatch && request.method === "POST") {
         const workerId = decodeURIComponent(workerMatch[1]);
         const worker = activeWorker(workerId);
@@ -257,22 +260,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
           writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
-        } else if (turn.action === "text") {
-          store.appendText(turn.sessionId, turn.runId, claimToken, stringValue(input.text, "text")!);
-          writeJson(response, 200, {});
+        } else if (turn.action === "observe") {
+          if (!Array.isArray(input.observations)) {
+            throw new HttpError(400, "invalid_request", "observations must be an array");
+          }
+          // The store re-validates against the contract schema. This only
+          // rejects a shape that is not even an array, so the error names the
+          // request rather than the first malformed element inside it.
+          writeJson(response, 200, store.ingestObservations(turn.sessionId, turn.runId, claimToken, input.observations));
         } else if (turn.action === "complete") {
           writeJson(response, 200, {
-            turn: store.completeTurn(
-              turn.sessionId,
-              turn.runId,
-              claimToken,
-              stringValue(input.text, "text")!,
-              stringValue(input.providerSessionId, "provider session id", true),
-            ),
+            turn: store.completeTurn(turn.sessionId, turn.runId, claimToken, {
+              text: stringValue(input.text, "text")!,
+              providerSessionId: stringValue(input.providerSessionId, "provider session id", true),
+              usage: input.usage as never,
+            }),
           });
         } else {
           const code = stringValue(input.code, "failure code")!;
-          if (code !== "provider_unavailable" && code !== "driver_failed") {
+          if (code !== "provider_unavailable" && code !== "driver_failed" && code !== "budget_exhausted") {
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
           writeJson(response, 200, {
@@ -285,12 +291,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const session = sessionPath(url.pathname);
       if (session) {
         if (request.method === "GET" && session.tail === "") {
-          writeJson(response, 200, { session: store.getSession(session.sessionId), turns: store.turns(session.sessionId) });
+          writeJson(response, 200, {
+            session: store.getSession(session.sessionId),
+            turns: store.turns(session.sessionId),
+            items: store.items(session.sessionId),
+          });
           return;
         }
         if (request.method === "GET" && session.tail === "/events") {
           const after = Number(url.searchParams.get("after") ?? "0");
-          writeJson(response, 200, { events: store.readEvents(session.sessionId, after) });
+          const events = store.readEvents(session.sessionId, after);
+          writeJson(response, 200, {
+            events,
+            cursor: events.at(-1)?.id ?? (Number.isSafeInteger(after) ? after : 0),
+            // The store returns the whole tail in one read, so a caller never
+            // has to page. Reported anyway because the field is contract and a
+            // future chunked read must not silently look like a complete one.
+            more: false,
+          });
           return;
         }
         if (request.method === "POST" && session.tail === "/turns") {
@@ -299,12 +317,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const input = await body(request);
           const accepted = store.submitTurn(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
-            text: stringValue(input.text, "turn text")!,
+            input: stringValue(input.input, "turn input")!,
           });
-          const result: TurnSubmissionResult = {
-            ...accepted,
-            execution: { status: "scheduled", code: "scheduled" },
-          };
+          const result: TurnSubmissionResult = accepted;
           writeJson(response, accepted.replayed ? 200 : 202, result);
           return;
         }

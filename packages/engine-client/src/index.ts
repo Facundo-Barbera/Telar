@@ -1,67 +1,66 @@
+/**
+ * vNext engine client — protocol v2.
+ *
+ * PROTOCOL v1 IS GONE, not deprecated. Its eleven flat `turn.*` events were not
+ * a subset of v2 and there is no dual-emit path; an engine speaking v2 answers
+ * on `/v2/**` and a v1 client gets a 404 rather than a confusing parse failure
+ * three layers in. The routes moved with the version deliberately, so the break
+ * is visible at the URL.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   ENGINE_PROTOCOL_VERSION,
-  EngineClientError,
-  type EngineDiscovery,
+  EngineDiscovery,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
   type EngineHealth,
-  type EngineProject,
-  type EngineSession,
-  type TurnSubmission,
+  type Item,
+  type Project,
+  type Session,
+  type Turn,
+  type TurnObservation,
   type TurnSubmissionResult,
+  type UsageSnapshot,
   type WorkerClaim,
   type WorkerStatus,
-} from "./contract";
+} from "./protocol";
 
-export * from "./contract";
+export * from "./protocol";
 
-/**
- * Protocol v2, namespaced for the duration of the cutover.
- *
- * IT IS NOT `export *` AND MUST NOT BECOME ONE WHILE v1 IS STILL HERE. The two
- * protocols share nine exported names — `EngineEvent`, `EngineDiscovery`,
- * `EngineHealth`, `TurnState`, `TurnSubmission`, `TurnSubmissionResult`,
- * `EngineErrorCode`, `EngineErrorBody`, `ENGINE_PROTOCOL_VERSION` — and a
- * second `export *` would resolve every one of those collisions by dropping the
- * name from the barrel entirely, with a green typecheck and a runtime
- * `undefined` at each call site.
- *
- * New code imports `protocol`. When the engine and `apps/vnext-web` are
- * migrated, `./contract` is deleted and this becomes the package root.
- */
-export * as protocol from "./protocol";
+export class EngineClientError extends Error {
+  readonly code: EngineErrorCode;
+  readonly status?: number;
+
+  constructor(code: EngineErrorCode, message: string, status?: number) {
+    super(message);
+    this.name = "EngineClientError";
+    this.code = code;
+    this.status = status;
+  }
+}
 
 const discoveryFile = (vnextRoot: string): string => path.join(vnextRoot, "engine.json");
 
-function isDiscovery(value: unknown): value is EngineDiscovery {
-  const candidate = value as Partial<EngineDiscovery> | null;
-  return Boolean(
-    candidate &&
-      candidate.version === ENGINE_PROTOCOL_VERSION &&
-      typeof candidate.daemonId === "string" &&
-      candidate.daemonId.length > 0 &&
-      candidate.host === "127.0.0.1" &&
-      Number.isInteger(candidate.port) &&
-      (candidate.port ?? 0) > 0 &&
-      (candidate.port ?? 0) < 65536 &&
-      typeof candidate.token === "string" &&
-      candidate.token.length >= 32 &&
-      Number.isFinite(candidate.startedAt),
-  );
-}
-
-/** Reads only the vNext discovery document; it never touches legacy Telar state. */
+/**
+ * Reads only the vNext discovery document; it never touches legacy Telar state.
+ *
+ * VALIDATION IS THE SCHEMA'S JOB NOW. This used to be `isDiscovery()`, fifteen
+ * hand-written checks ending in a `value is EngineDiscovery` assertion the
+ * compiler took on trust — so adding a field to the type and forgetting a line
+ * here silently weakened the check. The schema carries the same rules (a
+ * 32-character minimum token, a real port) and cannot drift from the type,
+ * because the type is derived from it.
+ */
 export async function discoverEngine(vnextRoot: string): Promise<EngineDiscovery> {
   try {
     const raw = await fs.readFile(discoveryFile(vnextRoot), "utf8");
-    const discovery: unknown = JSON.parse(raw);
-    if (!isDiscovery(discovery)) {
+    const discovery = EngineDiscovery.safeParse(JSON.parse(raw) as unknown);
+    if (!discovery.success) {
       throw new EngineClientError("engine_unavailable", "vNext engine discovery is invalid");
     }
-    return discovery;
+    return discovery.data;
   } catch (error) {
     if (error instanceof EngineClientError) throw error;
     throw new EngineClientError("engine_unavailable", "vNext engine is not discoverable");
@@ -69,6 +68,10 @@ export async function discoverEngine(vnextRoot: string): Promise<EngineDiscovery
 }
 
 type FetchLike = typeof fetch;
+
+/** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
+ *  so it does not have to replay the journal from zero. */
+export type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[] };
 
 export class EngineClient {
   constructor(
@@ -106,77 +109,84 @@ export class EngineClient {
   }
 
   health(): Promise<EngineHealth> {
-    return this.request("GET", "/v1/health");
+    return this.request("GET", "/v2/health");
   }
 
-  listProjects(): Promise<{ projects: EngineProject[] }> {
-    return this.request("GET", "/v1/projects");
+  listProjects(): Promise<{ projects: Project[] }> {
+    return this.request("GET", "/v2/projects");
   }
 
-  registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: EngineProject }> {
-    return this.request("POST", "/v1/projects", input);
+  registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
+    return this.request("POST", "/v2/projects", input);
   }
 
-  listSessions(projectId: string): Promise<{ sessions: EngineSession[] }> {
-    return this.request("GET", `/v1/sessions?projectId=${encodeURIComponent(projectId)}`);
+  listSessions(projectId: string): Promise<{ sessions: Session[] }> {
+    return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string }): Promise<{ session: EngineSession }> {
-    return this.request("POST", "/v1/sessions", input);
+  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean }): Promise<{ session: Session }> {
+    return this.request("POST", "/v2/sessions", input);
   }
 
-  session(sessionId: string): Promise<{ session: EngineSession; turns: TurnSubmissionResult["turn"][] }> {
-    return this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
+  session(sessionId: string): Promise<SessionSnapshot> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}`);
   }
 
-  events(sessionId: string, after = 0): Promise<{ events: EngineEvent[] }> {
-    return this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`);
+  events(sessionId: string, after = 0): Promise<{ events: EngineEvent[]; cursor: number; more: boolean }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`);
   }
 
-  submitTurn(sessionId: string, input: TurnSubmission): Promise<TurnSubmissionResult> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns`, input);
+  submitTurn(sessionId: string, input: { runId: string; input: string }): Promise<TurnSubmissionResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
   }
 
-  stopTurn(sessionId: string, runId?: string): Promise<{ turn?: TurnSubmissionResult["turn"]; stopped: boolean }> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
+  stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
 
   /** Explicit human resolution for a turn whose provider effects are uncertain. */
-  discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: TurnSubmissionResult["turn"] }> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
+  discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
   }
 
   registerWorker(workerId: string): Promise<{ worker: { workerId: string } }> {
-    return this.request("POST", "/v1/workers/register", { workerId });
+    return this.request("POST", "/v2/workers/register", { workerId });
   }
 
   workerHeartbeat(workerId: string): Promise<WorkerStatus> {
-    return this.request("POST", `/v1/workers/${encodeURIComponent(workerId)}/heartbeat`, {});
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {});
   }
 
   claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {
-    return this.request("POST", `/v1/workers/${encodeURIComponent(workerId)}/claim`, {});
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, {});
   }
 
-  markTurnRunning(sessionId: string, runId: string, claimToken: string): Promise<{ turn: TurnSubmissionResult["turn"] }> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/running`, { claimToken });
+  markTurnRunning(sessionId: string, runId: string, claimToken: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/running`, { claimToken });
   }
 
-  appendTurnText(sessionId: string, runId: string, claimToken: string, text: string): Promise<void> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/text`, { claimToken, text });
+  /** Batched: one round trip per delta would dominate the cost of streaming. */
+  reportObservations(
+    sessionId: string,
+    runId: string,
+    claimToken: string,
+    observations: TurnObservation[],
+  ): Promise<{ accepted: number }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/observe`, {
+      claimToken,
+      observations,
+    });
   }
 
   completeTurn(
     sessionId: string,
     runId: string,
     claimToken: string,
-    text: string,
-    providerSessionId?: string,
-  ): Promise<{ turn: TurnSubmissionResult["turn"] }> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/complete`, {
+    result: { text: string; providerSessionId?: string; usage?: UsageSnapshot },
+  ): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/complete`, {
       claimToken,
-      text,
-      ...(providerSessionId === undefined ? {} : { providerSessionId }),
+      ...result,
     });
   }
 
@@ -184,12 +194,17 @@ export class EngineClient {
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: "provider_unavailable" | "driver_failed"; message: string },
-  ): Promise<{ turn: TurnSubmissionResult["turn"] }> {
-    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/fail`, { claimToken, ...failure });
+    failure: { code: "provider_unavailable" | "driver_failed" | "budget_exhausted"; message: string },
+  ): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/fail`, {
+      claimToken,
+      ...failure,
+    });
   }
 }
 
 export async function connectEngine(vnextRoot: string, fetchImpl?: FetchLike): Promise<EngineClient> {
   return new EngineClient(await discoverEngine(vnextRoot), fetchImpl);
 }
+
+export { ENGINE_PROTOCOL_VERSION };

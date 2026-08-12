@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { EngineProject, EngineSession } from "@telar/engine-client";
+import type { Project, Session } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { Icon } from "./vnext-icons";
 import { type SessionFilter, sessionFilterLabel, VNextSessionList } from "./vnext-session-list";
@@ -17,8 +17,8 @@ function activeSessionFromPath(pathname: string) {
 
 export function VNextSidebar({ collapsed, onClose }: { collapsed: boolean; onClose: () => void }) {
   const pathname = usePathname();
-  const [projects, setProjects] = useState<EngineProject[]>([]);
-  const [sessions, setSessions] = useState<EngineSession[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [filter, setFilter] = useState<SessionFilter>("recent");
   const [query, setQuery] = useState("");
   const [projectId, setProjectId] = useState("");
