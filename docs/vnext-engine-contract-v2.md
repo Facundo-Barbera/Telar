@@ -303,15 +303,21 @@ shipped.
    `packages/engine-client` with tests, then rewrite the driver to emit it. The
    contract is reviewable before behaviour changes, and `apps/vnext-web` can
    bind against real types while the driver lands.
+4. **zod in `engine-client`, types derived with `z.infer`.** Not `effect/Schema`
+   — t3 code uses it because its *entire server* is Effect-based (`Effect`,
+   `Layer`, `Context.Service`, `Stream`), so that choice follows its
+   architecture rather than standing alone. Not plain TS types either: the
+   shapes cross three trust boundaries (provider SDK → engine, engine → client,
+   disk → engine) and types are erased before any of them. v1's cost was already
+   visible — `isDiscovery()` was fifteen hand-rolled lines ending in a
+   `value is EngineDiscovery` assertion tsc takes on trust, and
+   `apps/vnext-web/lib/vnext/journal.ts` hand-checked `typeof event.data.text
+   === "string"` because every payload was `Record<string, unknown>`. One
+   definition per shape; the type falls out of it.
+5. **`environmentId` carried from day one**, pinned to `"local"`. One legal
+   value costs nothing now and is the cheapest this will ever be.
 
 ### Still open
 
-4. **Effect.** t3 code's contracts are `effect/Schema`; Telar's are plain TS
-   types plus zod in core. Recommendation: **stay on zod**, port the *shapes*
-   not the framework. Effect is a large adoption to carry for schema validation
-   alone.
-5. **Remote environments.** t3 code models `EnvironmentId` everywhere from day
-   one so a client can drive a server on another machine. Cheap to carry as an
-   always-`"local"` field now; expensive to retrofit. Recommendation: carry it.
-6. **Warp run-history migration.** See §7 — migrate `TELAR_HOME/ultra` or
-   abandon it.
+6. **Warp run-history migration.** See §7 — decided to abandon `TELAR_HOME/ultra`;
+   the read-side of that decision still needs writing when `storage.ts` moves.

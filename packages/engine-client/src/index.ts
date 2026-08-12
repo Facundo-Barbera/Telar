@@ -18,6 +18,22 @@ import {
 
 export * from "./contract";
 
+/**
+ * Protocol v2, namespaced for the duration of the cutover.
+ *
+ * IT IS NOT `export *` AND MUST NOT BECOME ONE WHILE v1 IS STILL HERE. The two
+ * protocols share nine exported names — `EngineEvent`, `EngineDiscovery`,
+ * `EngineHealth`, `TurnState`, `TurnSubmission`, `TurnSubmissionResult`,
+ * `EngineErrorCode`, `EngineErrorBody`, `ENGINE_PROTOCOL_VERSION` — and a
+ * second `export *` would resolve every one of those collisions by dropping the
+ * name from the barrel entirely, with a green typecheck and a runtime
+ * `undefined` at each call site.
+ *
+ * New code imports `protocol`. When the engine and `apps/vnext-web` are
+ * migrated, `./contract` is deleted and this becomes the package root.
+ */
+export * as protocol from "./protocol";
+
 const discoveryFile = (vnextRoot: string): string => path.join(vnextRoot, "engine.json");
 
 function isDiscovery(value: unknown): value is EngineDiscovery {
