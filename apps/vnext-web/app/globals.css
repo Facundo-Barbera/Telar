@@ -128,58 +128,126 @@ p { line-height: 1.5; }
 .vnext-session-heartbeat__identity i { color: var(--v-line); font-style: normal; }
 .vnext-session-heartbeat__identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vnext-session-heartbeat__actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
-.vnext-conversation-column { display: flex; width: min(100%, 800px); min-height: 0; flex: 1; flex-direction: column; margin: 0 auto; padding: 12px 16px 20px; }
-.vnext-live-state { display: flex; align-items: flex-start; gap: 9px; margin: 6px 0 0; border-left: 2px solid var(--v-line); padding: 7px 0 7px 10px; }
-.vnext-live-state p { margin: 0; color: var(--v-quiet); font-size: 12px; }
-.vnext-session-transcript { display: grid; gap: 20px; min-height: 0; flex: 1; padding: 22px 0 18px; }
-.vnext-empty-state { margin: auto; color: var(--v-quiet); font-size: 13px; text-align: center; }
-.vnext-conversation-turn { display: grid; gap: 12px; min-width: 0; }
-.vnext-conversation-turn__meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; font-size: 11px; }
-.vnext-conversation-turn__prompt { justify-self: end; width: min(100%, 570px); border: 1px solid color-mix(in oklab, var(--v-primary) 15%, var(--v-line)); border-radius: 12px 12px 4px 12px; padding: 10px 12px; background: color-mix(in oklab, var(--v-primary) 4%, var(--v-surface)); }
-.vnext-conversation-turn__prompt p, .vnext-conversation-turn__answer > p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.vnext-conversation-turn__prompt p { font-size: 13px; line-height: 1.5; }
-.vnext-conversation-turn__answer { width: 100%; padding: 4px 2px; }
-.vnext-conversation-turn__answer > p { max-width: 690px; font-size: 14px; line-height: 1.7; }
-.vnext-turn-failure { margin-top: 9px !important; border-left: 2px solid var(--v-danger); padding: 7px 10px; background: color-mix(in oklab, var(--v-danger) 5%, var(--v-surface)); color: var(--v-danger); font-size: 12px !important; }
+.vnext-conversation-column { display: flex; width: 100%; min-height: 0; flex: 1; flex-direction: column; }
 
-/* ── protocol v2 timeline ──────────────────────────────────────────────────
-   Tool calls and reasoning are COLLAPSED BY DEFAULT. A turn that ran forty
-   tools is unreadable expanded, and the label is what a reader scans. */
-.vnext-timeline { display: flex; flex-direction: column; gap: 6px; }
-.vnext-timeline:empty { display: none; }
+/* THE SCROLLER. Stick-to-bottom lives in JS; this owns the geometry. The 16px
+   padding is outside the 800px reading column, so the column stays centred. */
+.vnext-transcript { position: relative; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.vnext-transcript__inner { display: flex; flex-direction: column; gap: 32px; padding: 16px; }
+/* Same 16px gutter and same 800px measure as the composer, so prose and input
+   sit on one grid rather than 13px apart. */
+.vnext-transcript__inner > * { width: 100%; max-width: 800px; margin-inline: auto; }
+.vnext-scroll-latest { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--v-line); border-radius: 999px; background: var(--v-canvas); color: var(--v-ink); box-shadow: 0 4px 12px -6px rgb(20 25 35 / .35); }
+.vnext-scroll-latest:hover { background: var(--v-hover); }
+.vnext-scroll-latest svg { width: 16px; height: 16px; }
 
-.vnext-tool-item { border: 1px solid var(--v-line); border-radius: 6px; background: var(--v-surface); font-size: 12px; }
-.vnext-tool-item > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
-.vnext-tool-item > summary::-webkit-details-marker { display: none; }
-.vnext-tool-item__kind { flex: none; color: var(--v-quiet); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.vnext-tool-item__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); }
-.vnext-tool-item__status { flex: none; color: var(--v-quiet); font-size: 11px; }
-.vnext-tool-item__status[data-status="failed"] { color: var(--v-danger); }
-/* A running row is the one thing that must read at a glance while streaming. */
-.vnext-tool-item[data-status="inProgress"] { border-color: color-mix(in oklab, var(--v-primary) 45%, var(--v-line)); }
-.vnext-tool-item[data-status="failed"] { border-color: color-mix(in oklab, var(--v-danger) 35%, var(--v-line)); }
-.vnext-tool-item__body { margin: 0; border-top: 1px solid var(--v-line); padding: 8px 9px; max-height: 320px; overflow: auto; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 32px between turns, 8px between the items inside one. These two numbers are
+   the transcript's whole rhythm. */
+.vnext-turn { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 800px; margin-inline: auto; min-width: 0; }
 
-/* A unified diff. Tinted by line rather than gutter-marked: at this density the
-   background is what the eye picks up when scanning a long patch. */
-.vnext-diff { display: flex; flex-direction: column; margin: 0; border-top: 1px solid var(--v-line); max-height: 420px; overflow: auto; font-size: 11px; line-height: 1.5; }
-.vnext-diff__line { padding: 0 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.vnext-diff__line[data-tone="add"] { background: color-mix(in oklab, var(--v-success) 13%, transparent); }
-.vnext-diff__line[data-tone="remove"] { background: color-mix(in oklab, var(--v-danger) 11%, transparent); }
-.vnext-diff__line[data-tone="meta"] { color: var(--v-quiet); background: color-mix(in oklab, var(--v-rail) 60%, transparent); }
-/* +N/−N on the collapsed row: for a detached run this is the whole summary. */
-.vnext-diff-stat { flex: none; display: inline-flex; gap: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
-.vnext-diff-stat b[data-tone="add"] { color: var(--v-success); font-weight: 600; }
-.vnext-diff-stat b[data-tone="remove"] { color: var(--v-danger); font-weight: 600; }
+/* ONLY THE USER GETS A BUBBLE. Alignment plus fill is the entire attribution
+   system — no avatar, no author label, no timestamp anywhere in the transcript. */
+/* `align-self`, NOT `margin-left:auto`. The turn is a flex COLUMN, where the
+   auto margin does nothing to the cross axis and `align-items: stretch` makes
+   `width: fit-content` a no-op — so the bubble rendered as a full-width slab.
+   Caught by looking at it. */
+.vnext-prompt { align-self: flex-end; width: fit-content; max-width: 100%; border-radius: var(--v-radius); padding: 12px 16px; background: color-mix(in oklab, var(--v-hover) 65%, var(--v-canvas)); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; white-space: pre-wrap; }
+/* The assistant is bare and owns the full lane, specifically so nested tool
+   rows do not visibly resize as prose streams in. */
+.vnext-answer { width: 100%; display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 14px; line-height: 20px; }
 
-/* The agent's checklist. Open while it works, collapsed once the turn ends. */
-.vnext-plan-item { border: 1px solid var(--v-line); border-radius: 6px; background: var(--v-surface); font-size: 12px; }
-.vnext-plan-item > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
-.vnext-plan-item > summary::-webkit-details-marker { display: none; }
-.vnext-plan { margin: 0; border-top: 1px solid var(--v-line); padding: 8px 9px 8px 26px; display: grid; gap: 3px; }
+/* ── the activity lane ─────────────────────────────────────────────────── */
+.vnext-activity { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; }
+.vnext-activity > * { width: 100%; }
+.vnext-step { border-radius: 8px; }
+.vnext-step__row { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--v-quiet); font-size: 12px; line-height: 16px; text-align: left; }
+.vnext-step__row:not(:disabled):hover { background: color-mix(in oklab, var(--v-hover) 60%, transparent); }
+.vnext-step__row:disabled { cursor: default; }
+.vnext-step__icon { flex: none; width: 14px; height: 14px; color: var(--v-quiet); }
+.vnext-step__label { flex: none; color: var(--v-ink); }
+.vnext-step__label--thought { font-style: italic; color: var(--v-quiet); }
+.vnext-step__preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--v-quiet); }
+.vnext-step__count { flex: none; margin-left: auto; font-size: 10px; color: color-mix(in oklab, var(--v-quiet) 70%, transparent); }
+.vnext-step__badge { flex: none; border: 1px solid color-mix(in oklab, var(--v-danger) 40%, transparent); border-radius: 999px; padding: 0 4px; font-size: 9px; color: var(--v-danger); }
+.vnext-step__chevron { flex: none; margin-left: auto; width: 12px; height: 12px; transition: transform 150ms cubic-bezier(.4,0,.2,1); }
+.vnext-step__row[aria-expanded="true"] .vnext-step__chevron, .vnext-step__chevron[data-open] { transform: rotate(-90deg); }
+/* A failure tints the row and never hides. */
+.vnext-step[data-status="failed"] { background: color-mix(in oklab, var(--v-danger) 10%, transparent); }
+.vnext-step[data-status="failed"] .vnext-step__icon, .vnext-step[data-status="failed"] .vnext-step__label { color: var(--v-danger); }
+.vnext-step__error { margin: 0; padding: 4px 6px; color: var(--v-danger); font-size: 12px; }
+
+/* NESTING IS A HAIRLINE, NEVER A CARD. Three levels, one device, zero boxes. */
+.vnext-step__detail { margin-left: 12px; border-left: 1px solid color-mix(in oklab, var(--v-line) 70%, transparent); padding: 4px 6px 4px 12px; }
+.vnext-nest { display: flex; flex-direction: column; gap: 2px; margin-left: 8px; border-left: 1px solid color-mix(in oklab, var(--v-line) 70%, transparent); padding-left: 8px; }
+.vnext-step__pre { margin: 0; max-height: 240px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--v-quiet); }
+
+.vnext-activity__toggle { display: flex; width: 100%; align-items: center; gap: 6px; border: 0; border-radius: 8px; padding: 4px 6px; background: transparent; color: var(--v-quiet); font-size: 12px; text-align: left; }
+.vnext-activity__toggle:hover { background: color-mix(in oklab, var(--v-hover) 50%, transparent); }
+/* Errors survive collapse: a fold hiding a failure carries its colour. */
+.vnext-activity__toggle[data-tone="danger"], .vnext-activity__toggle[data-tone="danger"] .vnext-step__icon { color: var(--v-danger); }
+.vnext-activity__count { flex: none; }
+.vnext-activity__tally { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: color-mix(in oklab, var(--v-quiet) 80%, transparent); }
+.vnext-activity__count::after { content: " ·"; color: color-mix(in oklab, var(--v-quiet) 50%, transparent); }
+.vnext-agent-result { padding: 6px 0 2px; }
+
+/* ── liveness: a travelling highlight, never a spinner ──────────────────── */
+.vnext-shimmer { position: relative; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v-quiet); }
+.vnext-shimmer__sweep { position: absolute; inset: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v-ink); }
+@media (prefers-reduced-motion: no-preference) {
+  .vnext-shimmer__sweep {
+    -webkit-mask-image: linear-gradient(90deg, transparent calc(50% - var(--spread, 40px)), #000 50%, transparent calc(50% + var(--spread, 40px)));
+    mask-image: linear-gradient(90deg, transparent calc(50% - var(--spread, 40px)), #000 50%, transparent calc(50% + var(--spread, 40px)));
+    -webkit-mask-size: 250% 100%; mask-size: 250% 100%;
+    -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+    animation: vnext-shimmer 2s linear infinite;
+  }
+}
+/* Parked OFF the text when motion is reduced, so the duplicate never shows. */
+@media (prefers-reduced-motion: reduce) { .vnext-shimmer__sweep { display: none; } }
+@keyframes vnext-shimmer { from { mask-position: 100% center; -webkit-mask-position: 100% center; } to { mask-position: 0% center; -webkit-mask-position: 0% center; } }
+
+.vnext-thinking { padding: 4px 0; color: var(--v-quiet); }
+.vnext-thinking__head { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; font-size: 11px; font-weight: 500; }
+.vnext-thinking__head svg { width: 12px; height: 12px; }
+.vnext-thinking__body { margin: 0 0 0 20px; border-left: 1px solid color-mix(in oklab, var(--v-line) 70%, transparent); padding-left: 12px; font-size: 12px; font-style: italic; line-height: 1.625; white-space: pre-wrap; color: var(--v-quiet); }
+.vnext-caret { display: inline-block; width: 2px; height: 12px; margin-left: 2px; transform: translateY(2px); background: color-mix(in oklab, var(--v-quiet) 70%, transparent); vertical-align: middle; animation: vnext-pulse 2s cubic-bezier(.4,0,.6,1) infinite; }
+.vnext-thought { margin: 0 6px 6px; border-radius: 8px; background: color-mix(in oklab, var(--v-rail) 60%, transparent); padding: 8px; font-size: 11px; font-style: italic; line-height: 1.625; white-space: pre-wrap; color: var(--v-quiet); }
+@keyframes vnext-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+/* ── plan ──────────────────────────────────────────────────────────────── */
+.vnext-plan-block { padding: 4px 6px; border-radius: 8px; }
+.vnext-plan-block__head { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--v-quiet); }
+.vnext-plan-block__head svg { width: 14px; height: 14px; }
+.vnext-plan-block__head em { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-style: normal; color: color-mix(in oklab, var(--v-quiet) 70%, transparent); }
+.vnext-plan { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.vnext-plan li { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.625; }
+.vnext-plan li svg { flex: none; width: 12px; height: 12px; margin-top: 3px; }
+/* A completed step is primary; an in-progress one is NEUTRAL, never amber —
+   amber in this system means a human has to move. */
 .vnext-plan li[data-status="completed"] { color: var(--v-quiet); text-decoration: line-through; }
+.vnext-plan li[data-status="completed"] svg { color: var(--v-primary); }
 .vnext-plan li[data-status="inProgress"] { color: var(--v-ink); font-weight: 500; }
+.vnext-plan li[data-status="inProgress"] svg { color: var(--v-ink); animation: vnext-spin 1s linear infinite; }
 .vnext-plan li[data-status="pending"] { color: var(--v-quiet); }
+.vnext-plan li[data-status="pending"] svg { color: color-mix(in oklab, var(--v-quiet) 40%, transparent); }
+@keyframes vnext-spin { to { transform: rotate(360deg); } }
+
+/* ── system events ─────────────────────────────────────────────────────── */
+.vnext-marker { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.vnext-marker i { height: 1px; flex: 1; background: var(--v-line); }
+.vnext-marker span { display: flex; align-items: center; gap: 6px; max-width: 80%; border: 1px dashed var(--v-line); border-radius: 999px; padding: 2px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; text-align: center; color: var(--v-quiet); }
+.vnext-marker span[data-tone="attention"] { border-color: color-mix(in oklab, var(--v-warning) 40%, transparent); color: var(--v-warning); }
+.vnext-marker span svg { width: 12px; height: 12px; }
+
+/* The tail of a live turn. No border, no card. */
+.vnext-working { display: flex; align-items: center; gap: 8px; margin: 0; width: fit-content; font-size: 11px; color: color-mix(in oklab, var(--v-quiet) 70%, transparent); }
+.vnext-working__dot { width: 6px; height: 6px; border-radius: 999px; background: color-mix(in oklab, var(--v-quiet) 50%, transparent); animation: vnext-pulse 2s cubic-bezier(.4,0,.6,1) infinite; }
+.vnext-working__clock { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+/* Silence for 20s is the difference between slow and stuck, and it is the one
+   thing a detached run most needs surfaced. */
+.vnext-working[data-stalled] { color: color-mix(in oklab, var(--v-warning) 80%, transparent); }
+.vnext-working[data-stalled] .vnext-working__dot { background: var(--v-warning); }
+.vnext-working__stall { color: var(--v-warning); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
 
 /* Agent prose.
    STREAMDOWN SHIPS NO VISUAL STYLES — its stylesheet is 499 bytes of keyframes,
@@ -244,27 +312,52 @@ p { line-height: 1.5; }
 .vnext-markdown [data-streamdown="table-header-cell"] { border: 1px solid var(--v-line); padding: 4px 8px; text-align: left; }
 .vnext-markdown [data-streamdown="table-header-cell"] { background: var(--v-rail); font-weight: 600; }
 
-/* A sub-agent and its work. Indented rather than merely bordered: the nesting
-   IS the information — these rows did not happen on the main timeline. */
-.vnext-task-group { border: 1px solid var(--v-line); border-left-width: 3px; border-radius: 6px; background: color-mix(in oklab, var(--v-surface) 96%, transparent); font-size: 12px; }
-.vnext-task-group > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
-.vnext-task-group > summary::-webkit-details-marker { display: none; }
-.vnext-task-group__role { flex: none; color: var(--v-quiet); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.vnext-task-group__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vnext-task-group > .vnext-timeline { padding: 0 9px 8px; }
-.vnext-task-group > p { margin: 0; padding: 0 9px 8px; }
-
-.vnext-reasoning-item { font-size: 12px; color: var(--v-quiet); }
-.vnext-reasoning-item > summary { cursor: pointer; padding: 2px 0; }
-.vnext-reasoning-item > p { margin: 4px 0 0; padding-left: 10px; border-left: 2px solid var(--v-line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .vnext-recovery { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in oklab, var(--v-warning) 35%, var(--v-line)); border-radius: 9px; padding: 10px 12px; background: color-mix(in oklab, var(--v-warning) 4%, var(--v-surface)); }
 .vnext-recovery strong { font-size: 12px; }
 .vnext-recovery p { max-width: 480px; margin: 3px 0 0; color: var(--v-quiet); font-size: 11px; }
-.vnext-session-composer { display: grid; gap: 8px; margin-top: auto; border: 1px solid color-mix(in oklab, var(--v-line) 90%, var(--v-quiet)); border-radius: 15px; padding: 10px; background: color-mix(in oklab, var(--v-surface) 94%, transparent); box-shadow: 0 18px 50px -28px rgb(20 25 35 / .5); backdrop-filter: blur(12px); }
-.vnext-session-composer .vnext-textarea { min-height: 76px; border-color: transparent; padding: 4px 3px; background: transparent; }
-.vnext-session-composer .vnext-textarea:focus { border-color: transparent; }
-.vnext-session-composer__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid color-mix(in oklab, var(--v-line) 65%, transparent); padding: 8px 1px 0; }
-.vnext-session-composer__footer p { margin: 0; }
+.vnext-turn-usage { margin: 4px 0 0; font-size: 11px; color: color-mix(in oklab, var(--v-quiet) 75%, transparent); font-variant-numeric: tabular-nums; }
+/* The session workspace is a column: masthead, scroller, composer. The
+   scroller is the only thing that scrolls — the composer must not leave. */
+.vnext-session-workspace { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
+
+/* ── the composer ──────────────────────────────────────────────────────── */
+/* Nothing separates it from the transcript — no divider, no gradient. That
+   wide, soft, downward shadow IS the separation, and a conventional card
+   shadow instantly reads as a downgrade. */
+.vnext-composer-wrap { position: relative; width: 100%; max-width: 800px; margin: 0 auto; padding: 0 16px 20px; }
+.vnext-composer { position: relative; display: flex; flex-direction: column; width: 100%; overflow: hidden; border: 1px solid color-mix(in oklab, var(--v-line) 80%, transparent); border-radius: 18px; background: color-mix(in oklab, var(--v-surface) 95%, transparent); box-shadow: 0 18px 60px -30px rgb(0 0 0 / .9); backdrop-filter: blur(24px); transition: border-color 150ms, background-color 150ms; }
+/* The focus ring lives on the CONTAINER, not the field. */
+.vnext-composer:has(.vnext-composer__field:focus-visible) { border-color: var(--v-primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--v-primary) 50%, transparent), 0 18px 60px -30px rgb(0 0 0 / .9); }
+.vnext-composer__field { flex: 1; width: 100%; resize: none; border: 0; outline: 0; background: transparent; box-shadow: none; field-sizing: content; min-height: 76px; max-height: 192px; padding: 12px 12px 8px; font-size: 15px; line-height: 24px; color: var(--v-ink); }
+.vnext-composer__field::placeholder { color: var(--v-quiet); }
+.vnext-composer__field:disabled { cursor: not-allowed; }
+.vnext-composer__footer { display: flex; width: 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px; min-height: 44px; border-top: 1px solid color-mix(in oklab, var(--v-line) 40%, transparent); padding: 6px 10px 8px; }
+.vnext-composer__tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+/* Control borders are DARKER than the box border — against a near-white
+   surface the hairline reads as a ghost. */
+.vnext-composer__mode { display: inline-flex; align-items: center; gap: 6px; height: 32px; border: 1px solid color-mix(in oklab, var(--v-line) 34%, var(--v-quiet)); border-radius: 8px; padding: 0 8px 0 10px; color: var(--v-quiet); font-size: 12px; font-weight: 500; transition: color 150ms, background-color 150ms, border-color 150ms; }
+.vnext-composer__mode:hover, .vnext-composer__mode:focus-within { background: var(--v-hover); color: var(--v-ink); }
+.vnext-composer__mode svg { width: 14px; height: 14px; flex: none; }
+.vnext-composer__mode select { border: 0; outline: 0; background: transparent; color: var(--v-ink); font-size: 12px; font-weight: 500; }
+/* SEND BECOMES STOP. One square, same place, never duplicated. */
+.vnext-composer__send { display: grid; place-items: center; width: 32px; height: 32px; flex: none; margin-left: auto; border: 0; border-radius: 10px; background: var(--v-primary); color: #fff; transition: background-color 150ms, transform 150ms; }
+.vnext-composer__send:hover:not(:disabled) { background: color-mix(in oklch, var(--v-primary), var(--v-ink) 10%); }
+.vnext-composer__send:active:not(:disabled) { transform: translateY(1px); }
+.vnext-composer__send:disabled { background: var(--v-rail); color: color-mix(in oklab, var(--v-quiet) 60%, transparent); cursor: not-allowed; }
+.vnext-composer__send svg { width: 16px; height: 16px; }
+.vnext-composer__send[data-state="sending"] svg { animation: vnext-spin 1s linear infinite; }
+.vnext-composer__esc { font-size: 10px; font-weight: 600; letter-spacing: -.01em; line-height: 1; }
+
+/* Queued follow-ups. NO LIFECYCLE VOCABULARY — no badge, no spinner, no
+   "sending…". A line being executed has no chip; it is in the transcript. */
+.vnext-queue { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; border: 1px solid color-mix(in oklab, var(--v-primary) 25%, transparent); border-radius: 14px; background: color-mix(in oklab, var(--v-primary) 4%, transparent); padding: 8px; }
+.vnext-queue__head { margin: 0; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .025em; color: var(--v-quiet); }
+.vnext-queue-chip { display: flex; align-items: center; gap: 8px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--v-line); background: color-mix(in oklab, var(--v-surface) 80%, transparent); padding: 6px 8px; }
+.vnext-queue-chip__text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--v-ink); }
+.vnext-queue-chip__drop { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--v-quiet); }
+.vnext-queue-chip__drop:hover { color: var(--v-danger); background: color-mix(in oklab, var(--v-danger) 10%, transparent); }
+.vnext-queue-chip__drop svg { width: 14px; height: 14px; }
+
 .vnext-right-panel { position: fixed; inset: 0 0 0 auto; z-index: 40; display: flex; width: min(480px, calc(100vw - 42px)); flex-direction: column; border-left: 1px solid var(--v-line); background: var(--v-rail); box-shadow: -18px 0 50px rgb(20 25 35 / .11); }
 .vnext-right-panel header { display: flex; min-height: 44px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--v-line); padding: 0 10px 0 14px; }
 .vnext-right-panel header div { display: grid; gap: 1px; }

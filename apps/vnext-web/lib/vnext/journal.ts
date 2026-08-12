@@ -40,6 +40,9 @@ export type JournalTurn = {
   items: JournalItem[];
   /** Sub-agents and background work launched by this turn. */
   tasks: JournalTask[];
+  /** When the provider actually started, for the live elapsed clock. Absent
+   *  until the turn is claimed and running. */
+  startedAt?: number;
   /** The assistant's final text, as the engine recorded it on completion. */
   resultText: string;
   failure?: string;
@@ -76,6 +79,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         state: turn.state,
         items: [],
         tasks: [],
+        ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
         resultText: turn.resultText ?? "",
         ...(turn.failure ? { failure: turn.failure.message } : {}),
         ...(turn.usage ? { usage: turn.usage } : {}),
@@ -152,7 +156,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         if (turn) turn.state = "claimed";
         break;
       case "turn.started":
-        if (turn) turn.state = "running";
+        if (turn) { turn.state = "running"; turn.startedAt = turn.startedAt ?? event.at; }
         break;
       case "turn.requeued":
         if (turn) turn.state = "queued";

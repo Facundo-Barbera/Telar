@@ -5,6 +5,7 @@ import type {
   Project,
   EngineRequest,
   RequestDecision,
+  RuntimeMode,
   Session,
   SessionSnapshot,
   Turn,
@@ -68,6 +69,9 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     // arriving and a local re-declaration only hides it.
     session: (sessionId: string) =>
       request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+    /** Rename, or change what the session may do without asking. */
+    updateSession: (sessionId: string, patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean }) =>
+      request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     resolveRequest: (sessionId: string, requestId: string, input: { decision: RequestDecision; reason?: string }) =>
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
     events: (sessionId: string, after: number) =>

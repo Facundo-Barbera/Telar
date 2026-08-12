@@ -23,6 +23,13 @@ const nextConfig: NextConfig = {
   // under Bun's isolated linker without inheriting any legacy web config.
   transpilePackages: ["@telar/engine-client"],
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
+  /**
+   * Next's dev indicator defaults to `bottom-left`, which is exactly where this
+   * app's sidebar puts its session list — it sat on top of the last row and
+   * clipped its title. Moved rather than disabled: it still surfaces compile and
+   * runtime errors, and losing that to tidy a corner is a bad trade.
+   */
+  devIndicators: { position: "bottom-right" },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
 };
 

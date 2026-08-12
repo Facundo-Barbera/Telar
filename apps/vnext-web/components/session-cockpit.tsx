@@ -2,22 +2,19 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { displayToolName, type EngineEvent, type EngineRequest, type Item, type Session, type Task, type Turn, type TurnState } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type EngineRequest, type Item, type RuntimeMode, type Session, type Task, type Turn, type TurnState } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import {
   appendJournalEvents,
   isActiveTurn,
-  isToolItem,
-  itemLabel,
   itemText,
   projectJournal,
-  toolOutput,
-  type JournalItem,
-  type JournalTask,
   type JournalTurn,
 } from "@/lib/vnext/journal";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { AgentMarkdown } from "./agent-markdown";
+import { Composer } from "./composer";
+import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
 import { VNextRightPanel } from "./right-panel";
 import { Icon } from "./vnext-icons";
 
@@ -62,14 +59,6 @@ function SessionMasthead({ projectId, session, sessionId, active, sending, onSto
   </header>;
 }
 
-function ActiveTurnNotice({ state }: { state: TurnState }) {
-  const status = describeTurnState(state);
-  return <aside className="vnext-live-state" aria-live="polite">
-    <StateBadge state={state} />
-    <p><strong>Live work in progress.</strong> This turn is {status.label.toLowerCase()}. You can keep reading while the durable journal updates.</p>
-  </aside>;
-}
-
 function RecoveryActions({ sending, onRetry, onDiscard }: {
   sending: boolean;
   onRetry: () => void;
@@ -87,151 +76,22 @@ function RecoveryActions({ sending, onRetry, onDiscard }: {
   </section>;
 }
 
+/**
+ * A price, at a precision that matches its size.
+ *
+ * A flat four decimals prints `$0.4210` — a trailing zero that reads as
+ * spurious accuracy on a figure whose last digit does not matter. Sub-cent runs
+ * still need the digits, so the precision scales instead of being fixed.
+ */
+function formatCost(usd: number): string {
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
 /** The journal separates the submitted prompt from streamed agent output. */
 export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "state" | "prompt">): Pick<Turn, "runId" | "state" | "input"> {
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
-}
-
-const TOOL_ICON: Partial<Record<Item["detail"]["type"], string>> = {
-  command_execution: "terminal",
-  file_change: "file",
-  file_read: "file",
-  mcp_tool_call: "plug",
-  dynamic_tool_call: "tool",
-  web_search: "search",
-  browser_action: "globe",
-};
-
-/**
- * A unified diff, coloured by line.
- *
- * PER-LINE RATHER THAN A DIFF LIBRARY: the engine already produced the diff, so
- * the only job left is to make additions and removals scannable. Splitting on
- * the first character is exactly what the format guarantees, and it cannot get
- * out of step with a parser the engine does not use.
- */
-function DiffBody({ diff }: { diff: string }) {
-  return <pre className="vnext-diff">
-    {diff.split("\n").map((line, index) => {
-      // `---`/`+++` are the file header, not a removed and an added line. Tested
-      // before the single-character check or every diff opens with one of each.
-      const tone = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@")
-        ? "meta"
-        : line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : undefined;
-      return <span key={index} className="vnext-diff__line" data-tone={tone}>{line || " "}</span>;
-    })}
-  </pre>;
-}
-
-/**
- * A tool call. Collapsed to its label by default — a turn that ran forty tools
- * is unreadable expanded, and the label is what a reader scans.
- *
- * `<details>` rather than React state on purpose: it keeps open/closed in the
- * DOM across re-renders, and a streaming turn re-renders constantly.
- */
-function ToolItem({ item }: { item: JournalItem }) {
-  const output = toolOutput(item);
-  const change = item.detail.type === "file_change" ? item.detail.change : undefined;
-  return <details className="vnext-tool-item" data-status={item.status}>
-    <summary>
-      <span className="vnext-tool-item__kind" aria-hidden="true">{TOOL_ICON[item.detail.type] ?? "tool"}</span>
-      <code className="vnext-tool-item__label">{itemLabel(item)}</code>
-      {/* The scannable part of a detached run: what this edit cost the file,
-          readable without expanding the row. */}
-      {change && (change.linesAdded ?? change.linesRemoved) !== undefined && <span className="vnext-diff-stat">
-        {change.linesAdded ? <b data-tone="add">+{change.linesAdded}</b> : null}
-        {change.linesRemoved ? <b data-tone="remove">−{change.linesRemoved}</b> : null}
-      </span>}
-      <span className="vnext-tool-item__status" data-status={item.status}>
-        {item.status === "inProgress" ? "running" : item.status === "failed" ? "failed" : item.status === "declined" ? "declined" : "done"}
-      </span>
-    </summary>
-    {change?.unifiedDiff
-      ? <DiffBody diff={change.unifiedDiff} />
-      : output
-        ? <pre className="vnext-tool-item__body">{output}</pre>
-        : <p className="vnext-muted vnext-small">No output recorded.</p>}
-  </details>;
-}
-
-/** The agent's checklist. One row per turn, updated in place by the engine. */
-function PlanItem({ item }: { item: JournalItem }) {
-  if (item.detail.type !== "plan") return null;
-  const steps = item.detail.plan.steps;
-  const done = steps.filter((step) => step.status === "completed").length;
-  return <details className="vnext-plan-item" open={item.status === "inProgress"}>
-    <summary>
-      <span className="vnext-tool-item__kind" aria-hidden="true">list</span>
-      <span className="vnext-tool-item__label">Plan</span>
-      <span className="vnext-muted vnext-small">{done}/{steps.length}</span>
-    </summary>
-    <ol className="vnext-plan">
-      {steps.map((step, index) => <li key={index} data-status={step.status}>{step.step}</li>)}
-    </ol>
-  </details>;
-}
-
-/** Extended thinking, collapsed by default: it is long and rarely the point. */
-function ReasoningItem({ item }: { item: JournalItem }) {
-  const text = itemText(item);
-  if (!text) return null;
-  return <details className="vnext-reasoning-item">
-    <summary>Thinking</summary>
-    <AgentMarkdown text={text} streaming={item.status === "inProgress"} />
-  </details>;
-}
-
-/** The state word a sub-agent row leads with. */
-const TASK_STATES: Record<Task["state"], string> = {
-  pending: "Queued",
-  running: "Working",
-  waiting: "Waiting",
-  completed: "Done",
-  failed: "Failed",
-  stopped: "Stopped",
-};
-
-/**
- * A sub-agent and everything it did, as ONE collapsible row.
- *
- * NESTED RATHER THAN INTERLEAVED. Five agents running at once put their tool
- * calls on the same stream in arrival order; rendered flat that reads as a
- * single agent doing five contradictory things. `Item.taskId` is what lets the
- * fold separate them, and this is the surface that separation exists for.
- */
-function TaskGroup({ task }: { task: JournalTask }) {
-  const live = task.state === "running" || task.state === "pending" || task.state === "waiting";
-  return <details className="vnext-task-group" open={live}>
-    <summary>
-      <span className="vnext-task-group__role">{task.role ?? (task.kind === "background" ? "Background" : "Agent")}</span>
-      <span className="vnext-task-group__title">{task.title ?? "Sub-agent"}</span>
-      <span className="vnext-muted vnext-small">{TASK_STATES[task.state]}</span>
-    </summary>
-    <div className="vnext-timeline">
-      {task.items.map((item) => <TimelineItem key={item.id} item={item} />)}
-    </div>
-    {task.resultText && <AgentMarkdown text={task.resultText} />}
-    {task.failure && <p className="vnext-turn-failure" role="alert">{task.failure}</p>}
-  </details>;
-}
-
-function TimelineItem({ item }: { item: JournalItem }) {
-  // The handle row for a sub-agent. Its work renders under `TaskGroup`, so
-  // showing it again here would print the fan-out twice.
-  if (item.detail.type === "task") return null;
-  if (isToolItem(item)) return <ToolItem item={item} />;
-  if (item.detail.type === "plan") return <PlanItem item={item} />;
-  if (item.detail.type === "reasoning") return <ReasoningItem item={item} />;
-  if (item.detail.type === "error") {
-    return <p className="vnext-turn-failure" role="alert">{item.detail.error.message}</p>;
-  }
-  if (item.detail.type === "assistant_message") {
-    return <AgentMarkdown text={itemText(item)} streaming={item.status === "inProgress"} />;
-  }
-  // Forward compatibility: an item type this build does not render still gets
-  // a row. A silently missing row is worse than an unstyled one.
-  return <p className="vnext-muted vnext-small">{itemLabel(item)}</p>;
 }
 
 /** The one-liner an approval card leads with, per request kind. */
@@ -284,76 +144,82 @@ function ApprovalCard({ request, sending, onDecide }: {
   </section>;
 }
 
-function SessionTurn({ turn, requests, sending, onDecide, onRetry, onDiscard }: {
+function SessionTurn({ turn, requests, sending, live, now, onDecide, onRetry, onDiscard }: {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
   turn: JournalTurn;
   sending: boolean;
+  /** This turn is the one currently executing. Drives the live step window. */
+  live: boolean;
+  now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   onDiscard: (turn: Pick<Turn, "runId">) => void;
 }) {
-  // The final text is shown only when no assistant item carried it. A completed
-  // turn has both — `resultText` on the turn and the streamed message items —
-  // and rendering both prints the answer twice.
-  const streamedAnswer = turn.items.some((item) => item.detail.type === "assistant_message" && itemText(item));
-  const hasBody = turn.items.length > 0 || turn.tasks.length > 0 || turn.resultText || turn.failure;
-  return <article className="vnext-conversation-turn">
-    <div className="vnext-conversation-turn__prompt">
-      <div className="vnext-conversation-turn__meta"><strong>You</strong><StateBadge state={turn.state} /></div>
-      <p>{turn.prompt}</p>
-    </div>
+  /**
+   * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
+   *
+   * A settled turn shows its answer and folds everything that produced it, so
+   * history reads as conclusions. The split point is the LAST assistant message:
+   * everything before it is activity, and narration in the middle folds with the
+   * work it narrates rather than stranding itself above the fold.
+   */
+  const lastProse = turn.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
+  const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
+  const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
+  const streamedAnswer = closing.some((item) => itemText(item));
+
+  return <article className="vnext-turn">
+    <p className="vnext-prompt">{turn.prompt}</p>
     {requests.map((request) => <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />)}
-    {hasBody && <div className="vnext-conversation-turn__answer">
-      <div className="vnext-conversation-turn__meta">
-        <strong>Telar</strong>
-        {turn.usage && <span className="vnext-muted vnext-small">
-          {turn.usage.tokens.input + turn.usage.tokens.output} tokens
-          {typeof turn.usage.costUsd === "number" && ` · $${turn.usage.costUsd.toFixed(4)}`}
-        </span>}
-      </div>
-      <div className="vnext-timeline">
-        {turn.items.map((item) => <TimelineItem key={item.id} item={item} />)}
-        {turn.tasks.map((task) => <TaskGroup key={task.id} task={task} />)}
-      </div>
+    <div className="vnext-answer">
+      <ActivityGroup items={activity} tasks={turn.tasks} live={live} />
+      {closing.map((item) => <TranscriptItem key={item.id} item={item} />)}
       {!streamedAnswer && turn.resultText && <AgentMarkdown text={turn.resultText} />}
-      {turn.failure && <p className="vnext-turn-failure" role="alert"><strong>Turn failed. </strong>{turn.failure}</p>}
-    </div>}
+      {turn.failure && <Marker text={turn.failure} tone="attention" />}
+      {turn.state === "stopped" && <Marker text="Stopped — kept what arrived." />}
+      {live && <WorkingIndicator label={turn.items.some((i) => i.status === "inProgress") ? "Working" : "Thinking"} startedAt={turn.startedAt} now={now} />}
+      {turn.usage && !live && <p className="vnext-turn-usage">
+        {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
+        {typeof turn.usage.costUsd === "number" && ` · ${formatCost(turn.usage.costUsd)}`}
+      </p>}
+    </div>
     {turn.state === "ambiguous" && <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />}
   </article>;
 }
 
-function SessionTranscript({ loading, error, transcript, openRequests, sending, onDecide, onRetry, onDiscard }: {
-  loading: boolean;
-  error?: VNextApiError;
-  transcript: ReturnType<typeof projectJournal>;
-  openRequests: EngineRequest[];
-  sending: boolean;
-  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
-  onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
-  onDiscard: (turn: Pick<Turn, "runId">) => void;
-}) {
-  return <section className="vnext-session-transcript" aria-label="Conversation transcript">
-    {loading && <p className="vnext-empty-state">Hydrating durable transcript…</p>}
-    {!loading && !error && transcript.length === 0 && <p className="vnext-empty-state">This durable session is ready for its first turn.</p>}
-    {transcript.map((turn) => <SessionTurn key={turn.runId} turn={turn} requests={openRequests.filter((request) => request.runId === turn.runId)} sending={sending} onDecide={onDecide} onRetry={onRetry} onDiscard={onDiscard} />)}
-  </section>;
-}
+/**
+ * Stick to the bottom while the reader is already there, and stop the moment
+ * they scroll up. Yanking a reader back to the tail mid-stream is the fastest
+ * way to make a long turn unreadable.
+ */
+function useStickToBottom(dependency: unknown) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const stuck = useRef(true);
 
-function SessionComposer({ draft, ready, active, sending, onDraftChange, onSubmit }: {
-  draft: string;
-  ready: boolean;
-  active?: { state: TurnState };
-  sending: boolean;
-  onDraftChange: (draft: string) => void;
-  onSubmit: (event: React.FormEvent) => void;
-}) {
-  const unavailable = !ready || Boolean(active) || sending;
-  const helper = !ready ? "Waiting for the engine-owned session to become available." : active ? "A turn is active. Stop it before sending another." : "Each submission receives a stable run ID before it reaches the engine.";
-  return <form className="vnext-session-composer" onSubmit={onSubmit}>
-    <label className="sr-only" htmlFor="vnext-turn-prompt">Message</label>
-    <textarea id="vnext-turn-prompt" className="vnext-textarea" aria-describedby="vnext-composer-help" placeholder={!ready ? "Waiting for the engine session…" : active ? "A turn is active. Stop it before sending another." : "Ask for changes, explore the project, or continue this conversation…"} value={draft} onChange={(event) => onDraftChange(event.target.value)} disabled={unavailable} />
-    <div className="vnext-session-composer__footer"><p id="vnext-composer-help" className="vnext-muted vnext-small">{helper}</p><button className="vnext-button" type="submit" disabled={!draft.trim() || unavailable}>{sending ? "Sending…" : "Send"}</button></div>
-  </form>;
+  const onScroll = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+    // 40px of slack: a reader one line off the bottom still means "following".
+    const bottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 40;
+    stuck.current = bottom;
+    setAtBottom(bottom);
+  }, []);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (node && stuck.current) node.scrollTop = node.scrollHeight;
+  }, [dependency]);
+
+  const toBottom = useCallback(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    stuck.current = true;
+    setAtBottom(true);
+  }, []);
+
+  return { ref, atBottom, onScroll, toBottom };
 }
 
 export function SessionCockpit({ projectId, sessionId }: { projectId: string; sessionId: string }) {
@@ -396,7 +262,32 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   }, [hydrate, tail]);
 
   const transcript = useMemo(() => projectJournal(turns, items, events, tasks), [turns, items, events, tasks]);
-  const active = transcript.find((turn) => isActiveTurn(turn.state));
+  /**
+   * The turn actually EXECUTING, which is not simply the first active one now
+   * that a backlog can exist: `queued` turns are also "active" by the contract's
+   * reckoning, and treating one of those as live would put the working
+   * indicator and the live step window on a turn that has not started.
+   */
+  const active = transcript.find((turn) => turn.state === "claimed" || turn.state === "running")
+    ?? transcript.find((turn) => isActiveTurn(turn.state));
+  const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
+  /** Everything typed but not yet started, oldest first — the pending strip. */
+  const queued = useMemo(
+    () => transcript.filter((turn) => turn.state === "queued").map((turn) => ({ runId: turn.runId, text: turn.prompt })),
+    [transcript],
+  );
+  const { ref: scrollRef, atBottom, onScroll, toBottom } = useStickToBottom(transcript);
+
+  // A clock, only while something is running. An always-on interval re-renders
+  // a settled transcript once a second for nothing.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    // The interval alone drives it. Seeding synchronously here is a cascading
+    // render for at most one second of staleness in a seconds-resolution clock.
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
   // Only OPEN requests are actionable; resolved ones are history and live in
   // the journal rather than as a card demanding a second answer.
   const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
@@ -429,22 +320,72 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not retry the ambiguous turn."));
     } finally { setSending(false); }
   };
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault(); if (!draft.trim() || active) return;
+  const submit = async () => {
+    if (!draft.trim()) return;
     const runId = draftRunId ?? newVNextRunId(); setDraftRunId(runId); setSending(true);
-    try { await api.submitTurn(sessionId, { runId, input: draft.trim() }); setDraft(""); setDraftRunId(undefined); await hydrate(); setError(undefined); }
-    catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not submit the turn.")); }
+    // Cleared OPTIMISTICALLY and before the round trip: the box emptying is the
+    // acknowledgement, and waiting on the network to give it back is the thing
+    // that makes queueing feel like a form submission.
+    const text = draft.trim();
+    setDraft(""); setDraftRunId(undefined);
+    try { await api.submitTurn(sessionId, { runId, input: text }); await hydrate(); setError(undefined); }
+    catch (cause) {
+      // Give the words back. Losing a typed message to a failed POST is
+      // unforgivable in a way that a visible error is not.
+      setDraft(text); setDraftRunId(runId);
+      setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not submit the turn."));
+    }
     finally { setSending(false); }
+  };
+  const withdraw = async (runId: string) => {
+    setSending(true);
+    try { await api.stopTurn(sessionId, runId); await hydrate(); setError(undefined); }
+    catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not withdraw the queued message.")); }
+    finally { setSending(false); }
+  };
+  const setRuntimeMode = async (mode: RuntimeMode) => {
+    // Not gated on `sending`: this is the brake, and a brake you cannot reach
+    // while the thing is moving is not a brake.
+    try { const next = await api.updateSession(sessionId, { runtimeMode: mode }); setSession(next.session); setError(undefined); }
+    catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not change the runtime mode.")); }
   };
 
   return <main className="vnext-session-workspace">
     <SessionMasthead projectId={projectId} session={session} sessionId={sessionId} active={active} sending={sending} onStop={() => void stop()} />
     <div className="vnext-conversation-column">
-      {projectId !== session?.projectId && session && <p className="vnext-alert">This URL’s project does not match the engine-owned session record.</p>}
-      {error && <SessionProblem error={error} />}
-      {active && <ActiveTurnNotice state={active.state} />}
-      <SessionTranscript loading={loading} error={error} transcript={transcript} openRequests={openRequests} sending={sending} onDecide={(requestId, decision) => void decideRequest(requestId, decision)} onRetry={(turn) => void retryAmbiguous(turn)} onDiscard={(turn) => void discardAmbiguous(turn)} />
-      <SessionComposer draft={draft} ready={Boolean(session)} active={active} sending={sending} onDraftChange={(nextDraft) => { setDraft(nextDraft); setDraftRunId(undefined); }} onSubmit={submit} />
+      <div className="vnext-transcript" ref={scrollRef} onScroll={onScroll}>
+        <div className="vnext-transcript__inner">
+          {projectId !== session?.projectId && session && <p className="vnext-alert">This URL’s project does not match the engine-owned session record.</p>}
+          {error && <SessionProblem error={error} />}
+          {loading && <p className="vnext-empty-state">Hydrating durable transcript…</p>}
+          {!loading && !error && transcript.length === 0 && <p className="vnext-empty-state">This durable session is ready for its first turn.</p>}
+          {transcript.filter((turn) => turn.state !== "queued").map((turn) => <SessionTurn
+            key={turn.runId}
+            turn={turn}
+            live={turn.runId === active?.runId}
+            now={now}
+            requests={openRequests.filter((request) => request.runId === turn.runId)}
+            sending={sending}
+            onDecide={(requestId, decision) => void decideRequest(requestId, decision)}
+            onRetry={(item) => void retryAmbiguous(item)}
+            onDiscard={(item) => void discardAmbiguous(item)}
+          />)}
+        </div>
+        {!atBottom && <button type="button" className="vnext-scroll-latest" aria-label="Scroll to latest" onClick={toBottom}><Icon name="arrowDown" /></button>}
+      </div>
+      <Composer
+        draft={draft}
+        ready={Boolean(session)}
+        busy={Boolean(active)}
+        sending={sending}
+        queued={queued}
+        runtimeMode={session?.runtimeMode}
+        onDraftChange={(nextDraft) => { setDraft(nextDraft); setDraftRunId(undefined); }}
+        onSubmit={() => void submit()}
+        onStop={() => void stop()}
+        onWithdraw={(runId) => void withdraw(runId)}
+        onRuntimeMode={(mode) => void setRuntimeMode(mode)}
+      />
     </div>
   </main>;
 }

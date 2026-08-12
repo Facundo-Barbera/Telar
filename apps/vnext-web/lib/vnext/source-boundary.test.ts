@@ -43,17 +43,35 @@ describe("standalone vNext source boundary", () => {
   });
 
   test("keeps the session workspace and visual shell local", () => {
+    /**
+     * ASSERTED ACROSS THE COMPONENT FOLDER, not against one file's contents.
+     * This used to name `function SessionTranscript` and `function
+     * SessionComposer` inside session-cockpit.tsx, which pinned a FILE LAYOUT
+     * rather than the boundary it exists to protect — splitting the transcript
+     * and composer into their own modules broke it while changing nothing about
+     * whether the visual shell is local. What matters is that these surfaces
+     * are built here and import nothing from the frozen app.
+     */
+    const components = fs
+      .readdirSync(path.join(appRoot, "components"))
+      .filter((name) => name.endsWith(".tsx"))
+      .map((name) => fs.readFileSync(path.join(appRoot, "components", name), "utf8"));
+    const cockpitSources = components.join("\n");
     const cockpit = fs.readFileSync(path.join(appRoot, "components", "session-cockpit.tsx"), "utf8");
     const shell = fs.readFileSync(path.join(appRoot, "components", "vnext-app-shell.tsx"), "utf8");
     const sidebar = fs.readFileSync(path.join(appRoot, "components", "vnext-sidebar.tsx"), "utf8");
     const panel = fs.readFileSync(path.join(appRoot, "components", "right-panel.tsx"), "utf8");
     const styles = fs.readFileSync(path.join(appRoot, "app", "globals.css"), "utf8");
     expect(cockpit).toContain("function SessionMasthead");
-    expect(cockpit).toContain("function SessionTranscript");
-    expect(cockpit).toContain("function SessionComposer");
+    expect(cockpitSources).toContain("function ActivityGroup");
+    expect(cockpitSources).toContain("export function Composer");
+    // Nothing under components/ may reach into the frozen app.
+    for (const source of components) {
+      expect(source).not.toContain("web_old");
+      expect(source).not.toContain("@telar/core");
+    }
     expect(cockpit).toContain("Retry as new run");
     expect(cockpit).toContain("Discard recovered run");
-    expect(cockpit).toContain('aria-live="polite"');
     expect(cockpit).toContain("VNextRightPanel");
     expect(shell).toContain("VNextSidebar");
     expect(sidebar).toContain("Search sessions");
