@@ -39,8 +39,15 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(initial.replayed).toBe(false);
   expect(store.submitTurn("session_one", { runId: "run_one", input: "Hello" })).toEqual({ ...initial, replayed: true });
   expect(() => store.submitTurn("session_one", { runId: "run_one", input: "Different" })).toThrow(EngineStateError);
-  expect(() => store.submitTurn("session_one", { runId: "run_two", input: "Second" })).toThrow(/active turn/);
   expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
+
+  // A SECOND SUBMISSION IS NOW ACCEPTED AND QUEUED, where it used to be a
+  // conflict. What has NOT changed is that only one turn ever executes:
+  // `claimTurn` refuses while another is claimed or running, which the
+  // queue-drain test below pins. The old assertion here described the
+  // waiting, not the invariant.
+  const queued = store.submitTurn("session_one", { runId: "run_two", input: "Second" });
+  expect(queued.turn.state).toBe("queued");
 });
 
 test("stop is durable and idempotent", () => {
@@ -149,6 +156,95 @@ test("observations become durable items and deltas, and only under a live claim"
     "content.delta",
     "item.completed",
   ]);
+});
+
+test("a follow-up may be QUEUED while a turn runs, and drains in the order it was typed", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "First" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_one", claimed.claim!.token);
+
+  // THE POINT: this used to be a conflict, so a human had to sit and wait
+  // through a long turn before they could say the next thing.
+  const second = store.submitTurn("session_one", { runId: "run_two", input: "Second" });
+  expect(second.turn.state).toBe("queued");
+  store.submitTurn("session_one", { runId: "run_three", input: "Third" });
+
+  // Still exactly ONE turn executing: nothing may be claimed while one runs.
+  expect(store.claimNextTurn("worker_two")).toBeUndefined();
+
+  store.completeTurn("session_one", "run_one", claimed.claim!.token, { text: "done" });
+  // Oldest first, so a backlog runs in the order it was typed.
+  expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_two");
+
+  // A queued follow-up can be withdrawn before it ever runs.
+  expect(store.stopTurn("session_one", "run_three").stopped).toBe(true);
+});
+
+test("an ambiguous turn still blocks new work, and the backlog is bounded", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "First" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_one", claimed.claim!.token);
+
+  // A runaway client with a fresh runId each time would otherwise grow
+  // queue.json without bound, and the queue is rewritten whole per transition.
+  for (let i = 0; i < 16; i += 1) store.submitTurn("session_one", { runId: `run_q${i}`, input: "more" });
+  expect(() => store.submitTurn("session_one", { runId: "run_over", input: "one too many" })).toThrow(/maximum number of queued/);
+
+  // Ambiguity is different from busy: it needs a human decision first.
+  const { store: other } = readyStore();
+  other.submitTurn("session_one", { runId: "run_a", input: "First" });
+  const held = other.claimTurn("session_one", "worker_one")!;
+  other.markRunning("session_one", "run_a", held.claim!.token);
+  other.recover();
+  expect(() => other.submitTurn("session_one", { runId: "run_b", input: "next" })).toThrow(/ambiguous/);
+});
+
+test("runtime mode can be tightened mid-session and binds the very next tool call", () => {
+  const { store } = readyStore();
+  expect(store.getSession("session_one").runtimeMode).toBe("auto");
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const token = claimed.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+
+  // Under `auto`, a command resolves itself with nobody watching.
+  const before = store.openRequest("session_one", "run_one", token, {
+    requestId: "req_before",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "rm -rf /tmp/x" } },
+  });
+  expect(before.state).toBe("resolved");
+
+  // A human takes the rope back WHILE THE TURN IS STILL RUNNING.
+  const tightened = store.updateSession("session_one", { runtimeMode: "approval-required" });
+  expect(tightened.runtimeMode).toBe("approval-required");
+
+  // The next tool call parks. This is what makes it usable as a brake: it binds
+  // the running turn, not merely the next one.
+  const after = store.openRequest("session_one", "run_one", token, {
+    requestId: "req_after",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "rm -rf /tmp/y" } },
+  });
+  expect(after.state).toBe("open");
+});
+
+test("a session can be renamed, and a no-op update writes no journal row", () => {
+  const { store } = readyStore();
+  const renamed = store.updateSession("session_one", { title: "  Ship the parser  " });
+  expect(renamed.title).toBe("Ship the parser");
+  expect(store.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
+
+  // A client polling a save button must not fill the journal with rows saying
+  // nothing happened.
+  store.updateSession("session_one", { title: "Ship the parser" });
+  expect(store.readEvents("session_one").filter((e) => e.type === "session.updated")).toHaveLength(1);
+
+  expect(() => store.updateSession("session_one", { title: "   " })).toThrow(/cannot be empty/);
+  expect(() => store.updateSession("session_one", { runtimeMode: "yolo" as "auto" })).toThrow(/unknown runtime mode/);
 });
 
 test("tasks are journalled AND projected, so a cold session still knows a sub-agent ran", () => {

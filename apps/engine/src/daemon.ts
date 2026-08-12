@@ -12,6 +12,7 @@ import {
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
+  type RuntimeMode,
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
@@ -404,6 +405,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           const result: TurnSubmissionResult = accepted;
           writeJson(response, accepted.replayed ? 200 : 202, result);
+          return;
+        }
+        if (request.method === "PATCH" && session.tail === "") {
+          const input = await body(request);
+          writeJson(response, 200, {
+            session: store.updateSession(session.sessionId, {
+              ...(input.title === undefined ? {} : { title: stringValue(input.title, "session title")! }),
+              // Validated in the store against the contract's own list, so the
+              // HTTP surface and an in-process caller refuse the same set.
+              ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode as RuntimeMode }),
+              ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
+            }),
+          });
           return;
         }
         if (request.method === "POST" && session.tail === "/archive") {

@@ -24,6 +24,7 @@ import {
   type RequestDetail,
   type RequestKind,
   type RequestOpenResult,
+  type RuntimeMode,
   type Turn,
   type TurnObservation,
   type TurnSubmissionResult,
@@ -126,6 +127,18 @@ export class EngineClient {
     driver?: ProviderDriverKind;
   }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
+  }
+
+  /**
+   * Change a live session. `runtimeMode` takes effect on the very NEXT tool
+   * call, including inside a turn that is already running — it is the brake a
+   * human reaches for when a detached session does something unexpected.
+   */
+  updateSession(
+    sessionId: string,
+    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean },
+  ): Promise<{ session: Session }> {
+    return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }
 
   session(sessionId: string): Promise<SessionSnapshot> {

@@ -28,6 +28,7 @@ import {
   type RequestKind,
   type RequestOpenResult,
   type RequestResolver,
+  type RuntimeMode,
   type Session,
   type Turn,
   type TurnFailureCode,
@@ -94,6 +95,20 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "dr
  * had to remove before a session could be a Codex session at all.
  */
 const PROVIDER_INSTANCE_SUFFIX = "default";
+
+/**
+ * How deep a session's backlog may get.
+ *
+ * A RUNAWAY-CLIENT GUARD, NOT A PRODUCT LIMIT. A human queueing follow-ups will
+ * never approach it; a retry loop with a fresh runId each time would otherwise
+ * grow `queue.json` without bound, and the queue is rewritten whole on every
+ * turn transition.
+ */
+const MAX_QUEUED_TURNS = 16;
+
+/** The contract's own list, as a set, so an unknown mode is refused at the edge
+ *  rather than written to disk and failing later inside `autoResolution`. */
+const RUNTIME_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "auto", "full-access"]);
 
 /**
  * Drop explicitly-undefined keys so a spread PATCHES rather than erases.
@@ -534,6 +549,50 @@ export class EngineStore {
     return structuredClone(session);
   }
 
+  /**
+   * Change what a session is and what it may do, mid-flight.
+   *
+   * `runtimeMode` IS THE ONE THAT MATTERS AND IT APPLIES IMMEDIATELY, including
+   * to a turn that is already running: `openRequest` reads the session document
+   * at the moment a tool asks, so tightening the mode stops the very next tool
+   * call rather than the next turn. That is the property that makes this usable
+   * as a brake — a human watching a detached session do something they did not
+   * expect can take the rope back without stopping the work.
+   *
+   * Loosening mid-turn does NOT retroactively resolve requests already parked.
+   * Those were opened under the old policy and a human answering them is the
+   * only thing that should settle them; auto-accepting a question somebody is
+   * already looking at would be a surprise in the dangerous direction.
+   */
+  updateSession(sessionId: string, patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean }): Session {
+    const session = this.getSession(sessionId);
+    if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+
+    const next: Session = { ...session };
+    if (patch.title !== undefined) {
+      const title = String(patch.title).trim();
+      if (!title) throw new EngineStateError("invalid_request", "session title cannot be empty");
+      next.title = title.slice(0, 200);
+    }
+    if (patch.runtimeMode !== undefined) {
+      if (!RUNTIME_MODES.has(patch.runtimeMode)) throw new EngineStateError("invalid_request", "unknown runtime mode");
+      next.runtimeMode = patch.runtimeMode;
+    }
+    if (patch.detached !== undefined) {
+      if (typeof patch.detached !== "boolean") throw new EngineStateError("invalid_request", "detached must be a boolean");
+      next.detached = patch.detached;
+    }
+    // Nothing changed: no write, no event. A client polling a "save" button
+    // should not fill the journal with rows that say nothing happened.
+    if (next.title === session.title && next.runtimeMode === session.runtimeMode && next.detached === session.detached) {
+      return structuredClone(session);
+    }
+    next.updatedAt = this.now();
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), next);
+    this.appendEvent(sessionId, { type: "session.updated", session: next });
+    return structuredClone(next);
+  }
+
   getSession(sessionId: string): Session {
     const stored = readJson(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
@@ -588,8 +647,20 @@ export class EngineStore {
       if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
-    if (queue.turns.some((turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running")) {
-      throw new EngineStateError("conflict", "session already has an active turn");
+    /**
+     * A FOLLOW-UP MAY BE QUEUED WHILE A TURN RUNS. This used to be a conflict,
+     * which meant a human had to sit and wait for a long turn before they could
+     * say the next thing — the single most common way to lose a thought.
+     *
+     * Only ONE turn executes at a time and that has not changed: `claimTurn`
+     * refuses while any turn is claimed or running, and picks the OLDEST queued
+     * one, so a backlog drains in the order it was typed. Provider continuity
+     * still works because `resumeCursorFor` reads the last COMPLETED turn, and
+     * the next claim happens after the previous turn settles.
+     */
+    const queued = queue.turns.filter((turn) => turn.state === "queued").length;
+    if (queued >= MAX_QUEUED_TURNS) {
+      throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
     }
     if (queue.turns.some((turn) => turn.state === "ambiguous")) {
       throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
