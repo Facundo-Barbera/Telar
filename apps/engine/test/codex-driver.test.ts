@@ -320,16 +320,35 @@ test("mid-turn compaction is keyed off the item, and the turn still ends", async
   expect(started(observations).some((o) => o.kind === "item.started" && o.item.detail.type === "context_compaction")).toBeTrue();
 });
 
-test("a child thread's work is visible but is never mistaken for this turn's", async () => {
+test("a child thread becomes a TASK, and its work is filed under it rather than the parent timeline", async () => {
   const { result, observations } = runTurn("child-thread");
   // The parent's answer only. A sub-agent's prose is not what the human asked.
   await expect(result).resolves.toMatchObject({ text: "parent answer" });
+
+  // Codex has no `task_started` to key off the way Claude does — a sub-agent
+  // simply IS a thread that is not the root, so the task is declared the first
+  // time such a thread speaks.
+  const opened = observations.find((o) => o.kind === "task.started");
+  expect(opened?.kind === "task.started" && opened.task).toMatchObject({
+    id: "task_fake-child-thread",
+    kind: "agent",
+    state: "running",
+    providerTaskId: "fake-child-thread",
+  });
+
   const childRow = started(observations).find(
     (o) => o.kind === "item.started" && o.item.providerRefs?.sessionId === "fake-child-thread",
   );
-  // Emitted, not dropped: `ItemSeed` cannot carry a task id yet, so the child
-  // thread id rides in providerRefs for a later task mapping to key off.
-  expect(childRow).toBeDefined();
+  expect(childRow?.kind === "item.started" && childRow.item.taskId).toBe("task_fake-child-thread");
+  // The parent's own rows stay unfiled — that is what makes the split mean
+  // something.
+  const parentRows = started(observations).filter((o) => o.kind === "item.started" && o.item.taskId === undefined);
+  expect(parentRows.length).toBeGreaterThan(0);
+
+  // The child's turn completing is the only signal it is done. Without closing
+  // it here `livenessOf` would report this session as working forever.
+  const closed = observations.find((o) => o.kind === "task.completed");
+  expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_fake-child-thread", state: "completed" });
 });
 
 // ── approvals ──────────────────────────────────────────────────────────────

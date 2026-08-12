@@ -160,6 +160,16 @@ p { line-height: 1.5; }
 .vnext-tool-item[data-status="failed"] { border-color: color-mix(in oklab, var(--v-danger) 35%, var(--v-border)); }
 .vnext-tool-item__body { margin: 0; border-top: 1px solid var(--v-border); padding: 8px 9px; max-height: 320px; overflow: auto; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* A sub-agent and its work. Indented rather than merely bordered: the nesting
+   IS the information — these rows did not happen on the main timeline. */
+.vnext-task-group { border: 1px solid var(--v-border); border-left-width: 3px; border-radius: 6px; background: color-mix(in oklab, var(--v-surface) 96%, transparent); font-size: 12px; }
+.vnext-task-group > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
+.vnext-task-group > summary::-webkit-details-marker { display: none; }
+.vnext-task-group__role { flex: none; color: var(--v-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.vnext-task-group__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnext-task-group > .vnext-timeline { padding: 0 9px 8px; }
+.vnext-task-group > p { margin: 0; padding: 0 9px 8px; }
+
 .vnext-reasoning-item { font-size: 12px; color: var(--v-muted); }
 .vnext-reasoning-item > summary { cursor: pointer; padding: 2px 0; }
 .vnext-reasoning-item > p { margin: 4px 0 0; padding-left: 10px; border-left: 2px solid var(--v-border); white-space: pre-wrap; overflow-wrap: anywhere; }

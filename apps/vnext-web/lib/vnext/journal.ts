@@ -1,4 +1,4 @@
-import type { EngineEvent, Item, Session, Turn, TurnState, UsageSnapshot } from "@telar/engine-client";
+import type { EngineEvent, Item, Session, Task, Turn, TurnState, UsageSnapshot } from "@telar/engine-client";
 
 /**
  * The client-side fold over protocol v2's journal.
@@ -22,11 +22,24 @@ export type JournalItem = Item & {
   openedBy: number;
 };
 
+/** A sub-agent, with the rows it produced. */
+export type JournalTask = Task & { items: JournalItem[] };
+
 export type JournalTurn = {
   runId: string;
   prompt: string;
   state: TurnState;
+  /**
+   * The MAIN LOOP's timeline only.
+   *
+   * Rows a sub-agent produced are on `tasks`, not here, and that separation is
+   * the point of `Item.taskId`. Five agents running concurrently interleave
+   * their tool calls on one stream; rendered flat they read as one agent doing
+   * five contradictory things at once.
+   */
   items: JournalItem[];
+  /** Sub-agents and background work launched by this turn. */
+  tasks: JournalTask[];
   /** The assistant's final text, as the engine recorded it on completion. */
   resultText: string;
   failure?: string;
@@ -53,7 +66,7 @@ export function journalCursor(events: EngineEvent[]): number {
  * is what makes a live turn stream. Applying the tail second means a row the
  * snapshot caught mid-flight is corrected by the events that followed it.
  */
-export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent[]): JournalTurn[] {
+export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent[], tasks: Task[] = []): JournalTurn[] {
   const byRun = new Map<string, JournalTurn>(
     turns.map((turn) => [
       turn.runId,
@@ -62,6 +75,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         prompt: turn.input,
         state: turn.state,
         items: [],
+        tasks: [],
         resultText: turn.resultText ?? "",
         ...(turn.failure ? { failure: turn.failure.message } : {}),
         ...(turn.usage ? { usage: turn.usage } : {}),
@@ -69,6 +83,21 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
     ]),
   );
   const seenItems = new Map<string, JournalItem>();
+  const seenTasks = new Map<string, JournalTask>();
+
+  const upsertTask = (task: Task): JournalTask | undefined => {
+    const turn = byRun.get(task.runId);
+    if (!turn) return undefined;
+    const existing = seenTasks.get(task.id);
+    // The items already collected survive the update: every task event repeats
+    // the whole task, and a replace would empty the list each time one arrives.
+    const merged: JournalTask = { ...task, items: existing?.items ?? [] };
+    seenTasks.set(task.id, merged);
+    const index = turn.tasks.findIndex((candidate) => candidate.id === task.id);
+    if (index === -1) turn.tasks.push(merged);
+    else turn.tasks[index] = merged;
+    return merged;
+  };
 
   const upsert = (item: Item, openedBy: number): JournalItem | undefined => {
     const turn = byRun.get(item.runId);
@@ -80,9 +109,17 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       openedBy: existing?.openedBy ?? openedBy,
     };
     seenItems.set(item.id, merged);
-    const index = turn.items.findIndex((candidate) => candidate.id === item.id);
-    if (index === -1) turn.items.push(merged);
-    else turn.items[index] = merged;
+    /**
+     * A row filed under a task the fold has not met yet stays on the main
+     * timeline rather than being dropped. The task event may simply be later in
+     * the same page — but an invisible row is worse than a misplaced one, and
+     * the next snapshot repairs the placement.
+     */
+    const owner = item.taskId ? seenTasks.get(item.taskId) : undefined;
+    const list = owner ? owner.items : turn.items;
+    const index = list.findIndex((candidate) => candidate.id === item.id);
+    if (index === -1) list.push(merged);
+    else list[index] = merged;
     return merged;
   };
 
@@ -90,6 +127,9 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
   // without replaying its whole journal. Event id 0 is not a real id, so these
   // sort before anything the tail opens — which is the correct relative order
   // for rows that already existed when the page loaded.
+  // Tasks BEFORE items, so a snapshot's sub-agent rows find their owner on the
+  // first pass instead of landing on the main timeline and staying there.
+  for (const task of tasks) upsertTask(task);
   for (const item of items) upsert(item, 0);
 
   for (const event of events) {
@@ -103,6 +143,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             prompt: event.turn.input,
             state: event.turn.state,
             items: [],
+            tasks: [],
             resultText: "",
           });
         }
@@ -152,20 +193,29 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         if (item) item.streamedText += event.text;
         break;
       }
+      case "task.started":
+      case "task.progress":
+      case "task.completed":
+        upsertTask(event.task);
+        break;
       case "usage.updated":
         if (turn) turn.usage = event.usage;
         break;
       default:
-        // Every other family (runtime.*, request.*, task.*, browser.*, mcp.*)
-        // is contract but not yet rendered. Ignoring them here is deliberate;
+        // Every other family (runtime.*, request.*, browser.*, mcp.*) is
+        // contract but not yet rendered. Ignoring them here is deliberate;
         // dropping them at PARSE time would not be, which is why
         // safeParseEvent only skips rows it cannot understand at all.
         break;
     }
   }
 
+  const byOpen = (left: JournalItem, right: JournalItem) =>
+    left.openedBy - right.openedBy || left.startedAt - right.startedAt;
   for (const turn of byRun.values()) {
-    turn.items.sort((left, right) => left.openedBy - right.openedBy || left.startedAt - right.startedAt);
+    turn.items.sort(byOpen);
+    for (const task of turn.tasks) task.items.sort(byOpen);
+    turn.tasks.sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
   }
   return [...byRun.values()];
 }

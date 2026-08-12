@@ -15,8 +15,8 @@ import {
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
-import type { TurnDriver } from "./driver";
 import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
+import type { DriverSelector } from "./worker";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
 
@@ -53,7 +53,7 @@ export type EngineDaemonOptions = {
    * started without an embedded worker never loads the Claude SDK. Every test
    * in this repo depends on that.
    */
-  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<TurnDriver> | TurnDriver };
+  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
 };
 
 export type EngineDaemon = {
@@ -257,6 +257,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             title: stringValue(input.title, "session title", true),
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
             ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
+            // Validated in the store rather than here, so the HTTP surface and
+            // any in-process caller reject the same set of drivers.
+            ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),
           }),
         });
         return;
@@ -370,6 +373,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             turns: store.turns(session.sessionId),
             items: store.items(session.sessionId),
             requests: store.requests(session.sessionId),
+            // On the snapshot rather than behind its own route: a background
+            // task outlives its turn, so "is this session still working" must
+            // be answerable from the FIRST fetch of a cold session, before any
+            // event has streamed.
+            tasks: store.tasks(session.sessionId),
           });
           return;
         }
@@ -472,7 +480,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         tools: BROWSER_TOOLS,
       };
       const createDriver =
-        config.createDriver ?? (async () => (await import("./driver")).createClaudeDriver(undefined, { browser: capability }));
+        config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers({ browser: capability }));
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const worker = new EngineWorker({
         client: new EngineClient(discovery),

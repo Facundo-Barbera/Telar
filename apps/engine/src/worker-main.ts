@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client";
 import { BROWSER_TOOLS, BrowserRuntime } from "./browser";
-import { createClaudeDriver } from "./driver";
+import { createDefaultDrivers } from "./drivers";
 import { vnextRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
@@ -37,10 +37,13 @@ const capability = {
 };
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+// The SAME factory the daemon's embedded worker uses. Both deployments must
+// offer the same providers with the same capabilities, or which one started the
+// engine changes what a session can do.
+const drivers = createDefaultDrivers({ browser: capability });
 const supervisor = new WorkerReconnectController({
   connect: () => connectEngine(path.resolve(root)),
-  createWorker: (client, onConnectionLost) =>
-    new EngineWorker({ client, workerId, driver: createClaudeDriver(undefined, { browser: capability }), onConnectionLost }),
+  createWorker: (client, onConnectionLost) => new EngineWorker({ client, workerId, driver: drivers, onConnectionLost }),
   pause,
 });
 

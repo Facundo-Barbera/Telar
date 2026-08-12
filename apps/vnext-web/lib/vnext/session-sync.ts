@@ -1,7 +1,8 @@
-import type { EngineEvent, EngineRequest, Item, Session, Turn } from "@telar/engine-client";
+// IMPORTED, NOT RE-DECLARED. This file used to carry its own structural copy of
+// the snapshot shape, which typechecked happily while the engine grew a field it
+// never learned about — `tasks` was invisible here for exactly that reason.
+import type { EngineEvent, SessionSnapshot } from "@telar/engine-client";
 import { appendJournalEvents, journalCursor } from "./journal";
-
-type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] };
 
 export type SessionSyncApi = {
   session(sessionId: string): Promise<SessionSnapshot>;

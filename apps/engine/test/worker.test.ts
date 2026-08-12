@@ -146,6 +146,66 @@ test("an unavailable provider becomes a typed durable failure instead of a succe
   expect((await client.events(sessionId)).events.at(-1)).toMatchObject({ type: "turn.failed", runId: "run_one", code: "provider_unavailable" });
 });
 
+test("the worker routes each turn to the driver its SESSION named", async () => {
+  const ran: string[] = [];
+  const named = (label: string): TurnDriver => ({
+    run: async () => {
+      ran.push(label);
+      return { text: label };
+    },
+  });
+  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_claude", projectId: "project_one" });
+  await client.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+  const worker = new EngineWorker({
+    client,
+    workerId: "worker_one",
+    driver: (kind) => (kind === "codex" ? named("codex") : named("claude")),
+    pollMs: 60_000,
+  });
+  workers.push(worker);
+  await worker.start();
+
+  // A worker holding ONE driver would run this through the Claude SDK and
+  // produce a plausible, wrong transcript.
+  await client.submitTurn("session_codex", { runId: "run_one", input: "Hello" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session("session_codex")).turns[0]?.state).toBe("completed"));
+  await client.submitTurn("session_claude", { runId: "run_two", input: "Hello" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session("session_claude")).turns[0]?.state).toBe("completed"));
+  expect(ran).toEqual(["codex", "claude"]);
+});
+
+test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
+  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+  const worker = new EngineWorker({
+    client,
+    workerId: "worker_one",
+    driver: (kind) => (kind === "claude" ? { run: async () => ({ text: "" }) } : undefined),
+    pollMs: 60_000,
+  });
+  workers.push(worker);
+  await worker.start();
+  await client.submitTurn("session_codex", { runId: "run_one", input: "Hello" });
+  await worker.tick();
+  // Resolved inside the settle path, so the turn ends with a reason rather than
+  // sitting claimed until the lease expires.
+  await eventually(async () =>
+    expect((await client.session("session_codex")).turns[0]).toMatchObject({
+      state: "failed",
+      failure: { code: "provider_unavailable" },
+    }),
+  );
+});
+
 test("engine connectivity loss aborts active provider execution", async () => {
   let sawAbort = false;
   const driver: TurnDriver = {

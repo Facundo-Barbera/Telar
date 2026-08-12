@@ -18,7 +18,9 @@ import {
   type EngineHealth,
   type Item,
   type Project,
+  type ProviderDriverKind,
   type Session,
+  type Task,
   type EngineRequest,
   type RequestDecision,
   type RequestDetail,
@@ -76,7 +78,16 @@ type FetchLike = typeof fetch;
 
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
-export type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] };
+export type SessionSnapshot = {
+  session: Session;
+  turns: Turn[];
+  items: Item[];
+  requests: EngineRequest[];
+  /** Sub-agents and background work. A background task OUTLIVES the turn that
+   *  started it, so this is the only thing that can tell a client opening a
+   *  cold session that it is still working. */
+  tasks: Task[];
+};
 
 export class EngineClient {
   constructor(
@@ -129,7 +140,15 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean; envMode?: "local" | "worktree" }): Promise<{ session: Session }> {
+  createSession(input: {
+    id?: string;
+    projectId: string;
+    title?: string;
+    detached?: boolean;
+    envMode?: "local" | "worktree";
+    /** Which provider runs this session's turns. Defaults to Claude. */
+    driver?: ProviderDriverKind;
+  }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
   }
 

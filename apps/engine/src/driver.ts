@@ -18,6 +18,9 @@ import type {
   RequestDecision,
   RequestDetail,
   RequestKind,
+  TaskKind,
+  TaskSeed,
+  TaskState,
   TurnObservation,
   UsageSnapshot,
 } from "@telar/engine-client";
@@ -101,6 +104,10 @@ type ClaudeSdk = {
       permissionMode: "default";
       abortController: AbortController;
       includePartialMessages: true;
+      /** Without this the SDK forwards only a sub-agent's tool_use/tool_result
+       *  blocks — "enough for a heartbeat counter", in its own words. A nested
+       *  transcript needs the text and the thinking too. */
+      forwardSubagentText: true;
       resume?: string;
       canUseTool?: SdkCanUseTool;
       mcpServers?: Record<string, SdkMcpServer>;
@@ -272,6 +279,42 @@ export function titleForToolCall(name: string, detail: ItemDetail): string {
   }
 }
 
+/**
+ * Which kind of task an SDK `task_started` describes.
+ *
+ * A DENYLIST, matching ./tasks.ts in the contract and t3 code's own comment on
+ * the same problem: the SDK renames its agent-flavoured task types as it grows
+ * (`subagent`, `local_agent`, `local_workflow`, …), and an ALLOWLIST silently
+ * dropped real sub-agents the first time a new name appeared. Only the types
+ * KNOWN to be background are treated as background; everything else is an agent
+ * and shows up unstyled rather than invisible.
+ */
+const BACKGROUND_TASK_TYPES = new Set(["background_shell", "background_bash", "monitor", "watch"]);
+
+export function taskKindForType(taskType: string | undefined): TaskKind {
+  return taskType && BACKGROUND_TASK_TYPES.has(taskType) ? "background" : "agent";
+}
+
+/** The SDK's task status vocabulary onto the contract's. `killed` and `paused`
+ *  have no contract equivalent and map to the nearest honest one — a killed
+ *  task was stopped, and a paused one is still waiting to resume. */
+export function taskStateForStatus(status: string | undefined): TaskState {
+  switch (status) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "killed":
+      return "stopped";
+    case "paused":
+      return "waiting";
+    case "pending":
+      return "pending";
+    default:
+      return "running";
+  }
+}
+
 /** Claude reports cumulative usage per assistant message; the result message
  *  carries the authoritative total plus the price. */
 function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined {
@@ -335,7 +378,7 @@ export function createClaudeDriver(
        * empty reasoning and empty assistant messages from the snapshot. Found
        * by running it, not by a test; the test now exists.
        */
-      const openBlocks = new Map<number, { id: string; kind: "text" | "thinking"; text: string }>();
+      const openBlocks = new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
 
       const closeBlock = (block: { id: string; kind: "text" | "thinking"; text: string }): TurnObservation => ({
         kind: "item.completed",
@@ -346,6 +389,62 @@ export function createClaudeDriver(
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
       const openTools = new Map<string, { id: string; detail: ItemDetail }>();
+
+      /**
+       * Sub-agents, keyed by the SDK's own `task_id`.
+       *
+       * THE CONTRACT ID IS DERIVED FROM `tool_use_id` WHEN THERE IS ONE, not
+       * from `task_id`, and that is what makes filing work without a lookup:
+       * every message produced inside a sub-agent carries `parent_tool_use_id`
+       * — the id of the `Task` call that launched it — so an item can name its
+       * task from the message alone. `task_updated` is the one SDK message that
+       * carries `task_id` and no `tool_use_id`, which is the only reason this
+       * map exists.
+       */
+      const taskIdsBySdkId = new Map<string, string>();
+      /** Last seed per task, so `task_updated`'s PATCH can be folded onto
+       *  something rather than sent as a task with no title or kind. */
+      const knownTasks = new Map<string, TaskSeed>();
+
+      const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
+        if (toolUseId) return `task_${toolUseId}`;
+        if (sdkTaskId && taskIdsBySdkId.has(sdkTaskId)) return taskIdsBySdkId.get(sdkTaskId)!;
+        return `task_${sdkTaskId ?? crypto.randomUUID().replaceAll("-", "")}`;
+      };
+
+      /** Fold a partial report onto what this task was last known to be, then
+       *  emit it whole — the repetition ./tasks.ts requires of every event. */
+      const emitTask = (
+        kind: "task.started" | "task.progress" | "task.completed",
+        sdkTaskId: string | undefined,
+        patch: Partial<TaskSeed> & { state: TaskState },
+        toolUseId?: string,
+        message?: string,
+      ): void => {
+        const id = taskIdFor(sdkTaskId, toolUseId);
+        if (sdkTaskId) taskIdsBySdkId.set(sdkTaskId, id);
+        const known = knownTasks.get(id);
+        const task: TaskSeed = {
+          ...known,
+          ...patch,
+          id,
+          kind: patch.kind ?? known?.kind ?? "agent",
+          state: patch.state,
+          ...(sdkTaskId ? { providerTaskId: sdkTaskId } : {}),
+        };
+        knownTasks.set(id, task);
+        emit(kind === "task.progress" ? { kind, task, ...(message ? { message } : {}) } : { kind, task });
+      };
+
+      /** A sub-agent's usage, in the contract's shape. The SDK reports one
+       *  total rather than an input/output split, and inventing a split would
+       *  be a fabricated number — it is carried as output, which is the field a
+       *  cost roll-up sums. */
+      const taskUsage = (value: unknown): UsageSnapshot | undefined => {
+        const usage = asRecord(value);
+        if (typeof usage.total_tokens !== "number") return undefined;
+        return { tokens: { input: 0, output: usage.total_tokens, cacheRead: 0, cacheCreate: 0 } };
+      };
 
       const pending: TurnObservation[] = [];
       const flush = async (): Promise<void> => {
@@ -422,6 +521,7 @@ export function createClaudeDriver(
             permissionMode: "default",
             abortController: controller,
             includePartialMessages: true,
+            forwardSubagentText: true,
             ...(providerSessionId ? { resume: providerSessionId } : {}),
             ...(canUseTool ? { canUseTool } : {}),
             ...(mcpServers ? { mcpServers } : {}),
@@ -434,6 +534,18 @@ export function createClaudeDriver(
             total_cost_usd?: number;
             usage?: unknown;
             message?: { content?: unknown[]; usage?: unknown };
+            /** Set on everything a sub-agent produced: the id of the `Task`
+             *  call that launched it. `null` on the main loop's own messages. */
+            parent_tool_use_id?: string | null;
+            task_id?: string;
+            tool_use_id?: string;
+            description?: string;
+            subagent_type?: string;
+            task_type?: string;
+            workflow_name?: string;
+            summary?: string;
+            status?: string;
+            patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
             event?: {
               type?: string;
               index?: number;
@@ -443,6 +555,86 @@ export function createClaudeDriver(
           };
 
           if (str(item.session_id)) reportedSessionId = item.session_id;
+
+          /**
+           * Whose work is this?
+           *
+           * A SUB-AGENT'S OUTPUT MUST NOT BECOME THE TURN'S RESULT, which is
+           * the trap `forwardSubagentText` opens: with it on, every sub-agent's
+           * prose arrives as an ordinary `assistant` message, and appending it
+           * to `finalText` would make the turn's summary the concatenation of
+           * five agents talking at once instead of the main loop's answer.
+           */
+          const parentToolUseId = str(item.parent_tool_use_id ?? undefined);
+          const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
+
+          // ── sub-agents and background work ────────────────────────────
+          if (item.type === "system" && item.subtype === "task_started") {
+            emitTask(
+              "task.started",
+              str(item.task_id),
+              {
+                state: "running",
+                kind: taskKindForType(str(item.task_type)),
+                ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
+                ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
+                ...(str(item.workflow_name)
+                  ? { warp: { warpRunId: str(item.task_id) ?? "warp", warpName: item.workflow_name! } }
+                  : {}),
+              },
+              str(item.tool_use_id),
+            );
+            await flush();
+            continue;
+          }
+          if (item.type === "system" && item.subtype === "task_progress") {
+            emitTask(
+              "task.progress",
+              str(item.task_id),
+              {
+                state: "running",
+                ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
+                ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
+                ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
+              },
+              str(item.tool_use_id),
+              str(item.summary),
+            );
+            await flush();
+            continue;
+          }
+          if (item.type === "system" && item.subtype === "task_updated") {
+            const status = str(item.patch?.status);
+            const state = taskStateForStatus(status);
+            const terminal = state === "completed" || state === "failed" || state === "stopped";
+            emitTask(
+              terminal ? "task.completed" : "task.progress",
+              str(item.task_id),
+              {
+                state,
+                ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
+                ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
+                ...(item.patch?.is_backgrounded === true ? { kind: "background" as const } : {}),
+              },
+              undefined,
+            );
+            await flush();
+            continue;
+          }
+          if (item.type === "system" && item.subtype === "task_notification") {
+            emitTask(
+              "task.completed",
+              str(item.task_id),
+              {
+                state: taskStateForStatus(str(item.status)),
+                ...(str(item.summary) ? { resultText: item.summary! } : {}),
+                ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
+              },
+              str(item.tool_use_id),
+            );
+            await flush();
+            continue;
+          }
 
           if (item.type === "result") {
             usage = usageFrom(item.usage, item.total_cost_usd) ?? usage;
@@ -458,7 +650,17 @@ export function createClaudeDriver(
           // ── streaming text and reasoning ───────────────────────────────
           if (item.type === "stream_event") {
             const event = item.event ?? {};
-            const index = typeof event.index === "number" ? event.index : -1;
+            /**
+             * KEYED BY OWNER AND INDEX, NOT BY INDEX ALONE.
+             *
+             * Content-block indices restart at 0 in every agent, so with
+             * sub-agent text forwarded a child's block 0 and the main loop's
+             * block 0 are two different blocks with one key — the child's
+             * `content_block_start` would silently overwrite the parent's open
+             * row and the parent's deltas would then append to the child's
+             * item. Concurrent agents make this the common case, not an edge.
+             */
+            const index = `${parentToolUseId ?? ""}#${typeof event.index === "number" ? event.index : -1}`;
 
             if (event.type === "content_block_start") {
               const blockType = event.content_block?.type;
@@ -475,6 +677,7 @@ export function createClaudeDriver(
                   item: {
                     id,
                     detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" },
+                    ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   },
                 });
               }
@@ -487,7 +690,7 @@ export function createClaudeDriver(
               const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
               if (typeof text !== "string" || text.length === 0) continue;
               open.text += text;
-              if (open.kind === "text") {
+              if (open.kind === "text" && !ownerTaskId) {
                 receivedPartialText = true;
                 finalText += text;
               }
@@ -514,17 +717,36 @@ export function createClaudeDriver(
 
           // ── tool calls, from the complete envelope ─────────────────────
           if (item.type === "assistant") {
-            usage = usageFrom(item.message?.usage, undefined) ?? usage;
+            // A sub-agent's usage is reported on its own task, not folded into
+            // the parent's running total, or the turn would double-count it
+            // against the `result` message's authoritative figure.
+            if (!ownerTaskId) usage = usageFrom(item.message?.usage, undefined) ?? usage;
             for (const raw of item.message?.content ?? []) {
               const block = asRecord(raw);
               if (block.type === "tool_use") {
                 const name = str(block.name) ?? "tool";
                 const useId = str(block.id) ?? itemId();
-                const detail = itemDetailForToolCall(name, block.input);
+                /**
+                 * A `Task` call is a HANDLE, not a tool row.
+                 *
+                 * items.ts defines `task` as "the row is a handle; the detail
+                 * is on the task events", and the id is derived from the
+                 * tool_use id — the same derivation every message inside the
+                 * sub-agent will produce from its `parent_tool_use_id`. That is
+                 * what joins the handle to the work without a lookup table.
+                 */
+                const isTask = name === "Task" || name === "Agent";
+                const detail: ItemDetail = isTask
+                  ? { type: "task", taskId: `task_${useId}` }
+                  : itemDetailForToolCall(name, block.input);
+                const title = isTask
+                  ? oneLine(str(asRecord(block.input).description) ?? str(asRecord(block.input).subagent_type) ?? name)
+                  : titleForToolCall(name, detail);
                 const seed: ItemSeed = {
                   id: `item_${useId}`,
                   detail,
-                  title: titleForToolCall(name, detail),
+                  title,
+                  ...(ownerTaskId ? { taskId: ownerTaskId } : {}),
                   providerRefs: { itemId: useId },
                 };
                 openTools.set(useId, { id: seed.id, detail });
@@ -538,9 +760,12 @@ export function createClaudeDriver(
               if (block.type === "text" && !receivedPartialText) {
                 const text = str(block.text);
                 if (!text) continue;
-                finalText += text;
+                if (!ownerTaskId) finalText += text;
                 const id = itemId();
-                emit({ kind: "item.started", item: { id, detail: { type: "assistant_message", text } } });
+                emit({
+                  kind: "item.started",
+                  item: { id, detail: { type: "assistant_message", text }, ...(ownerTaskId ? { taskId: ownerTaskId } : {}) },
+                });
                 emit({ kind: "item.completed", itemId: id, status: "completed" });
               }
             }
@@ -581,6 +806,21 @@ export function createClaudeDriver(
         // A block the provider never closed still gets its accumulated text,
         // for the same reason: the projection has no other source for it.
         for (const [, open] of openBlocks) emit(closeBlock(open));
+        /**
+         * A task left running when the turn ended is closed as failed.
+         *
+         * THIS MATTERS MORE THAN THE TOOL CASE ABOVE. `livenessOf()` reads task
+         * state to answer "is this session still working", and a sub-agent
+         * stuck at `running` makes a finished detached session claim it is
+         * still busy — forever, with no live stream to correct it and nothing
+         * for a human to stop. A BACKGROUND task is left alone: outliving its
+         * turn is what background means.
+         */
+        for (const [id, task] of knownTasks) {
+          if (task.kind === "background") continue;
+          if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
+          emit({ kind: "task.completed", task: { ...task, id, state: "failed", failure: "the turn ended before this agent reported back" } });
+        }
         await flush();
 
         return {

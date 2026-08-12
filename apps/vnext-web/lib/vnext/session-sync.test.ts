@@ -43,7 +43,7 @@ describe("vNext session hydration", () => {
       },
       session: async () => {
         calls.push("session");
-        return { session, turns: [{ ...turn, state: "running" as const }], items, requests: [] };
+        return { session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] };
       },
     };
     const result = await hydrateVNextSession(api, session.id);
@@ -63,7 +63,7 @@ describe("vNext session hydration", () => {
     const result = await tailVNextSession(
       {
         events: async () => ({ events: [started] }),
-        session: async () => ({ session, turns: [{ ...turn, state: "running" as const }], items, requests: [] }),
+        session: async () => ({ session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] }),
       },
       session.id,
       1,

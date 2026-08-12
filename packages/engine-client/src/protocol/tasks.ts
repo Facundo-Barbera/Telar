@@ -144,6 +144,25 @@ export const Task = z.object({
 export type Task = z.infer<typeof Task>;
 
 /**
+ * A task as the WORKER knows it, before the engine stamps ownership on it.
+ *
+ * DERIVED FROM `Task` BY OMISSION rather than written out again, for the same
+ * reason `ItemSeed` is a hand-written sibling of `Item` and has already drifted
+ * from it once: the five omitted fields are exactly the ones a worker must not
+ * mint. `sessionId` and `runId` are the engine's routing; `startedAt`,
+ * `updatedAt` and `completedAt` are the engine's clock. A worker that could set
+ * its own timestamps could order two tasks against a clock nobody else reads.
+ */
+export const TaskSeed = Task.omit({
+  sessionId: true,
+  runId: true,
+  startedAt: true,
+  updatedAt: true,
+  completedAt: true,
+});
+export type TaskSeed = z.infer<typeof TaskSeed>;
+
+/**
  * Whether a session should read as "still working" when no turn is running.
  *
  * DERIVED HERE, IN THE CONTRACT, for the same reason `autoResolution` is: the

@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import type { TurnObservation } from "@telar/engine-client";
-import { createClaudeDriver, itemDetailForToolCall, ProviderUnavailableError, titleForToolCall } from "../src/driver";
+import {
+  createClaudeDriver,
+  itemDetailForToolCall,
+  ProviderUnavailableError,
+  taskKindForType,
+  taskStateForStatus,
+  titleForToolCall,
+} from "../src/driver";
 
 /** Collect everything a run reports, in order, the way the worker relays it. */
 function recorder() {
@@ -245,6 +252,135 @@ test("tool mapping is by CAPABILITY, so a new provider tool is unstyled and neve
 test("an mcp tool carries its server so a client can group by it", () => {
   const detail = itemDetailForToolCall("mcp__linear__search", { q: "x" });
   expect(detail.type === "mcp_tool_call" && detail.call.server).toBe("linear");
+});
+
+// ── sub-agents ───────────────────────────────────────────────────────────────
+
+test("a Task call becomes a HANDLE row, not a generic tool row", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [{ type: "tool_use", id: "toolu_task", name: "Task", input: { description: "Audit the parser", subagent_type: "Explore" } }],
+        },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const started = sink.observations.find((o) => o.kind === "item.started");
+  // items.ts: "the row is a handle; the detail is on the task events". The id
+  // is derived from the tool_use id, which is what every message inside the
+  // sub-agent will independently produce from its `parent_tool_use_id`.
+  expect(started?.kind === "item.started" && started.item.detail).toEqual({ type: "task", taskId: "task_toolu_task" });
+  expect(started?.kind === "item.started" && started.item.title).toBe("Audit the parser");
+});
+
+test("a sub-agent's work is FILED under its task and never becomes the turn's answer", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_task", description: "Audit the parser", subagent_type: "Explore" };
+      // The child's own tool call and its own prose, both carrying the id of
+      // the Task call that launched them.
+      yield {
+        type: "assistant",
+        parent_tool_use_id: "toolu_task",
+        message: { content: [{ type: "tool_use", id: "toolu_child", name: "Bash", input: { command: "rg parser" } }] },
+      };
+      yield { type: "stream_event", parent_tool_use_id: "toolu_task", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+      yield { type: "stream_event", parent_tool_use_id: "toolu_task", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "child says" } } };
+      yield { type: "stream_event", parent_tool_use_id: "toolu_task", event: { type: "content_block_stop", index: 0 } };
+      // The main loop's own answer.
+      yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+      yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "parent says" } } };
+      yield { type: "stream_event", parent_tool_use_id: null, event: { type: "content_block_stop", index: 0 } };
+      yield { type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_task", status: "completed", summary: "found it", output_file: "/tmp/x" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+
+  // THE HEADLINE ASSERTION. With `forwardSubagentText` on, a sub-agent's prose
+  // arrives as an ordinary assistant message; appending it would make a
+  // fan-out's turn summary the concatenation of every agent talking at once.
+  await expect(result).resolves.toMatchObject({ text: "parent says" });
+
+  const started = sink.observations.filter((o) => o.kind === "item.started");
+  const child = started.find((o) => o.kind === "item.started" && o.item.id === "item_toolu_child");
+  expect(child?.kind === "item.started" && child.item.taskId).toBe("task_toolu_task");
+  // Both agents opened content block index 0. Keyed by index alone they would
+  // be one row, and the parent's deltas would land on the child's item.
+  const textRows = started.filter((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message");
+  expect(textRows).toHaveLength(2);
+  expect(new Set(textRows.map((o) => (o.kind === "item.started" ? o.item.taskId : undefined)))).toEqual(
+    new Set(["task_toolu_task", undefined]),
+  );
+});
+
+test("task lifecycle rides the stream, and a partial patch does not erase the title", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_task", description: "Audit the parser", subagent_type: "Explore", task_type: "subagent" };
+      // `task_updated` carries a PATCH naming only what changed — no title, no
+      // kind. A straight replace would blank both.
+      yield { type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "completed" } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const tasks = sink.observations.filter((o) => o.kind === "task.started" || o.kind === "task.completed");
+  expect(tasks.map((o) => o.kind)).toEqual(["task.started", "task.completed"]);
+  const [opened, closed] = tasks;
+  expect(opened?.kind === "task.started" && opened.task).toMatchObject({
+    id: "task_toolu_task",
+    kind: "agent",
+    state: "running",
+    title: "Audit the parser",
+    role: "Explore",
+    providerTaskId: "t1",
+  });
+  // Folded onto what was already known, and joined back to the same contract id
+  // even though this message carried no tool_use_id at all.
+  expect(closed?.kind === "task.completed" && closed.task).toMatchObject({
+    id: "task_toolu_task",
+    state: "completed",
+    title: "Audit the parser",
+    role: "Explore",
+  });
+});
+
+test("an agent still running when the turn ends is failed, so the session stops claiming it is busy", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_a", description: "never reports back" };
+      yield { type: "system", subtype: "task_started", task_id: "t2", tool_use_id: "toolu_b", description: "a log tail", task_type: "background_shell" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "task.completed");
+  // The agent is closed; the BACKGROUND task is not — outliving its turn is
+  // the definition of background, and `livenessOf` reports it as monitoring.
+  expect(closed).toHaveLength(1);
+  expect(closed[0]?.kind === "task.completed" && closed[0].task.id).toBe("task_toolu_a");
+  expect(closed[0]?.kind === "task.completed" && closed[0].task.state).toBe("failed");
+});
+
+test("task classification is a DENYLIST, so a renamed agent type is unstyled and never invisible", () => {
+  expect(taskKindForType("background_shell")).toBe("background");
+  expect(taskKindForType("subagent")).toBe("agent");
+  // The load-bearing case: an SDK that invents a new agent flavour tomorrow.
+  expect(taskKindForType("local_workflow")).toBe("agent");
+  expect(taskKindForType(undefined)).toBe("agent");
+  expect(taskStateForStatus("killed")).toBe("stopped");
+  expect(taskStateForStatus("paused")).toBe("waiting");
+  expect(taskStateForStatus(undefined)).toBe("running");
 });
 
 test("collapsed labels are derived once, by the engine", () => {

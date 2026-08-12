@@ -151,6 +151,66 @@ test("observations become durable items and deltas, and only under a live claim"
   ]);
 });
 
+test("tasks are journalled AND projected, so a cold session still knows a sub-agent ran", () => {
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const token = claimed.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Audit the parser", role: "Explore" } },
+    // A row produced INSIDE the sub-agent.
+    { kind: "item.started", item: { id: "i1", detail: { type: "command_execution", command: { command: "rg x" } }, taskId: "task_a" } },
+    // A patch naming only the state, exactly as `task_updated` sends it.
+    { kind: "task.completed", task: { id: "task_a", kind: "agent", state: "completed", resultText: "found it" } },
+  ]);
+
+  const tasks = store.tasks("session_one");
+  expect(tasks).toHaveLength(1);
+  expect(tasks[0]).toMatchObject({
+    id: "task_a",
+    sessionId: "session_one",
+    runId: "run_one",
+    state: "completed",
+    resultText: "found it",
+    // Carried through the terminal patch that never mentioned them.
+    title: "Audit the parser",
+    role: "Explore",
+    completedAt: 100,
+  });
+  // The link survives into the stored item, which is the only way a client
+  // opening this session LATER can file the row under its agent.
+  expect(store.items("session_one")[0]).toMatchObject({ id: "i1", taskId: "task_a" });
+  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
+    "session.created",
+    "turn.accepted",
+    "turn.claimed",
+    "turn.started",
+    "task.started",
+    "item.started",
+    "task.completed",
+  ]);
+  // A projection, on disk, beside the journal — not derived on read.
+  expect(fs.existsSync(path.join(stateRoot, "sessions", "session_one", "tasks.json"))).toBe(true);
+});
+
+test("a session names its provider, and the routing instance is derived from it", () => {
+  const { store } = readyStore();
+  const codex = store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+  expect(codex).toMatchObject({ driver: "codex", providerInstanceId: "codex:default" });
+  expect(store.createSession({ id: "session_default", projectId: "project_one" })).toMatchObject({
+    driver: "claude",
+    providerInstanceId: "claude:default",
+  });
+  expect(() => store.createSession({ id: "session_bad", projectId: "project_one", driver: "gemini" as "claude" })).toThrow(
+    /unknown provider driver/,
+  );
+  // The claim is what a worker routes on, so the driver has to survive onto it.
+  store.submitTurn("session_codex", { runId: "run_one", input: "Hello" });
+  expect(store.claimNextTurn("worker_one")).toMatchObject({ sessionId: "session_codex", driver: "codex" });
+});
+
 test("a malformed observation rejects the WHOLE batch, leaving no half-written provider message", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });

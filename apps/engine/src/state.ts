@@ -14,10 +14,13 @@ import {
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
+  Task as TaskSchema,
   Turn as TurnSchema,
   TurnObservation as TurnObservationSchema,
   type EngineEvent,
   type Item,
+  type ProviderDriverKind,
+  type Task,
   type Project,
   type EngineRequest,
   type RequestDecision,
@@ -82,12 +85,32 @@ type TurnFailure = { code: TurnFailureCode; message: string };
 const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "driver_failed", "budget_exhausted"]);
 
 /**
- * The provider instance a session gets until the account registry is wired in
- * (stage 4). Named rather than inlined so the seam is greppable: routing is by
- * instance id in the contract, and this is the one place still assuming there
- * is exactly one.
+ * The provider instance a session gets until the account registry exists.
+ *
+ * ONE INSTANCE PER DRIVER, derived as `<driver>:default` where the session is
+ * created. That is still an assumption — the contract routes by instance id
+ * precisely so one Telar can hold two Claude accounts — but it is now an
+ * assumption about ACCOUNTS rather than about providers, which is what stage 4
+ * had to remove before a session could be a Codex session at all.
  */
-const DEFAULT_PROVIDER_INSTANCE_ID = "claude:default";
+const PROVIDER_INSTANCE_SUFFIX = "default";
+
+/**
+ * Drop explicitly-undefined keys so a spread PATCHES rather than erases.
+ *
+ * `{ ...known, ...seed }` looks equivalent and is not: a key present with the
+ * value `undefined` wins the spread and blanks whatever the earlier object had.
+ * Providers send exactly that shape — Claude's `task_updated` patch names only
+ * what changed — so without this a progress report would erase the title its
+ * start report carried.
+ */
+function definedOnly<T extends object>(value: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry !== undefined) out[key as keyof T] = entry as T[keyof T];
+  }
+  return out;
+}
 
 const ID = /^[A-Za-z0-9_-]+$/;
 const MAX_TEXT_LENGTH = 200_000;
@@ -298,6 +321,10 @@ function requestsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "requests.json");
 }
 
+function tasksFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "tasks.json");
+}
+
 function readJson(file: string): unknown | undefined {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -440,7 +467,14 @@ export class EngineStore {
     return project;
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean; envMode?: EnvMode }): Session {
+  createSession(input: {
+    id?: string;
+    projectId: string;
+    title?: string;
+    detached?: boolean;
+    envMode?: EnvMode;
+    driver?: ProviderDriverKind;
+  }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -458,6 +492,8 @@ export class EngineStore {
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
     const envMode = input.envMode ?? "local";
+    const driver = input.driver ?? "claude";
+    if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
     // The worktree is cut BEFORE the session document is written. A session
     // whose workspace does not exist is unusable and would have to be repaired
     // on read; failing here leaves nothing behind to repair.
@@ -480,8 +516,12 @@ export class EngineStore {
       state: "active",
       createdAt: at,
       updatedAt: at,
-      providerInstanceId: DEFAULT_PROVIDER_INSTANCE_ID,
-      driver: "claude",
+      // The instance is the ROUTING key and the driver is descriptive, so the
+      // two are derived together here rather than picked independently — a
+      // session routed to `claude:default` while claiming to be a Codex session
+      // is the one inconsistency this split exists to make impossible.
+      providerInstanceId: `${driver}:${PROVIDER_INSTANCE_SUFFIX}`,
+      driver,
       workspace,
       envMode,
       runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
@@ -531,6 +571,11 @@ export class EngineStore {
   items(sessionId: string): Item[] {
     this.getSession(sessionId);
     return structuredClone([...this.readItems(sessionId).values()]);
+  }
+
+  tasks(sessionId: string): Task[] {
+    this.getSession(sessionId);
+    return structuredClone([...this.readTasks(sessionId).values()]);
   }
 
   submitTurn(sessionId: string, input: { runId: string; input: string }): { turn: Turn; replayed: boolean } {
@@ -633,11 +678,14 @@ export class EngineStore {
     const turn = this.requireRunningClaim(sessionId, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const items = this.readItems(sessionId);
+    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), tasksTouched: false };
     for (const observation of parsed.data) {
-      this.journalObservation(sessionId, turn, observation, items);
+      this.journalObservation(sessionId, turn, observation, projection);
     }
-    this.writeItems(sessionId, items);
+    this.writeItems(sessionId, projection.items);
+    // Most batches carry no task at all — a rewrite per batch would be a file
+    // write per streamed provider message for nothing.
+    if (projection.tasksTouched) this.writeTasks(sessionId, projection.tasks);
     return { accepted: parsed.data.length };
   }
 
@@ -1108,6 +1156,25 @@ export class EngineStore {
     atomicWrite(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
   }
 
+  /**
+   * Tasks are a projection for the same reason items are — and they matter
+   * MORE after a restart, not less. A background task outlives the turn that
+   * started it, so a client reopening a cold session has no live stream to
+   * learn about it from; `tasks.json` is the only thing that can still say the
+   * session is working.
+   */
+  private readTasks(sessionId: string): Map<string, Task> {
+    const stored = readJson(tasksFile(this.paths, sessionId));
+    if (stored === undefined) return new Map();
+    const parsed = TaskSchema.array().safeParse((stored as { tasks?: unknown }).tasks);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext task projection");
+    return new Map(parsed.data.map((task) => [task.id, task]));
+  }
+
+  private writeTasks(sessionId: string, tasks: Map<string, Task>): void {
+    atomicWrite(tasksFile(this.paths, sessionId), { version: STATE_VERSION, tasks: [...tasks.values()] });
+  }
+
   private readRequests(sessionId: string): Map<string, EngineRequest> {
     const stored = readJson(requestsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
@@ -1121,8 +1188,14 @@ export class EngineStore {
   }
 
   /** One observation → at most one journal record, plus its projection edit. */
-  private journalObservation(sessionId: string, turn: Turn, observation: TurnObservation, items: Map<string, Item>): void {
+  private journalObservation(
+    sessionId: string,
+    turn: Turn,
+    observation: TurnObservation,
+    projection: { items: Map<string, Item>; tasks: Map<string, Task>; tasksTouched: boolean },
+  ): void {
     const at = this.now();
+    const items = projection.items;
     if (observation.kind === "usage") {
       this.appendEvent(sessionId, { type: "usage.updated", usage: observation.usage }, turn.runId);
       return;
@@ -1152,6 +1225,42 @@ export class EngineStore {
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       return;
     }
+    if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
+      const seed = observation.task;
+      const known = projection.tasks.get(seed.id);
+      const terminal = seed.state === "completed" || seed.state === "failed" || seed.state === "stopped";
+      /**
+       * THE SEED IS FOLDED OVER WHAT IS ALREADY STORED, not swapped for it.
+       * Providers report tasks incrementally — Claude's `task_updated` carries
+       * a PATCH with only the changed fields, so a straight replace would erase
+       * the `title` and `subagent_type` that only `task_started` ever sent. The
+       * `?? known?.x` chain is what makes a partial report additive.
+       */
+      const task: Task = {
+        ...known,
+        ...definedOnly(seed),
+        id: seed.id,
+        kind: seed.kind,
+        state: seed.state,
+        sessionId,
+        // A background task belongs to the turn that STARTED it even after that
+        // turn settles, which is the whole meaning of background.
+        runId: known?.runId ?? turn.runId,
+        startedAt: known?.startedAt ?? at,
+        updatedAt: at,
+        ...(terminal ? { completedAt: at } : known?.completedAt ? { completedAt: known.completedAt } : {}),
+      };
+      projection.tasks.set(task.id, task);
+      projection.tasksTouched = true;
+      this.appendEvent(
+        sessionId,
+        observation.kind === "task.progress"
+          ? { type: "task.progress", task, ...(observation.message ? { message: observation.message } : {}) }
+          : { type: observation.kind === "task.started" ? "task.started" : "task.completed", task },
+        turn.runId,
+      );
+      return;
+    }
     const seed = observation.item;
     const started = observation.kind === "item.started";
     const item: Item = {
@@ -1162,6 +1271,11 @@ export class EngineStore {
       detail: seed.detail,
       startedAt: started ? at : (items.get(seed.id)?.startedAt ?? at),
       ...(seed.title ? { title: seed.title } : {}),
+      // A row filed under a task the engine has never heard of is kept filed
+      // anyway: the task event may simply not have arrived yet, and dropping
+      // the link would silently move a sub-agent's work into the parent
+      // timeline — the exact confusion this field exists to prevent.
+      ...(seed.taskId ? { taskId: seed.taskId } : {}),
       ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
     };
     items.set(item.id, item);

@@ -101,6 +101,63 @@ describe("ordering", () => {
   });
 });
 
+describe("sub-agents", () => {
+  const task = {
+    id: "task_a",
+    sessionId: "s1",
+    runId: "run_1",
+    kind: "agent" as const,
+    state: "running" as const,
+    title: "Audit the parser",
+    startedAt: 1,
+    updatedAt: 1,
+  };
+
+  test("a sub-agent's rows nest under it instead of interleaving with the main loop's", () => {
+    const [projected] = projectJournal(
+      [turn],
+      [],
+      [
+        { ...envelope, id: 1, type: "task.started", task },
+        { ...envelope, id: 2, type: "item.started", item: item({ id: "child", taskId: "task_a", detail: { type: "command_execution", command: { command: "rg x" } } }) },
+        { ...envelope, id: 3, type: "item.started", item: item({ id: "parent", detail: { type: "assistant_message", text: "hi" } }) },
+        { ...envelope, id: 4, type: "task.completed", task: { ...task, state: "completed", resultText: "found it" } },
+      ],
+    );
+    // Rendered flat, five concurrent agents read as one agent doing five
+    // contradictory things. This split is what `Item.taskId` buys.
+    expect(projected!.items.map((row) => row.id)).toEqual(["parent"]);
+    expect(projected!.tasks).toHaveLength(1);
+    expect(projected!.tasks[0]!.items.map((row: { id: string }) => row.id)).toEqual(["child"]);
+    // The terminal event repeats the whole task; the rows it already collected
+    // must survive that replacement.
+    expect(projected!.tasks[0]).toMatchObject({ state: "completed", resultText: "found it" });
+  });
+
+  test("a snapshot's tasks are folded BEFORE its items, so nesting survives a reload", () => {
+    const [projected] = projectJournal(
+      [turn],
+      [item({ id: "child", taskId: "task_a", detail: { type: "assistant_message", text: "from the child" } })],
+      [],
+      [task],
+    );
+    // The cold-open path: no events at all, only the two projections. Folding
+    // items first would strand the row on the main timeline permanently.
+    expect(projected!.items).toEqual([]);
+    expect(projected!.tasks[0]!.items.map((row: { id: string }) => row.id)).toEqual(["child"]);
+  });
+
+  test("a row whose task is not known yet stays visible on the main timeline", () => {
+    const [projected] = projectJournal(
+      [turn],
+      [],
+      [{ ...envelope, id: 1, type: "item.started", item: item({ id: "orphan", taskId: "task_missing", detail: { type: "assistant_message", text: "x" } }) }],
+    );
+    // An invisible row is worse than a misplaced one.
+    expect(projected!.items.map((row) => row.id)).toEqual(["orphan"]);
+  });
+});
+
 describe("turn state", () => {
   test("every durable transition projects without waiting for a snapshot", () => {
     const [projected] = projectJournal([{ ...turn, state: "queued" }], [], [

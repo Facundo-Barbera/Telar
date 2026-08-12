@@ -1,4 +1,4 @@
-import type { EngineClient, RequestDecision } from "@telar/engine-client";
+import type { EngineClient, ProviderDriverKind, RequestDecision } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { ProviderUnavailableError, type TurnDriver } from "./driver";
 
@@ -14,10 +14,29 @@ type WorkerClient = Pick<
   | "failTurn"
 >;
 
+/**
+ * Which driver runs a claimed turn.
+ *
+ * A FUNCTION OF THE CLAIM, not a field set once at construction. The engine
+ * decides which provider a session belongs to and says so in `claim.driver`; a
+ * worker that captured one driver would happily run a Codex session through the
+ * Claude SDK and produce a plausible, wrong transcript. Passing a bare
+ * `TurnDriver` is still allowed and means "every turn, regardless of provider",
+ * which is what the tests want and what a single-provider deployment is.
+ */
+export type DriverSelector = TurnDriver | ((driver: ProviderDriverKind) => TurnDriver | undefined);
+
+export class UnsupportedDriverError extends Error {
+  constructor(driver: string) {
+    super(`this worker has no driver for ${driver}`);
+    this.name = "UnsupportedDriverError";
+  }
+}
+
 export type EngineWorkerOptions = {
   client: WorkerClient;
   workerId: string;
-  driver: TurnDriver;
+  driver: DriverSelector;
   /** Short testable polling loop; production process supervision is outside this leaf. */
   pollMs?: number;
   /** Used by the process supervisor to rediscover a restarted daemon. */
@@ -85,6 +104,7 @@ export class EngineWorker {
           claim.turn.runId,
           claim.turn.claim!.token,
           claim.turn.input,
+          claim.driver,
         );
       }
     } catch (error) {
@@ -95,12 +115,26 @@ export class EngineWorker {
     }
   }
 
-  private async execute(sessionId: string, cwd: string, providerSessionId: string | undefined, runId: string, claimToken: string, prompt: string): Promise<void> {
+  private async execute(
+    sessionId: string,
+    cwd: string,
+    providerSessionId: string | undefined,
+    runId: string,
+    claimToken: string,
+    prompt: string,
+    driverKind: ProviderDriverKind,
+  ): Promise<void> {
     const controller = new AbortController();
     this.active.set(claimToken, controller);
     try {
+      // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
+      // `failTurn` only settles a turn that is RUNNING, so a worker with no
+      // driver for this provider that threw here first would leave the turn
+      // stuck at `claimed` until its lease expired, with nothing recorded.
+      // Measured — the test below asserted `failed` and got `claimed`.
       await this.options.client.markTurnRunning(sessionId, runId, claimToken);
-      const result = await this.options.driver.run({
+      const driver = this.driverFor(driverKind);
+      const result = await driver.run({
         prompt,
         cwd,
         signal: controller.signal,
@@ -158,7 +192,7 @@ export class EngineWorker {
         return;
       }
       const failure =
-        error instanceof ProviderUnavailableError
+        error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
           ? { code: "provider_unavailable" as const, message: error.message }
           : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "vNext driver failed" };
       try {
@@ -169,6 +203,14 @@ export class EngineWorker {
     } finally {
       this.active.delete(claimToken);
     }
+  }
+
+  private driverFor(kind: ProviderDriverKind): TurnDriver {
+    const selector = this.options.driver;
+    if (typeof selector !== "function") return selector;
+    const driver = selector(kind);
+    if (!driver) throw new UnsupportedDriverError(kind);
+    return driver;
   }
 
   private loseConnection(reason: unknown): void {

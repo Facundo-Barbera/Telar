@@ -7,6 +7,7 @@ import type {
   EngineRequest,
   RequestDecision,
   Session,
+  SessionSnapshot,
   Turn,
   TurnSubmissionResult,
 } from "@telar/engine-client";
@@ -63,8 +64,11 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, title?: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, { title }),
+    // The contract's own snapshot type, not a hand-copied structural twin: this
+    // route proxies the engine verbatim, so a field the engine adds is already
+    // arriving and a local re-declaration only hides it.
     session: (sessionId: string) =>
-      request<{ session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+      request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
     resolveRequest: (sessionId: string, requestId: string, input: { decision: RequestDecision; reason?: string }) =>
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
     events: (sessionId: string, after: number) =>

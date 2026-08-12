@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EngineEvent, EngineRequest, Item, Session, Turn, TurnState } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, Item, Session, Task, Turn, TurnState } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import {
   appendJournalEvents,
@@ -13,6 +13,7 @@ import {
   projectJournal,
   toolOutput,
   type JournalItem,
+  type JournalTask,
   type JournalTurn,
 } from "@/lib/vnext/journal";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
@@ -133,7 +134,44 @@ function ReasoningItem({ item }: { item: JournalItem }) {
   </details>;
 }
 
+/** The state word a sub-agent row leads with. */
+const TASK_STATES: Record<Task["state"], string> = {
+  pending: "Queued",
+  running: "Working",
+  waiting: "Waiting",
+  completed: "Done",
+  failed: "Failed",
+  stopped: "Stopped",
+};
+
+/**
+ * A sub-agent and everything it did, as ONE collapsible row.
+ *
+ * NESTED RATHER THAN INTERLEAVED. Five agents running at once put their tool
+ * calls on the same stream in arrival order; rendered flat that reads as a
+ * single agent doing five contradictory things. `Item.taskId` is what lets the
+ * fold separate them, and this is the surface that separation exists for.
+ */
+function TaskGroup({ task }: { task: JournalTask }) {
+  const live = task.state === "running" || task.state === "pending" || task.state === "waiting";
+  return <details className="vnext-task-group" open={live}>
+    <summary>
+      <span className="vnext-task-group__role">{task.role ?? (task.kind === "background" ? "Background" : "Agent")}</span>
+      <span className="vnext-task-group__title">{task.title ?? "Sub-agent"}</span>
+      <span className="vnext-muted vnext-small">{TASK_STATES[task.state]}</span>
+    </summary>
+    <div className="vnext-timeline">
+      {task.items.map((item) => <TimelineItem key={item.id} item={item} />)}
+    </div>
+    {task.resultText && <p>{task.resultText}</p>}
+    {task.failure && <p className="vnext-turn-failure" role="alert">{task.failure}</p>}
+  </details>;
+}
+
 function TimelineItem({ item }: { item: JournalItem }) {
+  // The handle row for a sub-agent. Its work renders under `TaskGroup`, so
+  // showing it again here would print the fan-out twice.
+  if (item.detail.type === "task") return null;
   if (isToolItem(item)) return <ToolItem item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningItem item={item} />;
   if (item.detail.type === "error") {
@@ -207,7 +245,7 @@ function SessionTurn({ turn, requests, sending, onDecide, onRetry, onDiscard }: 
   // turn has both — `resultText` on the turn and the streamed message items —
   // and rendering both prints the answer twice.
   const streamedAnswer = turn.items.some((item) => item.detail.type === "assistant_message" && itemText(item));
-  const hasBody = turn.items.length > 0 || turn.resultText || turn.failure;
+  const hasBody = turn.items.length > 0 || turn.tasks.length > 0 || turn.resultText || turn.failure;
   return <article className="vnext-conversation-turn">
     <div className="vnext-conversation-turn__prompt">
       <div className="vnext-conversation-turn__meta"><strong>You</strong><StateBadge state={turn.state} /></div>
@@ -224,6 +262,7 @@ function SessionTurn({ turn, requests, sending, onDecide, onRetry, onDiscard }: 
       </div>
       <div className="vnext-timeline">
         {turn.items.map((item) => <TimelineItem key={item.id} item={item} />)}
+        {turn.tasks.map((task) => <TaskGroup key={task.id} task={task} />)}
       </div>
       {!streamedAnswer && turn.resultText && <p>{turn.resultText}</p>}
       {turn.failure && <p className="vnext-turn-failure" role="alert"><strong>Turn failed. </strong>{turn.failure}</p>}
@@ -270,6 +309,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [requests, setRequests] = useState<EngineRequest[]>([]);
   const [events, setEvents] = useState<EngineEvent[]>([]);
   const [draft, setDraft] = useState("");
@@ -287,14 +327,14 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   }, []);
   const hydrate = useCallback(() => enqueueSync(async () => {
     const hydrated = await hydrateVNextSession(api, sessionId);
-    setSession(hydrated.session); setTurns(hydrated.turns); setItems(hydrated.items); setRequests(hydrated.requests); setEvents(hydrated.events); cursor.current = hydrated.cursor;
+    setSession(hydrated.session); setTurns(hydrated.turns); setItems(hydrated.items); setTasks(hydrated.tasks); setRequests(hydrated.requests); setEvents(hydrated.events); cursor.current = hydrated.cursor;
   }), [enqueueSync, sessionId]);
   const tail = useCallback(() => enqueueSync(async () => {
     const update = await tailVNextSession(api, sessionId, cursor.current);
     if (update.events.length === 0) return;
     cursor.current = update.cursor;
     setEvents((current) => appendJournalEvents(current, update.events));
-    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); setItems(update.snapshot.items); setRequests(update.snapshot.requests); }
+    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); setItems(update.snapshot.items); setTasks(update.snapshot.tasks); setRequests(update.snapshot.requests); }
   }), [enqueueSync, sessionId]);
 
   useEffect(() => {
@@ -304,7 +344,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [hydrate, tail]);
 
-  const transcript = useMemo(() => projectJournal(turns, items, events), [turns, items, events]);
+  const transcript = useMemo(() => projectJournal(turns, items, events, tasks), [turns, items, events, tasks]);
   const active = transcript.find((turn) => isActiveTurn(turn.state));
   // Only OPEN requests are actionable; resolved ones are history and live in
   // the journal rather than as a card demanding a second answer.

@@ -22,6 +22,7 @@ import { Id, ProviderDriverKind, ProviderInstanceId, ProviderRefs, Timestamp, Us
 import { Turn } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
+import { TaskSeed } from "./tasks";
 
 /** An item as the worker knows it, before the engine stamps ownership on it. */
 export const ItemSeed = z.object({
@@ -32,6 +33,17 @@ export const ItemSeed = z.object({
    *  only party that has seen the provider payload, then stored so three
    *  clients do not derive three different labels for one row. */
   title: z.string().optional(),
+  /**
+   * The sub-agent this row belongs to, when it was not produced by the main
+   * loop.
+   *
+   * THE WORKER SETS THIS, NOT THE ENGINE, because the worker is the only party
+   * that sees the provider's parent linkage — Claude's `parent_tool_use_id`,
+   * Codex's child thread id. Without it a fan-out's tool calls arrive
+   * interleaved with the parent's and nothing can tell them apart, which is the
+   * state stage 4 shipped in and this closes.
+   */
+  taskId: Id.optional(),
   providerRefs: ProviderRefs.optional(),
 });
 export type ItemSeed = z.infer<typeof ItemSeed>;
@@ -56,6 +68,20 @@ export const TurnObservation = z.discriminatedUnion("kind", [
     text: z.string().min(1),
   }),
   z.object({ kind: z.literal("usage"), usage: UsageSnapshot }),
+
+  /**
+   * Sub-agents and background work.
+   *
+   * THE WHOLE SEED RIDES EVERY ONE OF THE THREE, not just `task.started`, and
+   * ./tasks.ts explains why: a client that had to join a late progress row back
+   * to its start row could not do so once the start row aged out of retention,
+   * and the agent silently vanished from the roster. The engine folds each seed
+   * over the stored task, so a progress observation that repeats what it already
+   * knew is a no-op rather than a conflict.
+   */
+  z.object({ kind: z.literal("task.started"), task: TaskSeed }),
+  z.object({ kind: z.literal("task.progress"), task: TaskSeed, message: z.string().optional() }),
+  z.object({ kind: z.literal("task.completed"), task: TaskSeed }),
 ]);
 export type TurnObservation = z.infer<typeof TurnObservation>;
 

@@ -14,11 +14,6 @@
  *   - no dynamic tools. Telar's in-process tool namespaces do not exist in
  *     vNext, and declaring `dynamicTools: []` is WORSE than silence (see the
  *     omit-when-empty note on `threadParams`).
- *   - no sub-agent buckets. `ItemSeed` has no `taskId`, so a child thread's
- *     work cannot be attributed to a task row. Its items are still emitted —
- *     invisible work is worse than unfiled work — tagged with the child thread
- *     id in `providerRefs.sessionId`, which is what a later task mapping keys
- *     off.
  *   - no on-demand compaction or rollback. Those are session operations, not
  *     turn operations, and `TurnDriver` runs turns.
  */
@@ -243,15 +238,52 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         ...(threadId && threadId !== rootThreadId ? { sessionId: threadId } : {}),
       });
 
+      /**
+       * A sub-agent, in Codex, IS a child thread.
+       *
+       * There is no `task_started` notification to key off the way Claude has
+       * one — the app-server simply starts emitting items under a threadId that
+       * is not the root's. So the task is declared the first time such a thread
+       * speaks, which is also the earliest moment anything is knowable about it.
+       * Deriving the id from the thread id means every subsequent row files
+       * itself with no lookup, exactly as `parent_tool_use_id` does for Claude.
+       */
+      const childTasks = new Set<string>();
+      const taskIdForThread = (threadId: string): string | undefined =>
+        threadId && rootThreadId && threadId !== rootThreadId ? `task_${threadId}` : undefined;
+
+      const noteThread = (threadId: string): string | undefined => {
+        const taskId = taskIdForThread(threadId);
+        if (!taskId || childTasks.has(threadId)) return taskId;
+        childTasks.add(threadId);
+        // No title: Codex names its child threads nothing, and inventing one
+        // ("Sub-agent 1") would read as provider-reported when it is not.
+        emit({ kind: "task.started", task: { id: taskId, kind: "agent", state: "running", providerTaskId: threadId } });
+        return taskId;
+      };
+
+      const closeThreadTask = (threadId: string, state: "completed" | "failed"): void => {
+        const taskId = taskIdForThread(threadId);
+        if (!taskId || !childTasks.delete(threadId)) return;
+        emit({ kind: "task.completed", task: { id: taskId, kind: "agent", state, providerTaskId: threadId } });
+      };
+
       /** Open a row for a Codex item if it has none yet. */
       const openItem = (threadId: string, codexId: string, detail: ItemDetail, title?: string): string => {
         const existing = open.get(codexId);
         if (existing) return existing.id;
         const id = itemIdFor(codexId);
+        const taskId = noteThread(threadId);
         open.set(codexId, { id, detail });
         emit({
           kind: "item.started",
-          item: { id, detail, ...(title ? { title } : {}), providerRefs: refsFor(codexId, threadId) },
+          item: {
+            id,
+            detail,
+            ...(title ? { title } : {}),
+            ...(taskId ? { taskId } : {}),
+            providerRefs: refsFor(codexId, threadId),
+          },
         });
         return id;
       };
@@ -436,14 +468,24 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
               // failure ends it.
               if (threadId === rootThreadId && params.willRetry !== true) throw new Error(message);
               const id = `item_error_${crypto.randomUUID().replaceAll("-", "")}`;
-              emit({ kind: "item.started", item: { id, detail: { type: "error", error: { message } } } });
+              const taskId = noteThread(threadId);
+              emit({
+                kind: "item.started",
+                item: { id, detail: { type: "error", error: { message } }, ...(taskId ? { taskId } : {}) },
+              });
               emit({ kind: "item.completed", itemId: id, status: "failed" });
               break;
             }
 
             case "turn/completed": {
               const turnRecord = record(params.turn);
-              if (threadId !== rootThreadId) break;
+              if (threadId !== rootThreadId) {
+                // A sub-agent finishing. Not this turn finishing — but it is
+                // the only signal that the child is done, and a task left
+                // running makes the session claim it is still working forever.
+                closeThreadTask(threadId, turnRecord.status === "failed" ? "failed" : "completed");
+                break;
+              }
               // A sub-agent's turn completing is not this turn completing.
               if (rootTurnId && str(turnRecord.id) && str(turnRecord.id) !== rootTurnId) break;
               if (turnRecord.status === "failed") {
@@ -452,6 +494,8 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
               // Rows the app-server never closed would sit spinning forever.
               for (const [, row] of open) emit({ kind: "item.completed", itemId: row.id, status: "failed" });
               open.clear();
+              // Same for a child thread that never reported its own completion.
+              for (const child of [...childTasks]) closeThreadTask(child, "failed");
               if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
               await flush();
               if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
