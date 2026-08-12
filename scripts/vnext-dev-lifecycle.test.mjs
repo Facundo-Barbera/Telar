@@ -6,8 +6,11 @@ import {
   decideWorkerFailure,
   decideWorkerStart,
   canLaunchCockpit,
+  describeVnextWebExposure,
   desktopDevCommand,
   ownedChildrenForShutdown,
+  isLoopbackHost,
+  resolveVnextWebHost,
   resolveVnextWebPort,
   shouldLaunchDesktop,
   vnextCockpitUrl,
@@ -78,5 +81,53 @@ describe("vNext dev lifecycle decisions", () => {
     const attachedDesktop = { name: "desktop", owned: false };
     const launchedDesktop = { name: "desktop", owned: desktopDevCommand(vnextCockpitUrl(3000)).owned };
     expect(ownedChildrenForShutdown([attachedDesktop, launchedDesktop])).toEqual([launchedDesktop]);
+  });
+});
+
+describe("reaching the cockpit from another device", () => {
+  test("binds loopback unless told otherwise, and that default is the security boundary", () => {
+    // The cockpit has no login and its sessions run tools without asking by
+    // default, so the listener is the only thing standing between a stranger on
+    // the network and a shell on this machine.
+    expect(resolveVnextWebHost({})).toBe("127.0.0.1");
+    expect(resolveVnextWebHost({ TELAR_VNEXT_WEB_HOST: "  100.72.141.10 " })).toBe("100.72.141.10");
+    // Passed to a child process, so shell-hostile input is refused outright.
+    expect(() => resolveVnextWebHost({ TELAR_VNEXT_WEB_HOST: "127.0.0.1; rm -rf /" })).toThrow(/bare host or IP/);
+    expect(() => resolveVnextWebHost({ TELAR_VNEXT_WEB_HOST: "$(whoami)" })).toThrow(/bare host or IP/);
+  });
+
+  test("a non-loopback bind is announced, and a wildcard bind says so in the strongest terms", () => {
+    expect(describeVnextWebExposure("127.0.0.1", 3000)).toBeNull();
+    expect(describeVnextWebExposure("localhost", 3000)).toBeNull();
+    expect(isLoopbackHost("::1")).toBeTrue();
+
+    const tailnet = describeVnextWebExposure("100.72.141.10", 3000);
+    expect(tailnet).toContain("100.72.141.10:3000");
+    expect(tailnet).toContain("shell on this machine");
+
+    // `0.0.0.0` is accepted and is almost always a mistake — it follows the
+    // machine onto whatever wifi it joins next.
+    expect(describeVnextWebExposure("0.0.0.0", 3000)).toContain("untrusted wifi");
+  });
+
+  test("the launch command, the printed URL and the port check all use the SAME host", () => {
+    // Three places that could disagree. A URL advertising one address while
+    // Next binds another is the failure that reads as "connection refused".
+    expect(webDevCommand(3000, "100.72.141.10").args).toContain("100.72.141.10");
+    expect(vnextCockpitUrl(3000, "100.72.141.10")).toBe("http://100.72.141.10:3000/");
+    // A bare IPv6 literal is not a URL authority without brackets.
+    expect(vnextCockpitUrl(3000, "::1")).toBe("http://[::1]:3000/");
+    expect(vnextCockpitUrl(3000)).toBe("http://127.0.0.1:3000/");
+  });
+
+  test("availability is checked on the interface that will actually be bound", async () => {
+    // A port can be free on loopback and taken on the interface that matters;
+    // checking the wrong one reports success and then fails at launch.
+    const held = net.createServer();
+    await new Promise((resolve) => held.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    const port = held.address().port;
+    await expect(assertVnextWebPortAvailable(port, "127.0.0.1")).rejects.toThrow(/unavailable on 127\.0\.0\.1/);
+    await new Promise((resolve) => held.close(resolve));
+    await assertVnextWebPortAvailable(port, "127.0.0.1");
   });
 });

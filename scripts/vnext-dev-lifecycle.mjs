@@ -36,31 +36,80 @@ export function resolveVnextWebPort(env = process.env) {
   return port;
 }
 
-export function vnextCockpitUrl(port) {
-  return `http://127.0.0.1:${port}/`;
+export const DEFAULT_VNEXT_WEB_HOST = "127.0.0.1";
+
+/**
+ * Which interface the cockpit listens on.
+ *
+ * LOOPBACK BY DEFAULT, AND THAT DEFAULT IS A SECURITY BOUNDARY RATHER THAN A
+ * CONVENIENCE. The cockpit has no authentication of its own: its route handlers
+ * proxy to the engine with a token they read server-side, and a session's
+ * default runtime mode is `auto`. So whoever can open this port can run shell
+ * commands and write files on this machine. Reaching it from another device is
+ * a legitimate thing to want — set this to the address of ONE private interface
+ * (a Tailscale 100.x.y.z, say) so the tailnet is the boundary.
+ *
+ * `0.0.0.0` IS ACCEPTED AND IS ALMOST CERTAINLY WRONG. It binds every network
+ * the machine is attached to, including whatever café or hotel wifi it joins
+ * next. `describeVnextWebExposure` exists to say so out loud at startup rather
+ * than leaving it to be discovered.
+ */
+export function resolveVnextWebHost(env = process.env) {
+  const raw = env.TELAR_VNEXT_WEB_HOST?.trim();
+  if (!raw) return DEFAULT_VNEXT_WEB_HOST;
+  // Deliberately permissive about the FORM (v4, v6, a hostname) and strict
+  // about shell-hostile characters: this value is passed to a child process.
+  if (!/^[A-Za-z0-9._:\-[\]]+$/.test(raw)) {
+    throw new Error("TELAR_VNEXT_WEB_HOST must be a bare host or IP address.");
+  }
+  return raw;
 }
 
-/** Make Next bind to the same deterministic port advertised to the desktop. */
-export function webDevCommand(port) {
+export function isLoopbackHost(host) {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+/** The warning a non-loopback bind earns, or null. Returned rather than printed
+ *  so the supervisor decides where it goes and a test can assert it exists. */
+export function describeVnextWebExposure(host, port) {
+  if (isLoopbackHost(host)) return null;
+  const reach = host === "0.0.0.0" || host === "::"
+    ? "EVERY network this machine is attached to, including untrusted wifi"
+    : `anything that can route to ${host}`;
+  return `The cockpit is listening on ${host}:${port}, reachable by ${reach}. It has no login, and sessions run tools without asking by default — treat this port as a shell on this machine.`;
+}
+
+export function vnextCockpitUrl(port, host = DEFAULT_VNEXT_WEB_HOST) {
+  // A bare IPv6 address needs brackets to be a URL authority at all.
+  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${authority}:${port}/`;
+}
+
+/** Make Next bind to the same deterministic host and port advertised to the desktop. */
+export function webDevCommand(port, host = DEFAULT_VNEXT_WEB_HOST) {
   return {
     label: "web",
-    args: ["run", "--cwd", "apps/vnext-web", "dev", "--", "--hostname", "127.0.0.1", "--port", String(port)],
+    args: ["run", "--cwd", "apps/vnext-web", "dev", "--", "--hostname", host, "--port", String(port)],
     owned: true,
   };
 }
 
 /**
- * Check the explicit loopback port before any owned process starts.  Next is
- * still given `--port`, so a later bind race causes a supervised fatal exit
- * rather than a silent automatic fallback.
+ * Check the explicit port before any owned process starts.  Next is still given
+ * `--port`, so a later bind race causes a supervised fatal exit rather than a
+ * silent automatic fallback.
+ *
+ * BOUND ON THE SAME HOST Next will use, not on loopback: a port can be free on
+ * 127.0.0.1 and taken on the interface that actually matters, and checking the
+ * wrong one reports success and then fails at launch.
  */
-export async function assertVnextWebPortAvailable(port) {
+export async function assertVnextWebPortAvailable(port, host = DEFAULT_VNEXT_WEB_HOST) {
   await new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", (error) => {
-      reject(new Error(`vNext web port ${port} is unavailable: ${error.message}`));
+      reject(new Error(`vNext web port ${port} is unavailable on ${host}: ${error.message}`));
     });
-    server.listen({ host: "127.0.0.1", port }, () => {
+    server.listen({ host, port }, () => {
       server.close((error) => error ? reject(error) : resolve());
     });
   });

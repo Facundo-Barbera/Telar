@@ -80,6 +80,27 @@ the selected loopback port before it starts anything and passes that exact port
 to both Next and the desktop shell; it fails rather than silently using Next's
 automatic fallback. It never uses `~/.telar` or `~/.telar-dev`.
 
+### Reaching the cockpit from another device
+
+`TELAR_VNEXT_WEB_HOST` chooses the interface the cockpit binds. It defaults to
+`127.0.0.1`, and that default is a security boundary rather than a convenience:
+**the cockpit has no login**, its route handlers hold the engine token, and a
+session's default runtime mode is `auto` — so whoever can open the port can run
+shell commands and write files on the host.
+
+Bind ONE private interface, not a wildcard:
+
+```sh
+TELAR_VNEXT_WEB_HOST=100.x.y.z bun run dev:vnext   # a Tailscale address
+```
+
+The launcher prints a warning whenever the bind is not loopback, and refuses to
+start if the port is already taken on that interface. `0.0.0.0` is accepted and
+is almost always wrong — it follows the machine onto whatever network it joins
+next. Note that binding one address is exclusive: with a tailnet address bound,
+`localhost:3000` on the host itself stops working, and you use the tailnet
+address there too.
+
 `apps/vnext-web` is an independent Next app with its own root-relative routes,
 styles, API adapters, and engine client. It does not mount or compile the legacy
 sidebar, dock, Loom/Workspace navigation, account registry, desktop/browser host,

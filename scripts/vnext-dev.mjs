@@ -14,6 +14,8 @@ import {
   decideWorkerStart,
   canLaunchCockpit,
   assertVnextWebPortAvailable,
+  describeVnextWebExposure,
+  resolveVnextWebHost,
   desktopDevCommand,
   ownedChildrenForShutdown,
   resolveVnextWebPort,
@@ -107,9 +109,14 @@ async function main() {
   const env = childEnv(telarHome);
   const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
   const webPort = resolveVnextWebPort(env);
-  const cockpitUrl = vnextCockpitUrl(webPort);
-  await assertVnextWebPortAvailable(webPort);
+  const webHost = resolveVnextWebHost(env);
+  const cockpitUrl = vnextCockpitUrl(webPort, webHost);
+  await assertVnextWebPortAvailable(webPort, webHost);
   process.stdout.write(`[telar-vnext] TELAR_HOME=${telarHome}\n`);
+  // Printed BEFORE anything starts listening, and to stderr: a warning about
+  // exposing a shell should not be the line that scrolls past in a happy log.
+  const exposure = describeVnextWebExposure(webHost, webPort);
+  if (exposure) console.error(`[telar-vnext] WARNING: ${exposure}`);
 
   let health = await probeEngine(vnextRoot);
   const engineAction = decideEngineStart(health ? "healthy" : "unreachable");
@@ -166,7 +173,7 @@ async function main() {
   // The web client discovers the engine from TELAR_HOME on each server request.
   // Do not pass host, port, token, or a discovery snapshot: an engine restart must
   // be discoverable rather than pinning web to stale credentials.
-  const webCommand = webDevCommand(webPort);
+  const webCommand = webDevCommand(webPort, webHost);
   const web = spawnOwned(webCommand.label, process.execPath, webCommand.args, { env });
   web.child.once("exit", (code, signal) => {
     if (!stopping) {
