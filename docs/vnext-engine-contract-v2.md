@@ -1,0 +1,317 @@
+# vNext engine — contract v2
+
+**Status:** proposed model, not implemented. Written 2026-08-11.
+**Supersedes:** `packages/engine-client/src/contract.ts` (protocol version 1).
+
+## 1. What this is for
+
+The engine must run **detached agent sessions on its own** — full Claude and
+Codex turns, sub-agents, tool timelines, approvals, and a real browser — with no
+UI client connected. Clients (web, desktop, later mobile) become *viewers and
+remote controls* over a daemon that would keep working if every one of them
+closed.
+
+Today it cannot. Protocol v1 is a durable text queue: eleven flat `turn.*`
+events, `permissionMode: "default"`, and a driver that reads only text deltas.
+`tool_use`, `tool_result` and `thinking` are dropped on the floor. There is
+nothing to render and nothing to approve.
+
+### In scope
+
+Sessions, turns, tool timelines, thinking, approvals, sub-agents, usage/cost,
+attachments, model selection, Codex, MCP, worktrees, the browser, and the
+capability-aggregation mode currently called Ultras.
+
+### Out of scope, deliberately
+
+**Looms, weaves, the verifier, and the acceptance gate.** They need a rework of
+their own and are not modelled here. `packages/core`'s loom/weave/verifier code
+stays frozen and unmounted. The contract below must not grow a `loom` entity as
+a side effect — when looms return they arrive as a layer *over* this stream, not
+a parallel one beside it.
+
+**Workspace queue/lanes/packets.** Deferred to its own pass, on top of v2.
+
+**Visual design.** The Codex app is the visual reference; that is a separate
+track from this contract.
+
+## 2. References, and where we diverge
+
+Studied: **t3 code** (`~/Projects/_refs/t3code`, pulled to `d37a9b09`,
+2026-08-12 nightly). It is the closest existing thing to what Telar vNext wants
+— an "agent harness control surface": one local server owning agent processes,
+with web, desktop and mobile clients over RPC. Its `packages/contracts` is a
+mature, hard-won version of the contract we are about to write, and the parts
+worth copying are copied.
+
+**Conductor** contributes one idea we take wholesale: a session runs in **its
+own git worktree** so several can run in parallel without fighting over a
+checkout. t3 code encodes the same idea as `ThreadEnvMode = "local" | "worktree"`.
+There is no Conductor source in `~/Projects` — this is modelled from the
+published behaviour, not from reading its code.
+
+### Three places we deliberately diverge from t3 code
+
+**1. The browser runs in the engine, not in a client.**
+This is the most important divergence and it is forced by the goal. In t3 code,
+browser automation is brokered to a connected desktop host
+(`PreviewAutomationBroker`, `PreviewAutomationHost { clientId, environmentId }`);
+with no host connected, tool calls fail with `PreviewAutomationNoAvailableHostError`.
+A t3 code session cannot browse while detached.
+
+Telar already has what closes that gap:
+`apps/web_old/lib/server/browser-runtime.ts` drives a real headless Chromium and
+already reports `provider: "desktop" | "playwright"`. We move it into the engine
+and invert the default — see §6.
+
+**2. `session` and `thread` are not split.**
+t3 code has `Thread` (the conversation) *and* `ProviderSession` (the process).
+The overload is a persistent source of confusion in its own code. Telar keeps
+**Session** as the one durable, user-facing conversation and calls the process
+attached to it a **Runtime**. One session, zero-or-one live runtime.
+
+**3. Aggregation is a projection, not an entity.**
+The single best structural idea in t3 code: it has no separate "fleet" or
+"workflow" object. Multi-agent fan-out rides the *same* runtime event stream as
+`task.*` events carrying `agentId`, `parentAgentId`, `workflowName`,
+`phaseIndex`, `agentIndex`, `agentPath`. Every surface — sidebar liveness pill,
+agent roster, workflow progress — is a fold over that one stream.
+
+Telar's Ultras are the opposite: a parallel universe with their own storage,
+journal, events, wake loop and surface (`packages/core/src/ultra/*`, ten
+modules). That is why the old UI needed a whole second rail to display them. v2
+folds aggregation back onto the main stream. See §7.
+
+## 3. Entities
+
+```
+Environment          the host the engine runs on (one, for now; remote later)
+  └── Project        a registered repo
+        └── Session  a durable conversation. Survives restarts and disconnects.
+              ├── Runtime   the live provider process, if any (0..1)
+              └── Turn      one user input and everything it caused
+                    ├── Item     a timeline row (message, tool call, reasoning…)
+                    ├── Request  something needing a human answer (0..n)
+                    └── Task     a sub-agent or background job (0..n)
+```
+
+**Session** carries: project, title, provider instance, model selection,
+`envMode: "local" | "worktree"`, worktree path when applicable, runtime mode,
+lifecycle state, and cumulative usage.
+
+**Runtime** is not persisted state the user owns; it is the engine's handle on a
+process. A session with no runtime is *cold* — reopening it starts a runtime and
+resumes provider continuity from the stored cursor.
+
+**Turn** is the unit of work and stays the durable, claimable, replay-safe unit
+v1 already gets right. v1's `runId` idempotency, claim tokens, and the
+`ambiguous`/`discarded` states are **kept** — they are the best part of the
+current engine and they are what makes a detached turn safe to recover after a
+crash.
+
+## 4. The event stream
+
+One append-only, monotonically-numbered journal per session. Every client state
+is a fold over it; there is no second source of truth. Cursor-based replay
+(`?since=<id>`) already works in v1 and carries over.
+
+### Event families
+
+| Family | Events | Purpose |
+| --- | --- | --- |
+| `session.*` | `created`, `updated`, `state.changed` | lifecycle, title, settings |
+| `runtime.*` | `started`, `configured`, `state.changed`, `exited` | the process |
+| `turn.*` | `accepted`, `claimed`, `started`, `completed`, `aborted`, `ambiguous`, `discarded`, `plan.updated`, `diff.updated` | the unit of work |
+| `item.*` | `started`, `updated`, `completed` | timeline rows |
+| `content.delta` | — | streaming text into an item |
+| `request.*` | `opened`, `resolved` | approvals and user input |
+| `task.*` | `started`, `progress`, `updated`, `completed` | sub-agents and background work |
+| `usage.updated` | — | tokens and cost |
+| `browser.*` | `state.changed`, `action` | the engine's browser |
+| `mcp.*`, `account.*`, `runtime.warning`, `runtime.error` | — | diagnostics |
+
+Every event carries `{ id, at, sessionId, turnId?, itemId?, requestId?, taskId?, providerRefs?, raw? }`.
+
+**`raw` is optional and load-bearing.** t3 code keeps the untranslated provider
+payload on every normalized event. It is how you debug a normalization bug
+without re-running the session, and how a client can render something the
+contract does not model yet. Keep it, keep it optional, and never let a client
+*depend* on it.
+
+### Item types
+
+Adopting t3 code's canonical set, minus the parts we do not have:
+
+```
+user_message · assistant_message · reasoning · plan
+command_execution · file_change · mcp_tool_call · dynamic_tool_call
+web_search · image_view · browser_action
+context_compaction · error · unknown
+```
+
+`item.status` is `inProgress | completed | failed | declined`. The tool-lifecycle
+subset is what the UI renders as expandable tool cards — this is precisely the
+data protocol v1 throws away.
+
+### Requests — the detached-mode crux
+
+`request.opened` carries a kind
+(`command_execution_approval`, `file_change_approval`, `file_read_approval`,
+`tool_user_input`, …) and stays open until `request.resolved`.
+
+A **detached session with an open request is blocked**, and that is the one
+failure mode that makes autonomous runs useless in practice. Resolution is
+governed by the session's runtime mode:
+
+| Runtime mode | Behaviour when a request opens with no human present |
+| --- | --- |
+| `approval-required` | session goes `waiting`, notification fires, work parks |
+| `auto-accept-edits` | file edits auto-resolve; commands park |
+| `auto` | everything inside the session's boundary auto-resolves; escapes park |
+| `full-access` | nothing opens a request in the first place |
+
+The mode is per session, set at creation, changeable mid-session. Default for a
+**detached** session is `auto`; default for an **attended** session is
+`approval-required`. A parked request must produce a real notification —
+otherwise "detached" means "silently stuck".
+
+## 5. Detached execution
+
+Detached is **the default, not a mode**. The engine already has the right bones
+(`daemon.ts`, `worker-supervisor.ts`, `worker.ts`, claim tokens, requeue); what
+is missing is that the worker currently runs one turn and exits.
+
+What changes:
+
+- **The runtime outlives the turn.** A provider process is kept warm per active
+  session, supervised, with a crash/restart policy that reuses the existing
+  claim/requeue machinery.
+- **Client presence is an input, never a requirement.** Copy t3 code's
+  `ClientActivityLease` idea — clients *report* visibility/focus so the engine can
+  cheapen polling — but no code path may require a lease to exist.
+- **Wake and notify.** Telar's `packages/core/src/ultra/wake.ts` already solved
+  scheduled wake-ups for Ultras. Generalize it to sessions so a detached session
+  can sleep, poll CI, and resume.
+- **Worktree isolation.** `envMode: "worktree"` creates the session's own
+  worktree via the existing `packages/core/src/vcs.ts`, so N detached sessions on
+  one project do not collide. This is the Conductor idea, and it is a
+  precondition for running several detached sessions at once.
+
+## 6. The browser
+
+Two providers behind one tool surface, chosen per session:
+
+- **`headless`** — engine-owned Playwright/Chromium. Works with nothing
+  attached. **This is the default**, and it is what makes "detached with full
+  browser capabilities" true rather than aspirational.
+- **`attached`** — a connected desktop/web client's webview, for when a human
+  wants to watch the agent work or drive alongside it. Brokered the way t3 code
+  brokers it.
+
+A session on `headless` **upgrades to `attached` when a host connects** and
+falls back when it leaves. The agent's tool surface is identical either way; the
+provider swap is invisible to the model. `apps/web_old/lib/browser-mcp.ts`'s
+fourteen tools are the surface to port, and
+`apps/web_old/lib/server/browser-runtime.ts` is the implementation to move.
+
+Browser activity is journalled as `browser_action` items on the normal stream,
+so a detached run's browsing is reviewable after the fact — a screenshot trail,
+not a black box.
+
+## 7. Warp — the aggregation mode formerly called Ultras
+
+**Decided: Ultras becomes Warp.** In weaving, the warp is the set of parallel
+threads held under tension on the loom, through which the weft passes. It is
+semantically exact for a parallel fan-out, it is native to Telar's vocabulary,
+and it does not collide with `loom`, `weave` or `thread`, which are all taken.
+"Ultra" had drifted into model-tier and thinking-budget vocabulary and read as
+an intensity setting rather than a structure.
+
+Vocabulary: **a warp** (one orchestrated run), **a warp script** (the authored
+file), **a warp agent** (one child in the fan-out), **warp phase**.
+
+The mode is Telar's deterministic multi-agent orchestrator: a script that fans
+out agents across phases under a budget. It is the one aggregation feature that
+exists today and it is worth keeping.
+
+**The structural change: it stops being a parallel universe.** Ultras today own
+their storage, journal, event bus, wake loop, sandbox and surface —
+`packages/core/src/ultra/{storage,journal,events,wake,runner,executor,sandbox,signals,surface,child-guard}.ts`.
+Every one of those needs a bespoke UI rail because none of it is on the session
+stream. In v2 a warp emits ordinary `task.*` events carrying `warpName`,
+`phaseIndex`, `phaseTitle`, `agentIndex`, `parentAgentId` — exactly t3 code's
+`taskAgentLinkage`. Sub-agents, warp agents and background shells then render
+through **one** timeline component instead of three.
+
+The script-authoring surface (`surface.ts`, `sandbox.ts`, the `agent()` /
+`parallel()` / `pipeline()` / `phase()` API) is genuinely good and stays as-is.
+What changes is where its *observations* go.
+
+**Rename scope.** `packages/core/src/ultra/` → `packages/core/src/warp/`, the
+`ultra:` event namespace → `warp:`, `UltraAgentOpts` → `WarpAgentOpts`, and so
+on. Two things need care and are not mechanical:
+
+- **`ultra:run-anchor`**, the kind id retired INV-10 used to pin, becomes
+  `warp:run` — and it should be re-pinned when the surface is rebuilt.
+- **Persisted runs** under `TELAR_HOME/ultra` need a read-side migration or a
+  deliberate decision to abandon existing run history. `storage.ts` owns that
+  path and INV-3a used to pin it as its sole composer.
+
+## 8. Staging
+
+Each stage is independently shippable and leaves the tree green.
+
+| # | Stage | Unblocks |
+| --- | --- | --- |
+| 1 | **Rich turn journal.** Items, content deltas, reasoning, usage. Driver stops discarding blocks. | A real session view. Everything else. |
+| 2 | **Requests + runtime modes.** Approvals end-to-end, parked-request notifications. | Trustworthy detached runs. |
+| 3 | **Persistent runtimes.** Warm processes, supervision, resume. | Detached, properly. |
+| 4 | **Providers.** Codex via app-server, model/effort selection, attachments, MCP. | Parity with the frozen app. |
+| 5 | **Tasks.** Sub-agents on the stream, then Warp on top of them. | Fan-out surfaces. |
+| 6 | **Browser.** Headless provider first, attached second. | Autonomous verification. |
+| 7 | **Worktrees.** `envMode`, parallel sessions. | Many detached sessions at once. |
+
+Stage 1 is the one that matters. Everything the previous agent could not build
+was downstream of it, and it is **contract-first** (§9.3): the v2 type surface
+lands in `packages/engine-client` with tests before the driver changes.
+
+### Verification note
+
+`apps/web_old` was retired from verification, which took INV-1's MCP-surface
+half, INV-4, INV-8, INV-10, INV-11c/e/g and others with it. Each retirement in
+`packages/core/test/invariants.test.ts` names what must come back and when.
+Stage 2 should restore the tool-layer moat (retired INV-1g) **before** approvals
+ship, not after — restoring it later means auditing a surface that already
+shipped.
+
+## 9. Decisions and remaining questions
+
+### Decided
+
+1. **Ultras → Warp.** §7.
+2. **Provider driver/instance split, adopted now.** A `ProviderDriverKind`
+   (`claude` | `codex`) is *what* runs; a `ProviderInstanceId` is *which
+   configured one* — account, credentials, cwd binding. **Routing is on instance
+   id.** t3 code's own contract carries visible scar tissue from doing this the
+   other way round first (`provider` is still marked "optional during the
+   driver/instance migration… once every producer populates it, routing flips to
+   instance-id-only"), and a mid-flight migration would touch every event and
+   every persisted model selection. Telar's existing accounts registry
+   (`packages/core/src/accounts.ts`, `account-identity.ts`) is the natural
+   source of instances.
+3. **Stage 1 is contract-first.** Write the full v2 type surface in
+   `packages/engine-client` with tests, then rewrite the driver to emit it. The
+   contract is reviewable before behaviour changes, and `apps/vnext-web` can
+   bind against real types while the driver lands.
+
+### Still open
+
+4. **Effect.** t3 code's contracts are `effect/Schema`; Telar's are plain TS
+   types plus zod in core. Recommendation: **stay on zod**, port the *shapes*
+   not the framework. Effect is a large adoption to carry for schema validation
+   alone.
+5. **Remote environments.** t3 code models `EnvironmentId` everywhere from day
+   one so a client can drive a server on another machine. Cheap to carry as an
+   always-`"local"` field now; expensive to retrofit. Recommendation: carry it.
+6. **Warp run-history migration.** See §7 — migrate `TELAR_HOME/ultra` or
+   abandon it.
