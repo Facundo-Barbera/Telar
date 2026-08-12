@@ -1,0 +1,191 @@
+/**
+ * WHAT IS IN A CHECKOUT, and what one file says.
+ *
+ * The cockpit grew a Files tree, and a tree needs two reads nothing else in the
+ * engine offered: the list of paths, and the text at one of them. Both are here
+ * rather than in ./git.ts because only the first is a git question.
+ *
+ * `git ls-files` IS THE LIST, AND THAT IS THE WHOLE DESIGN. `--cached --others
+ * --exclude-standard` is every tracked file plus every untracked one git would
+ * not ignore, which means `.gitignore` — the file the repository already
+ * maintains for exactly this purpose — decides what a person sees. A hand-kept
+ * deny list would have to guess at `node_modules`, `.next`, `target`, `vendor`,
+ * `__pycache__`, `.venv` and whatever the next ecosystem calls its cache, and it
+ * would be wrong about somebody's repository within a week. It is also fast:
+ * 1,125 paths out of this repository in 18ms, because git is reading an index it
+ * already has rather than walking a disk.
+ *
+ * THE WALK IS THE FALLBACK, NOT THE PLAN. `envMode: "local"` lets a session run
+ * in an unversioned directory on purpose, and there is no ignore file to obey
+ * there — so the engine walks, with its own small deny list, and the listing says
+ * `source: "walk"` so a surface can be honest about which question it answered.
+ *
+ * NEITHER READ IS A MUTATION and neither may become one. This module is reachable
+ * from a panel that a human refreshes; the fencing that keeps a path inside its
+ * own checkout lives at the store boundary (see state.ts) for the same reason the
+ * patch read's does.
+ */
+import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import path from "node:path";
+import type { WorkspaceFile, WorkspaceListing } from "@telar/engine-client";
+import { nulFields } from "./git.js";
+import type { GitRunner } from "./worktree.js";
+
+/**
+ * How many paths one listing may carry.
+ *
+ * A TRANSPORT LIMIT, unlike the review's — this list is one string per file and
+ * a tree renders it all. Five thousand paths is roughly 180KB of JSON, which is
+ * fine for a read a human asks for and would not be fine on a timer (which is
+ * why nothing polls it). Past that a person is not browsing a tree, and the
+ * surface says the list was cut rather than pretending it is the repository.
+ */
+export const MAX_WORKSPACE_FILES = 5_000;
+
+/**
+ * How much of a file a viewer gets.
+ *
+ * 512KB is far more than anybody reads and far less than a checked-in binary or
+ * a generated bundle. A file past it arrives cut, WITH ITS REAL SIZE, so the
+ * viewer can say so instead of showing a syntax error that is not in the source.
+ */
+export const MAX_FILE_BYTES = 512 * 1024;
+
+/** How deep a walk goes. Only reached in an unversioned directory; deep enough
+ *  for a real source tree, shallow enough that a symlink cycle cannot hang the
+ *  daemon. */
+const MAX_WALK_DEPTH = 12;
+
+/**
+ * What a WALK skips. Deliberately short: this list exists only for directories
+ * git is not managing, and every entry is a directory nobody has ever wanted to
+ * read source out of. A repository never reaches this code — its `.gitignore`
+ * does a better job than this list ever could.
+ */
+const WALK_DENY = new Set([".git", "node_modules", ".next", ".turbo", "dist", "build", ".venv", "__pycache__", ".cache", "target"]);
+
+/** Repo-relative, forward-slashed. A backslash is a legal character in a POSIX
+ *  filename, so this converts only the separator the platform actually used. */
+function relative(root: string, target: string): string {
+  return path.relative(root, target).split(path.sep).join("/");
+}
+
+/**
+ * Every file under `cwd`, as git sees it.
+ *
+ * Returns `undefined` when this is not a work tree, which is the caller's signal
+ * to walk instead. Not an error: an unversioned workspace is a supported
+ * configuration, and throwing here would make the Files tree a failure state for
+ * it.
+ */
+export function gitWorkspaceFiles(git: GitRunner, cwd: string): string[] | undefined {
+  const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return undefined;
+  /**
+   * `--deduplicate` matters and is not decoration: without it a path that is
+   * both staged and modified is listed twice, and a tree built from the result
+   * grows two rows for one file. `-z` for the same reason every other read here
+   * uses it — a filename may contain a newline.
+   */
+  const listed = git(cwd, ["ls-files", "--cached", "--others", "--exclude-standard", "--deduplicate", "-z"]);
+  if (listed.status !== 0) return [];
+  return nulFields(listed.stdout).filter((entry) => entry.length > 0);
+}
+
+/**
+ * Every file under `root`, by walking it.
+ *
+ * BREADTH-FIRST, so a cap truncates the DEEPEST paths rather than everything
+ * after whichever directory happened to sort first. A tree cut off at
+ * `apps/engine/...` because `apps` sorted before `packages` would look like a
+ * repository that has no packages.
+ */
+export function walkWorkspaceFiles(root: string, limit = MAX_WORKSPACE_FILES): string[] {
+  const files: string[] = [];
+  let frontier: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
+  while (frontier.length > 0 && files.length < limit) {
+    const next: { dir: string; depth: number }[] = [];
+    for (const { dir, depth } of frontier) {
+      if (files.length >= limit) break;
+      let entries: Dirent[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        // An unreadable directory is one directory, not a failed listing.
+        continue;
+      }
+      for (const entry of entries) {
+        if (files.length >= limit) break;
+        if (entry.name.startsWith(".") && entry.isDirectory()) continue;
+        if (entry.isDirectory()) {
+          if (!WALK_DENY.has(entry.name) && depth + 1 <= MAX_WALK_DEPTH) next.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          continue;
+        }
+        // A SYMLINK IS NOT FOLLOWED. `isFile()` is false for one, so a link into
+        // a parent directory cannot turn this walk into a cycle.
+        if (entry.isFile()) files.push(relative(root, path.join(dir, entry.name)));
+      }
+    }
+    frontier = next;
+  }
+  return files;
+}
+
+export function listWorkspaceFiles(git: GitRunner, input: { cwd: string; now: number }): WorkspaceListing {
+  const tracked = gitWorkspaceFiles(git, input.cwd);
+  const repository = tracked !== undefined;
+  const all = tracked ?? walkWorkspaceFiles(input.cwd, MAX_WORKSPACE_FILES + 1);
+  /**
+   * SORTED HERE, ONCE. `ls-files` is already sorted and a walk is not, and a
+   * tree whose order depends on which reader answered is a tree that reorders
+   * under the cursor when a project stops being a repository. Plain codepoint
+   * order — the client groups and sorts per directory, which is a different
+   * question and belongs where the grouping happens.
+   */
+  const files = all.slice(0, MAX_WORKSPACE_FILES).sort();
+  return {
+    workspacePath: input.cwd,
+    repository,
+    files,
+    source: repository ? "git" : "walk",
+    truncated: all.length > MAX_WORKSPACE_FILES,
+    readAt: input.now,
+  };
+}
+
+/**
+ * A NUL byte in the first block means binary, which is the same test `git diff`
+ * uses. Cheaper and more honest than sniffing extensions: a `.txt` full of bytes
+ * is binary and a `.dat` full of JSON is not.
+ */
+function looksBinary(buffer: Buffer): boolean {
+  return buffer.subarray(0, Math.min(buffer.length, 8_192)).includes(0);
+}
+
+/**
+ * One file's text.
+ *
+ * The path arriving here is already fenced inside its checkout by the caller —
+ * this function does the reading, not the deciding.
+ */
+export function readWorkspaceFile(input: { cwd: string; path: string; maxBytes?: number }): WorkspaceFile {
+  const limit = input.maxBytes ?? MAX_FILE_BYTES;
+  const absolute = path.resolve(input.cwd, input.path);
+  const bytes = statSync(absolute).size;
+  const buffer = readFileSync(absolute);
+  if (looksBinary(buffer)) return { path: input.path, text: "", bytes, binary: true, truncated: false };
+  /**
+   * CUT ON BYTES, THEN DECODED — the other order would mean decoding a
+   * multi-megabyte file in order to throw most of it away. A multi-byte
+   * character straddling the cut decodes to one replacement character at the
+   * very end of a view that already says it is truncated.
+   */
+  const truncated = buffer.length > limit;
+  return {
+    path: input.path,
+    text: (truncated ? buffer.subarray(0, limit) : buffer).toString("utf8"),
+    bytes,
+    binary: false,
+    truncated,
+  };
+}

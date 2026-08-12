@@ -151,7 +151,7 @@ export function parseAheadBehind(stdout: string): { ahead: number; behind: numbe
 const MAX_REVIEW_FILES = 300;
 
 /** Splits a NUL-delimited git payload, dropping the trailing empty field. */
-function nulFields(stdout: string): string[] {
+export function nulFields(stdout: string): string[] {
   const fields = stdout.split("\0");
   if (fields.at(-1) === "") fields.pop();
   return fields;

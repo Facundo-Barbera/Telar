@@ -304,6 +304,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { diff: store.projectDiff(projectId) });
         return;
       }
+      /** The project's own file list, for a canvas with no session — same tree,
+       *  one scope wider. */
+      const projectFiles = /^\/v2\/projects\/([^/]+)\/files$/.exec(url.pathname);
+      if (request.method === "GET" && projectFiles) {
+        const projectId = decodeURIComponent(projectFiles[1]);
+        const target = url.searchParams.get("path");
+        if (target) {
+          writeJson(response, 200, { file: store.projectFile(projectId, target) });
+          return;
+        }
+        writeJson(response, 200, { listing: store.projectFiles(projectId) });
+        return;
+      }
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
       if (request.method === "GET" && projectGitHub) {
         writeJson(response, 200, {
@@ -515,6 +528,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             return;
           }
           writeJson(response, 200, { diff: store.sessionDiff(session.sessionId) });
+          return;
+        }
+        /**
+         * The session's checkout, as a file list. `?path=` reads ONE file's
+         * text — the same split as `/diff`, and for the same reason: a tree asks
+         * for every path once and a viewer asks for one file at a time.
+         */
+        if (request.method === "GET" && session.tail === "/files") {
+          const target = url.searchParams.get("path");
+          if (target) {
+            writeJson(response, 200, { file: store.sessionFile(session.sessionId, target) });
+            return;
+          }
+          writeJson(response, 200, { listing: store.sessionFiles(session.sessionId) });
           return;
         }
         if (request.method === "POST" && session.tail === "/git/commit") {

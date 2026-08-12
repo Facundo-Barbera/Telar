@@ -30,6 +30,15 @@ export type ReviewRow = {
   file: GitFileChange;
   /** The journal claims the session touched this path. */
   reported: boolean;
+  /**
+   * How many times the journal saw this path written, when it saw it at all.
+   *
+   * THE ONE FACT ONLY THE JOURNAL HAS. Git reports a file's net difference and
+   * cannot tell you it was rewritten four times getting there; the row shows the
+   * final state either way, so the count is the only honest signal that there
+   * were earlier attempts. Absent below 2, because "×1" is every row.
+   */
+  edits?: number;
 };
 
 export type SessionReview = {
@@ -58,13 +67,24 @@ export type SessionReview = {
  * reported — the alternative is a rename showing up as "never mentioned" on
  * every single review.
  */
-function isReported(file: GitFileChange, reported: ReadonlySet<string>): boolean {
-  return reported.has(file.path) || (file.renamedFrom !== undefined && reported.has(file.renamedFrom));
+function journalEdits(file: GitFileChange, reported: ReadonlyMap<string, number>): number | undefined {
+  return reported.get(file.path) ?? (file.renamedFrom === undefined ? undefined : reported.get(file.renamedFrom));
 }
 
-export function reconcileReview(diff: SessionDiff, reportedPaths: readonly string[]): SessionReview {
-  const reported = new Set(reportedPaths);
-  const rows = diff.files.map((file) => ({ file, reported: isReported(file, reported) }));
+/**
+ * `reported` IS A MAP, PATH → HOW MANY TIMES THE JOURNAL SAW IT WRITTEN.
+ *
+ * It was a list of paths, back when the journal had a surface of its own to
+ * carry the count. That surface is gone — Changes and Git said the same thing in
+ * two tabs, so they are now one Diff — and this fold is the only place left that
+ * can join the two witnesses. Taking the count as well as the path costs one
+ * field and keeps the last thing the journal knew that git does not.
+ */
+export function reconcileReview(diff: SessionDiff, reported: ReadonlyMap<string, number>): SessionReview {
+  const rows = diff.files.map((file) => {
+    const edits = journalEdits(file, reported);
+    return { file, reported: edits !== undefined, ...(edits !== undefined && edits > 1 ? { edits } : {}) };
+  });
   const onDisk = new Set<string>();
   for (const file of diff.files) {
     onDisk.add(file.path);
@@ -73,7 +93,7 @@ export function reconcileReview(diff: SessionDiff, reportedPaths: readonly strin
   return {
     rows,
     unreported: rows.filter((row) => !row.reported).map((row) => row.file),
-    settled: reportedPaths.filter((path) => !onDisk.has(path)),
+    settled: [...reported.keys()].filter((path) => !onDisk.has(path)),
     filesChanged: diff.files.length,
     linesAdded: diff.linesAdded,
     linesRemoved: diff.linesRemoved,

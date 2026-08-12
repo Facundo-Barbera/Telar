@@ -1066,7 +1066,7 @@ export function SessionCockpit({
           // are held locally and applied by the one patch that follows creation.
           onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
-          onOpenChanges={() => showPanelTab("changes")}
+          onOpenChanges={() => showPanelTab("diff")}
         />
       </div>
       {panel.open && (

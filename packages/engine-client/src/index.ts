@@ -42,6 +42,8 @@ import {
   type UsageSnapshot,
   type WorkerClaim,
   type WorkerStatus,
+  type WorkspaceFile,
+  type WorkspaceListing,
 } from "./protocol";
 
 export * from "./protocol";
@@ -180,6 +182,31 @@ export class EngineClient {
     const query = new URLSearchParams({ path });
     if (options.untracked) query.set("untracked", "1");
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`);
+  }
+
+  /**
+   * Every file in a checkout, for the Files tree.
+   *
+   * NOT CACHED AND NOT POLLED. It is git reading its own index — 18ms for this
+   * repository — and a tree that reorders itself under the cursor on a timer is
+   * worse than one that waits to be asked. The surface has a refresh button.
+   */
+  projectFiles(projectId: string): Promise<{ listing: WorkspaceListing }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/files`);
+  }
+
+  sessionFiles(sessionId: string): Promise<{ listing: WorkspaceListing }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files`);
+  }
+
+  /** One file's text, as it is on disk. Fenced inside the checkout by the
+   *  engine — see `readFenced` there for why the check is not at the route. */
+  projectFile(projectId: string, path: string): Promise<{ file: WorkspaceFile }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`);
+  }
+
+  sessionFile(sessionId: string, path: string): Promise<{ file: WorkspaceFile }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`);
   }
 
   /** Which models a provider says it has. Cached in the engine for five

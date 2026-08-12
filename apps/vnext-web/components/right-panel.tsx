@@ -5,7 +5,8 @@ import {
   BotIcon,
   ChevronRightIcon,
   CircleDotIcon,
-  GitBranchIcon,
+  FileDiffIcon,
+  FolderTreeIcon,
   GitPullRequestIcon,
   FileIcon,
   GaugeIcon,
@@ -15,7 +16,6 @@ import {
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PanelsTopLeftIcon,
-  PencilIcon,
   PlusIcon,
   TerminalIcon,
   XIcon,
@@ -25,7 +25,6 @@ import type {
   BrowserSnapshot,
   BrowserTab,
   EngineEvent,
-  FileChangeKind,
   Item,
   Task,
   TaskState,
@@ -33,7 +32,7 @@ import type {
   TurnState,
 } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
-import { fileReference, pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -46,7 +45,9 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
-import { GitSurface } from "@/components/session/git-surface";
+import { DiffSurface } from "@/components/session/diff-surface";
+import { FilesSurface } from "@/components/session/files-surface";
+import { FileViewSurface } from "@/components/session/file-view-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
 
@@ -82,15 +83,18 @@ const api = createVNextApi();
  */
 const SURFACES = [
   { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
-  { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file the conversation says it wrote." },
   /**
-   * CHANGES AND GIT ARE NOT THE SAME SURFACE, and keeping both is the point.
-   * Changes reads the JOURNAL — what the agent reported, with the patch its own
-   * tool produced, including work it later undid. Git reads the DISK — what
-   * actually differs from where the session started, including side effects
-   * nobody narrated. The Git surface is where the two are joined.
+   * DIFF AND FILES, WHICH USED TO BE CHANGES AND GIT — and the old pair was a
+   * duplicate wearing two names. "Changes" folded the journal and "Git" read the
+   * disk, but both drew a list of changed files with `+`/`−` counts and an
+   * expandable patch, one click apart in the same strip. Meanwhile nothing in the
+   * cockpit could show a file that had NOT changed, which is most of a repository.
+   *
+   * So: one tab for what moved, backed by the disk and annotated by the journal
+   * (session/diff-surface.tsx), and one for what is there (session/files-surface.tsx).
    */
-  { id: "git", label: "Git", icon: GitBranchIcon, blurb: "What the checkout has that its last commit does not." },
+  { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this conversation changed, and what it did not mention." },
+  { id: "files", label: "Files", icon: FolderTreeIcon, blurb: "The checkout, as a tree. Drag a file into the message." },
   /**
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
@@ -104,7 +108,7 @@ const SURFACES = [
 type SurfaceId = (typeof SURFACES)[number]["id"];
 
 /**
- * A panel tab is either a fixed surface or ONE BROWSER PAGE.
+ * A panel tab is a fixed surface, ONE BROWSER PAGE, or ONE FILE.
  *
  * Pages used to be stacked inside a single "Browser" tab, which made the panel
  * disagree with every browser anyone has ever used: two open pages were one tab
@@ -112,25 +116,51 @@ type SurfaceId = (typeof SURFACES)[number]["id"];
  * than a click on a tab, and neither page could be closed on its own. A page is
  * a tab — that is what a tab IS — so each one gets its own, keyed by the
  * engine's tab id.
+ *
+ * A FILE IS THE SAME KIND OF THING, and gets the same treatment. It is not a fold
+ * over the session record; it is something a person opened from the tree and will
+ * close when they are done with it. The alternative — a preview pane under the
+ * tree — splits a 320px column into two unreadable halves (see
+ * session/file-view-surface.tsx).
  */
-export type PanelTab = SurfaceId | `browser:${string}`;
+export type PanelTab = SurfaceId | `browser:${string}` | `file:${string}`;
 
 const BROWSER_PREFIX = "browser:";
+const FILE_PREFIX = "file:";
 
 export function browserPanelTab(tabId: string): PanelTab {
   return `${BROWSER_PREFIX}${tabId}`;
 }
 
-/** The engine tab id behind a panel tab, or undefined for a fixed surface. */
+/** The engine tab id behind a panel tab, or undefined for anything else. */
 export function browserTabId(tab: PanelTab): string | undefined {
   return tab.startsWith(BROWSER_PREFIX) ? tab.slice(BROWSER_PREFIX.length) : undefined;
 }
 
+export function filePanelTab(path: string): PanelTab {
+  return `${FILE_PREFIX}${path}`;
+}
+
+/** The workspace-relative path behind a panel tab, or undefined for anything
+ *  else. A path may contain a colon, so this splits on the FIRST one only. */
+export function filePanelPath(tab: PanelTab): string | undefined {
+  return tab.startsWith(FILE_PREFIX) ? tab.slice(FILE_PREFIX.length) : undefined;
+}
+
+/** Every open file, as plain paths — what the tree marks as already open. */
+export function openFilePaths(tabs: readonly PanelTab[]): string[] {
+  return tabs.map(filePanelPath).filter((path): path is string => path !== undefined);
+}
+
 /** Anything shaped like a tab id this build understands — the validator for
  *  what comes back out of localStorage. A browser page whose id is no longer
- *  open is still KNOWN; the surface says so rather than the tab vanishing. */
+ *  open is still KNOWN; the surface says so rather than the tab vanishing. A
+ *  file that has since been deleted is the same: its tab reports that. */
 export function isPanelTab(value: string): value is PanelTab {
-  return value.startsWith(BROWSER_PREFIX) || SURFACES.some((surface) => surface.id === value);
+  if (value.startsWith(BROWSER_PREFIX)) return true;
+  // A bare `file:` names nothing, and would restore as a tab that can only fail.
+  if (value.startsWith(FILE_PREFIX)) return value.length > FILE_PREFIX.length;
+  return SURFACES.some((surface) => surface.id === value);
 }
 
 /** A page's label: its title, else its host, else the raw URL. A tab reading
@@ -150,6 +180,11 @@ export function describePanelTab(
   tab: PanelTab,
   browser?: BrowserState,
 ): { label: string; icon: typeof BotIcon; blurb: string; missing?: boolean } {
+  // A FILE WEARS ITS BASENAME. `apps/vnext-web/components/right-panel.tsx` in a
+  // 44px-wide tab is `apps/vnex…`, which names nothing; the full path is the
+  // tooltip and the surface's own header.
+  const path = filePanelPath(tab);
+  if (path !== undefined) return { label: path.split("/").at(-1) || path, icon: FileIcon, blurb: path };
   const pageId = browserTabId(tab);
   if (pageId === undefined) {
     const surface = SURFACES.find((entry) => entry.id === tab)!;
@@ -162,38 +197,28 @@ export function describePanelTab(
 
 // ── folds over the session record ──────────────────────────────────────────
 
-/** One path, as the session last left it. */
-export type ChangedFile = {
-  path: string;
-  kind: FileChangeKind;
-  renamedFrom?: string;
-  unifiedDiff?: string;
-  linesAdded?: number;
-  linesRemoved?: number;
-  /** How many times the session touched this path. The row shows only the
-   *  NEWEST change, so the count is the one honest signal that there were
-   *  earlier ones. */
-  edits: number;
-};
-
-export function changedFiles(items: readonly Item[]): ChangedFile[] {
-  const byPath = new Map<string, { at: number; file: ChangedFile }>();
+/**
+ * WHAT THE TRANSCRIPT SAYS THIS SESSION WROTE: path → how many times.
+ *
+ * A MAP, NOT A LIST OF ROWS. This used to build a full `ChangedFile` — kind,
+ * patch, line counts, sort order — because the journal had a surface of its own
+ * to render. It does not any more: Changes and Git were the same list twice, so
+ * there is one Diff surface and git is its witness (see session/diff-surface.tsx).
+ * What survives is the half of the reconciliation only the journal can supply, and
+ * the count is the one fact git genuinely cannot state — a file rewritten four
+ * times has the same net diff as a file written once.
+ */
+export function journalWrites(items: readonly Item[]): Map<string, number> {
+  const writes = new Map<string, number>();
   for (const item of items) {
     if (item.detail.type !== "file_change") continue;
-    // A declined change never ran and a failed one never landed. Listing either
+    // A declined change never ran and a failed one never landed. Counting either
     // would claim the session edited a file it did not.
     if (item.status === "declined" || item.status === "failed") continue;
-    const change = item.detail.change;
-    const at = item.completedAt ?? item.startedAt;
-    const previous = byPath.get(change.path);
-    const edits = (previous?.file.edits ?? 0) + 1;
-    if (previous && previous.at > at) {
-      previous.file.edits = edits;
-      continue;
-    }
-    byPath.set(change.path, { at, file: { ...change, edits } });
+    const path = item.detail.change.path;
+    writes.set(path, (writes.get(path) ?? 0) + 1);
   }
-  return [...byPath.values()].sort((left, right) => right.at - left.at).map((entry) => entry.file);
+  return writes;
 }
 
 export type BrowserState = { provider: BrowserProvider; tabs: BrowserTab[] };
@@ -259,17 +284,6 @@ function figure(value: number | undefined): string {
 }
 
 
-const CHANGE_KIND: Partial<Record<FileChangeKind, string>> = {
-  create: "new",
-  delete: "deleted",
-  rename: "renamed",
-};
-
-const CHANGE_TONE: Partial<Record<FileChangeKind, PanelTone>> = {
-  create: "done",
-  delete: "danger",
-};
-
 const BROWSER_PROVIDER: Record<BrowserProvider, string> = {
   headless: "the engine’s own headless Chromium",
   attached: "a client-provided webview",
@@ -284,104 +298,6 @@ const TASK_STATE: Record<TaskState, string> = {
   failed: "Failed",
   stopped: "Stopped",
 };
-
-/** A unified diff, tinted by line. The transcript carries its own copy; one
- *  shared `<Diff>` is worth extracting the next time both files are open. */
-function Diff({ diff }: { diff: string }) {
-  return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[10px] leading-relaxed">
-      {diff.split("\n").map((line, index) => {
-        const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
-        return (
-          <span
-            key={index}
-            className={cn(
-              "block whitespace-pre-wrap break-words",
-              header
-                ? "text-muted-foreground/70"
-                : line.startsWith("+")
-                  ? "bg-success/10 text-success"
-                  : line.startsWith("-")
-                    ? "bg-destructive/10 text-destructive"
-                    : "text-muted-foreground",
-            )}
-          >
-            {line || " "}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
-
-function FileRow({ file }: { file: ChangedFile }) {
-  const [open, setOpen] = useState(false);
-  const cut = file.path.lastIndexOf("/");
-  const kind = CHANGE_KIND[file.kind];
-
-  return (
-    /* DRAGGABLE ON THE WRAPPER, NOT THE BUTTON. A draggable <button> fights its
-       own click on every browser that has ever shipped; the wrapper carries the
-       gesture and the button keeps the press. */
-    <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
-      <PanelRow tone={CHANGE_TONE[file.kind] ?? "none"} className="p-0 pl-0">
-        <button
-          type="button"
-          className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", file.unifiedDiff && "hover:bg-muted/60")}
-          disabled={!file.unifiedDiff}
-          aria-expanded={file.unifiedDiff ? open : undefined}
-          onClick={() => setOpen((current) => !current)}
-          title={file.path}
-        >
-          <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-            {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
-            <span className="text-foreground">{file.path.slice(cut + 1)}</span>
-          </span>
-          {kind && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-              {kind}
-            </Badge>
-          )}
-          {file.edits > 1 && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-              ×{file.edits}
-            </Badge>
-          )}
-          <span className="shrink-0 font-mono text-[10px] tabular-nums">
-            {file.linesAdded ? <span className="text-success">+{file.linesAdded}</span> : null}
-            {file.linesAdded && file.linesRemoved ? " " : null}
-            {/* U+2212, not a hyphen: same width as the plus, which is the whole
-                reason the column lines up. */}
-            {file.linesRemoved ? <span className="text-destructive">−{file.linesRemoved}</span> : null}
-          </span>
-          {file.unifiedDiff && (
-            <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-          )}
-        </button>
-      </PanelRow>
-      {open && file.unifiedDiff && <Diff diff={file.unifiedDiff} />}
-      {open && file.renamedFrom && <p className="px-4 pb-2 text-[11px] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
-    </div>
-  );
-}
-
-function ChangesSurface({ files }: { files: readonly ChangedFile[] }) {
-  if (files.length === 0) {
-    return (
-      <PanelEmpty icon={<PencilIcon />} title="No file changes yet">
-        Every file this session writes, edits, renames or deletes lands here with its diff.
-      </PanelEmpty>
-    );
-  }
-  return (
-    <div className="flex flex-col">
-      {files.map((file) => (
-        <FileRow key={file.path} file={file} />
-      ))}
-    </div>
-  );
-}
 
 /**
  * ONE PAGE, with the chrome row a browser has and nothing it does not.
@@ -601,7 +517,7 @@ function UsageSurface({ usage }: { usage: SessionUsage }) {
 
 export function VNextPanelSurface({
   tab,
-  files,
+  writes,
   tasks,
   turns,
   browser,
@@ -609,15 +525,20 @@ export function VNextPanelSurface({
   sessionTitle,
   projectId,
   branch,
+  openPaths,
+  onOpenTab,
   active,
 }: {
   tab: PanelTab;
-  files: readonly ChangedFile[];
+  /** What the journal says was written, path → count. The Diff surface's half of
+   *  the reconciliation — see `journalWrites`. */
+  writes: ReadonlyMap<string, number>;
   tasks: readonly Task[];
   turns: readonly Turn[];
   browser?: BrowserState;
-  /** Absent on a session that does not exist yet, which is also a session with
-   *  no browser and no repository diff — both surfaces have nothing to poll. */
+  /** Absent on a session that does not exist yet. Every surface that needs a
+   *  checkout falls back to the project's own, which is the same directory until
+   *  the session cuts a worktree. */
   sessionId?: string;
   /** The default commit message. Derived from the first message, which is the
    *  best one-line summary of what was asked for that anybody has. */
@@ -627,22 +548,43 @@ export function VNextPanelSurface({
   projectId?: string;
   /** The session's own branch, so its pull request can be marked as its own. */
   branch?: string;
+  /** Files already open as tabs, so the tree can mark them. */
+  openPaths?: readonly string[];
+  /** The tree opens a file by opening a TAB, which the panel owns. */
+  onOpenTab: (tab: PanelTab) => void;
   active?: TurnState;
 }) {
   const usage = useMemo(() => sessionUsage(turns), [turns]);
-  // The journal's half of the reconciliation, as plain paths.
-  const reportedPaths = useMemo(() => files.map((file) => file.path), [files]);
+  const filePath = filePanelPath(tab);
+  if (filePath !== undefined)
+    return (
+      <FileViewSurface
+        path={filePath}
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(active ? { active } : {})}
+      />
+    );
   const pageId = browserTabId(tab);
   if (pageId !== undefined)
     return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} />;
-  if (tab === "changes") return <ChangesSurface files={files} />;
-  if (tab === "git")
+  if (tab === "diff")
     return (
-      <GitSurface
+      <DiffSurface
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
-        reportedPaths={reportedPaths}
+        reported={writes}
         suggestion={sessionTitle?.trim() || "Session work"}
+        {...(active ? { active } : {})}
+      />
+    );
+  if (tab === "files")
+    return (
+      <FilesSurface
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(openPaths ? { openPaths } : {})}
+        onOpenFile={(path) => onOpenTab(filePanelTab(path))}
         {...(active ? { active } : {})}
       />
     );
@@ -911,11 +853,19 @@ export function VNextRightPanel({
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
-  const files = useMemo(() => changedFiles(items), [items]);
+  const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
+  const openPaths = useMemo(() => openFilePaths(tabs), [tabs]);
   const running = tasks.filter(isLiveTask).length;
   const failed = tasks.filter((task) => task.state === "failed").length;
-  const counts: Partial<Record<PanelTab, number>> = { changes: files.length, agents: tasks.length };
+  /**
+   * NO COUNT ON DIFF, deliberately. The badge used to carry the journal's file
+   * count, and the surface now lists git's — which is a different, larger number
+   * (it includes what nobody narrated). A badge that disagrees with the length of
+   * the list underneath it is worse than no badge: it teaches the reader that one
+   * of the two is lying, without saying which.
+   */
+  const counts: Partial<Record<PanelTab, number>> = { agents: tasks.length };
   /** Everything openable that is not already open — fixed surfaces first, then
    *  one entry per browser page the engine currently reports. */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
@@ -1080,15 +1030,19 @@ export function VNextRightPanel({
         {tab ? (
           <>
             {/* The active turn's state, in the machine's register: one word
-                saying what the record below is currently doing. */}
-            {active && browserTabId(tab) === undefined && (
+                saying what the RECORD below is currently doing. A page, a file
+                and the file tree are not the record — they are things on disk and
+                in a browser — so the word would be describing something else. */}
+            {active && browserTabId(tab) === undefined && filePanelPath(tab) === undefined && tab !== "files" && (
               <p className="px-4 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
             <VNextPanelSurface
               tab={tab}
-              files={files}
+              writes={writes}
               tasks={tasks}
               turns={turns}
+              openPaths={openPaths}
+              onOpenTab={onOpenTab}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}

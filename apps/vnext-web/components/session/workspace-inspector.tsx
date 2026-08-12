@@ -231,7 +231,7 @@ export function WorkspaceInspector({
               label={dirty > 0 ? "Changes" : "Clean"}
               {...(dirty > 0 ? { detail: `${dirty} changed` } : {})}
               tone={dirty > 0 ? "attention" : "default"}
-              onSelect={() => goTo("changes")}
+              onSelect={() => goTo("diff")}
             />
             {branch ? (
               <InspectorRow

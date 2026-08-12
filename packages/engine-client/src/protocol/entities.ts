@@ -334,3 +334,63 @@ export const GitOverview = z.object({
   worktrees: z.array(GitWorktreeEntry),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
+
+/**
+ * WHAT IS IN A CHECKOUT — the flat list a file tree is built from.
+ *
+ * FLAT PATHS, NOT A TREE. A nested payload would encode one client's idea of how
+ * to group and sort, and every consumer would have to walk it anyway to search.
+ * A list of repo-relative paths is the smallest true thing, and the shape is
+ * `a/b/c.ts` on every platform because a backslash is a legal character in a
+ * POSIX filename and a client cannot tell the two apart afterwards.
+ *
+ * DIRECTORIES ARE IMPLIED BY THEIR CONTENTS, which means an EMPTY directory does
+ * not appear. That is git's own view — it tracks files, not folders — and
+ * inventing folder entries the versioning system cannot see would make the tree
+ * disagree with `git status` for no gain.
+ *
+ * `source` IS THE HONEST BIT. In a repository this is git's index plus untracked
+ * files, so `.gitignore` decides what a person sees and `node_modules` never
+ * appears. In an unversioned directory — which `envMode: "local"` supports on
+ * purpose — there is no ignore file to obey, so the engine walks the directory
+ * with its own small deny list and says that is what it did.
+ */
+export const WorkspaceListingSource = z.enum(["git", "walk"]);
+export type WorkspaceListingSource = z.infer<typeof WorkspaceListingSource>;
+
+export const WorkspaceListing = z.object({
+  /** The checkout these paths are relative to: a session's worktree, or a
+   *  project root. Named in full because the next thing a reader does is `cd`. */
+  workspacePath: z.string().min(1),
+  repository: z.boolean(),
+  files: z.array(z.string().min(1)),
+  source: WorkspaceListingSource,
+  /** The list is capped. Reported so a partial tree cannot read as a whole
+   *  repository — a tree that silently stops is worse than one that says it did. */
+  truncated: z.boolean(),
+  readAt: Timestamp,
+});
+export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
+
+/**
+ * ONE FILE'S TEXT, as it is on disk right now.
+ *
+ * NOT A PATCH. `sessionFilePatch` answers "what changed"; this answers "what
+ * does this file say", which is the question a file tree raises and the diff
+ * cannot answer for the majority of files that did not change.
+ *
+ * BINARY AND TRUNCATED ARE BOTH STATED rather than approximated. A viewer handed
+ * the first half of a file with no flag would show a syntax error that is not in
+ * the source, and one handed a PNG's bytes as UTF-8 would show line noise.
+ */
+export const WorkspaceFile = z.object({
+  path: z.string().min(1),
+  /** Empty for a binary file — there is no text to send, and sending mojibake
+   *  would be worse than sending nothing. */
+  text: z.string(),
+  /** The file's real size, even when the text above was cut short. */
+  bytes: z.number().int().nonnegative(),
+  binary: z.boolean(),
+  truncated: z.boolean(),
+});
+export type WorkspaceFile = z.infer<typeof WorkspaceFile>;

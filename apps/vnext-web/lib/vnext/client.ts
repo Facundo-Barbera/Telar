@@ -22,6 +22,8 @@ import type {
   SessionSnapshot,
   Turn,
   TurnSubmissionResult,
+  WorkspaceFile,
+  WorkspaceListing,
 } from "@telar/engine-client";
 
 /**
@@ -181,6 +183,30 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
         `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
       );
     },
+    /**
+     * Every file in a checkout, for the Files tree — and one file's text.
+     *
+     * NEITHER IS POLLED. The listing is git reading an index it already has, but a
+     * tree that reorders itself under the cursor on a timer is hostile in a way a
+     * stale figure is not; both surfaces have a refresh button and re-read when a
+     * turn settles.
+     */
+    projectFiles: (projectId: string) =>
+      request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/files`),
+    sessionFiles: (sessionId: string) =>
+      request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/files`),
+    projectFile: (projectId: string, path: string) =>
+      request<{ file: WorkspaceFile }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
+      ),
+    sessionFile: (sessionId: string, path: string) =>
+      request<{ file: WorkspaceFile }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+      ),
     /** Snapshot the session's work as one commit. A refusal ("nothing to commit",
      *  a hook that said no) comes back as `committed: false` with a reason, not
      *  as a thrown error — it is an answer about the repository. */

@@ -70,6 +70,16 @@ export function fileReference(path: string): TelarReference {
   return { kind: "file", label: path.split("/").at(-1) || path, text: `\`${path}\`` };
 }
 
+/**
+ * A DIRECTORY KEEPS ITS TRAILING SLASH, and that one character is the point: an
+ * agent handed `` `apps/engine` `` has to guess whether to Read it or Glob it,
+ * and handed `` `apps/engine/` `` it does not. Same reason `ls` prints one.
+ */
+export function directoryReference(path: string): TelarReference {
+  const trimmed = path.replace(/\/+$/, "");
+  return { kind: "file", label: `${trimmed.split("/").at(-1) || trimmed}/`, text: `\`${trimmed}/\`` };
+}
+
 export function pageReference(page: { title?: string; url: string }): TelarReference {
   return { kind: "page", label: page.title?.trim() || page.url, text: page.url };
 }

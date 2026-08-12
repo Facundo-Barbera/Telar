@@ -1,8 +1,25 @@
 "use client";
 
 /**
- * THE GIT SURFACE — a review of what this session did to the repository, not a
+ * THE DIFF SURFACE — a review of what this session did to the repository, not a
  * git client.
+ *
+ * IT USED TO BE TWO TABS, and that was the mistake. "Changes" folded the journal
+ * — every path the agent said it wrote, with the patch its own tool produced —
+ * and "Git" read the disk. Both drew a list of files with `+`/`−` counts and an
+ * expandable diff, side by side in the same strip, and the honest answer to "what
+ * is the difference" took a paragraph. So there is one tab, and it is called what
+ * a person came looking for.
+ *
+ * THE DISK IS THE WITNESS, THE JOURNAL IS THE ANNOTATION. Git is the one that can
+ * be checked: it sees the lockfile `bun install` rewrote, the snapshot a test
+ * dropped, the file a formatter reflowed — none of which any transcript mentions,
+ * all of which are about to be in the commit. The journal supplies what git
+ * cannot: which of these rows the conversation actually claimed (the dividers
+ * below), which claims left no trace (`settled`), and how many times a path was
+ * rewritten on the way to its current state (`×N`). Nothing the Changes tab
+ * showed was dropped except the agent's own copy of the patch, which is the one
+ * thing on that surface that could disagree with the file on disk.
  *
  * WHAT THE FROZEN COCKPIT HAD HERE, and why almost none of it survived
  * (apps/web_old/components/session/workspace-git-pane.tsx):
@@ -109,12 +126,16 @@ function ReviewFileRow({
   readPatch,
   file,
   reported,
+  edits,
 }: {
   /** Session-scoped or project-scoped — the row does not care which, which is
    *  what lets one surface serve a conversation and a canvas. */
   readPatch: (path: string, untracked: boolean) => Promise<{ file: { patch: string; binary: boolean } }>;
   file: GitFileChange;
   reported: boolean;
+  /** How many times the journal saw this path written, when that is more than
+   *  once — the one thing the old Changes tab knew that git does not. */
+  edits?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [patch, setPatch] = useState<string>();
@@ -161,6 +182,13 @@ function ReviewFileRow({
           {!reported && (
             <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal text-warning">
               unreported
+            </Badge>
+          )}
+          {/* Rewritten more than once on the way here. Git shows the net result
+              and cannot say this; the transcript can. */}
+          {edits !== undefined && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal" title={`The session wrote this ${edits} times`}>
+              ×{edits}
             </Badge>
           )}
           {file.binary && (
@@ -367,13 +395,13 @@ function CommitBox({
   );
 }
 
-export function GitSurface({
+export function DiffSurface({
   sessionId,
   /** Present always; used when there is no session yet. */
   projectId,
-  /** Paths the JOURNAL says this session wrote — `changedFiles(items)`. The other
-   *  half of the reconciliation. */
-  reportedPaths,
+  /** What the JOURNAL says this session wrote: path → how many times. The other
+   *  half of the reconciliation — see `changedFiles` in right-panel.tsx. */
+  reported,
   /** The session title, as the default commit message. */
   suggestion,
   /** A turn is running. Only used to hold the commit button. */
@@ -381,7 +409,7 @@ export function GitSurface({
 }: {
   sessionId?: string;
   projectId?: string;
-  reportedPaths: readonly string[];
+  reported: ReadonlyMap<string, number>;
   suggestion: string;
   active?: TurnState;
 }) {
@@ -430,7 +458,7 @@ export function GitSurface({
     };
   }, [load, active]);
 
-  const review = useMemo(() => (diff ? reconcileReview(diff, reportedPaths) : undefined), [diff, reportedPaths]);
+  const review = useMemo(() => (diff ? reconcileReview(diff, reported) : undefined), [diff, reported]);
 
   if (!sessionId && !projectId) {
     return (
@@ -537,7 +565,7 @@ export function GitSurface({
           {review.rows
             .filter((row) => row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported />
+              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported {...(row.edits ? { edits: row.edits } : {})} />
             ))}
         </div>
       )}

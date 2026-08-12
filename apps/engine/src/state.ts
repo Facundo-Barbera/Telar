@@ -52,7 +52,10 @@ import {
   type ModelSelection as ModelSelectionValue,
   type WorkerClaim,
   type WorkerStatus,
+  type WorkspaceFile,
+  type WorkspaceListing,
 } from "@telar/engine-client";
+import { listWorkspaceFiles, readWorkspaceFile } from "./files";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { defaultGhRunner, readGitHub, type GhRunner } from "./github";
 import { readModelCatalogue } from "./models";
@@ -790,6 +793,59 @@ export class EngineStore {
     if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
     if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
     return commitSessionWork(this.git, { cwd: session.workspace.path, message: text });
+  }
+
+  /**
+   * Every file in a project's own checkout, for the Files tree.
+   *
+   * PROJECT-SCOPED because a tree is a view of a place: the new-conversation
+   * canvas has a project and no session, and the tree there is the same tree.
+   */
+  projectFiles(projectId: string): WorkspaceListing {
+    return listWorkspaceFiles(this.git, { cwd: this.getProject(projectId).root, now: this.now() });
+  }
+
+  /** Every file in a session's own checkout — its worktree, when it cut one. */
+  sessionFiles(sessionId: string): WorkspaceListing {
+    return listWorkspaceFiles(this.git, { cwd: this.getSession(sessionId).workspace.path, now: this.now() });
+  }
+
+  projectFile(projectId: string, target: string): WorkspaceFile {
+    const project = this.getProject(projectId);
+    return this.readFenced(project.root, target, "project");
+  }
+
+  sessionFile(sessionId: string, target: string): WorkspaceFile {
+    const session = this.getSession(sessionId);
+    return this.readFenced(session.workspace.path, target, "session workspace");
+  }
+
+  /**
+   * READ A FILE, INSIDE ONE DIRECTORY AND NOWHERE ELSE.
+   *
+   * The fence is the whole method. A client that can name a path can name
+   * `../../../.ssh/id_ed25519`, and this engine listens on a port with no login
+   * — so the check is here, at the store boundary, rather than at the route: an
+   * in-process caller must not be able to walk past a check that only ran on the
+   * socket. Same rule, same shape, as the patch reads above.
+   *
+   * A DIRECTORY IS NOT A FILE, and saying so beats letting `readFileSync` throw
+   * EISDIR at a surface that would render the errno.
+   */
+  private readFenced(root: string, target: string, label: string): WorkspaceFile {
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    const resolved = path.resolve(root, target);
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(resolved);
+    } catch {
+      throw new EngineStateError("not_found", "no such file in this workspace");
+    }
+    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
+    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
+    return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved) });
   }
 
   createSession(input: {

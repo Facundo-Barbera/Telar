@@ -7,7 +7,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task, Turn } from "@telar/engine-client";
-import { changedFiles, isLiveTask, latestBrowserState, sessionUsage } from "./right-panel";
+import { isLiveTask, isPanelTab, journalWrites, latestBrowserState, openFilePaths, sessionUsage } from "./right-panel";
 
 function fileChange(overrides: {
   path: string;
@@ -44,29 +44,48 @@ function turnWithUsage(input: number, output: number, costUsd?: number): Turn {
   } as Turn;
 }
 
-describe("changedFiles", () => {
-  test("keeps the NEWEST change per path and counts the earlier ones", () => {
-    // The row shows one change, so the count is the only honest signal that
-    // there were others — and the fold must not depend on arrival order.
-    const files = changedFiles([
+describe("journalWrites", () => {
+  test("counts every write per path, whatever order they arrive in", () => {
+    // The count is the one fact git cannot state: a file rewritten twice has the
+    // same net diff as a file written once, and the Diff surface badges it `×2`.
+    const writes = journalWrites([
       fileChange({ path: "a.ts", at: 200, linesAdded: 9 }),
       fileChange({ path: "a.ts", at: 100, linesAdded: 1 }),
+      fileChange({ path: "b.ts", at: 150 }),
     ]);
-    expect(files).toHaveLength(1);
-    expect(files[0].edits).toBe(2);
-    expect(files[0].linesAdded).toBe(9);
+    expect([...writes]).toEqual([
+      ["a.ts", 2],
+      ["b.ts", 1],
+    ]);
   });
 
   test("omits changes that never landed", () => {
-    // Listing a declined or failed change would claim the session edited a file
-    // it did not — the most damaging kind of wrong a diff list can be.
-    expect(changedFiles([fileChange({ path: "a.ts", at: 1, status: "declined" })])).toEqual([]);
-    expect(changedFiles([fileChange({ path: "b.ts", at: 1, status: "failed" })])).toEqual([]);
+    // Counting a declined or failed change would claim the session edited a file
+    // it did not — and on the Diff surface that would move the row from "not in
+    // the transcript" to "the session wrote this", which is the most damaging
+    // kind of wrong this fold can be.
+    expect(journalWrites([fileChange({ path: "a.ts", at: 1, status: "declined" })]).size).toBe(0);
+    expect(journalWrites([fileChange({ path: "b.ts", at: 1, status: "failed" })]).size).toBe(0);
+  });
+});
+
+describe("file tabs", () => {
+  test("a path with a colon in it survives the round trip", () => {
+    // The tab id is `file:<path>` and a colon is legal in a filename, so the
+    // split has to be on the FIRST separator only.
+    expect(openFilePaths(["files", "file:src/weird:name.ts", "browser:tab_1"])).toEqual(["src/weird:name.ts"]);
   });
 
-  test("orders by most recently touched", () => {
-    const files = changedFiles([fileChange({ path: "old.ts", at: 10 }), fileChange({ path: "new.ts", at: 20 })]);
-    expect(files.map((file) => file.path)).toEqual(["new.ts", "old.ts"]);
+  test("a bare `file:` is not a tab", () => {
+    // It names nothing, so restoring it from localStorage would produce a tab
+    // that can only ever fail to load.
+    expect(isPanelTab("file:src/a.ts")).toBe(true);
+    expect(isPanelTab("file:")).toBe(false);
+    // And the renamed surfaces are what this build understands.
+    expect(isPanelTab("diff")).toBe(true);
+    expect(isPanelTab("files")).toBe(true);
+    expect(isPanelTab("changes")).toBe(false);
+    expect(isPanelTab("git")).toBe(false);
   });
 });
 
