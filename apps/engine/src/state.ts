@@ -30,9 +30,11 @@ import {
   type TurnFailureCode,
   type TurnObservation,
   type UsageSnapshot,
+  type EnvMode,
   type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
+import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
 function requestTitle(detail: RequestDetail): string {
@@ -367,13 +369,15 @@ export type EngineNotifier = (input: {
 export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  private readonly git: GitRunner;
 
   constructor(
     root: string,
     private readonly now: () => number = Date.now,
-    options: { notifier?: EngineNotifier } = {},
+    options: { notifier?: EngineNotifier; git?: GitRunner } = {},
   ) {
     this.notifier = options.notifier;
+    this.git = options.git ?? defaultGitRunner;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -426,7 +430,7 @@ export class EngineStore {
     return project;
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean }): Session {
+  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean; envMode?: EnvMode }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -443,6 +447,21 @@ export class EngineStore {
     // what happens when a request opens with nobody home, and the two defaults
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
+    const envMode = input.envMode ?? "local";
+    // The worktree is cut BEFORE the session document is written. A session
+    // whose workspace does not exist is unusable and would have to be repaired
+    // on read; failing here leaves nothing behind to repair.
+    const workspace: Session["workspace"] =
+      envMode === "worktree"
+        ? (() => {
+            const cut = createSessionWorktree(this.git, {
+              vnextRoot: this.paths.root,
+              projectRoot: project.root,
+              sessionId: id,
+            });
+            return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
+          })()
+        : { mode: "local" as const, path: project.root };
     const session: Session = {
       id,
       projectId: input.projectId,
@@ -453,8 +472,8 @@ export class EngineStore {
       updatedAt: at,
       providerInstanceId: DEFAULT_PROVIDER_INSTANCE_ID,
       driver: "claude",
-      workspace: { mode: "local", path: project.root },
-      envMode: "local",
+      workspace,
+      envMode,
       runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
       interactionMode: "default",
       detached,
@@ -713,6 +732,40 @@ export class EngineStore {
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
     return structuredClone(turn);
+  }
+
+  /**
+   * End a session and free its checkout.
+   *
+   * THE BRANCH SURVIVES. Removing the worktree returns the disk and the git
+   * registration; the commits on `telar/<id>` are the session's OUTPUT and
+   * deleting them is a separate human decision. A detached run whose work
+   * vanished when it finished would be worse than one that never ran.
+   *
+   * Refuses while work is in flight: archiving under a running turn would
+   * pull the checkout out from under a live provider process.
+   */
+  archiveSession(sessionId: string): Session {
+    const session = this.getSession(sessionId);
+    if (session.state === "archived") return session;
+    const active = this.readQueue(sessionId).turns.find(
+      (turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running",
+    );
+    if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before archiving");
+
+    if (session.workspace.mode === "worktree") {
+      const project = this.getProject(session.projectId);
+      // Best-effort. A leaked directory is bounded inside the engine's own
+      // root and is reapable later; refusing to archive because git was
+      // unhappy would strand the session in a state a human cannot leave.
+      removeSessionWorktree(this.git, project.root, session.workspace.path);
+    }
+    const at = this.now();
+    session.state = "archived";
+    session.updatedAt = at;
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+    this.appendEvent(sessionId, { type: "session.archived" });
+    return structuredClone(session);
   }
 
   requests(sessionId: string): EngineRequest[] {

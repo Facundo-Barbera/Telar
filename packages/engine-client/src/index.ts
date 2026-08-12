@@ -129,7 +129,7 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
 
-  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean }): Promise<{ session: Session }> {
+  createSession(input: { id?: string; projectId: string; title?: string; detached?: boolean; envMode?: "local" | "worktree" }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
   }
 
@@ -147,6 +147,12 @@ export class EngineClient {
 
   stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
+  }
+
+  /** End a session and free its worktree. The branch survives — it is the
+   *  session's output, and destroying it is a separate human decision. */
+  archiveSession(sessionId: string): Promise<{ session: Session }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/archive`, {});
   }
 
   /** Explicit human resolution for a turn whose provider effects are uncertain. */

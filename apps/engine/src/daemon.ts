@@ -15,6 +15,7 @@ import {
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
+import type { TurnDriver } from "./driver";
 import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
@@ -32,11 +33,34 @@ export type EngineDaemonOptions = {
    * TOLD, and the request records that honestly rather than claiming otherwise.
    */
   notifier?: EngineNotifier;
+  /**
+   * Run a worker inside the daemon process.
+   *
+   * WHY THIS EXISTS: without it, `startEngine()` produces a control plane that
+   * accepts turns and then refuses them — `POST /turns` 503s with
+   * `worker_unavailable` until a SEPARATE `bun run worker` process registers.
+   * "The engine runs on its own" was therefore false in the most literal sense:
+   * one process was never enough. `scripts/vnext-dev.mjs` papered over it by
+   * launching both.
+   *
+   * The out-of-process worker is NOT going away and is still the right shape
+   * for isolating provider crashes — `worker-main.ts` plus
+   * `WorkerReconnectController` stay exactly as they are, and an embedded
+   * worker coexists with them because the engine already claims turns to
+   * exactly one worker at a time.
+   *
+   * The driver is INJECTED as a factory and imported lazily, so a daemon
+   * started without an embedded worker never loads the Claude SDK. Every test
+   * in this repo depends on that.
+   */
+  embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<TurnDriver> | TurnDriver };
 };
 
 export type EngineDaemon = {
   discovery: EngineDiscovery;
   store: EngineStore;
+  /** Present only when `embeddedWorker` was requested. */
+  worker?: { workerId: string };
   close(): Promise<void>;
 };
 
@@ -232,6 +256,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             projectId: stringValue(input.projectId, "project id")!,
             title: stringValue(input.title, "session title", true),
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
+            ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
           }),
         });
         return;
@@ -373,6 +398,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, accepted.replayed ? 200 : 202, result);
           return;
         }
+        if (request.method === "POST" && session.tail === "/archive") {
+          await body(request);
+          writeJson(response, 200, { session: store.archiveSession(session.sessionId) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
           writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
@@ -414,13 +444,41 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // discovery is published, so clients never observe a pre-recovery queue.
     store.recover();
     writeDiscovery(store, discovery);
+
+    // The embedded worker starts AFTER discovery is published, because it
+    // connects through the same discovery document every other client uses
+    // rather than through a private in-process shortcut. That keeps one code
+    // path for claim/heartbeat/observe instead of two that can diverge.
+    let embedded: { workerId: string; stop(): Promise<void> } | undefined;
+    if (options.embeddedWorker) {
+      const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
+      const [{ EngineClient }, { EngineWorker }] = await Promise.all([
+        import("@telar/engine-client"),
+        import("./worker"),
+      ]);
+      const createDriver = config.createDriver ?? (async () => (await import("./driver")).createClaudeDriver());
+      const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
+      const worker = new EngineWorker({
+        client: new EngineClient(discovery),
+        workerId,
+        driver: await createDriver(),
+        ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
+      });
+      await worker.start();
+      embedded = { workerId, stop: () => worker.stop() };
+    }
+
     let closed = false;
     return {
       discovery,
       store,
+      ...(embedded ? { worker: { workerId: embedded.workerId } } : {}),
       async close() {
         if (closed) return;
         closed = true;
+        // The worker stops FIRST: it holds claims, and a claim outliving the
+        // server it reports to becomes an ambiguous turn on the next start.
+        await embedded?.stop();
         await closeServer(server);
         clearInterval(workerPruner);
         removeOwnDiscovery(store, daemonId);
