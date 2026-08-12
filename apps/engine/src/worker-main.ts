@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import { connectEngine } from "@telar/engine-client";
+import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { browserCapability, createDefaultDrivers } from "./drivers";
 import { vnextRootFromEnv } from "./state";

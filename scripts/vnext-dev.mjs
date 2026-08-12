@@ -5,7 +5,9 @@ import path from "node:path";
 import process from "node:process";
 // Root scripts are outside an individual workspace package, so resolve this
 // first-party client directly rather than relying on a hoisted workspace link.
-import { connectEngine } from "../packages/engine-client/src/index.ts";
+// `/node` rather than the root barrel: discovery reads the filesystem and the
+// root export is bundled into browser client components.
+import { connectEngine } from "../packages/engine-client/src/node.ts";
 import {
   decideEngineStart,
   decideWorkerFailure,

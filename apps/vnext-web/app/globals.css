@@ -160,6 +160,90 @@ p { line-height: 1.5; }
 .vnext-tool-item[data-status="failed"] { border-color: color-mix(in oklab, var(--v-danger) 35%, var(--v-border)); }
 .vnext-tool-item__body { margin: 0; border-top: 1px solid var(--v-border); padding: 8px 9px; max-height: 320px; overflow: auto; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* A unified diff. Tinted by line rather than gutter-marked: at this density the
+   background is what the eye picks up when scanning a long patch. */
+.vnext-diff { display: flex; flex-direction: column; margin: 0; border-top: 1px solid var(--v-border); max-height: 420px; overflow: auto; font-size: 11px; line-height: 1.5; }
+.vnext-diff__line { padding: 0 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vnext-diff__line[data-tone="add"] { background: color-mix(in oklab, var(--v-success, oklch(.72 .17 145)) 13%, transparent); }
+.vnext-diff__line[data-tone="remove"] { background: color-mix(in oklab, var(--v-danger) 11%, transparent); }
+.vnext-diff__line[data-tone="meta"] { color: var(--v-quiet); background: color-mix(in oklab, var(--v-rail) 60%, transparent); }
+/* +N/−N on the collapsed row: for a detached run this is the whole summary. */
+.vnext-diff-stat { flex: none; display: inline-flex; gap: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.vnext-diff-stat b[data-tone="add"] { color: var(--v-success, oklch(.55 .15 145)); font-weight: 600; }
+.vnext-diff-stat b[data-tone="remove"] { color: var(--v-danger); font-weight: 600; }
+
+/* The agent's checklist. Open while it works, collapsed once the turn ends. */
+.vnext-plan-item { border: 1px solid var(--v-border); border-radius: 6px; background: var(--v-surface); font-size: 12px; }
+.vnext-plan-item > summary { display: flex; align-items: center; gap: 8px; padding: 6px 9px; cursor: pointer; list-style: none; }
+.vnext-plan-item > summary::-webkit-details-marker { display: none; }
+.vnext-plan { margin: 0; border-top: 1px solid var(--v-border); padding: 8px 9px 8px 26px; display: grid; gap: 3px; }
+.vnext-plan li[data-status="completed"] { color: var(--v-quiet); text-decoration: line-through; }
+.vnext-plan li[data-status="inProgress"] { color: var(--v-ink); font-weight: 500; }
+.vnext-plan li[data-status="pending"] { color: var(--v-muted); }
+
+/* Agent prose.
+   STREAMDOWN SHIPS NO VISUAL STYLES — its stylesheet is 499 bytes of keyframes,
+   because it is built for Tailwind projects and the frozen cockpit is one. This
+   app is not, so every rule below is load-bearing rather than decorative: without
+   them a fenced code block loses `white-space: pre` and renders as one run-on
+   line, which is how this was found (by looking at the page, not at a test).
+   Targeted on `data-streamdown`, which is the library's own stable hook. */
+.vnext-markdown { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.vnext-markdown > :first-child { margin-top: 0; }
+.vnext-markdown > :last-child { margin-bottom: 0; }
+.vnext-markdown p { margin: 0 0 8px; }
+.vnext-markdown [data-streamdown^="heading-"] { margin: 14px 0 6px; line-height: 1.3; font-weight: 600; }
+.vnext-markdown [data-streamdown="heading-1"] { font-size: 17px; }
+.vnext-markdown [data-streamdown="heading-2"] { font-size: 15px; }
+.vnext-markdown [data-streamdown="heading-3"] { font-size: 14px; }
+.vnext-markdown [data-streamdown$="-list"] { margin: 0 0 8px; padding-left: 20px; display: grid; gap: 2px; }
+.vnext-markdown [data-streamdown="unordered-list"] { list-style: disc; }
+.vnext-markdown [data-streamdown="ordered-list"] { list-style: decimal; }
+.vnext-markdown [data-streamdown="list-item"] { display: list-item; }
+.vnext-markdown [data-streamdown="strong"] { font-weight: 600; }
+.vnext-markdown [data-streamdown="link"] { color: var(--v-accent, var(--v-ink)); text-decoration: underline; text-underline-offset: 2px; }
+.vnext-markdown [data-streamdown="blockquote"] { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--v-border); color: var(--v-quiet); }
+.vnext-markdown [data-streamdown="horizontal-rule"] { margin: 12px 0; border: 0; border-top: 1px solid var(--v-border); }
+.vnext-markdown [data-streamdown="inline-code"] { padding: 1px 4px; border-radius: 4px; background: var(--v-rail); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+
+/* Code blocks.
+   `white-space: pre` IS THE LOAD-BEARING RULE and it is applied to the body AND
+   its descendants, not just descendants: `code-block-body` is itself the `<pre>`
+   in streamdown's tree, so a descendant-only selector missed it entirely and the
+   block rendered as one run-on line. Caught by looking at the page twice.
+   Header and actions are positioned rather than flexed for the same reason —
+   they are not reliably siblings in one row, so layout must not assume it. */
+.vnext-markdown [data-streamdown="code-block"] { position: relative; margin: 0 0 8px; border: 1px solid var(--v-border); border-radius: 6px; overflow: hidden; background: var(--v-rail); }
+.vnext-markdown [data-streamdown="code-block-header"] { padding: 4px 9px; border-bottom: 1px solid var(--v-border); color: var(--v-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.vnext-markdown [data-streamdown="code-block-actions"] { position: absolute; top: 2px; right: 5px; z-index: 1; display: flex; gap: 2px; }
+.vnext-markdown [data-streamdown^="code-block-"][data-streamdown$="-button"] { display: inline-flex; align-items: center; border: 1px solid transparent; border-radius: 4px; padding: 2px 4px; background: transparent; color: var(--v-quiet); font-size: 10px; line-height: 1; cursor: pointer; }
+.vnext-markdown [data-streamdown^="code-block-"][data-streamdown$="-button"]:hover { border-color: var(--v-border); background: var(--v-surface); color: var(--v-ink); }
+.vnext-markdown [data-streamdown^="code-block-"][data-streamdown$="-button"] svg { width: 12px; height: 12px; }
+.vnext-markdown [data-streamdown="code-block-body"],
+.vnext-markdown [data-streamdown="code-block-body"] pre,
+.vnext-markdown [data-streamdown="code-block-body"] code {
+  margin: 0; background: none; white-space: pre;
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.55;
+}
+.vnext-markdown [data-streamdown="code-block-body"] { padding: 8px 9px; max-height: 380px; overflow: auto; }
+.vnext-markdown [data-streamdown="code-block-body"] code { display: block; padding: 0; }
+/**
+ * THE RULE THAT ACTUALLY FIXES THE COLLAPSED CODE BLOCK, after two wrong
+ * guesses at it. Streamdown emits ONE `<span class="block">` PER LINE — there
+ * are no newline text nodes in the output at all, so `white-space: pre` had
+ * nothing to preserve. `block` is a Tailwind utility, and this app has no
+ * Tailwind, so every line span stayed inline and the whole block ran together.
+ * Found by rendering the component through `renderToStaticMarkup` and reading
+ * the HTML, which is now the regression test in components/agent-markdown.test.ts.
+ */
+.vnext-markdown [data-streamdown="code-block-body"] code > span { display: block; }
+
+.vnext-markdown [data-streamdown="table-wrapper"] { margin: 0 0 8px; overflow-x: auto; }
+.vnext-markdown [data-streamdown="table"] { border-collapse: collapse; font-size: 12px; }
+.vnext-markdown [data-streamdown="table-cell"],
+.vnext-markdown [data-streamdown="table-header-cell"] { border: 1px solid var(--v-border); padding: 4px 8px; text-align: left; }
+.vnext-markdown [data-streamdown="table-header-cell"] { background: var(--v-rail); font-weight: 600; }
+
 /* A sub-agent and its work. Indented rather than merely bordered: the nesting
    IS the information — these rows did not happen on the main timeline. */
 .vnext-task-group { border: 1px solid var(--v-border); border-left-width: 3px; border-radius: 6px; background: color-mix(in oklab, var(--v-surface) 96%, transparent); font-size: 12px; }

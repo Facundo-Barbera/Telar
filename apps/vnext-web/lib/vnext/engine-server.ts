@@ -2,11 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  connectEngine,
   EngineClientError,
   type EngineClient,
   type EngineErrorCode,
 } from "@telar/engine-client";
+import { connectEngine } from "@telar/engine-client/node";
 
 /**
  * The vNext web process is only an authenticated engine client.  In

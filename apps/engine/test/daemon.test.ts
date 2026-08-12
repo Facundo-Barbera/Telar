@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { connectEngine, EngineClient, EngineClientError } from "@telar/engine-client";
+import { EngineClient, EngineClientError } from "@telar/engine-client";
+import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 
 const roots: string[] = [];

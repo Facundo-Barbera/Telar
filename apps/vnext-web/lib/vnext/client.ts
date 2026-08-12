@@ -2,7 +2,6 @@ import type {
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
-  Item,
   Project,
   EngineRequest,
   RequestDecision,

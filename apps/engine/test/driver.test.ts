@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import type { TurnObservation } from "@telar/engine-client";
+import { unifiedDiff } from "../src/diff";
 import {
   createClaudeDriver,
   itemDetailForToolCall,
+  planDetailForTodos,
   ProviderUnavailableError,
   taskKindForType,
   taskStateForStatus,
@@ -252,6 +254,186 @@ test("tool mapping is by CAPABILITY, so a new provider tool is unstyled and neve
 test("an mcp tool carries its server so a client can group by it", () => {
   const detail = itemDetailForToolCall("mcp__linear__search", { q: "x" });
   expect(detail.type === "mcp_tool_call" && detail.call.server).toBe("linear");
+});
+
+// ── reviewing the work ───────────────────────────────────────────────────────
+
+test("a file edit carries a real diff, which nothing produced before", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t1", name: "Edit", input: { file_path: "src/a.ts" } }] },
+      };
+      yield {
+        type: "user",
+        // The string content is what went to the MODEL — a confirmation
+        // sentence. The reviewable half is on `tool_use_result`.
+        message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "The file has been updated." }] },
+        tool_use_result: {
+          filePath: "src/a.ts",
+          structuredPatch: [
+            { oldStart: 10, oldLines: 3, newStart: 10, newLines: 4, lines: [" keep", "-gone", "+added", "+also added"] },
+          ],
+        },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  const detail = closed?.kind === "item.completed" ? closed.detail : undefined;
+  expect(detail?.type).toBe("file_change");
+  expect(detail?.type === "file_change" && detail.change.unifiedDiff).toBe(
+    ["--- a/src/a.ts", "+++ b/src/a.ts", "@@ -10,3 +10,4 @@", " keep", "-gone", "+added", "+also added"].join("\n"),
+  );
+  // An ABSOLUTE path drops the git `a/`/`b/` prefixes — with them the header
+  // reads `--- a//tmp/x.ts`, which is neither absolute nor repo-relative.
+  // Observed on a real turn.
+  expect(unifiedDiff("/tmp/x.ts", [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["+x"] }])).toStartWith("--- /tmp/x.ts\n+++ /tmp/x.ts");
+  expect(detail?.type === "file_change" && detail.change.linesAdded).toBe(2);
+  expect(detail?.type === "file_change" && detail.change.linesRemoved).toBe(1);
+});
+
+test("a CREATED file shows its whole content as a diff, since the SDK sends no patch for one", async () => {
+  // Measured against a real turn: a Write of a new file came back with an empty
+  // `structuredPatch`, so the most legible change of all — "here is a whole new
+  // file" — was the one the transcript could not show.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Write", input: { file_path: "src/new.ts" } }] } };
+      yield {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "created" }] },
+        tool_use_result: { structuredPatch: [], originalFile: null, content: "export const a = 1;\nexport const b = 2;\n" },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  const detail = closed?.kind === "item.completed" ? closed.detail : undefined;
+  expect(detail?.type === "file_change" && detail.change.unifiedDiff).toBe(
+    ["--- a/src/new.ts", "+++ b/src/new.ts", "@@ -0,0 +1,2 @@", "+export const a = 1;", "+export const b = 2;"].join("\n"),
+  );
+  expect(detail?.type === "file_change" && detail.change.linesAdded).toBe(2);
+  expect(detail?.type === "file_change" && detail.change.linesRemoved).toBe(0);
+});
+
+test("an edit that changed nothing does NOT get an invented all-additions diff", async () => {
+  // Anti-vacuity for the arm above. It is guarded on `originalFile === null`
+  // precisely so a no-op edit is not reported as a full rewrite.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Edit", input: { file_path: "src/a.ts" } }] } };
+      yield {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "no change" }] },
+        tool_use_result: { structuredPatch: [], originalFile: "export const a = 1;\n", content: "export const a = 1;\n" },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  expect(closed?.kind === "item.completed" && closed.detail?.type === "file_change" && closed.detail.change.unifiedDiff).toBeUndefined();
+});
+
+test("two edits in one message get NO diff rather than each other's", async () => {
+  // `tool_use_result` hangs off the MESSAGE, not the block, so with two results
+  // there is no way to know which it describes. One file's diff on another
+  // file's row is worse than no diff.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Edit", input: { file_path: "src/a.ts" } },
+            { type: "tool_use", id: "t2", name: "Edit", input: { file_path: "src/b.ts" } },
+          ],
+        },
+      };
+      yield {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "ok" },
+            { type: "tool_result", tool_use_id: "t2", content: "ok" },
+          ],
+        },
+        tool_use_result: { structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["+x"] }] },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "item.completed");
+  expect(closed).toHaveLength(2);
+  for (const row of closed) {
+    expect(row.kind === "item.completed" && row.detail?.type === "file_change" && row.detail.change.unifiedDiff).toBeUndefined();
+  }
+});
+
+test("TodoWrite is ONE plan row updated in place, not a checklist per call", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "TodoWrite", input: { todos: [{ content: "Read the code", status: "in_progress" }] } }],
+        },
+      };
+      // Its result must close nothing — the plan is turn-scoped.
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } };
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "t2",
+              name: "TodoWrite",
+              input: { todos: [{ content: "Read the code", status: "completed" }, { content: "Write the fix", status: "in_progress" }] },
+            },
+          ],
+        },
+      };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const started = sink.observations.filter((o) => o.kind === "item.started");
+  const updated = sink.observations.filter((o) => o.kind === "item.updated");
+  // ONE row. A row per call leaves the transcript full of near-identical
+  // checklists — the failure the Codex seam already avoids.
+  expect(started).toHaveLength(1);
+  expect(started[0]?.kind === "item.started" && started[0].item.detail.type).toBe("plan");
+  expect(updated).toHaveLength(1);
+  const plan = updated[0]?.kind === "item.updated" ? updated[0].item.detail : undefined;
+  expect(plan?.type === "plan" && plan.plan.steps).toEqual([
+    { step: "Read the code", status: "completed" },
+    { step: "Write the fix", status: "inProgress" },
+  ]);
+  // Closed with the turn, since no tool_result closes it.
+  const closed = sink.observations.filter((o) => o.kind === "item.completed");
+  expect(closed).toHaveLength(1);
+  expect(closed[0]?.kind === "item.completed" && closed[0].status).toBe("completed");
+});
+
+test("a TodoWrite whose payload is not a todo list stays an ordinary tool row", () => {
+  // Anti-vacuity: an unrecognised shape must not become an empty plan claiming
+  // the agent has no steps.
+  expect(planDetailForTodos({ todos: [] })).toBeUndefined();
+  expect(planDetailForTodos({ nope: 1 })).toBeUndefined();
+  expect(planDetailForTodos({ todos: [{ activeForm: "Reading" }] })?.steps).toEqual([{ step: "Reading", status: "pending" }]);
 });
 
 // ── the browser ──────────────────────────────────────────────────────────────

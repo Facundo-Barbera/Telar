@@ -20,6 +20,7 @@ import type {
   RequestDecision,
   RequestDetail,
   RequestKind,
+  PlanDetail,
   TaskKind,
   TaskSeed,
   TaskState,
@@ -29,6 +30,7 @@ import type {
 // The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
 // in engine-client. Every client renders these names too.
 import { displayToolName, parseToolName, qualifyTelarTool, TELAR_MCP_SERVER } from "@telar/engine-client";
+import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -362,6 +364,29 @@ export function taskStateForStatus(status: string | undefined): TaskState {
   }
 }
 
+/**
+ * A TodoWrite call as the contract's plan.
+ *
+ * Returns `undefined` when the payload is not a todo list, so an unrecognised
+ * shape falls through to an ordinary tool row rather than becoming an empty
+ * plan that claims the agent has no steps.
+ */
+export function planDetailForTodos(input: unknown): PlanDetail | undefined {
+  const todos = asRecord(input).todos;
+  if (!Array.isArray(todos)) return undefined;
+  const steps = todos.flatMap((raw) => {
+    const todo = asRecord(raw);
+    // `content` is the imperative form; `activeForm` is the present-continuous
+    // one the SDK shows while a step runs. The imperative reads correctly in a
+    // list whatever the step's state, so it is the one stored.
+    const step = str(todo.content) ?? str(todo.activeForm);
+    if (!step) return [];
+    const status = todo.status === "completed" ? "completed" : todo.status === "in_progress" ? "inProgress" : "pending";
+    return [{ step, status } as const];
+  });
+  return steps.length > 0 ? { steps } : undefined;
+}
+
 /** Claude reports cumulative usage per assistant message; the result message
  *  carries the authoritative total plus the price. */
 function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined {
@@ -448,6 +473,9 @@ export function createClaudeDriver(
        * carries `task_id` and no `tool_use_id`, which is the only reason this
        * map exists.
        */
+      /** The turn's single plan row, once TodoWrite has opened one. */
+      let planItemId: string | undefined;
+
       const taskIdsBySdkId = new Map<string, string>();
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
@@ -623,6 +651,8 @@ export function createClaudeDriver(
             total_cost_usd?: number;
             usage?: unknown;
             message?: { content?: unknown[]; usage?: unknown };
+            /** The tool's full structured Output — where `structuredPatch` lives. */
+            tool_use_result?: unknown;
             /** Set on everything a sub-agent produced: the id of the `Task`
              *  call that launched it. `null` on the main loop's own messages. */
             parent_tool_use_id?: string | null;
@@ -829,6 +859,27 @@ export function createClaudeDriver(
                 const name = str(block.name) ?? "tool";
                 const useId = str(block.id) ?? itemId();
                 /**
+                 * ONE PLAN ROW PER TURN, UPDATED IN PLACE.
+                 *
+                 * TodoWrite is called repeatedly with the WHOLE list, so a row
+                 * per call leaves the transcript full of near-identical
+                 * checklists — the exact failure the Codex seam already avoids,
+                 * and the reason `plan` says "updated in place across a turn".
+                 * The call is deliberately not registered in `openTools`, so
+                 * its `tool_result` closes nothing; the plan closes with the
+                 * turn.
+                 */
+                const plan = name === "TodoWrite" ? planDetailForTodos(block.input) : undefined;
+                if (plan) {
+                  const detail: ItemDetail = { type: "plan", plan };
+                  if (planItemId) emit({ kind: "item.updated", item: { id: planItemId, detail, title: "Plan" } });
+                  else {
+                    planItemId = `item_plan_${crypto.randomUUID().replaceAll("-", "")}`;
+                    emit({ kind: "item.started", item: { id: planItemId, detail, title: "Plan" } });
+                  }
+                  continue;
+                }
+                /**
                  * A `Task` call is a HANDLE, not a tool row.
                  *
                  * items.ts defines `task` as "the row is a handle; the detail
@@ -877,9 +928,19 @@ export function createClaudeDriver(
 
           // ── tool results ──────────────────────────────────────────────
           if (item.type === "user") {
-            for (const raw of item.message?.content ?? []) {
-              const block = asRecord(raw);
-              if (block.type !== "tool_result") continue;
+            const results = (item.message?.content ?? []).map(asRecord).filter((block) => block.type === "tool_result");
+            /**
+             * `tool_use_result` IS PER MESSAGE, NOT PER BLOCK.
+             *
+             * It carries the tool's full structured Output — for a file edit,
+             * the `structuredPatch` this whole diff feature depends on. But the
+             * SDK hangs it off the message rather than off the block, so with
+             * two results in one message there is no way to know which it
+             * describes. Attaching it anyway would put one file's diff on
+             * another file's row, which is worse than having no diff at all.
+             */
+            const structured = results.length === 1 ? item.tool_use_result : undefined;
+            for (const block of results) {
               const useId = str(block.tool_use_id);
               const open = useId ? openTools.get(useId) : undefined;
               if (!open || !useId) continue;
@@ -890,7 +951,7 @@ export function createClaudeDriver(
                 kind: "item.completed",
                 itemId: open.id,
                 status: failed ? "failed" : "completed",
-                detail: withToolOutput(open.detail, output),
+                detail: withToolResult(open.detail, output, structured),
               });
             }
             await flush();
@@ -913,6 +974,8 @@ export function createClaudeDriver(
         // A block the provider never closed still gets its accumulated text,
         // for the same reason: the projection has no other source for it.
         for (const [, open] of openBlocks) emit(closeBlock(open));
+        // The plan is turn-scoped and has no tool_result to close it.
+        if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
         /**
          * A task left running when the turn ended is closed as failed.
          *
@@ -940,6 +1003,29 @@ export function createClaudeDriver(
       }
     },
   };
+}
+
+/**
+ * Fold a tool's result into the detail its call opened with.
+ *
+ * `structured` is the SDK's full Output object, which is where the interesting
+ * half lives: a file edit's `structuredPatch`. The string `output` is only what
+ * was sent to the MODEL, and for an edit that is a confirmation sentence.
+ */
+export function withToolResult(detail: ItemDetail, output: string, structured?: unknown): ItemDetail {
+  if (detail.type === "file_change") {
+    const hunks = patchHunksOf(structured);
+    if (!hunks) return detail;
+    return {
+      ...detail,
+      change: {
+        ...detail.change,
+        unifiedDiff: unifiedDiff(detail.change.path, hunks),
+        ...countDiffLines(hunks),
+      },
+    };
+  }
+  return withToolOutput(detail, output);
 }
 
 /** Fold a tool's output into the detail its call opened with. */

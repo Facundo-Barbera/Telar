@@ -7,8 +7,6 @@
  * three layers in. The routes moved with the version deliberately, so the break
  * is visible at the URL.
  */
-import fs from "node:fs/promises";
-import path from "node:path";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
@@ -48,33 +46,11 @@ export class EngineClientError extends Error {
   }
 }
 
-const discoveryFile = (vnextRoot: string): string => path.join(vnextRoot, "engine.json");
-
-/**
- * Reads only the vNext discovery document; it never touches legacy Telar state.
- *
- * VALIDATION IS THE SCHEMA'S JOB NOW. This used to be `isDiscovery()`, fifteen
- * hand-written checks ending in a `value is EngineDiscovery` assertion the
- * compiler took on trust — so adding a field to the type and forgetting a line
- * here silently weakened the check. The schema carries the same rules (a
- * 32-character minimum token, a real port) and cannot drift from the type,
- * because the type is derived from it.
- */
-export async function discoverEngine(vnextRoot: string): Promise<EngineDiscovery> {
-  try {
-    const raw = await fs.readFile(discoveryFile(vnextRoot), "utf8");
-    const discovery = EngineDiscovery.safeParse(JSON.parse(raw) as unknown);
-    if (!discovery.success) {
-      throw new EngineClientError("engine_unavailable", "vNext engine discovery is invalid");
-    }
-    return discovery.data;
-  } catch (error) {
-    if (error instanceof EngineClientError) throw error;
-    throw new EngineClientError("engine_unavailable", "vNext engine is not discoverable");
-  }
-}
-
-type FetchLike = typeof fetch;
+/** Engine discovery (`discoverEngine`/`connectEngine`) lives in `./node`, a
+ *  separate entry point, because it reads the filesystem and this root export
+ *  is bundled into browser client components — a top-level `node:fs/promises`
+ *  import here is a hard Turbopack error. */
+export type FetchLike = typeof fetch;
 
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
@@ -257,10 +233,6 @@ export class EngineClient {
       ...failure,
     });
   }
-}
-
-export async function connectEngine(vnextRoot: string, fetchImpl?: FetchLike): Promise<EngineClient> {
-  return new EngineClient(await discoverEngine(vnextRoot), fetchImpl);
 }
 
 export { ENGINE_PROTOCOL_VERSION };

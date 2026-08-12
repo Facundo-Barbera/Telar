@@ -17,6 +17,7 @@ import {
   type JournalTurn,
 } from "@/lib/vnext/journal";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
+import { AgentMarkdown } from "./agent-markdown";
 import { VNextRightPanel } from "./right-panel";
 import { Icon } from "./vnext-icons";
 
@@ -102,6 +103,27 @@ const TOOL_ICON: Partial<Record<Item["detail"]["type"], string>> = {
 };
 
 /**
+ * A unified diff, coloured by line.
+ *
+ * PER-LINE RATHER THAN A DIFF LIBRARY: the engine already produced the diff, so
+ * the only job left is to make additions and removals scannable. Splitting on
+ * the first character is exactly what the format guarantees, and it cannot get
+ * out of step with a parser the engine does not use.
+ */
+function DiffBody({ diff }: { diff: string }) {
+  return <pre className="vnext-diff">
+    {diff.split("\n").map((line, index) => {
+      // `---`/`+++` are the file header, not a removed and an added line. Tested
+      // before the single-character check or every diff opens with one of each.
+      const tone = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@")
+        ? "meta"
+        : line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : undefined;
+      return <span key={index} className="vnext-diff__line" data-tone={tone}>{line || " "}</span>;
+    })}
+  </pre>;
+}
+
+/**
  * A tool call. Collapsed to its label by default — a turn that ran forty tools
  * is unreadable expanded, and the label is what a reader scans.
  *
@@ -110,17 +132,43 @@ const TOOL_ICON: Partial<Record<Item["detail"]["type"], string>> = {
  */
 function ToolItem({ item }: { item: JournalItem }) {
   const output = toolOutput(item);
-  const diff = item.detail.type === "file_change" ? item.detail.change.unifiedDiff : undefined;
-  const body = diff ?? output;
+  const change = item.detail.type === "file_change" ? item.detail.change : undefined;
   return <details className="vnext-tool-item" data-status={item.status}>
     <summary>
       <span className="vnext-tool-item__kind" aria-hidden="true">{TOOL_ICON[item.detail.type] ?? "tool"}</span>
       <code className="vnext-tool-item__label">{itemLabel(item)}</code>
+      {/* The scannable part of a detached run: what this edit cost the file,
+          readable without expanding the row. */}
+      {change && (change.linesAdded ?? change.linesRemoved) !== undefined && <span className="vnext-diff-stat">
+        {change.linesAdded ? <b data-tone="add">+{change.linesAdded}</b> : null}
+        {change.linesRemoved ? <b data-tone="remove">−{change.linesRemoved}</b> : null}
+      </span>}
       <span className="vnext-tool-item__status" data-status={item.status}>
         {item.status === "inProgress" ? "running" : item.status === "failed" ? "failed" : item.status === "declined" ? "declined" : "done"}
       </span>
     </summary>
-    {body ? <pre className="vnext-tool-item__body">{body}</pre> : <p className="vnext-muted vnext-small">No output recorded.</p>}
+    {change?.unifiedDiff
+      ? <DiffBody diff={change.unifiedDiff} />
+      : output
+        ? <pre className="vnext-tool-item__body">{output}</pre>
+        : <p className="vnext-muted vnext-small">No output recorded.</p>}
+  </details>;
+}
+
+/** The agent's checklist. One row per turn, updated in place by the engine. */
+function PlanItem({ item }: { item: JournalItem }) {
+  if (item.detail.type !== "plan") return null;
+  const steps = item.detail.plan.steps;
+  const done = steps.filter((step) => step.status === "completed").length;
+  return <details className="vnext-plan-item" open={item.status === "inProgress"}>
+    <summary>
+      <span className="vnext-tool-item__kind" aria-hidden="true">list</span>
+      <span className="vnext-tool-item__label">Plan</span>
+      <span className="vnext-muted vnext-small">{done}/{steps.length}</span>
+    </summary>
+    <ol className="vnext-plan">
+      {steps.map((step, index) => <li key={index} data-status={step.status}>{step.step}</li>)}
+    </ol>
   </details>;
 }
 
@@ -130,7 +178,7 @@ function ReasoningItem({ item }: { item: JournalItem }) {
   if (!text) return null;
   return <details className="vnext-reasoning-item">
     <summary>Thinking</summary>
-    <p>{text}</p>
+    <AgentMarkdown text={text} streaming={item.status === "inProgress"} />
   </details>;
 }
 
@@ -163,7 +211,7 @@ function TaskGroup({ task }: { task: JournalTask }) {
     <div className="vnext-timeline">
       {task.items.map((item) => <TimelineItem key={item.id} item={item} />)}
     </div>
-    {task.resultText && <p>{task.resultText}</p>}
+    {task.resultText && <AgentMarkdown text={task.resultText} />}
     {task.failure && <p className="vnext-turn-failure" role="alert">{task.failure}</p>}
   </details>;
 }
@@ -173,13 +221,13 @@ function TimelineItem({ item }: { item: JournalItem }) {
   // showing it again here would print the fan-out twice.
   if (item.detail.type === "task") return null;
   if (isToolItem(item)) return <ToolItem item={item} />;
+  if (item.detail.type === "plan") return <PlanItem item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningItem item={item} />;
   if (item.detail.type === "error") {
     return <p className="vnext-turn-failure" role="alert">{item.detail.error.message}</p>;
   }
   if (item.detail.type === "assistant_message") {
-    const text = itemText(item);
-    return text ? <p>{text}</p> : null;
+    return <AgentMarkdown text={itemText(item)} streaming={item.status === "inProgress"} />;
   }
   // Forward compatibility: an item type this build does not render still gets
   // a row. A silently missing row is worse than an unstyled one.
@@ -267,7 +315,7 @@ function SessionTurn({ turn, requests, sending, onDecide, onRetry, onDiscard }: 
         {turn.items.map((item) => <TimelineItem key={item.id} item={item} />)}
         {turn.tasks.map((task) => <TaskGroup key={task.id} task={task} />)}
       </div>
-      {!streamedAnswer && turn.resultText && <p>{turn.resultText}</p>}
+      {!streamedAnswer && turn.resultText && <AgentMarkdown text={turn.resultText} />}
       {turn.failure && <p className="vnext-turn-failure" role="alert"><strong>Turn failed. </strong>{turn.failure}</p>}
     </div>}
     {turn.state === "ambiguous" && <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />}
