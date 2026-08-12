@@ -93,6 +93,17 @@ export const Effort = z.string().min(1);
 export type Effort = z.infer<typeof Effort>;
 
 /**
+ * Which context window a turn runs with.
+ *
+ * A CLOSED SET, unlike `Effort`, because it is not a provider vocabulary — it is
+ * a switch with two positions. `default` is whatever the model ships with and is
+ * the absence of a choice; `1m` opts into the long-context beta, which the
+ * Agent SDK gates behind a `betas` flag and which not every model supports.
+ */
+export const ContextWindow = z.enum(["default", "1m"]);
+export type ContextWindow = z.infer<typeof ContextWindow>;
+
+/**
  * A model AND/OR AN EFFORT on a configured instance. Routing is by
  * `instanceId`; `model` is the provider's own identifier and is never
  * interpreted here.
@@ -114,10 +125,26 @@ export const ModelSelection = z
     instanceId: ProviderInstanceId,
     model: z.string().min(1).optional(),
     effort: Effort.optional(),
+    /**
+     * How much context the model is given.
+     *
+     * `1m` OPTS INTO A BETA — the Agent SDK's `betas: ['context-1m-2025-08-07']`
+     * — so it is absent by default rather than defaulted to a number this
+     * contract would then have to keep true as models change. Claude-only:
+     * Codex has no equivalent and ignores it, which its driver states.
+     */
+    contextWindow: ContextWindow.optional(),
+    /**
+     * Trade some quality for latency, where the provider offers it. Reaches the
+     * Agent SDK as an inline `settings: { fastMode }`. Claude-only.
+     */
+    fastMode: z.boolean().optional(),
   })
-  .refine((value) => value.model !== undefined || value.effort !== undefined, {
-    message: "a model selection must name a model, an effort, or both",
-  });
+  .refine(
+    (value) =>
+      value.model !== undefined || value.effort !== undefined || value.contextWindow !== undefined || value.fastMode !== undefined,
+    { message: "a model selection must name at least one of model, effort, context window or fast mode" },
+  );
 export type ModelSelection = z.infer<typeof ModelSelection>;
 
 /**
@@ -342,3 +369,47 @@ export const McpServer = z.object({
   updatedAt: Timestamp,
 });
 export type McpServer = z.infer<typeof McpServer>;
+
+/**
+ * ONE MODEL A PROVIDER SAYS IT HAS.
+ *
+ * ASKED FOR, NOT HAND-MAINTAINED. The cockpit shipped a static list of model
+ * ids and it was wrong within a week: it offered Codex a `gpt-5.5-codex` that
+ * does not exist and defaulted to `gpt-5.5` when the installed harness defaults
+ * to something else entirely. A list a human types is a list that goes stale,
+ * and the failure mode is a 404 at the provider rather than a visible gap.
+ *
+ * `isDefault` AND `hidden` COME FROM THE PROVIDER because only the provider
+ * knows. The cockpit's own idea of "which of these is old" is a separate,
+ * derived thing (see the version split in the client) — this field is the
+ * provider saying "do not show this at all".
+ *
+ * `efforts` IS PER MODEL, which the previous per-provider guess could not
+ * express: Codex reports six levels for its newest model and four for an older
+ * one, and offering a level a model does not have fails the turn.
+ */
+export const ProviderModel = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().optional(),
+  isDefault: z.boolean(),
+  hidden: z.boolean(),
+  efforts: z.array(Effort),
+  defaultEffort: Effort.optional(),
+});
+export type ProviderModel = z.infer<typeof ProviderModel>;
+
+/** Where a catalogue came from, so a surface can say whether it is asking or
+ *  guessing. `builtin` is this cockpit's own list and is a known gap. */
+export const ModelCatalogueSource = z.enum(["provider", "builtin"]);
+export type ModelCatalogueSource = z.infer<typeof ModelCatalogueSource>;
+
+export const ModelCatalogue = z.object({
+  driver: ProviderDriverKind,
+  models: z.array(ProviderModel),
+  source: ModelCatalogueSource,
+  /** Why it fell back, when it did. Never invented. */
+  message: z.string().min(1).optional(),
+  readAt: Timestamp,
+});
+export type ModelCatalogue = z.infer<typeof ModelCatalogue>;

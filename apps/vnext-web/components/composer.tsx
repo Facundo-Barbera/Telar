@@ -29,10 +29,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
-import { AccessControl, AgentControl, BackgroundPresence, ComposerOverflowMenu, ContextPill, ReasoningControl } from "./composer-controls";
+import {
+  AccessControl,
+  AgentControl,
+  BackgroundPresence,
+  ComposerOverflowMenu,
+  ContextPill,
+  ControlDivider,
+  ReasoningControl,
+} from "./composer-controls";
 import { insertReference, readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { FreshGreeting } from "./session/fresh-greeting";
 import { WorkspaceEnvironment } from "./workspace-environment";
@@ -278,8 +287,10 @@ export function Composer({
    *  worktree is cut when the session is created. */
   envMode?: "local" | "worktree";
   onEnvMode?: (mode: "local" | "worktree") => void;
-  /** The model the first message will create the session with, while fresh. */
-  pendingModel?: { model?: string; effort?: string };
+  /** The provider knobs the first message will create the session with, while
+   *  fresh. Same shape as `session.model` minus the instance, which the engine
+   *  stamps. */
+  pendingModel?: ModelChoice;
   /** A turn is running or claimed. NOT a reason to disable anything. */
   busy: boolean;
   sending: boolean;
@@ -300,8 +311,9 @@ export function Composer({
    *  is the caller's job — the composer only asks for the text. */
   onRecall?: (item: QueuedMessage) => void;
   onRuntimeMode: (mode: RuntimeMode) => void;
-  /** Change which model runs the NEXT turn. Absent makes the picker read-only. */
-  onModelChange?: (next: { model?: string; effort?: string }) => void;
+  /** Change what the NEXT turn runs with. Absent makes every picker read-only.
+   *  Takes the WHOLE choice, never a fragment. */
+  onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
   onOpenChanges?: () => void;
 }) {
@@ -437,10 +449,25 @@ export function Composer({
     event.dataTransfer.types.includes("text/uri-list");
 
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
-  // The session's own record wins once it exists; before that, the pending
-  // choice the first message will be created with.
-  const model = session?.model?.model ?? pendingModel?.model;
-  const effort = session?.model?.effort ?? pendingModel?.effort;
+  /**
+   * ONE VALUE FOR EVERY PROVIDER KNOB, passed whole to every control.
+   *
+   * Each control used to receive the fields it cared about and send back only
+   * those, so picking an effort cleared the model and picking a model cleared
+   * the effort. Handing the whole choice down and taking the whole choice back
+   * makes that loss unrepresentable — see `ModelChoice`.
+   *
+   * The session's own record wins once it exists; before that, the pending
+   * choice the first message will be created with.
+   */
+  const activeDriver = session?.driver ?? driver!;
+  const stored = session?.model ?? pendingModel;
+  const choice: ModelChoice = {
+    ...(stored?.model ? { model: stored.model } : {}),
+    ...(stored?.effort ? { effort: stored.effort } : {}),
+    ...(stored?.contextWindow ? { contextWindow: stored.contextWindow } : {}),
+    ...(stored?.fastMode === undefined ? {} : { fastMode: stored.fastMode }),
+  };
 
   return (
     /**
@@ -567,8 +594,8 @@ export function Composer({
               ))}
             </InputGroupAddon>
           )}
-          <InputGroupAddon align="block-end" className="min-h-11 flex-wrap justify-between gap-1 border-t border-border/40 px-2.5 pt-1.5 pb-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               {/* Present but inert: attachments are a contract the engine does
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
@@ -592,29 +619,39 @@ export function Composer({
               {(session || (fresh && driver)) && (
                 <>
                   <AgentControl
-                    driver={session?.driver ?? driver!}
-                    {...(model ? { model } : {})}
-                    {...(effort ? { effort } : {})}
-                    {...(onModelChange ? { onModelChange } : {})}
+                    driver={activeDriver}
+                    choice={choice}
+                    {...(onModelChange ? { onChange: onModelChange } : {})}
                     {...(onDriverChange ? { onDriverChange } : {})}
                   />
-                  <div className="hidden items-center gap-1.5 @2xl/composer:flex">
-                    <ReasoningControl
-                      driver={session?.driver ?? driver!}
-                      {...(model ? { model } : {})}
-                      {...(effort ? { effort } : {})}
-                      {...(onModelChange ? { onModelChange } : {})}
-                    />
-                    {runtimeMode && <AccessControl runtimeMode={runtimeMode} onRuntimeMode={onRuntimeMode} />}
+                  {/* Hairlines rather than borders: three bordered chips read
+                      as chrome bolted to the composer, where the reference draws
+                      the same three as labels with a rule between them. */}
+                  <div className="hidden items-center gap-1 @2xl/composer:flex">
+                    <ControlDivider />
+                    <ReasoningControl driver={activeDriver} choice={choice} {...(onModelChange ? { onChange: onModelChange } : {})} />
+                    {runtimeMode && (
+                      <>
+                        <ControlDivider />
+                        <AccessControl runtimeMode={runtimeMode} onRuntimeMode={onRuntimeMode} />
+                      </>
+                    )}
                   </div>
+                  {/* The overflow carries EVERYTHING the pills carry, plus the
+                      two create-time choices that live on other surfaces when
+                      there is room. A narrow window must not be the reason a
+                      setting is unreachable. */}
                   <div className="@2xl/composer:hidden">
                     <ComposerOverflowMenu
-                      driver={session?.driver ?? driver!}
-                      {...(model ? { model } : {})}
-                      {...(effort ? { effort } : {})}
+                      driver={activeDriver}
+                      choice={choice}
+                      fresh={fresh}
                       {...(runtimeMode ? { runtimeMode } : {})}
-                      {...(onModelChange ? { onModelChange } : {})}
+                      {...(envMode ? { envMode } : {})}
+                      {...(onModelChange ? { onChange: onModelChange } : {})}
                       {...(runtimeMode ? { onRuntimeMode } : {})}
+                      {...(onDriverChange ? { onDriverChange } : {})}
+                      {...(onEnvMode ? { onEnvMode } : {})}
                     />
                   </div>
                 </>

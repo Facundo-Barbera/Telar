@@ -589,3 +589,36 @@ test("a selection that selects nothing is refused rather than stored", () => {
     EngineStateError,
   );
 });
+
+test("a model selection can be cleared, which `undefined` could never express", () => {
+  // THE BUG THIS PINS: the cockpit's "Provider default" row sent `model:
+  // undefined`, `JSON.stringify` dropped the key, and the engine saw no patch
+  // at all — so the pill said one thing, the record said another, and a reload
+  // snapped the old model back.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5", effort: "max" } });
+  expect(store.getSession("session_one").model).toBeDefined();
+
+  expect(store.updateSession("session_one", { model: null }).model).toBeUndefined();
+  // And an absent key still means "leave it alone", which is the other half of
+  // the distinction.
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
+  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
+});
+
+test("the context window and fast mode reach the claim without a model", () => {
+  // Both are Claude-side switches the composer offers on the provider default,
+  // so they have to survive a selection that names no model at all.
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  store.updateSession("session_one", {
+    model: { instanceId: session.providerInstanceId, contextWindow: "1m", fastMode: true },
+  });
+  store.submitTurn("session_one", { runId: "run_one", input: "hi" });
+  expect(store.claimNextTurn("worker_one")?.model).toEqual({
+    instanceId: session.providerInstanceId,
+    contextWindow: "1m",
+    fastMode: true,
+  });
+});

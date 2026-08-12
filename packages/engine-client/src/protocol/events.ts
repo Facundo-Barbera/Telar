@@ -18,7 +18,7 @@
  * event.data.text === "string"` before it dares use a field.
  */
 import { z } from "zod";
-import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
+import { BrowserProvider, BrowserTab, ContextWindow, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
 import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
@@ -267,14 +267,18 @@ export type EngineErrorBody = z.infer<typeof EngineErrorBody>;
 export const TurnModelSelection = z
   .object({
     /** Absent means "the provider's own default model", which is a real choice
-     *  and not the same as naming one. Effort still applies to it — see
-     *  `ModelSelection`. */
+     *  and not the same as naming one. Everything below still applies to it —
+     *  see `ModelSelection`. */
     model: z.string().min(1).optional(),
     effort: Effort.optional(),
+    contextWindow: ContextWindow.optional(),
+    fastMode: z.boolean().optional(),
   })
-  .refine((value) => value.model !== undefined || value.effort !== undefined, {
-    message: "a turn's model selection must name a model, an effort, or both",
-  });
+  .refine(
+    (value) =>
+      value.model !== undefined || value.effort !== undefined || value.contextWindow !== undefined || value.fastMode !== undefined,
+    { message: "a turn's model selection must name at least one of model, effort, context window or fast mode" },
+  );
 export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
 
 /** Submitting a turn. `runId` is the client's idempotency key — resubmitting

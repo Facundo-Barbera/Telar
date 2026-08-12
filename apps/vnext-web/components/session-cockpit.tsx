@@ -18,6 +18,7 @@ import {
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import { appendJournalEvents, isActiveTurn, itemText, projectJournal, type JournalTurn } from "@/lib/vnext/journal";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
+import type { ModelChoice } from "@/lib/models";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { Composer } from "./composer";
 import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
@@ -360,7 +361,37 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
   /** Where the first message will land. `local` matches the engine's own
    *  default, so an untouched canvas creates what it says it will. */
   const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
-  const [draftModel, setDraftModel] = useState<{ model?: string; effort?: string }>({});
+  /**
+   * How much rope the session will start with.
+   *
+   * `auto` IS THE ENGINE'S OWN DEFAULT for a detached session
+   * (`DEFAULT_DETACHED_RUNTIME_MODE`), so an untouched canvas creates exactly
+   * what it says it will. Without this the access control simply did not exist
+   * before the first message — the composer read it off a session that did not
+   * exist yet — and a narrow window's overflow menu had nothing in it but
+   * Reasoning.
+   */
+  const [draftRuntimeMode, setDraftRuntimeMode] = useState<RuntimeMode>("auto");
+  /**
+   * Every provider knob the first message will create the session with. One
+   * value, so no control can clear another's field — see `ModelChoice`.
+   *
+   * NOT SEEDED WITH A MODEL, and that is the honest shape now that the picker
+   * asks the provider which model is default. An absent model means "run the
+   * default", the picker SHOWS which one that is, and nothing has to be written
+   * for the two to agree. Seeding an id here would have meant guessing — and
+   * the guess for Codex was wrong by two generations.
+   */
+  const [draftModel, setDraftModel] = useState<ModelChoice>({});
+  /**
+   * Switching provider clears the choice, because a Claude id is not a thing
+   * Codex can run — and neither are its effort levels or its Claude-only
+   * switches.
+   */
+  const chooseDriver = useCallback((next: ProviderDriverKind) => {
+    setDraftDriver(next);
+    setDraftModel({});
+  }, []);
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -704,17 +735,30 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
         // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
         // an effort chosen must still write that effort — which is exactly the
         // case that used to fall through this `if` and vanish.
-        if (draftModel.model || draftModel.effort) {
-          await api.updateSession(target, {
-            model: {
-              instanceId: created.session.providerInstanceId,
-              ...(draftModel.model ? { model: draftModel.model } : {}),
-              ...(draftModel.effort ? { effort: draftModel.effort } : {}),
-            },
-          });
+        // ONE PATCH FOR EVERY CREATE-TIME CHOICE. Two round trips to set two
+        // fields on a session that was created a moment ago is two chances for
+        // the second to fail after the first landed.
+        const creationPatch = {
+          ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
+          ...(draftModel.model || draftModel.effort || draftModel.contextWindow || draftModel.fastMode !== undefined
+            ? {
+                model: {
+                  instanceId: created.session.providerInstanceId,
+                  ...(draftModel.model ? { model: draftModel.model } : {}),
+                  ...(draftModel.effort ? { effort: draftModel.effort } : {}),
+                  ...(draftModel.contextWindow ? { contextWindow: draftModel.contextWindow } : {}),
+                  ...(draftModel.fastMode === undefined ? {} : { fastMode: draftModel.fastMode }),
+                },
+              }
+            : {}),
+        };
+        if (Object.keys(creationPatch).length > 0) {
+          const patched = await api.updateSession(target, creationPatch);
+          setSession(patched.session);
         }
         setSessionId(target);
-        setSession(created.session);
+        // Only when the patch did not already give us a newer record.
+        if (Object.keys(creationPatch).length === 0) setSession(created.session);
         window.history.replaceState(null, "", `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(target)}`);
       }
       /**
@@ -746,11 +790,13 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
       await api.submitTurn(target, {
         runId,
         input: text,
-        ...(pending?.model || pending?.effort
+        ...(pending?.model || pending?.effort || pending?.contextWindow || pending?.fastMode !== undefined
           ? {
               model: {
                 ...(pending.model ? { model: pending.model } : {}),
                 ...(pending.effort ? { effort: pending.effort } : {}),
+                ...(pending.contextWindow ? { contextWindow: pending.contextWindow } : {}),
+                ...(pending.fastMode === undefined ? {} : { fastMode: pending.fastMode }),
               },
             }
           : {}),
@@ -805,7 +851,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
    * instance id comes from the session because the engine rejects a model that
    * does not belong to it.
    */
-  const setModel = async (next: { model?: string; effort?: string }) => {
+  const setModel = async (next: ModelChoice) => {
     if (!session || !sessionId) return;
     try {
       const updated = await api.updateSession(sessionId, {
@@ -817,13 +863,18 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
          * `undefined` only when BOTH are absent is what clears it.
          */
         model:
-          next.model || next.effort
+          next.model || next.effort || next.contextWindow || next.fastMode !== undefined
             ? {
                 instanceId: session.providerInstanceId,
                 ...(next.model ? { model: next.model } : {}),
                 ...(next.effort ? { effort: next.effort } : {}),
+                ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
+                ...(next.fastMode === undefined ? {} : { fastMode: next.fastMode }),
               }
-            : undefined,
+            : // `null`, not `undefined`: JSON.stringify drops an undefined key, so
+              // the engine would see no patch and keep the old selection — the
+              // pill would say "Provider default" and the record would disagree.
+              null,
       });
       setSession(updated.session);
       setError(undefined);
@@ -939,7 +990,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           {...(fresh
             ? {
                 driver: draftDriver,
-                onDriverChange: setDraftDriver,
+                onDriverChange: chooseDriver,
                 pendingModel: draftModel,
                 envMode: draftEnvMode,
                 onEnvMode: setDraftEnvMode,
@@ -948,7 +999,9 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           busy={Boolean(active)}
           sending={sending}
           queued={queued}
-          runtimeMode={session?.runtimeMode}
+          {...(session?.runtimeMode ?? (fresh ? draftRuntimeMode : undefined)
+            ? { runtimeMode: session?.runtimeMode ?? draftRuntimeMode }
+            : {})}
           projectId={session?.projectId ?? projectId}
           {...(projectName ? { projectName } : {})}
           {...(session ? { session } : {})}
@@ -973,9 +1026,9 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
             setDraft((current) => (current ? `${current}\n${item.text}` : item.text));
             void withdraw(item.runId);
           }}
-          onRuntimeMode={(mode) => void setRuntimeMode(mode)}
-          // Before a session exists there is nothing to patch — the choice is
-          // held locally and applied when the first message creates it.
+          // Before a session exists there is nothing to patch, so both choices
+          // are held locally and applied by the one patch that follows creation.
+          onRuntimeMode={fresh ? setDraftRuntimeMode : (mode) => void setRuntimeMode(mode)}
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
           onOpenChanges={() => showPanelTab("changes")}
         />

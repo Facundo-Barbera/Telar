@@ -26,6 +26,7 @@ import {
   type BrowserTab,
   type GitCommitEntry,
   type GitHubSnapshot,
+  type ModelCatalogue,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -54,6 +55,7 @@ import {
 } from "@telar/engine-client";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { defaultGhRunner, readGitHub, type GhRunner } from "./github";
+import { readModelCatalogue } from "./models";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -173,6 +175,10 @@ const MAX_TURN_ATTACHMENTS = 16;
 /** How long a GitHub read stays fresh. Longer than a glance, shorter than the
  *  time it takes to file an issue and come back for it. */
 const GITHUB_CACHE_MS = 30_000;
+
+/** Longer than the GitHub cache because the read is heavier — a whole
+ *  subprocess — and the answer changes far less often. */
+const MODEL_CACHE_MS = 5 * 60_000;
 
 export type EngineStatePaths = {
   root: string;
@@ -492,6 +498,9 @@ export class EngineStore {
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
   private readonly githubCache = new Map<string, GitHubSnapshot>();
+  /** In memory, like the GitHub cache and for the same reason: it describes
+   *  somebody else's installation, which changes without telling us. */
+  private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
   /**
    * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
    * so the store keeps no provider dependency — every test builds an
@@ -671,6 +680,23 @@ export class EngineStore {
    * `force` is what the refresh button sends, and it is the only way past the
    * cache — a timer must never be able to hold this open.
    */
+  /**
+   * Which models a provider says it has.
+   *
+   * CACHED FOR THE SAME REASON THE GITHUB READ IS, and harder: answering means
+   * spawning a `codex app-server`, initialising it and killing it. Five minutes
+   * is far longer than a person spends in a menu and far shorter than the time
+   * between a provider shipping a model and somebody wanting it.
+   */
+  async modelCatalogue(driver: ProviderDriverKind, options: { force?: boolean } = {}): Promise<ModelCatalogue> {
+    if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
+    const cached = this.modelCache.get(driver);
+    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) return structuredClone(cached);
+    const catalogue = await readModelCatalogue(driver, this.now);
+    this.modelCache.set(driver, catalogue);
+    return structuredClone(catalogue);
+  }
+
   async projectGitHub(projectId: string, options: { force?: boolean } = {}): Promise<GitHubSnapshot> {
     const project = this.getProject(projectId);
     const cached = this.githubCache.get(project.id);
@@ -839,7 +865,9 @@ export class EngineStore {
    */
   updateSession(
     sessionId: string,
-    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelectionValue },
+    /** `model: null` CLEARS the selection; absent leaves it alone. The two are
+     *  different requests and JSON cannot express the difference any other way. */
+    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelectionValue | null },
   ): Session {
     const session = this.getSession(sessionId);
     if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
@@ -869,12 +897,26 @@ export class EngineStore {
      * reason.
      */
     if (patch.model !== undefined) {
-      const parsed = ModelSelection.safeParse(patch.model);
-      if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
-      if (parsed.data.instanceId !== session.providerInstanceId) {
-        throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
+      /**
+       * `null` CLEARS IT, AND WITHOUT THIS THERE WAS NO WAY TO.
+       *
+       * A client wanting "back to the provider's own defaults" has to send
+       * something, and `undefined` is not a thing you can send: `JSON.stringify`
+       * drops the key, so the engine saw no patch at all and left the old
+       * selection in place. The cockpit's "Provider default" row did exactly
+       * that — the pill said one thing, the session record said another, and
+       * the next reload snapped it back.
+       */
+      if (patch.model === null) {
+        delete next.model;
+      } else {
+        const parsed = ModelSelection.safeParse(patch.model);
+        if (!parsed.success) throw new EngineStateError("invalid_request", "model selection is malformed");
+        if (parsed.data.instanceId !== session.providerInstanceId) {
+          throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
+        }
+        next.model = parsed.data;
       }
-      next.model = parsed.data;
     }
     // Nothing changed: no write, no event. A client polling a "save" button
     // should not fill the journal with rows that say nothing happened.
@@ -882,8 +924,12 @@ export class EngineStore {
       next.title === session.title &&
       next.runtimeMode === session.runtimeMode &&
       next.detached === session.detached &&
-      next.model?.model === session.model?.model &&
-      next.model?.effort === session.model?.effort
+      // COMPARED WHOLE, not field by field. The hand-written version listed
+      // `model` and `effort`, so when the selection grew a context window and a
+      // fast-mode switch, a patch that changed only those looked like a no-op
+      // and was silently dropped — the write never happened and the event never
+      // fired. Serialising cannot fall behind the shape it is comparing.
+      JSON.stringify(next.model ?? null) === JSON.stringify(session.model ?? null)
     ) {
       return structuredClone(session);
     }
@@ -1048,6 +1094,8 @@ export class EngineStore {
               // explicit `undefined` the engine would then hand to a driver.
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
+              ...(input.model.contextWindow ? { contextWindow: input.model.contextWindow } : {}),
+              ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
             },
           }
         : {}),

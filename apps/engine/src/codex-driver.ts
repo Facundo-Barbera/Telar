@@ -16,6 +16,10 @@
  *     omit-when-empty note on `threadParams`).
  *   - no on-demand compaction or rollback. Those are session operations, not
  *     turn operations, and `TurnDriver` runs turns.
+ *   - NO CONTEXT-WINDOW OR FAST-MODE SWITCH. Both are Claude-side concepts —
+ *     an Agent SDK `betas` flag and an inline `settings.fastMode` — and the
+ *     app-server exposes no equivalent. `DriverRun` carries them and this driver
+ *     ignores them; the cockpit only offers them on a Claude session.
  *   - NO USER-CONFIGURED MCP SERVERS, and this one is a real gap rather than a
  *     scoping choice. `DriverRun.mcpServers` arrives here and is not used: the
  *     app-server owns its own MCP registry through `~/.codex/config.toml` and

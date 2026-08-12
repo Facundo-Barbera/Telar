@@ -80,6 +80,11 @@ export type DriverRun = {
   model?: string;
   /** Reasoning effort, where the provider has the concept. Same absent rule. */
   effort?: string;
+  /** `1m` opts into the Agent SDK's long-context beta. Claude-only; Codex has
+   *  no equivalent and its driver says so. */
+  contextWindow?: string;
+  /** Latency over quality, where the provider offers it. Claude-only. */
+  fastMode?: boolean;
   /**
    * Files the human attached to THIS message, already on disk.
    *
@@ -243,6 +248,14 @@ function claudeMcpServers(servers: McpServer[] | undefined): Record<string, SdkM
  * display-level nicety is the worse trade, and a level the SDK cannot honour is
  * indistinguishable from none.
  */
+/**
+ * The SDK's own name for the long-context beta, verbatim from its `SdkBeta`
+ * union. A DATED STRING, so it will change: when it does, the SDK's type stops
+ * accepting this one and the build says so, which is the whole reason it is
+ * pinned here rather than assembled.
+ */
+const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const CLAUDE_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 const claudeEffort = (value: string | undefined): ClaudeEffort | undefined =>
@@ -258,6 +271,20 @@ type ClaudeSdk = {
       /** Omitted entirely when the session names none — the SDK then uses the
        *  model the local Claude Code install is configured with. */
       model?: string;
+      /**
+       * Opt-in protocol betas. The only one this engine sends is the 1M context
+       * window, and it is sent ONLY when a session asked for it: a beta flag is
+       * a request for behaviour that is not yet default, and sending one nobody
+       * asked for is how a client inherits somebody else's migration.
+       */
+      betas?: string[];
+      /**
+       * The SDK's inline settings layer — the same one `applyFlagSettings`
+       * merges into mid-session. `fastMode` lives here rather than in the query
+       * options proper, which is why it is threaded separately from `model` and
+       * `effort` despite being the same kind of choice to a human.
+       */
+      settings?: { fastMode?: boolean };
       /** How hard to think. A CLOSED vocabulary here, unlike `DriverRun.effort`
        *  — see `claudeEffort` below. */
       effort?: ClaudeEffort;
@@ -567,6 +594,8 @@ export function createClaudeDriver(
       signal,
       model,
       effort,
+      contextWindow,
+      fastMode,
       attachments,
       mcpServers: userMcpServers,
       onObservations,
@@ -809,6 +838,11 @@ export function createClaudeDriver(
             forwardSubagentText: true,
             ...(model ? { model } : {}),
             ...(sdkEffort ? { effort: sdkEffort } : {}),
+            // Both absent unless asked for: a beta flag and a settings override
+            // are requests for non-default behaviour, and inventing either
+            // would make every session inherit a choice nobody made.
+            ...(contextWindow === "1m" ? { betas: [CONTEXT_1M_BETA] } : {}),
+            ...(fastMode === undefined ? {} : { settings: { fastMode } }),
             ...(providerSessionId ? { resume: providerSessionId } : {}),
             ...(canUseTool ? { canUseTool } : {}),
             ...(mcpServers ? { mcpServers } : {}),

@@ -13,6 +13,7 @@ import {
   type BrowserSnapshot,
   type GitCommitEntry,
   type GitHubSnapshot,
+  type ModelCatalogue,
   type SessionDiff,
   type McpServer,
   type McpServerSpec,
@@ -169,6 +170,14 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
   }
 
+  /** Which models a provider says it has. Cached in the engine for five
+   *  minutes — answering means spawning the provider's own CLI. */
+  modelCatalogue(driver: ProviderDriverKind, options: { refresh?: boolean } = {}): Promise<{ catalogue: ModelCatalogue }> {
+    const query = new URLSearchParams({ driver });
+    if (options.refresh) query.set("refresh", "1");
+    return this.request("GET", `/v2/models?${query.toString()}`);
+  }
+
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
@@ -192,7 +201,7 @@ export class EngineClient {
    */
   updateSession(
     sessionId: string,
-    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection },
+    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }

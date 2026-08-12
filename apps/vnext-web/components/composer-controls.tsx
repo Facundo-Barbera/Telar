@@ -1,15 +1,26 @@
 "use client";
 
-import { forwardRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { CheckIcon, ChevronDownIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon } from "lucide-react";
-import type { ProviderDriverKind, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
+import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
+import type { ModelCatalogue, ProviderDriverKind, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
-import { EFFORT_HELP, EFFORT_LABEL, PROVIDER_EFFORTS, effortLabel, MODELS, modelLabel, type Effort } from "@/lib/models";
+import {
+  CONTEXT_WINDOWS,
+  PROVIDER_EFFORTS,
+  effortLabel,
+  modelLabel,
+  supportsLongContext,
+  type ModelChoice,
+} from "@/lib/models";
+import { orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
+import { defaultModelId, effortsFor, splitGenerations } from "@/lib/model-generations";
+import { createVNextApi } from "@/lib/vnext/client";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -44,13 +55,32 @@ import { cn } from "@/lib/utils";
  * free to disable whatever it likes.
  */
 
+/**
+ * A PILL IS TEXT WITH A CHEVRON, NOT A BUTTON WITH A BORDER.
+ *
+ * These carried `border border-input` at `h-8`, which made three of them read as
+ * three chips bolted to the bottom of the composer — a row of chrome competing
+ * with the message box it belongs to. The reference cockpit draws the same three
+ * as borderless labels separated by hairlines, and the difference is entirely
+ * one of weight: the settings are ambient facts you glance at, not actions you
+ * are being offered.
+ *
+ * The border comes back on HOVER and while OPEN, which is where a target needs
+ * to announce itself and nowhere else.
+ */
 function controlClass(open: boolean, disabled?: boolean) {
   return cn(
-    "flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-input bg-transparent px-2.5 text-xs font-medium text-muted-foreground transition-colors",
+    "flex h-7 min-w-0 items-center gap-1.5 rounded-md bg-transparent px-2 text-xs font-medium text-muted-foreground transition-colors",
     !disabled && "hover:bg-accent hover:text-foreground",
     disabled && "opacity-70",
-    open && "border-ring bg-accent text-foreground",
+    open && "bg-accent text-foreground",
   );
+}
+
+/** The hairline between two pills. Ported from the reference row, where it is
+ *  what lets borderless controls still read as separate things. */
+export function ControlDivider() {
+  return <span aria-hidden className="h-4 w-px shrink-0 bg-border" />;
 }
 
 type ControlTriggerProps = ComponentPropsWithoutRef<"button"> & {
@@ -87,6 +117,48 @@ ControlTrigger.displayName = "ControlTrigger";
 
 function MenuHeading({ children }: { children: ReactNode }) {
   return <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+}
+
+/**
+ * A COMPACT row: one line, a tick, nothing else.
+ *
+ * The two-line `ChoiceRow` below is right where the choice needs explaining —
+ * the access modes, the model list — and wrong for a list of seven effort levels
+ * everyone already understands, where it turned a short menu into a half-screen
+ * panel. This is the reference cockpit's shape for exactly those lists.
+ */
+function CompactRow({
+  label,
+  hint,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  label: string;
+  /** A word, not a sentence — "Default", "1M". Never wraps. */
+  hint?: string;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors",
+        selected ? "bg-accent" : "hover:bg-accent/60",
+        disabled && "cursor-default opacity-60",
+      )}
+    >
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {hint && <span className="shrink-0 text-[10px] text-muted-foreground">{hint}</span>}
+      <span className="flex size-3.5 shrink-0 items-center justify-center">
+        {selected && <CheckIcon className="size-3.5 text-primary" />}
+      </span>
+    </button>
+  );
 }
 
 /** A single-select row: label, description, tick when chosen. */
@@ -142,6 +214,42 @@ export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
 
 const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
 
+/**
+ * The catalogue, fetched once per driver per page.
+ *
+ * MODULE SCOPE, NOT COMPONENT STATE. There are three controls that need it —
+ * the model picker, the reasoning menu and the overflow — and the read is a
+ * subprocess spawn on the engine's side. One promise per driver, shared, means
+ * opening a popover never costs a second one.
+ */
+const catalogues = new Map<ProviderDriverKind, Promise<ModelCatalogue>>();
+const api = createVNextApi();
+
+function useModelCatalogue(driver: ProviderDriverKind): ModelCatalogue | undefined {
+  const [catalogue, setCatalogue] = useState<ModelCatalogue>();
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred, like every other read in this app that the server could not
+    // have performed.
+    const task = window.setTimeout(() => {
+      let pending = catalogues.get(driver);
+      if (!pending) {
+        pending = api.modelCatalogue(driver).then((result) => result.catalogue);
+        catalogues.set(driver, pending);
+        // A failed read must not poison the cache — the next popover should try
+        // again rather than inherit the error for the life of the page.
+        void pending.catch(() => catalogues.delete(driver));
+      }
+      void pending.then((result) => !cancelled && setCatalogue(result)).catch(() => undefined);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(task);
+    };
+  }, [driver]);
+  return catalogue;
+}
+
 /** Every provider the engine can drive. Two, and the contract's union is the
  *  reason this is not a lookup — a third would want a rail entry, not a row. */
 const PROVIDERS: ProviderDriverKind[] = ["claude", "codex"];
@@ -164,23 +272,47 @@ const PROVIDERS: ProviderDriverKind[] = ["claude", "codex"];
  */
 export function AgentControl({
   driver,
-  model,
-  effort,
-  onModelChange,
+  choice,
+  onChange,
   onDriverChange,
 }: {
   driver: ProviderDriverKind;
-  model?: string;
-  effort?: string;
+  choice: ModelChoice;
   /** Absent on a session that does not exist yet — the fresh canvas picks a
    *  model before there is anything to patch. */
-  onModelChange?: (next: { model?: string; effort?: Effort }) => void;
+  onChange?: (next: ModelChoice) => void;
   /** Absent once the session exists, which is what locks the rail. */
   onDriverChange?: (driver: ProviderDriverKind) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const options = MODELS[driver];
-  const readOnly = !onModelChange;
+  const [showLegacy, setShowLegacy] = useState(false);
+  const catalogue = useModelCatalogue(driver);
+  const readOnly = !onChange;
+  const { effort } = choice;
+  const models = catalogue?.models ?? [];
+  const { current, legacy } = splitGenerations(models);
+  /**
+   * READ AFTER MOUNT, like every other localStorage-backed preference in this
+   * app: the server has no storage to agree with, and a value picked during
+   * render is a hydration mismatch waiting for its first star.
+   */
+  const [favorites, setStoredFavorites] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const task = window.setTimeout(() => setStoredFavorites(readFavorites()), 0);
+    return () => window.clearTimeout(task);
+  }, []);
+  const setFavorites = (next: Set<string>) => {
+    setStoredFavorites(next);
+    writeFavorites(next);
+  };
+  /**
+   * An absent model still SELECTS a row: the provider's own default is what
+   * will run, and a menu with nothing ticked reads as broken rather than unset.
+   * Nothing is written for it — sending no model IS asking for the default, and
+   * the row simply says which one that is.
+   */
+  const selectedModel = choice.model ?? defaultModelId(models);
+  const shown = orderByFavorite(showLegacy ? [...current, ...legacy] : current, favorites);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -189,9 +321,9 @@ export function AgentControl({
           <ControlTrigger
             open={open}
             icon={<ProviderIcon provider={driver} size={14} />}
-            label={modelLabel(driver, model)}
+            label={modelLabel(driver, choice.model)}
             {...(effort ? { detail: effortLabel(effort) } : {})}
-            ariaLabel={`Model: ${modelLabel(driver, model)} on ${PROVIDER_LABEL[driver]}`}
+            ariaLabel={`Model: ${modelLabel(driver, choice.model)} on ${PROVIDER_LABEL[driver]}`}
             // Shrinks rather than forcing the row to overflow: the composer
             // shares the window with the right panel and cannot assume width.
             className="min-w-0 max-w-44 justify-start"
@@ -202,82 +334,147 @@ export function AgentControl({
         align="start"
         side="top"
         sideOffset={8}
-        className="w-[min(23rem,calc(100vw-2rem))] flex-row gap-0 overflow-hidden rounded-2xl p-0"
+        className="max-h-[min(26rem,70vh)] w-64 flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         {/**
          * THE PROVIDER RAIL — the donor's own `w-14` column, minus its
-         * favourites star (nothing here stores favourites yet).
+         * favourites star, which is now a per-row toggle instead.
          *
          * The provider belongs HERE rather than in an overflow menu, and not
          * only to shorten the row: which provider you are on decides which
-         * models exist, so the two questions are one question. Answering them in
-         * different places is what made the `···` permanent.
+         * models exist, so the two questions are one question.
          */}
-        <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/20 p-2">
-          {PROVIDERS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              // Safe here and nowhere else in the composer: this content is
-              // portalled, so it is outside `InputGroup`'s `has-disabled` reach.
-              disabled={!onDriverChange}
-              onClick={() => onDriverChange?.(option)}
-              aria-label={PROVIDER_LABEL[option]}
-              title={onDriverChange ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
-              className={cn(
-                "flex size-9 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
-                option === driver
-                  ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
-                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                option !== driver && !onDriverChange && "opacity-40",
-              )}
-            >
-              <ProviderIcon provider={option} size={16} />
-            </button>
-          ))}
+        <div className="flex min-h-0 flex-1">
+          <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/20 p-1.5">
+            {PROVIDERS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                // Safe here and nowhere else in the composer: this content is
+                // portalled, so it is outside `InputGroup`'s `has-disabled` reach.
+                disabled={!onDriverChange}
+                onClick={() => onDriverChange?.(option)}
+                aria-label={PROVIDER_LABEL[option]}
+                title={onDriverChange ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
+                className={cn(
+                  "flex size-8 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
+                  option === driver
+                    ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                  option !== driver && !onDriverChange && "opacity-40",
+                )}
+              >
+                <ProviderIcon provider={option} size={15} />
+              </button>
+            ))}
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-1">
+            {/**
+             * ONE LINE PER MODEL, and no "Provider default" row.
+             *
+             * Each row used to carry a sentence of prose, which made a list of
+             * four the tallest thing in the cockpit and buried the only word
+             * anybody reads — the name. And the default is now a MODEL rather
+             * than an option: "whatever the harness is configured with" asked
+             * the reader to hold two ideas at once, when the answer to "which
+             * model is running" is the only one they wanted.
+             */}
+            {shown.map((option) => {
+              const starred = favorites.has(option.id);
+              return (
+                <div key={option.id} className="group/model flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => {
+                      // A model that cannot take the long window drops the
+                      // request rather than carrying it into a call the provider
+                      // would refuse.
+                      // A model that cannot take the long window drops the
+                      // request rather than carrying it into a call the provider
+                      // would refuse.
+                      onChange?.({
+                        ...choice,
+                        model: option.id,
+                        ...(supportsLongContext(driver, option.id) ? {} : { contextWindow: undefined }),
+                        // An effort the new model does not support would fail
+                        // the turn, so it goes with the model it belonged to.
+                        ...(choice.effort && !option.efforts.includes(choice.effort) ? { effort: undefined } : {}),
+                      });
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                      option.id === selectedModel ? "bg-accent" : "hover:bg-accent/60",
+                      readOnly && "cursor-default opacity-60",
+                    )}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {option.isDefault && <span className="shrink-0 text-[10px] text-muted-foreground">Default</span>}
+                    <span className="flex size-3.5 shrink-0 items-center justify-center">
+                      {option.id === selectedModel && <CheckIcon className="size-3.5 text-primary" />}
+                    </span>
+                  </button>
+                  {/* The star stays out of the row's own hit target: pressing a
+                      model must never be one pixel away from favouriting it. */}
+                  <button
+                    type="button"
+                    aria-label={starred ? `Unstar ${option.label}` : `Star ${option.label}`}
+                    title={starred ? "Remove from favourites" : "Keep at the top"}
+                    onClick={() => setFavorites(toggleFavorite(favorites, option.id))}
+                    className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
+                      starred ? "opacity-100" : "opacity-0 group-hover/model:opacity-60 focus-visible:opacity-100",
+                    )}
+                  >
+                    <StarIcon className={cn("size-3.5", starred && "fill-current text-primary")} />
+                  </button>
+                </div>
+              );
+            })}
+            {/**
+             * OLDER GENERATIONS, FOLDED. A provider's list grows and never
+             * shrinks — Codex reports seven models and four of them are
+             * previous families kept for people who pinned them. The rule is
+             * "older than the provider's own default" rather than a list of ids
+             * this repository would have to keep editing: see
+             * lib/model-generations.ts.
+             */}
+            {legacy.length > 0 && !showLegacy && (
+              <button
+                type="button"
+                onClick={() => setShowLegacy(true)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
+              >
+                <span className="min-w-0 flex-1 truncate">Legacy models</span>
+                <span className="shrink-0 text-[10px]">{legacy.length}</span>
+                <ChevronRightIcon className="size-3.5 shrink-0" />
+              </button>
+            )}
+            {/* A model this catalogue does not list — set by another client, or
+                added upstream since. Shown so the session never reads as running
+                something it is not. */}
+            {choice.model && models.length > 0 && !models.some((option) => option.id === choice.model) && (
+              <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
+            )}
+            {!catalogue && <p className="px-2 py-1.5 text-[11px] text-muted-foreground">Asking {PROVIDER_LABEL[driver]}…</p>}
+            {catalogue && models.length === 0 && (
+              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+                {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
+              </p>
+            )}
+          </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col p-1.5">
-          <MenuHeading>{PROVIDER_LABEL[driver]} models</MenuHeading>
-          <ChoiceRow
-            label="Provider default"
-            description="Whatever the installed harness is configured to use."
-            selected={!model}
-            disabled={readOnly}
-            onSelect={() => {
-              // The EFFORT SURVIVES dropping back to the default model — they
-              // are independent choices, and clearing one because the other
-              // changed is the coupling this pair just stopped having.
-              onModelChange?.(effort ? { effort: effort as Effort } : {});
-              setOpen(false);
-            }}
-          />
-          {options.map((option) => (
-            <ChoiceRow
-              key={option.id}
-              label={option.label}
-              description={option.blurb}
-              selected={option.id === model}
-              disabled={readOnly}
-              onSelect={() => {
-                onModelChange?.({ model: option.id, ...(effort ? { effort: effort as Effort } : {}) });
-                setOpen(false);
-              }}
-            />
-          ))}
-          {/* A model this catalogue does not list — set by another client, or
-              added upstream since. Shown so the session never reads as running
-              something it is not. */}
-          {model && !options.some((option) => option.id === model) && (
-            <ChoiceRow label={model} description="Set outside this cockpit. Kept as-is." selected disabled onSelect={() => undefined} />
-          )}
-          <p className="px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
-            {readOnly
-              ? "Chosen when the session starts."
-              : onDriverChange
-                ? "Applies to the first message. The provider is fixed after that."
-                : `Applies to the next turn. The provider stays ${PROVIDER_LABEL[driver]} — start a new session to change it.`}
-          </p>
-        </div>
+        <p className="border-t border-border px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
+          {readOnly
+            ? "Chosen when the session starts."
+            : onDriverChange
+              ? "Applies to the first message. The provider is fixed after that."
+              : `Next turn. Provider stays ${PROVIDER_LABEL[driver]}.`}
+          {/* Whether this list was ASKED FOR or guessed. The distinction matters
+              the moment an id here 404s at the provider. */}
+          {catalogue?.source === "builtin" && models.length > 0 ? " List is this cockpit's own." : ""}
+        </p>
       </PopoverContent>
     </Popover>
   );
@@ -302,61 +499,101 @@ export function AgentControl({
  */
 export function ReasoningControl({
   driver,
-  model,
-  effort,
-  onModelChange,
+  choice,
+  onChange,
 }: {
   driver: ProviderDriverKind;
-  model?: string;
-  effort?: string;
-  onModelChange?: (next: { model?: string; effort?: Effort }) => void;
+  choice: ModelChoice;
+  onChange?: (next: ModelChoice) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const label = effortLabel(effort);
-  const levels = PROVIDER_EFFORTS[driver];
-  const readOnly = !onModelChange;
+  const label = effortLabel(choice.effort);
+  const catalogue = useModelCatalogue(driver);
+  /**
+   * PER MODEL, not per provider. Codex reports six levels for its newest model
+   * and four for an older one, and offering a level a model does not have fails
+   * the whole turn. The static list is the fallback for a catalogue that has not
+   * loaded or could not be read.
+   */
+  const reported = effortsFor(catalogue?.models ?? [], choice.model ?? defaultModelId(catalogue?.models ?? []));
+  const levels = reported.length > 0 ? reported : PROVIDER_EFFORTS[driver];
+  const readOnly = !onChange;
+  /**
+   * BOTH EXTRA GROUPS ARE CLAUDE-ONLY AND SAY SO BY BEING ABSENT.
+   *
+   * The 1M window is an Agent SDK `betas` flag and fast mode is an inline
+   * `settings.fastMode`; the Codex app-server has neither, and its driver
+   * ignores both (see apps/engine/src/codex-driver.ts). A switch that silently
+   * did nothing on half the sessions is the thing this whole cockpit keeps
+   * refusing to ship.
+   */
+  const claude = driver === "claude";
+  const longContext = supportsLongContext(driver, choice.model);
+
+  /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
+   *  model, and picking a window must not clear the effort. */
+  const pick = (next: Partial<ModelChoice>) => {
+    onChange?.({ ...choice, ...next });
+    setOpen(false);
+  };
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
-          <ControlTrigger open={open} icon={<GaugeIcon className="size-3.5" />} label={label} ariaLabel={`Reasoning effort: ${label}`} />
+          <ControlTrigger
+            open={open}
+            icon={<GaugeIcon className="size-3.5" />}
+            label={label}
+            {...(choice.contextWindow === "1m" ? { detail: "1M" } : {})}
+            ariaLabel={`Reasoning effort: ${label}`}
+          />
         }
       />
-      <PopoverContent align="start" side="top" sideOffset={8} className="w-[min(20rem,calc(100vw-2rem))] gap-0 rounded-2xl p-1.5">
+      <PopoverContent align="start" side="top" sideOffset={8} className="max-h-[min(26rem,70vh)] w-56 gap-0 overflow-y-auto rounded-xl p-1">
         <MenuHeading>Reasoning</MenuHeading>
-        {/* THE MODEL RIDES ALONG UNCHANGED. Every row re-sends whatever model is
-            currently selected — including none — so choosing an effort never
-            silently clears the model, and choosing one on the provider default
-            stays on the provider default. */}
-        <ChoiceRow
-          label="Auto"
-          description={`Whatever ${PROVIDER_LABEL[driver]} does by default.`}
-          selected={!effort}
-          disabled={readOnly}
-          onSelect={() => {
-            onModelChange?.(model ? { model } : {});
-            setOpen(false);
-          }}
-        />
+        <CompactRow label="Auto" selected={!choice.effort} disabled={readOnly} onSelect={() => pick({ effort: undefined })} />
         {levels.map((level) => (
-          <ChoiceRow
+          <CompactRow
             key={level}
-            label={EFFORT_LABEL[level]}
-            description={EFFORT_HELP[level]}
-            selected={effort === level}
+            label={effortLabel(level)}
+            selected={choice.effort === level}
             disabled={readOnly}
-            onSelect={() => {
-              onModelChange?.({ ...(model ? { model } : {}), effort: level });
-              setOpen(false);
-            }}
+            onSelect={() => pick({ effort: level })}
           />
         ))}
         {/* A level this list does not offer — another client's, or one this
             provider spells differently. `Effort` is an open string in the
             contract, so it is shown rather than silently replaced. */}
-        {effort && !levels.some((level) => level === effort) && (
-          <ChoiceRow label={effort} description="Set outside this cockpit. Kept as-is." selected disabled onSelect={() => undefined} />
+        {choice.effort && !levels.some((level) => level === choice.effort) && (
+          <CompactRow label={choice.effort} hint="external" selected disabled onSelect={() => undefined} />
+        )}
+
+        {claude && longContext && (
+          <div className="mt-1 border-t border-border pt-1">
+            <MenuHeading>Context window</MenuHeading>
+            {CONTEXT_WINDOWS.map((option) => (
+              <CompactRow
+                key={option.id}
+                label={option.label}
+                {...(option.id === "default" ? { hint: "200K" } : {})}
+                selected={(choice.contextWindow ?? "default") === option.id}
+                disabled={readOnly}
+                // `default` is the ABSENCE of a choice, so it is cleared rather
+                // than stored — the engine should never carry a field that says
+                // "whatever you were going to do anyway".
+                onSelect={() => pick({ contextWindow: option.id === "default" ? undefined : option.id })}
+              />
+            ))}
+          </div>
+        )}
+
+        {claude && (
+          <div className="mt-1 border-t border-border pt-1">
+            <MenuHeading>Fast mode</MenuHeading>
+            <CompactRow label="Off" selected={choice.fastMode !== true} disabled={readOnly} onSelect={() => pick({ fastMode: undefined })} />
+            <CompactRow label="On" selected={choice.fastMode === true} disabled={readOnly} onSelect={() => pick({ fastMode: true })} />
+          </div>
         )}
       </PopoverContent>
     </Popover>
@@ -412,19 +649,34 @@ export function AccessControl({ runtimeMode, onRuntimeMode }: { runtimeMode: Run
  */
 export function ComposerOverflowMenu({
   driver,
-  model,
-  effort,
+  choice,
   runtimeMode,
-  onModelChange,
+  fresh,
+  envMode,
+  onChange,
   onRuntimeMode,
+  onDriverChange,
+  onEnvMode,
 }: {
   driver: ProviderDriverKind;
-  model?: string;
-  effort?: string;
+  choice: ModelChoice;
   runtimeMode?: RuntimeMode;
-  onModelChange?: (next: { model?: string; effort?: Effort }) => void;
+  /** Before a session exists the provider and the workspace are still choices;
+   *  after, neither is. */
+  fresh?: boolean;
+  envMode?: "local" | "worktree";
+  onChange?: (next: ModelChoice) => void;
   onRuntimeMode?: (mode: RuntimeMode) => void;
+  onDriverChange?: (driver: ProviderDriverKind) => void;
+  onEnvMode?: (mode: "local" | "worktree") => void;
 }) {
+  const claude = driver === "claude";
+  const longContext = supportsLongContext(driver, choice.model);
+  const catalogue = useModelCatalogue(driver);
+  // Same per-model rule as the pill's menu — see `ReasoningControl`.
+  const reported = effortsFor(catalogue?.models ?? [], choice.model ?? defaultModelId(catalogue?.models ?? []));
+  const levels = reported.length > 0 ? reported : PROVIDER_EFFORTS[driver];
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -432,43 +684,124 @@ export function ComposerOverflowMenu({
           <button
             type="button"
             aria-label="More composer settings"
-            title="Reasoning and access"
+            title="Everything else about this message"
             className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           />
         }
       >
         <MoreHorizontalIcon className="size-4" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="w-56">
-        {onModelChange && (
-          <>
+      <DropdownMenuContent align="start" side="top" className="max-h-[min(30rem,70vh)] w-60 overflow-y-auto">
+        {/**
+         * EVERY SETTING, NOT SOME OF THEM. This menu exists because the pills do
+         * not fit, so anything the pills can do it must also do — otherwise a
+         * narrow window silently takes features away, which is exactly what it
+         * did: on a fresh canvas there is no session, so there was no runtime
+         * mode, so the only group here was Reasoning.
+         *
+         * EVERY LABEL IS INSIDE A GROUP. Base UI's `Menu.GroupLabel` reads
+         * `MenuGroupContext` and THROWS without a `Menu.Group` above it — a bare
+         * label does not degrade, it takes the page down when the menu opens.
+         */}
+        {onChange && (
+          <DropdownMenuGroup>
             <DropdownMenuLabel>Reasoning</DropdownMenuLabel>
-            {/* Independent of the model, as the providers are — see
-                `ReasoningControl`. Each row re-sends the current model so
-                picking an effort never clears it. */}
-            <DropdownMenuItem onClick={() => onModelChange(model ? { model } : {})}>
+            <DropdownMenuItem onClick={() => onChange({ ...choice, effort: undefined })}>
               <span className="flex-1">Auto</span>
-              {!effort && <CheckIcon className="size-3.5 text-primary" />}
+              {!choice.effort && <CheckIcon className="size-3.5 text-primary" />}
             </DropdownMenuItem>
-            {PROVIDER_EFFORTS[driver].map((level) => (
-              <DropdownMenuItem key={level} onClick={() => onModelChange({ ...(model ? { model } : {}), effort: level })}>
-                <span className="flex-1">{EFFORT_LABEL[level]}</span>
-                {effort === level && <CheckIcon className="size-3.5 text-primary" />}
+            {levels.map((level) => (
+              <DropdownMenuItem key={level} onClick={() => onChange({ ...choice, effort: level })}>
+                <span className="flex-1">{effortLabel(level)}</span>
+                {choice.effort === level && <CheckIcon className="size-3.5 text-primary" />}
               </DropdownMenuItem>
             ))}
+          </DropdownMenuGroup>
+        )}
+
+        {onChange && claude && longContext && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Context window</DropdownMenuLabel>
+              {CONTEXT_WINDOWS.map((option) => (
+                <DropdownMenuItem
+                  key={option.id}
+                  onClick={() => onChange({ ...choice, contextWindow: option.id === "default" ? undefined : option.id })}
+                >
+                  <span className="flex-1">{option.label}</span>
+                  {(choice.contextWindow ?? "default") === option.id && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+
+        {onChange && claude && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Fast mode</DropdownMenuLabel>
+              {[
+                { on: false, label: "Off" },
+                { on: true, label: "On" },
+              ].map((option) => (
+                <DropdownMenuItem key={option.label} onClick={() => onChange({ ...choice, fastMode: option.on ? true : undefined })}>
+                  <span className="flex-1">{option.label}</span>
+                  {(choice.fastMode === true) === option.on && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
           </>
         )}
 
         {runtimeMode && onRuntimeMode && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Access</DropdownMenuLabel>
-            {RUNTIME_MODES.map((option) => (
-              <DropdownMenuItem key={option} onClick={() => onRuntimeMode(option)}>
-                <span className="flex-1">{RUNTIME_MODE_LABELS[option]}</span>
-                {option === runtimeMode && <CheckIcon className="size-3.5 text-primary" />}
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Access</DropdownMenuLabel>
+              {RUNTIME_MODES.map((option) => (
+                <DropdownMenuItem key={option} onClick={() => onRuntimeMode(option)}>
+                  <span className="flex-1">{RUNTIME_MODE_LABELS[option]}</span>
+                  {option === runtimeMode && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+
+        {/* The two create-time choices. They live on other surfaces when there
+            is room — the provider in the model picker's rail, the workspace in
+            the composer's foot — and a narrow window must not be the reason you
+            cannot reach them. */}
+        {fresh && onDriverChange && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Provider</DropdownMenuLabel>
+              {PROVIDERS.map((option) => (
+                <DropdownMenuItem key={option} onClick={() => onDriverChange(option)}>
+                  <ProviderIcon provider={option} size={14} />
+                  <span className="flex-1">{PROVIDER_LABEL[option]}</span>
+                  {option === driver && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        )}
+
+        {fresh && onEnvMode && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Workspace</DropdownMenuLabel>
+              {(["local", "worktree"] as const).map((option) => (
+                <DropdownMenuItem key={option} onClick={() => onEnvMode(option)}>
+                  <span className="flex-1">{option === "worktree" ? "Own worktree" : "Project checkout"}</span>
+                  {option === (envMode ?? "local") && <CheckIcon className="size-3.5 text-primary" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
           </>
         )}
       </DropdownMenuContent>

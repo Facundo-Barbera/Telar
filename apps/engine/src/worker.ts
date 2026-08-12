@@ -137,6 +137,8 @@ export class EngineWorker {
         // read absence as "use the provider's own default".
         ...(model?.model ? { model: model.model } : {}),
         ...(model?.effort ? { effort: model.effort } : {}),
+        ...(model?.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        ...(model?.fastMode === undefined ? {} : { fastMode: model.fastMode }),
         // Both arrive ON THE CLAIM, resolved by the engine, for the same reason
         // everything else here does: the worker holds no store handle and must
         // not look anything up between claim and execution.

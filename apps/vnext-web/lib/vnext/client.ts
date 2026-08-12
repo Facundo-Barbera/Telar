@@ -3,6 +3,7 @@ import type {
   GitCommitEntry,
   GitHubSnapshot,
   GitOverview,
+  ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
   EngineEvent,
@@ -71,6 +72,13 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    /** Which models a provider says it has — asked of the provider where it can
+     *  answer, and this cockpit's own short list where it cannot. */
+    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {
+      const query = new URLSearchParams({ driver });
+      if (options.refresh) query.set("refresh", "1");
+      return request<{ catalogue: ModelCatalogue }>(fetcher, "GET", `/api/models?${query.toString()}`);
+    },
     projectGit: (projectId: string) =>
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
@@ -96,7 +104,7 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
      *  and the provider owns the resume cursor. */
     updateSession: (
       sessionId: string,
-      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection },
+      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>

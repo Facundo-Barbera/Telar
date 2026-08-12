@@ -255,6 +255,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, health());
         return;
       }
+      /**
+       * A provider's models. NOT project-scoped: a catalogue describes an
+       * installed harness, and every project on this machine sees the same one.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/models") {
+        const driver = url.searchParams.get("driver") ?? "claude";
+        writeJson(response, 200, {
+          catalogue: await store.modelCatalogue(driver as "claude" | "codex", { force: url.searchParams.get("refresh") === "1" }),
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
         writeJson(response, 200, { projects: store.listProjects() });
         return;
@@ -556,7 +567,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode as RuntimeMode }),
               ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
               // Parsed in the store against `ModelSelection`, same reasoning.
-              ...(input.model === undefined ? {} : { model: input.model as ModelSelection }),
+              // `null` is forwarded rather than dropped: it is how a client says
+              // "clear it", which `undefined` cannot express over JSON.
+              ...(input.model === undefined ? {} : { model: input.model as ModelSelection | null }),
             }),
           });
           return;

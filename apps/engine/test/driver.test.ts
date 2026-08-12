@@ -743,3 +743,22 @@ test("the user's MCP servers reach the SDK, and Telar's own key wins a collision
   expect(servers?.linear).toEqual({ type: "http", url: "https://mcp.linear.app" });
   expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });
+
+test("the 1M window and fast mode reach the SDK only when a session asked for them", async () => {
+  // A beta flag and a settings override are requests for non-default behaviour.
+  // Sending either unasked is how every session inherits somebody else's
+  // migration, so absence has to stay absence.
+  const seen: { betas?: string[]; settings?: { fastMode?: boolean } }[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      seen.push({ betas: input.options.betas, settings: input.options.settings });
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, { contextWindow: "1m", fastMode: true }).result;
+  await run(driver, {}).result;
+  expect(seen).toEqual([
+    { betas: ["context-1m-2025-08-07"], settings: { fastMode: true } },
+    { betas: undefined, settings: undefined },
+  ]);
+});
