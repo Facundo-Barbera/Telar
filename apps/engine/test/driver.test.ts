@@ -396,6 +396,10 @@ test("task lifecycle rides the stream, and a partial patch does not erase the ti
   const driver = createClaudeDriver(async () => ({
     async *query() {
       yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_task", description: "Audit the parser", subagent_type: "Explore", task_type: "subagent" };
+      // Observed against the real SDK: progress repeats the description with a
+      // "Running " prefix. Taking it as the title makes a roster row read as
+      // status prose and churn while the agent works.
+      yield { type: "system", subtype: "task_progress", task_id: "t1", tool_use_id: "toolu_task", description: "Running Audit the parser", usage: { total_tokens: 40, tool_uses: 2, duration_ms: 9 } };
       // `task_updated` carries a PATCH naming only what changed — no title, no
       // kind. A straight replace would blank both.
       yield { type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "completed" } };
@@ -405,9 +409,11 @@ test("task lifecycle rides the stream, and a partial patch does not erase the ti
   const { sink, result } = run(driver);
   await result;
 
-  const tasks = sink.observations.filter((o) => o.kind === "task.started" || o.kind === "task.completed");
-  expect(tasks.map((o) => o.kind)).toEqual(["task.started", "task.completed"]);
-  const [opened, closed] = tasks;
+  const tasks = sink.observations.filter((o) => o.kind.startsWith("task."));
+  expect(tasks.map((o) => o.kind)).toEqual(["task.started", "task.progress", "task.completed"]);
+  const [opened, progressed, closed] = tasks;
+  expect(progressed?.kind === "task.progress" && progressed.task.title).toBe("Audit the parser");
+  expect(progressed?.kind === "task.progress" && progressed.task.usage?.tokens.output).toBe(40);
   expect(opened?.kind === "task.started" && opened.task).toMatchObject({
     id: "task_toolu_task",
     kind: "agent",

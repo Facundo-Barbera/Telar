@@ -632,12 +632,25 @@ export function createClaudeDriver(
             continue;
           }
           if (item.type === "system" && item.subtype === "task_progress") {
+            /**
+             * A PROGRESS DESCRIPTION DOES NOT RENAME THE TASK.
+             *
+             * Measured against the real SDK: `task_started` carried "Find
+             * top-level .ts files non-recursively" and the progress messages
+             * that followed carried "Running Find top-level .ts files
+             * non-recursively". Taking the later one as the title makes a
+             * roster row read as status prose, and makes it churn while the
+             * agent runs. The start event names the task; progress reports on
+             * it. A task that never announced a start still takes one, because
+             * an ugly title beats an anonymous row.
+             */
+            const known = knownTasks.get(taskIdFor(str(item.task_id), str(item.tool_use_id)));
             emitTask(
               "task.progress",
               str(item.task_id),
               {
                 state: "running",
-                ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
+                ...(!known?.title && str(item.description) ? { title: oneLine(item.description!) } : {}),
                 ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
                 ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
               },
