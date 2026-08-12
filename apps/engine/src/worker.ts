@@ -1,10 +1,17 @@
-import type { EngineClient } from "@telar/engine-client";
+import type { EngineClient, RequestDecision } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { ProviderUnavailableError, type TurnDriver } from "./driver";
 
 type WorkerClient = Pick<
   EngineClient,
-  "registerWorker" | "workerHeartbeat" | "claimTurn" | "markTurnRunning" | "reportObservations" | "completeTurn" | "failTurn"
+  | "registerWorker"
+  | "workerHeartbeat"
+  | "claimTurn"
+  | "markTurnRunning"
+  | "reportObservations"
+  | "openRequest"
+  | "completeTurn"
+  | "failTurn"
 >;
 
 export type EngineWorkerOptions = {
@@ -25,6 +32,16 @@ export class EngineWorker {
   private stopped = false;
   private readonly active = new Map<string, AbortController>();
   private connectionLost = false;
+  /**
+   * Approvals this worker is blocked on, keyed by request id.
+   *
+   * A driver sitting inside `canUseTool` is parked on one of these promises.
+   * The engine cannot push, so the answer arrives on the next heartbeat and
+   * `tick()` settles it — which is why the heartbeat must keep running while a
+   * turn is blocked, and therefore why the "one turn at a time" early-return in
+   * `tick()` comes AFTER the heartbeat rather than before it.
+   */
+  private readonly awaiting = new Map<string, (decision: RequestDecision) => void>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -50,6 +67,14 @@ export class EngineWorker {
     try {
       const status = await this.options.client.workerHeartbeat(this.options.workerId);
       for (const cancellation of status.cancel) this.active.get(cancellation.claimToken)?.abort(new Error("turn stopped"));
+      // Settle anything a human answered since the last beat. This must happen
+      // even while a turn is active — the turn is what is waiting.
+      for (const resolution of status.resolved) {
+        const settle = this.awaiting.get(resolution.requestId);
+        if (!settle) continue;
+        this.awaiting.delete(resolution.requestId);
+        settle(resolution.decision);
+      }
       if (this.active.size !== 0) return;
       const { claim } = await this.options.client.claimTurn(this.options.workerId);
       if (claim) {
@@ -80,6 +105,31 @@ export class EngineWorker {
         cwd,
         signal: controller.signal,
         providerSessionId,
+        onRequest: async ({ kind, detail, toolUseId }) => {
+          const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+          const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
+            requestId,
+            kind,
+            detail,
+          });
+          // Auto-resolved by the session's runtime mode — no human involved,
+          // no wait. This is the common path in a detached session.
+          if (opened.state === "resolved") return opened.decision;
+
+          // Parked. Wait for the heartbeat to carry an answer, or for the turn
+          // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
+          // while a human is deciding would otherwise leave the driver blocked
+          // forever inside canUseTool, and the turn would never end.
+          return new Promise<RequestDecision>((resolve) => {
+            this.awaiting.set(requestId, resolve);
+            const onAbort = () => {
+              if (!this.awaiting.delete(requestId)) return;
+              resolve("cancel");
+            };
+            if (controller.signal.aborted) onAbort();
+            else controller.signal.addEventListener("abort", onAbort, { once: true });
+          });
+        },
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the
           // driver may still be mid-message when the abort lands. Reporting

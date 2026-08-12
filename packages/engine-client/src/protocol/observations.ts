@@ -21,6 +21,7 @@ import { z } from "zod";
 import { Id, ProviderDriverKind, ProviderInstanceId, ProviderRefs, Timestamp, UsageSnapshot } from "./common";
 import { Turn } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
+import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
 
 /** An item as the worker knows it, before the engine stamps ownership on it. */
 export const ItemSeed = z.object({
@@ -86,13 +87,62 @@ export const WorkerClaim = z.object({
 export type WorkerClaim = z.infer<typeof WorkerClaim>;
 
 /**
- * The heartbeat reply. `cancel` is how a stop reaches a worker: the engine
- * cannot interrupt a running provider call directly, so a stopped turn is
- * reported here and the worker aborts its own controller.
+ * The heartbeat reply.
+ *
+ * IT IS THE ONLY CHANNEL FROM ENGINE TO WORKER, and both fields exist because
+ * the engine cannot reach into a running provider call:
+ *   - `cancel` carries a stop. The worker aborts its own controller.
+ *   - `resolved` carries an answered approval. A worker blocked inside
+ *     `canUseTool` is waiting for exactly this.
+ * Polling rather than pushing keeps the worker a plain HTTP client with no
+ * inbound socket, which is what lets it be restarted independently.
  */
 export const WorkerStatus = z.object({
   workerId: Id,
   heartbeatAt: Timestamp,
   cancel: z.array(z.object({ sessionId: Id, runId: Id, claimToken: Id })),
+  resolved: z.array(
+    z.object({
+      requestId: Id,
+      sessionId: Id,
+      runId: Id,
+      decision: RequestDecision,
+      reason: z.string().optional(),
+      answers: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
 });
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
+
+/**
+ * A worker asking the engine whether a tool call may proceed.
+ *
+ * THE WORKER DOES NOT DECIDE, and does not even know the session's runtime
+ * mode. It describes what the provider wants to do; the engine applies
+ * `autoResolution` and either answers immediately or parks the request and
+ * tells the worker to wait. Putting the policy anywhere else would mean two
+ * parties could disagree about whether a session is allowed to do something.
+ */
+export const RequestOpenInput = z.object({
+  claimToken: Id,
+  /** Worker-minted, unique within the turn. */
+  requestId: Id,
+  kind: RequestKind,
+  detail: RequestDetail,
+  /** The timeline row this is about, when the worker already opened one. */
+  itemId: Id.optional(),
+  providerRefs: ProviderRefs.optional(),
+});
+export type RequestOpenInput = z.infer<typeof RequestOpenInput>;
+
+/** The engine's answer. `state: "open"` means park and watch the heartbeat. */
+export const RequestOpenResult = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("resolved"),
+    requestId: Id,
+    decision: RequestDecision,
+    resolvedBy: RequestResolver,
+  }),
+  z.object({ state: z.literal("open"), requestId: Id, notified: z.boolean() }),
+]);
+export type RequestOpenResult = z.infer<typeof RequestOpenResult>;

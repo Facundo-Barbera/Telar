@@ -1,7 +1,7 @@
-import type { EngineEvent, Item, Session, Turn } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, Item, Session, Turn } from "@telar/engine-client";
 import { appendJournalEvents, journalCursor } from "./journal";
 
-type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[] };
+type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] };
 
 export type SessionSyncApi = {
   session(sessionId: string): Promise<SessionSnapshot>;
@@ -21,6 +21,11 @@ const QUEUE_CHANGING_EVENTS = new Set<EngineEvent["type"]>([
   "turn.stopped",
   "turn.ambiguous",
   "turn.discarded",
+  // A request opening or closing changes what the human must DO, so it earns a
+  // snapshot even though it is not a queue transition. Approvals are rare —
+  // unlike deltas, they cannot storm.
+  "request.opened",
+  "request.resolved",
 ]);
 
 /**

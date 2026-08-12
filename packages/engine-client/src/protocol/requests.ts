@@ -87,7 +87,16 @@ export type RequestDetail = z.infer<typeof RequestDetail>;
 export const RequestState = z.enum(["open", "resolved"]);
 export type RequestState = z.infer<typeof RequestState>;
 
-export const Request = z.object({
+/**
+ * NAMED `EngineRequest`, NOT `Request`, and that is not stylistic. `Request` is
+ * a DOM global (the fetch API's), so in any browser-facing file a bare
+ * `Request` type annotation resolves to THAT with no error — TypeScript simply
+ * uses the wrong type and the code compiles. Measured: `session-cockpit.tsx`
+ * typechecked against the fetch `Request` and only failed later, on unrelated
+ * property accesses, with a message that pointed nowhere near the cause. The
+ * `Engine` prefix matches `EngineEvent` and `EngineHealth`.
+ */
+export const EngineRequest = z.object({
   id: Id,
   runId: Id,
   sessionId: Id,
@@ -113,7 +122,7 @@ export const Request = z.object({
 
   providerRefs: ProviderRefs.optional(),
 });
-export type Request = z.infer<typeof Request>;
+export type EngineRequest = z.infer<typeof EngineRequest>;
 
 /**
  * THE AUTO-RESOLUTION POLICY, defined once.

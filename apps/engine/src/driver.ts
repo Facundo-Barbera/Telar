@@ -12,7 +12,23 @@
  * downstream of that one omission.
  */
 import crypto from "node:crypto";
-import type { ItemDetail, ItemSeed, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type {
+  ItemDetail,
+  ItemSeed,
+  RequestDecision,
+  RequestDetail,
+  RequestKind,
+  TurnObservation,
+  UsageSnapshot,
+} from "@telar/engine-client";
+
+/** What the provider wants to do, in the contract's vocabulary. */
+export type DriverRequest = {
+  kind: RequestKind;
+  detail: RequestDetail;
+  /** The provider's own tool-use id, so the row and the request correlate. */
+  toolUseId: string;
+};
 
 export type DriverRun = {
   prompt: string;
@@ -22,6 +38,13 @@ export type DriverRun = {
   providerSessionId?: string;
   /** Batched back to the engine. Never called after the run settles. */
   onObservations(observations: TurnObservation[]): Promise<void>;
+  /**
+   * Ask whether a tool call may proceed. Resolves with the engine's answer,
+   * which may take an arbitrarily long time — a parked approval waits for a
+   * human. ABSENT means the driver runs with no gate at all, which is the
+   * `full-access` shape and is what the tests use.
+   */
+  onRequest?(request: DriverRequest): Promise<RequestDecision>;
 };
 
 export type DriverResult = {
@@ -41,6 +64,13 @@ export class ProviderUnavailableError extends Error {
   }
 }
 
+/** The SDK's permission callback, narrowed to what this driver uses. */
+type SdkCanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal; toolUseID: string; title?: string },
+) => Promise<{ behavior: "allow"; updatedInput?: Record<string, unknown> } | { behavior: "deny"; message: string; interrupt?: boolean }>;
+
 type ClaudeSdk = {
   query(input: {
     prompt: string;
@@ -50,9 +80,44 @@ type ClaudeSdk = {
       abortController: AbortController;
       includePartialMessages: true;
       resume?: string;
+      canUseTool?: SdkCanUseTool;
     };
   }): AsyncIterable<unknown>;
 };
+
+/**
+ * Which REQUEST kind a tool call belongs to.
+ *
+ * COARSER THAN THE ITEM MAPPING ON PURPOSE. An item type answers "what should
+ * this row look like"; a request kind answers "what is the human being asked to
+ * permit", and permission is about capability rather than vocabulary — "may you
+ * run shell commands here" is one decision whether the tool is `Bash` or
+ * `exec_command`. `requests.ts` says the same thing from the other side.
+ */
+export function requestKindForTool(name: string): RequestKind {
+  if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
+  if (name === "Read" || name === "NotebookRead" || name === "Glob" || name === "Grep") return "file_read";
+  if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "NotebookEdit") return "file_change";
+  return "tool_call";
+}
+
+/** The request payload for a tool call, reusing the item mapping's detail. */
+export function requestDetailForToolCall(name: string, input: unknown): RequestDetail {
+  const detail = itemDetailForToolCall(name, input);
+  switch (detail.type) {
+    case "command_execution":
+      return { kind: "command_execution", command: detail.command };
+    case "file_change":
+      return { kind: "file_change", change: detail.change };
+    case "file_read":
+      return { kind: "file_read", read: detail.read };
+    case "mcp_tool_call":
+    case "dynamic_tool_call":
+      return { kind: "tool_call", call: detail.call };
+    default:
+      return { kind: "tool_call", call: { name, input: input === undefined ? undefined : input } };
+  }
+}
 
 const itemId = (): string => `item_${crypto.randomUUID().replaceAll("-", "")}`;
 
@@ -172,7 +237,7 @@ export function createClaudeDriver(
   loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
 ): TurnDriver {
   return {
-    async run({ prompt, cwd, signal, onObservations, providerSessionId }) {
+    async run({ prompt, cwd, signal, onObservations, onRequest, providerSessionId }) {
       let sdk: ClaudeSdk;
       try {
         sdk = await loadSdk();
@@ -208,6 +273,36 @@ export function createClaudeDriver(
         pending.push(observation);
       };
 
+      /**
+       * The permission gate.
+       *
+       * IT MUST ALWAYS ANSWER. The SDK's own docs are blunt about the failure
+       * mode: a permission prompt has no park deadline, so a callback that
+       * throws or never settles blocks the tool indefinitely with nothing to
+       * report it. Any failure here therefore becomes an explicit `deny`
+       * carrying the reason, which is recoverable, rather than a hang.
+       */
+      const canUseTool: SdkCanUseTool | undefined = onRequest
+        ? async (toolName, input, options) => {
+            try {
+              const decision = await onRequest({
+                kind: requestKindForTool(toolName),
+                detail: requestDetailForToolCall(toolName, input),
+                toolUseId: options.toolUseID,
+              });
+              if (decision === "accept" || decision === "acceptForSession") return { behavior: "allow" };
+              // `cancel` withdraws the whole turn rather than just this call.
+              return {
+                behavior: "deny",
+                message: decision === "cancel" ? "The human cancelled this turn." : "The human declined this tool call.",
+                ...(decision === "cancel" ? { interrupt: true } : {}),
+              };
+            } catch (error) {
+              return { behavior: "deny", message: error instanceof Error ? error.message : "permission request failed" };
+            }
+          }
+        : undefined;
+
       try {
         for await (const message of sdk.query({
           prompt,
@@ -217,6 +312,7 @@ export function createClaudeDriver(
             abortController: controller,
             includePartialMessages: true,
             ...(providerSessionId ? { resume: providerSessionId } : {}),
+            ...(canUseTool ? { canUseTool } : {}),
           },
         })) {
           const item = message as {

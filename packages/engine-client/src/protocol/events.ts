@@ -21,7 +21,7 @@ import { z } from "zod";
 import { Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
 import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
-import { Request, RequestDecision, RequestResolver } from "./requests";
+import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
 /**
@@ -109,7 +109,7 @@ const ContentDelta = event("content.delta", {
 });
 
 // ── requests: the human gate ───────────────────────────────────────────────
-const RequestOpened = event("request.opened", { request: Request });
+const RequestOpened = event("request.opened", { request: EngineRequest });
 const RequestResolved = event("request.resolved", {
   requestId: Id,
   decision: RequestDecision,

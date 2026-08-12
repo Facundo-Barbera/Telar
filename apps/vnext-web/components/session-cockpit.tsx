@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EngineEvent, Item, Session, Turn, TurnState } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, Item, Session, Turn, TurnState } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import {
   appendJournalEvents,
@@ -148,7 +148,56 @@ function TimelineItem({ item }: { item: JournalItem }) {
   return <p className="vnext-muted vnext-small">{itemLabel(item)}</p>;
 }
 
-function SessionTurn({ turn, sending, onRetry, onDiscard }: {
+/** The one-liner an approval card leads with, per request kind. */
+function requestSummary(detail: EngineRequest["detail"]): { label: string; body?: string } {
+  switch (detail.kind) {
+    case "command_execution":
+      return { label: "wants to run a command", body: detail.command.command };
+    case "file_change":
+      return { label: `wants to ${detail.change.kind} a file`, body: detail.change.path };
+    case "file_read":
+      return { label: "wants to read a file", body: detail.read.path };
+    case "tool_call":
+      return { label: `wants to use ${detail.call.name}`, body: undefined };
+    case "user_input":
+      return { label: "is asking you something", body: detail.prompt };
+  }
+}
+
+/**
+ * A parked approval.
+ *
+ * SHOWN AT THE TOP OF THE TURN, not inline in the timeline, because it is the
+ * one thing blocking progress — everything below it has already happened and
+ * nothing more will happen until this is answered.
+ */
+function ApprovalCard({ request, sending, onDecide }: {
+  request: EngineRequest;
+  sending: boolean;
+  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
+}) {
+  const summary = requestSummary(request.detail);
+  return <section className="vnext-recovery" aria-label="Approval required">
+    <div>
+      <strong>Telar {summary.label}</strong>
+      {summary.body && <pre className="vnext-tool-item__body">{summary.body}</pre>}
+      {request.notified === false && (
+        <p className="vnext-muted vnext-small">
+          This parked while nothing was watching, and no notification was sent.
+        </p>
+      )}
+    </div>
+    <div className="vnext-row">
+      <button className="vnext-button" type="button" disabled={sending} onClick={() => onDecide(request.id, "accept")}>Allow once</button>
+      <button className="vnext-button vnext-button--secondary" type="button" disabled={sending} onClick={() => onDecide(request.id, "acceptForSession")}>Allow for session</button>
+      <button className="vnext-button vnext-button--secondary" type="button" disabled={sending} onClick={() => onDecide(request.id, "decline")}>Decline</button>
+    </div>
+  </section>;
+}
+
+function SessionTurn({ turn, requests, sending, onDecide, onRetry, onDiscard }: {
+  requests: EngineRequest[];
+  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
   turn: JournalTurn;
   sending: boolean;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
@@ -164,6 +213,7 @@ function SessionTurn({ turn, sending, onRetry, onDiscard }: {
       <div className="vnext-conversation-turn__meta"><strong>You</strong><StateBadge state={turn.state} /></div>
       <p>{turn.prompt}</p>
     </div>
+    {requests.map((request) => <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />)}
     {hasBody && <div className="vnext-conversation-turn__answer">
       <div className="vnext-conversation-turn__meta">
         <strong>Telar</strong>
@@ -182,18 +232,20 @@ function SessionTurn({ turn, sending, onRetry, onDiscard }: {
   </article>;
 }
 
-function SessionTranscript({ loading, error, transcript, sending, onRetry, onDiscard }: {
+function SessionTranscript({ loading, error, transcript, openRequests, sending, onDecide, onRetry, onDiscard }: {
   loading: boolean;
   error?: VNextApiError;
   transcript: ReturnType<typeof projectJournal>;
+  openRequests: EngineRequest[];
   sending: boolean;
+  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   onDiscard: (turn: Pick<Turn, "runId">) => void;
 }) {
   return <section className="vnext-session-transcript" aria-label="Conversation transcript">
     {loading && <p className="vnext-empty-state">Hydrating durable transcript…</p>}
     {!loading && !error && transcript.length === 0 && <p className="vnext-empty-state">This durable session is ready for its first turn.</p>}
-    {transcript.map((turn) => <SessionTurn key={turn.runId} turn={turn} sending={sending} onRetry={onRetry} onDiscard={onDiscard} />)}
+    {transcript.map((turn) => <SessionTurn key={turn.runId} turn={turn} requests={openRequests.filter((request) => request.runId === turn.runId)} sending={sending} onDecide={onDecide} onRetry={onRetry} onDiscard={onDiscard} />)}
   </section>;
 }
 
@@ -218,6 +270,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [requests, setRequests] = useState<EngineRequest[]>([]);
   const [events, setEvents] = useState<EngineEvent[]>([]);
   const [draft, setDraft] = useState("");
   const [draftRunId, setDraftRunId] = useState<string>();
@@ -234,14 +287,14 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   }, []);
   const hydrate = useCallback(() => enqueueSync(async () => {
     const hydrated = await hydrateVNextSession(api, sessionId);
-    setSession(hydrated.session); setTurns(hydrated.turns); setItems(hydrated.items); setEvents(hydrated.events); cursor.current = hydrated.cursor;
+    setSession(hydrated.session); setTurns(hydrated.turns); setItems(hydrated.items); setRequests(hydrated.requests); setEvents(hydrated.events); cursor.current = hydrated.cursor;
   }), [enqueueSync, sessionId]);
   const tail = useCallback(() => enqueueSync(async () => {
     const update = await tailVNextSession(api, sessionId, cursor.current);
     if (update.events.length === 0) return;
     cursor.current = update.cursor;
     setEvents((current) => appendJournalEvents(current, update.events));
-    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); setItems(update.snapshot.items); }
+    if (update.snapshot) { setSession(update.snapshot.session); setTurns(update.snapshot.turns); setItems(update.snapshot.items); setRequests(update.snapshot.requests); }
   }), [enqueueSync, sessionId]);
 
   useEffect(() => {
@@ -253,11 +306,20 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
 
   const transcript = useMemo(() => projectJournal(turns, items, events), [turns, items, events]);
   const active = transcript.find((turn) => isActiveTurn(turn.state));
+  // Only OPEN requests are actionable; resolved ones are history and live in
+  // the journal rather than as a card demanding a second answer.
+  const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
   const stop = async () => {
     if (!active) return;
     setSending(true);
     try { await api.stopTurn(sessionId, active.runId); await hydrate(); setError(undefined); }
     catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not stop the turn.")); }
+    finally { setSending(false); }
+  };
+  const decideRequest = async (requestId: string, decision: "accept" | "acceptForSession" | "decline") => {
+    setSending(true);
+    try { await api.resolveRequest(sessionId, requestId, { decision }); await hydrate(); setError(undefined); }
+    catch (cause) { setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not answer the approval.")); }
     finally { setSending(false); }
   };
   const discardAmbiguous = async (turn: Pick<Turn, "runId">) => {
@@ -290,7 +352,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       {projectId !== session?.projectId && session && <p className="vnext-alert">This URL’s project does not match the engine-owned session record.</p>}
       {error && <SessionProblem error={error} />}
       {active && <ActiveTurnNotice state={active.state} />}
-      <SessionTranscript loading={loading} error={error} transcript={transcript} sending={sending} onRetry={(turn) => void retryAmbiguous(turn)} onDiscard={(turn) => void discardAmbiguous(turn)} />
+      <SessionTranscript loading={loading} error={error} transcript={transcript} openRequests={openRequests} sending={sending} onDecide={(requestId, decision) => void decideRequest(requestId, decision)} onRetry={(turn) => void retryAmbiguous(turn)} onDiscard={(turn) => void discardAmbiguous(turn)} />
       <SessionComposer draft={draft} ready={Boolean(session)} active={active} sending={sending} onDraftChange={(nextDraft) => { setDraft(nextDraft); setDraftRunId(undefined); }} onSubmit={submit} />
     </div>
   </main>;

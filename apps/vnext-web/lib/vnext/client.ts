@@ -4,6 +4,8 @@ import type {
   EngineHealth,
   Item,
   Project,
+  EngineRequest,
+  RequestDecision,
   Session,
   Turn,
   TurnSubmissionResult,
@@ -62,7 +64,9 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     createSession: (projectId: string, title?: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, { title }),
     session: (sessionId: string) =>
-      request<{ session: Session; turns: Turn[]; items: Item[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+      request<{ session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+    resolveRequest: (sessionId: string, requestId: string, input: { decision: RequestDecision; reason?: string }) =>
+      request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
     events: (sessionId: string, after: number) =>
       request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
     submitTurn: (sessionId: string, input: { runId: string; input: string }) =>

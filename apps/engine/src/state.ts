@@ -7,9 +7,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  autoResolution,
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   Item as ItemSchema,
+  EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
   Turn as TurnSchema,
@@ -17,13 +19,36 @@ import {
   type EngineEvent,
   type Item,
   type Project,
+  type EngineRequest,
+  type RequestDecision,
+  type RequestDetail,
+  type RequestKind,
+  type RequestOpenResult,
+  type RequestResolver,
   type Session,
   type Turn,
   type TurnFailureCode,
   type TurnObservation,
   type UsageSnapshot,
   type WorkerClaim,
+  type WorkerStatus,
 } from "@telar/engine-client";
+
+/** The human-facing one-liner for a parked request's notification. */
+function requestTitle(detail: RequestDetail): string {
+  switch (detail.kind) {
+    case "command_execution":
+      return detail.command.command;
+    case "file_change":
+      return `${detail.change.kind} ${detail.change.path}`;
+    case "file_read":
+      return detail.read.path;
+    case "tool_call":
+      return detail.call.name;
+    case "user_input":
+      return detail.prompt;
+  }
+}
 
 /**
  * A journal record before the engine stamps its envelope.
@@ -267,6 +292,10 @@ function itemsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "items.json");
 }
 
+function requestsFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "requests.json");
+}
+
 function readJson(file: string): unknown | undefined {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -318,10 +347,33 @@ function readJournal(file: string): EngineEvent[] {
   return events;
 }
 
+/**
+ * Told when a request parks with nobody watching.
+ *
+ * IT RETURNS WHETHER A HUMAN WAS ACTUALLY REACHED, and that boolean is stored
+ * on the request. With no notifier configured the answer is `false` — which
+ * records the honest state "this session is stuck and nobody was told" rather
+ * than implying someone was. The contract comment on `EngineRequest.notified` exists
+ * for exactly this: it must be detectable, not inferred from absence.
+ */
+export type EngineNotifier = (input: {
+  sessionId: string;
+  runId: string;
+  requestId: string;
+  kind: RequestKind;
+  title: string;
+}) => boolean;
+
 export class EngineStore {
   readonly paths: EngineStatePaths;
+  private readonly notifier?: EngineNotifier;
 
-  constructor(root: string, private readonly now: () => number = Date.now) {
+  constructor(
+    root: string,
+    private readonly now: () => number = Date.now,
+    options: { notifier?: EngineNotifier } = {},
+  ) {
+    this.notifier = options.notifier;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -663,6 +715,152 @@ export class EngineStore {
     return structuredClone(turn);
   }
 
+  requests(sessionId: string): EngineRequest[] {
+    this.getSession(sessionId);
+    return structuredClone([...this.readRequests(sessionId).values()]);
+  }
+
+  /**
+   * A worker asking whether a tool call may proceed.
+   *
+   * THE ENGINE DECIDES, NOT THE WORKER, and this is the only place the session's
+   * runtime mode is consulted. `autoResolution` lives in the CONTRACT rather
+   * than here precisely so a client can describe a mode's behaviour before a
+   * user picks it; if this method re-implemented the ladder, the settings
+   * screen and the engine could disagree.
+   *
+   * Idempotent on `requestId`: a worker that retries after a dropped response
+   * gets the same answer rather than opening a second request, which matters
+   * because the provider is blocked on the first one.
+   */
+  openRequest(
+    sessionId: string,
+    runId: string,
+    claimToken: string,
+    input: { requestId: string; kind: RequestKind; detail: RequestDetail; itemId?: string; providerRefs?: EngineRequest["providerRefs"] },
+  ): RequestOpenResult {
+    assertId(input.requestId, "request id");
+    const turn = this.requireRunningClaim(sessionId, runId, claimToken);
+    const session = this.getSession(sessionId);
+    const requests = this.readRequests(sessionId);
+
+    const known = requests.get(input.requestId);
+    if (known) {
+      return known.state === "resolved"
+        ? { state: "resolved", requestId: known.id, decision: known.decision!, resolvedBy: known.resolvedBy! }
+        : { state: "open", requestId: known.id, notified: known.notified ?? false };
+    }
+
+    const at = this.now();
+    const automatic = autoResolution(session.runtimeMode, input.kind);
+    const request: EngineRequest = {
+      id: input.requestId,
+      runId: turn.runId,
+      sessionId,
+      state: automatic ? "resolved" : "open",
+      detail: input.detail,
+      openedAt: at,
+      ...(input.itemId ? { itemId: input.itemId } : {}),
+      ...(input.providerRefs ? { providerRefs: input.providerRefs } : {}),
+      ...(automatic ? { decision: automatic, resolvedBy: "policy" as const, resolvedAt: at } : {}),
+    };
+
+    if (!automatic) {
+      // Parked. Tell someone, and record whether anyone was actually reached —
+      // "stuck and nobody was told" has to be a detectable state.
+      request.notified = this.notifier
+        ? this.notifier({
+            sessionId,
+            runId: turn.runId,
+            requestId: request.id,
+            kind: input.kind,
+            title: requestTitle(input.detail),
+          })
+        : false;
+    }
+
+    requests.set(request.id, request);
+    this.writeRequests(sessionId, requests);
+    this.appendEvent(sessionId, { type: "request.opened", request }, turn.runId);
+
+    if (automatic) {
+      this.appendEvent(
+        sessionId,
+        { type: "request.resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" },
+        turn.runId,
+      );
+      return { state: "resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" };
+    }
+    this.touchSession(sessionId, at);
+    return { state: "open", requestId: request.id, notified: request.notified ?? false };
+  }
+
+  /** A human (or a cancellation) answering a parked request. */
+  resolveRequest(
+    sessionId: string,
+    requestId: string,
+    input: { decision: RequestDecision; resolvedBy?: RequestResolver; reason?: string; answers?: Record<string, unknown> },
+  ): EngineRequest {
+    assertId(requestId, "request id");
+    const requests = this.readRequests(sessionId);
+    const request = requests.get(requestId);
+    if (!request) throw new EngineStateError("not_found", "request does not exist");
+    if (request.state === "resolved") {
+      throw new EngineStateError("conflict", "request has already been resolved");
+    }
+    const at = this.now();
+    request.state = "resolved";
+    request.decision = input.decision;
+    request.resolvedBy = input.resolvedBy ?? "human";
+    request.resolvedAt = at;
+    if (input.reason !== undefined) request.reason = input.reason;
+    if (input.answers !== undefined) request.answers = input.answers;
+    requests.set(request.id, request);
+    this.writeRequests(sessionId, requests);
+    this.touchSession(sessionId, at);
+    this.appendEvent(
+      sessionId,
+      {
+        type: "request.resolved",
+        requestId: request.id,
+        decision: request.decision,
+        resolvedBy: request.resolvedBy,
+        ...(request.reason ? { reason: request.reason } : {}),
+      },
+      request.runId,
+    );
+    return structuredClone(request);
+  }
+
+  /**
+   * Answered requests a worker is still blocked on.
+   *
+   * Rides the heartbeat for the same reason `cancel` does: the worker is a
+   * plain HTTP client with no inbound socket, so the engine cannot push. A
+   * worker sitting inside `canUseTool` polls here until its answer appears.
+   */
+  resolutionsForWorker(workerId: string): WorkerStatus["resolved"] {
+    assertId(workerId, "worker id");
+    return this.allSessions().flatMap((session) => {
+      const claimed = new Map(
+        this.readQueue(session.id).turns
+          .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
+          .map((turn) => [turn.runId, turn] as const),
+      );
+      if (claimed.size === 0) return [];
+      return [...this.readRequests(session.id).values()]
+        .filter((request) => request.state === "resolved" && request.decision && claimed.has(request.runId))
+        .map((request) => ({
+          requestId: request.id,
+          sessionId: session.id,
+          runId: request.runId,
+          decision: request.decision!,
+          ...(request.reason ? { reason: request.reason } : {}),
+          ...(request.answers ? { answers: request.answers } : {}),
+        }));
+    });
+  }
+
   readEvents(sessionId: string, after = 0): EngineEvent[] {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
@@ -840,6 +1038,18 @@ export class EngineStore {
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
     atomicWrite(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+  }
+
+  private readRequests(sessionId: string): Map<string, EngineRequest> {
+    const stored = readJson(requestsFile(this.paths, sessionId));
+    if (stored === undefined) return new Map();
+    const parsed = RequestSchema.array().safeParse((stored as { requests?: unknown }).requests);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext request projection");
+    return new Map(parsed.data.map((request) => [request.id, request]));
+  }
+
+  private writeRequests(sessionId: string, requests: Map<string, EngineRequest>): void {
+    atomicWrite(requestsFile(this.paths, sessionId), { version: STATE_VERSION, requests: [...requests.values()] });
   }
 
   /** One observation → at most one journal record, plus its projection edit. */

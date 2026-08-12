@@ -8,13 +8,14 @@ import path from "node:path";
 import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
+  RequestOpenInput,
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
-import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv } from "./state";
+import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
 
@@ -26,6 +27,11 @@ export type EngineDaemonOptions = {
   workerLeaseMs?: number;
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
+  /**
+   * Told when an approval parks with nobody watching. ABSENT MEANS NOBODY IS
+   * TOLD, and the request records that honestly rather than claiming otherwise.
+   */
+  notifier?: EngineNotifier;
 };
 
 export type EngineDaemon = {
@@ -99,12 +105,19 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-type TurnAction = "running" | "observe" | "complete" | "fail" | "discard";
+type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|complete|fail|discard)$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
+}
+
+/** `POST /v2/sessions/:id/requests/:requestId` — a human answering. */
+function requestPath(pathname: string): { sessionId: string; requestId: string } | undefined {
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/requests\/([A-Za-z0-9_-]+)$/.exec(pathname);
+  if (!match) return undefined;
+  return { sessionId: decodeURIComponent(match[1]), requestId: decodeURIComponent(match[2]) };
 }
 
 function writeDiscovery(store: EngineStore, discovery: EngineDiscovery): void {
@@ -143,7 +156,7 @@ function closeServer(server: http.Server): Promise<void> {
 
 export async function startEngine(options: EngineDaemonOptions = {}): Promise<EngineDaemon> {
   const root = options.vnextRoot ?? vnextRootFromEnv();
-  const store = new EngineStore(root, options.now);
+  const store = new EngineStore(root, options.now, { ...(options.notifier ? { notifier: options.notifier } : {}) });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("base64url");
@@ -241,7 +254,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const worker = activeWorker(workerId);
         worker.heartbeatAt = now();
         if (workerMatch[2] === "heartbeat") {
-          const status: WorkerStatus = { workerId, heartbeatAt: worker.heartbeatAt, cancel: store.cancellationsForWorker(workerId) };
+          const status: WorkerStatus = {
+            workerId,
+            heartbeatAt: worker.heartbeatAt,
+            cancel: store.cancellationsForWorker(workerId),
+            resolved: store.resolutionsForWorker(workerId),
+          };
           writeJson(response, 200, status);
         } else {
           writeJson(response, 200, { claim: store.claimNextTurn(workerId) });
@@ -260,6 +278,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
           writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
+        } else if (turn.action === "request") {
+          const parsed = RequestOpenInput.safeParse(input);
+          if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");
+          writeJson(
+            response,
+            200,
+            store.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
+              requestId: parsed.data.requestId,
+              kind: parsed.data.kind,
+              detail: parsed.data.detail,
+              ...(parsed.data.itemId ? { itemId: parsed.data.itemId } : {}),
+              ...(parsed.data.providerRefs ? { providerRefs: parsed.data.providerRefs } : {}),
+            }),
+          );
         } else if (turn.action === "observe") {
           if (!Array.isArray(input.observations)) {
             throw new HttpError(400, "invalid_request", "observations must be an array");
@@ -288,6 +320,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
 
+      const humanRequest = requestPath(url.pathname);
+      if (humanRequest && request.method === "POST") {
+        const input = await body(request);
+        const decision = stringValue(input.decision, "decision")!;
+        if (!["accept", "acceptForSession", "decline", "cancel"].includes(decision)) {
+          throw new HttpError(400, "invalid_request", "decision is invalid");
+        }
+        writeJson(response, 200, {
+          request: store.resolveRequest(humanRequest.sessionId, humanRequest.requestId, {
+            decision: decision as "accept" | "acceptForSession" | "decline" | "cancel",
+            reason: stringValue(input.reason, "reason", true),
+            ...(input.answers && typeof input.answers === "object" ? { answers: input.answers as Record<string, unknown> } : {}),
+          }),
+        });
+        return;
+      }
+
       const session = sessionPath(url.pathname);
       if (session) {
         if (request.method === "GET" && session.tail === "") {
@@ -295,6 +344,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             session: store.getSession(session.sessionId),
             turns: store.turns(session.sessionId),
             items: store.items(session.sessionId),
+            requests: store.requests(session.sessionId),
           });
           return;
         }

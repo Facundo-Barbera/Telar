@@ -19,6 +19,11 @@ import {
   type Item,
   type Project,
   type Session,
+  type EngineRequest,
+  type RequestDecision,
+  type RequestDetail,
+  type RequestKind,
+  type RequestOpenResult,
   type Turn,
   type TurnObservation,
   type TurnSubmissionResult,
@@ -71,7 +76,7 @@ type FetchLike = typeof fetch;
 
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
-export type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[] };
+export type SessionSnapshot = { session: Session; turns: Turn[]; items: Item[]; requests: EngineRequest[] };
 
 export class EngineClient {
   constructor(
@@ -176,6 +181,32 @@ export class EngineClient {
       claimToken,
       observations,
     });
+  }
+
+  /**
+   * Ask whether a tool call may proceed. The engine applies the session's
+   * runtime mode and either answers immediately or parks the request; a parked
+   * answer arrives later on the heartbeat.
+   */
+  openRequest(
+    sessionId: string,
+    runId: string,
+    claimToken: string,
+    input: { requestId: string; kind: RequestKind; detail: RequestDetail; itemId?: string },
+  ): Promise<RequestOpenResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/request`, {
+      claimToken,
+      ...input,
+    });
+  }
+
+  /** A human answering a parked request. */
+  resolveRequest(
+    sessionId: string,
+    requestId: string,
+    input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
+  ): Promise<{ request: EngineRequest }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input);
   }
 
   completeTurn(

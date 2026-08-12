@@ -18,7 +18,7 @@ import {
   EngineEvent,
   Item,
   ItemDetail,
-  Request,
+  EngineRequest,
   RequestKind,
   RuntimeMode,
   Session,
@@ -82,7 +82,7 @@ describe("the package barrel", () => {
     // Each of these is exported by one module and IMPORTED by events.ts. If
     // events.ts ever re-exports one, it disappears from ../src/protocol and
     // this fails — which is the only signal anyone would get.
-    for (const [name, schema] of Object.entries({ Session, Turn, Item, Request })) {
+    for (const [name, schema] of Object.entries({ Session, Turn, Item, EngineRequest })) {
       expect(schema, `${name} vanished from the protocol barrel`).toBeDefined();
       expect(typeof schema.safeParse, `${name} is not a schema`).toBe("function");
     }
@@ -280,7 +280,7 @@ describe("Request", () => {
   test("a parked request records whether anyone was told", () => {
     // "It was stuck and nobody was notified" has to be a detectable state, not
     // an inference from absence.
-    const parsed = Request.safeParse({
+    const parsed = EngineRequest.safeParse({
       id: "q1",
       runId: "r1",
       sessionId: "s1",
@@ -295,7 +295,7 @@ describe("Request", () => {
 
   test("a user_input request requires its fields", () => {
     expect(
-      Request.safeParse({
+      EngineRequest.safeParse({
         id: "q1",
         runId: "r1",
         sessionId: "s1",
