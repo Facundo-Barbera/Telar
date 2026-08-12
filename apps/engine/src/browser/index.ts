@@ -19,9 +19,17 @@
  * and closes it. Ownership is the feature.
  */
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
-import { browserErrorText, imageDataUrlOf, isReadOnlyBrowserCall, normalizeBrowserToolCall, parseBrowserTabs, textOf } from "./helpers";
+import {
+  browserErrorText,
+  imageDataUrlOf,
+  isBrowserNotInstalled,
+  isReadOnlyBrowserCall,
+  normalizeBrowserToolCall,
+  parseBrowserTabs,
+  textOf,
+} from "./helpers";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
-import { PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
+import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
 
 export * from "./helpers";
@@ -75,6 +83,11 @@ export type BrowserRuntimeOptions = BrowserTransportOptions & {
   /** Set false to own teardown entirely (a supervisor that already kills its
    *  process group). Default true. */
   installExitHandler?: boolean;
+  /** The seam for the one-shot binary download. Injected so a test can prove
+   *  the retry happens without downloading a hundred megabytes of Chromium. */
+  install?: (browser?: string) => Promise<string>;
+  /** Set false on a machine that provisions the browser itself. Default true. */
+  autoInstall?: boolean;
 };
 
 type BrowserScope = ScopedRuntimeResource & {
@@ -88,13 +101,27 @@ export class BrowserRuntime {
   private readonly exitHooks: ExitHooks | null;
   private readonly onProcessExit = () => this.killAllNow();
   private closed = false;
+  private readonly install: ((browser?: string) => Promise<string>) | null;
+  /** One attempt per runtime. A second failure after a successful install is
+   *  something else — a broken cache, a missing shared library — and retrying
+   *  the download forever would hide it behind a slow loop. */
+  private installAttempted = false;
 
   constructor(options: BrowserRuntimeOptions = {}) {
-    const { maxScopes, exitHooks, installExitHandler, ...transportOptions } = options;
+    const { maxScopes, exitHooks, installExitHandler, install, autoInstall, ...transportOptions } = options;
     this.scopes = new ScopedRuntimePool<BrowserScope>(maxScopes ?? MAX_BROWSER_SCOPES);
     this.transportOptions = transportOptions;
     this.exitHooks = installExitHandler === false ? null : (exitHooks ?? nodeExitHooks);
     this.exitHooks?.on("exit", this.onProcessExit);
+    this.install =
+      autoInstall === false
+        ? null
+        : (install ??
+          ((browser) =>
+            installBrowser({
+              ...(browser ? { browser } : {}),
+              ...(transportOptions.cliPath ? { cliPath: transportOptions.cliPath } : {}),
+            })));
   }
 
   /** Scopes with a resident browser, running or not. */
@@ -134,7 +161,37 @@ export class BrowserRuntime {
     // resolving and `tools/call` registering its pending RPC, and evict the
     // browser out from under a call that was about to look idle.
     const resource = this.scopeFor(scope);
-    return resource.transport.call(normalized.name, input);
+    const result = await resource.transport.call(normalized.name, input);
+    if (!result.isError || !this.install || this.installAttempted) return result;
+
+    /**
+     * THE ONE FAILURE A DETACHED SESSION CANNOT RECOVER FROM ON ITS OWN.
+     *
+     * A machine that has never run Playwright answers every browser call with
+     * "Browser is not installed. Run npx @playwright/mcp install-browser" — an
+     * instruction addressed to a human who, by construction, is not there. The
+     * engine downloads it and retries once, which turns a permanently broken
+     * capability into a slow first call.
+     *
+     * The flag is set BEFORE the await: two concurrent calls both seeing the
+     * error must not both queue an install. `installBrowser` is single-flight
+     * process-wide as well, because the Playwright cache is shared across
+     * every runtime in the process.
+     */
+    if (!isBrowserNotInstalled(textOf(result))) return result;
+    this.installAttempted = true;
+    try {
+      await this.install(this.transportOptions.browser);
+    } catch (error) {
+      // The install itself failing is reported as the ORIGINAL call's failure
+      // with the reason appended: the agent asked to browse, not to install.
+      return {
+        ...result,
+        content: [{ type: "text", text: `${textOf(result)}\n\nTelar could not install the browser: ${browserErrorText(error instanceof Error ? error.message : error)}` }],
+      };
+    }
+    if (this.closed) return result;
+    return this.scopeFor(scope).transport.call(normalized.name, input);
   }
 
   /**

@@ -17,9 +17,33 @@
  * — rather than being refused a driver up front.
  */
 import type { ProviderDriverKind } from "@telar/engine-client";
+import { BROWSER_TOOLS, type BrowserRuntime } from "./browser";
 import { createCodexDriver } from "./codex-driver";
 import { createClaudeDriver, type BrowserCapability, type TurnDriver } from "./driver";
 import type { DriverSelector } from "./worker";
+
+/**
+ * The engine's browser, narrowed to what a driver may do with it.
+ *
+ * ASSEMBLED HERE, ONCE, for both deployments. The driver must not import
+ * `./browser` — every driver would then drag Chromium's transport in whether or
+ * not a session ever browses — so this is the seam, and having ONE of it is
+ * what stops the embedded and standalone workers offering different browsers.
+ */
+export function browserCapability(browser: BrowserRuntime): BrowserCapability {
+  return {
+    call: (scopeKey, name, args) => browser.call(scopeKey, name, args),
+    isReadOnly: (name, args) => browser.isReadOnly(name, args),
+    tools: BROWSER_TOOLS,
+    // `start: false` is the default and is load-bearing: this runs after a
+    // navigation, and a state read that could LAUNCH a browser would start one
+    // for a session that only ever declined to browse.
+    state: async (scopeKey) => {
+      const state = await browser.state(scopeKey, { screenshot: false });
+      return { provider: state.provider, tabs: state.tabs };
+    },
+  };
+}
 
 export type DefaultDriverOptions = {
   /** Handed to Claude only. The Codex app-server runs its own tooling and has

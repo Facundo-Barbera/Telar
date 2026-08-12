@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client";
-import { BROWSER_TOOLS, BrowserRuntime } from "./browser";
-import { createDefaultDrivers } from "./drivers";
+import { BrowserRuntime } from "./browser";
+import { browserCapability, createDefaultDrivers } from "./drivers";
 import { vnextRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
@@ -30,11 +30,7 @@ let stopping = false;
  * scopes are per session, and a session is only ever claimed by one worker.
  */
 const browser = new BrowserRuntime();
-const capability = {
-  call: (scopeKey: string, name: string, args?: Record<string, unknown>) => browser.call(scopeKey, name, args),
-  isReadOnly: (name: string, args?: Record<string, unknown>) => browser.isReadOnly(name, args),
-  tools: BROWSER_TOOLS,
-};
+const capability = browserCapability(browser);
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 // The SAME factory the daemon's embedded worker uses. Both deployments must

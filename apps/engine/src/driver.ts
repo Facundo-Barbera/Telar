@@ -13,6 +13,8 @@
  */
 import crypto from "node:crypto";
 import type {
+  BrowserProvider,
+  BrowserTab,
   ItemDetail,
   ItemSeed,
   RequestDecision,
@@ -45,6 +47,14 @@ export type BrowserCapability = {
   call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ content: unknown[]; isError?: boolean }>;
   isReadOnly(name: string, args?: Record<string, unknown>): boolean;
   tools: readonly { name: string; description: string; input: unknown }[];
+  /**
+   * What the browser is looking at now, WITHOUT launching one.
+   *
+   * Optional because a capability assembled by a test has no browser to
+   * describe. Its absence means the session simply never journals browser
+   * state, which is strictly better than journalling an invented one.
+   */
+  state?(scopeKey: string): Promise<{ provider: BrowserProvider; tabs: BrowserTab[] }>;
 };
 
 export type DriverRun = {
@@ -137,6 +147,7 @@ async function buildBrowserMcpServer(
   browser: BrowserCapability,
   scopeKey: string,
   gate: (name: string, args: Record<string, unknown>) => Promise<boolean>,
+  onNavigated: () => void,
 ): Promise<SdkMcpServer | undefined> {
   const { createSdkMcpServer, tool } = sdk;
   if (!createSdkMcpServer || !tool) return undefined;
@@ -150,7 +161,12 @@ async function buildBrowserMcpServer(
         if (!(await gate(definition.name, args))) {
           return { content: [{ type: "text", text: "The human declined this browser action." }], isError: true };
         }
-        return browser.call(scopeKey, definition.name, args);
+        const result = await browser.call(scopeKey, definition.name, args);
+        // A call that CHANGED something is the only one worth re-reading state
+        // for. Polling after every read would put a screenshot's worth of work
+        // behind each `browser_snapshot`.
+        if (!browser.isReadOnly(definition.name, args) && !result.isError) onNavigated();
+        return result;
       },
     ),
   );
@@ -498,18 +514,46 @@ export function createClaudeDriver(
        * tool. Clicking a button on a live page is an action with consequences,
        * and the legacy stack classified browser calls for exactly this reason.
        */
+      /**
+       * Journal what the browser is looking at after it moves.
+       *
+       * SEQUENCED THROUGH A SINGLE PROMISE rather than fired per call: a page
+       * that redirects produces several mutating calls in quick succession, and
+       * two overlapping `state()` reads would report the intermediate page after
+       * the final one. Failures are swallowed — a browser panel that cannot be
+       * described must not fail the tool call that moved it.
+       */
+      let browserStateQueue: Promise<void> = Promise.resolve();
+      const reportBrowserState = (): void => {
+        const read = options.browser?.state;
+        if (!read || !browserScopeKey) return;
+        browserStateQueue = browserStateQueue
+          .then(async () => {
+            const state = await read.call(options.browser, browserScopeKey);
+            emit({ kind: "browser.state", provider: state.provider, tabs: state.tabs });
+            await flush();
+          })
+          .catch(() => undefined);
+      };
+
       const mcpServers =
         options.browser && browserScopeKey
           ? {
-              browser: await buildBrowserMcpServer(sdk, options.browser, browserScopeKey, async (name, args) => {
-                if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
-                const decision = await onRequest({
-                  kind: "tool_call",
-                  detail: { kind: "tool_call", call: { name, input: args } },
-                  toolUseId: `browser_${name}_${crypto.randomUUID().slice(0, 8)}`,
-                });
-                return decision === "accept" || decision === "acceptForSession";
-              }),
+              browser: await buildBrowserMcpServer(
+                sdk,
+                options.browser,
+                browserScopeKey,
+                async (name, args) => {
+                  if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
+                  const decision = await onRequest({
+                    kind: "tool_call",
+                    detail: { kind: "tool_call", call: { name, input: args } },
+                    toolUseId: `browser_${name}_${crypto.randomUUID().slice(0, 8)}`,
+                  });
+                  return decision === "accept" || decision === "acceptForSession";
+                },
+                reportBrowserState,
+              ),
             }
           : undefined;
 
@@ -797,6 +841,11 @@ export function createClaudeDriver(
 
         if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
         if (!completed) throw new Error("Claude ended without a successful result");
+
+        // Drained BEFORE the turn settles. A state read still in flight would
+        // otherwise report against a turn the engine has already closed, which
+        // it rejects as a conflict.
+        await browserStateQueue;
 
         // A tool whose result never arrived (the stream ended first) would
         // otherwise sit spinning in the UI forever.

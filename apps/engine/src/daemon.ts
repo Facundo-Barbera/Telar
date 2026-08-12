@@ -468,17 +468,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The daemon owns the browser, not the driver: it outlives any turn and
       // has to be closed exactly once. `release(sessionId)` on archive is what
       // keeps Chromium instances from accumulating until the pool evicts them.
-      const { BrowserRuntime, BROWSER_TOOLS } = await import("./browser");
+      const { BrowserRuntime } = await import("./browser");
       browser = new BrowserRuntime();
       store.attachBrowser(browser);
-      // The capability is ASSEMBLED HERE rather than being the runtime itself:
-      // the driver must not import ./browser, or every driver would drag
-      // Chromium's transport in whether or not a session ever browses.
-      const capability = {
-        call: (scopeKey: string, name: string, args?: Record<string, unknown>) => browser!.call(scopeKey, name, args),
-        isReadOnly: (name: string, args?: Record<string, unknown>) => browser!.isReadOnly(name, args),
-        tools: BROWSER_TOOLS,
-      };
+      const capability = (await import("./drivers")).browserCapability(browser);
       const createDriver =
         config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers({ browser: capability }));
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;

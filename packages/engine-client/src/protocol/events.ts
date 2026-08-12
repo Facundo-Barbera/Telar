@@ -18,7 +18,7 @@
  * event.data.text === "string"` before it dares use a field.
  */
 import { z } from "zod";
-import { Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
+import { BrowserProvider, BrowserTab, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
 import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
@@ -123,28 +123,6 @@ const TaskProgress = event("task.progress", { task: Task, message: z.string().op
 const TaskCompleted = event("task.completed", { task: Task });
 
 // ── browser ────────────────────────────────────────────────────────────────
-/**
- * Which browser is serving this session.
- *
- * `headless` is the ENGINE's own Chromium and is the default, because it is
- * what makes a detached session able to browse at all. t3 code brokers
- * automation to a connected desktop host and fails outright when none is
- * attached; Telar already has the headless runtime
- * (`apps/web_old/lib/server/browser-runtime.ts`) that closes that gap.
- * `attached` takes over when a client offers a webview, so a human can watch.
- */
-export const BrowserProvider = z.enum(["headless", "attached", "none"]);
-export type BrowserProvider = z.infer<typeof BrowserProvider>;
-
-export const BrowserTab = z.object({
-  id: Id,
-  url: z.string(),
-  title: z.string(),
-  active: z.boolean(),
-  loading: z.boolean().optional(),
-});
-export type BrowserTab = z.infer<typeof BrowserTab>;
-
 const BrowserStateChanged = event("browser.state.changed", {
   provider: BrowserProvider,
   tabs: z.array(BrowserTab),

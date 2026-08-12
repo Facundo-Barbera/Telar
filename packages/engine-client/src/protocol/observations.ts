@@ -18,7 +18,7 @@
  * messages later close the row its call opened.
  */
 import { z } from "zod";
-import { Id, ProviderDriverKind, ProviderInstanceId, ProviderRefs, Timestamp, UsageSnapshot } from "./common";
+import { BrowserProvider, BrowserTab, Id, ProviderDriverKind, ProviderInstanceId, ProviderRefs, Timestamp, UsageSnapshot } from "./common";
 import { Turn } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
@@ -82,6 +82,18 @@ export const TurnObservation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task.started"), task: TaskSeed }),
   z.object({ kind: z.literal("task.progress"), task: TaskSeed, message: z.string().optional() }),
   z.object({ kind: z.literal("task.completed"), task: TaskSeed }),
+
+  /**
+   * What the session's browser is looking at now.
+   *
+   * REPORTED BY THE WORKER RATHER THAN READ BY THE ENGINE, even though the
+   * daemon owns a browser of its own. There are two worker deployments and the
+   * out-of-process one has its OWN `BrowserRuntime` that the daemon cannot
+   * reach — so the only party that can see a given session's tabs is whoever
+   * drove them. The engine journals what it is told, as with every other
+   * observation.
+   */
+  z.object({ kind: z.literal("browser.state"), provider: BrowserProvider, tabs: z.array(BrowserTab) }),
 ]);
 export type TurnObservation = z.infer<typeof TurnObservation>;
 

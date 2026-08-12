@@ -15,6 +15,7 @@ import {
   MCP_PROTOCOL_VERSION,
   PlaywrightMcpTransport,
   installBrowser,
+  textOf,
   type BrowserProcess,
   type RunOnce,
   type SpawnBrowserProcess,
@@ -319,6 +320,83 @@ describe("the owned browser runtime", () => {
 
     expect(fake.children).toHaveLength(2);
     expect(browser.scopeKeys).toEqual(["session:a", "session:b"]);
+    await browser.close();
+  });
+
+  test("a browser that was never downloaded is installed and the call retried", async () => {
+    // THE ONE FAILURE A DETACHED SESSION CANNOT RECOVER FROM. Playwright's
+    // answer is prose addressed to a human — "Run npx @playwright/mcp
+    // install-browser" — and by construction there is no human.
+    let attempts = 0;
+    const fake = fakeBrowser({
+      respond: (request) => {
+        if (request.method === "initialize") return { protocolVersion: MCP_PROTOCOL_VERSION };
+        attempts += 1;
+        return attempts === 1
+          ? { content: [{ type: "text", text: "### Error\nBrowser chromium is not installed. Run npx @playwright/mcp install-browser chromium" }], isError: true }
+          : { content: [{ type: "text", text: "ok" }] };
+      },
+    });
+    const installs: string[] = [];
+    const browser = runtime(fake.spawn, {
+      install: async (name?: string) => {
+        installs.push(name ?? "chromium");
+        return "installed";
+      },
+    });
+
+    const result = await browser.call("session:a", "browser_navigate", { url: "http://localhost:3000" });
+    expect(installs).toEqual(["chromium"]);
+    expect(result.isError).toBeFalsy();
+    expect(attempts).toBe(2);
+
+    // ONCE PER RUNTIME. A second failure after a successful install is
+    // something else — a broken cache, a missing shared library — and retrying
+    // the download forever would hide it behind a slow loop.
+    attempts = 0;
+    await browser.call("session:a", "browser_navigate", { url: "http://localhost:3001" });
+    expect(installs).toEqual(["chromium"]);
+    await browser.close();
+  });
+
+  test("an install that fails reports the browsing failure, with the reason appended", async () => {
+    const fake = fakeBrowser({
+      respond: (request) =>
+        request.method === "initialize"
+          ? { protocolVersion: MCP_PROTOCOL_VERSION }
+          : { content: [{ type: "text", text: "Browser is not installed. Run install-browser" }], isError: true },
+    });
+    const browser = runtime(fake.spawn, {
+      install: async () => {
+        throw new Error("no network");
+      },
+    });
+    const result = await browser.call("session:a", "browser_navigate", { url: "http://x" });
+    // The agent asked to browse, not to install. It gets told both.
+    expect(result.isError).toBeTrue();
+    expect(textOf(result)).toContain("not installed");
+    expect(textOf(result)).toContain("no network");
+    await browser.close();
+  });
+
+  test("an ordinary tool failure is never mistaken for a missing browser", async () => {
+    // Anti-vacuity for the matcher above: it is a substring match on prose, so
+    // a normal error must not trigger a hundred-megabyte download.
+    let installed = false;
+    const fake = fakeBrowser({
+      respond: (request) =>
+        request.method === "initialize"
+          ? { protocolVersion: MCP_PROTOCOL_VERSION }
+          : { content: [{ type: "text", text: "### Error\nTimed out waiting for the page to load" }], isError: true },
+    });
+    const browser = runtime(fake.spawn, {
+      install: async () => {
+        installed = true;
+        return "";
+      },
+    });
+    await browser.call("session:a", "browser_navigate", { url: "http://x" });
+    expect(installed).toBeFalse();
     await browser.close();
   });
 

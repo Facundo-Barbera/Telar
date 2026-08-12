@@ -1225,6 +1225,17 @@ export class EngineStore {
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       return;
     }
+    if (observation.kind === "browser.state") {
+      // No projection: a browser's tabs are LIVE state, not durable history.
+      // Replaying them from a week-old journal would describe pages that are
+      // long gone, so this rides the stream and nothing else.
+      this.appendEvent(
+        sessionId,
+        { type: "browser.state.changed", provider: observation.provider, tabs: observation.tabs },
+        turn.runId,
+      );
+      return;
+    }
     if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
       const seed = observation.task;
       const known = projection.tasks.get(seed.id);

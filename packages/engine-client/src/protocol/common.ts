@@ -141,10 +141,10 @@ export type EnvMode = z.infer<typeof EnvMode>;
  * Tokens for one unit of work.
  *
  * THE FOUR-WAY SPLIT IS NOT ARBITRARY — it is the same pair-plus-cache shape
- * `UltraTokens` (`packages/core/src/warp/surface.ts` after the rename) and
- * core's `UsageEntry` already store, so a figure derived from this is
- * comparable with the session ledger's rather than being a second definition of
- * "tokens". AD-18/FR-RF-2: one spend, one number.
+ * `UltraTokens` (`packages/core/src/ultra/surface.ts`) and core's `UsageEntry`
+ * already store, so a figure derived from this is comparable with the session
+ * ledger's rather than being a second definition of "tokens". AD-18/FR-RF-2:
+ * one spend, one number.
  */
 export const TokenUsage = z.object({
   input: z.number().int().nonnegative(),
@@ -195,3 +195,29 @@ export const ProviderRefs = z.object({
   sessionId: z.string().min(1).optional(),
 });
 export type ProviderRefs = z.infer<typeof ProviderRefs>;
+
+/**
+ * Which browser is serving a session.
+ *
+ * `headless` is the ENGINE's own Chromium and is the default, because it is
+ * what makes a detached session able to browse at all. t3 code brokers
+ * automation to a connected desktop host and fails outright when none is
+ * attached; Telar's headless runtime (`apps/engine/src/browser/`) closes that
+ * gap. `attached` takes over when a client offers a webview, so a human can
+ * watch — no client offers one yet, so nothing reports it.
+ *
+ * HERE RATHER THAN IN ./events.ts, where it started: both the journal event and
+ * the worker's observation need it, and observations must not have to import
+ * the event union to describe a browser tab.
+ */
+export const BrowserProvider = z.enum(["headless", "attached", "none"]);
+export type BrowserProvider = z.infer<typeof BrowserProvider>;
+
+export const BrowserTab = z.object({
+  id: Id,
+  url: z.string(),
+  title: z.string(),
+  active: z.boolean(),
+  loading: z.boolean().optional(),
+});
+export type BrowserTab = z.infer<typeof BrowserTab>;

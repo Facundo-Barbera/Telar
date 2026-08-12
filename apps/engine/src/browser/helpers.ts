@@ -86,6 +86,24 @@ export function browserErrorText(value: unknown): string {
 }
 
 /**
+ * Whether a failed browser call means "the binary was never downloaded".
+ *
+ * MATCHED ON TEXT BECAUSE THERE IS NOTHING ELSE. Playwright MCP reports this as
+ * an ordinary `isError` tool result with prose in it — no code, no typed field —
+ * so a substring match is the whole of the available signal. Kept deliberately
+ * loose across the two phrasings it uses, and read-only: a false positive costs
+ * one wasted install attempt, while a false negative leaves a detached session
+ * permanently unable to browse with nobody around to run the installer.
+ */
+export function isBrowserNotInstalled(text: string): boolean {
+  const lowered = text.toLowerCase();
+  return (
+    (lowered.includes("is not installed") || lowered.includes("install-browser") || lowered.includes("executable doesn't exist")) &&
+    lowered.includes("brows")
+  );
+}
+
+/**
  * The text blocks of a tool result, joined. Image blocks are skipped rather
  * than stringified — a base64 payload in an error message is a wall.
  *

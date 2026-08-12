@@ -247,15 +247,35 @@ The script-authoring surface (`surface.ts`, `sandbox.ts`, the `agent()` /
 `parallel()` / `pipeline()` / `phase()` API) is genuinely good and stays as-is.
 What changes is where its *observations* go.
 
-**Rename scope.** `packages/core/src/ultra/` → `packages/core/src/warp/`, the
-`ultra:` event namespace → `warp:`, `UltraAgentOpts` → `WarpAgentOpts`, and so
-on. Two things need care and are not mechanical:
+### Rename scope — revised, and narrower than planned
+
+The original plan was a mechanical sweep: `packages/core/src/ultra/` →
+`packages/core/src/warp/`, the `ultra:` event namespace → `warp:`,
+`UltraAgentOpts` → `WarpAgentOpts`. **That sweep was rejected on inspection.**
+
+The name is what needed to change, and in the vocabulary that survives it
+already has: `WarpLinkage`, `WarpPhase`, `warpRunId`, `warpName`, `phaseIndex`
+are the contract's words, and every vNext surface reads them. What the sweep
+would additionally have done is rename 3,400 occurrences across a legacy
+implementation whose only consumers are its own tests and `apps/web_old` — and
+`web_old` is FROZEN, so it cannot be edited to follow. The rename would break
+the frozen reference app in order to tidy the vocabulary of an architecture
+vNext replaces rather than carries forward.
+
+So `packages/core/src/ultra/` keeps its name and its header now says why, in
+place. The two hard parts of the sweep are recorded here rather than done:
 
 - **`ultra:run-anchor`**, the kind id retired INV-10 used to pin, becomes
-  `warp:run` — and it should be re-pinned when the surface is rebuilt.
-- **Persisted runs** under `TELAR_HOME/ultra` need a read-side migration or a
-  deliberate decision to abandon existing run history. `storage.ts` owns that
-  path and INV-3a used to pin it as its sole composer.
+  `warp:run` **when the vNext warp surface is built**, not before — there is
+  nothing to re-pin it against yet.
+- **Persisted runs** under `TELAR_HOME/ultra`: abandoned deliberately. vNext
+  writes only beneath `TELAR_HOME/vnext` and never reads legacy run history.
+
+**What a vNext Warp still has to do**, and has not: run a warp script inside the
+engine so its `agent()` calls become sub-agent turns whose observations land on
+the session stream as `task.*`. The authoring surface is the part worth porting;
+the ten modules of parallel infrastructure around it are the part that exists
+precisely because there was no session stream to put anything on.
 
 ## 8. Staging
 
@@ -264,18 +284,35 @@ Each stage is independently shippable and leaves the tree green.
 | # | Stage | Status | Unblocks |
 | --- | --- | --- | --- |
 | 1 | **Rich turn journal.** Items, content deltas, reasoning, usage. Driver stops discarding blocks. | **DONE** | A real session view. Everything else. |
-| 2 | **Requests + runtime modes.** Approvals end-to-end, parked-request notifications. | contract only | Trustworthy detached runs. |
-| 3 | **Persistent runtimes.** Warm processes, supervision, resume. | not started | Detached, properly. |
-| 4 | **Providers.** Codex via app-server, model/effort selection, attachments, MCP. | not started | Parity with the frozen app. |
-| 5 | **Tasks.** Sub-agents on the stream, then Warp on top of them. | contract only | Fan-out surfaces. |
-| 6 | **Browser.** Headless provider first, attached second. | contract only | Autonomous verification. |
-| 7 | **Worktrees.** `envMode`, parallel sessions. | contract only | Many detached sessions at once. |
+| 2 | **Requests + runtime modes.** Approvals end-to-end, parked-request notifications. | **DONE** | Trustworthy detached runs. |
+| 3 | **Persistent runtimes.** Warm processes, supervision, resume. | **DONE** | Detached, properly. |
+| 4 | **Providers.** Codex via app-server, driver selection per session. | **DONE** | Parity with the frozen app. |
+| 5 | **Tasks.** Sub-agents on the stream, then Warp on top of them. | **sub-agents DONE**, Warp not started | Fan-out surfaces. |
+| 6 | **Browser.** Headless provider first, attached second. | **headless DONE**, attached not started | Autonomous verification. |
+| 7 | **Worktrees.** `envMode`, parallel sessions. | **DONE** | Many detached sessions at once. |
 
 **"Contract only" means the shapes exist and are tested, and nothing emits
-them.** The distinction matters: `request.*` is fully modelled, and
-`autoResolution()` is the tested policy every client will read — but the driver
-still runs at `permissionMode: "default"` with no `canUseTool`, so no request
-can open yet. A reader should not infer from the contract that approvals work.
+them.** Nothing is in that state any more, but the distinction is worth keeping
+written down: a reader must never infer from a modelled shape that the behaviour
+behind it works.
+
+### What is still not built, precisely
+
+- **Warp.** The linkage (`WarpLinkage`, `WarpPhase`) is modelled and Claude's
+  own `workflow_name` populates it, so an SDK workflow already surfaces as
+  warp-linked tasks. Telar's own script harness — `agent()`, `parallel()`,
+  `pipeline()`, `phase()` — has NOT been ported onto the session stream. The
+  legacy implementation stays at `packages/core/src/ultra/` under its old name;
+  see that module's header for why renaming it was rejected rather than
+  forgotten.
+- **The `attached` browser provider.** `headless` is the default and works
+  detached, which was the point. `attached` needs a client offering a webview
+  and no client offers one, so nothing reports it; adding the arm without an
+  implementation would be a lie in the enum.
+- **Model and effort selection per turn.** `TurnSubmission.model` is modelled
+  and ignored — every turn runs the driver's default.
+- **Attachments and user-configured MCP servers.** Modelled nowhere; the only
+  MCP server the engine registers is its own in-process browser.
 
 ### What stage 1 actually landed
 

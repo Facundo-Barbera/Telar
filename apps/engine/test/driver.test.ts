@@ -254,6 +254,78 @@ test("an mcp tool carries its server so a client can group by it", () => {
   expect(detail.type === "mcp_tool_call" && detail.call.server).toBe("linear");
 });
 
+// ── the browser ──────────────────────────────────────────────────────────────
+
+/** An SDK whose in-process MCP server is real enough to invoke a tool. */
+function sdkWithBrowserTools(invoke: (handlers: Map<string, (args: Record<string, unknown>) => Promise<unknown>>) => Promise<void>) {
+  const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+  return async () => ({
+    tool: (name: string, _description: string, _shape: unknown, handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>) => {
+      handlers.set(name, handler);
+      return { name };
+    },
+    createSdkMcpServer: (input: unknown) => input,
+    async *query() {
+      await invoke(handlers);
+      yield { type: "result", subtype: "success" };
+    },
+  });
+}
+
+test("a browser call that CHANGED the page journals what it is now looking at", async () => {
+  const calls: string[] = [];
+  const browser = {
+    call: async (_scope: string, name: string) => {
+      calls.push(name);
+      return { content: [{ type: "text", text: "ok" }] };
+    },
+    isReadOnly: (name: string) => name === "browser_snapshot",
+    tools: [
+      { name: "browser_navigate", description: "go", input: { shape: {} } },
+      { name: "browser_snapshot", description: "look", input: { shape: {} } },
+    ],
+    state: async () => ({ provider: "headless" as const, tabs: [{ id: "0", url: "http://x", title: "X", active: true }] }),
+  };
+  const driver = createClaudeDriver(
+    sdkWithBrowserTools(async (handlers) => {
+      await handlers.get("browser_navigate")!({ url: "http://x" });
+      // A READ must not trigger a state report: polling after every snapshot
+      // puts a page listing behind each look at the DOM.
+      await handlers.get("browser_snapshot")!({});
+    }),
+    { browser },
+  );
+  const { sink, result } = run(driver, { browserScopeKey: "session_one" });
+  await result;
+
+  const states = sink.observations.filter((o) => o.kind === "browser.state");
+  expect(states).toHaveLength(1);
+  expect(states[0]?.kind === "browser.state" && states[0].tabs[0]?.url).toBe("http://x");
+  expect(calls).toEqual(["browser_navigate", "browser_snapshot"]);
+});
+
+test("a browser whose state cannot be read still lets the tool call succeed", async () => {
+  // A browser panel that cannot be described must never fail the navigation
+  // that moved it — the agent asked to browse, not to be observed.
+  const browser = {
+    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    isReadOnly: () => false,
+    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
+    state: async () => Promise.reject(new Error("the browser went away")),
+  };
+  let toolResult: unknown;
+  const driver = createClaudeDriver(
+    sdkWithBrowserTools(async (handlers) => {
+      toolResult = await handlers.get("browser_navigate")!({ url: "http://x" });
+    }),
+    { browser },
+  );
+  const { sink, result } = run(driver, { browserScopeKey: "session_one" });
+  await expect(result).resolves.toBeDefined();
+  expect(toolResult).toMatchObject({ content: [{ type: "text", text: "ok" }] });
+  expect(sink.observations.filter((o) => o.kind === "browser.state")).toHaveLength(0);
+});
+
 // ── sub-agents ───────────────────────────────────────────────────────────────
 
 test("a Task call becomes a HANDLE row, not a generic tool row", async () => {
