@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronRightIcon, FolderIcon, GitBranchIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, FolderIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
 import {
-  displayToolName,
   type EngineEvent,
   type EngineRequest,
+  type RequestDecision,
   type Item,
   type RuntimeMode,
   type Session,
@@ -19,9 +19,9 @@ import { appendJournalEvents, isActiveTurn, itemText, projectJournal, type Journ
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { Composer } from "./composer";
 import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
-import { VNextRightPanel } from "./right-panel";
+import { RailToggle, VNextRightPanel } from "./right-panel";
+import { ApprovalCard } from "./approval-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
@@ -66,12 +66,17 @@ function SessionProblem({ error }: { error: VNextApiError }) {
  */
 function SessionMasthead({
   projectId,
+  projectName,
   session,
   sending,
   onRename,
   panel,
 }: {
   projectId: string;
+  /** Resolved from the project record. Absent until it loads — the breadcrumb
+   *  falls back to the id rather than showing a gap, but an opaque
+   *  `project_1a1649…` is addressing, not a name a person navigates by. */
+  projectName?: string;
   session?: Session;
   sending: boolean;
   onRename: (title: string) => void;
@@ -97,7 +102,7 @@ function SessionMasthead({
         <FolderIcon className="size-4" />
       </Button>
       <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="shrink-0 truncate text-muted-foreground">{session?.projectId ?? projectId}</span>
+        <span className="max-w-48 shrink-0 truncate text-muted-foreground">{projectName ?? session?.projectId ?? projectId}</span>
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
         {editing ? (
           <input
@@ -139,23 +144,7 @@ function SessionMasthead({
           </>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        {/* What this session IS, at a glance: which provider runs it, and
-            whether it has a checkout of its own or shares the project's. */}
-        {session && (
-          <Badge variant="secondary" className="gap-1 font-normal">
-            <BotIcon className="size-3" />
-            {session.driver === "codex" ? "Codex" : "Claude"}
-          </Badge>
-        )}
-        {session?.workspace.mode === "worktree" && (
-          <Badge variant="outline" className="gap-1 font-normal" title={`Worktree on ${session.workspace.branch}`}>
-            <GitBranchIcon className="size-3" />
-            {session.workspace.branch}
-          </Badge>
-        )}
-        {panel}
-      </div>
+      <div className="flex shrink-0 items-center gap-1.5">{panel}</div>
     </header>
   );
 }
@@ -198,71 +187,6 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
 }
 
-/** The one-liner an approval card leads with, per request kind. */
-function requestSummary(detail: EngineRequest["detail"]): { label: string; body?: string } {
-  switch (detail.kind) {
-    case "command_execution":
-      return { label: "wants to run a command", body: detail.command.command };
-    case "file_change":
-      return { label: `wants to ${detail.change.kind} a file`, body: detail.change.path };
-    case "file_read":
-      return { label: "wants to read a file", body: detail.read.path };
-    case "tool_call":
-      // `wants to use browser_click`, not `mcp__telar__browser_click`. The
-      // qualified name is addressing; a human being asked to permit something
-      // should read the verb.
-      return { label: `wants to use ${displayToolName(detail.call.name)}`, body: undefined };
-    case "user_input":
-      return { label: "is asking you something", body: detail.prompt };
-  }
-}
-
-/**
- * A parked approval.
- *
- * SHOWN AT THE TOP OF THE TURN, not inline in the timeline, because it is the
- * one thing blocking progress — everything below it has already happened and
- * nothing more will happen until this is answered.
- *
- * --warning, the app's one "a person has to move" colour. Not --destructive: an
- * approval is a question, not a failure.
- */
-function ApprovalCard({
-  request,
-  sending,
-  onDecide,
-}: {
-  request: EngineRequest;
-  sending: boolean;
-  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
-}) {
-  const summary = requestSummary(request.detail);
-  return (
-    <section className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-warning/5 p-3" aria-label="Approval required">
-      <p className="text-sm font-medium">Telar {summary.label}</p>
-      {summary.body && (
-        <pre className="max-h-40 overflow-auto rounded-md bg-muted/50 p-2 font-mono text-[11px] break-words whitespace-pre-wrap">
-          {summary.body}
-        </pre>
-      )}
-      {request.notified === false && (
-        <p className="text-xs text-muted-foreground">This parked while nothing was watching, and no notification was sent.</p>
-      )}
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" disabled={sending} onClick={() => onDecide(request.id, "accept")}>
-          Allow once
-        </Button>
-        <Button size="sm" variant="outline" disabled={sending} onClick={() => onDecide(request.id, "acceptForSession")}>
-          Allow for session
-        </Button>
-        <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")}>
-          Decline
-        </Button>
-      </div>
-    </section>
-  );
-}
-
 function SessionTurn({
   turn,
   requests,
@@ -274,7 +198,7 @@ function SessionTurn({
   onDiscard,
 }: {
   requests: EngineRequest[];
-  onDecide: (requestId: string, decision: "accept" | "acceptForSession" | "decline") => void;
+  onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   turn: JournalTurn;
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
@@ -299,13 +223,13 @@ function SessionTurn({
   return (
     <div className="flex flex-col gap-8">
       <Message from="user">
-        <MessageContent>
+        <MessageContent from="user">
           <p className="whitespace-pre-wrap">{turn.prompt}</p>
         </MessageContent>
       </Message>
 
       <Message from="assistant">
-        <MessageContent>
+        <MessageContent from="assistant">
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
@@ -362,6 +286,10 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   const [error, setError] = useState<VNextApiError>();
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  /** Open by default: the rail is where a fan-out lives, and a sub-agent nobody
+   *  can see is the failure this column exists to prevent. */
+  const [railOpen, setRailOpen] = useState(true);
+  const [projectName, setProjectName] = useState<string>();
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
 
@@ -401,6 +329,20 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       }),
     [enqueueSync, sessionId],
   );
+
+  // The session record carries a project ID, not its name. One list call
+  // resolves it; a failure leaves the breadcrumb on the id, which is worse to
+  // read but never wrong.
+  useEffect(() => {
+    let cancelled = false;
+    void api.projects().then(
+      (result) => !cancelled && setProjectName(result.projects.find((project) => project.id === projectId)?.name),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -463,10 +405,10 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
       setSending(false);
     }
   };
-  const decideRequest = async (requestId: string, decision: "accept" | "acceptForSession" | "decline") => {
+  const decideRequest = async (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => {
     setSending(true);
     try {
-      await api.resolveRequest(sessionId, requestId, { decision });
+      await api.resolveRequest(sessionId, requestId, { decision, ...(extra?.answers ? { answers: extra.answers } : {}) });
       await hydrate();
       setError(undefined);
     } catch (cause) {
@@ -570,22 +512,20 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
     <main className="group/masthead flex min-h-0 flex-1 flex-col">
       <SessionMasthead
         projectId={projectId}
+        projectName={projectName}
         session={session}
         sending={sending}
         onRename={(next) => void rename(next)}
-        panel={
-          <VNextRightPanel
-            projectId={session?.projectId ?? projectId}
-            sessionId={sessionId}
-            active={active?.state}
-            items={items}
-            tasks={tasks}
-            turns={turns}
-            events={events}
-          />
-        }
+        panel={<RailToggle open={railOpen} onToggle={() => setRailOpen((current) => !current)} />}
       />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* THE COMPOSER BELONGS TO THE CHAT COLUMN, NOT TO THE WINDOW. Nesting it
+          beside the transcript rather than under the whole row makes the
+          geometry say what is true: you type INTO the conversation, and the rail
+          is its own full-height column next to it. `min-w-0` is what keeps a
+          long unbroken line in either child from widening the row instead of
+          scrolling inside its own box. */}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConversationViewport className="min-w-0 flex-1">
           <ConversationContent>
             {projectId !== session?.projectId && session && (
@@ -604,7 +544,7 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
                 now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId)}
                 sending={sending}
-                onDecide={(requestId, decision) => void decideRequest(requestId, decision)}
+                onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}
               />
@@ -619,6 +559,8 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
           sending={sending}
           queued={queued}
           runtimeMode={session?.runtimeMode}
+          driver={session?.driver}
+          {...(session?.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {})}
           onDraftChange={(nextDraft) => {
             setDraft(nextDraft);
             setDraftRunId(undefined);
@@ -628,6 +570,8 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
           onWithdraw={(runId) => void withdraw(runId)}
           onRuntimeMode={(mode) => void setRuntimeMode(mode)}
         />
+        </div>
+        {railOpen && <VNextRightPanel active={active?.state} items={items} tasks={tasks} turns={turns} events={events} />}
       </div>
     </main>
   );

@@ -48,14 +48,44 @@ function sources(root: string): string[] {
   });
 }
 
+/**
+ * The MODULE SPECIFIERS a file imports — not its raw text.
+ *
+ * A whole-file substring scan cannot tell an import from prose, and it produced
+ * exactly the false positive you would predict: a comment in approval-card.tsx
+ * explaining what the donor app does with `Edit(apps/web/components/**)` was
+ * reported as importing `apps/web`. A boundary test that fires on documentation
+ * teaches people to stop writing documentation, so it reads specifiers instead.
+ */
+function importSpecifiers(source: string): string[] {
+  const found: string[] = [];
+  const patterns = [
+    /\bfrom\s+["']([^"']+)["']/g, // import … from "x" / export … from "x"
+    /\bimport\s+["']([^"']+)["']/g, // bare side-effect import
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g, // dynamic import
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) for (const match of source.matchAll(pattern)) found.push(match[1]);
+  return found;
+}
+
 describe("standalone vNext source boundary", () => {
   test("owns its browser, adapter, and style tree without legacy runtime imports", () => {
     for (const file of ownedRoots.flatMap(sources)) {
-      const source = fs.readFileSync(file, "utf8");
+      const specifiers = importSpecifiers(fs.readFileSync(file, "utf8"));
       for (const forbidden of banned) {
-        expect(source, `${path.relative(appRoot, file)} imports ${forbidden}`).not.toContain(forbidden);
+        const offender = specifiers.find((specifier) => specifier.includes(forbidden));
+        expect(offender, `${path.relative(appRoot, file)} imports ${forbidden} (via "${offender}")`).toBeUndefined();
       }
     }
+  });
+
+  test("the boundary check reads imports, not prose", () => {
+    // Guards the guard: if this ever reverts to a substring scan, a comment
+    // mentioning a banned path starts failing the build again.
+    expect(importSpecifiers('// see apps/web_old/components/ui\nimport { x } from "./y";')).toEqual(["./y"]);
+    expect(importSpecifiers('import "@telar/core";')).toEqual(["@telar/core"]);
+    expect(importSpecifiers('const m = await import("@/lib/store");')).toEqual(["@/lib/store"]);
   });
 
   test("uses root-relative routes and its own stylesheet", () => {

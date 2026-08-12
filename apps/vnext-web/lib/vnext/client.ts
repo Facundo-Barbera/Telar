@@ -73,7 +73,14 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     /** Rename, or change what the session may do without asking. */
     updateSession: (sessionId: string, patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean }) =>
       request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
-    resolveRequest: (sessionId: string, requestId: string, input: { decision: RequestDecision; reason?: string }) =>
+    /** `answers` is only meaningful for a `user_input` request — the route has
+     *  always forwarded it; this signature simply never offered it, so the one
+     *  request kind that asks a question could not be answered from the UI. */
+    resolveRequest: (
+      sessionId: string,
+      requestId: string,
+      input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
+    ) =>
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
     events: (sessionId: string, after: number) =>
       request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),

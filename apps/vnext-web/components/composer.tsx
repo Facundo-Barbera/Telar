@@ -26,8 +26,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CornerDownLeftIcon, ShieldIcon, SquareIcon, XIcon } from "lucide-react";
-import type { RuntimeMode } from "@telar/engine-client";
+import { BotIcon, CornerDownLeftIcon, GitBranchIcon, ShieldIcon, SquareIcon, XIcon } from "lucide-react";
+import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
@@ -125,6 +125,8 @@ export function Composer({
   sending,
   queued,
   runtimeMode,
+  driver,
+  worktreeBranch,
   onDraftChange,
   onSubmit,
   onStop,
@@ -138,6 +140,13 @@ export function Composer({
   sending: boolean;
   queued: QueuedMessage[];
   runtimeMode?: RuntimeMode;
+  /** Which provider runs this session. READ-ONLY: the engine fixes the driver
+   *  at creation, so this is a statement, not a control. It sits beside the
+   *  mode pill because "who is answering" and "what may they do" are the two
+   *  facts a person checks before pressing Enter. */
+  driver?: ProviderDriverKind;
+  /** Present only for a worktree session — the branch its work lands on. */
+  worktreeBranch?: string;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -221,7 +230,22 @@ export function Composer({
           />
           <InputGroupAddon align="block-end" className="justify-between gap-1">
             <div className="flex min-w-0 items-center gap-1">
+              {driver && (
+                <span className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground" title="Set when the session was created">
+                  <BotIcon className="size-3.5" />
+                  {driver === "codex" ? "Codex" : "Claude"}
+                </span>
+              )}
               {runtimeMode && <RuntimeModeControl mode={runtimeMode} onChange={onRuntimeMode} disabled={!ready} />}
+              {worktreeBranch && (
+                <span
+                  className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                  title={`Work lands on ${worktreeBranch}, not on the project checkout`}
+                >
+                  <GitBranchIcon className="size-3.5 shrink-0" />
+                  <span className="truncate">{worktreeBranch}</span>
+                </span>
+              )}
             </div>
             <InputGroupButton
               type={busy ? "button" : "submit"}

@@ -14,10 +14,25 @@ import { cn } from "@/lib/utils";
  * chrome and makes a long transcript read as two columns of boxes rather than
  * as a conversation.
  *
- * ASSISTANT CONTENT IS `w-full`, NOT `w-fit`. This is not cosmetic: every nested
- * activity row lives inside this box, so a `w-fit` assistant turn makes tool
- * disclosures inherit the width of the longest prose fragment in the turn — and
- * they visibly resize as the agent narrates. The lane has to be stable.
+ * ASSISTANT CONTENT IS `w-full`, NOT `w-fit`. Not cosmetic: every activity row
+ * lives inside this box, so a `w-fit` assistant turn makes tool disclosures
+ * inherit the width of the longest prose fragment in the turn — and they
+ * visibly resize as the agent narrates. The lane has to be stable.
+ *
+ * THE ROLE IS A PROP, NOT A CLASS ON AN ANCESTOR.
+ *
+ * The donor styles this by putting `is-user` on the wrapper and reading it from
+ * the child with `group-[.is-user]:w-fit`. That worked there and broke here: the
+ * utility is composed at runtime from an arbitrary variant, and after a rebuild
+ * the `w-fit` and `ml-auto` rules were simply absent from the served stylesheet
+ * while their `px-4`/`bg-secondary` siblings survived — so the bubble rendered
+ * full-width with correct padding, and nothing failed anywhere. Measured, not
+ * guessed: the element matched the selector and no rule set its width.
+ *
+ * A prop cannot fail that way. It also costs nothing here, because this
+ * component is only ever rendered by its own module's `Message` — the class
+ * dance exists in the donor because its `MessageContent` is a public slot for
+ * callers it does not control.
  */
 
 export type MessageRole = "user" | "assistant";
@@ -26,22 +41,24 @@ export const Message = ({ className, from, ...props }: HTMLAttributes<HTMLDivEle
   <div
     // The 50rem measure matches the composer's outer width below it, so prose
     // and the box you type into share one lane.
-    className={cn(
-      "group mx-auto flex w-full max-w-[50rem] flex-col gap-2",
-      from === "user" ? "is-user" : "is-assistant",
-      className,
-    )}
+    className={cn("mx-auto flex w-full max-w-[50rem] flex-col gap-2", className)}
+    data-role={from}
     {...props}
   />
 );
 
-export const MessageContent = ({ children, className, ...props }: HTMLAttributes<HTMLDivElement>) => (
+export const MessageContent = ({
+  from,
+  children,
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { from: MessageRole }) => (
   <div
     className={cn(
-      "flex min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm",
-      "group-[.is-assistant]:w-full group-[.is-user]:w-fit",
-      "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3",
-      "text-foreground",
+      "flex min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm text-foreground",
+      from === "user"
+        ? "ml-auto w-fit rounded-lg bg-secondary px-4 py-3"
+        : "w-full",
       className,
     )}
     {...props}

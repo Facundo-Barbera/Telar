@@ -5,23 +5,35 @@ import { BotIcon, ChevronRightIcon, FileIcon, GaugeIcon, GlobeIcon, PanelRightIc
 import type { BrowserProvider, BrowserTab, EngineEvent, FileChangeKind, Item, Task, TaskState, Turn, TurnState } from "@telar/engine-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 /**
- * The session panel: four surfaces, each backed by a record the engine emits.
+ * THE RAIL — a permanent column, not an overlay.
  *
- * There is no Terminal and no Editor tab because there is no contract to render
- * for either, and no page preview because `browser.state.changed` carries URLs
- * and titles rather than pixels. An empty surface NAMES what is missing instead
- * of drawing a shape that implies a feature.
+ * The frozen app's conversation shell has four slots — header, transcript,
+ * composer, and RAIL — and the rail is a full-height column the surface fills:
+ * sub-agent cards with live step counts, a `DONE` divider, its own footer. It
+ * is part of the room. This was previously a Sheet that slid over the
+ * conversation, which is a different thing entirely: an overlay is somewhere you
+ * go, and a fan-out of five agents is something you need to be able to WATCH
+ * while you read and type.
+ *
+ * Four surfaces, each backed by a record the engine emits. There is no Terminal
+ * and no Editor tab because there is no contract to render for either, and no
+ * page preview because `browser.state.changed` carries URLs and titles rather
+ * than pixels. An empty surface NAMES what is missing instead of drawing a shape
+ * that implies a feature.
+ *
+ * AGENTS IS THE DEFAULT TAB. A fan-out is the most interesting thing on the
+ * screen while it happens, and the rail exists mainly so it has somewhere to be.
  */
 
 const TABS = [
+  { id: "agents", label: "Agents", icon: BotIcon },
   { id: "changes", label: "Changes", icon: PencilIcon },
   { id: "browser", label: "Browser", icon: GlobeIcon },
-  { id: "agents", label: "Agents", icon: BotIcon },
   { id: "usage", label: "Usage", icon: GaugeIcon },
 ] as const;
 
@@ -109,6 +121,15 @@ export function isLiveTask(task: Task): boolean {
   return LIVE_TASK_STATES.has(task.state);
 }
 
+/** The rail's one mapping from engine state to the five-colour vocabulary. */
+export function taskTone(state: TaskState): PanelTone {
+  if (state === "failed") return "danger";
+  if (state === "waiting") return "attention";
+  if (state === "running" || state === "pending") return "active";
+  if (state === "completed") return "done";
+  return "none";
+}
+
 // ── presentation ───────────────────────────────────────────────────────────
 
 /** An absent figure is an em dash, never a zero — a session that reported
@@ -128,6 +149,11 @@ const CHANGE_KIND: Partial<Record<FileChangeKind, string>> = {
   rename: "renamed",
 };
 
+const CHANGE_TONE: Partial<Record<FileChangeKind, PanelTone>> = {
+  create: "done",
+  delete: "danger",
+};
+
 const BROWSER_PROVIDER: Record<BrowserProvider, string> = {
   headless: "the engine’s own headless Chromium",
   attached: "a client-provided webview",
@@ -143,25 +169,11 @@ const TASK_STATE: Record<TaskState, string> = {
   stopped: "Stopped",
 };
 
-const PANEL_ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
-
-function Empty({ icon: Icon, title, children }: { icon: typeof PencilIcon; title: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col items-center gap-1.5 px-4 py-10 text-center">
-      <Icon className="size-5 text-muted-foreground/60" />
-      <p className="text-sm font-medium">{title}</p>
-      <p className="max-w-64 text-xs text-muted-foreground">{children}</p>
-    </div>
-  );
-}
-
-/**
- * A unified diff, tinted by line. The transcript carries its own copy; one
- * shared `<Diff>` is worth extracting the next time both files are open.
- */
+/** A unified diff, tinted by line. The transcript carries its own copy; one
+ *  shared `<Diff>` is worth extracting the next time both files are open. */
 function Diff({ diff }: { diff: string }) {
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[10px] leading-relaxed">
+    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[10px] leading-relaxed">
       {diff.split("\n").map((line, index) => {
         const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
         return (
@@ -193,42 +205,44 @@ function FileRow({ file }: { file: ChangedFile }) {
 
   return (
     <div>
-      <button
-        type="button"
-        className={cn(PANEL_ROW, file.unifiedDiff && "hover:bg-muted/60")}
-        disabled={!file.unifiedDiff}
-        aria-expanded={file.unifiedDiff ? open : undefined}
-        onClick={() => setOpen((current) => !current)}
-        title={file.path}
-      >
-        <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-          {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
-          <span className="text-foreground">{file.path.slice(cut + 1)}</span>
-        </span>
-        {kind && (
-          <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-            {kind}
-          </Badge>
-        )}
-        {file.edits > 1 && (
-          <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-            ×{file.edits}
-          </Badge>
-        )}
-        <span className="shrink-0 font-mono text-[10px] tabular-nums">
-          {file.linesAdded ? <span className="text-success">+{file.linesAdded}</span> : null}
-          {file.linesAdded && file.linesRemoved ? " " : null}
-          {/* U+2212, not a hyphen: same width as the plus, which is the whole
-              reason the column lines up. */}
-          {file.linesRemoved ? <span className="text-destructive">−{file.linesRemoved}</span> : null}
-        </span>
-        {file.unifiedDiff && (
-          <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-        )}
-      </button>
+      <PanelRow tone={CHANGE_TONE[file.kind] ?? "none"} className="p-0 pl-0">
+        <button
+          type="button"
+          className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", file.unifiedDiff && "hover:bg-muted/60")}
+          disabled={!file.unifiedDiff}
+          aria-expanded={file.unifiedDiff ? open : undefined}
+          onClick={() => setOpen((current) => !current)}
+          title={file.path}
+        >
+          <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+            {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
+            <span className="text-foreground">{file.path.slice(cut + 1)}</span>
+          </span>
+          {kind && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+              {kind}
+            </Badge>
+          )}
+          {file.edits > 1 && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+              ×{file.edits}
+            </Badge>
+          )}
+          <span className="shrink-0 font-mono text-[10px] tabular-nums">
+            {file.linesAdded ? <span className="text-success">+{file.linesAdded}</span> : null}
+            {file.linesAdded && file.linesRemoved ? " " : null}
+            {/* U+2212, not a hyphen: same width as the plus, which is the whole
+                reason the column lines up. */}
+            {file.linesRemoved ? <span className="text-destructive">−{file.linesRemoved}</span> : null}
+          </span>
+          {file.unifiedDiff && (
+            <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+          )}
+        </button>
+      </PanelRow>
       {open && file.unifiedDiff && <Diff diff={file.unifiedDiff} />}
-      {open && file.renamedFrom && <p className="px-1.5 py-1 text-[11px] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
+      {open && file.renamedFrom && <p className="px-4 pb-2 text-[11px] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
   );
 }
@@ -236,13 +250,13 @@ function FileRow({ file }: { file: ChangedFile }) {
 function ChangesSurface({ files }: { files: readonly ChangedFile[] }) {
   if (files.length === 0) {
     return (
-      <Empty icon={PencilIcon} title="No file changes yet">
+      <PanelEmpty icon={<PencilIcon />} title="No file changes yet">
         Every file this session writes, edits, renames or deletes lands here with its diff.
-      </Empty>
+      </PanelEmpty>
     );
   }
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex flex-col">
       {files.map((file) => (
         <FileRow key={file.path} file={file} />
       ))}
@@ -253,35 +267,28 @@ function ChangesSurface({ files }: { files: readonly ChangedFile[] }) {
 function BrowserSurface({ state }: { state?: BrowserState }) {
   if (!state || state.tabs.length === 0) {
     return (
-      <Empty icon={GlobeIcon} title="This session has not browsed">
+      <PanelEmpty icon={<GlobeIcon />} title="This session has not browsed">
         When the engine opens a page it reports the tab on the journal. Nothing has been opened here yet.
-      </Empty>
+      </PanelEmpty>
     );
   }
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-0.5">
-        {state.tabs.map((tab) => (
-          <div key={tab.id} className={cn(PANEL_ROW, tab.active && "bg-muted/50")}>
-            <GlobeIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate">{tab.title || "Untitled"}</span>
-              <span className="truncate font-mono text-[10px] text-muted-foreground">{tab.url}</span>
-            </span>
-            {tab.loading && (
-              <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-                loading
-              </Badge>
-            )}
-            {tab.active && (
-              <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px] font-normal">
-                active
-              </Badge>
-            )}
-          </div>
-        ))}
-      </div>
-      <p className="px-1.5 text-[11px] text-muted-foreground">
+    <div className="flex flex-col">
+      {state.tabs.map((tab) => (
+        <PanelRow key={tab.id} tone={tab.active ? "active" : "none"} className="text-xs">
+          <GlobeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">{tab.title || "Untitled"}</span>
+            <span className="truncate font-mono text-[10px] text-muted-foreground">{tab.url}</span>
+          </span>
+          {tab.loading && (
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+              loading
+            </Badge>
+          )}
+        </PanelRow>
+      ))}
+      <p className="px-4 py-2 text-[11px] text-muted-foreground">
         Served by {BROWSER_PROVIDER[state.provider]}. The engine reports each tab’s URL, title and loading state — there is no
         screenshot and no webview, so this list is the whole of what it can show.
       </p>
@@ -290,39 +297,35 @@ function BrowserSurface({ state }: { state?: BrowserState }) {
 }
 
 function TaskRow({ task }: { task: Task }) {
-  const live = isLiveTask(task);
   const body = task.failure ?? task.resultText;
   const [open, setOpen] = useState(false);
   const tokens = task.usage ? task.usage.tokens.input + task.usage.tokens.output : undefined;
   const RowIcon = task.kind === "background" ? TerminalIcon : BotIcon;
 
   return (
-    <div className={cn("rounded-md", task.state === "failed" && "bg-destructive/10")}>
-      <button
-        type="button"
-        className={cn(PANEL_ROW, body && "hover:bg-muted/60")}
-        disabled={!body}
-        aria-expanded={body ? open : undefined}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <RowIcon className={cn("size-3.5 shrink-0", task.state === "failed" ? "text-destructive" : "text-muted-foreground")} />
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate">{task.title ?? task.role ?? "Sub-agent"}</span>
-          {task.role && task.title && <span className="truncate text-[10px] text-muted-foreground">{task.role}</span>}
-        </span>
-        {tokens !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
-        <Badge
-          variant={task.state === "failed" ? "destructive" : live ? "default" : "outline"}
-          className="shrink-0 px-1 py-0 text-[9px] font-normal"
+    <div>
+      <PanelRow tone={taskTone(task.state)} className="p-0 pl-0">
+        <button
+          type="button"
+          className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", body && "hover:bg-muted/60")}
+          disabled={!body}
+          aria-expanded={body ? open : undefined}
+          onClick={() => setOpen((current) => !current)}
         >
-          {TASK_STATE[task.state]}
-        </Badge>
-        {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
-      </button>
+          <RowIcon className={cn("size-3.5 shrink-0", task.state === "failed" ? "text-destructive" : "text-muted-foreground")} />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">{task.title ?? task.role ?? "Sub-agent"}</span>
+            {task.role && task.title && <span className="truncate text-[10px] text-muted-foreground">{task.role}</span>}
+          </span>
+          {tokens !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
+          <span className={cn("shrink-0 font-mono text-[10px]", task.state === "failed" ? "text-destructive" : "text-muted-foreground")}>
+            {TASK_STATE[task.state]}
+          </span>
+          {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+        </button>
+      </PanelRow>
       {open && body && (
-        <p className={cn("px-1.5 pb-1.5 text-[11px] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>
-          {body}
-        </p>
+        <p className={cn("px-4 pb-2 text-[11px] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>{body}</p>
       )}
     </div>
   );
@@ -333,24 +336,18 @@ function AgentsSurface({ tasks }: { tasks: readonly Task[] }) {
   const finished = tasks.filter((task) => !isLiveTask(task));
   if (tasks.length === 0) {
     return (
-      <Empty icon={BotIcon} title="Sub-agents appear here as they work">
+      <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
         A task carries its own title, state and result. Background work — a watch loop, a long shell — is listed the same way and
         can outlive the turn that started it.
-      </Empty>
+      </PanelEmpty>
     );
   }
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex flex-col">
       {live.map((task) => (
         <TaskRow key={task.id} task={task} />
       ))}
-      {finished.length > 0 && live.length > 0 && (
-        <div className="flex items-center gap-2 py-1">
-          <span className="h-px flex-1 bg-border" />
-          <span className="font-mono text-[9px] text-muted-foreground">finished</span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-      )}
+      {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
       {finished.map((task) => (
         <TaskRow key={task.id} task={task} />
       ))}
@@ -367,16 +364,16 @@ function UsageSurface({ usage }: { usage: SessionUsage }) {
     ["Cost", usage.costUsd === undefined ? "—" : money(usage.costUsd)],
   ];
   return (
-    <div className="flex flex-col gap-3">
-      <dl className="flex flex-col gap-1">
+    <div className="flex flex-col">
+      <dl className="flex flex-col">
         {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-2 px-1.5 text-xs">
+          <div key={label} className="flex items-baseline justify-between gap-2 px-4 py-1.5 text-xs">
             <dt className="text-muted-foreground">{label}</dt>
             <dd className="font-mono tabular-nums">{value}</dd>
           </div>
         ))}
       </dl>
-      <p className="px-1.5 text-[11px] text-muted-foreground">
+      <p className="px-4 py-2 text-[11px] text-muted-foreground">
         {usage.reported === 0
           ? "No turn has reported usage yet. Every figure above is missing, not zero."
           : `Totalled across ${usage.reported} of ${usage.turns} turns. A turn the provider gave no figures for contributes nothing rather than a zero.`}
@@ -407,66 +404,82 @@ export function VNextPanelSurface({
   return <UsageSurface usage={usage} />;
 }
 
+/** The masthead control that shows and hides the rail. Lives in the header
+ *  rather than on the rail itself, so the affordance is in the same place
+ *  whether the rail is open or shut. */
+export function RailToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      aria-label={open ? "Hide session panel" : "Show session panel"}
+      aria-pressed={open}
+      onClick={onToggle}
+      className={cn(open && "bg-muted text-foreground")}
+    >
+      <PanelRightIcon className="size-4" />
+    </Button>
+  );
+}
+
 export function VNextRightPanel({
-  projectId,
-  sessionId,
   active,
   items = [],
   tasks = [],
   turns = [],
   events = [],
 }: {
-  projectId: string;
-  sessionId: string;
   active?: TurnState;
   items?: readonly Item[];
   tasks?: readonly Task[];
   turns?: readonly Turn[];
   events?: readonly EngineEvent[];
 }) {
-  const [tab, setTab] = useState<PanelTab>("changes");
+  const [tab, setTab] = useState<PanelTab>("agents");
   const files = useMemo(() => changedFiles(items), [items]);
   const running = tasks.filter(isLiveTask).length;
-  const counts: Partial<Record<PanelTab, number>> = { changes: files.length, agents: running };
+  const counts: Partial<Record<PanelTab, number>> = { changes: files.length, agents: tasks.length };
+  const failed = tasks.some((task) => task.state === "failed");
 
   return (
-    <Sheet>
-      <SheetTrigger
-        render={
-          <Button variant="ghost" size="icon-sm" aria-label="Open session panel">
-            <PanelRightIcon className="size-4" />
-          </Button>
-        }
-      />
-      <SheetContent side="right" className="w-[26rem] gap-0 sm:max-w-[26rem]">
-        <SheetHeader className="pb-2">
-          <SheetTitle>Session panel</SheetTitle>
-          {/* Which session these four surfaces describe. Every tab is a fold
-              over ONE session's journal, and nothing else on screen says which. */}
-          <SheetDescription className="truncate font-mono text-[10px]" title={`${projectId}/${sessionId}`}>
-            {projectId} / {sessionId}
-            {active && ` · ${active}`}
-          </SheetDescription>
-        </SheetHeader>
-        <Tabs value={tab} onValueChange={(next) => setTab(next as PanelTab)} className="min-h-0 flex-1 gap-0 px-4 pb-4">
-          <TabsList variant="line" className="w-full border-b border-border">
-            {TABS.map((candidate) => (
-              <TabsTrigger key={candidate.id} value={candidate.id} className="gap-1">
-                <candidate.icon />
-                {candidate.label}
-                {counts[candidate.id] ? (
-                  <span className="rounded-full bg-muted px-1 font-mono text-[9px] tabular-nums">{counts[candidate.id]}</span>
-                ) : null}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+    <aside className="flex w-80 shrink-0 flex-col border-l border-border" aria-label="Session panel">
+      {/* The header states what the rail is REPORTING right now, in the same
+          mono-uppercase register the panels below it use: how many sub-agents
+          are alive, and whether any of them failed. */}
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border px-3 font-mono text-[10px] tracking-[0.08em] text-muted-foreground uppercase">
+        <span>session</span>
+        {running > 0 && (
+          <span className="flex items-center gap-1 text-primary">
+            <span aria-hidden className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse" />
+            {running} running
+          </span>
+        )}
+        {failed && <span className="text-destructive">1 failed</span>}
+        {active && <span className="ml-auto text-muted-foreground/60">{active}</span>}
+      </div>
+
+      <Tabs value={tab} onValueChange={(next) => setTab(next as PanelTab)} className="min-h-0 flex-1 gap-0">
+        {/* Four tabs, an icon and a count each, inside a 320px rail: at the
+            default trigger padding the strip overflowed by 26px and clipped
+            "Usage" to "Usa". Tightened rather than scrolled — a tab strip you
+            have to scroll to discover is a tab strip with hidden tabs. */}
+        <TabsList variant="line" className="w-full shrink-0 justify-start gap-0 rounded-none border-b border-border px-1">
           {TABS.map((candidate) => (
-            <TabsContent key={candidate.id} value={candidate.id} className="min-h-0 overflow-y-auto pt-3">
-              <VNextPanelSurface tab={candidate.id} files={files} tasks={tasks} turns={turns} events={events} />
-            </TabsContent>
+            <TabsTrigger key={candidate.id} value={candidate.id} className="gap-1 px-1.5 text-[11px] [&_svg]:size-3.5">
+              <candidate.icon />
+              {candidate.label}
+              {counts[candidate.id] ? (
+                <span className="rounded-full bg-muted px-1 font-mono text-[9px] tabular-nums">{counts[candidate.id]}</span>
+              ) : null}
+            </TabsTrigger>
           ))}
-        </Tabs>
-      </SheetContent>
-    </Sheet>
+        </TabsList>
+        {TABS.map((candidate) => (
+          <TabsContent key={candidate.id} value={candidate.id} className="min-h-0 overflow-y-auto py-1">
+            <VNextPanelSurface tab={candidate.id} files={files} tasks={tasks} turns={turns} events={events} />
+          </TabsContent>
+        ))}
+      </Tabs>
+    </aside>
   );
 }

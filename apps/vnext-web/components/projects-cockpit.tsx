@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRightIcon, GitBranchIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { ActivityIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, GitBranchIcon, MessageSquareIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import type { EngineHealth, Project, ProviderDriverKind, Session } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { sessionsForSelectedProject } from "@/lib/vnext/project-selection";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Panel, PanelBody, PanelEmpty, PanelHeader, PanelRow } from "@/components/ui/panel";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -149,29 +149,28 @@ export function ProjectsCockpit() {
 
       <div className="grid gap-6 lg:grid-cols-[20rem_minmax(0,1fr)]">
         <section className="flex flex-col gap-4" aria-label="Projects">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Engine status</CardTitle>
-              {/* The worker id is a 40-character opaque token. Left to wrap it
-                  turned a one-line status into a four-line paragraph and pushed
-                  the card out of the column, so it truncates and the full value
-                  lives in the title attribute. */}
-              <CardDescription className="truncate" title={health?.worker.workerId}>
-                {health
-                  ? health.worker.registered
-                    ? "A worker is available."
-                    : "No worker is registered; turns cannot be submitted yet."
-                  : "Checking the local engine."}
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <Panel>
+            <PanelHeader icon={<ActivityIcon />} label="engine" tone={health?.worker.registered ? "done" : health ? "attention" : "none"} />
+            {/* The worker id is a 40-character opaque token. Left to wrap it
+                turned a one-line status into a four-line paragraph and pushed
+                the panel out of its column, so the prose stays short and the
+                full value lives in the title attribute. */}
+            <PanelRow
+              tone={health?.worker.registered ? "done" : health ? "attention" : "none"}
+              className="text-xs text-muted-foreground"
+              title={health?.worker.workerId}
+            >
+              {health
+                ? health.worker.registered
+                  ? "A worker is available."
+                  : "No worker is registered; turns cannot be submitted yet."
+                : "Checking the local engine."}
+            </PanelRow>
+          </Panel>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Register a project</CardTitle>
-              <CardDescription>Stores a project record and nothing else.</CardDescription>
-            </CardHeader>
-            <CardContent>
+          <Panel>
+            <PanelHeader icon={<FolderPlusIcon />} label="register a project" />
+            <div className="p-3">
               <form className="flex flex-col gap-2" onSubmit={register}>
                 <Input aria-label="Project name" placeholder="Project name" value={name} onChange={(event) => setName(event.target.value)} required />
                 <Input
@@ -186,39 +185,39 @@ export function ProjectsCockpit() {
                   Register project
                 </Button>
               </form>
-            </CardContent>
-          </Card>
+            </div>
+          </Panel>
 
-          <div className="flex flex-col gap-1" aria-label="Registered projects">
-            {loading && <p className="px-1 text-xs text-muted-foreground">Loading projects…</p>}
-            {!loading && projects.length === 0 && <p className="px-1 text-xs text-muted-foreground">No projects are registered.</p>}
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                type="button"
-                onClick={() => setSelectedId(project.id)}
-                aria-pressed={project.id === selectedId}
-                className={cn(
-                  "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left transition-colors",
-                  project.id === selectedId ? "border-primary/40 bg-primary/5" : "border-transparent hover:bg-muted/60",
-                )}
-              >
-                <span className="text-sm font-medium">{project.name}</span>
-                <span className="w-full truncate font-mono text-[10px] text-muted-foreground">{project.root}</span>
-              </button>
-            ))}
-          </div>
+          <Panel className="min-h-0">
+            <PanelHeader icon={<FolderIcon />} label="projects" count={projects.length} />
+            <PanelBody>
+              {loading && <p className="px-3 py-2 text-xs text-muted-foreground">Loading projects…</p>}
+              {!loading && projects.length === 0 && (
+                <PanelEmpty icon={<FolderIcon />} title="Nothing registered">
+                  Point Telar at a local checkout above.
+                </PanelEmpty>
+              )}
+              {projects.map((project) => (
+                <PanelRow key={project.id} tone={project.id === selectedId ? "active" : "none"} active={project.id === selectedId} className="p-0 pl-0">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(project.id)}
+                    aria-pressed={project.id === selectedId}
+                    className="flex w-full flex-col items-start gap-0.5 py-2 pr-3 pl-4 text-left hover:bg-muted/40"
+                  >
+                    <span className="text-sm font-medium">{project.name}</span>
+                    <span className="w-full truncate font-mono text-[10px] text-muted-foreground">{project.root}</span>
+                  </button>
+                </PanelRow>
+              ))}
+            </PanelBody>
+          </Panel>
         </section>
 
         <section id="sessions" aria-label="Sessions">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Sessions</CardTitle>
-              <CardDescription>
-                {selectedProject ? `Persistent transcripts in ${selectedProject.name}.` : "Choose a project to see its sessions."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
+          <Panel>
+            <PanelHeader icon={<MessageSquareIcon />} label={selectedProject ? `sessions · ${selectedProject.name}` : "sessions"} count={visibleSessions.length} />
+            <div className="flex flex-col gap-4 p-3">
               {selectedId && (
                 <form className="flex flex-col gap-2 rounded-lg border border-border p-3" onSubmit={createSession}>
                   <Input
@@ -252,24 +251,34 @@ export function ProjectsCockpit() {
                   </div>
                 </form>
               )}
-              {selectedId && visibleSessions.length === 0 && <p className="text-sm text-muted-foreground">No sessions yet.</p>}
-              <div className="flex flex-col gap-0.5">
+              {!selectedId && <PanelEmpty title="No project selected">Choose one on the left to see its sessions.</PanelEmpty>}
+              {selectedId && visibleSessions.length === 0 && (
+                <PanelEmpty icon={<MessageSquareIcon />} title="No sessions yet">
+                  Start one above; it becomes a durable transcript the engine owns.
+                </PanelEmpty>
+              )}
+              {/* NO RAIL BY DEFAULT. Every session here is active, so colouring
+                  them all drew one continuous stripe down the list and the rail
+                  stopped carrying information. A 3px rail marks the EXCEPTIONAL
+                  row; the ordinary one gets none. */}
+              <div className="-mx-3 flex flex-col">
                 {visibleSessions.map((session) => (
-                  <Link
-                    key={session.id}
-                    href={`/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/60"
-                  >
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-sm">{session.title || "Untitled session"}</span>
-                      <span className="truncate font-mono text-[10px] text-muted-foreground">{session.id}</span>
-                    </span>
-                    <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                  </Link>
+                  <PanelRow key={session.id} tone="none" className="p-0 pl-0">
+                    <Link
+                      href={`/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`}
+                      className={cn("flex w-full items-center gap-2 py-1.5 pr-3 pl-4 transition-colors hover:bg-muted/40", session.state === "archived" && "opacity-60")}
+                    >
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate text-sm">{session.title || "Untitled session"}</span>
+                        <span className="truncate font-mono text-[10px] text-muted-foreground">{session.id}</span>
+                      </span>
+                      <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    </Link>
+                  </PanelRow>
                 ))}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </Panel>
         </section>
       </div>
     </main>
