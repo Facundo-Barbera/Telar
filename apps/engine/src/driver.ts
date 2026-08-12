@@ -26,6 +26,9 @@ import type {
   TurnObservation,
   UsageSnapshot,
 } from "@telar/engine-client";
+// The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
+// in engine-client. Every client renders these names too.
+import { displayToolName, parseToolName, qualifyTelarTool, TELAR_MCP_SERVER } from "@telar/engine-client";
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -170,7 +173,8 @@ async function buildBrowserMcpServer(
       },
     ),
   );
-  return createSdkMcpServer({ name: "browser", version: "2.0.0", tools });
+  // ONE server for every Telar capability, not one per toolkit.
+  return createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools });
 }
 
 /**
@@ -201,6 +205,7 @@ export function requestDetailForToolCall(name: string, input: unknown): RequestD
       return { kind: "file_read", read: detail.read };
     case "mcp_tool_call":
     case "dynamic_tool_call":
+    case "browser_action":
       return { kind: "tool_call", call: detail.call };
     default:
       return { kind: "tool_call", call: { name, input: input === undefined ? undefined : input } };
@@ -269,11 +274,31 @@ export function itemDetailForToolCall(name: string, input: unknown): ItemDetail 
   if (name === "WebFetch") {
     return { type: "dynamic_tool_call", call: { name, input: toolInput } };
   }
-  if (name.startsWith("mcp__")) {
-    const [, server] = name.split("__");
+
+  const parsed = parseToolName(name);
+  /**
+   * TELAR'S OWN TOOLS GET THEIR OWN ROW TYPES.
+   *
+   * This arm is what `browser_action` was waiting for. It has been in the
+   * contract and in the cockpit's icon table since v2 was written, and nothing
+   * produced it: the browser was registered as a server called `browser`, so
+   * every call matched the generic `mcp__` arm below and rendered as an
+   * anonymous MCP row with a duplicated name. Routing on CAPABILITY rather than
+   * on server identity is what makes the distinction survive the next toolkit.
+   */
+  if (parsed.capability === "browser") {
+    return {
+      type: "browser_action",
+      call: { name, server: parsed.server ?? TELAR_MCP_SERVER, input: toolInput },
+      // The page it acts on, when the call names one. Absent for a click or a
+      // snapshot, which act on wherever the tab already is.
+      ...(str(args.url) ? { url: str(args.url)! } : {}),
+    };
+  }
+  if (parsed.server) {
     return {
       type: "mcp_tool_call",
-      call: { name, ...(server ? { server } : {}), input: toolInput },
+      call: { name, server: parsed.server, input: toolInput },
     };
   }
   return { type: "dynamic_tool_call", call: { name, input: toolInput } };
@@ -290,6 +315,12 @@ export function titleForToolCall(name: string, detail: ItemDetail): string {
       return detail.change.path;
     case "web_search":
       return oneLine(detail.query) || name;
+    case "browser_action":
+      // `browser_navigate → example.com` rather than the qualified name. The
+      // stored `call.name` stays fully qualified; this is the label only.
+      return detail.url ? `${displayToolName(name)} → ${oneLine(detail.url, 80)}` : displayToolName(name);
+    case "mcp_tool_call":
+      return displayToolName(name);
     default:
       return name;
   }
@@ -536,10 +567,20 @@ export function createClaudeDriver(
           .catch(() => undefined);
       };
 
+      /**
+       * THE KEY IS WHAT NAMES THE SERVER, not `createSdkMcpServer`'s `name`.
+       *
+       * Measured, by running it: with `createSdkMcpServer({ name: "telar" })`
+       * but this key left as `browser`, the model still saw
+       * `mcp__browser__browser_navigate` and every call landed back in the
+       * generic `mcp_tool_call` arm. The title read correctly the whole time,
+       * which is exactly why a passing unit test on `itemDetailForToolCall` did
+       * not catch it — the mapping was right and the input to it was wrong.
+       */
       const mcpServers =
         options.browser && browserScopeKey
           ? {
-              browser: await buildBrowserMcpServer(
+              [TELAR_MCP_SERVER]: await buildBrowserMcpServer(
                 sdk,
                 options.browser,
                 browserScopeKey,
@@ -547,8 +588,12 @@ export function createClaudeDriver(
                   if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
                   const decision = await onRequest({
                     kind: "tool_call",
-                    detail: { kind: "tool_call", call: { name, input: args } },
-                    toolUseId: `browser_${name}_${crypto.randomUUID().slice(0, 8)}`,
+                    // The QUALIFIED name, so the approval and the timeline row
+                    // name the same tool. A client shortens it for display
+                    // (`displayToolName`); the data does not lie about which
+                    // server it belongs to.
+                    detail: { kind: "tool_call", call: { name: qualifyTelarTool(name), server: TELAR_MCP_SERVER, input: args } },
+                    toolUseId: `${TELAR_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
                   });
                   return decision === "accept" || decision === "acceptForSession";
                 },
@@ -905,6 +950,9 @@ function withToolOutput(detail: ItemDetail, output: string): ItemDetail {
       return { ...detail, command: { ...detail.command, outputPreview: preview } };
     case "mcp_tool_call":
     case "dynamic_tool_call":
+    // A browser action's output is its snapshot or its console dump, and it is
+    // the whole reason the row is expandable. Omitted before this arm existed.
+    case "browser_action":
       return { ...detail, call: { ...detail.call, output: preview } };
     default:
       return detail;

@@ -257,7 +257,10 @@ test("an mcp tool carries its server so a client can group by it", () => {
 // ── the browser ──────────────────────────────────────────────────────────────
 
 /** An SDK whose in-process MCP server is real enough to invoke a tool. */
-function sdkWithBrowserTools(invoke: (handlers: Map<string, (args: Record<string, unknown>) => Promise<unknown>>) => Promise<void>) {
+function sdkWithBrowserTools(
+  invoke: (handlers: Map<string, (args: Record<string, unknown>) => Promise<unknown>>) => Promise<void>,
+  seen: { serverKeys?: string[] } = {},
+) {
   const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
   return async () => ({
     tool: (name: string, _description: string, _shape: unknown, handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>) => {
@@ -265,12 +268,29 @@ function sdkWithBrowserTools(invoke: (handlers: Map<string, (args: Record<string
       return { name };
     },
     createSdkMcpServer: (input: unknown) => input,
-    async *query() {
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
+      seen.serverKeys = Object.keys(input.options.mcpServers ?? {});
       await invoke(handlers);
       yield { type: "result", subtype: "success" };
     },
   });
 }
+
+test("the browser registers under the ONE Telar server, because the key is what names it", async () => {
+  // FOUND BY RUNNING IT. `createSdkMcpServer({ name })` is not what forms the
+  // model-visible prefix — the `mcpServers` KEY is. With the key left as
+  // `browser` the model saw `mcp__browser__browser_navigate` and every call
+  // fell back to `mcp_tool_call`, while the row's TITLE still read correctly.
+  const seen: { serverKeys?: string[] } = {};
+  const browser = {
+    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    isReadOnly: () => true,
+    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
+  };
+  const driver = createClaudeDriver(sdkWithBrowserTools(async () => {}, seen), { browser });
+  await run(driver, { browserScopeKey: "session_one" }).result;
+  expect(seen.serverKeys).toEqual(["telar"]);
+});
 
 test("a browser call that CHANGED the page journals what it is now looking at", async () => {
   const calls: string[] = [];

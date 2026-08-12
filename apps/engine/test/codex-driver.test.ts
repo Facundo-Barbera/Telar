@@ -237,6 +237,12 @@ test("tool items land on the canonical rows a Claude turn would produce", async 
 
   const mcp = rows.find((row) => row?.detail.type === "mcp_tool_call");
   expect(mcp?.detail.type === "mcp_tool_call" && mcp.detail.call.server).toBe("linear");
+  // NORMALIZED TO CLAUDE'S SPELLING. Codex hands over `{ server, tool }` and
+  // this used to store `linear.search` while the identical tool called through
+  // Claude stored `mcp__linear__search` — one tool with two names, so a client
+  // grouping by tool sees two, and an approval remembered against one does not
+  // match the other.
+  expect(mcp?.detail.type === "mcp_tool_call" && mcp.detail.call.name).toBe("mcp__linear__search");
 
   expect(rows.some((row) => row?.detail.type === "web_search")).toBeTrue();
   // THE LOAD-BEARING CASE: an item type this driver has never heard of still

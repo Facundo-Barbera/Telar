@@ -1,4 +1,4 @@
-import type { EngineEvent, Item, Session, Task, Turn, TurnState, UsageSnapshot } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type Item, type Session, type Task, type Turn, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
  * The client-side fold over protocol v2's journal.
@@ -252,7 +252,11 @@ export function itemLabel(item: JournalItem): string {
     case "mcp_tool_call":
     case "dynamic_tool_call":
     case "browser_action":
-      return item.detail.call.name;
+      // The stored name is fully qualified (`mcp__telar__browser_click`) because
+      // that is what correlates a row with its approval. A label drops the
+      // addressing — the contract owns that rule so three clients cannot invent
+      // three ways to shorten it.
+      return displayToolName(item.detail.call.name);
     case "web_search":
       return item.detail.query;
     case "error":

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EngineEvent, EngineRequest, Item, Session, Task, Turn, TurnState } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type EngineRequest, type Item, type Session, type Task, type Turn, type TurnState } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import {
   appendJournalEvents,
@@ -196,7 +196,10 @@ function requestSummary(detail: EngineRequest["detail"]): { label: string; body?
     case "file_read":
       return { label: "wants to read a file", body: detail.read.path };
     case "tool_call":
-      return { label: `wants to use ${detail.call.name}`, body: undefined };
+      // `wants to use browser_click`, not `wants to use
+      // mcp__telar__browser_click`. The qualified name is addressing; a human
+      // being asked to permit something should read the verb.
+      return { label: `wants to use ${displayToolName(detail.call.name)}`, body: undefined };
     case "user_input":
       return { label: "is asking you something", body: detail.prompt };
   }

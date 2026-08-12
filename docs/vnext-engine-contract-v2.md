@@ -218,6 +218,42 @@ Browser activity is journalled as `browser_action` items on the normal stream,
 so a detached run's browsing is reviewable after the fact — a screenshot trail,
 not a black box.
 
+### 6.1 Telar's own tools are MCP tools, and they have a naming standard
+
+The browser is not special-cased into the provider — it is an in-process MCP
+server. So are the toolkits that come after it. The rule, taken from t3 code
+(`mcp__t3-code__preview_navigate`, toolkits under `mcp/toolkits/<capability>/`
+behind a `requireMcpCapability` gate) and defined once in
+`packages/engine-client/src/protocol/tools.ts`:
+
+> **`mcp__telar__<capability>_<verb>`** — one server named `telar`, and the
+> capability is legible in the tool name.
+
+- **One server, many capabilities.** Not one server per toolkit. Ten toolkits
+  registered as ten servers would show a client ten groups that are all Telar.
+- **`TELAR_CAPABILITIES` is the registry.** Adding a capability there is the
+  whole registration: the prefix check, the item mapping and the approval
+  routing all read that list. `assertTelarToolNames` is run over every toolkit
+  by a test, so a tool added without its prefix fails the build.
+- **The stored name is always fully qualified**, because it is what correlates a
+  timeline row with its approval and with the provider's own `tool_use`.
+  `displayToolName()` strips the addressing for labels — defined in the contract
+  so three clients cannot invent three ways to shorten it.
+- **Providers are normalized to one spelling.** Claude reports
+  `mcp__linear__search`; the Codex app-server reports `{ server, tool }`.
+  `canonicalToolName()` makes both store the same string. Without it one MCP
+  tool has two names depending on which provider called it, and a client
+  grouping by tool sees two.
+
+**What this fixed, not just tidied.** The browser was registered as a server
+called `browser` holding tools called `browser_*`, producing
+`mcp__browser__browser_navigate`. The stutter was the symptom; the defect was
+that it matched the generic `mcp__` arm of the item mapping, so **`browser_action`
+— in this contract since v2 was written, with an icon in the cockpit — was
+produced by nothing.** Every browser call rendered as an anonymous MCP row.
+Routing on capability rather than on server identity is what makes the row type
+reachable and keeps it reachable for the next toolkit.
+
 ## 7. Warp — the aggregation mode formerly called Ultras
 
 **Decided: Ultras becomes Warp.** In weaving, the warp is the set of parallel

@@ -14,7 +14,7 @@
  * silently missing row is worse than an ugly one, and Codex ships new item
  * types faster than this file can learn them.
  */
-import type { ItemDetail, ItemStatus, RequestDetail, RequestKind, UsageSnapshot } from "@telar/engine-client";
+import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot } from "@telar/engine-client";
 import { titleForToolCall } from "../driver";
 
 export type CodexItem = Record<string, unknown>;
@@ -154,19 +154,35 @@ export function codexItemDetail(item: CodexItem): { detail: ItemDetail; title?: 
       const tool = str(item.tool) ?? "tool";
       const failure = str(record(item.error).message);
       const output = failure ?? (item.result === undefined ? undefined : item.result);
-      return {
-        detail: {
-          type: "mcp_tool_call",
-          call: {
-            name: server ? `${server}.${tool}` : tool,
-            ...(server ? { server } : {}),
-            ...(item.arguments === undefined ? {} : { input: item.arguments }),
-            ...(output === undefined ? {} : { output }),
-            ...(str(item.id) ? { toolUseId: str(item.id)! } : {}),
-          },
-        },
-        title: server ? `${server}.${tool}` : tool,
+      /**
+       * NORMALIZED TO CLAUDE'S SPELLING, not to Codex's own.
+       *
+       * Codex hands over `{ server, tool }` and this used to render
+       * `linear.search` while the same tool called through Claude stored
+       * `mcp__linear__search`. One tool, two names, and therefore two rows a
+       * client cannot group, two approvals to remember, and — once Telar's own
+       * toolkits reach Codex — a `browser_*` call that maps to `browser_action`
+       * from one provider and `mcp_tool_call` from the other. See the contract's
+       * ./protocol/tools.ts.
+       */
+      const name = canonicalToolName(server, tool);
+      const call = {
+        name,
+        ...(server ? { server } : {}),
+        ...(item.arguments === undefined ? {} : { input: item.arguments }),
+        ...(output === undefined ? {} : { output }),
+        ...(str(item.id) ? { toolUseId: str(item.id)! } : {}),
       };
+      // Telar's own capabilities get their own row type here too, so the split
+      // is by capability rather than by which provider placed the call.
+      if (parseToolName(name).capability === "browser") {
+        const url = str(record(item.arguments).url);
+        return {
+          detail: { type: "browser_action", call, ...(url ? { url } : {}) },
+          title: url ? `${tool} → ${url}` : tool,
+        };
+      }
+      return { detail: { type: "mcp_tool_call", call }, title: tool };
     }
 
     case "dynamicToolCall": {

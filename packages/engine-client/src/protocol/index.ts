@@ -10,16 +10,14 @@
  *   items     timeline rows; the data protocol v1 discarded
  *   requests  approvals and questions, plus the auto-resolution policy
  *   tasks     sub-agents, background work, Warp linkage
+ *   tools     Telar's own MCP namespace: one server, capability-prefixed names
  *   events    the journal: one discriminated union, plus transport shapes
- *
- * v1 (`../contract.ts`) is still exported from the package root during the
- * cutover and is deleted in the commit that migrates the engine. Nothing new
- * should import it.
  */
 export * from "./common";
 export * from "./entities";
 export * from "./items";
 export * from "./requests";
 export * from "./tasks";
+export * from "./tools";
 export * from "./events";
 export * from "./observations";
